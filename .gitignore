@@ -1,0 +1,6 @@
+target/
+*.sqlite
+*.sqlite-*
+*.log
+.env
+.forge/
