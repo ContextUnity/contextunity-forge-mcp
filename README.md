@@ -1,404 +1,247 @@
 # ContextUnity Forge MCP
 
-A native Rust code map and documentation engine with a command line interface and a Model Context Protocol (MCP) server. One executable scans repositories, extracts syntax and documentation, links symbols, and queries bundled SQLite. Deployment requires no Python interpreter, virtual environment, database service, or separately installed SQLite.
+A high-performance native code graph, documentation engine, and Model Context Protocol (MCP) server written in pure Rust.
 
-## Build and start
+One standalone binary scans your codebase using Tree-sitter, links symbols and architectural invariants into an embedded SQLite database, and exposes 15 specialized MCP tools for AI coding agents and developers.
 
-Build on Linux with the Rust toolchain and a C compiler for bundled SQLite and Tree-sitter. Database identity checks currently require Unix file metadata. Build from this repository:
+> [!NOTE]
+> **Alpha Version (v0.2.0-alpha)**: ContextUnity Forge MCP is currently in active alpha development. There is no pre-packaged installer yet. Build directly from source using the Rust toolchain.
 
+---
+
+## Highlights
+
+- **Pure Rust & Native Performance**: No Python runtime, external database server, or system SQLite required. Sub-second cold indexing and millisecond-level incremental updates.
+- **15 Specialized MCP Tools**: High-level semantic tools for repository overview, symbol search, AST previews, incoming blast-radius analysis, test mapping, and removal proofs.
+- **Resilient & Collision-Free**: Prevents semantic hijacking (bare symbol names are never confused with modules), supports `path:symbol` and line coordinates (`path:line`), and filters Markdown documentation to dedicated tools.
+- **Fail-Closed Security**: Strict 2.0-second SQLite timeouts, 64 KiB output ceilings, and automatic blocking of SQL write injections and path traversal attempts.
+- **Multi-Workspace & Worktree Linking**: Index multiple repositories or sibling worktrees into a single unified code graph via `forge-mcp.yaml`.
+
+---
+
+## Building from Source
+
+### Prerequisites
+- Rust 1.80+ (`cargo`, `rustc`)
+- C compiler (`gcc` or `clang` for bundled SQLite and Tree-sitter)
+- Linux / Unix environment
+
+### Build & Install
 ```sh
+git clone https://github.com/ContextUnity/contextunity-forge-mcp.git
+cd contextunity-forge-mcp
 cargo build --release
-export PATH="$PWD/target/release:$PATH"
+
+# Copy or install to your PATH:
+install -m 755 target/release/contextunity-forge-mcp ~/.local/bin/contextunity-forge-mcp
 ```
 
-The default binary includes Python, Rust, TypeScript/JavaScript, Vue and Proto.
-Other grammars are optional:
-
+By default, the binary compiles with support for **Python, Rust, TypeScript, JavaScript, Vue, Protocol Buffers, and Markdown**.
+To enable optional languages (Go, Java, C#, C, C++, PHP, Ruby):
 ```sh
-cargo build --release --locked --features lang-go
-cargo build --release --locked --features all-languages
-cargo build --release --locked --no-default-features --features lang-rust
+cargo build --release --features all-languages
 ```
 
-`--no-default-features` alone builds the Markdown/document engine. See the
-[profile guide](docs/language-profiles.md) for feature selection and adding a
-provider. No package installation or runtime plugin loader is required.
-
-From the repository you want to index:
-
-```sh
-contextunity-forge-mcp guide init
-contextunity-forge-mcp guide validate
-contextunity-forge-mcp build . --output .code-map.sqlite --verbose
-contextunity-forge-mcp query overview --db .code-map.sqlite
-contextunity-forge-mcp --db .code-map.sqlite serve
-```
-
-Invoking the executable without a subcommand also starts the stdio MCP server. Keep standard output reserved for protocol messages when running `serve`.
-
-## Architecture
-
-```text
-CLI commands                         MCP stdio requests (rmcp)
-     └───────────────────┬───────────────────┘
-                    shared core
-                         │
-           adapter / workspace configuration
-                         │
-                scanner and content hashes
-                         │
-       Tree-sitter syntax + Markdown sections
-                         │
-              symbol and document linker
-                         │
-       SQLite writer / SHA-256 commitments
-                         │
-       read queries / recursive graph traversal
-```
-
-The CLI owns argument parsing and output. The MCP layer owns protocol transport and tool schemas. Both call the same domain operations. The scanner determines admitted files; language extractors produce definitions, imports, and calls; the linker resolves references and preserves unresolved evidence. Markdown sections supply searchable documentation and code references. SQLite stores graph rows, extraction contributions, document sections, full text search indexes, and commitments.
-
-The database is a repository snapshot. The CLI requires an explicit build or
-delta after source changes. MCP checks the source inventory before reads and
-updates its owned index when source changes. Query results reflect indexed
-evidence; dynamic execution, external libraries, and unindexed files require
-separate inspection.
-
-## Source coverage
-
-| Input | Extraction boundary |
-| --- | --- |
-| Python (`.py`, `.pyi`) | Definitions, classes, imports, calls, attached documentation |
-| TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`) | Functions, classes, methods, imports, calls |
-| Vue (`.vue`) | JavaScript or TypeScript `<script>` blocks and basic template bindings |
-| Rust (`.rs`) | Functions, types, traits, implementations, imports, calls |
-| Go (`.go`) | Types, functions, methods, imports, calls |
-| Markdown (`.md`, `.mdx`) | Sections, metadata, invariants, code references |
-| Protocol Buffers (`.proto`) | Enums, messages, services, RPCs, imports, type references |
-| Java (`.java`) | Declarations, local calls and inheritance; classpath resolution remains conservative |
-| C# (`.cs`) | Declarations, local calls and base relations; assembly resolution remains conservative |
-| Kotlin (`.kt`, `.kts`) | Declarations, local calls and base relations; inferred receiver types remain conservative |
-| PHP (`.php`) | Declarations and supported calls/relations; autoload and dynamic dispatch remain unresolved |
-| Ruby (`.rb`) | Declarations and supported calls; bare-call and dynamic forms retain unresolved evidence |
-| C (`.c`, `.h`) | Declarations, local calls and include facts; preprocessing and indirect calls remain conservative |
-| C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`) | Declarations, local calls and supported bases; templates and implicit calls remain conservative |
-
-Profiles are discovered at build time from `src/engine/languages/*.rs` and
-selected by `lang-<provider>` Cargo features. A provider exports a `PROFILES`
-slice; no manual Rust registry edit is required. The compiled profile
-fingerprint includes enabled providers and invalidates incompatible indexes.
-The table lists all available modes; optional modes require their feature.
-See [language profiles and extension guide](docs/language-profiles.md) for the
-contract and limits. `.h` uses the C profile when enabled.
-
-Unsupported extensions are outside the scanner's inventory. Vue extracts component names, event handlers, bound props and interpolations from templates; styles and complex template expressions remain outside syntax extraction. MDX is treated as Markdown. The scanner bounds a file to 5 MiB, the admitted corpus to 100,000 files, and total admitted bytes to 500 MiB. Exceeding a bound is an error.
-
-## Command line reference
-
-Global `--root` defaults to the current directory (`FORGE_WORKSPACE_ROOT` overrides it). Global `--db` defaults to `<root>/.forge/code-map.sqlite` (`FORGE_DB` overrides it). An explicit `--db` is useful when a build uses a custom `--output`. Build, scan, and delta also accept their own positional workspace root. CLI results are JSON.
-
-Use `contextunity-forge-mcp --help` and `<command> --help` for exact arguments and defaults. Quote selectors, text queries, and structural patterns so the shell passes them unchanged.
-
-### Indexing
-
-```sh
-# Inspect the admitted file inventory.
-contextunity-forge-mcp scan . --pretty
-
-# Build a complete database.
-contextunity-forge-mcp build . --output .code-map.sqlite --verbose
-
-# Update explicitly changed or deleted repository-relative paths.
-contextunity-forge-mcp delta . --db .code-map.sqlite src/main.rs
-```
-
-Delta reparses the listed changed files, gathers affected references from persisted dependencies, and replaces the affected files' graph contributions in one SQLite write-ahead log (WAL) transaction. Unchanged file digests are reused only when file identity and timestamps still match. Include every admitted addition, change, and deletion in the command; an unlisted source change is rejected. Changes during indexing also reject the update. Rebuild when changing adapter scope.
-
-### Code map
-
-```sh
-contextunity-forge-mcp query overview --db .code-map.sqlite
-contextunity-forge-mcp query inspect 'build' --show-doc --db .code-map.sqlite
-contextunity-forge-mcp query inspect 'build' --show-source --db .code-map.sqlite
-contextunity-forge-mcp query search '*Revert*' --kind function --limit 100
-contextunity-forge-mcp query tests 'build'
-contextunity-forge-mcp query tests 'test_build' --direction outbound
-contextunity-forge-mcp query impact 'build' --depth 3 --db .code-map.sqlite
-contextunity-forge-mcp query explain 'build' --db .code-map.sqlite
-contextunity-forge-mcp query remove 'legacy_helper' --db .code-map.sqlite
-```
-
-Start with an overview and use returned selectors to inspect individual symbols. Inspection includes linked documentation by default. `--show-doc` enables it explicitly; `--show-doc false` disables it. Impact follows graph relationships to a bounded depth. Removal analysis reports evidence for a proposed retirement; interpret the result within index coverage.
-
-`--show-source` adds the exact indexed line range, preserving line endings, from a local or linked workspace. Source is omitted by default. A changed, missing, or symlinked source file returns an error; update or rebuild the index before requesting source again.
-
-Symbol search uses FTS5 for terms and simple prefixes such as `Order*`. Patterns with `*` elsewhere, such as `*Revert*`, match substrings in names and qualified names. Other characters are literal; regular expressions and typo correction are not supported. Results have a configurable limit and a `truncated` flag.
-
-Test mapping follows static dependencies transitively with cycle detection. The default inbound direction returns test symbols that depend on the selected production symbol; outbound returns production dependencies of a selected test. Selecting a class includes its members. Containment does not connect unrelated sibling tests. Test files and Rust `#[test]`, `#[tokio::test]`, and `#[async_std::test]` functions supply test markers. Unresolved references can hide dependencies; an empty result is not proof that no tests exist.
-
-The graph includes `inherits` from a derived class to its base, `implements` from a type to an interface or trait, `decorates` from a decorator to its decorated symbol, and `mutates` from an assignment owner to a field. These relationships participate in impact and slice queries. Python class field assignments include ORM declarations without requiring an ORM dependency.
-
-Resolution coverage marks known external imports separately from unresolved local dependencies. Rust `std::`, `core::` and `alloc::` imports and JavaScript/TypeScript `node:` imports receive `external` only when no indexed provider matches. Unknown package names remain `unresolved`; an absolute import alone does not prove that a dependency exists outside the index. Overview and analysis report `external_imports` separately from unresolved references. Calls through external imports can remain unresolved because the external source is not indexed.
-
-Static route patterns include HTTP decorators, `path('...', handler)`, `app.get('...', handler)` and similar HTTP methods, and `{path: '...', component: handler}` objects. Route nodes have names such as `GET /items` and a `handles` edge when the handler resolves. Registrations without an explicit HTTP method use `ANY`; Python `route(..., methods=[...])` creates one node per method. Dynamic paths and unresolved handlers require source inspection. These are syntax patterns, not runtime framework validation.
-
-Route registrations retain all explicit handlers, including inline functions and parenthesized callbacks. Vue script blocks use absolute source coordinates. Proto RPC type references participate in dependency traversal and removal checks.
-
-Rebuild existing indexes to populate the relationships, route nodes, test markers, and composite edge indexes. Readers check a separate index semantics version; MCP rebuilds an incompatible owned index after validating workspace ownership. Unreadable or foreign databases are rejected without replacement.
-
-See [language support and current limits](docs/language-support.md) for verified boundaries.
-
-### General queries and analysis
-
-```sh
-contextunity-forge-mcp query run slice 'build' --depth 2 --limit 100
-contextunity-forge-mcp query run unwired --limit 100
-contextunity-forge-mcp query run raw_cypher 'MATCH (n) RETURN n' --limit 100
-contextunity-forge-mcp query analyze 'SELECT kind, COUNT(*) FROM nodes GROUP BY kind'
-contextunity-forge-mcp query analyze src/
-```
-
-`raw_cypher` accepts a restricted set of graph shapes, not arbitrary Cypher. See operational boundaries below. SQL analysis accepts one read-only `SELECT` or `WITH` statement without a semicolon. SQL text is limited to 64 KiB, SQLite scalar values and serialized results to 8 MiB, and execution has a two-second progress budget. Queries that exceed these limits return an error. SQL analysis returns at most 1,000 rows; public `--limit` values range from 1 to 10,000. Impact and slice traversal accept depths up to 16 and return at most 1,000 nodes with a truncation indicator.
-
-Path analysis treats path characters literally and reports total diagnostic counts and truncation. Cycle detection retains cross-file cycles, uses integer node keys internally, and rejects graphs exceeding its 500,000-edge computation budget.
-
-### Checkpoints
-
-```sh
-contextunity-forge-mcp checkpoint save --name orientation --content '{"focus":"indexer"}'
-contextunity-forge-mcp checkpoint list
-contextunity-forge-mcp checkpoint get --name orientation
-contextunity-forge-mcp checkpoint delete --name orientation
-```
-
-Checkpoints persist in `<root>/.forge/checkpoints.json`. Content is JSON; names contain 1–200 characters and each saved value is limited to 1 MiB.
-
-### Documentation
-
-```sh
-contextunity-forge-mcp docs search 'Code Quality invariant' --doc-type architecture --db .code-map.sqlite
-contextunity-forge-mcp docs get 'docs/architecture/code-quality.md' --section 'Fail-Closed' --db .code-map.sqlite
-```
-
-Markdown YAML frontmatter supplies document metadata. Headings split documents into sections. Inline code spans identify symbol references; supported GitHub alert blocks identify architectural invariants:
-
-```markdown
----
-title: Request handling
-doc_type: architecture
 ---
 
-# Request validation
-
-> [!IMPORTANT] Invariant:
-> `validate_request` runs before request dispatch.
-```
-
-### Structural search
+## Quickstart (CLI)
 
 ```sh
-contextunity-forge-mcp ast grep 'def $NAME($$$ARGS):' --lang python --path src/
-```
+cd /path/to/your/project
 
-Use single quotes around patterns containing `$` to prevent shell expansion. Structural matches identify syntax locations; they do not execute source code.
-
-### Guidance
-
-```sh
+# 1. Initialize configuration and inspect file inventory
 contextunity-forge-mcp guide init
-contextunity-forge-mcp guide adapter
-contextunity-forge-mcp guide docs
-contextunity-forge-mcp guide validate
+contextunity-forge-mcp scan .
+
+# 2. Build the code graph database (.forge/code-map.sqlite)
+contextunity-forge-mcp build . --verbose
+
+# 3. Query the index
+contextunity-forge-mcp query overview
+contextunity-forge-mcp query search 'Token*' --kind function
+contextunity-forge-mcp query inspect 'src/auth.py:login'
+contextunity-forge-mcp query impact 'src/auth.py:login' --depth 1
+
+# 4. Start the stdio MCP server
+contextunity-forge-mcp serve
 ```
 
-## Repository adapter
+For complete CLI options and subcommands, see [docs/cli-reference.md](docs/cli-reference.md).
 
-`forge-mcp.yaml` defines repository scope; `contextunity-forge-mcp.yaml` is also recognized. With no adapter, scanning starts at the workspace root and applies Git ignore rules and built-in exclusions. `ignore` entries match exact file or directory basenames. Root paths stay inside the workspace; parent traversal and symbolic links are rejected. When both filenames exist, `forge-mcp.yaml` takes precedence. Build and scan accept `--adapter` for an explicit workspace-local file. The guide commands print the supported template and validate configuration. Start with repository-relative source and documentation roots:
+---
+
+## Repository Adapter (`forge-mcp.yaml`)
+
+The `forge-mcp.yaml` adapter file defines indexing boundaries, exclusions, and linked sibling repositories. Place it in your project root:
 
 ```yaml
+# Source directories to index
 roots:
   - src
-  - tests
+  - packages
+
+# Documentation directories (Markdown / MDX)
 doc_roots:
   - docs
+
+# Basename exclusions
 ignore:
   - target
   - node_modules
   - .venv
-```
+  - dist
 
-`eligible_roots` is an alternative to `roots`; `roots` takes precedence. `doc_roots` extends the selected roots. `excluded_directory_names` and `excluded_file_names` extend the same basename exclusion set as `ignore`. Use plain paths for roots; document root glob patterns are not expanded. Use `guide init` for the implementation's current complete template. Keep generated artifacts and dependency trees outside indexing scope. Rebuild after changing scope so the stored index and adapter describe the same repository.
-
-### Linked workspaces and sibling worktrees
-
-To index related workspaces (e.g. parent repository, child worktree, or shared libraries) into a single unified code map, configure `linked_workspaces`:
-
-```yaml
-roots:
-  - src
-doc_roots:
-  - docs
-
+# Index sibling repositories or worktrees into a single unified code graph
 linked_workspaces:
-  - name: commerce
-    path: /home/user/ContextUnity/worktrees/commerce-horoshop-api
-    roots:
-      - extensions
-    doc_roots:
-      - docs
-  - name: gridviewspec
-    path: /home/user/ContextUnity/projects/gridviewspec
+  - name: shared-contracts
+    path: "../shared-contracts"
+    enabled: true     # Set to false to disable without deleting the configuration
     roots:
       - src
-    ignore:
-      - dist
+    doc_roots:
+      - docs
+
+  - name: extra-library
+    path: "../extra-library"
+    enabled: false    # Quickly toggle off when not needed
+    roots:
+      - lib
 ```
 
-- **Unified Graph in Local Database**: The SQLite index is stored in the local worktree (`<local-root>/.forge/code-map.sqlite`).
-- **Path Namespacing**: Nodes and files from linked workspaces are prefixed as `[<workspace_name>]/<relative_path>`.
-- **Cross-workspace Search**: Symbols and doc sections from all linked workspaces are searchable and inspectable.
-- **Import identity**: Exact dependencies require a complete module namespace, compatible language and justified workspace. Matching a name suffix does not prove a dependency; ambiguous providers remain visible in resolution coverage. Scan roots do not define runtime import roots.
-- **Fail-Open Resilience**: If a linked worktree/workspace becomes unavailable (e.g. branch worktree removed or unmounted), the indexer skips it and automatically rebuilds the database without it, eliminating crashes and stale data.
+- **`enabled: true/false`**: Toggle linked workspaces on or off with a single line. Modifying this automatically refreshes the code graph on the next query.
+- **Fail-Open Resilience**: If a linked worktree is temporarily deleted or unmounted, Forge skips it gracefully without crashing or corrupting the local database.
 
-## Database verification and updates
+---
 
-Readers check the database schema, engine, workspace binding, and SHA-256 commitments before returning indexed data. An incompatible database requires a rebuild; the database belongs to the canonical workspace path used during indexing.
+## MCP Client Configuration
 
-A successful build or delta can write an optional private `<database>.verified.json` verification record. It binds the verified generation to the workspace, database identity, schema, and commitment algorithm. If the record is missing, malformed, stale, or not private, readers perform full verification. A nonempty WAL also requires full verification. The record contains no source index and can be removed when diagnosing verification behavior.
-
-The MCP server checks inventory metadata before admitting each read. Changed
-file identities or timestamps trigger content hashing; changed content,
-additions and deletions update the index through delta. An incompatible owned
-index is rebuilt. The read and source admission share the connection lock, and
-each request ends its SQLite read snapshot so subsequent requests can observe
-external deltas. Unchanged reads do not rewrite the index. A failed admission
-returns an error instead of presenting old metadata as current.
-
-## MCP tools
-
-| Tool | Purpose |
-| --- | --- |
-| `code_map_overview` | Repository and module overview |
-| `code_map_inspect` | Symbol inspection with optional documentation |
-| `get_code_snippet` | Bounded source preview with continuation for a selected symbol |
-| `code_map_search` | FTS5 and wildcard symbol search with a kind filter |
-| `code_map_tests` | Transitive test dependents or production dependencies |
-| `code_map_impact` | Bounded dependency impact |
-| `code_map_explain` | Symbol context and incoming/outgoing relationships |
-| `code_map_query` | General graph query operations |
-| `code_map_analyze` | Analysis entry point |
-| `code_map_prove_removal` | Indexed evidence for symbol or file removal |
-| `ast_grep_search` | Structural syntax search |
-| `search_docs` | Documentation full text search |
-| `get_doc` | Document or section retrieval |
-| `forge_guide` | Onboarding, adapter guidance, query routing, and validation |
-| `session_checkpoint` | Workspace checkpoint management |
-
-MCP responses have a 64 KiB hard ceiling. Lists use compact projections and
-pages of 30 items by default (maximum 100). Continue with the returned
-`next_offset` and `generation`; an index change requires restarting the query.
-`detail: "full"` is explicit and remains bounded. Source previews default to
-five leading and 35 body lines, with omission metadata and a separate source
-offset. Global analysis summarizes diagnostics; select an exact file for
-detailed rows. See [context protection](docs/context-protection-plan.md) for
-response examples, adapter settings and the distinction from CLI output.
-`forge_guide` with `topic: "query"` provides a compact path from overview to
-symbol, dependency, test, diagnostic, and document queries, with recovery hints.
-
-## Building from Source
-
-```sh
-cargo build --release
-```
-
-The resulting standalone executable is located at `target/release/contextunity-forge-mcp`.
-
-## MCP client configuration
-
-Use absolute executable, workspace, and database paths for clients launched outside the repository. Replace paths below with your own. Merge the server entry into existing configuration.
+To connect Forge MCP to your AI agent or IDE, add it to your client's MCP configuration:
 
 ### Claude Desktop
-
-Add a server to `claude_desktop_config.json`; the Linux installer uses `~/.config/Claude/claude_desktop_config.json`:
-
+Add to `~/.config/Claude/claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
     "contextunity-forge": {
-      "command": "/home/you/.local/bin/contextunity-forge-mcp",
-      "args": ["--root", "/path/to/repository", "--db", "/path/to/repository/.forge/code-map.sqlite", "serve"]
+      "command": "contextunity-forge-mcp",
+      "args": ["--root", "/path/to/project", "serve"]
+    }
+  }
+}
+```
+
+### Antigravity (Google DeepMind)
+Tool definitions and instructions are installed in:
+`~/.gemini/antigravity-cli/mcp/contextunity-forge/`
+
+In `~/.gemini/antigravity-cli/mcp/contextunity-forge/config.json`:
+```json
+{
+  "mcpServers": {
+    "contextunity-forge": {
+      "command": "contextunity-forge-mcp",
+      "args": ["--root", "/path/to/project", "serve"]
     }
   }
 }
 ```
 
 ### Cursor
-
-Use the same `mcpServers` shape in `.cursor/mcp.json` for a project or `~/.cursor/mcp.json` for a user configuration. See [Cursor MCP configuration](https://prod.cursor.com/help/customization/mcp).
-
-### Antigravity
-
-The installer provisions `~/.gemini/antigravity-cli/mcp/contextunity-forge/config.json` using the `mcpServers` shape above. Confirm this file is loaded by the client distribution you use.
+Add to `.cursor/mcp.json` or `~/.cursor/mcp.json`:
+```json
+{
+  "mcpServers": {
+    "contextunity-forge": {
+      "command": "contextunity-forge-mcp",
+      "args": ["--root", "/path/to/project", "serve"]
+    }
+  }
+}
+```
 
 ### VS Code
-
-Place this in `.vscode/mcp.json`. The dedicated MCP file uses `servers` and the `stdio` type:
-
+Add to `.vscode/mcp.json`:
 ```json
 {
   "servers": {
     "contextunity-forge": {
       "type": "stdio",
-      "command": "/home/you/.local/bin/contextunity-forge-mcp",
-      "args": ["--root", "/path/to/repository", "serve"]
+      "command": "contextunity-forge-mcp",
+      "args": ["--root", "/path/to/project", "serve"]
     }
   }
 }
 ```
 
-See [VS Code MCP configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration).
-
 ### Zed
-
-Merge this into Zed's `settings.json`:
-
+Add to Zed's `settings.json`:
 ```json
 {
   "context_servers": {
     "contextunity-forge": {
-      "command": "/home/you/.local/bin/contextunity-forge-mcp",
-      "args": ["--root", "/path/to/repository", "serve"],
-      "env": {}
+      "command": "contextunity-forge-mcp",
+      "args": ["--root", "/path/to/project", "serve"]
     }
   }
 }
 ```
 
-See [Zed MCP configuration](https://zed.dev/docs/ai/mcp).
+---
 
-## Performance targets
+## 15 Specialized MCP Tools
 
-These are acceptance targets, not measured results. Compare release builds on a documented machine with a fixed repository snapshot and adapter. Report corpus size, node and edge counts, cold/warm state, sample count, and measurement boundaries alongside results.
+| Category | Tool | Purpose |
+|---|---|---|
+| **Discovery & Search** | `code_map_overview` | Workspace hierarchy, component list, indexing statistics, and unresolved imports. |
+| | `code_map_search` | High-speed FTS5 and prefix symbol search (`pattern="Token*"`). |
+| | `ast_grep_search` | Structural Tree-sitter AST syntax matching with `$NAME` and `$$$ARGS` captures. |
+| | `search_docs` | Full-text search across Markdown documentation, contracts, and ADRs. |
+| | `get_doc` | Retrieve exact Markdown documents or header sections (`path_or_id`, `section`). |
+| **Inspection & Context** | `code_map_inspect` | Detailed symbol definition, signature, docstring, and architectural invariants. |
+| | `get_code_snippet` | Bounded AST preview (5 leading + 35 body lines) without reading entire files. |
+| | `code_map_explain` | Direct call hierarchy: symbol callers (inbound) and dependencies (outbound). |
+| | `code_map_impact` | Recursive incoming dependency tracing (blast radius). Always start with `depth=1`. |
+| | `code_map_tests` | Discover tests exercising a symbol (`inbound`) or dependencies of a test (`outbound`). |
+| **Safety & Verification** | `code_map_prove_removal` | Verify whether a symbol or module can be safely deleted without broken references. |
+| | `code_map_analyze` | Diagnostics summary (`target=''`), per-file issues, cycles check, or read-only SQL. |
+| | `code_map_query` | Universal query router: `slice`, `unwired`, or `cypher` (`MATCH (n) RETURN n`). |
+| | `session_checkpoint` | Save, inspect, and restore agent working memory in `.forge/checkpoints.json`. |
+| | `forge_guide` | Interactive guidance for query routing, adapter config, and budget recovery. |
 
-| Operation | Target |
-| --- | --- |
-| Cold indexing, approximately 3,000 files | < 800 ms |
-| Incremental update | < 20 ms |
-| MCP query latency, 95th percentile | < 5 ms |
-| Native process startup | < 5 ms |
-| Active stdio resident memory | < 15 MB |
+---
 
-A shell command includes process startup; an already running MCP request measures a different boundary. Small fixture timings do not establish the 3,000-file target.
+## Resilient Selector Syntax
 
-## Operational boundaries
+Forge resolves selectors intelligently across all query tools:
+- **Canonical ID**: `function:src/scanner.rs:42:scan` (exact single-node lookup).
+- **File Path**: `src/scanner.rs` (automatically resolves to the module node; strips `file://`, `file:`, `./`).
+- **Path + Symbol**: `src/scanner.rs:scan` or `src/scanner.rs::scan` (resolves the inner symbol, never colliding with the module).
+- **Path + Line**: `src/scanner.rs:42` or `src/scanner.rs#L42` (resolves to the innermost AST function/method enclosing that line).
+- **Bare Names**: `scan` (searches for symbol; if ambiguous between a module and function, prompts with exact candidate IDs).
+- **Markdown Handling**: Passing a `.md` path to code tools directs callers to `get_doc` or `search_docs`.
 
-- The index captures syntax and resolvable relationships. Dynamic dispatch, receiver typing, and external source can remain unresolved. Empty caller results alone do not establish that removal is safe.
-- Delta updates affected graph contributions in a WAL transaction. Its runtime still includes repository inventory checks, dependency resolution, commitment verification, and persistence.
-- Go calls through receiver variables, external source-bearing re-exports, and modules with identical language-neutral stems (for example `util.py` and `util.ts`) can remain unresolved or ambiguous. Inspect resolution diagnostics before relying on their graph edges.
-- Python receiver reassignment and static methods currently have a known confidence limitation: some calls can receive an incorrect exact target. Confirm those call sites in source before using impact or removal results.
-- Protocol Buffer syntax extractor captures messages, enums, services, and RPC signatures along with import edges.
-- `raw_cypher` supports `MATCH (n) RETURN n`, `MATCH (n:kind) RETURN n`, and `MATCH (a)-[e]->(b) RETURN a,e,b`. It is not a general Cypher runtime.
-- `code_map_query` takes `limit` as a tool argument, not a Cypher clause. Deep slices with more than 1,000 immediate links are rejected before recursion; use `depth: 1` and page direct neighbors, or select a narrower module. A smaller page limit does not reduce the recursive count. `code_map_analyze` takes `target: ""` for workspace diagnostics; cycles require `include_cycles: true`.
-- Documentation search operates on indexed sections; update the index after editing Markdown.
-- The standalone database format and tool surface require compatibility verification before replacing another Forge deployment.
-- Successful client configuration writes do not establish that a particular client discovers or launches the server. Zed configuration is manual.
+---
+
+## Session Checkpoints
+
+The `session_checkpoint` tool provides local, non-destructive memory storage for AI coding agents:
+- Checkpoints are saved in `.forge/checkpoints.json` inside the workspace root.
+- They allow agents to record intermediate decisions, task state, or discovery checkpoints across turns without creating Git commits or polluting repository files.
+- Keys are sanitized with strict path-traversal guards (`../../etc/passwd` is rejected).
+
+---
+
+## Documentation & Skills
+
+- **[docs/cli-reference.md](docs/cli-reference.md)**: Full command-line interface guide.
+- **[docs/operational-boundaries.md](docs/operational-boundaries.md)**: Timeouts, memory ceilings, and performance targets.
+- **[docs/language-profiles.md](docs/language-profiles.md)**: Language extraction boundaries and AST profiles.
+- **[docs/language-support.md](docs/language-support.md)**: Supported syntax features and extraction limits.
+- **[docs/context-protection-plan.md](docs/context-protection-plan.md)**: LLM context protection and token management.
+- **Agent Skill**: Available at [`.agents/skills/contextunity-forge/SKILL.md`](.agents/skills/contextunity-forge/SKILL.md) and [`skills/contextunity-forge/SKILL.md`](skills/contextunity-forge/SKILL.md).
+
+---
+
+## License
+
+Apache-2.0 or MIT.
