@@ -1,3 +1,4 @@
+use crate::engine::languages::module_name;
 use crate::{
     core::{commitments, models::*, schema::SCHEMA_DDL},
     engine::{
@@ -7,7 +8,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -96,6 +97,7 @@ fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
         adapter_version,
         digest,
         linked_workspaces,
+        response: Default::default(),
     })
 }
 fn populate(
@@ -105,14 +107,14 @@ fn populate(
     entries: &[FileEntry],
     facts: &BTreeMap<String, Facts>,
 ) -> Result<Value> {
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-64000; PRAGMA cache_spill=OFF; PRAGMA foreign_keys=ON;")?;
+    conn.execute_batch("PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128000; PRAGMA cache_spill=OFF;")?;
     conn.set_prepared_statement_cache_capacity(128);
     let (tables, indexes) = SCHEMA_DDL
         .split_once("CREATE INDEX")
         .context("schema indexes missing")?;
     conn.execute_batch(tables)?;
     let linking = Instant::now();
-    let graph = linker::link(facts);
+    let graph = linker::link_with_root(facts, None, Some(root));
     let link_ms = linking.elapsed().as_secs_f64() * 1000.;
     let writing = Instant::now();
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -133,12 +135,22 @@ fn populate(
     cached(&tx, "DELETE FROM domain_commitments", [])?;
     for (k, v) in [
         ("schema_version", scanner::ENGINE_SCHEMA_VERSION.to_owned()),
+        (
+            "index_semantics_version",
+            scanner::INDEX_SEMANTICS_VERSION.to_owned(),
+        ),
         ("indexer_engine", "contextunity-forge-mcp-rust".to_owned()),
         ("workspace_root", root.to_string_lossy().into_owned()),
         ("adapter", policy(root, adapter).to_string()),
-        ("adapter_version", adapter.adapter_version.clone().unwrap_or_default()),
+        (
+            "adapter_version",
+            adapter.adapter_version.clone().unwrap_or_default(),
+        ),
         ("adapter_digest", adapter.digest.clone()),
-        ("adapter_linked_workspaces", serde_json::to_string(&adapter.linked_workspaces)?),
+        (
+            "adapter_linked_workspaces",
+            serde_json::to_string(&adapter.linked_workspaces)?,
+        ),
         ("inventory_snapshot", serde_json::to_string(entries)?),
         (
             "corpus_hash",
@@ -170,21 +182,45 @@ fn populate(
     let seal = commitments::seal(&tx)?;
     let seal_ms = sealing.elapsed().as_secs_f64() * 1000.;
     tx.commit()?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     Ok(
         json!({"files":entries.len(),"nodes":node_id,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":"2","link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms}),
     )
 }
 fn components(facts: &mut BTreeMap<String, Facts>) {
-    let paths: Vec<_> = facts.keys().cloned().collect();
-    let mut added = BTreeSet::new();
+    let owners = component_owners(facts.iter().filter_map(|(path, f)| {
+        f.nodes
+            .iter()
+            .any(|n| n.kind == "module")
+            .then_some(path.as_str())
+    }));
+    assign_components(facts, &owners);
+}
+fn component_owners<'a>(paths: impl Iterator<Item = &'a str>) -> BTreeMap<String, String> {
+    let mut owners: BTreeMap<String, String> = BTreeMap::new();
     for path in paths {
         let root = path.split_once('/').map_or(".", |(root, _)| root);
-        let f = facts.get_mut(&path).expect("existing owner");
+        owners
+            .entry(root.to_owned())
+            .and_modify(|owner| {
+                if path < owner.as_str() {
+                    *owner = path.to_owned();
+                }
+            })
+            .or_insert_with(|| path.to_owned());
+    }
+    owners
+}
+fn assign_components(facts: &mut BTreeMap<String, Facts>, owners: &BTreeMap<String, String>) {
+    for (path, f) in facts {
+        f.nodes.retain(|n| n.kind != "component");
+        f.edges.retain(|e| !e.src.starts_with("component:"));
         if !f.nodes.iter().any(|n| n.kind == "module") {
             continue;
         }
+        let root = path.split_once('/').map_or(".", |(root, _)| root);
         let id = format!("component:{root}");
-        if added.insert(root.to_owned()) {
+        if owners.get(root) == Some(path) {
             f.nodes.push(Node {
                 id: id.clone(),
                 kind: "component".into(),
@@ -209,6 +245,42 @@ fn components(facts: &mut BTreeMap<String, Facts>) {
             confidence: "exact".into(),
         });
     }
+}
+fn delta_components(
+    conn: &Connection,
+    modified: &BTreeSet<String>,
+    facts: &BTreeMap<String, Facts>,
+    replace_files: &mut BTreeSet<String>,
+) -> Result<BTreeMap<String, String>> {
+    let mut st = conn.prepare("SELECT path,owner FROM owned_nodes WHERE kind='component'")?;
+    let previous = st
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
+    let mut st = conn.prepare("SELECT owner FROM owned_nodes WHERE kind='module' AND owner NOT IN(SELECT value FROM json_each(?1))")?;
+    let paths = st
+        .query_map([serde_json::to_string(modified)?], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let current = component_owners(paths.iter().map(String::as_str).chain(
+        facts.iter().filter_map(|(path, f)| {
+            f.nodes
+                .iter()
+                .any(|n| n.kind == "module")
+                .then_some(path.as_str())
+        }),
+    ));
+    for (root, owner) in &previous {
+        if current.get(root) != Some(owner) {
+            replace_files.insert(owner.clone());
+        }
+    }
+    for (root, owner) in &current {
+        if previous.get(root) != Some(owner) {
+            replace_files.insert(owner.clone());
+        }
+    }
+    Ok(current)
 }
 fn atomic_build(
     root: &Path,
@@ -265,7 +337,7 @@ fn atomic_build(
         )?;
         let mut report = populate(&mut conn, root, adapter, entries, facts)?;
         let verifying = Instant::now();
-        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        let integrity: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
         if integrity != "ok" {
             bail!("candidate database failed integrity check: {integrity}");
         }
@@ -339,7 +411,9 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         |r| r.get(0),
     )?;
     let previous: Vec<FileEntry> = serde_json::from_str(&previous)?;
+    let scanning = Instant::now();
     let scan = scanner::scan_reusing(&root, &adapter, &previous)?;
+    let scan_ms = scanning.elapsed().as_secs_f64() * 1000.;
     let modified: BTreeSet<String> = modified
         .iter()
         .map(|p| {
@@ -384,8 +458,13 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             names.insert(qual);
         }
     }
+    let extracting = Instant::now();
     for path in &modified {
         names.insert(module_name(path));
+        let (_, local_path) = crate::engine::languages::workspace_path(path);
+        let local_module = module_name(local_path);
+        names.insert(local_module.clone());
+        names.extend(local_module.split('.').map(str::to_owned));
         if let Some(file) = inventory.get(path.as_str()) {
             let f = extract(&root, file, &adapter)?;
             names.extend(
@@ -396,6 +475,8 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             facts.insert(path.clone(), f);
         }
     }
+    let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
+    let hydrating = Instant::now();
     let mut affected = modified.clone();
     {
         let mut st=admitted.prepare("SELECT owner FROM reverse_dependencies WHERE target IN(SELECT value FROM json_each(?1))")?;
@@ -408,38 +489,25 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         }
     }
     let mut replace_files = modified.clone();
-    {
-        let mut st = admitted.prepare("SELECT owner FROM owned_nodes WHERE kind='component'")?;
-        for owner in st.query_map([], |r| r.get::<_, String>(0))? {
-            replace_files.insert(owner?);
-        }
-    }
-    let mut component_roots = BTreeSet::new();
-    for file in &scan.entries {
-        if file.is_doc {
-            continue;
-        }
-        let root = file.path.split_once('/').map_or(".", |(root, _)| root);
-        if component_roots.insert(root.to_owned()) {
-            replace_files.insert(file.path.clone());
-        }
-    }
+    let component_owners = delta_components(&admitted, &modified, &facts, &mut replace_files)?;
     affected.extend(replace_files.iter().cloned());
+    let load_owners: Vec<_> = affected
+        .difference(&modified)
+        .filter(|path| inventory.contains_key(path.as_str()))
+        .collect();
+    let mut loaded_fact_files = 0;
     {
         let mut st=admitted.prepare("SELECT path,facts_json FROM local_facts WHERE path IN(SELECT value FROM json_each(?1))")?;
-        for row in st.query_map([serde_json::to_string(&affected)?], |r| {
+        for row in st.query_map([serde_json::to_string(&load_owners)?], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })? {
             let (path, raw) = row?;
-            if modified.contains(&path) || !inventory.contains_key(path.as_str()) {
-                continue;
-            }
-            let mut f: Facts = serde_json::from_str(&raw)?;
-            f.nodes.retain(|n| n.kind != "component");
-            f.edges.retain(|e| !e.src.starts_with("component:"));
+            let f: Facts = serde_json::from_str(&raw)?;
             facts.insert(path, f);
+            loaded_fact_files += 1;
         }
     }
+    assign_components(&mut facts, &component_owners);
     let mut tokens = BTreeSet::new();
     for f in facts.values() {
         tokens.extend(reference_keys(f));
@@ -476,8 +544,11 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                 .push(node);
         }
     }
-    components(&mut facts);
-    let graph = linker::link_owners(&facts, Some(&affected));
+    let hydrate_ms = hydrating.elapsed().as_secs_f64() * 1000.;
+    let linking = Instant::now();
+    let graph = linker::link_with_root(&facts, Some(&affected), Some(&root));
+    let link_ms = linking.elapsed().as_secs_f64() * 1000.;
+    let persisting = Instant::now();
     drop(admitted);
     if super::cache::identity(db)? != admitted_identity {
         bail!("database changed during delta admission");
@@ -512,6 +583,12 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             params![e.src, e.dst, e.kind],
         )?;
     }
+    let mut commitment_owners = affected.clone();
+    commitment_owners.extend(
+        tx.prepare_cached("SELECT DISTINCT path FROM edges WHERE (src_public_id,dst_public_id,kind)IN(SELECT src,dst,kind FROM changed_edge_keys)")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    );
     tx.execute("DELETE FROM edges WHERE (src_public_id,dst_public_id,kind)IN(SELECT src,dst,kind FROM changed_edge_keys)",[])?;
     for path in &affected {
         for (table, column) in [
@@ -528,6 +605,8 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             )?;
         }
     }
+    tx.execute_batch("CREATE TEMP TABLE replaced_nodes(id TEXT PRIMARY KEY)")?;
+    tx.execute("INSERT OR IGNORE INTO replaced_nodes SELECT public_id FROM owned_nodes WHERE owner IN(SELECT value FROM json_each(?1))", [serde_json::to_string(&replace_files)?])?;
     for path in &replace_files {
         delete_file(&tx, path)?;
     }
@@ -546,7 +625,16 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     }
     persist_files(&tx, &changed_entries, &facts)?;
     persist_graph(&tx, &graph, &mut node_paths)?;
+    let dangling: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM replaced_nodes r WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE n.id=r.id) AND (EXISTS(SELECT 1 FROM edges e WHERE e.src_public_id=r.id) OR EXISTS(SELECT 1 FROM edges e WHERE e.dst_public_id=r.id)))", [], |r| r.get(0))?;
+    if dangling {
+        bail!("delta leaves an edge with a missing endpoint; rebuild index");
+    }
     tx.execute("INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)SELECT e.src,e.dst,e.kind,min(e.path),min(e.line),min(e.evidence),min(e.confidence),count(*) FROM edge_occurrences e JOIN changed_edge_keys k ON k.src=e.src AND k.dst=e.dst AND k.kind=e.kind GROUP BY e.src,e.dst,e.kind ON CONFLICT(src_public_id,dst_public_id,kind)DO UPDATE SET occurrence_count=excluded.occurrence_count,path=excluded.path,line=excluded.line,evidence=excluded.evidence,confidence=excluded.confidence",[])?;
+    commitment_owners.extend(
+        tx.prepare_cached("SELECT DISTINCT path FROM edges WHERE (src_public_id,dst_public_id,kind)IN(SELECT src,dst,kind FROM changed_edge_keys)")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    );
     let affected_entries: Vec<_> = scan
         .entries
         .iter()
@@ -564,18 +652,23 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         "INSERT OR REPLACE INTO metadata VALUES('inventory_snapshot',?1)",
         [serde_json::to_string(&scan.entries)?],
     )?;
-    let seal = commitments::seal_owners(&tx, Some(&affected))?;
-    commitments::verify_owners(&tx, Some(&affected))?;
+    let persist_ms = persisting.elapsed().as_secs_f64() * 1000.;
+    let sealing = Instant::now();
+    let seal = commitments::seal_owners(&tx, Some(&commitment_owners))?;
+    let seal_ms = sealing.elapsed().as_secs_f64() * 1000.;
+    let verifying = Instant::now();
+    commitments::verify_owners(&tx, Some(&commitment_owners))?;
     let latest = scanner::scan_reusing(&root, &adapter, &scan.entries)?;
     if latest.entries != scan.entries {
         bail!("workspace changed during delta; transaction rolled back");
     }
+    let verify_ms = verifying.elapsed().as_secs_f64() * 1000.;
     tx.commit()?;
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
     drop(conn);
     let cached = super::cache::publish_verified(db, &root, &seal).unwrap_or(false);
     Ok(
-        json!({"files":scan.files,"changed_files":modified.len(),"affected_owners":affected.len(),"reparsed_files":modified.iter().filter(|p|inventory.contains_key(p.as_str())).count(),"verification_cache":cached,"output_root":seal,"elapsed_ms":started.elapsed().as_secs_f64()*1000.}),
+        json!({"files":scan.files,"changed_files":modified.len(),"affected_owners":affected.len(),"reparsed_files":modified.iter().filter(|p|inventory.contains_key(p.as_str())).count(),"loaded_fact_files":loaded_fact_files,"rewritten_files":changed_entries.len(),"verification_cache":cached,"output_root":seal,"scan_ms":scan_ms,"extract_ms":extract_ms,"hydrate_ms":hydrate_ms,"link_ms":link_ms,"persist_ms":persist_ms,"seal_ms":seal_ms,"verify_ms":verify_ms,"elapsed_ms":started.elapsed().as_secs_f64()*1000.}),
     )
 }
 fn delete_file(tx: &Connection, path: &str) -> Result<()> {
@@ -630,18 +723,26 @@ fn persist_files(
     })?;
     let mut docs_count = 0;
 
-    let mut stmt_source_inv = tx.prepare("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
+    let mut stmt_source_inv =
+        tx.prepare("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
     let mut stmt_files = tx.prepare("INSERT INTO files VALUES(?1,'indexed',?2,?3,?4,?5,0)")?;
     let mut stmt_local_facts = tx.prepare("INSERT INTO local_facts VALUES(?1,?2,?3,?4,0,?5)")?;
-    let mut stmt_nodes = tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
-    let mut stmt_owned_nodes = tx.prepare("INSERT INTO owned_nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
+    let mut stmt_nodes =
+        tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
+    let mut stmt_owned_nodes =
+        tx.prepare("INSERT INTO owned_nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
     let mut stmt_search_text = tx.prepare("INSERT INTO search_text VALUES(?1,?2)")?;
     let mut stmt_owned_search = tx.prepare("INSERT INTO owned_search VALUES(?1,?2,0,?3)")?;
-    let mut stmt_node_search = tx.prepare("INSERT INTO node_search(rowid,search_text)VALUES(?1,?2)")?;
-    let mut stmt_shared_symbol = tx.prepare("INSERT INTO shared_owners VALUES('symbol',?1,?2,?3)")?;
-    let mut stmt_shared_ref = tx.prepare("INSERT OR IGNORE INTO shared_owners VALUES('reference',?1,?2,0)")?;
-    let mut stmt_shared_def = tx.prepare("INSERT OR IGNORE INTO shared_owners VALUES('default_export',?1,?2,0)")?;
-    let mut stmt_doc_sec = tx.prepare("INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")?;
+    let mut stmt_node_search =
+        tx.prepare("INSERT INTO node_search(rowid,search_text)VALUES(?1,?2)")?;
+    let mut stmt_shared_symbol =
+        tx.prepare("INSERT INTO shared_owners VALUES('symbol',?1,?2,?3)")?;
+    let mut stmt_shared_ref =
+        tx.prepare("INSERT OR IGNORE INTO shared_owners VALUES('reference',?1,?2,0)")?;
+    let mut stmt_shared_def =
+        tx.prepare("INSERT OR IGNORE INTO shared_owners VALUES('default_export',?1,?2,0)")?;
+    let mut stmt_doc_sec =
+        tx.prepare("INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")?;
     let mut stmt_doc_search = tx.prepare("INSERT INTO doc_search(rowid,section_title,content,invariants)SELECT rowid,section_title,content,invariants FROM doc_sections WHERE path=?1")?;
     let mut stmt_errors = tx.prepare("INSERT INTO errors VALUES(?1,?2,?3)")?;
 
@@ -693,7 +794,12 @@ fn persist_files(
                 n.generated,
                 details
             ])?;
-            let search = format!("{} {} {} {}", n.name, n.qualname, n.path, details);
+            let doc = n.details.get("doc").and_then(|d| d.as_str()).unwrap_or("");
+            let search = if doc.is_empty() {
+                format!("{} {} {}", n.name, n.qualname, n.path)
+            } else {
+                format!("{} {} {} {}", n.name, n.qualname, n.path, doc)
+            };
             stmt_search_text.execute(params![n.id, search])?;
             stmt_owned_search.execute(params![file.path, n.id, search])?;
             stmt_node_search.execute(params![node_id, search])?;
@@ -737,10 +843,12 @@ fn persist_graph(
     node_paths: &mut hashbrown::HashMap<String, Option<String>>,
 ) -> Result<()> {
     let mut ordinals: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut stmt_occ = tx.prepare("INSERT INTO edge_occurrences VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)")?;
+    let mut stmt_occ =
+        tx.prepare("INSERT INTO edge_occurrences VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)")?;
     let mut stmt_edges = tx.prepare("INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,1)ON CONFLICT(src_public_id,dst_public_id,kind)DO UPDATE SET occurrence_count=occurrence_count+1")?;
     let mut stmt_deps = tx.prepare("INSERT INTO dependencies VALUES(?1,?2,?3,?4,'resolved')")?;
-    let mut stmt_rdeps = tx.prepare("INSERT INTO reverse_dependencies VALUES(?1,?2,?3,?4,'resolved')")?;
+    let mut stmt_rdeps =
+        tx.prepare("INSERT INTO reverse_dependencies VALUES(?1,?2,?3,?4,'resolved')")?;
     let mut stmt_select_path = tx.prepare_cached("SELECT path FROM nodes WHERE id=?1")?;
 
     for e in &graph.edges {
@@ -766,22 +874,31 @@ fn persist_graph(
             e.evidence,
             e.confidence
         ])?;
-        if matches!(e.kind.as_str(), "calls" | "imports" | "documents") {
-            let target: Option<String> = if let Some(p) = node_paths.get(&e.dst) {
+        let mut targets = BTreeSet::new();
+        for endpoint in [&e.src, &e.dst] {
+            let target: Option<String> = if let Some(p) = node_paths.get(endpoint) {
                 p.clone()
             } else {
-                let p: Option<String> = stmt_select_path.query_row([&e.dst], |r| r.get(0)).ok();
-                node_paths.insert(e.dst.clone(), p.clone());
+                let p: Option<String> = stmt_select_path
+                    .query_row([endpoint], |r| r.get(0))
+                    .optional()?;
+                node_paths.insert(endpoint.clone(), p.clone());
                 p
             };
-            stmt_deps.execute(params![e.path, target, e.kind, e.evidence])?;
-            if let Some(ref target) = target {
-                stmt_rdeps.execute(params![target, e.path, e.kind, e.evidence])?;
+            let target = target
+                .with_context(|| format!("edge {} has missing endpoint {endpoint}", e.kind))?;
+            if target != e.path {
+                targets.insert(target);
             }
+        }
+        for target in targets {
+            stmt_deps.execute(params![e.path, target, e.kind, e.evidence])?;
+            stmt_rdeps.execute(params![target, e.path, e.kind, e.evidence])?;
         }
     }
     let mut stmt_cov = tx.prepare("INSERT INTO resolution_coverage VALUES(?1,?2,?3,?4,?5)")?;
-    let mut stmt_unres = tx.prepare("INSERT INTO dependencies VALUES(?1,NULL,'unresolved',?2,?3)")?;
+    let mut stmt_unres =
+        tx.prepare("INSERT INTO dependencies VALUES(?1,NULL,'unresolved',?2,?3)")?;
     for c in &graph.coverage {
         stmt_cov.execute(params![c.path, c.line, c.expression, c.status, c.evidence])?;
         if c.status != "resolved" {
@@ -856,6 +973,13 @@ fn reference_keys(facts: &Facts) -> BTreeSet<String> {
         .iter()
         .filter(|r| !r.dynamic)
         .flat_map(|r| std::iter::once(r.expression.as_str()).chain(r.module.as_deref()))
+        .chain(
+            facts
+                .nodes
+                .iter()
+                .filter(|n| n.kind == "impl")
+                .map(|n| n.name.split('<').next().unwrap_or(&n.name).trim()),
+        )
         .chain(
             facts
                 .docs

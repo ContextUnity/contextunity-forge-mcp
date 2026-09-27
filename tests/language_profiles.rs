@@ -1,0 +1,586 @@
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-java",
+    feature = "lang-csharp",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby",
+    feature = "lang-c",
+    feature = "lang-cpp"
+))]
+use contextunity_forge_mcp::db::{reader, writer};
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-rust",
+    feature = "lang-typescript",
+    feature = "lang-java",
+    feature = "lang-csharp",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby",
+    feature = "lang-c",
+    feature = "lang-cpp"
+))]
+use contextunity_forge_mcp::engine::ast;
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-java",
+    feature = "lang-csharp",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby",
+    feature = "lang-c",
+    feature = "lang-cpp"
+))]
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-java",
+    feature = "lang-csharp",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby",
+    feature = "lang-c",
+    feature = "lang-cpp"
+))]
+struct Workspace(PathBuf);
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-java",
+    feature = "lang-csharp",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby",
+    feature = "lang-c",
+    feature = "lang-cpp"
+))]
+impl Workspace {
+    fn new() -> Self {
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("forge_profiles_{}_{n}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        Self(root)
+    }
+    fn write(&self, name: &str, source: &str) {
+        let path = self.0.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
+    }
+    fn db(&self) -> PathBuf {
+        self.0.join(".forge/code-map.sqlite")
+    }
+    fn build(&self) {
+        writer::build(&self.0, &self.db(), None).unwrap();
+    }
+}
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-java",
+    feature = "lang-csharp",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby",
+    feature = "lang-c",
+    feature = "lang-cpp"
+))]
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(feature = "lang-python")]
+#[test]
+fn persisted_imports_require_complete_language_and_workspace_identity() {
+    let owner = Workspace::new();
+    let linked = Workspace::new();
+    owner.write(
+        "forge-mcp.yaml",
+        &format!(
+            "roots: [.]\nlinked_workspaces:\n  - name: provider\n    path: '{}'\n    roots: [.]\n",
+            linked.0.display()
+        ),
+    );
+    owner.write("main.py", "from settings import value\nfrom path import Path\nimport time\nfrom typing import Any\nfrom commerce.snapshot import revert\ndef use():\n    value()\n    Path()\n    time.time()\n    Any()\n    revert()\n");
+    linked.write("package/settings.py", "def value(): pass\n");
+    linked.write("package/path.py", "class Path: pass\n");
+    linked.write("package/time.py", "def time(): pass\n");
+    linked.write("package/typing.py", "class Any: pass\n");
+    linked.write("commerce/snapshot.py", "def revert(): pass\n");
+    owner.build();
+    let conn = reader::open(&owner.db(), &owner.0).unwrap();
+    let mut st = conn.prepare("SELECT dst FROM edge_occurrences WHERE owner='main.py' AND kind IN ('imports','calls') ORDER BY dst").unwrap();
+    let targets: Vec<String> = st
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        targets.len(),
+        2,
+        "only the qualified linked package import and call may resolve: {targets:?}"
+    );
+    assert!(targets.iter().all(|t| t.contains("commerce/snapshot.py")));
+    let unresolved: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM resolution_coverage WHERE path='main.py' AND status='unresolved'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        unresolved, 8,
+        "four unbound imports and four calls remain unresolved"
+    );
+}
+
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-rust",
+    feature = "lang-typescript"
+))]
+#[test]
+fn module_conventions_are_language_specific() {
+    for (path, language, expected) in [
+        #[cfg(feature = "lang-python")]
+        ("pkg/index.py", "python", "pkg.index"),
+        #[cfg(feature = "lang-python")]
+        ("pkg/mod.py", "python", "pkg.mod"),
+        #[cfg(feature = "lang-python")]
+        ("pkg/__init__.py", "python", "pkg"),
+        #[cfg(feature = "lang-typescript")]
+        ("pkg/index.ts", "typescript", "pkg"),
+        #[cfg(feature = "lang-typescript")]
+        ("pkg/mod.ts", "typescript", "pkg.mod"),
+        #[cfg(feature = "lang-rust")]
+        ("pkg/mod.rs", "rust", "pkg"),
+        #[cfg(feature = "lang-rust")]
+        ("pkg/index.rs", "rust", "pkg.index"),
+    ] {
+        let f = ast::extract(path, language, "").unwrap();
+        assert_eq!(f.nodes[0].qualname, expected, "{path}");
+    }
+}
+
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-java",
+    feature = "lang-csharp",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby",
+    feature = "lang-c",
+    feature = "lang-cpp"
+))]
+fn persisted_graph(w: &Workspace) -> Vec<Vec<String>> {
+    let conn = reader::open(&w.db(), &w.0).unwrap();
+    [
+        "SELECT id||'|'||qualname||'|'||details FROM nodes ORDER BY id",
+        "SELECT src||'|'||dst||'|'||kind||'|'||owner||'|'||line||'|'||confidence FROM edge_occurrences ORDER BY owner,src,dst,kind,line",
+        "SELECT path||'|'||line||'|'||expression||'|'||status||'|'||evidence FROM resolution_coverage ORDER BY path,line,expression,status,evidence",
+    ].iter().map(|sql| {
+        conn.prepare(sql).unwrap().query_map([], |r|r.get(0)).unwrap().collect::<Result<Vec<String>,_>>().unwrap()
+    }).collect()
+}
+
+#[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
+#[test]
+fn import_owner_family_relative_and_ambiguous_provider_matrix() {
+    let owner = Workspace::new();
+    let a = Workspace::new();
+    let b = Workspace::new();
+    owner.write("forge-mcp.yaml", &format!("roots: [.]\nlinked_workspaces:\n  - name: a\n    path: '{}'\n    roots: [.]\n  - name: b\n    path: '{}'\n    roots: [.]\n",a.0.display(),b.0.display()));
+    owner.write("settings.py", "def value(): pass\n");
+    owner.write("shared/service.py", "def local(): pass\n");
+    owner.write("foreign/only.ts", "export function target() {}\n");
+    owner.write("main.py","from settings import value\nfrom shared.service import local\nfrom foreign.only import target\nfrom dup.provider import chosen\ndef use():\n    value()\n    local()\n    target()\n    chosen()\n");
+    a.write("settings.py", "def value(): pass\n");
+    a.write("shared/service.py", "def local(): pass\n");
+    a.write("pkg/helpers.py", "def helper(): pass\n");
+    a.write("pkg/use.py","from .helpers import helper\nfrom ...settings import value\ndef use():\n    helper()\n    value()\n");
+    a.write("dup/provider.py", "def chosen(): pass\n");
+    b.write("dup/provider.py", "def other(): pass\n");
+    owner.build();
+    let conn = reader::open(&owner.db(), &owner.0).unwrap();
+    let mut st = conn
+        .prepare("SELECT owner, dst FROM edge_occurrences WHERE kind='calls' ORDER BY owner,dst")
+        .unwrap();
+    let calls: Vec<(String, String)> = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    assert!(calls.contains(&("main.py".into(), "py:settings.py:1:value".into())));
+    assert!(calls.contains(&("main.py".into(), "py:shared/service.py:1:local".into())));
+    assert!(calls.contains(&(
+        "[a]/pkg/use.py".into(),
+        "py:[a]/pkg/helpers.py:1:helper".into()
+    )));
+    let ambiguous:i64=conn.query_row("SELECT count(*) FROM resolution_coverage WHERE path='main.py' AND expression='chosen' AND status='ambiguous'",[],|r|r.get(0)).unwrap();
+    assert_eq!(ambiguous, 1);
+}
+
+#[cfg(feature = "lang-python")]
+#[test]
+fn import_provider_changes_delta_matches_cold_build() {
+    let owner = Workspace::new();
+    let linked = Workspace::new();
+    owner.write(
+        "forge-mcp.yaml",
+        &format!(
+            "roots: [.]\nlinked_workspaces:\n  - name: provider\n    path: '{}'\n    roots: [.]\n",
+            linked.0.display()
+        ),
+    );
+    owner.write(
+        "main.py",
+        "from pkg.service import run\ndef use(): return run()\n",
+    );
+    linked.write("pkg/service.py", "def run(): pass\n");
+    owner.build();
+    for step in 0..5 {
+        let changed = match step {
+            0 => {
+                linked.write("pkg/service.py", "\ndef run(): pass\n");
+                vec!["[provider]/pkg/service.py"]
+            }
+            1 => {
+                fs::rename(
+                    linked.0.join("pkg/service.py"),
+                    linked.0.join("pkg/renamed.py"),
+                )
+                .unwrap();
+                vec!["[provider]/pkg/service.py", "[provider]/pkg/renamed.py"]
+            }
+            2 => {
+                linked.write("pkg/service.py", "def run(): pass\n");
+                vec!["[provider]/pkg/service.py"]
+            }
+            3 => {
+                linked.write("pkg/service.pyi", "def unrelated(): pass\n");
+                vec!["[provider]/pkg/service.pyi"]
+            }
+            _ => {
+                fs::remove_file(linked.0.join("pkg/service.pyi")).unwrap();
+                vec!["[provider]/pkg/service.pyi"]
+            }
+        };
+        writer::delta(
+            &owner.0,
+            &owner.db(),
+            &changed.iter().map(PathBuf::from).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let delta = persisted_graph(&owner);
+        owner.build();
+        let cold = persisted_graph(&owner);
+        assert_eq!(delta, cold, "provider change step {step}");
+    }
+}
+
+#[test]
+fn automatic_registry_has_unique_languages_and_extensions() {
+    use contextunity_forge_mcp::engine::languages;
+    let profiles: Vec<_> = languages::profiles().collect();
+    languages::validate_profiles(profiles.iter().copied()).unwrap();
+    if let Some(first) = profiles.first() {
+        assert!(languages::validate_profiles([*first, *first]).is_err());
+    }
+    for profile in profiles {
+        for extension in profile.extensions() {
+            let path = format!("sample.{extension}");
+            assert_eq!(
+                languages::for_path(std::path::Path::new(&path))
+                    .unwrap()
+                    .id(),
+                profile.id()
+            );
+            profile.create_parser(&path).unwrap();
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "lang-java",
+    feature = "lang-csharp",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby",
+    feature = "lang-c",
+    feature = "lang-cpp"
+))]
+#[test]
+fn popular_languages_persist_calls_relations_diagnostics_and_delta() {
+    let fixtures = [
+        #[cfg(feature = "lang-java")]
+        (
+            "sample.java",
+            "java",
+            r#"import missing.Library;
+interface Face {}
+class Base {}
+class Worker extends Base implements Face {
+ int helper() { return 1; }
+ // caller documentation
+ int caller() { return helper(); }
+ void unknown(Thing client) { client.run(); }
+ void shadow(Callback helper) { helper(); }
+}
+
+"#,
+            2,
+        ),
+        #[cfg(feature = "lang-csharp")]
+        (
+            "sample.cs",
+            "csharp",
+            r#"using Missing.Library;
+interface Face {}
+class Base {}
+class Worker : Base, Face {
+ int helper() { return 1; }
+ // caller documentation
+ int caller() { return helper(); }
+ void unknown(dynamic client) { client.run(); }
+ void shadow(System.Func<int> helper) { helper(); }
+}
+"#,
+            2,
+        ),
+        #[cfg(feature = "lang-kotlin")]
+        (
+            "sample.kt",
+            "kotlin",
+            r#"import missing.Library
+interface Face
+open class Base
+class Worker : Base(), Face {
+ fun helper(): Int { return 1 }
+ // caller documentation
+ fun caller(): Int { return helper() }
+ fun unknown(client: Thing) { client.run() }
+ fun shadow(helper: () -> Int) { helper() }
+}
+"#,
+            2,
+        ),
+        #[cfg(feature = "lang-php")]
+        (
+            "sample.php",
+            "php",
+            r#"<?php
+use Missing\Library;
+interface Face {}
+class Base {}
+class Worker extends Base implements Face {}
+function helper() { return 1; }
+// caller documentation
+function caller() { return helper(); }
+function unknown($client) { $client->run(); }
+function shadow($helper) { $helper(); }
+"#,
+            2,
+        ),
+        #[cfg(feature = "lang-ruby")]
+        (
+            "sample.rb",
+            "ruby",
+            r#"require 'missing/library'
+class Base
+end
+class Worker < Base
+ def helper()
+  1
+ end
+ # caller documentation
+ def caller()
+  helper()
+ end
+ def unknown(client)
+  client.run()
+ end
+ def shadow(helper)
+  helper.call()
+ end
+end
+"#,
+            1,
+        ),
+        #[cfg(feature = "lang-c")]
+        (
+            "sample.c",
+            "c",
+            r#"#include <missing.h>
+int helper(void) { return 1; }
+// caller documentation
+int caller(void) { return helper(); }
+void unknown(struct Thing *client) { client->run(); }
+int shadow(int (*helper)(void)) { return helper(); }
+"#,
+            0,
+        ),
+        #[cfg(feature = "lang-cpp")]
+        (
+            "sample.cpp",
+            "cpp",
+            r#"#include <missing.hpp>
+class Base {};
+class Worker : public Base {
+ int helper() { return 1; }
+ // caller documentation
+ int caller() { return helper(); }
+ void unknown(Thing client) { client.run(); }
+ int shadow(int (*helper)()) { return helper(); }
+};
+"#,
+            1,
+        ),
+    ];
+    for (path, language, source, relations) in fixtures {
+        let w = Workspace::new();
+        w.write(path, source);
+        w.build();
+        let conn = reader::open(&w.db(), &w.0).unwrap();
+        let errors: i64 = conn
+            .query_row("SELECT count(*) FROM errors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            errors,
+            0,
+            "{language}: {:?}",
+            ast::extract(path, language, source).unwrap().errors
+        );
+        let caller = reader::inspect(&conn, "caller", true).unwrap();
+        assert_eq!(caller["node"]["language"], language);
+        let line = caller["node"]["line"].as_u64().unwrap() as usize;
+        assert!(
+            source.lines().nth(line - 1).unwrap().contains("caller"),
+            "{language}: {caller}"
+        );
+        assert!(
+            caller["node"]["details"]["doc"]
+                .as_str()
+                .unwrap_or("")
+                .contains("caller documentation"),
+            "{language}: {caller}"
+        );
+        let mut st=conn.prepare("SELECT s.name,d.name FROM edge_occurrences e JOIN nodes s ON s.id=e.src JOIN nodes d ON d.id=e.dst WHERE e.kind='calls' ORDER BY s.name,d.name").unwrap();
+        let calls: Vec<(String, String)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let mut expected = vec![("caller".into(), "helper".into())];
+        if language == "java" {
+            expected.push(("shadow".into(), "helper".into()));
+        }
+        assert_eq!(calls, expected, "{language}");
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM edge_occurrences WHERE kind IN('inherits','implements')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, relations, "{language}");
+        let unknown: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM resolution_coverage WHERE status='unresolved'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            unknown >= if language == "java" { 2 } else { 3 },
+            "{language}: {unknown}"
+        );
+        drop(st);
+        drop(conn);
+        let edited = source.replace("helper", "renamed");
+        let edited = if language == "php" {
+            edited.replacen("<?php", "<?php\n", 1)
+        } else {
+            format!("\n{edited}")
+        };
+        w.write(path, &edited);
+        writer::delta(&w.0, &w.db(), &[PathBuf::from(path)]).unwrap();
+        let delta = persisted_graph(&w);
+        w.build();
+        assert_eq!(delta, persisted_graph(&w), "{language}");
+        let malformed = if language == "php" {
+            "<?php function broken( {"
+        } else {
+            "\0"
+        };
+        w.write(path, malformed);
+        w.build();
+        let conn = reader::open(&w.db(), &w.0).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM errors", [], |r| r.get(0))
+            .unwrap();
+        assert!(count > 0, "{language} malformed syntax has diagnostics");
+    }
+}
+
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-ruby",
+    feature = "lang-csharp",
+    feature = "lang-cpp",
+    feature = "lang-java"
+))]
+#[test]
+fn unsupported_invocations_and_unbound_aliases_remain_unresolved() {
+    let fixtures: &[(&str, &str)] = &[
+        #[cfg(feature = "lang-python")]
+        (
+            "a.py",
+            "def helper(): pass\nfrom missing import helper\ndef use(): helper()\n",
+        ),
+        #[cfg(feature = "lang-ruby")]
+        (
+            "a.rb",
+            "def helper; 1; end\ndef caller; helper; end\ndef dynamic; yield; super; end\n",
+        ),
+        #[cfg(feature = "lang-csharp")]
+        (
+            "a.cs",
+            "class A { A():base() {} object make() { return new A(); } }\n",
+        ),
+        #[cfg(feature = "lang-cpp")]
+        ("a.cpp", "class A {}; A *make() { return new A(); }\n"),
+        #[cfg(feature = "lang-java")]
+        ("a.java", "class A { A() { super(); } }\n"),
+    ];
+    for &(path, source) in fixtures {
+        let w = Workspace::new();
+        w.write(path, source);
+        w.build();
+        let conn = reader::open(&w.db(), &w.0).unwrap();
+        let calls: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM edge_occurrences WHERE kind='calls'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(calls, 0, "{path}");
+        let unresolved: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM resolution_coverage WHERE status='unresolved'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(unresolved > 0, "{path}");
+    }
+}

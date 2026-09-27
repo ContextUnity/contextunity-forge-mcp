@@ -37,22 +37,22 @@ fn encode_row(hasher: &mut Sha256, row: &rusqlite::Row<'_>, columns: usize) -> R
     hasher.update([0xff]);
     for i in 0..columns {
         match row.get_ref(i)? {
-            ValueRef::Null => hasher.update([b'n']),
+            ValueRef::Null => hasher.update(b"n"),
             ValueRef::Integer(n) => {
-                hasher.update([b'i']);
+                hasher.update(b"i");
                 hasher.update(n.to_le_bytes());
             }
             ValueRef::Real(n) => {
-                hasher.update([b'r']);
+                hasher.update(b"r");
                 hasher.update(n.to_bits().to_le_bytes());
             }
             ValueRef::Text(s) => {
-                hasher.update([b't']);
+                hasher.update(b"t");
                 hasher.update((s.len() as u64).to_le_bytes());
                 hasher.update(s);
             }
             ValueRef::Blob(s) => {
-                hasher.update([b'b']);
+                hasher.update(b"b");
                 hasher.update((s.len() as u64).to_le_bytes());
                 hasher.update(s);
             }
@@ -156,7 +156,7 @@ fn root(conn: &Connection) -> Result<String> {
         h.update(k);
         h.update(v);
     }
-    let mut stmt=conn.prepare("SELECT key,value FROM metadata WHERE key IN('schema_version','indexer_engine','workspace_root','adapter','corpus_hash','commitment_algorithm','inventory_snapshot')ORDER BY key")?;
+    let mut stmt=conn.prepare("SELECT key,value FROM metadata WHERE key IN('schema_version','index_semantics_version','indexer_engine','workspace_root','adapter','corpus_hash','commitment_algorithm','inventory_snapshot')ORDER BY key")?;
     for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
         let (k, v) = row?;
         h.update((k.len() as u64).to_le_bytes());
@@ -213,10 +213,14 @@ pub fn seal_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Resu
         }
         let mut st =
             conn.prepare_cached("INSERT OR REPLACE INTO domain_commitments VALUES(?1,?2)")?;
-        for (k, v) in changed {
+        for (k, v) in &changed {
             st.execute(params![k, v])?;
         }
-        let digest = aggregate(table, &stored(conn, table)?);
+        let digest = if owners.is_none() {
+            aggregate(table, &changed)
+        } else {
+            aggregate(table, &stored(conn, table)?)
+        };
         st.execute(params![table, digest])?;
     }
     for table in FTS {

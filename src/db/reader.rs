@@ -1,5 +1,7 @@
+use super::paging;
+use crate::core::response::{Detail, QueryOptions};
 use anyhow::{bail, Context, Result};
-use rusqlite::{types::ValueRef, Connection, OpenFlags};
+use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Map, Value};
 use std::path::Path;
 pub fn open(path: &Path, root: &Path) -> Result<Connection> {
@@ -27,13 +29,16 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
     if version != "2" || engine != "contextunity-forge-mcp-rust" {
         bail!("incompatible database schema or engine");
     }
-    let stored: String = conn.query_row(
-        "SELECT value FROM metadata WHERE key='workspace_root'",
-        [],
-        |r| r.get(0),
-    )?;
-    if Path::new(&stored) != root.canonicalize()? {
-        bail!("database belongs to a different workspace: {stored}");
+    validate_workspace(&conn, root)?;
+    let semantics: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='index_semantics_version'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if semantics.as_deref() != Some(crate::engine::scanner::INDEX_SEMANTICS_VERSION) {
+        bail!("incompatible index semantics; rebuild index");
     }
     let algorithm: String = conn.query_row(
         "SELECT value FROM metadata WHERE key='commitment_algorithm'",
@@ -61,6 +66,50 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
     conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024);
     Ok(conn)
 }
+pub(crate) fn validate_workspace(conn: &Connection, root: &Path) -> Result<()> {
+    let stored: String = conn.query_row(
+        "SELECT value FROM metadata WHERE key='workspace_root'",
+        [],
+        |r| r.get(0),
+    )?;
+    if Path::new(&stored) != root.canonicalize()? {
+        bail!("database belongs to a different workspace: {stored}");
+    }
+    Ok(())
+}
+
+pub(crate) struct QueryBudget<'a> {
+    conn: &'a Connection,
+    started: std::time::Instant,
+}
+impl<'a> QueryBudget<'a> {
+    pub(crate) fn new(conn: &'a Connection) -> Self {
+        let started = std::time::Instant::now();
+        conn.progress_handler(
+            1000,
+            Some(move || started.elapsed() > std::time::Duration::from_secs(2)),
+        );
+        Self { conn, started }
+    }
+    pub(crate) fn check(&self) -> Result<()> {
+        if self.started.elapsed() > std::time::Duration::from_secs(2) {
+            bail!("graph query exceeds two second budget");
+        }
+        Ok(())
+    }
+}
+impl Drop for QueryBudget<'_> {
+    fn drop(&mut self) {
+        self.conn.progress_handler(0, None::<fn() -> bool>);
+    }
+}
+
+// SQLite BINARY ordering makes [path + '/', path + '0') a literal descendant range.
+pub(crate) fn path_bounds(path: &str) -> (String, String) {
+    let path = path.trim_end_matches('/');
+    (format!("{path}/"), format!("{path}0"))
+}
+
 pub fn rows(
     conn: &Connection,
     sql: &str,
@@ -73,18 +122,7 @@ pub fn rows(
     if sql.len() > 64 * 1024 {
         bail!("SQL exceeds64KiB");
     }
-    let started = std::time::Instant::now();
-    conn.progress_handler(
-        1000,
-        Some(move || started.elapsed() > std::time::Duration::from_millis(2000)),
-    );
-    struct ProgressGuard<'a>(&'a Connection);
-    impl Drop for ProgressGuard<'_> {
-        fn drop(&mut self) {
-            self.0.progress_handler(0, None::<fn() -> bool>);
-        }
-    }
-    let _guard = ProgressGuard(conn);
+    let _budget = QueryBudget::new(conn);
     let mut statement = conn.prepare(sql)?;
     if !statement.readonly() {
         bail!("query must be read-only");
@@ -138,12 +176,15 @@ pub fn rows(
     Ok(result)
 }
 pub fn select(conn: &Connection, selector: &str) -> Result<Value> {
+    select_detail(conn, selector, Detail::Full)
+}
+pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -> Result<Value> {
     if selector.trim().is_empty() {
         bail!("selector is empty");
     }
     let exact = rows(
         conn,
-        "SELECT * FROM nodes WHERE id=?1 OR qualname=?1",
+        "SELECT id FROM nodes WHERE id=?1 OR qualname=?1 ORDER BY id LIMIT 101",
         &[&selector],
         101,
     )?;
@@ -151,7 +192,7 @@ pub fn select(conn: &Connection, selector: &str) -> Result<Value> {
         let (kind, name) = selector.split_once(':').unwrap_or(("", selector));
         rows(
             conn,
-            "SELECT * FROM nodes WHERE ((name=?1 OR qualname=?1) AND (?2='' OR kind=?2)) OR path=?3",
+            "SELECT id FROM nodes WHERE ((name=?1 OR qualname=?1) AND (?2='' OR kind=?2)) OR path=?3 ORDER BY id LIMIT 101",
             &[&name, &kind, &selector],
             101,
         )?
@@ -160,7 +201,16 @@ pub fn select(conn: &Connection, selector: &str) -> Result<Value> {
     };
     match result.len() {
         0 => bail!("selector not found: {selector}"),
-        1 => Ok(result[0].clone()),
+        1 => Ok(rows(
+            conn,
+            &format!(
+                "SELECT {} FROM nodes n WHERE n.id=?1 LIMIT 1",
+                paging::nodes("n", detail)
+            ),
+            &[&result[0]["id"].as_str().context("invalid node id")?],
+            1,
+        )?
+        .remove(0)),
         _ => bail!(
             "ambiguous selector {selector}; use an exact node id; candidates: {}",
             serde_json::to_string(
@@ -227,9 +277,9 @@ pub fn search_docs(
     }
     let kind = doc_type.unwrap_or("");
     let component = component.unwrap_or("").trim_end_matches('/');
-    let prefix = format!("{component}/%");
+    let (prefix, end) = path_bounds(component);
     Ok(
-        json!({"sections":rows(conn,"SELECT d.*,bm25(doc_search)rank FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 AND (?2='' OR d.doc_type=?2)AND(?3='' OR d.path=?3 OR d.path LIKE ?4)ORDER BY rank,d.path LIMIT ?5",&[&query,&kind,&component,&prefix,&(limit as i64)],limit)?}),
+        json!({"sections":rows(conn,"SELECT d.*,bm25(doc_search)rank FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 AND (?2='' OR d.doc_type=?2)AND(?3='' OR d.path=?3 OR (d.path>=?4 AND d.path<?5))ORDER BY rank,d.path LIMIT ?6",&[&query,&kind,&component,&prefix,&end,&(limit as i64)],limit)?}),
     )
 }
 pub fn get_doc(conn: &Connection, path: &str, section: Option<&str>) -> Result<Value> {
@@ -242,14 +292,15 @@ pub fn get_doc(conn: &Connection, path: &str, section: Option<&str>) -> Result<V
 }
 pub fn analyze(conn: &Connection, target: &str) -> Result<Value> {
     let first = target
-        .trim_start()
         .split_whitespace()
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
+    let path = target.trim_end_matches('/');
+    let (prefix, end) = path_bounds(path);
     let indexed_path: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM nodes WHERE path=?1 OR path LIKE ?2)",
-        rusqlite::params![target, format!("{}/%", target.trim_end_matches('/'))],
+        "SELECT EXISTS(SELECT 1 FROM nodes WHERE path=?1 OR (path>=?2 AND path<?3))",
+        rusqlite::params![path, prefix, end],
         |r| r.get(0),
     )?;
     if !indexed_path
@@ -271,11 +322,48 @@ pub fn analyze(conn: &Connection, target: &str) -> Result<Value> {
         }
         return Ok(json!({"rows":rows(conn,sql,&[],1000)?}));
     }
-    let path = target.trim_end_matches('/');
-    let prefix = format!("{path}/%");
-    Ok(
-        json!({"target":target,"errors":rows(conn,"SELECT * FROM errors WHERE ?1='' OR path=?1 OR path LIKE ?2 ORDER BY path,line",&[&path,&prefix],1000)?,"resolution":rows(conn,"SELECT * FROM resolution_coverage WHERE status!='resolved' AND(?1='' OR path=?1 OR path LIKE ?2)ORDER BY path,line",&[&path,&prefix],1000)?,"cycles":crate::db::traversal::cycles(conn)?}),
-    )
+    let total_errors: usize = conn.query_row(
+        "SELECT count(*) FROM errors WHERE ?1='' OR path=?1 OR (path>=?2 AND path<?3)",
+        rusqlite::params![path, prefix, end],
+        |r| r.get(0),
+    )?;
+    let mut errors = rows(
+        conn,
+        "SELECT * FROM errors WHERE ?1='' OR path=?1 OR (path>=?2 AND path<?3) ORDER BY path,line LIMIT 1001",
+        &[&path, &prefix, &end],
+        1001,
+    )?;
+    let errors_truncated = errors.len() > 1000;
+    errors.truncate(1000);
+
+    let total_unresolved: usize = conn.query_row(
+        "SELECT count(*) FROM resolution_coverage WHERE status!='resolved' AND (?1='' OR path=?1 OR (path>=?2 AND path<?3))",
+        rusqlite::params![path, prefix, end],
+        |r| r.get(0),
+    )?;
+    let mut resolution = rows(
+        conn,
+        "SELECT * FROM resolution_coverage WHERE status!='resolved' AND (?1='' OR path=?1 OR (path>=?2 AND path<?3)) ORDER BY path,line LIMIT 1001",
+        &[&path, &prefix, &end],
+        1001,
+    )?;
+    let resolution_truncated = resolution.len() > 1000;
+    resolution.truncate(1000);
+
+    let cycles =
+        crate::db::traversal::cycles(conn, if path.is_empty() { None } else { Some(path) })?;
+
+    Ok(json!({
+        "target": target,
+        "errors": errors,
+        "total_errors": total_errors,
+        "errors_truncated": errors_truncated,
+        "resolution": resolution,
+        "total_unresolved": total_unresolved,
+        "resolution_truncated": resolution_truncated,
+        "truncated": errors_truncated || resolution_truncated,
+        "cycles": cycles
+    }))
 }
 
 pub fn validate_limit(limit: usize) -> Result<()> {
@@ -283,4 +371,202 @@ pub fn validate_limit(limit: usize) -> Result<()> {
         bail!("limit must be1..10000");
     }
     Ok(())
+}
+
+pub fn overview_paged(conn: &Connection, options: &QueryOptions) -> Result<Value> {
+    let generation = paging::generation(conn, options)?;
+    let lang_sql = "SELECT l.language,l.files,coalesce(r.resolved,0) resolved,coalesce(r.unresolved,0) unresolved,coalesce(e.parse_errors,0) parse_errors FROM (SELECT language,count(*) files FROM files GROUP BY language) l LEFT JOIN (SELECT f.language,count(CASE WHEN rc.status='resolved' THEN 1 END) resolved,count(CASE WHEN rc.status!='resolved' THEN 1 END) unresolved FROM resolution_coverage rc JOIN files f ON f.path=rc.path GROUP BY f.language) r ON r.language=l.language LEFT JOIN (SELECT f.language,count(*) parse_errors FROM errors er JOIN files f ON f.path=er.path GROUP BY f.language) e ON e.language=l.language ORDER BY l.language";
+    let compiled_profiles: std::collections::BTreeSet<_> =
+        crate::engine::languages::profiles().map(|p| p.id()).collect();
+    Ok(json!({
+        "generation": generation,
+        "components": paging::query(conn, "SELECT id,name,path FROM nodes WHERE kind='component' ORDER BY path,id", &[], options)?,
+        "counts": rows(conn,"SELECT (SELECT count(*) FROM files) files,(SELECT count(*) FROM nodes) nodes,(SELECT count(*) FROM edges) edges,(SELECT count(*) FROM doc_sections) doc_sections,(SELECT count(*) FROM errors) parse_errors,(SELECT count(*) FROM resolution_coverage WHERE status!='resolved') unresolved", &[], 1)?.remove(0),
+        "languages": paging::query(conn, lang_sql, &[], options)?,
+        "compiled_profiles": compiled_profiles,
+        "metadata": rows(conn,"SELECT key,value FROM metadata WHERE key IN('schema_version','output_root','corpus_hash','workspace_root') ORDER BY key", &[], 4)?
+    }))
+}
+
+pub fn inspect_paged(
+    conn: &Connection,
+    selector: &str,
+    show_doc: bool,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let generation = paging::generation(conn, options)?;
+    let node = select_detail(conn, selector, options.detail)?;
+    let id = node["id"].as_str().context("invalid node id")?;
+    let documents = if show_doc {
+        paging::query(conn, &format!("SELECT {} FROM doc_sections d JOIN edges e ON e.dst_public_id=d.doc_id WHERE e.src_public_id=?1 AND e.kind='references_doc' ORDER BY d.is_invariant DESC,d.path,d.doc_id", paging::docs("d", options.detail)), &[&id], options)?
+    } else {
+        paging::value(Vec::new(), 0, options, &generation)
+    };
+    let coverage = paging::query(conn, &format!("SELECT {} FROM resolution_coverage c WHERE c.path=?1 AND c.line BETWEEN ?2 AND ?3 ORDER BY c.line,c.expression,c.status,c.evidence", paging::coverage("c", options.detail)), &[&node["path"].as_str().unwrap_or(""), &node["line"].as_i64().unwrap_or(0), &node["end_line"].as_i64().unwrap_or(i64::MAX)], options)?;
+    Ok(json!({"node":node, "documents":documents, "coverage":coverage, "generation":generation}))
+}
+
+pub fn explain_paged(
+    conn: &Connection,
+    selector: &str,
+    direction: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let mut result = inspect_paged(conn, selector, true, options)?;
+    let id = result["node"]["id"]
+        .as_str()
+        .context("invalid node id")?
+        .to_owned();
+    let dir = direction.unwrap_or("both");
+    match dir {
+        "both" | "incoming" => {
+            result["incoming"] = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.dst_public_id=?1 ORDER BY e.kind,e.src_public_id,e.edge_id", paging::edges("e", options.detail)), &[&id], options)?;
+        }
+        "outgoing" => {
+            let total = paging::count(conn, "SELECT count(*) FROM edges WHERE dst_public_id=?1", &[&id])?;
+            result["incoming"] = json!({"total": total, "omitted": true, "hint": "Pass direction='incoming' to page incoming edges."});
+        }
+        _ => bail!("direction must be both, incoming, or outgoing"),
+    }
+    match dir {
+        "both" | "outgoing" => {
+            result["outgoing"] = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.src_public_id=?1 ORDER BY e.kind,e.dst_public_id,e.edge_id", paging::edges("e", options.detail)), &[&id], options)?;
+        }
+        "incoming" => {
+            let total = paging::count(conn, "SELECT count(*) FROM edges WHERE src_public_id=?1", &[&id])?;
+            result["outgoing"] = json!({"total": total, "omitted": true, "hint": "Pass direction='outgoing' to page outgoing edges."});
+        }
+        _ => {}
+    }
+    result["direction"] = json!(dir);
+    Ok(result)
+}
+
+pub fn search_docs_paged(
+    conn: &Connection,
+    query: &str,
+    doc_type: Option<&str>,
+    component: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let query = query
+        .split_whitespace()
+        .map(|s| format!("\"{}\"", s.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    if query.is_empty() {
+        bail!("search query is empty");
+    }
+    let kind = doc_type.unwrap_or("");
+    let component = component.unwrap_or("").trim_end_matches('/');
+    let (prefix, end) = path_bounds(component);
+    let sql = format!("SELECT {},bm25(doc_search) rank FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 AND (?2='' OR d.doc_type=?2) AND (?3='' OR d.path=?3 OR (d.path>=?4 AND d.path<?5)) ORDER BY rank,d.path,d.doc_id", paging::docs("d", options.detail));
+    Ok(
+        json!({"sections":paging::query(conn, &sql, &[&query,&kind,&component,&prefix,&end], options)?}),
+    )
+}
+
+pub fn get_doc_paged(
+    conn: &Connection,
+    path: &str,
+    section: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let section = section.unwrap_or("");
+    let sections = paging::query(conn, &format!("SELECT {} FROM doc_sections d WHERE (d.doc_id=?1 OR d.path=?1) AND (?2='' OR d.section_title=?2) ORDER BY d.path,d.rowid", paging::docs("d", options.detail)), &[&path,&section], options)?;
+    if sections["total"] == 0 {
+        bail!("document or section not found");
+    }
+    Ok(json!({"sections":sections}))
+}
+
+pub fn analyze_paged(
+    conn: &Connection,
+    target: &str,
+    include_cycles: Option<bool>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let generation = paging::generation(conn, options)?;
+    let sql = target.trim();
+    let first = sql
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(first.as_str(), "select" | "with") {
+        if sql.contains(';') {
+            bail!("exactly one SELECT or WITH statement is allowed");
+        }
+        let statement = conn.prepare(sql)?;
+        if !statement.readonly() {
+            bail!("query must be read-only");
+        }
+        return Ok(
+            json!({"rows":paging::query(conn, sql, &[], options)?, "ordering":"SQL order is preserved; include a deterministic ORDER BY for stable pagination."}),
+        );
+    }
+    let path = target.trim_end_matches('/');
+    let (prefix, end) = path_bounds(path);
+    let indexed_path: bool = path.is_empty()
+        || conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM files WHERE path=?1 OR (path>=?2 AND path<?3))",
+            rusqlite::params![path, prefix, end],
+            |r| r.get(0),
+        )?;
+    if !indexed_path
+        && [
+            "insert", "update", "delete", "drop", "alter", "create", "replace", "attach", "detach",
+            "pragma", "vacuum", "reindex", "begin", "commit", "rollback",
+        ]
+        .contains(&first.as_str())
+    {
+        bail!("write or administrative SQL is not allowed");
+    }
+    let params: &[&dyn rusqlite::ToSql] = &[&path, &prefix, &end];
+    let scope = "(?1='' OR path=?1 OR (path>=?2 AND path<?3))";
+    let total_errors = paging::count(
+        conn,
+        &format!("SELECT count(*) FROM errors WHERE {scope}"),
+        params,
+    )?;
+    let total_unresolved = paging::count(
+        conn,
+        &format!("SELECT count(*) FROM resolution_coverage WHERE status!='resolved' AND {scope}"),
+        params,
+    )?;
+    let exact_file: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM files WHERE path=?1)",
+        [path],
+        |r| r.get(0),
+    )?;
+    let mut result = json!({"target":target,"generation":generation,"total_errors":total_errors,"total_unresolved":total_unresolved,"scope":if exact_file {"file"} else {"summary"}});
+    if exact_file {
+        let error_columns = if options.detail == Detail::Full {
+            "*"
+        } else {
+            "path,line,substr(message,1,512) message,length(message)>512 message_truncated"
+        };
+        result["errors"] = paging::query(
+            conn,
+            &format!(
+                "SELECT {error_columns} FROM errors WHERE path=?1 ORDER BY line,message,rowid"
+            ),
+            &[&path],
+            options,
+        )?;
+        result["resolution"] = paging::query(conn, &format!("SELECT {} FROM resolution_coverage c WHERE c.status!='resolved' AND c.path=?1 ORDER BY c.line,c.expression,c.status,c.evidence", paging::coverage("c", options.detail)), &[&path], options)?;
+    } else {
+        result["top_files"] = json!(rows(conn, &format!("SELECT path,sum(parse_errors) parse_errors,sum(unresolved) unresolved FROM (SELECT path,count(*) parse_errors,0 unresolved FROM errors WHERE {scope} GROUP BY path UNION ALL SELECT path,0 parse_errors,count(*) unresolved FROM resolution_coverage WHERE status!='resolved' AND {scope} GROUP BY path) GROUP BY path ORDER BY sum(parse_errors)+sum(unresolved) DESC,path LIMIT 5"), params, 5)?);
+        result["resolution_statuses"] = json!(rows(conn, &format!("SELECT status,count(*) total FROM resolution_coverage WHERE {scope} GROUP BY status ORDER BY status LIMIT 20"), params, 20)?);
+        result["continuation_hint"] = json!(
+            "Call code_map_analyze with an exact path from top_files to page its diagnostics."
+        );
+    }
+    let compute_cycles = include_cycles.unwrap_or(!exact_file);
+    result["cycles"] = if compute_cycles {
+        super::cycles::summary(conn, if path.is_empty() { None } else { Some(path) })?
+    } else {
+        json!({"omitted": true, "hint": "Pass include_cycles=true to compute cyclic dependencies."})
+    };
+    Ok(result)
 }

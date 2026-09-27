@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const ENGINE_SCHEMA_VERSION: &str = "2";
+pub const INDEX_SEMANTICS_VERSION: &str = concat!("3:", env!("FORGE_LANGUAGE_PROFILE_DIGEST"));
 const MAX_FILES: usize = 100_000;
-const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+pub(crate) const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Default, Serialize, PartialEq, Eq)]
@@ -36,6 +37,8 @@ pub struct LinkedWorkspace {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct AdapterFile {
+    #[serde(default)]
+    response: crate::core::response::ResponsePolicy,
     adapter_version: Option<serde_json::Value>,
     roots: Option<Vec<String>>,
     ignore: Option<Vec<String>>,
@@ -49,6 +52,7 @@ struct AdapterFile {
 
 #[derive(Debug, Clone)]
 pub struct Adapter {
+    pub response: crate::core::response::ResponsePolicy,
     pub roots: Vec<PathBuf>,
     pub ignored_names: BTreeSet<String>,
     pub adapter_version: Option<String>,
@@ -144,14 +148,7 @@ pub fn resolve_file_path(
         if let Some((prefix, rest)) = file_path.split_once("]/") {
             let ws_name = prefix.trim_start_matches('[');
             if let Some(lw) = adapter.linked_workspaces.iter().find(|w| w.name == ws_name) {
-                let target = lw.path.join(rest);
-                if target.exists() {
-                    let canonical = target.canonicalize()?;
-                    if canonical.starts_with(&lw.path) {
-                        return Ok(canonical);
-                    }
-                }
-                return Ok(target);
+                return checked_child(&lw.path, Path::new(rest));
             }
         }
     }
@@ -186,9 +183,23 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
                 return Err(error("adapter must be inside workspace root"));
             }
             let content = fs::read_to_string(&canonical)?;
-            let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
-            let parsed: AdapterFile = serde_yaml::from_str(&content)
-                .map_err(|e| error(e.to_string()))?;
+            let mut identity: serde_yaml::Value =
+                serde_yaml::from_str(&content).map_err(|e| error(e.to_string()))?;
+            if let Some(mapping) = identity.as_mapping_mut() {
+                mapping.remove(serde_yaml::Value::String("response".into()));
+            }
+            let hash = if identity
+                .as_mapping()
+                .is_some_and(|mapping| mapping.is_empty())
+            {
+                String::new()
+            } else {
+                let identity =
+                    serde_yaml::to_string(&identity).map_err(|e| error(e.to_string()))?;
+                format!("{:x}", Sha256::digest(identity.as_bytes()))
+            };
+            let parsed: AdapterFile =
+                serde_yaml::from_str(&content).map_err(|e| error(e.to_string()))?;
             let version_str = parsed.adapter_version.as_ref().map(|v| match v {
                 serde_json::Value::Number(n) => n.to_string(),
                 serde_json::Value::String(s) => s.clone(),
@@ -197,6 +208,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
             (parsed, hash, version_str)
         }
     };
+    raw.response.validate().map_err(|e| error(e.to_string()))?;
     let roots = raw
         .roots
         .or(raw.eligible_roots)
@@ -237,10 +249,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     roots.sort();
     roots.dedup();
     let mut linked_workspaces = Vec::new();
-    let configs = raw
-        .linked_workspaces
-        .or(raw.workspaces)
-        .unwrap_or_default();
+    let configs = raw.linked_workspaces.or(raw.workspaces).unwrap_or_default();
     for lw_cfg in configs {
         let target_path = if Path::new(&lw_cfg.path).is_absolute() {
             PathBuf::from(&lw_cfg.path)
@@ -300,7 +309,13 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         ws_roots.dedup();
 
         let mut ignored: BTreeSet<String> = [
-            ".git", "target", "node_modules", ".venv", "__pycache__", ".forge", "dist",
+            ".git",
+            "target",
+            "node_modules",
+            ".venv",
+            "__pycache__",
+            ".forge",
+            "dist",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -318,6 +333,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     }
 
     Ok(Adapter {
+        response: raw.response,
         roots,
         ignored_names: raw
             .ignore
@@ -345,17 +361,13 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
 }
 
 pub fn language(path: &Path) -> Option<(&'static str, bool)> {
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some("py") | Some("pyi") => Some(("python", false)),
-        Some("ts") | Some("tsx") => Some(("typescript", false)),
-        Some("js") | Some("jsx") => Some(("javascript", false)),
-        Some("vue") => Some(("vue", false)),
-        Some("rs") => Some(("rust", false)),
-        Some("go") => Some(("go", false)),
-        Some("proto") => Some(("proto", false)),
-        Some("md") | Some("mdx") => Some(("markdown", true)),
-        _ => None,
+    if matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("md" | "mdx")
+    ) {
+        return Some(("markdown", true));
     }
+    super::languages::for_path(path).map(|p| (p.id(), false))
 }
 
 pub fn digest(bytes: &[u8]) -> String {
@@ -521,11 +533,8 @@ pub fn scan_reusing(
                 if item.file_type().is_some_and(|kind| kind.is_file()) {
                     let full = item.into_path();
                     if let Ok(rel) = full.strip_prefix(&lw.path) {
-                        let rel_str = format!(
-                            "[{}]/{}",
-                            lw.name,
-                            rel.to_string_lossy().replace('\\', "/")
-                        );
+                        let rel_str =
+                            format!("[{}]/{}", lw.name, rel.to_string_lossy().replace('\\', "/"));
                         if seen_rel_paths.insert(rel_str.clone()) {
                             candidates.push((full, rel_str));
                         }

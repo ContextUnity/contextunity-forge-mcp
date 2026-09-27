@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-rust")]
+
 use contextunity_forge_mcp::mcp::server::Server;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -8,7 +10,11 @@ fn test_adapter_change_auto_rebuild() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("test_forge_adapter_{}_{}", std::process::id(), nonce));
+    let root = std::env::temp_dir().join(format!(
+        "test_forge_adapter_{}_{}",
+        std::process::id(),
+        nonce
+    ));
     let src_dir = root.join("src");
     fs::create_dir_all(&src_dir).unwrap();
     fs::write(src_dir.join("main.rs"), "pub fn hello() {}\n").unwrap();

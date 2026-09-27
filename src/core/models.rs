@@ -75,12 +75,6 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     pub coverage: Vec<Coverage>,
 }
-pub fn module_name(path: &str) -> String {
-    let path = path.rsplit_once('.').map_or(path, |(p, _)| p);
-    path.trim_end_matches("/__init__")
-        .trim_end_matches("/index")
-        .replace('/', ".")
-}
 pub fn is_test(path: &str) -> bool {
     path.split('/').any(|p| p == "tests" || p == "test")
         || path.rsplit('/').next().is_some_and(|p| {

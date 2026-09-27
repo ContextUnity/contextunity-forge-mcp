@@ -45,7 +45,6 @@ pub enum Command {
         pretty: bool,
     },
     Delta {
-        #[arg(default_value = ".")]
         workspace_root: PathBuf,
         #[arg(required = true)]
         modified_files: Vec<PathBuf>,
@@ -82,6 +81,22 @@ pub enum QueryCommand {
         selector: String,
         #[arg(long,default_value_t=true,action=clap::ArgAction::Set,num_args=0..=1,default_missing_value="true")]
         show_doc: bool,
+        #[arg(long)]
+        show_source: bool,
+    },
+    Search {
+        pattern: String,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    Tests {
+        selector: String,
+        #[arg(long, default_value = "inbound")]
+        direction: String,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
     },
     Impact {
         selector: String,
@@ -201,11 +216,25 @@ impl Cli {
                 let conn = crate::db::reader::open(&db, &root)?;
                 match command {
                     QueryCommand::Overview => query::overview(&conn)?,
-                    QueryCommand::Inspect { selector, show_doc } => {
-                        query::inspect(&conn, &selector, show_doc)?
+                    QueryCommand::Inspect {
+                        selector,
+                        show_doc,
+                        show_source,
+                    } => {
+                        crate::db::symbols::inspect(&conn, &root, &selector, show_doc, show_source)?
                     }
+                    QueryCommand::Search {
+                        pattern,
+                        kind,
+                        limit,
+                    } => crate::db::symbols::search(&conn, &pattern, kind.as_deref(), limit)?,
+                    QueryCommand::Tests {
+                        selector,
+                        direction,
+                        limit,
+                    } => crate::db::symbols::tests(&conn, &selector, &direction, limit)?,
                     QueryCommand::Impact { selector, depth } => {
-                        query::traverse(&conn, &selector, depth, true)?
+                        query::traverse(&conn, &selector, depth, true, 1000)?
                     }
                     QueryCommand::Explain { selector } => query::explain(&conn, &selector)?,
                     QueryCommand::Remove { selector } => query::removal(&conn, &selector)?,

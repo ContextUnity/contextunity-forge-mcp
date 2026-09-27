@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-python")]
+
 use contextunity_forge_mcp::db::{reader, writer};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};

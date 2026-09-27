@@ -13,8 +13,11 @@ General system architecture description.
 ## References
 Consult `contextunity.core.tokens` and `ServiceClient`.
 "#;
-    let sections = docs::extract("docs/architecture.md", source, 1000.0).expect("markdown extract failed");
+    let sections =
+        docs::extract("docs/architecture.md", source, 1000.0).expect("markdown extract failed");
     assert!(!sections.is_empty());
     assert_eq!(sections[0].path, "docs/architecture.md");
-    assert!(sections.iter().any(|s| s.section_title.contains("Architecture") || s.section_title.contains("Invariants")));
+    assert!(sections.iter().any(
+        |s| s.section_title.contains("Architecture") || s.section_title.contains("Invariants")
+    ));
 }

@@ -1,39 +1,19 @@
-pub mod go;
-pub mod proto;
-pub mod python;
-pub mod rust;
-pub mod typescript;
+pub(crate) mod relations;
+pub(crate) mod routes;
 use crate::core::models::*;
+use crate::engine::languages::{self, FileContext, LanguageProfile, SyntaxContext};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node as Syntax, Parser, Tree};
 pub fn parser(language: &str, path: &str) -> Result<Parser> {
-    let grammar = match language {
-        "python" => python::language(),
-        "typescript" | "javascript" | "vue" => typescript::language(path, language),
-        "rust" => rust::language(),
-        "go" => go::language(),
-        "proto" => proto::language(),
-        _ => bail!("unsupported AST language: {language}"),
-    };
-    let mut p = Parser::new();
-    p.set_language(&grammar)?;
-    Ok(p)
+    languages::require(language)?.create_parser(path)
 }
 pub fn text<'a>(node: Syntax<'_>, source: &'a str) -> &'a str {
     &source[node.byte_range()]
 }
-fn field<'a>(node: Syntax<'_>, source: &'a str, name: &str) -> Option<&'a str> {
+pub(crate) fn field<'a>(node: Syntax<'_>, source: &'a str, name: &str) -> Option<&'a str> {
     node.child_by_field_name(name).map(|n| text(n, source))
-}
-fn symbol_kind(language: &str, kind: &str) -> Option<&'static str> {
-    match language {
-        "python" => python::kind(kind),
-        "rust" => rust::kind(kind),
-        "go" => go::kind(kind),
-        "proto" => proto::kind(kind),
-        _ => typescript::kind(kind),
-    }
 }
 fn qualified(module: &str, scopes: &[String], name: &str) -> String {
     std::iter::once(module)
@@ -42,18 +22,7 @@ fn qualified(module: &str, scopes: &[String], name: &str) -> String {
         .collect::<Vec<_>>()
         .join(".")
 }
-fn doc_comment(node: Syntax<'_>, source: &str, language: &str) -> String {
-    if language == "python" {
-        if let Some(body) = node.child_by_field_name("body") {
-            if let Some(first) = body.named_child(0) {
-                if first.kind() == "expression_statement"
-                    && first.named_child(0).is_some_and(|n| n.kind() == "string")
-                {
-                    return text(first, source).to_owned();
-                }
-            }
-        }
-    }
+pub(crate) fn doc_comment(node: Syntax<'_>, source: &str) -> String {
     let mut anchor = node;
     while let Some(parent) = anchor.parent() {
         if matches!(
@@ -81,11 +50,35 @@ fn doc_comment(node: Syntax<'_>, source: &str, language: &str) -> String {
     comments.reverse();
     comments.join("\n")
 }
-fn scope_bindings(node: Syntax<'_>, source: &str) -> Vec<String> {
-    fn names(node: Syntax<'_>, source: &str, out: &mut std::collections::BTreeSet<String>) {
+pub struct ScopeBindings {
+    pub all: Vec<String>,
+    pub rebindings: Vec<String>,
+}
+pub(crate) fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
+    let is_callable = matches!(
+        node.kind(),
+        "function_definition"
+            | "function_declaration"
+            | "function_item"
+            | "method_definition"
+            | "method_declaration"
+            | "arrow_function"
+            | "function_expression"
+            | "lambda"
+            | "closure_expression"
+            | "func_literal"
+    );
+    let is_module = matches!(node.kind(), "module" | "program" | "source_file");
+    if !is_callable && !is_module {
+        return ScopeBindings {
+            all: Vec::new(),
+            rebindings: Vec::new(),
+        };
+    }
+    fn names<'a>(node: Syntax<'_>, source: &'a str, out: &mut HashSet<&'a str>) {
         match node.kind() {
             "identifier" | "shorthand_property_identifier_pattern" => {
-                out.insert(text(node, source).into());
+                out.insert(text(node, source));
             }
             "default_parameter"
             | "typed_default_parameter"
@@ -119,6 +112,8 @@ fn scope_bindings(node: Syntax<'_>, source: &str) -> Vec<String> {
                 }
             }
             "parameters"
+            | "lambda_parameters"
+            | "as_pattern_target"
             | "formal_parameters"
             | "parameter_list"
             | "tuple_pattern"
@@ -142,62 +137,85 @@ fn scope_bindings(node: Syntax<'_>, source: &str) -> Vec<String> {
             _ => {}
         }
     }
-    let mut out = std::collections::BTreeSet::new();
-    for field in ["parameters", "parameter"] {
-        if let Some(parameters) = node.child_by_field_name(field) {
-            names(parameters, source, &mut out);
-        }
-    }
-    let mut stack = node
-        .child_by_field_name("body")
-        .into_iter()
-        .collect::<Vec<_>>();
-    while let Some(n) = stack.pop() {
-        if matches!(
-            n.kind(),
-            "function_definition"
-                | "class_definition"
-                | "function_declaration"
-                | "function_item"
-                | "arrow_function"
-                | "function_expression"
-                | "method_definition"
-        ) {
-            continue;
-        }
-        let lhs = match n.kind() {
-            "assignment"
-            | "augmented_assignment"
-            | "for_statement"
-            | "for_in_statement"
-            | "short_var_declaration" => n.child_by_field_name("left"),
-            "variable_declarator" | "let_declaration" => n
-                .child_by_field_name("name")
-                .or_else(|| n.child_by_field_name("pattern")),
-            _ => None,
-        };
-        let callable = n
-            .child_by_field_name("value")
-            .or_else(|| n.child_by_field_name("right"))
-            .is_some_and(|n| matches!(n.kind(), "arrow_function" | "function_expression"));
-        if !callable {
-            if let Some(lhs) = lhs {
-                names(lhs, source, &mut out);
+    let mut param_names = HashSet::new();
+    if is_callable {
+        for field in ["parameters", "parameter"] {
+            if let Some(parameters) = node.child_by_field_name(field) {
+                names(parameters, source, &mut param_names);
             }
         }
-        let mut c = n.walk();
-        stack.extend(n.named_children(&mut c));
     }
-    out.into_iter().collect()
+    let mut body_names = HashSet::new();
+    let body = node
+        .child_by_field_name("body")
+        .or_else(|| is_module.then_some(node));
+    if let Some(body_node) = body {
+        let mut stack = vec![body_node];
+        while let Some(n) = stack.pop() {
+            if n != body_node
+                && matches!(
+                    n.kind(),
+                    "function_definition"
+                        | "lambda"
+                        | "class_definition"
+                        | "function_declaration"
+                        | "function_item"
+                        | "arrow_function"
+                        | "function_expression"
+                        | "method_definition"
+                        | "method_declaration"
+                        | "closure_expression"
+                        | "func_literal"
+                )
+            {
+                continue;
+            }
+            let lhs = match n.kind() {
+                "assignment"
+                | "augmented_assignment"
+                | "for_statement"
+                | "for_in_statement"
+                | "for_in_clause"
+                | "short_var_declaration" => n.child_by_field_name("left"),
+                "as_pattern" => n.child_by_field_name("alias"),
+                "variable_declarator" | "let_declaration" | "named_expression" => n
+                    .child_by_field_name("name")
+                    .or_else(|| n.child_by_field_name("pattern")),
+                _ => None,
+            };
+            let callable = n
+                .child_by_field_name("value")
+                .or_else(|| n.child_by_field_name("right"))
+                .is_some_and(|n| matches!(n.kind(), "arrow_function" | "function_expression" | "lambda"));
+            if !callable {
+                if let Some(lhs) = lhs {
+                    names(lhs, source, &mut body_names);
+                }
+            }
+            let mut c = n.walk();
+            stack.extend(n.named_children(&mut c));
+        }
+    }
+    let mut all_set: std::collections::BTreeSet<String> = param_names
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let rebindings_set: std::collections::BTreeSet<String> = body_names
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    all_set.extend(rebindings_set.iter().cloned());
+    ScopeBindings {
+        all: all_set.into_iter().collect(),
+        rebindings: rebindings_set.into_iter().collect(),
+    }
 }
 fn declaration_signature(node: Syntax<'_>, source: &str) -> String {
     let mut c = node.walk();
-    let body_node = node
-        .child_by_field_name("body")
-        .or_else(|| {
-            node.named_children(&mut c)
-                .find(|ch| matches!(ch.kind(), "message_body" | "enum_body"))
-        });
+    let body_node = node.child_by_field_name("body").or_else(|| {
+        node.named_children(&mut c)
+            .find(|ch| matches!(ch.kind(), "message_body" | "enum_body"))
+    });
     let end = body_node.map_or(node.end_byte(), |b| b.start_byte());
     source[node.start_byte()..end]
         .trim()
@@ -207,7 +225,7 @@ fn declaration_signature(node: Syntax<'_>, source: &str) -> String {
         .take(512)
         .collect()
 }
-fn bounded_expression(value: &str) -> String {
+pub(crate) fn bounded_expression(value: &str) -> String {
     if value.len() <= 512 {
         return value.into();
     }
@@ -217,414 +235,153 @@ fn bounded_expression(value: &str) -> String {
         crate::core::commitments::hash(value.as_bytes())
     )
 }
-fn is_default_export(mut node: Syntax<'_>, source: &str, name: &str) -> bool {
-    let original = node;
-    while let Some(parent) = node.parent() {
-        if parent.kind() == "export_statement"
-            && text(parent, source)
-                .trim_start()
-                .starts_with("export default")
-        {
-            return true;
-        }
-        if !matches!(
-            parent.kind(),
-            "variable_declarator" | "lexical_declaration" | "variable_declaration"
-        ) {
-            break;
-        }
-        node = parent;
-    }
-    let mut anchor = original;
-    while let Some(parent) = anchor.parent() {
-        if matches!(parent.kind(), "program" | "module") {
-            let mut c = parent.walk();
-            return parent.named_children(&mut c).any(|n| {
-                if n.kind() != "export_statement" || n.child_by_field_name("source").is_some() {
-                    return false;
-                }
-                if text(n, source).trim_start().starts_with("export default")
-                    && n.child_by_field_name("value")
-                        .is_some_and(|v| v.kind() == "identifier" && text(v, source) == name)
-                {
-                    return true;
-                }
-                let mut c = n.walk();
-                for clause in n
-                    .named_children(&mut c)
-                    .filter(|n| n.kind() == "export_clause")
-                {
-                    let mut cursor = clause.walk();
-                    for specifier in clause.named_children(&mut cursor) {
-                        if field(specifier, source, "name") == Some(name)
-                            && field(specifier, source, "alias") == Some("default")
-                        {
-                            return true;
-                        }
-                    }
-                }
-                false
-            });
-        }
-        if !matches!(
-            parent.kind(),
-            "variable_declarator"
-                | "lexical_declaration"
-                | "variable_declaration"
-                | "export_statement"
-        ) {
-            break;
-        }
-        anchor = parent;
-    }
-    false
-}
-fn record_import(node: Syntax<'_>, source: &str, owner: &str, facts: &mut Facts) {
-    let statement = text(node, source);
-    let line = node.start_position().row + 1;
-    let mut add = |expression: String, alias: Option<String>, module: Option<String>| {
-        facts.references.push(Reference {
-            source: owner.into(),
-            dynamic: false,
-            expression,
-            kind: "imports".into(),
-            line,
-            alias,
-            module,
-        })
-    };
-    match node.kind() {
-        "import_from_statement" => {
-            let module = field(node, source, "module_name").unwrap_or("").to_owned();
-            let mut c = node.walk();
-            for child in node.children_by_field_name("name", &mut c) {
-                let name = field(child, source, "name").unwrap_or_else(|| text(child, source));
-                add(
-                    name.into(),
-                    field(child, source, "alias")
-                        .map(str::to_owned)
-                        .or_else(|| Some(name.into())),
-                    Some(module.clone()),
-                );
-            }
-            if statement.contains('*') {
-                add("*".into(), None, Some(module));
-            }
-        }
-        "import_statement"
-            if statement.starts_with("import ")
-                && !statement.contains("from ")
-                && !statement.contains('"')
-                && !statement.contains('\'') =>
-        {
-            let mut c = node.walk();
-            for child in node.children_by_field_name("name", &mut c) {
-                let name = field(child, source, "name").unwrap_or_else(|| text(child, source));
-                add(
-                    name.into(),
-                    field(child, source, "alias")
-                        .map(str::to_owned)
-                        .or_else(|| Some(name.split('.').next().unwrap_or(name).into())),
-                    Some(name.into()),
-                );
-            }
-        }
-        "import_statement" => {
-            let module =
-                field(node, source, "source").map(|s| s.trim_matches(['\'', '"']).to_owned());
-            fn ids(node: Syntax<'_>, source: &str, values: &mut Vec<(String, Option<String>)>) {
-                match node.kind() {
-                    "import_specifier" => {
-                        let name =
-                            field(node, source, "name").unwrap_or_else(|| text(node, source));
-                        values.push((
-                            name.into(),
-                            field(node, source, "alias")
-                                .map(str::to_owned)
-                                .or_else(|| Some(name.into())),
-                        ));
-                    }
-                    "namespace_import" => {
-                        if let Some(n) = node.named_child(0) {
-                            values.push(("*".into(), Some(text(n, source).into())));
-                        }
-                    }
-                    "identifier" => {
-                        values.push(("default".into(), Some(text(node, source).into())))
-                    }
-                    _ => {
-                        let mut c = node.walk();
-                        for n in node.named_children(&mut c) {
-                            ids(n, source, values);
-                        }
-                    }
-                }
-            }
-            let mut names = Vec::new();
-            let mut c = node.walk();
-            for n in node.named_children(&mut c) {
-                if n.kind() == "import_clause" {
-                    ids(n, source, &mut names);
-                }
-            }
-            if names.is_empty() {
-                add("*".into(), None, module);
-            } else {
-                for (name, alias) in names {
-                    add(name, alias, module.clone());
-                }
-            }
-        }
-        "use_declaration" => {
-            let value = field(node, source, "argument")
-                .unwrap_or(statement.trim_start_matches("use ").trim_end_matches(';'));
-            fn expand(value: &str, prefix: &str, out: &mut Vec<(String, String)>) {
-                if let Some((base, rest)) = value.split_once('{') {
-                    let root = format!("{prefix}{}", base.trim());
-                    for item in rest.trim_end_matches('}').split(',') {
-                        if !item.trim().is_empty() {
-                            expand(item.trim(), &root, out);
-                        }
-                    }
-                } else {
-                    let (name, alias) = value
-                        .split_once(" as ")
-                        .unwrap_or((value, value.rsplit("::").next().unwrap_or(value)));
-                    out.push((format!("{prefix}{}", name.trim()), alias.trim().into()));
-                }
-            }
-            let mut names = Vec::new();
-            expand(value, "", &mut names);
-            for (name, alias) in names {
-                add(name.clone(), Some(alias), Some(name));
-            }
-        }
-        "import_spec" => {
-            if let Some(path) = field(node, source, "path") {
-                let path = path.trim_matches(['"', '`']);
-                add(
-                    path.into(),
-                    Some(
-                        field(node, source, "name")
-                            .unwrap_or(path.rsplit('/').next().unwrap_or(path))
-                            .into(),
-                    ),
-                    Some(path.into()),
-                );
-            }
-        }
-        "import" => {
-            let mut p = field(node, source, "path");
-            if p.is_none() {
-                let mut c = node.walk();
-                p = node
-                    .named_children(&mut c)
-                    .find(|n| n.kind() == "string")
-                    .map(|n| text(n, source));
-            }
-            if let Some(path) = p {
-                let path = path.trim_matches(['"', '\'', '`']);
-                add(
-                    path.into(),
-                    Some(path.rsplit('/').next().unwrap_or(path).into()),
-                    Some(path.into()),
-                );
-            }
-        }
-        _ => {}
-    }
-}
-
-fn visit(
-    node: Syntax<'_>,
-    source: &str,
-    path: &str,
-    language: &str,
-    module: &str,
-    scopes: &mut Vec<String>,
-    owner: &str,
-    facts: &mut Facts,
-    offset: usize,
-) {
-    if node.is_error() || node.is_missing() {
-        facts.errors.push(Diagnostic {
-            path: path.into(),
-            line: node.start_position().row + offset + 1,
-            message: format!(
-                "syntax {} at column {}",
-                node.kind(),
-                node.start_position().column + 1
-            ),
-        });
-    }
-    let mut child_owner = owner.to_owned();
-    let mut pushed = false;
-    if let Some(kind) = symbol_kind(language, node.kind()) {
-        let inferred = node.parent().and_then(|p| {
-            if matches!(p.kind(), "variable_declarator" | "pair" | "assignment") {
-                field(p, source, "name")
-                    .or_else(|| field(p, source, "left"))
-                    .or_else(|| field(p, source, "key"))
-            } else {
-                None
-            }
-        });
-        let mut proto_cursor = node.walk();
-        let proto_name = if language == "proto" {
-            node.named_children(&mut proto_cursor)
-                .find(|ch| {
-                    matches!(
-                        ch.kind(),
-                        "message_name" | "service_name" | "rpc_name" | "enum_name"
-                    )
-                })
-                .map(|ch| text(ch, source))
+pub(crate) fn symbol_name<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
+    let inferred = node.parent().and_then(|p| {
+        if matches!(p.kind(), "variable_declarator" | "pair" | "assignment") {
+            field(p, source, "name")
+                .or_else(|| field(p, source, "left"))
+                .or_else(|| field(p, source, "key"))
         } else {
             None
-        };
-        let name = proto_name
-            .or_else(|| field(node, source, "name"))
-            .or_else(|| field(node, source, "type"))
-            .or(inferred)
-            .map(str::to_owned)
-            .unwrap_or_else(|| {
-                format!(
-                    "anonymous@{}:{}",
-                    node.start_position().row + offset + 1,
-                    node.start_position().column + 1
-                )
-            });
-        let prefix = match (language, kind) {
-            ("python", "class") => "class",
-            ("python", _) => "py",
-            ("rust", _) => "rs",
-            ("go", _) => "go",
-            ("proto", "class") => "message",
-            ("proto", "service") => "service",
-            ("proto", "function") => "rpc",
-            ("proto", "enum") => "enum",
-            _ => "ts",
-        };
-        let line = node.start_position().row + offset + 1;
-        let mut id = format!("{prefix}:{path}:{line}:{name}");
-        if facts.nodes.iter().any(|n| n.id == id) {
-            id.push_str(&format!(":{}", node.start_position().column));
         }
-        if language == "proto" && node.kind() == "rpc" {
-            let mut c = node.walk();
-            for ch in node.named_children(&mut c) {
-                if ch.kind() == "message_or_enum_type" {
-                    let type_name = text(ch, source).trim();
-                    if !type_name.is_empty() {
-                        facts.references.push(Reference {
-                            source: id.clone(),
-                            dynamic: false,
-                            expression: type_name.to_owned(),
-                            kind: "references".into(),
-                            line,
-                            alias: None,
-                            module: type_name.rsplit_once('.').map(|(m, _)| m.to_owned()),
-                        });
-                    }
-                }
+    });
+    field(node, source, "name")
+        .or_else(|| field(node, source, "type"))
+        .or(inferred)
+}
+
+struct Extraction<'a> {
+    source: &'a str,
+    path: &'a str,
+    profile: &'a dyn LanguageProfile,
+    file: FileContext,
+    module: &'a str,
+    offset: usize,
+    symbols: HashMap<usize, String>,
+    ids: HashSet<String>,
+}
+impl Extraction<'_> {
+    fn visit(
+        &mut self,
+        node: Syntax<'_>,
+        scopes: &mut Vec<String>,
+        owner: &str,
+        facts: &mut Facts,
+    ) {
+        let (source, path, language, module, offset) = (
+            self.source,
+            self.path,
+            self.profile.id(),
+            self.module,
+            self.offset,
+        );
+        if node.parent().is_none() {
+            if let Some(module) = facts.nodes.iter_mut().find(|n| n.id == owner) {
+                let bindings = module.details["bindings"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let bindings: std::collections::BTreeSet<String> = bindings
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .chain(self.profile.bindings(node, source).all)
+                    .collect();
+                module.details["bindings"] = json!(bindings);
             }
         }
-        let decorators = node
-            .parent()
-            .filter(|p| p.kind() == "decorated_definition")
-            .map(|p| {
-                let mut c = p.walk();
-                p.named_children(&mut c)
-                    .filter(|n| n.kind() == "decorator")
-                    .map(|n| text(n, source).to_owned())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let details = json!({"bindings":scope_bindings(node,source),"default_export":is_default_export(node,source,&name),"doc":doc_comment(node,source,language),"decorators":decorators,"bases":field(node,source,"superclasses"),"receiver":field(node,source,"receiver"),"signature":declaration_signature(node,source),"async":text(node,source).trim_start().starts_with("async ")});
-        facts.nodes.push(Node {
-            id: id.clone(),
-            kind: kind.into(),
-            name: name.clone(),
-            qualname: qualified(module, scopes, &name),
-            path: path.into(),
-            line,
-            end_line: node.end_position().row + offset + 1,
-            is_test: is_test(path),
-            language: language.into(),
-            generated: false,
-            details,
-        });
-        facts.edges.push(Edge {
-            src: owner.into(),
-            dst: id.clone(),
-            kind: "contains".into(),
-            path: path.into(),
-            line,
-            evidence: node.kind().into(),
-            confidence: "exact".into(),
-        });
-        child_owner = id;
-        scopes.push(name);
-        pushed = true;
-    }
-    if matches!(
-        node.kind(),
-        "import_statement" | "import_from_statement" | "use_declaration" | "import_spec" | "import"
-    ) {
-        let before = facts.references.len();
-        record_import(node, source, &format!("module:{path}"), facts);
-        for r in &mut facts.references[before..] {
-            r.line += offset;
-        }
-    }
-    if matches!(node.kind(), "call" | "call_expression" | "macro_invocation") {
-        if let Some(callee) =
-            field(node, source, "function").or_else(|| field(node, source, "macro"))
-        {
-            let dynamic = callee == "import" || callee == "require";
-            let import_path = if dynamic {
-                node.child_by_field_name("arguments")
-                    .and_then(|n| n.named_child(0))
-                    .filter(|n| n.kind() == "string")
-                    .map(|n| text(n, source).trim_matches(['\'', '"']).to_owned())
-            } else {
-                None
-            };
-            facts.references.push(Reference {
-                source: child_owner.clone(),
-                dynamic: !callee
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || "_.:!".contains(c)),
-                expression: import_path
-                    .clone()
-                    .unwrap_or_else(|| bounded_expression(callee)),
-                kind: if dynamic { "imports" } else { "calls" }.into(),
+        if node.is_error() || node.is_missing() {
+            facts.errors.push(Diagnostic {
+                path: path.into(),
                 line: node.start_position().row + offset + 1,
-                alias: None,
-                module: import_path,
+                message: format!(
+                    "syntax {} at column {}",
+                    node.kind(),
+                    node.start_position().column + 1
+                ),
             });
         }
-    }
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        visit(
-            child,
+        let mut child_owner = owner.to_owned();
+        let mut pushed = false;
+        if let Some(kind) = self.profile.symbol(node) {
+            let name = self
+                .profile
+                .symbol_name(node, source)
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    format!(
+                        "anonymous@{}:{}",
+                        node.start_position().row + offset + 1,
+                        node.start_position().column + 1
+                    )
+                });
+            let prefix = self.profile.node_prefix(kind);
+            let line = node.start_position().row + offset + 1;
+            let mut id = format!("{prefix}:{path}:{line}:{name}");
+            if !self.ids.insert(id.clone()) {
+                id.push_str(&format!(":{}", node.start_position().column));
+                self.ids.insert(id.clone());
+            }
+            self.symbols.insert(node.id(), id.clone());
+            let metadata = self.profile.metadata(node, source, &name, &self.file);
+            let bindings = self.profile.bindings(node, source);
+            let details = json!({"receiver_name":metadata.receiver_name,"bindings":bindings.all,"rebindings":bindings.rebindings,"default_export":metadata.default_export,"doc":self.profile.doc_comment(node,source),"decorators":metadata.decorators,"bases":metadata.bases,"receiver":metadata.receiver,"signature":declaration_signature(node,source),"async":metadata.is_async});
+            facts.nodes.push(Node {
+                id: id.clone(),
+                kind: kind.into(),
+                name: name.clone(),
+                qualname: qualified(module, scopes, &name),
+                path: path.into(),
+                line,
+                end_line: node.end_position().row + offset + 1,
+                is_test: is_test(path) || self.profile.test_attribute(node, source),
+                language: language.into(),
+                generated: false,
+                details,
+            });
+            facts.edges.push(Edge {
+                src: owner.into(),
+                dst: id.clone(),
+                kind: "contains".into(),
+                path: path.into(),
+                line,
+                evidence: node.kind().into(),
+                confidence: "exact".into(),
+            });
+            self.profile.extract_relations(
+                &SyntaxContext {
+                    node,
+                    source,
+                    owner: &id,
+                    offset,
+                },
+                facts,
+            );
+            child_owner = id;
+            scopes.push(name);
+            pushed = true;
+        }
+        let ctx = SyntaxContext {
+            node,
             source,
-            path,
-            language,
-            module,
-            scopes,
-            &child_owner,
-            facts,
+            owner: &child_owner,
             offset,
-        );
-    }
-    if pushed {
-        scopes.pop();
+        };
+        self.profile.extract_imports(&ctx, facts);
+        self.profile.extract_calls(&ctx, facts);
+        self.profile.extract_mutations(&ctx, facts);
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            self.visit(child, scopes, &child_owner, facts);
+        }
+        self.profile.extract_routes(&ctx, facts, &self.symbols);
+        if pushed {
+            scopes.pop();
+        }
     }
 }
 pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
-    let module = module_name(path);
+    let profile = languages::require(language)?;
+    let module = profile.module_name_for_source(path, source);
     let mut facts = Facts::default();
     facts.nodes.push(Node {
         id: format!("module:{path}"),
@@ -640,65 +397,84 @@ pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
         details: json!({}),
     });
 
-    if language == "vue" {
-        let mut rest = source;
-        let mut base = 0;
-        while let Some(start) = rest.find("<script") {
-            let opening = start
-                + rest[start..]
-                    .find('>')
-                    .context("unterminated Vue script tag")?
-                + 1;
-            let end = opening
-                + rest[opening..]
-                    .find("</script>")
-                    .context("unterminated Vue script block")?;
-            let script = &rest[opening..end];
-            let lang = if rest[start..opening].contains("lang=\"ts\"")
-                || rest[start..opening].contains("lang='ts'")
-            {
-                "typescript"
-            } else {
-                "javascript"
-            };
-            let tree = parser(lang, path)?
-                .parse(script, None)
-                .context("Tree-sitter parse cancelled")?;
-            let offset = source[..base + opening]
-                .bytes()
-                .filter(|b| *b == b'\n')
-                .count();
-            visit(
-                tree.root_node(),
-                script,
-                path,
-                lang,
-                &module,
-                &mut Vec::new(),
-                &format!("module:{path}"),
-                &mut facts,
-                offset,
-            );
-            base += end + 9;
-            rest = &source[base..];
-        }
-    } else {
-        let tree = parser(language, path)?
-            .parse(source, None)
-            .context("Tree-sitter parse cancelled")?;
-        visit(
-            tree.root_node(),
-            source,
-            path,
-            language,
-            &module,
-            &mut Vec::new(),
-            &format!("module:{path}"),
-            &mut facts,
-            0,
-        );
-    }
+    profile.extract_file(path, source, &module, &mut facts)?;
+    profile.finish(&mut facts);
     Ok(facts)
+}
+
+pub(crate) fn extract_tree(
+    profile: &dyn LanguageProfile,
+    root: Syntax<'_>,
+    path: &str,
+    source: &str,
+    module: &str,
+    facts: &mut Facts,
+) {
+    Extraction {
+        source,
+        path,
+        profile,
+        file: profile.prepare(root, source),
+        module,
+        offset: 0,
+        symbols: HashMap::new(),
+        ids: facts.nodes.iter().map(|n| n.id.clone()).collect(),
+    }
+    .visit(root, &mut Vec::new(), &format!("module:{path}"), facts);
+}
+
+pub const SEARCH_MATCH_HORIZON: usize = 10_000;
+
+struct SearchBudget {
+    deadline: Option<std::time::Instant>,
+    remaining: usize,
+    exhausted: bool,
+}
+
+impl SearchBudget {
+    fn unbounded() -> Self {
+        Self {
+            deadline: None,
+            remaining: 0,
+            exhausted: false,
+        }
+    }
+
+    fn bounded(query_deadline: std::time::Instant) -> Self {
+        let file_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        Self {
+            deadline: Some(query_deadline.min(file_deadline)),
+            remaining: 1_000_000,
+            exhausted: false,
+        }
+    }
+
+    fn step(&mut self) -> bool {
+        let Some(deadline) = self.deadline else {
+            return true;
+        };
+        if self.exhausted || self.remaining == 0 || std::time::Instant::now() >= deadline {
+            self.exhausted = true;
+            return false;
+        }
+        self.remaining -= 1;
+        true
+    }
+
+    fn prepare_parser(&mut self, parser: &mut Parser) -> bool {
+        if !self.step() {
+            return false;
+        }
+        if let Some(deadline) = self.deadline {
+            parser.set_timeout_micros(
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_micros()
+                    .max(1) as u64,
+            );
+        }
+        true
+    }
 }
 
 fn structural_match(
@@ -707,7 +483,11 @@ fn structural_match(
     ps: &str,
     source: &str,
     captures: &mut serde_json::Map<String, serde_json::Value>,
+    budget: &mut SearchBudget,
 ) -> bool {
+    if !budget.step() {
+        return false;
+    }
     let token = text(pattern, ps);
     if token.starts_with("__FORGE_META_") && pattern.named_child_count() == 0 {
         let name = token.trim_start_matches("__FORGE_META_");
@@ -742,13 +522,20 @@ fn structural_match(
         ps: &str,
         ts: &str,
         caps: &mut serde_json::Map<String, serde_json::Value>,
+        budget: &mut SearchBudget,
     ) -> bool {
+        if !budget.step() {
+            return false;
+        }
         if p.is_empty() {
             return t.is_empty();
         }
         let token = text(p[0], ps);
         if token.starts_with("__FORGE_MANY_") {
             for count in 0..=t.len() {
+                if !budget.step() {
+                    return false;
+                }
                 let mut branch = caps.clone();
                 let name = token.trim_start_matches("__FORGE_MANY_");
                 let value = if count == 0 {
@@ -760,19 +547,19 @@ fn structural_match(
                     continue;
                 }
                 branch.insert(name.into(), json!(value));
-                if sequence(&p[1..], &t[count..], ps, ts, &mut branch) {
+                if sequence(&p[1..], &t[count..], ps, ts, &mut branch, budget) {
                     *caps = branch;
                     return true;
                 }
             }
             return false;
         }
-        if t.is_empty() || !structural_match(p[0], t[0], ps, ts, caps) {
+        if t.is_empty() || !structural_match(p[0], t[0], ps, ts, caps, budget) {
             return false;
         }
-        sequence(&p[1..], &t[1..], ps, ts, caps)
+        sequence(&p[1..], &t[1..], ps, ts, caps, budget)
     }
-    sequence(&p, &t, ps, source, captures)
+    sequence(&p, &t, ps, source, captures, budget)
 }
 pub fn search(
     source: &str,
@@ -781,6 +568,73 @@ pub fn search(
     pattern: &str,
     limit: usize,
 ) -> Result<Vec<serde_json::Value>> {
+    Ok(search_range(
+        source,
+        path,
+        language,
+        pattern,
+        0,
+        limit,
+        SearchBudget::unbounded(),
+    )?
+    .items)
+}
+
+pub struct SearchPage {
+    pub items: Vec<serde_json::Value>,
+    pub matched: usize,
+    pub complete: bool,
+    pub work_limited: bool,
+}
+
+impl SearchPage {
+    fn limited(items: Vec<serde_json::Value>, matched: usize) -> Self {
+        Self {
+            items,
+            matched,
+            complete: false,
+            work_limited: true,
+        }
+    }
+}
+
+pub fn search_page(
+    source: &str,
+    path: &str,
+    language: &str,
+    pattern: &str,
+    offset: usize,
+    limit: usize,
+    deadline: std::time::Instant,
+) -> Result<SearchPage> {
+    anyhow::ensure!(
+        limit > 0
+            && offset
+                .checked_add(limit)
+                .is_some_and(|end| end <= SEARCH_MATCH_HORIZON),
+        "AST search offset + limit must be 1..=10000; narrow path or pattern"
+    );
+    search_range(
+        source,
+        path,
+        language,
+        pattern,
+        offset,
+        limit,
+        SearchBudget::bounded(deadline),
+    )
+}
+
+fn search_range(
+    source: &str,
+    path: &str,
+    language: &str,
+    pattern: &str,
+    offset: usize,
+    limit: usize,
+    mut budget: SearchBudget,
+) -> Result<SearchPage> {
+    let bounded = budget.deadline.is_some();
     let mut normalized = String::new();
     let mut chars = pattern.chars().peekable();
     while let Some(c) = chars.next() {
@@ -799,12 +653,17 @@ pub fn search(
             normalized.push(c);
         }
     }
-    let partial_body = language == "python" && normalized.trim_end().ends_with(':');
-    if partial_body {
-        normalized.push_str("\n    __FORGE_META_BODY\n");
+    let profile = languages::require(language)?;
+    let partial_body = profile.prepare_pattern(&mut normalized);
+    let mut parser = profile.create_parser(path)?;
+    if !budget.prepare_parser(&mut parser) {
+        return Ok(SearchPage::limited(Vec::new(), 0));
     }
-    let mut parser = parser(language, path)?;
-    let pt: Tree = parser.parse(&normalized, None).context("invalid pattern")?;
+    let pt: Tree = match parser.parse(&normalized, None) {
+        Some(tree) => tree,
+        None if bounded => return Ok(SearchPage::limited(Vec::new(), 0)),
+        None => bail!("invalid pattern"),
+    };
     if pt.root_node().has_error() {
         bail!("pattern is not valid {language} syntax");
     }
@@ -817,10 +676,23 @@ pub fn search(
     {
         pn = pn.named_child(0).context("empty pattern")?;
     }
-    let tree = parser.parse(source, None).context("parse cancelled")?;
+    if !budget.prepare_parser(&mut parser) {
+        return Ok(SearchPage::limited(Vec::new(), 0));
+    }
+    let tree = match parser.parse(source, None) {
+        Some(tree) => tree,
+        None if bounded => return Ok(SearchPage::limited(Vec::new(), 0)),
+        None => bail!("parse cancelled"),
+    };
     let mut stack = vec![tree.root_node()];
     let mut matches = Vec::new();
+    let mut matched_count = 0;
+    let mut visited = 0;
     while let Some(n) = stack.pop() {
+        visited += 1;
+        if !budget.step() || (bounded && visited > 100_000) {
+            return Ok(SearchPage::limited(matches, matched_count));
+        }
         let mut captures = serde_json::Map::new();
         let matched = if partial_body && n.kind() == pn.kind() {
             let mut pc = pn.walk();
@@ -834,21 +706,45 @@ pub fn search(
                 .filter(|x| x.kind() != "block")
                 .collect();
             a.len() == b.len()
-                && a.iter()
-                    .zip(b)
-                    .all(|(a, b)| structural_match(*a, b, &normalized, source, &mut captures))
+                && a.iter().zip(b).all(|(a, b)| {
+                    structural_match(*a, b, &normalized, source, &mut captures, &mut budget)
+                })
         } else {
-            structural_match(pn, n, &normalized, source, &mut captures)
+            structural_match(pn, n, &normalized, source, &mut captures, &mut budget)
         };
+        if budget.exhausted {
+            return Ok(SearchPage::limited(matches, matched_count));
+        }
         if matched {
-            matches.push(json!({"path":path,"line":n.start_position().row+1,"end_line":n.end_position().row+1,"text":text(n,source),"captures":captures}));
-            if matches.len() >= limit {
-                break;
+            matched_count += 1;
+            if matched_count > offset {
+                if matches.len() == limit {
+                    return Ok(SearchPage {
+                        items: matches,
+                        matched: matched_count,
+                        complete: false,
+                        work_limited: false,
+                    });
+                }
+                matches.push(json!({"path":path,"line":n.start_position().row+1,"end_line":n.end_position().row+1,"text":text(n,source),"captures":captures}));
+                if !bounded && matches.len() >= limit {
+                    return Ok(SearchPage {
+                        items: matches,
+                        matched: matched_count,
+                        complete: false,
+                        work_limited: false,
+                    });
+                }
             }
         }
         let mut c = n.walk();
         let children: Vec<_> = n.named_children(&mut c).collect();
         stack.extend(children.into_iter().rev());
     }
-    Ok(matches)
+    Ok(SearchPage {
+        items: matches,
+        matched: matched_count,
+        complete: true,
+        work_limited: false,
+    })
 }

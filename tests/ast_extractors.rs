@@ -1,5 +1,13 @@
+#![cfg(any(
+    feature = "lang-python",
+    feature = "lang-rust",
+    feature = "lang-typescript",
+    feature = "lang-go"
+))]
+
 use contextunity_forge_mcp::engine::ast;
 
+#[cfg(feature = "lang-python")]
 #[test]
 fn test_python_ast_extractor() {
     let source = r#"
@@ -18,11 +26,21 @@ def standalone_helper(x: int) -> int:
     return x * 2
 "#;
     let facts = ast::extract("test.py", "python", source).expect("python extraction failed");
-    assert!(facts.nodes.iter().any(|n| n.kind == "class" && n.name == "ServiceClient"));
-    assert!(facts.nodes.iter().any(|n| n.kind == "function" && n.name == "fetch"));
-    assert!(facts.nodes.iter().any(|n| n.kind == "function" && n.name == "standalone_helper"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "class" && n.name == "ServiceClient"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "function" && n.name == "fetch"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "function" && n.name == "standalone_helper"));
 }
 
+#[cfg(feature = "lang-rust")]
 #[test]
 fn test_rust_ast_extractor() {
     let source = r#"
@@ -45,11 +63,21 @@ impl Config {
 }
 "#;
     let facts = ast::extract("test.rs", "rust", source).expect("rust extraction failed");
-    assert!(facts.nodes.iter().any(|n| n.kind == "struct" && n.name == "Config"));
-    assert!(facts.nodes.iter().any(|n| n.kind == "enum" && n.name == "Status"));
-    assert!(facts.nodes.iter().any(|n| n.kind == "function" && n.name == "new"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "struct" && n.name == "Config"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "enum" && n.name == "Status"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "function" && n.name == "new"));
 }
 
+#[cfg(feature = "lang-typescript")]
 #[test]
 fn test_typescript_ast_extractor() {
     let source = r#"
@@ -70,12 +98,23 @@ export const processUser = (u: User) => {
     console.log(u);
 };
 "#;
-    let facts = ast::extract("test.ts", "typescript", source).expect("typescript extraction failed");
-    assert!(facts.nodes.iter().any(|n| n.kind == "class" && n.name == "UserService"));
-    assert!(facts.nodes.iter().any(|n| n.kind == "method" && n.name == "getUser"));
-    assert!(facts.nodes.iter().any(|n| n.kind == "function" && n.name == "processUser"));
+    let facts =
+        ast::extract("test.ts", "typescript", source).expect("typescript extraction failed");
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "class" && n.name == "UserService"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "method" && n.name == "getUser"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "function" && n.name == "processUser"));
 }
 
+#[cfg(feature = "lang-go")]
 #[test]
 fn test_go_ast_extractor() {
     let source = r#"
@@ -98,6 +137,12 @@ func Run() {
 "#;
     let facts = ast::extract("main.go", "go", source).expect("go extraction failed");
     assert!(facts.nodes.iter().any(|n| n.name == "Server"));
-    assert!(facts.nodes.iter().any(|n| n.kind == "method" && n.name == "Start"));
-    assert!(facts.nodes.iter().any(|n| n.kind == "function" && n.name == "Run"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "method" && n.name == "Start"));
+    assert!(facts
+        .nodes
+        .iter()
+        .any(|n| n.kind == "function" && n.name == "Run"));
 }

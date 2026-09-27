@@ -11,6 +11,19 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
+The default binary includes Python, Rust, TypeScript/JavaScript, Vue and Proto.
+Other grammars are optional:
+
+```sh
+cargo build --release --locked --features lang-go
+cargo build --release --locked --features all-languages
+cargo build --release --locked --no-default-features --features lang-rust
+```
+
+`--no-default-features` alone builds the Markdown/document engine. See the
+[profile guide](docs/language-profiles.md) for feature selection and adding a
+provider. No package installation or runtime plugin loader is required.
+
 From the repository you want to index:
 
 ```sh
@@ -45,7 +58,11 @@ CLI commands                         MCP stdio requests (rmcp)
 
 The CLI owns argument parsing and output. The MCP layer owns protocol transport and tool schemas. Both call the same domain operations. The scanner determines admitted files; language extractors produce definitions, imports, and calls; the linker resolves references and preserves unresolved evidence. Markdown sections supply searchable documentation and code references. SQLite stores graph rows, extraction contributions, document sections, full text search indexes, and commitments.
 
-The database is a repository snapshot. Build before querying a new repository, and update the index when source changes. Query results reflect indexed evidence; dynamic execution, external libraries, and unindexed files require separate inspection.
+The database is a repository snapshot. The CLI requires an explicit build or
+delta after source changes. MCP checks the source inventory before reads and
+updates its owned index when source changes. Query results reflect indexed
+evidence; dynamic execution, external libraries, and unindexed files require
+separate inspection.
 
 ## Source coverage
 
@@ -58,6 +75,21 @@ The database is a repository snapshot. Build before querying a new repository, a
 | Go (`.go`) | Types, functions, methods, imports, calls |
 | Markdown (`.md`, `.mdx`) | Sections, metadata, invariants, code references |
 | Protocol Buffers (`.proto`) | Enums, messages, services, RPCs, imports, type references |
+| Java (`.java`) | Declarations, local calls and inheritance; classpath resolution remains conservative |
+| C# (`.cs`) | Declarations, local calls and base relations; assembly resolution remains conservative |
+| Kotlin (`.kt`, `.kts`) | Declarations, local calls and base relations; inferred receiver types remain conservative |
+| PHP (`.php`) | Declarations and supported calls/relations; autoload and dynamic dispatch remain unresolved |
+| Ruby (`.rb`) | Declarations and supported calls; bare-call and dynamic forms retain unresolved evidence |
+| C (`.c`, `.h`) | Declarations, local calls and include facts; preprocessing and indirect calls remain conservative |
+| C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`) | Declarations, local calls and supported bases; templates and implicit calls remain conservative |
+
+Profiles are discovered at build time from `src/engine/languages/*.rs` and
+selected by `lang-<provider>` Cargo features. A provider exports a `PROFILES`
+slice; no manual Rust registry edit is required. The compiled profile
+fingerprint includes enabled providers and invalidates incompatible indexes.
+The table lists all available modes; optional modes require their feature.
+See [language profiles and extension guide](docs/language-profiles.md) for the
+contract and limits. `.h` uses the C profile when enabled.
 
 Unsupported extensions are outside the scanner's inventory. Vue templates and styles are outside syntax extraction; MDX is treated as Markdown. The scanner bounds a file to 5 MiB, the admitted corpus to 100,000 files, and total admitted bytes to 500 MiB. Exceeding a bound is an error.
 
@@ -87,12 +119,32 @@ Delta reparses the listed changed files, gathers affected references from persis
 ```sh
 contextunity-forge-mcp query overview --db .code-map.sqlite
 contextunity-forge-mcp query inspect 'build' --show-doc --db .code-map.sqlite
+contextunity-forge-mcp query inspect 'build' --show-source --db .code-map.sqlite
+contextunity-forge-mcp query search '*Revert*' --kind function --limit 100
+contextunity-forge-mcp query tests 'build'
+contextunity-forge-mcp query tests 'test_build' --direction outbound
 contextunity-forge-mcp query impact 'build' --depth 3 --db .code-map.sqlite
 contextunity-forge-mcp query explain 'build' --db .code-map.sqlite
 contextunity-forge-mcp query remove 'legacy_helper' --db .code-map.sqlite
 ```
 
 Start with an overview and use returned selectors to inspect individual symbols. Inspection includes linked documentation by default. `--show-doc` enables it explicitly; `--show-doc false` disables it. Impact follows graph relationships to a bounded depth. Removal analysis reports evidence for a proposed retirement; interpret the result within index coverage.
+
+`--show-source` adds the exact indexed line range, preserving line endings, from a local or linked workspace. Source is omitted by default. A changed, missing, or symlinked source file returns an error; update or rebuild the index before requesting source again.
+
+Symbol search uses FTS5 for terms and simple prefixes such as `Order*`. Patterns with `*` elsewhere, such as `*Revert*`, match substrings in names and qualified names. Other characters are literal; regular expressions and typo correction are not supported. Results have a configurable limit and a `truncated` flag.
+
+Test mapping follows static dependencies transitively with cycle detection. The default inbound direction returns test symbols that depend on the selected production symbol; outbound returns production dependencies of a selected test. Selecting a class includes its members. Containment does not connect unrelated sibling tests. Test files and Rust `#[test]`, `#[tokio::test]`, and `#[async_std::test]` functions supply test markers. Unresolved references can hide dependencies; an empty result is not proof that no tests exist.
+
+The graph includes `inherits` from a derived class to its base, `implements` from a type to an interface or trait, `decorates` from a decorator to its decorated symbol, and `mutates` from an assignment owner to a field. These relationships participate in impact and slice queries. Python class field assignments include ORM declarations without requiring an ORM dependency.
+
+Static route patterns include HTTP decorators, `path('...', handler)`, `app.get('...', handler)` and similar HTTP methods, and `{path: '...', component: handler}` objects. Route nodes have names such as `GET /items` and a `handles` edge when the handler resolves. Registrations without an explicit HTTP method use `ANY`; Python `route(..., methods=[...])` creates one node per method. Dynamic paths and unresolved handlers require source inspection. These are syntax patterns, not runtime framework validation.
+
+Route registrations retain all explicit handlers, including inline functions and parenthesized callbacks. Vue script blocks use absolute source coordinates. Proto RPC type references participate in dependency traversal and removal checks.
+
+Rebuild existing indexes to populate the relationships, route nodes, test markers, and composite edge indexes. Readers check a separate index semantics version; MCP rebuilds an incompatible owned index after validating workspace ownership. Unreadable or foreign databases are rejected without replacement.
+
+See [language support and current limits](docs/language-support.md) for verified boundaries.
 
 ### General queries and analysis
 
@@ -104,7 +156,9 @@ contextunity-forge-mcp query analyze 'SELECT kind, COUNT(*) FROM nodes GROUP BY 
 contextunity-forge-mcp query analyze src/
 ```
 
-`raw_cypher` accepts a restricted set of graph shapes, not arbitrary Cypher. See operational boundaries below. SQL analysis accepts one read-only `SELECT` or `WITH` statement without a semicolon. SQL text is limited to 64 KiB, SQLite scalar values and serialized results to 8 MiB, and execution has a 200 ms progress budget. Queries that exceed these limits return an error. SQL analysis returns at most 1,000 rows; public `--limit` values range from 1 to 10,000. Impact and slice traversal accept depths up to 16 and return at most 1,000 nodes with a truncation indicator.
+`raw_cypher` accepts a restricted set of graph shapes, not arbitrary Cypher. See operational boundaries below. SQL analysis accepts one read-only `SELECT` or `WITH` statement without a semicolon. SQL text is limited to 64 KiB, SQLite scalar values and serialized results to 8 MiB, and execution has a two-second progress budget. Queries that exceed these limits return an error. SQL analysis returns at most 1,000 rows; public `--limit` values range from 1 to 10,000. Impact and slice traversal accept depths up to 16 and return at most 1,000 nodes with a truncation indicator.
+
+Path analysis treats path characters literally and reports total diagnostic counts and truncation. Cycle detection retains cross-file cycles, uses integer node keys internally, and rejects graphs exceeding its 500,000-edge computation budget.
 
 ### Checkpoints
 
@@ -201,15 +255,22 @@ linked_workspaces:
 - **Unified Graph in Local Database**: The SQLite index is stored in the local worktree (`<local-root>/.forge/code-map.sqlite`).
 - **Path Namespacing**: Nodes and files from linked workspaces are prefixed as `[<workspace_name>]/<relative_path>`.
 - **Cross-workspace Search**: Symbols and doc sections from all linked workspaces are searchable and inspectable.
+- **Import identity**: Exact dependencies require a complete module namespace, compatible language and justified workspace. Matching a name suffix does not prove a dependency; ambiguous providers remain visible in resolution coverage. Scan roots do not define runtime import roots.
 - **Fail-Open Resilience**: If a linked worktree/workspace becomes unavailable (e.g. branch worktree removed or unmounted), the indexer skips it and automatically rebuilds the database without it, eliminating crashes and stale data.
 
 ## Database verification and updates
 
 Readers check the database schema, engine, workspace binding, and SHA-256 commitments before returning indexed data. An incompatible database requires a rebuild; the database belongs to the canonical workspace path used during indexing.
 
-A successful build or delta can write an optional private `<database>.verified.json` cache. The cache binds the verified generation to the workspace, database identity, schema, and commitment algorithm. Missing, malformed, stale, or non-private cache files cause full verification. A nonempty WAL also requires full verification. The cache accelerates admission; it contains no source index and can be removed when diagnosing verification behavior.
+A successful build or delta can write an optional private `<database>.verified.json` verification record. It binds the verified generation to the workspace, database identity, schema, and commitment algorithm. If the record is missing, malformed, stale, or not private, readers perform full verification. A nonempty WAL also requires full verification. The record contains no source index and can be removed when diagnosing verification behavior.
 
-The MCP server ends its read snapshot after each tool request so later requests can observe an externally committed delta without restarting the process. A request reads a consistent database snapshot. Source edits still require an explicit build or delta; verification of stored commitments does not rescan source on every query.
+The MCP server checks inventory metadata before admitting each read. Changed
+file identities or timestamps trigger content hashing; changed content,
+additions and deletions update the index through delta. An incompatible owned
+index is rebuilt. The read and source admission share the connection lock, and
+each request ends its SQLite read snapshot so subsequent requests can observe
+external deltas. Unchanged reads do not rewrite the index. A failed admission
+returns an error instead of presenting old metadata as current.
 
 ## MCP tools
 
@@ -217,6 +278,9 @@ The MCP server ends its read snapshot after each tool request so later requests 
 | --- | --- |
 | `code_map_overview` | Repository and module overview |
 | `code_map_inspect` | Symbol inspection with optional documentation |
+| `get_code_snippet` | Bounded source preview with continuation for a selected symbol |
+| `code_map_search` | FTS5 and wildcard symbol search with a kind filter |
+| `code_map_tests` | Transitive test dependents or production dependencies |
 | `code_map_impact` | Bounded dependency impact |
 | `code_map_explain` | Symbol context and incoming/outgoing relationships |
 | `code_map_query` | General graph query operations |
@@ -227,6 +291,15 @@ The MCP server ends its read snapshot after each tool request so later requests 
 | `get_doc` | Document or section retrieval |
 | `forge_guide` | Onboarding, adapter guidance, and validation |
 | `session_checkpoint` | Workspace checkpoint management |
+
+MCP responses have a 64 KiB hard ceiling. Lists use compact projections and
+pages of 30 items by default (maximum 100). Continue with the returned
+`next_offset` and `generation`; an index change requires restarting the query.
+`detail: "full"` is explicit and remains bounded. Source previews default to
+five leading and 35 body lines, with omission metadata and a separate source
+offset. Global analysis summarizes diagnostics; select an exact file for
+detailed rows. See [context protection](docs/context-protection-plan.md) for
+response examples, adapter settings and the distinction from CLI output.
 
 ## Building from Source
 

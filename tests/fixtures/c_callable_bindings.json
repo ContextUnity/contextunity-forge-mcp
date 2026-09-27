@@ -1,0 +1,680 @@
+[
+  {
+    "name": "c_empty_first_unassigned",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_first_assigned",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_nonfirst_unassigned",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_nonfirst_assigned",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_multiple_unassigned",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*helper)(), (*last)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_multiple_assigned",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*helper)(), (*last)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_first_initialized",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*helper)()=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_multiple_initialized",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)()=callback, (*helper)()=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_first_initialized_other_unassigned",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)()=callback, (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_first_unassigned_other_initialized",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*helper)()=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_nested_unassigned",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*((helper)))(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_nested_assigned",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*((helper)))(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_nested_initialized",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*((helper)))()=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_outer_nested_unassigned",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (((*other)))(), (((*helper)))(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_outer_nested_initialized",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (((*other)))(), (((*helper)))()=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_parameter",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*helper)()){ return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_empty_direct_control",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){ return helper();}\n",
+    "expected": "exact"
+  },
+  {
+    "name": "c_empty_indirect_control",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){(*callback)(); return helper();}\n",
+    "expected": "exact"
+  },
+  {
+    "name": "c_empty_comma_call_control",
+    "extension": "c",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){(*callback)(), helper(); return helper();}\n",
+    "expected": "exact_duplicate"
+  },
+  {
+    "name": "c_void_first_unassigned",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*helper)(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_first_assigned",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*helper)(void); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_nonfirst_unassigned",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*helper)(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_nonfirst_assigned",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*helper)(void); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_multiple_unassigned",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*helper)(void), (*last)(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_multiple_assigned",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*helper)(void), (*last)(void); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_first_initialized",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*helper)(void)=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_multiple_initialized",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void)=callback, (*helper)(void)=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_first_initialized_other_unassigned",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void)=callback, (*helper)(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_first_unassigned_other_initialized",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*helper)(void)=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_nested_unassigned",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*((helper)))(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_nested_assigned",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*((helper)))(void); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_nested_initialized",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*((helper)))(void)=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_outer_nested_unassigned",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (((*other)))(void), (((*helper)))(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_outer_nested_initialized",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (((*other)))(void), (((*helper)))(void)=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_parameter",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*helper)(void)){ return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_void_direct_control",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){ return helper();}\n",
+    "expected": "exact"
+  },
+  {
+    "name": "c_void_indirect_control",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){(*callback)(); return helper();}\n",
+    "expected": "exact"
+  },
+  {
+    "name": "c_void_comma_call_control",
+    "extension": "c",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){(*callback)(), helper(); return helper();}\n",
+    "expected": "exact_duplicate"
+  },
+  {
+    "name": "c_primitive_char_unassigned",
+    "extension": "c",
+    "source": "char helper(){return 1;}\nchar control(){return helper();}\nchar caller(char (*callback)()){char (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_char_assigned",
+    "extension": "c",
+    "source": "char helper(){return 1;}\nchar control(){return helper();}\nchar caller(char (*callback)()){char (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_double_unassigned",
+    "extension": "c",
+    "source": "double helper(){return 1;}\ndouble control(){return helper();}\ndouble caller(double (*callback)()){double (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_double_assigned",
+    "extension": "c",
+    "source": "double helper(){return 1;}\ndouble control(){return helper();}\ndouble caller(double (*callback)()){double (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_float_unassigned",
+    "extension": "c",
+    "source": "float helper(){return 1;}\nfloat control(){return helper();}\nfloat caller(float (*callback)()){float (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_float_assigned",
+    "extension": "c",
+    "source": "float helper(){return 1;}\nfloat control(){return helper();}\nfloat caller(float (*callback)()){float (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_long_unassigned",
+    "extension": "c",
+    "source": "long helper(){return 1;}\nlong control(){return helper();}\nlong caller(long (*callback)()){long (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_long_assigned",
+    "extension": "c",
+    "source": "long helper(){return 1;}\nlong control(){return helper();}\nlong caller(long (*callback)()){long (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_unsigned_unassigned",
+    "extension": "c",
+    "source": "unsigned helper(){return 1;}\nunsigned control(){return helper();}\nunsigned caller(unsigned (*callback)()){unsigned (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_unsigned_assigned",
+    "extension": "c",
+    "source": "unsigned helper(){return 1;}\nunsigned control(){return helper();}\nunsigned caller(unsigned (*callback)()){unsigned (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_signed_char_unassigned",
+    "extension": "c",
+    "source": "signed char helper(){return 1;}\nsigned char control(){return helper();}\nsigned char caller(signed char (*callback)()){signed char (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_signed_char_assigned",
+    "extension": "c",
+    "source": "signed char helper(){return 1;}\nsigned char control(){return helper();}\nsigned char caller(signed char (*callback)()){signed char (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_unsigned_int_unassigned",
+    "extension": "c",
+    "source": "unsigned int helper(){return 1;}\nunsigned int control(){return helper();}\nunsigned int caller(unsigned int (*callback)()){unsigned int (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_unsigned_int_assigned",
+    "extension": "c",
+    "source": "unsigned int helper(){return 1;}\nunsigned int control(){return helper();}\nunsigned int caller(unsigned int (*callback)()){unsigned int (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_long_long_unassigned",
+    "extension": "c",
+    "source": "long long helper(){return 1;}\nlong long control(){return helper();}\nlong long caller(long long (*callback)()){long long (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "c_primitive_long_long_assigned",
+    "extension": "c",
+    "source": "long long helper(){return 1;}\nlong long control(){return helper();}\nlong long caller(long long (*callback)()){long long (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_first_unassigned",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_first_assigned",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_nonfirst_unassigned",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_nonfirst_assigned",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_multiple_unassigned",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*helper)(), (*last)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_multiple_assigned",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*helper)(), (*last)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_first_initialized",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*helper)()=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_multiple_initialized",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)()=callback, (*helper)()=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_first_initialized_other_unassigned",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)()=callback, (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_first_unassigned_other_initialized",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*helper)()=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_nested_unassigned",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*((helper)))(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_nested_assigned",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*((helper)))(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_nested_initialized",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (*other)(), (*((helper)))()=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_outer_nested_unassigned",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (((*other)))(), (((*helper)))(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_outer_nested_initialized",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){int (((*other)))(), (((*helper)))()=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_parameter",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*helper)()){ return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_empty_direct_control",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){ return helper();}\n",
+    "expected": "exact"
+  },
+  {
+    "name": "cpp_empty_indirect_control",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){(*callback)(); return helper();}\n",
+    "expected": "exact"
+  },
+  {
+    "name": "cpp_empty_comma_call_control",
+    "extension": "cpp",
+    "source": "int helper(){return 1;}\nint control(){return helper();}\nint caller(int (*callback)()){(*callback)(), helper(); return helper();}\n",
+    "expected": "exact_duplicate"
+  },
+  {
+    "name": "cpp_void_first_unassigned",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*helper)(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_first_assigned",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*helper)(void); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_nonfirst_unassigned",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*helper)(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_nonfirst_assigned",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*helper)(void); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_multiple_unassigned",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*helper)(void), (*last)(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_multiple_assigned",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*helper)(void), (*last)(void); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_first_initialized",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*helper)(void)=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_multiple_initialized",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void)=callback, (*helper)(void)=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_first_initialized_other_unassigned",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void)=callback, (*helper)(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_first_unassigned_other_initialized",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*helper)(void)=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_nested_unassigned",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*((helper)))(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_nested_assigned",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*((helper)))(void); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_nested_initialized",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (*other)(void), (*((helper)))(void)=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_outer_nested_unassigned",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (((*other)))(void), (((*helper)))(void); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_outer_nested_initialized",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){int (((*other)))(void), (((*helper)))(void)=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_parameter",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*helper)(void)){ return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_void_direct_control",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){ return helper();}\n",
+    "expected": "exact"
+  },
+  {
+    "name": "cpp_void_indirect_control",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){(*callback)(); return helper();}\n",
+    "expected": "exact"
+  },
+  {
+    "name": "cpp_void_comma_call_control",
+    "extension": "cpp",
+    "source": "int helper(void){return 1;}\nint control(void){return helper();}\nint caller(int (*callback)(void)){(*callback)(), helper(); return helper();}\n",
+    "expected": "exact_duplicate"
+  },
+  {
+    "name": "cpp_primitive_char_unassigned",
+    "extension": "cpp",
+    "source": "char helper(){return 1;}\nchar control(){return helper();}\nchar caller(char (*callback)()){char (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_char_assigned",
+    "extension": "cpp",
+    "source": "char helper(){return 1;}\nchar control(){return helper();}\nchar caller(char (*callback)()){char (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_double_unassigned",
+    "extension": "cpp",
+    "source": "double helper(){return 1;}\ndouble control(){return helper();}\ndouble caller(double (*callback)()){double (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_double_assigned",
+    "extension": "cpp",
+    "source": "double helper(){return 1;}\ndouble control(){return helper();}\ndouble caller(double (*callback)()){double (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_float_unassigned",
+    "extension": "cpp",
+    "source": "float helper(){return 1;}\nfloat control(){return helper();}\nfloat caller(float (*callback)()){float (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_float_assigned",
+    "extension": "cpp",
+    "source": "float helper(){return 1;}\nfloat control(){return helper();}\nfloat caller(float (*callback)()){float (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_long_unassigned",
+    "extension": "cpp",
+    "source": "long helper(){return 1;}\nlong control(){return helper();}\nlong caller(long (*callback)()){long (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_long_assigned",
+    "extension": "cpp",
+    "source": "long helper(){return 1;}\nlong control(){return helper();}\nlong caller(long (*callback)()){long (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_unsigned_unassigned",
+    "extension": "cpp",
+    "source": "unsigned helper(){return 1;}\nunsigned control(){return helper();}\nunsigned caller(unsigned (*callback)()){unsigned (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_unsigned_assigned",
+    "extension": "cpp",
+    "source": "unsigned helper(){return 1;}\nunsigned control(){return helper();}\nunsigned caller(unsigned (*callback)()){unsigned (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_signed_char_unassigned",
+    "extension": "cpp",
+    "source": "signed char helper(){return 1;}\nsigned char control(){return helper();}\nsigned char caller(signed char (*callback)()){signed char (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_signed_char_assigned",
+    "extension": "cpp",
+    "source": "signed char helper(){return 1;}\nsigned char control(){return helper();}\nsigned char caller(signed char (*callback)()){signed char (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_unsigned_int_unassigned",
+    "extension": "cpp",
+    "source": "unsigned int helper(){return 1;}\nunsigned int control(){return helper();}\nunsigned int caller(unsigned int (*callback)()){unsigned int (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_unsigned_int_assigned",
+    "extension": "cpp",
+    "source": "unsigned int helper(){return 1;}\nunsigned int control(){return helper();}\nunsigned int caller(unsigned int (*callback)()){unsigned int (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_long_long_unassigned",
+    "extension": "cpp",
+    "source": "long long helper(){return 1;}\nlong long control(){return helper();}\nlong long caller(long long (*callback)()){long long (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_long_long_assigned",
+    "extension": "cpp",
+    "source": "long long helper(){return 1;}\nlong long control(){return helper();}\nlong long caller(long long (*callback)()){long long (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_bool_unassigned",
+    "extension": "cpp",
+    "source": "bool helper(){return 1;}\nbool control(){return helper();}\nbool caller(bool (*callback)()){bool (*other)(), (*helper)(); return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_primitive_bool_assigned",
+    "extension": "cpp",
+    "source": "bool helper(){return 1;}\nbool control(){return helper();}\nbool caller(bool (*callback)()){bool (*other)(), (*helper)(); helper=callback; return helper();}\n",
+    "expected": "unknown"
+  },
+  {
+    "name": "cpp_original_assigned",
+    "extension": "cpp",
+    "source": "int helper() { return 1; }\nint caller(int (*callback)()) {\n    int (*other)(), (*helper)();\n    helper = callback;\n    return helper();\n}\n",
+    "expected": "unknown_no_control"
+  },
+  {
+    "name": "cpp_original_unassigned",
+    "extension": "cpp",
+    "source": "int helper() { return 1; }\nint caller(int (*callback)()) {\n    int (*other)(), (*helper)();\n    return helper();\n}\n",
+    "expected": "unknown_no_control"
+  },
+  {
+    "name": "cpp_original_supplementary_exact",
+    "extension": "cpp",
+    "source": "int helper() { return 1; }\nint caller() { int (*other)(), (*helper)(); return helper(); }\n",
+    "expected": "unknown_no_control"
+  }
+]

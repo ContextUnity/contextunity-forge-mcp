@@ -5,16 +5,40 @@ edition = "2021"
 authors = ["ContextUnity Team"]
 description = "Pure Rust ContextUnity Forge MCP Server, Code Map and Documentation Engine"
 
+[features]
+default = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto"]
+all-languages = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto", "lang-go", "lang-java", "lang-csharp", "lang-kotlin", "lang-php", "lang-ruby", "lang-c", "lang-cpp"]
+lang-python = ["dep:tree-sitter-python"]
+lang-rust = ["dep:tree-sitter-rust"]
+lang-typescript = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
+lang-vue = ["lang-typescript"]
+lang-proto = []
+lang-go = ["dep:tree-sitter-go"]
+lang-java = ["dep:tree-sitter-java"]
+lang-csharp = ["dep:tree-sitter-c-sharp"]
+lang-kotlin = ["dep:tree-sitter-kotlin"]
+lang-php = ["dep:tree-sitter-php"]
+lang-ruby = ["dep:tree-sitter-ruby"]
+lang-c = ["dep:tree-sitter-c"]
+lang-cpp = ["dep:tree-sitter-cpp"]
+
 [dependencies]
 rmcp = { version = "3.4", features = ["transport-io", "schemars"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 rusqlite = { version = "0.31", features = ["bundled", "modern_sqlite", "hooks", "limits"] }
 tree-sitter = "0.22"
-tree-sitter-python = "0.21"
-tree-sitter-typescript = "0.21"
-tree-sitter-javascript = "0.21"
-tree-sitter-rust = "0.21"
-tree-sitter-go = "0.21"
+tree-sitter-python = { version = "0.21", optional = true }
+tree-sitter-typescript = { version = "0.21", optional = true }
+tree-sitter-javascript = { version = "0.21", optional = true }
+tree-sitter-rust = { version = "0.21", optional = true }
+tree-sitter-go = { version = "0.21", optional = true }
+tree-sitter-java = { version = "=0.21.0", optional = true }
+tree-sitter-c-sharp = { version = "=0.21.3", optional = true }
+tree-sitter-kotlin = { version = "=0.3.8", optional = true }
+tree-sitter-php = { version = "=0.22.8", optional = true }
+tree-sitter-ruby = { version = "=0.21.0", optional = true }
+tree-sitter-c = { version = "=0.21.4", optional = true }
+tree-sitter-cpp = { version = "=0.22.3", optional = true }
 pulldown-cmark = { version = "0.10", default-features = false }
 rayon = "1.10"
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "io-std", "sync", "fs"] }
@@ -35,6 +59,7 @@ schemars = "1.0"
 
 [build-dependencies]
 cc = "1.0"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

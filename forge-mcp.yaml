@@ -1,0 +1,20 @@
+roots:
+  - src
+  - tests
+  - build.rs
+doc_roots:
+  - README.md
+  - docs
+ignore:
+  - target
+  - vendor
+  - .git
+  - .forge
+response:
+  detail: compact
+  page_size: 30
+  max_output_bytes: 65536
+  source_context:
+    enabled_by_default: false
+    leading_lines: 5
+    max_body_lines: 35

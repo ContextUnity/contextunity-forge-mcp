@@ -193,6 +193,8 @@ CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_nodes_path ON nodes(path);
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_public_id);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_public_id);
+CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_public_id, kind);
+CREATE INDEX IF NOT EXISTS idx_edges_src_kind ON edges(src_public_id, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_path ON edges(path);
 CREATE INDEX IF NOT EXISTS idx_doc_sections_path ON doc_sections(path);

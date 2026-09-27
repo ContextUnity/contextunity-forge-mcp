@@ -1,3 +1,5 @@
+#![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
+
 use contextunity_forge_mcp::db::reader;
 use contextunity_forge_mcp::mcp::server::Server;
 use std::fs;
@@ -9,7 +11,8 @@ fn test_multi_workspace_indexing_and_resilience() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_base = std::env::temp_dir().join(format!("test_forge_mw_{}_{}", std::process::id(), nonce));
+    let temp_base =
+        std::env::temp_dir().join(format!("test_forge_mw_{}_{}", std::process::id(), nonce));
 
     // 1. Setup primary workspace (traverse)
     let ws_traverse = temp_base.join("traverse");
@@ -79,71 +82,111 @@ linked_workspaces:
     let server = Server::new(ws_traverse.clone(), db_path.clone());
 
     // 5. Initial read: should index traverse + commerce + gridviewspec
-    let overview_res = server.read(|conn| {
-        let ov = reader::overview(conn)?;
-        Ok(ov)
-    }).expect("read overview");
+    let overview_res = server
+        .read(|conn| {
+            let ov = reader::overview(conn)?;
+            Ok(ov)
+        })
+        .expect("read overview");
 
     let file_count = overview_res["counts"][0]["files"].as_i64().unwrap_or(0);
     // 2 files in traverse + 2 in commerce + 1 in gridviewspec = 5 files
-    assert_eq!(file_count, 5, "expected 5 indexed files across 3 workspaces");
+    assert_eq!(
+        file_count, 5,
+        "expected 5 indexed files across 3 workspaces"
+    );
 
     // Check symbols from all workspaces are queryable
-    let node_check = server.read(|conn| {
-        // Inspect symbol from traverse
-        let tr = reader::inspect(conn, "function:run_traverse", false).is_ok();
-        // Inspect symbol from commerce
-        let cm = reader::inspect(conn, "function:revert_confirmed_bindings", false).is_ok();
-        // Inspect symbol from gridviewspec
-        let gr = reader::inspect(conn, "interface:GridColumn", false).is_ok();
-        Ok(serde_json::json!({
-            "tr": tr,
-            "cm": cm,
-            "gr": gr,
-        }))
-    }).expect("check symbols");
-    assert!(node_check["tr"].as_bool().unwrap(), "run_traverse should be found");
-    assert!(node_check["cm"].as_bool().unwrap(), "revert_confirmed_bindings should be found");
-    assert!(node_check["gr"].as_bool().unwrap(), "GridColumn should be found");
+    let node_check = server
+        .read(|conn| {
+            // Inspect symbol from traverse
+            let tr = reader::inspect(conn, "function:run_traverse", false).is_ok();
+            // Inspect symbol from commerce
+            let cm = reader::inspect(conn, "function:revert_confirmed_bindings", false).is_ok();
+            // Inspect symbol from gridviewspec
+            let gr = reader::inspect(conn, "interface:GridColumn", false).is_ok();
+            Ok(serde_json::json!({
+                "tr": tr,
+                "cm": cm,
+                "gr": gr,
+            }))
+        })
+        .expect("check symbols");
+    assert!(
+        node_check["tr"].as_bool().unwrap(),
+        "run_traverse should be found"
+    );
+    assert!(
+        node_check["cm"].as_bool().unwrap(),
+        "revert_confirmed_bindings should be found"
+    );
+    assert!(
+        node_check["gr"].as_bool().unwrap(),
+        "GridColumn should be found"
+    );
 
     // Check docs from both traverse and commerce are indexed
-    let doc_check = server.read(|conn| {
-        let tr_doc = reader::search_docs(conn, "Route Planning", None, None, 5)?;
-        let cm_doc = reader::search_docs(conn, "Binding Rules", None, None, 5)?;
-        Ok(serde_json::json!({
-            "tr_sections": tr_doc["sections"].as_array().unwrap().len(),
-            "cm_sections": cm_doc["sections"].as_array().unwrap().len(),
-        }))
-    }).expect("check docs");
-    assert!(doc_check["tr_sections"].as_u64().unwrap() > 0, "traverse docs missing");
-    assert!(doc_check["cm_sections"].as_u64().unwrap() > 0, "commerce docs missing");
+    let doc_check = server
+        .read(|conn| {
+            let tr_doc = reader::search_docs(conn, "Route Planning", None, None, 5)?;
+            let cm_doc = reader::search_docs(conn, "Binding Rules", None, None, 5)?;
+            Ok(serde_json::json!({
+                "tr_sections": tr_doc["sections"].as_array().unwrap().len(),
+                "cm_sections": cm_doc["sections"].as_array().unwrap().len(),
+            }))
+        })
+        .expect("check docs");
+    assert!(
+        doc_check["tr_sections"].as_u64().unwrap() > 0,
+        "traverse docs missing"
+    );
+    assert!(
+        doc_check["cm_sections"].as_u64().unwrap() > 0,
+        "commerce docs missing"
+    );
 
     // 6. Resilience test: remove/delete gridviewspec workspace from disk!
     fs::remove_dir_all(&ws_grid).unwrap();
 
     // 7. Next read: server must detect missing workspace, skip it, and automatically reindex without errors!
-    let overview_res2 = server.read(|conn| {
-        let ov = reader::overview(conn)?;
-        Ok(ov)
-    }).expect("read overview after workspace removed");
+    let overview_res2 = server
+        .read(|conn| {
+            let ov = reader::overview(conn)?;
+            Ok(ov)
+        })
+        .expect("read overview after workspace removed");
 
     let file_count2 = overview_res2["counts"][0]["files"].as_i64().unwrap_or(0);
     // 2 files in traverse + 2 in commerce = 4 files (gridviewspec safely purged)
-    assert_eq!(file_count2, 4, "expected 4 indexed files after gridviewspec removed");
+    assert_eq!(
+        file_count2, 4,
+        "expected 4 indexed files after gridviewspec removed"
+    );
 
-    let node_check2 = server.read(|conn| {
-        let tr = reader::inspect(conn, "function:run_traverse", false).is_ok();
-        let cm = reader::inspect(conn, "function:revert_confirmed_bindings", false).is_ok();
-        let gr = reader::inspect(conn, "interface:GridColumn", false).is_ok();
-        Ok(serde_json::json!({
-            "tr": tr,
-            "cm": cm,
-            "gr": gr,
-        }))
-    }).expect("check symbols after removal");
-    assert!(node_check2["tr"].as_bool().unwrap(), "run_traverse should still exist");
-    assert!(node_check2["cm"].as_bool().unwrap(), "revert_confirmed_bindings should still exist");
-    assert!(!node_check2["gr"].as_bool().unwrap(), "GridColumn should be removed");
+    let node_check2 = server
+        .read(|conn| {
+            let tr = reader::inspect(conn, "function:run_traverse", false).is_ok();
+            let cm = reader::inspect(conn, "function:revert_confirmed_bindings", false).is_ok();
+            let gr = reader::inspect(conn, "interface:GridColumn", false).is_ok();
+            Ok(serde_json::json!({
+                "tr": tr,
+                "cm": cm,
+                "gr": gr,
+            }))
+        })
+        .expect("check symbols after removal");
+    assert!(
+        node_check2["tr"].as_bool().unwrap(),
+        "run_traverse should still exist"
+    );
+    assert!(
+        node_check2["cm"].as_bool().unwrap(),
+        "revert_confirmed_bindings should still exist"
+    );
+    assert!(
+        !node_check2["gr"].as_bool().unwrap(),
+        "GridColumn should be removed"
+    );
 
     let _ = fs::remove_dir_all(&temp_base);
 }
