@@ -178,29 +178,261 @@ pub fn rows(
 pub fn select(conn: &Connection, selector: &str) -> Result<Value> {
     select_detail(conn, selector, Detail::Full)
 }
+fn is_code_path(s: &str) -> bool {
+    const EXTENSIONS: &[&str] = &[
+        ".py", ".rs", ".ts", ".tsx", ".js", ".jsx", ".vue", ".go", ".c", ".cpp", ".cc", ".cxx",
+        ".h", ".hpp", ".cs", ".java", ".kt", ".rb", ".php", ".proto", ".json", ".yaml", ".yml",
+        ".toml", ".sql", ".sh", ".bash",
+    ];
+    EXTENSIONS.iter().any(|ext| s.ends_with(ext))
+}
+
 pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -> Result<Value> {
-    if selector.trim().is_empty() {
-        bail!("selector is empty");
+    let trimmed = selector.trim();
+    if trimmed.is_empty() {
+        bail!("selector is empty; use an exact node id or code_map_search to find symbols");
     }
-    let exact = rows(
+    // 1. Normalize prefix: strip file:// or file: or leading ./
+    let unpeeled = if let Some(stripped) = trimmed.strip_prefix("file://") {
+        stripped
+    } else if let Some(stripped) = trimmed.strip_prefix("file:") {
+        stripped
+    } else {
+        trimmed
+    };
+    let unpeeled = unpeeled.strip_prefix("./").unwrap_or(unpeeled);
+
+    // 1b. Check line anchor: #L123 or #123
+    let (clean_selector, line_anchor) = if let Some((base, hash_part)) = unpeeled.split_once('#') {
+        let line_str = hash_part.trim_start_matches('L');
+        if let Ok(l) = line_str.parse::<i64>() {
+            (base, Some(l))
+        } else {
+            (unpeeled, None)
+        }
+    } else {
+        (unpeeled, None)
+    };
+
+    // 1c. Check path:line syntax (e.g. src/foo.rs:42)
+    let (normalized, target_line) = if let Some(l) = line_anchor {
+        (clean_selector, Some(l))
+    } else if let Some((base, num_part)) = clean_selector.rsplit_once(':') {
+        if base.contains('/') || base.contains('\\') || is_code_path(base) {
+            if let Ok(l) = num_part.parse::<i64>() {
+                (base, Some(l))
+            } else {
+                (clean_selector, None)
+            }
+        } else {
+            (clean_selector, None)
+        }
+    } else {
+        (clean_selector, None)
+    };
+    if normalized.ends_with(".md") {
+        bail!("'{normalized}' is a Markdown file; use get_doc or search_docs to inspect documentation");
+    }
+
+    // 1d. If a specific line number was targeted, find the enclosing node
+    if let Some(line) = target_line {
+        let line_matches = rows(
+            conn,
+            "SELECT id, kind FROM nodes WHERE (path=?1 OR substr(path,-length(?1))=?1) AND line<=?2 AND end_line>=?2 ORDER BY CASE WHEN kind IN ('module', 'file', 'component') THEN 1 ELSE 0 END ASC, (end_line - line) ASC LIMIT 1",
+            &[&normalized, &line],
+            1,
+        )?;
+        if !line_matches.is_empty() {
+            return Ok(rows(
+                conn,
+                &format!(
+                    "SELECT {} FROM nodes n WHERE n.id=?1 LIMIT 1",
+                    paging::nodes("n", detail)
+                ),
+                &[&line_matches[0]["id"].as_str().context("invalid node id")?],
+                1,
+            )?
+            .remove(0));
+        }
+    }
+
+    // 2. Exact match by id
+    let exact_id = rows(
         conn,
-        "SELECT id FROM nodes WHERE id=?1 OR qualname=?1 ORDER BY id LIMIT 101",
-        &[&selector],
-        101,
+        "SELECT id, kind FROM nodes WHERE id=?1 LIMIT 1",
+        &[&normalized],
+        1,
     )?;
-    let result = if exact.is_empty() {
-        let (kind, name) = selector.split_once(':').unwrap_or(("", selector));
+    if !exact_id.is_empty() {
+        return Ok(rows(
+            conn,
+            &format!(
+                "SELECT {} FROM nodes n WHERE n.id=?1 LIMIT 1",
+                paging::nodes("n", detail)
+            ),
+            &[&exact_id[0]["id"].as_str().context("invalid node id")?],
+            1,
+        )?
+        .remove(0));
+    }
+
+    // 3. Match by path:symbol, kind:name, or name/path/module:path
+    let (prefix_part, symbol_part) = if let Some((p, s)) = normalized.split_once("::") {
+        (Some(p), s)
+    } else if let Some((p, s)) = normalized.split_once(':') {
+        (Some(p), s)
+    } else {
+        (None, normalized)
+    };
+
+    let mut result = if let Some(prefix) = prefix_part {
+        let is_path = prefix.contains('/') || prefix.contains('\\') || is_code_path(prefix);
+        let is_known_kind = matches!(
+            prefix,
+            "function"
+                | "fn"
+                | "class"
+                | "module"
+                | "struct"
+                | "method"
+                | "trait"
+                | "interface"
+                | "type"
+                | "component"
+        );
+        if is_path {
+            let mut candidates = rows(
+                conn,
+                "SELECT id, kind FROM nodes WHERE path=?1 AND (name=?2 OR qualname=?2) ORDER BY id LIMIT 101",
+                &[&prefix, &symbol_part],
+                101,
+            )?;
+            if candidates.is_empty() {
+                candidates = rows(
+                    conn,
+                    "SELECT id, kind FROM nodes WHERE substr(path,-length(?1))=?1 AND (name=?2 OR qualname=?2) ORDER BY id LIMIT 101",
+                    &[&prefix, &symbol_part],
+                    101,
+                )?;
+            }
+            if candidates.is_empty() {
+                candidates = rows(
+                    conn,
+                    "SELECT id, kind FROM nodes WHERE (path=?1 OR substr(path,-length(?1))=?1) AND substr(qualname,-length(?2))=?2 ORDER BY id LIMIT 101",
+                    &[&prefix, &symbol_part],
+                    101,
+                )?;
+            }
+            let non_modules: Vec<_> = candidates
+                .iter()
+                .filter(|v| {
+                    !matches!(
+                        v["kind"].as_str(),
+                        Some("module") | Some("file") | Some("component")
+                    )
+                })
+                .cloned()
+                .collect();
+            if non_modules.is_empty() {
+                candidates
+            } else {
+                non_modules
+            }
+        } else if is_known_kind {
+            let kind = if prefix == "fn" { "function" } else { prefix };
+            rows(
+                conn,
+                "SELECT id, kind FROM nodes WHERE (name=?1 OR qualname=?1) AND kind=?2 ORDER BY id LIMIT 101",
+                &[&symbol_part, &kind],
+                101,
+            )?
+        } else {
+            let base_name = symbol_part.strip_prefix("./").unwrap_or(symbol_part);
+            rows(
+                conn,
+                "SELECT id, kind FROM nodes WHERE ((name=?1 OR qualname=?1) AND (?2='' OR kind=?2)) OR path=?3 OR id=?4 ORDER BY id LIMIT 101",
+                &[&base_name, &prefix, &normalized, &format!("module:{normalized}")],
+                101,
+            )?
+        }
+    } else {
+        let base_name = normalized.strip_prefix("./").unwrap_or(normalized);
         rows(
             conn,
-            "SELECT id FROM nodes WHERE ((name=?1 OR qualname=?1) AND (?2='' OR kind=?2)) OR path=?3 ORDER BY id LIMIT 101",
-            &[&name, &kind, &selector],
+            "SELECT id, kind FROM nodes WHERE (name=?1 OR qualname=?1) OR path=?2 OR id=?3 ORDER BY id LIMIT 101",
+            &[&base_name, &normalized, &format!("module:{normalized}")],
             101,
         )?
-    } else {
-        exact
     };
+
+    // 4. Smart suffix fallback (for import paths like contextunity.shield.cli or Class.method like FormLoginFetcher.fetch)
+    if result.is_empty() {
+        let clean_target = normalized
+            .trim_start_matches("module:")
+            .trim_start_matches("function:")
+            .trim_start_matches("class:");
+        let suffix_matches = rows(
+            conn,
+            "SELECT id, kind FROM nodes WHERE substr(qualname,-length(?1))=?1 OR substr(path,-length(?1))=?1 ORDER BY id LIMIT 101",
+            &[&clean_target],
+            101,
+        )?;
+        if suffix_matches.len() == 1 {
+            result = suffix_matches;
+        } else if suffix_matches.len() > 1 {
+            let exact_suffix: Vec<_> = suffix_matches
+                .iter()
+                .filter(|v| {
+                    v["id"]
+                        .as_str()
+                        .map_or(false, |id| id.ends_with(clean_target))
+                })
+                .cloned()
+                .collect();
+            if exact_suffix.len() == 1 {
+                result = exact_suffix;
+            } else {
+                result = suffix_matches;
+            }
+        }
+    }
+
+    // 5. Disambiguate file/module paths:
+    // If a file path matched all its functions and classes, but has exactly one module/file node, pick the module node!
+    // CRITICAL SAFETY INVARIANT: Only disambiguate to module when the selector is clearly a path or file,
+    // NEVER when it is a bare symbol name (to prevent semantic hijacking of functions/classes having the same name as a file).
+    let is_path_like = normalized.contains('/')
+        || normalized.contains('\\')
+        || is_code_path(normalized)
+        || normalized.starts_with("module:")
+        || conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM files WHERE path=?1)",
+                [&normalized],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+
+    if is_path_like && result.len() > 1 {
+        let modules: Vec<_> = result
+            .iter()
+            .filter(|v| {
+                matches!(
+                    v["kind"].as_str(),
+                    Some("module") | Some("file") | Some("component")
+                )
+            })
+            .cloned()
+            .collect();
+        if modules.len() == 1 {
+            result = modules;
+        }
+    }
+
     match result.len() {
-        0 => bail!("selector not found: {selector}; use code_map_search to find an indexed symbol id, code_map_overview to inspect indexed paths, or get_doc for Markdown files. File paths are passed without a file: prefix"),
+        0 => {
+            bail!("selector not found: {selector}; use code_map_search to find an indexed symbol id, code_map_overview to inspect indexed paths, or get_doc for Markdown files. File paths are passed without a file: prefix");
+        }
         1 => Ok(rows(
             conn,
             &format!(
@@ -519,6 +751,9 @@ pub fn analyze_paged(
         return Ok(
             json!({"rows":paging::query(conn, sql, &[], options)?, "ordering":"SQL order is preserved; include a deterministic ORDER BY for stable pagination."}),
         );
+    }
+    if sql.contains(';') {
+        bail!("exactly one SELECT or WITH statement is allowed");
     }
     let path = target.trim_end_matches('/');
     let (prefix, end) = path_bounds(path);

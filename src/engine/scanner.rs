@@ -20,6 +20,8 @@ pub struct LinkedWorkspaceConfig {
     pub name: String,
     pub path: String,
     #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
     pub roots: Option<Vec<String>>,
     #[serde(default)]
     pub doc_roots: Option<Vec<String>>,
@@ -251,6 +253,9 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     let mut linked_workspaces = Vec::new();
     let configs = raw.linked_workspaces.or(raw.workspaces).unwrap_or_default();
     for lw_cfg in configs {
+        if !lw_cfg.enabled.unwrap_or(true) {
+            continue;
+        }
         let target_path = if Path::new(&lw_cfg.path).is_absolute() {
             PathBuf::from(&lw_cfg.path)
         } else {

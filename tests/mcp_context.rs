@@ -160,12 +160,12 @@ fn stdio_budget_and_query_errors_explain_how_to_retry() {
         ),
         (
             "code_map_query",
-            json!({"operation":"raw_cypher","selector":"MATCH (n) RETURN n LIMIT 3"}),
+            json!({"operation":"cypher","selector":"MATCH (n) RETURN n LIMIT 3"}),
             "Pass limit as a separate tool argument",
         ),
         (
             "code_map_inspect",
-            json!({"selector":"file:README.md"}),
+            json!({"selector":"file:nonexistent.rs"}),
             "File paths are passed without a file: prefix",
         ),
     ] {

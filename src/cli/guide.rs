@@ -16,14 +16,15 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
             Ok(json!({"path":path,"created":true}))
         }
         "adapter" => Ok(
-            json!({"filename":"forge-mcp.yaml","template":TEMPLATE,"keys":["roots","eligible_roots","doc_roots","ignore","excluded_directory_names","excluded_file_names","linked_workspaces","workspaces"],"roots":"relative plain paths or .; symlinks and parent traversal rejected","ignore":"exact file or directory basenames","linked_workspaces":"array of {name, path, roots, doc_roots, ignore}; indexes external/sibling worktrees into unified graph; skips unavailable worktrees and auto-rebuilds","default":"workspace root; gitignore and common build directories excluded"}),
+            json!({"filename":"forge-mcp.yaml","template":TEMPLATE,"keys":["roots","eligible_roots","doc_roots","ignore","excluded_directory_names","excluded_file_names","linked_workspaces","workspaces"],"roots":"relative plain paths or .; symlinks and parent traversal rejected","ignore":"exact file or directory basenames","linked_workspaces":"array of {name, path, enabled?, roots, doc_roots, ignore}; indexes external/sibling worktrees into unified graph; enabled (default true) allows toggling workspaces; skips unavailable worktrees and auto-rebuilds","default":"workspace root; gitignore and common build directories excluded"}),
         ),
         "docs" => Ok(
             json!({"frontmatter":"---\ndoc_type: architecture\ntitle: Module contract\n---","invariant":"> [!IMPORTANT] Invariant: Document the rule and reference `symbol.name`.","types":["architecture","adr","guide","api","plan"]}),
         ),
         "query" => Ok(json!({
             "start": "Call code_map_overview to identify indexed paths and coverage.",
-            "symbols": "Use code_map_search with FTS terms or a prefix* pattern for names; a leading wildcard can scan the full index. Then use code_map_inspect for a precise selector, code_map_explain for relationships, and code_map_impact with depth=1 before deeper traversal.",
+            "symbols": "Use code_map_search with FTS terms or prefix* pattern. Selectors support canonical ID, file path (resolves to module), path:symbol (resolves inner symbol), and path:line/path#Lline (resolves innermost AST node). Bare names never get hijacked into modules. Then use code_map_inspect, code_map_explain, and code_map_impact (depth=1).",
+            "snippets": "Use get_code_snippet for a fast, bounded AST preview (default 5 leading + 35 body lines) before reading entire files via ctx_read.",
             "tests": "Call code_map_tests on a narrow symbol or module; broad scopes are rejected before unbounded traversal.",
             "diagnostics": "Call code_map_analyze with target='' for workspace totals; use an indexed path for a smaller scope or an exact file for paged rows. Cycles require include_cycles=true.",
             "documents": "Use search_docs to find sections and get_doc to read the selected section.",
@@ -44,6 +45,16 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
 struct Checkpoints {
     entries: std::collections::BTreeMap<String, Value>,
 }
+fn checkpoint_name(name: Option<&str>) -> Result<&str> {
+    let name = name.ok_or_else(|| anyhow::anyhow!("checkpoint name required"))?;
+    if name.is_empty() || name.len() > 200 {
+        bail!("checkpoint name must be 1..=200 characters");
+    }
+    if name.contains("..") || name.contains(['/', '\\', '\0']) {
+        bail!("checkpoint name must not contain path traversal characters");
+    }
+    Ok(name)
+}
 pub fn checkpoint(
     root: &Path,
     action: &str,
@@ -63,16 +74,14 @@ pub fn checkpoint(
     match action {
         "list" => Ok(json!(data.entries)),
         "get" => {
-            let name = name.ok_or_else(|| anyhow::anyhow!("checkpoint name required"))?;
+            let name = checkpoint_name(name)?;
             data.entries
                 .get(name)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("checkpoint not found"))
         }
         "save" | "delete" => {
-            let name = name
-                .filter(|n| !n.is_empty() && n.len() <= 200)
-                .ok_or_else(|| anyhow::anyhow!("checkpoint name must be1..200 characters"))?;
+            let name = checkpoint_name(name)?;
             if action == "save" {
                 let value =
                     content.ok_or_else(|| anyhow::anyhow!("checkpoint content required"))?;

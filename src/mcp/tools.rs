@@ -182,7 +182,8 @@ pub struct GetDoc {
 }
 #[derive(Deserialize, JsonSchema)]
 pub struct Guide {
-    pub topic: String,
+    #[serde(default)]
+    pub topic: Option<String>,
     #[serde(default)]
     pub force: bool,
 }
@@ -207,13 +208,13 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "Overview of indexed components, modules and coverage. Collections are independently paginated."
+        description = "Workspace overview: components, modules, and coverage. Start here to verify workspace_root matches active worktree and check coverage before making absence claims. Collections independently paginated."
     )]
     fn code_map_overview(&self, Parameters(p): Parameters<PageInput>) -> CallToolResult {
         self.responding(|policy| self.read(|c| reader::overview_paged(c, &p.resolve(policy)?)))
     }
     #[tool(
-        description = "Inspect a symbol, paged relations and invariants. Source defaults off; request show_source for a bounded AST preview."
+        description = "Inspect an indexed symbol by selector (e.g. 'function:name', 'class:Name', 'module:path'). Returns definition, signature, docstring, and architectural invariants. Set show_source=true for bounded AST preview or use get_code_snippet."
     )]
     fn code_map_inspect(&self, Parameters(p): Parameters<Inspect>) -> CallToolResult {
         self.responding(|policy| {
@@ -225,7 +226,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Read a bounded AST source preview (5 leading/35 body lines by default). Continue with source_offset and generation; oversized lines identify the local file to read."
+        description = "Read a bounded AST source preview for a symbol selector (default 5 leading + 35 body lines). Pass source_offset with previous generation for next lines. Keeps context compact; use ctx_read for full file edits."
     )]
     fn get_code_snippet(&self, Parameters(p): Parameters<Inspect>) -> CallToolResult {
         self.responding(|policy| {
@@ -235,7 +236,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Search symbols with FTS terms or '*' patterns. Prefer prefix*; a leading wildcard can scan the full index. Compact pages default to 30; max 100."
+        description = "Search indexed symbols with FTS terms or prefix* pattern (e.g. 'Token*', 'router'). Prefer prefix* for fast prefix lookup. Returns symbol IDs, kinds, and paths. Compact pages default to 30; max 100."
     )]
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         self.responding(|policy| {
@@ -245,7 +246,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Find paged transitive test dependents (inbound) or production dependencies of a test (outbound)."
+        description = "Find test relationships: 'inbound' finds tests exercising a target symbol/module; 'outbound' finds production dependencies of a test. Narrow symbol or leaf module required; broad scopes are rejected."
     )]
     fn code_map_tests(&self, Parameters(p): Parameters<Tests>) -> CallToolResult {
         self.responding(|policy| {
@@ -254,7 +255,9 @@ impl Server {
             })
         })
     }
-    #[tool(description = "Trace incoming dependencies to bounded depth with paged results.")]
+    #[tool(
+        description = "Trace incoming dependencies (blast radius) for a selector. Always start with depth=1 to avoid exponential graph fan-out. Paged results require offset + generation for continuation."
+    )]
     fn code_map_impact(&self, Parameters(p): Parameters<Impact>) -> CallToolResult {
         self.responding(|policy| {
             self.read(|c| {
@@ -263,7 +266,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Explain symbol ownership, independently paged edge directions and invariants. Set show_source for a bounded source preview."
+        description = "Explain symbol ownership, direct edge directions (inbound/outbound), and architectural invariants for a selector. Set show_source=true for bounded AST preview."
     )]
     fn code_map_explain(&self, Parameters(p): Parameters<Explain>) -> CallToolResult {
         self.responding(|policy| {
@@ -282,7 +285,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Query a paged slice, unwired nodes or the documented Cypher subset. Pass limit as a separate argument, not inside Cypher."
+        description = "Advanced graph query. Operation: 'slice' (subgraph around selector), 'unwired' (nodes without edges), or 'cypher' (e.g. 'MATCH (n:Function) RETURN n'). Specify limit and depth as arguments, not inside Cypher text."
     )]
     fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
         self.responding(|policy| {
@@ -298,7 +301,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Summarize workspace diagnostics with target='', or an indexed file/directory path. Cycles are omitted by default; set include_cycles=true to compute them. Page exact-file diagnostics or run bounded read-only SELECT/WITH SQL."
+        description = "Analyze diagnostics, errors, and cycles. target='' for workspace totals; target='path/to/file.py' for paged file diagnostics; include_cycles=true to compute cycles. Also accepts read-only SELECT/WITH SQL queries."
     )]
     fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
         self.responding(|policy| {
@@ -308,7 +311,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Check removal safety using complete indexed evidence. Displayed dependency and coverage collections are paginated."
+        description = "Check removal safety using indexed incoming dependencies and unresolved edges before deleting a symbol or module. Complete coverage required before absence claims."
     )]
     fn code_map_prove_removal(&self, Parameters(p): Parameters<Selector>) -> CallToolResult {
         self.responding(|policy| {
@@ -316,7 +319,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Search Tree-sitter syntax with $NAME and $$$ARGS captures. Bounded pages include continuation and computation limits."
+        description = "Syntactic pattern search across code using Tree-sitter AST ($NAME captures nodes, $$$ARGS captures sequences). Requires language ('python', 'typescript', 'rust') and pattern. Optional path filters scope."
     )]
     fn ast_grep_search(&self, Parameters(p): Parameters<Ast>) -> CallToolResult {
         self.responding(|policy| {
@@ -330,7 +333,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Search paged documentation sections with optional type/component filters."
+        description = "Full-text search indexed documentation and ADRs. Optional doc_type filter ('architecture', 'adr', 'guide', 'api', 'plan') and component filter. Returns section anchors for get_doc."
     )]
     fn search_docs(&self, Parameters(p): Parameters<SearchDocs>) -> CallToolResult {
         self.responding(|policy| {
@@ -346,7 +349,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Read paged documentation sections by path/id, optionally selecting an exact section. Oversized sections report an actionable byte limit."
+        description = "Read documentation content by path or ID (e.g. 'docs/architecture/router.md'). Optional section parameter narrows read to an exact Markdown header anchor."
     )]
     fn get_doc(&self, Parameters(p): Parameters<GetDoc>) -> CallToolResult {
         self.responding(|policy| {
@@ -361,19 +364,25 @@ impl Server {
         })
     }
     #[tool(
-        description = "Guide topics init,adapter,docs,query,validate. The query topic selects narrow graph tools and explains page continuation and budget recovery."
+        description = "Interactive guide. Topics: 'query' (tool selection, budget recovery, paging rules), 'docs' (documentation frontmatter & invariants), 'adapter' (forge-mcp.yaml config), 'validate' (index status), 'init' (initialize config). Defaults to 'query'."
     )]
     fn forge_guide(&self, Parameters(p): Parameters<Guide>) -> CallToolResult {
-        if p.topic == "init" {
+        let topic = p.topic.as_deref().unwrap_or("query");
+        let topic = if topic.trim().is_empty() {
+            "query"
+        } else {
+            topic.trim()
+        };
+        if topic == "init" {
             return response::result(
-                cli::guide::run(&self.root, &p.topic, p.force),
+                cli::guide::run(&self.root, topic, p.force),
                 &ResponsePolicy::default(),
             );
         }
-        self.responding(|_| cli::guide::run(&self.root, &p.topic, p.force))
+        self.responding(|_| cli::guide::run(&self.root, topic, p.force))
     }
     #[tool(
-        description = "Manage local workspace checkpoints: list,get,save,delete. Large checkpoint reads return a bounded error; use the local .forge/checkpoints.json file."
+        description = "Manage local session checkpoints saved in .forge/checkpoints.json. Actions: 'list', 'save' (requires name + content), 'get' (by name), 'delete' (by name)."
     )]
     fn session_checkpoint(&self, Parameters(p): Parameters<Checkpoint>) -> CallToolResult {
         match scanner::load_adapter(&self.root, None) {
@@ -389,7 +398,7 @@ impl Server {
 #[tool_handler(
     name = "contextunity-forge-mcp",
     version = "0.2.0",
-    instructions = "Native workspace code graph. Responses are at most 64 KiB. Compact pages default to 30 (maximum 100). Pass generation with continuation offsets. Inspect coverage before absence claims. Use forge_guide topic=query for tool selection and budget recovery."
+    instructions = "Native workspace code graph (15 tools). Max 64 KiB responses, 2s SQLite budget. Workflow: code_map_overview -> code_map_search (prefix*) -> code_map_inspect -> code_map_explain -> code_map_impact (depth=1) -> code_map_tests -> get_code_snippet -> ctx_read. Paged results include offset and generation; pass both for next page. Use compact detail. Inspect coverage before absence claims."
 )]
 impl ServerHandler for Server {
     async fn call_tool(

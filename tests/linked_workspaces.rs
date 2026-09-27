@@ -1,6 +1,7 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
 use contextunity_forge_mcp::db::reader;
+use contextunity_forge_mcp::engine::scanner;
 use contextunity_forge_mcp::mcp::server::Server;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -187,6 +188,68 @@ linked_workspaces:
         !node_check2["gr"].as_bool().unwrap(),
         "GridColumn should be removed"
     );
+
+    let _ = fs::remove_dir_all(&temp_base);
+}
+
+#[test]
+fn test_linked_workspace_toggle_enabled() {
+    let temp_base = std::env::temp_dir().join(format!("forge_test_enabled_{}", std::process::id()));
+    let ws_main = temp_base.join("main");
+    let ws_sibling = temp_base.join("sibling");
+    fs::create_dir_all(ws_main.join("src")).unwrap();
+    fs::create_dir_all(ws_sibling.join("src")).unwrap();
+    fs::write(ws_main.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(ws_sibling.join("src/lib.rs"), "pub fn sibling() {}\n").unwrap();
+
+    // 1. enabled: false -> should not be included in linked_workspaces
+    let adapter_disabled = format!(
+        r#"roots:
+  - src
+linked_workspaces:
+  - name: sibling
+    path: "{}"
+    enabled: false
+"#,
+        ws_sibling.display()
+    );
+    fs::write(ws_main.join("forge-mcp.yaml"), &adapter_disabled).unwrap();
+    let adapter = scanner::load_adapter(&ws_main, None).unwrap();
+    assert!(
+        adapter.linked_workspaces.is_empty(),
+        "disabled linked workspace must be skipped"
+    );
+
+    // 2. enabled: true -> should be included
+    let adapter_enabled = format!(
+        r#"roots:
+  - src
+linked_workspaces:
+  - name: sibling
+    path: "{}"
+    enabled: true
+"#,
+        ws_sibling.display()
+    );
+    fs::write(ws_main.join("forge-mcp.yaml"), &adapter_enabled).unwrap();
+    let adapter = scanner::load_adapter(&ws_main, None).unwrap();
+    assert_eq!(adapter.linked_workspaces.len(), 1);
+    assert_eq!(adapter.linked_workspaces[0].name, "sibling");
+
+    // 3. enabled omitted -> defaults to true
+    let adapter_default = format!(
+        r#"roots:
+  - src
+linked_workspaces:
+  - name: sibling
+    path: "{}"
+"#,
+        ws_sibling.display()
+    );
+    fs::write(ws_main.join("forge-mcp.yaml"), &adapter_default).unwrap();
+    let adapter = scanner::load_adapter(&ws_main, None).unwrap();
+    assert_eq!(adapter.linked_workspaces.len(), 1);
+    assert_eq!(adapter.linked_workspaces[0].name, "sibling");
 
     let _ = fs::remove_dir_all(&temp_base);
 }

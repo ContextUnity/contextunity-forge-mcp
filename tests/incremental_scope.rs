@@ -142,6 +142,36 @@ fn one_file_edit_does_not_rewrite_unrelated_component_owners() {
 
 #[test]
 #[cfg(feature = "lang-python")]
+fn src_namespace_edit_relinks_its_consumer_without_invalidating_siblings() {
+    let w = Workspace::new();
+    let provider = "services/shield/src/contextunity/shield/audit.py";
+    w.write(provider, "def log_event(): return 1\n");
+    w.write(
+        "services/client/src/contextunity/client/main.py",
+        "from contextunity.shield.audit import log_event\ndef run(): return log_event()\n",
+    );
+    for n in 0..20 {
+        w.write(
+            &format!("services/other/src/contextunity/other/helper_{n}.py"),
+            &format!("def helper_{n}(): return {n}\n"),
+        );
+        w.write(
+            &format!("services/other/src/contextunity/other/view_{n}.py"),
+            &format!("from contextunity.other.helper_{n} import helper_{n}\ndef view(): return helper_{n}()\n"),
+        );
+    }
+    w.build();
+    w.write(provider, "def log_event_new(): return 2\n");
+    let report = w.delta(&[provider]);
+    assert_eq!(report["reparsed_files"], 1, "{report}");
+    assert_eq!(report["rewritten_files"], 1, "{report}");
+    assert_eq!(report["affected_owners"], 2, "{report}");
+    assert_eq!(report["loaded_fact_files"], 1, "{report}");
+    w.assert_cold_equivalent();
+}
+
+#[test]
+#[cfg(feature = "lang-python")]
 fn linked_component_transfer_preserves_unmodified_containment_edges() {
     let w = Workspace::new();
     let linked = Workspace::new();

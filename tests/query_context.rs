@@ -534,7 +534,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
     // analyze with include_cycles = Some(true)
     let summary_with_cycles =
         reader::analyze_paged(&conn, "pkg", Some(true), &options(10)).unwrap();
-    assert_eq!(summary_with_cycles["cycles"]["omitted"].is_null(), true);
+    assert!(summary_with_cycles["cycles"]["omitted"].is_null());
     assert!(summary_with_cycles["cycles"]["total"].is_number());
 
     // explain direction filtering
@@ -551,8 +551,8 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
     .unwrap();
     assert!(both["incoming"]["total"].as_u64().unwrap() >= 1);
     assert!(both["outgoing"]["total"].as_u64().unwrap() >= 1);
-    assert_eq!(both["incoming"]["omitted"].is_null(), true);
-    assert_eq!(both["outgoing"]["omitted"].is_null(), true);
+    assert!(both["incoming"]["omitted"].is_null());
+    assert!(both["outgoing"]["omitted"].is_null());
 
     let incoming_only = symbols::explain_paged(
         &conn,
@@ -564,7 +564,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
     )
     .unwrap();
     assert!(incoming_only["incoming"]["total"].as_u64().unwrap() >= 1);
-    assert_eq!(incoming_only["incoming"]["omitted"].is_null(), true);
+    assert!(incoming_only["incoming"]["omitted"].is_null());
     assert_eq!(incoming_only["outgoing"]["omitted"], true);
 
     let outgoing_only = symbols::explain_paged(
@@ -578,7 +578,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
     .unwrap();
     assert_eq!(outgoing_only["incoming"]["omitted"], true);
     assert!(outgoing_only["outgoing"]["total"].as_u64().unwrap() >= 1);
-    assert_eq!(outgoing_only["outgoing"]["omitted"].is_null(), true);
+    assert!(outgoing_only["outgoing"]["omitted"].is_null());
 }
 
 #[test]

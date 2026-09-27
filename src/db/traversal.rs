@@ -1,4 +1,4 @@
-use super::{paging, reader};
+use super::{paging, reader, symbols};
 use crate::core::response::QueryOptions;
 use anyhow::{bail, Result};
 use rusqlite::Connection;
@@ -91,6 +91,9 @@ pub fn traverse(
     )
 }
 pub fn removal(conn: &Connection, selector: &str) -> Result<Value> {
+    if selector.trim().ends_with(".md") {
+        bail!("'{selector}' is a Markdown file; use get_doc or search_docs to inspect documentation");
+    }
     let nodes = reader::rows(
         conn,
         "SELECT id FROM nodes WHERE path=?1",
@@ -103,7 +106,7 @@ pub fn removal(conn: &Connection, selector: &str) -> Result<Value> {
         nodes
     };
     if selected.len() > 10000 {
-        bail!("removal scope exceeds10000 nodes");
+        bail!("removal scope exceeds 10000 nodes");
     }
     let ids: Vec<_> = selected.iter().filter_map(|n| n["id"].as_str()).collect();
     let encoded = serde_json::to_string(&ids)?;
@@ -127,7 +130,11 @@ pub fn query(
     depth: u32,
     limit: usize,
 ) -> Result<Value> {
-    match operation {
+    let op = operation.trim();
+    if op.starts_with("MATCH ") || op.starts_with("match ") {
+        return cypher(conn, op, limit);
+    }
+    match op {
         "overview" => reader::overview(conn),
         "inspect" => reader::inspect(conn, selector.unwrap_or(""), true),
         "explain" => reader::explain(conn, selector.unwrap_or("")),
@@ -142,8 +149,12 @@ pub fn query(
             )?,
             "meaning": "no indexed static caller; not a dead-code proof"
         })),
-        "raw_cypher" => cypher(conn, selector.unwrap_or(""), limit),
-        _ => bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,raw_cypher"),
+        "cypher" | "raw_cypher" => cypher(conn, selector.unwrap_or(""), limit),
+        "doctor" => reader::overview(conn),
+        "search" | "discover" | "find" => {
+            symbols::search(conn, selector.unwrap_or(""), None, limit)
+        }
+        _ => bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,cypher"),
     }
 }
 fn cypher(conn: &Connection, query: &str, limit: usize) -> Result<Value> {
@@ -194,6 +205,9 @@ pub fn traverse_paged(
 }
 
 pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) -> Result<Value> {
+    if selector.trim().ends_with(".md") {
+        bail!("'{selector}' is a Markdown file; use get_doc or search_docs to inspect documentation");
+    }
     let generation = paging::generation(conn, options)?;
     let file_count = paging::count(
         conn,
@@ -210,7 +224,7 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
         )
     };
     if file_count > 10000 {
-        bail!("removal scope exceeds10000 nodes");
+        bail!("removal scope exceeds 10000 nodes");
     }
     let dependencies = format!("WITH selected(id) AS ({selection}) SELECT e.edge_id FROM edges e WHERE e.dst_public_id IN(SELECT id FROM selected) AND e.src_public_id NOT IN(SELECT id FROM selected) AND e.kind NOT IN('contains','references_doc',{REVERSE_DEPENDENCIES}) UNION SELECT e.edge_id FROM edges e WHERE e.src_public_id IN(SELECT id FROM selected) AND e.dst_public_id NOT IN(SELECT id FROM selected) AND e.kind IN({REVERSE_DEPENDENCIES})");
     let dependency_count = paging::count(
@@ -239,15 +253,23 @@ pub fn query_paged(
     depth: u32,
     options: &QueryOptions,
 ) -> Result<Value> {
-    match operation {
+    let op = operation.trim();
+    if op.starts_with("MATCH ") || op.starts_with("match ") {
+        return cypher_paged(conn, op, options);
+    }
+    match op {
         "overview" => reader::overview_paged(conn, options),
         "inspect" => reader::inspect_paged(conn, selector.unwrap_or(""), true, options),
         "explain" => reader::explain_paged(conn, selector.unwrap_or(""), None, options),
         "impact" => traverse_paged(conn, selector.unwrap_or(""), depth, true, options),
         "slice" => traverse_paged(conn, selector.unwrap_or(""), depth, false, options),
         "unwired" => Ok(json!({"nodes":paging::query(conn, &format!("SELECT {} FROM nodes n WHERE n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_public_id=n.id AND e.kind='calls') ORDER BY n.path,n.line,n.id", paging::nodes("n", options.detail)), &[], options)?, "meaning":"no indexed static caller; not a dead-code proof"})),
-        "raw_cypher" => cypher_paged(conn, selector.unwrap_or(""), options),
-        _ => bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,raw_cypher"),
+        "cypher" | "raw_cypher" => cypher_paged(conn, selector.unwrap_or(""), options),
+        "doctor" => reader::overview_paged(conn, options),
+        "search" | "discover" | "find" => {
+            symbols::search_paged(conn, selector.unwrap_or(""), None, options)
+        }
+        _ => bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,cypher"),
     }
 }
 

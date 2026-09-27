@@ -56,14 +56,21 @@ delta execution.
 - **Root cause 2**: `f.nodes` and `owned_nodes` added bare `name` for fields and methods (`timestamp`, `details`, `to_dict`, `__init__`), matching an additional 110 unrelated owners.
 - **Root cause 3**: `src/engine/linker.rs` did not register module namespaces relative to `src/` roots (`contextunity.shield.audit`), leaving direct imports unresolved.
 
-### Post-fix benchmark (`audit.py` single-file delta)
+### Post-fix verification (`audit.py` delta)
 
-| Metric | Baseline | Post-fix | Improvement |
-| --- | ---: | ---: | ---: |
-| Affected owners | 2,262 | 6 | **~377x fewer** |
-| Total `delta` latency | 18,015 ms | 1,520 ms | **~12x faster** |
-| Extract | 4.4 ms | 3.6 ms | ~1.2x |
-| Hydrate | ~9,770 ms | 78.5 ms | **~124x faster** |
-| Link | ~1,200 ms | 19.0 ms | **~63x faster** |
-| Persist & Seal | ~4,070 ms | 826 ms | **~5x faster** |
-| Loaded fact files | 2,261 | 5 | **~452x fewer** |
+Two repeated release runs from the current source take 1,694 ms and 1,627 ms.
+Each reparses and rewrites one file, affects eight owners, and loads seven
+other fact files. The earlier candidate's five-run median is 17,724 ms and
+affects 2,262 owners; the sample counts differ, so the speed ratio is indicative.
+
+| Stage | Earlier candidate median | Current release range |
+| --- | ---: | ---: |
+| Total `delta` | 17,724 ms | 1,627–1,694 ms |
+| Hydrate | 873 ms | 93–104 ms |
+| Link | 575 ms | 22–27 ms |
+| Persist | 9,768 ms | 730–794 ms |
+| Seal | 2,139 ms | 177–200 ms |
+| Verify | 1,932 ms | 202–219 ms |
+
+After two deltas, a fresh cold build has zero differences in node, edge,
+resolution coverage, and local-fact rows in both comparison directions.

@@ -131,24 +131,6 @@ fn trim_page_tail(value: &mut Value) -> bool {
     object.values_mut().any(trim_page_tail)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn interrupted_sqlite_query_reports_a_recovery_path() {
-        let sqlite_error = rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
-            None,
-        );
-        let result = result(Err(sqlite_error.into()), &ResponsePolicy::default());
-        assert_eq!(result.is_error, Some(true));
-        let message = result.content[0].as_text().unwrap().text.as_str();
-        assert!(message.contains("2-second SQLite budget"), "{message}");
-        assert!(message.contains("reduce traversal depth"), "{message}");
-    }
-}
-
 pub fn stdio() -> (tokio::io::Stdin, BoundedWriter<tokio::io::Stdout>) {
     (tokio::io::stdin(), BoundedWriter::new(tokio::io::stdout()))
 }
@@ -255,4 +237,22 @@ fn protocol_limit_error(prefix: &[u8]) -> Vec<u8> {
     let mut bytes = json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"Response exceeds 65536 bytes. Narrow the request arguments or output. Request ids longer than 128 bytes are omitted from this error."}}).to_string().into_bytes();
     bytes.push(b'\n');
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupted_sqlite_query_reports_a_recovery_path() {
+        let sqlite_error = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+            None,
+        );
+        let result = result(Err(sqlite_error.into()), &ResponsePolicy::default());
+        assert_eq!(result.is_error, Some(true));
+        let message = result.content[0].as_text().unwrap().text.as_str();
+        assert!(message.contains("2-second SQLite budget"), "{message}");
+        assert!(message.contains("reduce traversal depth"), "{message}");
+    }
 }
