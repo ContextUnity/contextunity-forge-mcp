@@ -26,7 +26,23 @@ pub fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallTool
                 );
             }
         },
-        Err(error) => bounded_error(&format!("{error:#}"), budget),
+        Err(error) => {
+            let interrupted = error.chain().any(|cause| {
+                matches!(
+                    cause.downcast_ref::<rusqlite::Error>(),
+                    Some(rusqlite::Error::SqliteFailure(code, _))
+                        if code.code == rusqlite::ErrorCode::OperationInterrupted
+                )
+            });
+            if interrupted {
+                bounded_error(
+                    "Graph query exceeded the 2-second SQLite budget. Narrow the selector to an indexed symbol or path, reduce traversal depth, and retry; reducing the page limit alone may not reduce query work. For diagnostic totals, use code_map_analyze with target='' (cycles are omitted by default); for cycles, analyze a smaller path with include_cycles=true.",
+                    budget,
+                )
+            } else {
+                bounded_error(&format!("{error:#}"), budget)
+            }
+        }
     }
 }
 
@@ -113,6 +129,24 @@ fn trim_page_tail(value: &mut Value) -> bool {
     // Preserve scalar node metadata, source continuation and freshness evidence.
     // Collection boundaries are produced by the database; arbitrary arrays are not pages.
     object.values_mut().any(trim_page_tail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupted_sqlite_query_reports_a_recovery_path() {
+        let sqlite_error = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+            None,
+        );
+        let result = result(Err(sqlite_error.into()), &ResponsePolicy::default());
+        assert_eq!(result.is_error, Some(true));
+        let message = result.content[0].as_text().unwrap().text.as_str();
+        assert!(message.contains("2-second SQLite budget"), "{message}");
+        assert!(message.contains("reduce traversal depth"), "{message}");
+    }
 }
 
 pub fn stdio() -> (tokio::io::Stdin, BoundedWriter<tokio::io::Stdout>) {

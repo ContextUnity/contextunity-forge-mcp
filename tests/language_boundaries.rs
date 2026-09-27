@@ -103,14 +103,26 @@ func Main() int {
     let conn = w.build();
 
     let nodes: Vec<(String, String, String)> = {
-        let mut stmt = conn.prepare("SELECT id, name, qualname FROM nodes").unwrap();
-        let rows = stmt.query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, name, qualname FROM nodes")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))
+            })
+            .unwrap();
         rows.map(Result::unwrap).collect()
     };
     println!("NODES: {:?}", nodes);
     let cov: Vec<(String, String, String)> = {
-        let mut stmt = conn.prepare("SELECT expression, status, evidence FROM resolution_coverage").unwrap();
-        let rows = stmt.query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT expression, status, evidence FROM resolution_coverage")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))
+            })
+            .unwrap();
         rows.map(Result::unwrap).collect()
     };
     println!("COVERAGE: {:?}", cov);
@@ -124,7 +136,12 @@ func Main() int {
             .unwrap();
         rows.map(Result::unwrap).collect()
     };
-    assert_eq!(calls.len(), 1, "expected 1 call edge between sibling files in same package: {:?}", calls);
+    assert_eq!(
+        calls.len(),
+        1,
+        "expected 1 call edge between sibling files in same package: {:?}",
+        calls
+    );
     assert!(calls[0].0.contains("Main"));
     assert!(calls[0].1.contains("Helper"));
 
@@ -181,14 +198,26 @@ export function run() {
     let conn = w.build();
 
     let modules: Vec<(String, String, String)> = {
-        let mut stmt = conn.prepare("SELECT id, qualname, path FROM nodes WHERE kind='module'").unwrap();
-        let rows = stmt.query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, qualname, path FROM nodes WHERE kind='module'")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))
+            })
+            .unwrap();
         rows.map(Result::unwrap).collect()
     };
     println!("MODULES: {:?}", modules);
     let cov: Vec<(String, String, String)> = {
-        let mut stmt = conn.prepare("SELECT expression, status, evidence FROM resolution_coverage").unwrap();
-        let rows = stmt.query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT expression, status, evidence FROM resolution_coverage")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))
+            })
+            .unwrap();
         rows.map(Result::unwrap).collect()
     };
     println!("COVERAGE: {:?}", cov);
@@ -223,7 +252,9 @@ export function run() {
         rows.map(Result::unwrap).collect()
     };
     assert!(
-        import_edges.iter().any(|(_, dst)| dst.contains("index.mjs")),
+        import_edges
+            .iter()
+            .any(|(_, dst)| dst.contains("index.mjs")),
         "expected import edge to index.mjs: {:?}",
         import_edges
     );
@@ -274,7 +305,11 @@ const user = { name: "Antigravity" };
     )
     .unwrap();
 
-    let expressions: Vec<&str> = facts.references.iter().map(|r| r.expression.as_str()).collect();
+    let expressions: Vec<&str> = facts
+        .references
+        .iter()
+        .map(|r| r.expression.as_str())
+        .collect();
     assert!(
         expressions.contains(&"MyButton"),
         "missing template custom component MyButton: {:?}",
@@ -349,7 +384,10 @@ pub fn execute() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(macro_count, 1, "expected log_info macro to be extracted as kind='macro'");
+    assert_eq!(
+        macro_count, 1,
+        "expected log_info macro to be extracted as kind='macro'"
+    );
 
     // Verify builtin println is resolved
     let println_resolved: i64 = conn
@@ -359,7 +397,10 @@ pub fn execute() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(println_resolved, 1, "expected println macro to be resolved as builtin");
+    assert_eq!(
+        println_resolved, 1,
+        "expected println macro to be resolved as builtin"
+    );
 
     // Verify crate:: import resolved to crates.core.src prefix
     let import_resolved: i64 = conn
@@ -369,7 +410,10 @@ pub fn execute() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(import_resolved >= 1, "expected crate:: import of log_info to be resolved");
+    assert!(
+        import_resolved >= 1,
+        "expected crate:: import of log_info to be resolved"
+    );
 }
 
 #[cfg(feature = "lang-proto")]

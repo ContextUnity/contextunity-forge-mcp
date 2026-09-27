@@ -147,7 +147,7 @@ pub fn rows(
                     },
             );
             if total_bytes > 8 * 1024 * 1024 {
-                bail!("query result exceeds8MiB serialized bound");
+                bail!("query result exceeds the 8 MiB row budget; narrow the selector or path, request detail='compact' with a smaller limit, or select fewer and smaller SQL columns. Continue paged requests with the returned offset and generation");
             }
             let cell = match raw {
                 ValueRef::Null => Value::Null,
@@ -200,7 +200,7 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
         exact
     };
     match result.len() {
-        0 => bail!("selector not found: {selector}"),
+        0 => bail!("selector not found: {selector}; use code_map_search to find an indexed symbol id, code_map_overview to inspect indexed paths, or get_doc for Markdown files. File paths are passed without a file: prefix"),
         1 => Ok(rows(
             conn,
             &format!(
@@ -224,7 +224,7 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
 }
 pub fn overview(conn: &Connection) -> Result<Value> {
     Ok(
-        json!({"components":rows(conn,"SELECT id,name,path FROM nodes WHERE kind='component' ORDER BY path",&[],10000)?,"counts":rows(conn,"SELECT (SELECT count(*)FROM files)files,(SELECT count(*)FROM nodes)nodes,(SELECT count(*)FROM edges)edges,(SELECT count(*)FROM doc_sections)doc_sections,(SELECT count(*)FROM errors)parse_errors,(SELECT count(*)FROM resolution_coverage WHERE status!='resolved')unresolved",&[],1)?,"languages":rows(conn,"SELECT language,count(*)files FROM files GROUP BY language ORDER BY language",&[],100)?,"generation":rows(conn,"SELECT key,value FROM metadata WHERE key IN('schema_version','output_root','corpus_hash','workspace_root')ORDER BY key",&[],10)?}),
+        json!({"components":rows(conn,"SELECT id,name,path FROM nodes WHERE kind='component' ORDER BY path",&[],10000)?,"counts":rows(conn,"SELECT (SELECT count(*)FROM files)files,(SELECT count(*)FROM nodes)nodes,(SELECT count(*)FROM edges)edges,(SELECT count(*)FROM doc_sections)doc_sections,(SELECT count(*)FROM errors)parse_errors,(SELECT count(*)FROM resolution_coverage WHERE status IN('unresolved','ambiguous'))unresolved,(SELECT count(*)FROM resolution_coverage WHERE status='external')external_imports",&[],1)?,"languages":rows(conn,"SELECT language,count(*)files FROM files GROUP BY language ORDER BY language",&[],100)?,"generation":rows(conn,"SELECT key,value FROM metadata WHERE key IN('schema_version','output_root','corpus_hash','workspace_root')ORDER BY key",&[],10)?}),
     )
 }
 pub fn inspect(conn: &Connection, selector: &str, show_doc: bool) -> Result<Value> {
@@ -337,18 +337,23 @@ pub fn analyze(conn: &Connection, target: &str) -> Result<Value> {
     errors.truncate(1000);
 
     let total_unresolved: usize = conn.query_row(
-        "SELECT count(*) FROM resolution_coverage WHERE status!='resolved' AND (?1='' OR path=?1 OR (path>=?2 AND path<?3))",
+        "SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous') AND (?1='' OR path=?1 OR (path>=?2 AND path<?3))",
         rusqlite::params![path, prefix, end],
         |r| r.get(0),
     )?;
     let mut resolution = rows(
         conn,
-        "SELECT * FROM resolution_coverage WHERE status!='resolved' AND (?1='' OR path=?1 OR (path>=?2 AND path<?3)) ORDER BY path,line LIMIT 1001",
+        "SELECT * FROM resolution_coverage WHERE status IN('unresolved','ambiguous') AND (?1='' OR path=?1 OR (path>=?2 AND path<?3)) ORDER BY path,line LIMIT 1001",
         &[&path, &prefix, &end],
         1001,
     )?;
     let resolution_truncated = resolution.len() > 1000;
     resolution.truncate(1000);
+    let total_external_imports: usize = conn.query_row(
+        "SELECT count(*) FROM resolution_coverage WHERE status='external' AND (?1='' OR path=?1 OR (path>=?2 AND path<?3))",
+        rusqlite::params![path, prefix, end],
+        |r| r.get(0),
+    )?;
 
     let cycles =
         crate::db::traversal::cycles(conn, if path.is_empty() { None } else { Some(path) })?;
@@ -360,6 +365,7 @@ pub fn analyze(conn: &Connection, target: &str) -> Result<Value> {
         "errors_truncated": errors_truncated,
         "resolution": resolution,
         "total_unresolved": total_unresolved,
+        "total_external_imports": total_external_imports,
         "resolution_truncated": resolution_truncated,
         "truncated": errors_truncated || resolution_truncated,
         "cycles": cycles
@@ -375,13 +381,14 @@ pub fn validate_limit(limit: usize) -> Result<()> {
 
 pub fn overview_paged(conn: &Connection, options: &QueryOptions) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
-    let lang_sql = "SELECT l.language,l.files,coalesce(r.resolved,0) resolved,coalesce(r.unresolved,0) unresolved,coalesce(e.parse_errors,0) parse_errors FROM (SELECT language,count(*) files FROM files GROUP BY language) l LEFT JOIN (SELECT f.language,count(CASE WHEN rc.status='resolved' THEN 1 END) resolved,count(CASE WHEN rc.status!='resolved' THEN 1 END) unresolved FROM resolution_coverage rc JOIN files f ON f.path=rc.path GROUP BY f.language) r ON r.language=l.language LEFT JOIN (SELECT f.language,count(*) parse_errors FROM errors er JOIN files f ON f.path=er.path GROUP BY f.language) e ON e.language=l.language ORDER BY l.language";
-    let compiled_profiles: std::collections::BTreeSet<_> =
-        crate::engine::languages::profiles().map(|p| p.id()).collect();
+    let lang_sql = "SELECT l.language,l.files,coalesce(r.resolved,0) resolved,coalesce(r.unresolved,0) unresolved,coalesce(r.external_imports,0) external_imports,coalesce(e.parse_errors,0) parse_errors FROM (SELECT language,count(*) files FROM files GROUP BY language) l LEFT JOIN (SELECT f.language,count(CASE WHEN rc.status='resolved' THEN 1 END) resolved,count(CASE WHEN rc.status IN('unresolved','ambiguous') THEN 1 END) unresolved,count(CASE WHEN rc.status='external' THEN 1 END) external_imports FROM resolution_coverage rc JOIN files f ON f.path=rc.path GROUP BY f.language) r ON r.language=l.language LEFT JOIN (SELECT f.language,count(*) parse_errors FROM errors er JOIN files f ON f.path=er.path GROUP BY f.language) e ON e.language=l.language ORDER BY l.language";
+    let compiled_profiles: std::collections::BTreeSet<_> = crate::engine::languages::profiles()
+        .map(|p| p.id())
+        .collect();
     Ok(json!({
         "generation": generation,
         "components": paging::query(conn, "SELECT id,name,path FROM nodes WHERE kind='component' ORDER BY path,id", &[], options)?,
-        "counts": rows(conn,"SELECT (SELECT count(*) FROM files) files,(SELECT count(*) FROM nodes) nodes,(SELECT count(*) FROM edges) edges,(SELECT count(*) FROM doc_sections) doc_sections,(SELECT count(*) FROM errors) parse_errors,(SELECT count(*) FROM resolution_coverage WHERE status!='resolved') unresolved", &[], 1)?.remove(0),
+        "counts": rows(conn,"SELECT (SELECT count(*) FROM files) files,(SELECT count(*) FROM nodes) nodes,(SELECT count(*) FROM edges) edges,(SELECT count(*) FROM doc_sections) doc_sections,(SELECT count(*) FROM errors) parse_errors,(SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous')) unresolved,(SELECT count(*) FROM resolution_coverage WHERE status='external') external_imports", &[], 1)?.remove(0),
         "languages": paging::query(conn, lang_sql, &[], options)?,
         "compiled_profiles": compiled_profiles,
         "metadata": rows(conn,"SELECT key,value FROM metadata WHERE key IN('schema_version','output_root','corpus_hash','workspace_root') ORDER BY key", &[], 4)?
@@ -423,7 +430,11 @@ pub fn explain_paged(
             result["incoming"] = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.dst_public_id=?1 ORDER BY e.kind,e.src_public_id,e.edge_id", paging::edges("e", options.detail)), &[&id], options)?;
         }
         "outgoing" => {
-            let total = paging::count(conn, "SELECT count(*) FROM edges WHERE dst_public_id=?1", &[&id])?;
+            let total = paging::count(
+                conn,
+                "SELECT count(*) FROM edges WHERE dst_public_id=?1",
+                &[&id],
+            )?;
             result["incoming"] = json!({"total": total, "omitted": true, "hint": "Pass direction='incoming' to page incoming edges."});
         }
         _ => bail!("direction must be both, incoming, or outgoing"),
@@ -433,7 +444,11 @@ pub fn explain_paged(
             result["outgoing"] = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.src_public_id=?1 ORDER BY e.kind,e.dst_public_id,e.edge_id", paging::edges("e", options.detail)), &[&id], options)?;
         }
         "incoming" => {
-            let total = paging::count(conn, "SELECT count(*) FROM edges WHERE src_public_id=?1", &[&id])?;
+            let total = paging::count(
+                conn,
+                "SELECT count(*) FROM edges WHERE src_public_id=?1",
+                &[&id],
+            )?;
             result["outgoing"] = json!({"total": total, "omitted": true, "hint": "Pass direction='outgoing' to page outgoing edges."});
         }
         _ => {}
@@ -513,6 +528,9 @@ pub fn analyze_paged(
             rusqlite::params![path, prefix, end],
             |r| r.get(0),
         )?;
+    if !indexed_path && matches!(path, "diagnostics" | "cycles") {
+        bail!("analysis target '{path}' is interpreted as a path, not an analysis mode. Use target='' for workspace diagnostics; pass include_cycles=true to compute cycles for the workspace or a narrower indexed path");
+    }
     if !indexed_path
         && [
             "insert", "update", "delete", "drop", "alter", "create", "replace", "attach", "detach",
@@ -531,7 +549,12 @@ pub fn analyze_paged(
     )?;
     let total_unresolved = paging::count(
         conn,
-        &format!("SELECT count(*) FROM resolution_coverage WHERE status!='resolved' AND {scope}"),
+        &format!("SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous') AND {scope}"),
+        params,
+    )?;
+    let total_external_imports = paging::count(
+        conn,
+        &format!("SELECT count(*) FROM resolution_coverage WHERE status='external' AND {scope}"),
         params,
     )?;
     let exact_file: bool = conn.query_row(
@@ -539,7 +562,7 @@ pub fn analyze_paged(
         [path],
         |r| r.get(0),
     )?;
-    let mut result = json!({"target":target,"generation":generation,"total_errors":total_errors,"total_unresolved":total_unresolved,"scope":if exact_file {"file"} else {"summary"}});
+    let mut result = json!({"target":target,"generation":generation,"total_errors":total_errors,"total_unresolved":total_unresolved,"total_external_imports":total_external_imports,"scope":if exact_file {"file"} else {"summary"}});
     if exact_file {
         let error_columns = if options.detail == Detail::Full {
             "*"
@@ -554,15 +577,16 @@ pub fn analyze_paged(
             &[&path],
             options,
         )?;
-        result["resolution"] = paging::query(conn, &format!("SELECT {} FROM resolution_coverage c WHERE c.status!='resolved' AND c.path=?1 ORDER BY c.line,c.expression,c.status,c.evidence", paging::coverage("c", options.detail)), &[&path], options)?;
+        result["resolution"] = paging::query(conn, &format!("SELECT {} FROM resolution_coverage c WHERE c.status IN('unresolved','ambiguous') AND c.path=?1 ORDER BY c.line,c.expression,c.status,c.evidence", paging::coverage("c", options.detail)), &[&path], options)?;
+        result["external_imports"] = paging::query(conn, &format!("SELECT {} FROM resolution_coverage c WHERE c.status='external' AND c.path=?1 ORDER BY c.line,c.expression,c.evidence", paging::coverage("c", options.detail)), &[&path], options)?;
     } else {
-        result["top_files"] = json!(rows(conn, &format!("SELECT path,sum(parse_errors) parse_errors,sum(unresolved) unresolved FROM (SELECT path,count(*) parse_errors,0 unresolved FROM errors WHERE {scope} GROUP BY path UNION ALL SELECT path,0 parse_errors,count(*) unresolved FROM resolution_coverage WHERE status!='resolved' AND {scope} GROUP BY path) GROUP BY path ORDER BY sum(parse_errors)+sum(unresolved) DESC,path LIMIT 5"), params, 5)?);
+        result["top_files"] = json!(rows(conn, &format!("SELECT path,sum(parse_errors) parse_errors,sum(unresolved) unresolved FROM (SELECT path,count(*) parse_errors,0 unresolved FROM errors WHERE {scope} GROUP BY path UNION ALL SELECT path,0 parse_errors,count(*) unresolved FROM resolution_coverage WHERE status IN('unresolved','ambiguous') AND {scope} GROUP BY path) GROUP BY path ORDER BY sum(parse_errors)+sum(unresolved) DESC,path LIMIT 5"), params, 5)?);
         result["resolution_statuses"] = json!(rows(conn, &format!("SELECT status,count(*) total FROM resolution_coverage WHERE {scope} GROUP BY status ORDER BY status LIMIT 20"), params, 20)?);
         result["continuation_hint"] = json!(
             "Call code_map_analyze with an exact path from top_files to page its diagnostics."
         );
     }
-    let compute_cycles = include_cycles.unwrap_or(!exact_file);
+    let compute_cycles = include_cycles.unwrap_or(false);
     result["cycles"] = if compute_cycles {
         super::cycles::summary(conn, if path.is_empty() { None } else { Some(path) })?
     } else {

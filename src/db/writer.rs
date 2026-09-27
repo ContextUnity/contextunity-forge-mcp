@@ -448,30 +448,71 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let encoded = serde_json::to_string(&modified)?;
     {
         let mut st = admitted.prepare(
-            "SELECT name,qualname FROM owned_nodes WHERE owner IN(SELECT value FROM json_each(?1))",
+            "SELECT owner,name,qualname,kind FROM owned_nodes WHERE owner IN(SELECT value FROM json_each(?1))",
         )?;
         for row in st.query_map([&encoded], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
         })? {
-            let (name, qual) = row?;
-            names.insert(name);
-            names.insert(qual);
+            let (owner, name, qual, kind) = row?;
+            names.insert(qual.clone());
+            if !matches!(kind.as_str(), "field" | "method" | "route" | "document") {
+                let mod_name = module_name(&owner);
+                let (_, local_path) = crate::engine::languages::workspace_path(&owner);
+                let local_module = module_name(local_path);
+                let src_module = local_path
+                    .split_once("/src/")
+                    .map(|(_, r)| module_name(r))
+                    .or_else(|| local_path.strip_prefix("src/").map(module_name));
+                let is_top = qual == name
+                    || qual == format!("{mod_name}.{name}")
+                    || qual == format!("{local_module}.{name}")
+                    || src_module
+                        .as_ref()
+                        .is_some_and(|m| qual == format!("{m}.{name}"));
+                if is_top {
+                    names.insert(name);
+                }
+            }
         }
     }
     let extracting = Instant::now();
     for path in &modified {
-        names.insert(module_name(path));
+        let mod_name = module_name(path);
+        names.insert(mod_name.clone());
         let (_, local_path) = crate::engine::languages::workspace_path(path);
         let local_module = module_name(local_path);
         names.insert(local_module.clone());
-        names.extend(local_module.split('.').map(str::to_owned));
+        if let Some((_, last)) = local_module.rsplit_once('.') {
+            names.insert(last.to_owned());
+        }
+        let src_module = local_path
+            .split_once("/src/")
+            .map(|(_, r)| module_name(r))
+            .or_else(|| local_path.strip_prefix("src/").map(module_name));
+        if let Some(src_mod) = &src_module {
+            names.insert(src_mod.clone());
+        }
         if let Some(file) = inventory.get(path.as_str()) {
             let f = extract(&root, file, &adapter)?;
-            names.extend(
-                f.nodes
-                    .iter()
-                    .flat_map(|n| [n.name.clone(), n.qualname.clone()]),
-            );
+            for n in &f.nodes {
+                names.insert(n.qualname.clone());
+                if !matches!(n.kind.as_str(), "field" | "method" | "route" | "document") {
+                    let is_top = n.qualname == n.name
+                        || n.qualname == format!("{mod_name}.{}", n.name)
+                        || n.qualname == format!("{local_module}.{}", n.name)
+                        || src_module
+                            .as_ref()
+                            .is_some_and(|m| n.qualname == format!("{m}.{}", n.name));
+                    if is_top {
+                        names.insert(n.name.clone());
+                    }
+                }
+            }
             facts.insert(path.clone(), f);
         }
     }

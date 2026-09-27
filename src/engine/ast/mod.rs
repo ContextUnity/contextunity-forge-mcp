@@ -186,7 +186,12 @@ pub(crate) fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
             let callable = n
                 .child_by_field_name("value")
                 .or_else(|| n.child_by_field_name("right"))
-                .is_some_and(|n| matches!(n.kind(), "arrow_function" | "function_expression" | "lambda"));
+                .is_some_and(|n| {
+                    matches!(
+                        n.kind(),
+                        "arrow_function" | "function_expression" | "lambda"
+                    )
+                });
             if !callable {
                 if let Some(lhs) = lhs {
                     names(lhs, source, &mut body_names);
@@ -196,14 +201,10 @@ pub(crate) fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
             stack.extend(n.named_children(&mut c));
         }
     }
-    let mut all_set: std::collections::BTreeSet<String> = param_names
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    let rebindings_set: std::collections::BTreeSet<String> = body_names
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let mut all_set: std::collections::BTreeSet<String> =
+        param_names.into_iter().map(str::to_owned).collect();
+    let rebindings_set: std::collections::BTreeSet<String> =
+        body_names.into_iter().map(str::to_owned).collect();
     all_set.extend(rebindings_set.iter().cloned());
     ScopeBindings {
         all: all_set.into_iter().collect(),

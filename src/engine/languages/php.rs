@@ -82,6 +82,16 @@ impl LanguageProfile for Php {
                 &["qualified_name", "namespace_name", "name"],
             );
             if let Some(target) = target {
+                let full_target = if ctx.node.kind() == "namespace_use_group_clause" {
+                    ctx.node
+                        .parent()
+                        .and_then(|group| group.parent())
+                        .and_then(|declaration| syntax::named(declaration, ctx.source, &["namespace_name"]))
+                        .map(|prefix| format!("{}\\{target}", prefix.trim_end_matches('\\')))
+                } else {
+                    None
+                };
+                let target = full_target.as_deref().unwrap_or(target);
                 let alias = syntax::child(ctx.node, &["namespace_aliasing_clause"])
                     .and_then(|n| syntax::named(n, ctx.source, &["name"]))
                     .or_else(|| target.rsplit('\\').next());

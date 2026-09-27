@@ -13,6 +13,11 @@ pipeline, automatic registration, supported extensions and each profile's limits
 - Exact imports require complete module namespace, language family and workspace
   evidence. Suffix matching remains a discovery aid rather than dependency proof.
   Missing or ambiguous aliases cannot fall through to unrelated declarations.
+- Nested Rust `use` trees retain each full path and alias. Known external Rust
+  standard-library and explicit `node:` imports have separate `external`
+  coverage; missing or unverified packages remain `unresolved`.
+- PHP grouped `use` clauses retain their shared namespace prefix and explicit
+  aliases in persisted import evidence. PHP autoloading remains unresolved.
 - Module conventions are language-specific: Python preserves `index.py` and
   `mod.py`, while package `__init__` has Python package semantics.
 - The compiled profile fingerprint participates in index semantics. Changes to
@@ -74,12 +79,13 @@ Unknown references limit removal and test-mapping conclusions.
 `tests/language_profiles.rs` exercises import identity, automatic registry
 contracts, persisted new-language fixtures, unresolved invocations and delta
 versus a full rebuild. `tests/profile_review_regressions.rs` covers owner-module
-priority, Ruby expression roles, C/C++ declarators, PHP receiver identity and
-Java method/value namespaces through persisted queries and removal checks.
-Existing `tests/audit_regressions.rs` protects admission,
-removal evidence, Rust aliases, decorator scope, cycles, routes, Vue coordinates
-and Proto RPC dependencies. These checks do not establish complete grammar
-coverage, compiler-equivalent inference or crash recovery.
+priority, Ruby expression roles, C/C++ declarators, PHP grouped imports and
+receiver identity, and Java method/value namespaces through persisted queries
+and removal checks. Existing `tests/audit_regressions.rs` protects admission,
+removal evidence, nested Rust imports, external import scope, decorator scope,
+cycles, routes, Vue coordinates and Proto RPC dependencies. These checks do not
+establish complete grammar coverage, compiler-equivalent inference or crash
+recovery.
 
 ## Language-refactor release measurements
 
@@ -119,8 +125,9 @@ full-language configuration before the incremental/context changes.
 This is a distribution-size cost; the registry creates parsers only for selected
 files. The measurements do not constitute memory-use profiling.
 
-[Raw samples and binary digests](/tmp/forge-language-refactor/performance/results.json).
-The session runner is `/tmp/forge-language-refactor/compare_releases.py`.
+[Raw samples and binary digests](measurements/language-refactor-results.json).
+The [comparison runner](measurements/compare_releases.py) accepts baseline and
+candidate executable paths and an output directory.
 
 ## Incremental and feature-build measurements
 
@@ -153,5 +160,5 @@ The current stripped release binaries measure **12.77 MiB** for the default
 Python/Rust/TS+JS/Vue/Proto set and **29.13 MiB** for `all-languages`. The values
 report executable file sizes. Resident memory is not profiled in this fixture.
 
-[Raw measurements and binary hashes](/tmp/forge-mcp-evolution-20260927/matched-benchmark.json)
-and [build/test matrix](/tmp/forge-mcp-evolution-20260927/gates.json).
+[Raw measurements and binary hashes](measurements/incremental-benchmark.json)
+and [build/test matrix](measurements/verification-gates.json).

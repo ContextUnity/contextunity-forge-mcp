@@ -70,7 +70,7 @@ separate inspection.
 | --- | --- |
 | Python (`.py`, `.pyi`) | Definitions, classes, imports, calls, attached documentation |
 | TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`) | Functions, classes, methods, imports, calls |
-| Vue (`.vue`) | JavaScript or TypeScript `<script>` blocks |
+| Vue (`.vue`) | JavaScript or TypeScript `<script>` blocks and basic template bindings |
 | Rust (`.rs`) | Functions, types, traits, implementations, imports, calls |
 | Go (`.go`) | Types, functions, methods, imports, calls |
 | Markdown (`.md`, `.mdx`) | Sections, metadata, invariants, code references |
@@ -91,7 +91,7 @@ The table lists all available modes; optional modes require their feature.
 See [language profiles and extension guide](docs/language-profiles.md) for the
 contract and limits. `.h` uses the C profile when enabled.
 
-Unsupported extensions are outside the scanner's inventory. Vue templates and styles are outside syntax extraction; MDX is treated as Markdown. The scanner bounds a file to 5 MiB, the admitted corpus to 100,000 files, and total admitted bytes to 500 MiB. Exceeding a bound is an error.
+Unsupported extensions are outside the scanner's inventory. Vue extracts component names, event handlers, bound props and interpolations from templates; styles and complex template expressions remain outside syntax extraction. MDX is treated as Markdown. The scanner bounds a file to 5 MiB, the admitted corpus to 100,000 files, and total admitted bytes to 500 MiB. Exceeding a bound is an error.
 
 ## Command line reference
 
@@ -137,6 +137,8 @@ Symbol search uses FTS5 for terms and simple prefixes such as `Order*`. Patterns
 Test mapping follows static dependencies transitively with cycle detection. The default inbound direction returns test symbols that depend on the selected production symbol; outbound returns production dependencies of a selected test. Selecting a class includes its members. Containment does not connect unrelated sibling tests. Test files and Rust `#[test]`, `#[tokio::test]`, and `#[async_std::test]` functions supply test markers. Unresolved references can hide dependencies; an empty result is not proof that no tests exist.
 
 The graph includes `inherits` from a derived class to its base, `implements` from a type to an interface or trait, `decorates` from a decorator to its decorated symbol, and `mutates` from an assignment owner to a field. These relationships participate in impact and slice queries. Python class field assignments include ORM declarations without requiring an ORM dependency.
+
+Resolution coverage marks known external imports separately from unresolved local dependencies. Rust `std::`, `core::` and `alloc::` imports and JavaScript/TypeScript `node:` imports receive `external` only when no indexed provider matches. Unknown package names remain `unresolved`; an absolute import alone does not prove that a dependency exists outside the index. Overview and analysis report `external_imports` separately from unresolved references. Calls through external imports can remain unresolved because the external source is not indexed.
 
 Static route patterns include HTTP decorators, `path('...', handler)`, `app.get('...', handler)` and similar HTTP methods, and `{path: '...', component: handler}` objects. Route nodes have names such as `GET /items` and a `handles` edge when the handler resolves. Registrations without an explicit HTTP method use `ANY`; Python `route(..., methods=[...])` creates one node per method. Dynamic paths and unresolved handlers require source inspection. These are syntax patterns, not runtime framework validation.
 
@@ -289,7 +291,7 @@ returns an error instead of presenting old metadata as current.
 | `ast_grep_search` | Structural syntax search |
 | `search_docs` | Documentation full text search |
 | `get_doc` | Document or section retrieval |
-| `forge_guide` | Onboarding, adapter guidance, and validation |
+| `forge_guide` | Onboarding, adapter guidance, query routing, and validation |
 | `session_checkpoint` | Workspace checkpoint management |
 
 MCP responses have a 64 KiB hard ceiling. Lists use compact projections and
@@ -300,6 +302,8 @@ five leading and 35 body lines, with omission metadata and a separate source
 offset. Global analysis summarizes diagnostics; select an exact file for
 detailed rows. See [context protection](docs/context-protection-plan.md) for
 response examples, adapter settings and the distinction from CLI output.
+`forge_guide` with `topic: "query"` provides a compact path from overview to
+symbol, dependency, test, diagnostic, and document queries, with recovery hints.
 
 ## Building from Source
 
@@ -394,6 +398,7 @@ A shell command includes process startup; an already running MCP request measure
 - Python receiver reassignment and static methods currently have a known confidence limitation: some calls can receive an incorrect exact target. Confirm those call sites in source before using impact or removal results.
 - Protocol Buffer syntax extractor captures messages, enums, services, and RPC signatures along with import edges.
 - `raw_cypher` supports `MATCH (n) RETURN n`, `MATCH (n:kind) RETURN n`, and `MATCH (a)-[e]->(b) RETURN a,e,b`. It is not a general Cypher runtime.
+- `code_map_query` takes `limit` as a tool argument, not a Cypher clause. Deep slices with more than 1,000 immediate links are rejected before recursion; use `depth: 1` and page direct neighbors, or select a narrower module. A smaller page limit does not reduce the recursive count. `code_map_analyze` takes `target: ""` for workspace diagnostics; cycles require `include_cycles: true`.
 - Documentation search operates on indexed sections; update the index after editing Markdown.
 - The standalone database format and tool surface require compatibility verification before replacing another Forge deployment.
 - Successful client configuration writes do not establish that a particular client discovers or launches the server. Zed configuration is manual.

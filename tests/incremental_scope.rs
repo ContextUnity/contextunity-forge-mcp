@@ -58,6 +58,26 @@ impl Workspace {
         writer::build(&self.0, &cold, None).unwrap();
         let cold = reader::open(&cold, &self.0).unwrap();
         commitments::verify(&cold).unwrap();
+        for conn in [&incremental, &cold] {
+            let mut statement = conn.prepare("SELECT f.path,f.facts_json,c.facts_hash FROM local_facts f JOIN file_commitments c ON c.path=f.path").unwrap();
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .unwrap();
+            for row in rows {
+                let (path, facts_json, facts_hash) = row.unwrap();
+                assert_eq!(
+                    facts_hash,
+                    commitments::hash(facts_json.as_bytes()),
+                    "{path}"
+                );
+            }
+        }
         for sql in [
             "SELECT owner||'|'||public_id||'|'||kind||'|'||path FROM owned_nodes ORDER BY owner,public_id",
             "SELECT path||'|'||facts_json FROM local_facts ORDER BY path",
@@ -81,6 +101,15 @@ fn strings(conn: &Connection, sql: &str) -> Vec<String> {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap()
+}
+
+#[test]
+fn document_mtime_json_roundtrip_preserves_commitment_input() {
+    // An observed timestamp that parsed one ULP lower without float_roundtrip.
+    let mtime = 1_790_494_491.067_507_7_f64;
+    let encoded = serde_json::to_string(&mtime).unwrap();
+    let decoded: f64 = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(mtime.to_bits(), decoded.to_bits(), "{encoded}");
 }
 
 #[test]

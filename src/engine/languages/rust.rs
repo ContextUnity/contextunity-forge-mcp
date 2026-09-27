@@ -55,60 +55,20 @@ impl LanguageProfile for Rust {
         parse_file(self, path, source, module, facts)
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        let (node, source) = (ctx.node, ctx.source);
-        let statement = text(node, source);
-        let mut add = |expression, alias, module| ctx.import(facts, expression, alias, module);
-        if node.kind() == "use_declaration" {
-            let value = field(node, source, "argument")
-                .unwrap_or(statement.trim_start_matches("use ").trim_end_matches(';'));
-            fn expand(value: &str, prefix: &str, out: &mut Vec<(String, String)>) {
-                let trimmed = value.trim().trim_matches(';');
-                if let Some((base, rest)) = trimmed.split_once('{') {
-                    let root = format!("{prefix}{}", base.trim());
-                    let mut depth = 0;
-                    let mut current = String::new();
-                    for c in rest.trim_end_matches('}').chars() {
-                        match c {
-                            '{' => {
-                                depth += 1;
-                                current.push(c);
-                            }
-                            '}' => {
-                                if depth > 0 {
-                                    depth -= 1;
-                                    current.push(c);
-                                }
-                            }
-                            ',' if depth == 0 => {
-                                let item = current.trim();
-                                if !item.is_empty() {
-                                    expand(item, &root, out);
-                                }
-                                current.clear();
-                            }
-                            _ => current.push(c),
-                        }
-                    }
-                    let item = current.trim();
-                    if !item.is_empty() {
-                        expand(item, &root, out);
-                    }
-                } else {
-                    let clean = trimmed.trim_matches(['}', '{', ' ']);
-                    if clean.is_empty() {
-                        return;
-                    }
-                    let (name, alias) = clean
-                        .split_once(" as ")
-                        .unwrap_or((clean, clean.rsplit("::").next().unwrap_or(clean)));
-                    out.push((format!("{prefix}{}", name.trim()), alias.trim().into()));
+        if ctx.node.kind() == "use_declaration" {
+            if let Some(argument) = ctx.node.child_by_field_name("argument") {
+                let mut imports = Vec::new();
+                collect_use(argument, ctx.source, "", &mut imports);
+                for (name, alias) in imports {
+                    ctx.import(facts, name.clone(), Some(alias), Some(name));
                 }
             }
-            let mut names = Vec::new();
-            expand(value, "", &mut names);
-            for (name, alias) in names {
-                add(name.clone(), Some(alias), Some(name));
-            }
+        }
+    }
+    fn external_import(&self, module: &str) -> Option<&'static str> {
+        match module.split("::").next()? {
+            "std" | "core" | "alloc" => Some("Rust standard library"),
+            _ => None,
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
@@ -235,6 +195,61 @@ impl LanguageProfile for Rust {
             previous = attr.prev_named_sibling();
         }
         false
+    }
+}
+
+fn collect_use(node: Syntax<'_>, source: &str, prefix: &str, out: &mut Vec<(String, String)>) {
+    fn joined(prefix: &str, name: &str) -> String {
+        if prefix.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{prefix}::{name}")
+        }
+    }
+    match node.kind() {
+        "scoped_use_list" => {
+            if let (Some(path), Some(list)) = (
+                node.child_by_field_name("path"),
+                node.child_by_field_name("list"),
+            ) {
+                collect_use(list, source, &joined(prefix, text(path, source)), out);
+            }
+        }
+        "use_list" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_use(child, source, prefix, out);
+            }
+        }
+        "use_as_clause" => {
+            if let (Some(path), Some(alias)) = (
+                node.child_by_field_name("path"),
+                node.child_by_field_name("alias"),
+            ) {
+                let path = text(path, source);
+                let name = if path == "self" {
+                    prefix.to_owned()
+                } else {
+                    joined(prefix, path)
+                };
+                if !name.is_empty() {
+                    out.push((name, text(alias, source).to_owned()));
+                }
+            }
+        }
+        "use_wildcard" => {
+            let path = node.named_child(0).map(|child| text(child, source));
+            let name = path.map_or_else(|| prefix.to_owned(), |path| joined(prefix, path));
+            out.push((format!("{name}::*"), "*".into()));
+        }
+        "self" if !prefix.is_empty() => {
+            out.push((prefix.to_owned(), prefix.rsplit("::").next().unwrap_or(prefix).into()));
+        }
+        "identifier" | "scoped_identifier" | "crate" | "super" | "self" => {
+            let name = joined(prefix, text(node, source));
+            out.push((name.clone(), name.rsplit("::").next().unwrap_or(&name).into()));
+        }
+        _ => {}
     }
 }
 

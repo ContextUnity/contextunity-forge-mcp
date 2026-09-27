@@ -15,6 +15,11 @@ also affect context use.
 
 ## Pages and continuation
 
+`forge_guide` with `topic: "query"` recommends the narrowest relevant tool,
+pagination arguments, and a recovery path for computation or byte limits.
+For symbol search, FTS terms and `prefix*` use the search index; a leading
+wildcard can scan the full node table before returning a page.
+
 List arguments use `limit` (default 30, range 1–100), `offset` (default 0),
 `detail` (`compact` or `full`) and `generation`. Collections retain their names,
 such as `nodes`, but contain a page object:
@@ -74,10 +79,23 @@ large AST `details` dictionaries and document bodies from ordinary listings.
 Use `get_doc` for document content.
 
 Global or directory `code_map_analyze` requests return diagnostic totals,
-aggregates, the five most affected files and cycle summaries. An exact file
-path returns paginated diagnostics. Read-only SQL analysis remains bounded by
-the query time and memory limits and returns a page. Traversal and cycle
-computation retain their separate safety limits.
+aggregates, the five most affected files and optional cycle summaries. An exact file
+path returns separate paginated unresolved diagnostics and known external imports.
+Use `target: ""` for the workspace. `diagnostics` and `cycles` are path names,
+not analysis modes. Cycles are omitted by default; set `include_cycles: true`
+to compute them for an indexed path.
+Overview and analysis totals keep `external_imports` separate from unresolved
+references. Each SQLite count or row statement has a two-second computation
+budget; a paged request may execute both statements. Row conversion has an
+8 MiB budget and returns a page. The MCP response has a separate 64 KiB
+limit. Budget errors suggest a narrower path or selector, compact detail, or
+fewer SQL columns. A depth greater than one is rejected before recursive
+traversal when the starting node has more than 1,000 immediate graph links.
+Use depth one and page its direct neighbors, or select a narrower module or
+symbol. Test mapping rejects a selected scope with more than 1,000 direct
+containment or dependency links before its unbounded walk. Reducing the page
+limit alone does not reduce recursive traversal work. Cycle computation retains
+its separate safety limits.
 
 ## Source previews
 
@@ -113,6 +131,10 @@ Allowed bounds are 1–100 items, 1,024–65,536 output bytes, 0–20 leading li
 1–100 body lines. Unknown response fields and invalid values are rejected.
 Absent settings use the defaults above. These presentation settings do not
 alter extracted facts or force an index rebuild.
+
+For an agent session with a tighter context budget, an adapter can use
+`page_size: 10` and `max_output_bytes: 16384`. This limits each response;
+the agent still decides how many pages to request.
 
 ## Source freshness
 

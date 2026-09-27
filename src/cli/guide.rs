@@ -21,6 +21,15 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
         "docs" => Ok(
             json!({"frontmatter":"---\ndoc_type: architecture\ntitle: Module contract\n---","invariant":"> [!IMPORTANT] Invariant: Document the rule and reference `symbol.name`.","types":["architecture","adr","guide","api","plan"]}),
         ),
+        "query" => Ok(json!({
+            "start": "Call code_map_overview to identify indexed paths and coverage.",
+            "symbols": "Use code_map_search with FTS terms or a prefix* pattern for names; a leading wildcard can scan the full index. Then use code_map_inspect for a precise selector, code_map_explain for relationships, and code_map_impact with depth=1 before deeper traversal.",
+            "tests": "Call code_map_tests on a narrow symbol or module; broad scopes are rejected before unbounded traversal.",
+            "diagnostics": "Call code_map_analyze with target='' for workspace totals; use an indexed path for a smaller scope or an exact file for paged rows. Cycles require include_cycles=true.",
+            "documents": "Use search_docs to find sections and get_doc to read the selected section.",
+            "pages": "Start with compact detail and a small limit. Continue with the returned next_offset and generation for the same selector and filters. For tighter agent context, set adapter response.page_size=10 and response.max_output_bytes=16384.",
+            "recovery": "On a computation budget error, narrow the selector or path and reduce depth; lowering limit alone may not reduce count or traversal work. On a byte limit error, use compact detail, a smaller limit, or fewer SQL columns."
+        })),
         "validate" => {
             let adapter = scanner::load_adapter(&root, None)?;
             let scan = scanner::scan_with_adapter(&root, &adapter)?;
@@ -28,7 +37,7 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
                 json!({"valid":true,"root":root,"roots":adapter.roots,"files":scan.files,"bytes":scan.bytes}),
             )
         }
-        _ => bail!("unknown guide topic; expected init,adapter,docs,validate"),
+        _ => bail!("unknown guide topic; expected init,adapter,docs,query,validate"),
     }
 }
 #[derive(serde::Deserialize, serde::Serialize, Default)]

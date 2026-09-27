@@ -6,6 +6,20 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::{fs::File, io::Read, path::Path};
 
+fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> {
+    let seeds = paging::count(
+        conn,
+        "SELECT count(*) FROM edges WHERE src_public_id=?1 AND kind='contains'",
+        &[&id],
+    )?;
+    let dependencies = super::traversal::immediate_links(conn, id, inbound, false)?;
+    let immediate = seeds.saturating_add(dependencies);
+    if immediate > 1000 {
+        bail!("test mapping from {id} starts with {immediate} direct graph links before its unbounded dependency walk. Select a narrower module or symbol; reducing limit alone does not reduce traversal work");
+    }
+    Ok(())
+}
+
 pub fn inspect(
     conn: &Connection,
     root: &Path,
@@ -109,6 +123,7 @@ pub fn tests(conn: &Connection, selector: &str, direction: &str, limit: usize) -
     };
     let node = reader::select(conn, selector)?;
     let id = node["id"].as_str().context("invalid node id")?;
+    admit_test_mapping(conn, id, inbound)?;
     // Containment expands only the selected scope; UNION visits each dependency once.
     let steps = super::traversal::dependency_steps(inbound, false, false);
     let sql = format!("WITH RECURSIVE seeds(id) AS (SELECT ?1 UNION SELECT e.dst_public_id FROM seeds s JOIN edges e ON e.src_public_id=s.id WHERE e.kind='contains'), walk(id) AS (SELECT id FROM seeds UNION {steps}) SELECT n.* FROM walk w JOIN nodes n ON n.id=w.id WHERE n.is_test=?2 AND n.kind IN ('function','method','class','struct') AND n.id!=?1 ORDER BY n.path,n.line,n.id LIMIT ?3");
@@ -177,13 +192,14 @@ pub fn tests_paged(
     paging::generation(conn, options)?;
     let node = reader::select_detail(conn, selector, options.detail)?;
     let id = node["id"].as_str().context("invalid node id")?;
+    admit_test_mapping(conn, id, inbound)?;
     let path = node["path"].as_str().unwrap_or("");
     let start_line = node["line"].as_i64().unwrap_or(0);
     let end_line = node["end_line"].as_i64().unwrap_or(i64::MAX);
 
     let unresolved_count: usize = conn
         .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE status!='resolved' AND path=?1 AND line BETWEEN ?2 AND ?3",
+            "SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous') AND path=?1 AND line BETWEEN ?2 AND ?3",
             rusqlite::params![path, start_line, end_line],
             |r| r.get(0),
         )

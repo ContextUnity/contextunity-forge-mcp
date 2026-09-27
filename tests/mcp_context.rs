@@ -120,6 +120,62 @@ impl Drop for Client {
     }
 }
 
+#[cfg(feature = "lang-rust")]
+#[test]
+fn stdio_distinguishes_known_external_imports_from_missing_sources() {
+    let workspace = Workspace::new();
+    workspace.write("main.rs", "use std::fmt::Debug;\nuse missing::Thing;\n");
+    let mut client = Client::new(&workspace);
+    let overview = client.payload("code_map_overview", json!({}));
+    assert_eq!(overview["counts"]["external_imports"], 1);
+    assert_eq!(overview["counts"]["unresolved"], 1);
+    let analysis = client.payload("code_map_analyze", json!({"target":"main.rs"}));
+    assert_eq!(analysis["total_external_imports"], 1);
+    assert_eq!(analysis["total_unresolved"], 1);
+    assert_eq!(
+        analysis["external_imports"]["items"][0]["expression"],
+        "std::fmt::Debug"
+    );
+    assert_eq!(
+        analysis["resolution"]["items"][0]["expression"],
+        "missing::Thing"
+    );
+}
+
+#[test]
+fn stdio_budget_and_query_errors_explain_how_to_retry() {
+    let workspace = Workspace::new();
+    workspace.write("README.md", "# Indexed document\n");
+    let mut client = Client::new(&workspace);
+    for (name, arguments, expected) in [
+        (
+            "code_map_analyze",
+            json!({"target":"SELECT hex(zeroblob(1500000)) AS payload"}),
+            "select fewer and smaller SQL columns",
+        ),
+        (
+            "code_map_analyze",
+            json!({"target":"diagnostics"}),
+            "Use target='' for workspace diagnostics",
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"raw_cypher","selector":"MATCH (n) RETURN n LIMIT 3"}),
+            "Pass limit as a separate tool argument",
+        ),
+        (
+            "code_map_inspect",
+            json!({"selector":"file:README.md"}),
+            "File paths are passed without a file: prefix",
+        ),
+    ] {
+        let (_, response) = client.call(name, arguments);
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let message = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(message.contains(expected), "{name}: {message}");
+    }
+}
+
 #[test]
 fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
     let workspace = Workspace::new();

@@ -131,6 +131,39 @@ fn persisted_search_and_traversal_pages_have_exact_totals_without_gaps() {
 }
 
 #[test]
+fn broad_slice_is_rejected_before_recursive_pagination() {
+    let workspace = Workspace::new();
+    let mut source = String::new();
+    for i in 0..1001 {
+        source.push_str(&format!("def leaf_{i}(): pass\n"));
+    }
+    source.push_str("def entry():\n");
+    for i in 0..1001 {
+        source.push_str(&format!("    leaf_{i}()\n"));
+    }
+    workspace.write("graph.py", &source);
+    let conn = workspace.build();
+    let error = traversal::traverse_paged(&conn, "entry", 2, false, &options(10))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("1001 immediate graph links"), "{error}");
+    assert!(error.contains("depth=1"), "{error}");
+    assert!(error.contains("Reducing limit alone"), "{error}");
+    let direct = traversal::traverse_paged(&conn, "entry", 1, false, &options(10)).unwrap();
+    assert_eq!(direct["nodes"]["total"], 1002);
+    for (selector, direction) in [("module:graph.py", "inbound"), ("entry", "outbound")] {
+        let error = symbols::tests_paged(&conn, selector, direction, &options(10))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("before its unbounded dependency walk"),
+            "{error}"
+        );
+        assert!(error.contains("narrower module or symbol"), "{error}");
+    }
+}
+
+#[test]
 fn compact_queries_never_read_heavy_columns_and_full_detail_is_explicit() {
     let workspace = Workspace::new();
     workspace.write(
@@ -185,7 +218,7 @@ fn diagnostics_summarize_directories_and_page_exact_files() {
     assert_eq!(summary["total_unresolved"], 540);
     assert_eq!(summary["top_files"].as_array().unwrap().len(), 5);
     assert!(summary.get("resolution").is_none());
-    assert_eq!(summary["cycles"]["total"], 0);
+    assert_eq!(summary["cycles"]["omitted"], true);
     let mut query = options(7);
     let mut lines = Vec::new();
     loop {
@@ -243,10 +276,13 @@ fn sql_pages_count_full_results_preserve_order_and_reject_writes() {
             .collect::<Vec<_>>()
     );
     assert!(reader::analyze_paged(&conn, "DELETE FROM nodes", None, &options(8)).is_err());
-    assert!(
-        reader::analyze_paged(&conn, "WITH n AS (SELECT 1) DELETE FROM nodes", None, &options(8))
-            .is_err()
-    );
+    assert!(reader::analyze_paged(
+        &conn,
+        "WITH n AS (SELECT 1) DELETE FROM nodes",
+        None,
+        &options(8)
+    )
+    .is_err());
     assert!(reader::analyze_paged(&conn, "SELECT 1; SELECT 2", None, &options(8)).is_err());
     assert_eq!(
         conn.query_row(
@@ -341,7 +377,8 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         body
     );
     let finished = SourceOptions::resolve(&policy, Some(true), None, None, 62).unwrap();
-    let empty = symbols::explain_paged(&conn, &workspace.0, "selected", None, &finished, &query).unwrap();
+    let empty =
+        symbols::explain_paged(&conn, &workspace.0, "selected", None, &finished, &query).unwrap();
     assert_eq!(empty["source"], "");
     assert!(empty["source_preview"]["end_line"].is_null());
     assert!(
@@ -491,29 +528,54 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
     workspace.write("pkg/b.py", "def b(): from pkg.a import a; a()\n");
     let conn = workspace.build();
 
-    // analyze with include_cycles = Some(false)
-    let summary_no_cycles = reader::analyze_paged(&conn, "pkg", Some(false), &options(10)).unwrap();
+    let summary_no_cycles = reader::analyze_paged(&conn, "pkg", None, &options(10)).unwrap();
     assert_eq!(summary_no_cycles["cycles"]["omitted"], true);
 
     // analyze with include_cycles = Some(true)
-    let summary_with_cycles = reader::analyze_paged(&conn, "pkg", Some(true), &options(10)).unwrap();
+    let summary_with_cycles =
+        reader::analyze_paged(&conn, "pkg", Some(true), &options(10)).unwrap();
     assert_eq!(summary_with_cycles["cycles"]["omitted"].is_null(), true);
     assert!(summary_with_cycles["cycles"]["total"].is_number());
 
     // explain direction filtering
-    let source = SourceOptions::resolve(&ResponsePolicy::default(), Some(false), None, None, 0).unwrap();
-    let both = symbols::explain_paged(&conn, &workspace.0, "a", Some("both"), &source, &options(10)).unwrap();
+    let source =
+        SourceOptions::resolve(&ResponsePolicy::default(), Some(false), None, None, 0).unwrap();
+    let both = symbols::explain_paged(
+        &conn,
+        &workspace.0,
+        "a",
+        Some("both"),
+        &source,
+        &options(10),
+    )
+    .unwrap();
     assert!(both["incoming"]["total"].as_u64().unwrap() >= 1);
     assert!(both["outgoing"]["total"].as_u64().unwrap() >= 1);
     assert_eq!(both["incoming"]["omitted"].is_null(), true);
     assert_eq!(both["outgoing"]["omitted"].is_null(), true);
 
-    let incoming_only = symbols::explain_paged(&conn, &workspace.0, "a", Some("incoming"), &source, &options(10)).unwrap();
+    let incoming_only = symbols::explain_paged(
+        &conn,
+        &workspace.0,
+        "a",
+        Some("incoming"),
+        &source,
+        &options(10),
+    )
+    .unwrap();
     assert!(incoming_only["incoming"]["total"].as_u64().unwrap() >= 1);
     assert_eq!(incoming_only["incoming"]["omitted"].is_null(), true);
     assert_eq!(incoming_only["outgoing"]["omitted"], true);
 
-    let outgoing_only = symbols::explain_paged(&conn, &workspace.0, "a", Some("outgoing"), &source, &options(10)).unwrap();
+    let outgoing_only = symbols::explain_paged(
+        &conn,
+        &workspace.0,
+        "a",
+        Some("outgoing"),
+        &source,
+        &options(10),
+    )
+    .unwrap();
     assert_eq!(outgoing_only["incoming"]["omitted"], true);
     assert!(outgoing_only["outgoing"]["total"].as_u64().unwrap() >= 1);
     assert_eq!(outgoing_only["outgoing"]["omitted"].is_null(), true);
@@ -529,7 +591,10 @@ fn tests_reports_unresolved_references_in_symbol_scope() {
     let conn = workspace.build();
     let res = symbols::tests_paged(&conn, "test_one", "inbound", &options(10)).unwrap();
     assert!(res["unresolved_references"].as_u64().unwrap() >= 1);
-    assert!(res["scope"].as_str().unwrap().contains("unresolved reference(s)"));
+    assert!(res["scope"]
+        .as_str()
+        .unwrap()
+        .contains("unresolved reference(s)"));
 }
 
 #[test]

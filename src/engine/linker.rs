@@ -92,6 +92,17 @@ pub fn link_with_root(
             if !namespaces.contains(&local_module) {
                 namespaces.push(local_module);
             }
+            if let Some((_, src_rel)) = local_path.split_once("/src/") {
+                let src_module = profile.module_name(src_rel);
+                if !namespaces.contains(&src_module) {
+                    namespaces.push(src_module);
+                }
+            } else if let Some(src_rel) = local_path.strip_prefix("src/") {
+                let src_module = profile.module_name(src_rel);
+                if !namespaces.contains(&src_module) {
+                    namespaces.push(src_module);
+                }
+            }
             for ns in namespaces {
                 let list = modules_by_namespace
                     .entry(profile.family())
@@ -167,8 +178,19 @@ pub fn link_with_root(
                     aliases.entry(scope).or_default().entry(alias.clone()).or_default().extend(targets);
                 }
                 let resolved=modules.len()==1 && (r.alias.is_none() || candidates.len()==1);
-                let status=if resolved {"resolved"}else if modules.len()>1 || candidates.len()>1 {"ambiguous"}else{"unresolved"};
-                let evidence=format!("import {symbol}: {} modules, {} alias targets",modules.len(),candidates.len());
+                let external = if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
+                    profile.and_then(|p| p.external_import(r.module.as_deref().unwrap_or(&r.expression)))
+                } else {
+                    None
+                };
+                let status=if resolved {"resolved"}else if modules.len()>1 || candidates.len()>1 {"ambiguous"}else if external.is_some() {"external"}else{"unresolved"};
+                let evidence=if let Some(kind)=external {
+                    format!("{kind}; no indexed provider for {symbol}")
+                } else if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
+                    format!("no indexed provider for absolute import {symbol}; external dependency or missing source remains unverified")
+                } else {
+                    format!("import {symbol}: {} modules, {} alias targets",modules.len(),candidates.len())
+                };
                 graph.coverage.push(Coverage {
                     path: path.clone(),
                     line: r.line,

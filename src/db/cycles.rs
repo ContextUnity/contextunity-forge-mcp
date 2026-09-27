@@ -72,7 +72,7 @@ pub fn cycles(conn: &Connection, filter_path: Option<&str>) -> Result<Value> {
             let id: String = lookup.query_row([node], |r| r.get(0))?;
             bytes = bytes.saturating_add(id.len().saturating_mul(6) + 4);
             if bytes > 8 * 1024 * 1024 {
-                bail!("cycle result exceeds8MiB serialized bound");
+                bail!("cycle result exceeds the 8 MiB output budget; analyze an indexed file or directory path to narrow the scope, or use code_map_analyze with include_cycles=false for diagnostic totals");
             }
             ids.push(id);
         }

@@ -235,7 +235,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Search symbols with FTS terms or '*' substring/prefix patterns. Compact pages default to 30; max 100."
+        description = "Search symbols with FTS terms or '*' patterns. Prefer prefix*; a leading wildcard can scan the full index. Compact pages default to 30; max 100."
     )]
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         self.responding(|policy| {
@@ -281,7 +281,9 @@ impl Server {
             })
         })
     }
-    #[tool(description = "Query a paged slice, unwired nodes or the documented Cypher subset.")]
+    #[tool(
+        description = "Query a paged slice, unwired nodes or the documented Cypher subset. Pass limit as a separate argument, not inside Cypher."
+    )]
     fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
         self.responding(|policy| {
             self.read(|c| {
@@ -296,17 +298,12 @@ impl Server {
         })
     }
     #[tool(
-        description = "Summarize workspace/directory diagnostics and cycles, page exact-file diagnostics, or run bounded read-only SELECT/WITH SQL."
+        description = "Summarize workspace diagnostics with target='', or an indexed file/directory path. Cycles are omitted by default; set include_cycles=true to compute them. Page exact-file diagnostics or run bounded read-only SELECT/WITH SQL."
     )]
     fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
         self.responding(|policy| {
             self.read(|c| {
-                reader::analyze_paged(
-                    c,
-                    &p.target,
-                    p.include_cycles,
-                    &p.page.resolve(policy)?,
-                )
+                reader::analyze_paged(c, &p.target, p.include_cycles, &p.page.resolve(policy)?)
             })
         })
     }
@@ -364,7 +361,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Initialize or validate the adapter; topics init,adapter,docs,validate. The response policy sets compact/full, page_size, max_output_bytes and source_context defaults."
+        description = "Guide topics init,adapter,docs,query,validate. The query topic selects narrow graph tools and explains page continuation and budget recovery."
     )]
     fn forge_guide(&self, Parameters(p): Parameters<Guide>) -> CallToolResult {
         if p.topic == "init" {
@@ -392,7 +389,7 @@ impl Server {
 #[tool_handler(
     name = "contextunity-forge-mcp",
     version = "0.2.0",
-    instructions = "Native workspace code graph. Responses are at most 64 KiB. Compact pages default to 30 (maximum 100). Pass generation with continuation offsets. Inspect coverage before absence claims. Use forge_guide for onboarding."
+    instructions = "Native workspace code graph. Responses are at most 64 KiB. Compact pages default to 30 (maximum 100). Pass generation with continuation offsets. Inspect coverage before absence claims. Use forge_guide topic=query for tool selection and budget recovery."
 )]
 impl ServerHandler for Server {
     async fn call_tool(

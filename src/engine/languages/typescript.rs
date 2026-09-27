@@ -308,6 +308,9 @@ impl LanguageProfile for TypeScript {
             Some(ImportPath::absolute(module.replace('/', ".")))
         }
     }
+    fn external_import(&self, module: &str) -> Option<&'static str> {
+        module.starts_with("node:").then_some("Node.js built-in module")
+    }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
         let mut file = FileContext::default();
         let mut c = root.walk();

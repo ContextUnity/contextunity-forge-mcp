@@ -290,6 +290,32 @@ fn c_and_cpp_collect_every_pointer_declarator() {
 
 #[cfg(feature = "lang-php")]
 #[test]
+fn php_grouped_use_keeps_its_namespace_prefix() {
+    let w = Workspace::new();
+    w.write(
+        "main.php",
+        "<?php\nuse Vendor\\Package\\{Alpha, Beta as B};\nfunction run() { return new Alpha(); }\n",
+    );
+    w.build();
+    let imports = strings(
+        &w.open(),
+        "SELECT expression FROM resolution_coverage WHERE path='main.php' AND line=2 ORDER BY expression",
+    );
+    assert_eq!(imports, ["Vendor\\Package\\Alpha", "Vendor\\Package\\Beta"]);
+    w.write(
+        "main.php",
+        "<?php\nuse Vendor\\Other\\{Alpha, Beta as B};\nfunction run() { return new Alpha(); }\n",
+    );
+    w.delta_matches_cold(&["main.php"]);
+    let imports = strings(
+        &w.open(),
+        "SELECT expression FROM resolution_coverage WHERE path='main.php' AND line=2 ORDER BY expression",
+    );
+    assert_eq!(imports, ["Vendor\\Other\\Alpha", "Vendor\\Other\\Beta"]);
+}
+
+#[cfg(feature = "lang-php")]
+#[test]
 fn php_receiver_syntax_preserves_variable_identity() {
     for expression in [
         "$Service->helper()",

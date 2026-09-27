@@ -110,8 +110,16 @@ pub trait LanguageProfile: Send + Sync {
         false
     }
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath>;
-    fn normalize_import_with_root(&self, _root: Option<&Path>, owner: &str, module: &str) -> Option<ImportPath> {
+    fn normalize_import_with_root(
+        &self,
+        _root: Option<&Path>,
+        owner: &str,
+        module: &str,
+    ) -> Option<ImportPath> {
         self.normalize_import(owner, module)
+    }
+    fn external_import(&self, _module: &str) -> Option<&'static str> {
+        None
     }
     fn builtin(&self, _name: &str) -> bool {
         false

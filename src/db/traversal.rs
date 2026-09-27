@@ -7,6 +7,50 @@ use serde_json::{json, Value};
 const FORWARD_DEPENDENCIES: &str =
     "'calls','inherits','implements','mutates','handles','references'";
 const REVERSE_DEPENDENCIES: &str = "'decorates'";
+const MAX_DEEP_TRAVERSAL_FRONTIER: usize = 1000;
+
+pub(super) fn immediate_links(
+    conn: &Connection,
+    id: &str,
+    inbound: bool,
+    structural: bool,
+) -> Result<usize> {
+    let (forward, reverse) = if inbound {
+        ("dst_public_id", "src_public_id")
+    } else {
+        ("src_public_id", "dst_public_id")
+    };
+    let extra = if structural {
+        ",'imports','contains','documents'"
+    } else {
+        ""
+    };
+    let forward = paging::count(
+        conn,
+        &format!("SELECT count(*) FROM edges WHERE {forward}=?1 AND kind IN({FORWARD_DEPENDENCIES}{extra})"),
+        &[&id],
+    )?;
+    let reverse = paging::count(
+        conn,
+        &format!(
+            "SELECT count(*) FROM edges WHERE {reverse}=?1 AND kind IN({REVERSE_DEPENDENCIES})"
+        ),
+        &[&id],
+    )?;
+    Ok(forward.saturating_add(reverse))
+}
+
+fn admit_traversal(conn: &Connection, id: &str, depth: u32, inbound: bool) -> Result<()> {
+    if depth <= 1 {
+        return Ok(());
+    }
+    let immediate = immediate_links(conn, id, inbound, true)?;
+    if immediate > MAX_DEEP_TRAVERSAL_FRONTIER {
+        bail!("selector {id} has {immediate} immediate graph links; depth {depth} would expand a broad graph before pagination. Retry with depth=1 and page the result, or select a narrower module or symbol. Reducing limit alone does not reduce traversal work");
+    }
+    Ok(())
+}
+
 pub(super) fn dependency_steps(inbound: bool, bounded: bool, structural: bool) -> String {
     let (from, to) = if inbound {
         ("dst_public_id", "src_public_id")
@@ -35,6 +79,7 @@ pub fn traverse(
     reader::validate_limit(limit)?;
     let node = reader::select(conn, selector)?;
     let id = node["id"].as_str().unwrap_or("");
+    admit_traversal(conn, id, depth, inbound)?;
     let size = limit + 1;
     let steps = dependency_steps(inbound, true, true);
     let sql = format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}) SELECT n.*,min(w.depth) distance FROM walk w JOIN nodes n ON n.id=w.id GROUP BY n.id ORDER BY distance,n.id LIMIT ?3");
@@ -65,7 +110,7 @@ pub fn removal(conn: &Connection, selector: &str) -> Result<Value> {
     let sql = format!("SELECT e.* FROM edges e WHERE e.dst_public_id IN(SELECT value FROM json_each(?1)) AND e.src_public_id NOT IN(SELECT value FROM json_each(?1)) AND e.kind NOT IN('contains','references_doc',{REVERSE_DEPENDENCIES}) UNION SELECT e.* FROM edges e WHERE e.src_public_id IN(SELECT value FROM json_each(?1)) AND e.dst_public_id NOT IN(SELECT value FROM json_each(?1)) AND e.kind IN({REVERSE_DEPENDENCIES}) ORDER BY path,line");
     let callers = reader::rows(conn, &sql, &[&encoded], 1001)?;
     let unresolved: i64 = conn.query_row(
-        "SELECT count(*)FROM resolution_coverage WHERE status!='resolved'",
+        "SELECT count(*)FROM resolution_coverage WHERE status IN('unresolved','ambiguous')",
         [],
         |r| r.get(0),
     )?;
@@ -124,7 +169,7 @@ fn cypher(conn: &Connection, query: &str, limit: usize) -> Result<Value> {
             json!({"rows":reader::rows(conn,"SELECT * FROM nodes WHERE kind=?1 ORDER BY node_id",&[&kind],limit)?}),
         );
     }
-    bail!("supported Cypher subset: MATCH (n) RETURN n; MATCH (n:kind) RETURN n; MATCH (a)-[e]->(b) RETURN a,e,b")
+    bail!("supported Cypher subset: MATCH (n) RETURN n; MATCH (n:kind) RETURN n; MATCH (a)-[e]->(b) RETURN a,e,b. Pass limit as a separate tool argument, not a Cypher LIMIT clause")
 }
 
 pub fn traverse_paged(
@@ -140,6 +185,7 @@ pub fn traverse_paged(
     paging::generation(conn, options)?;
     let node = reader::select_detail(conn, selector, options.detail)?;
     let id = node["id"].as_str().unwrap_or("");
+    admit_traversal(conn, id, depth, inbound)?;
     let steps = dependency_steps(inbound, true, true);
     let sql = format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}), reached(id,distance) AS (SELECT id,min(depth) FROM walk GROUP BY id) SELECT {},r.distance FROM reached r JOIN nodes n ON n.id=r.id ORDER BY r.distance,n.id", paging::nodes("n", options.detail));
     Ok(
@@ -174,7 +220,7 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
     )?;
     let unresolved = paging::count(
         conn,
-        "SELECT count(*) FROM resolution_coverage WHERE status!='resolved'",
+        "SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous')",
         &[],
     )?;
     let errors = paging::count(conn, "SELECT count(*) FROM errors", &[])?;
@@ -231,7 +277,7 @@ fn cypher_paged(conn: &Connection, query: &str, options: &QueryOptions) -> Resul
             options,
         )?
     } else {
-        bail!("supported Cypher subset: MATCH (n) RETURN n; MATCH (n:kind) RETURN n; MATCH (a)-[e]->(b) RETURN a,e,b");
+        bail!("supported Cypher subset: MATCH (n) RETURN n; MATCH (n:kind) RETURN n; MATCH (a)-[e]->(b) RETURN a,e,b. Pass limit as a separate tool argument, not a Cypher LIMIT clause");
     };
     Ok(json!({"rows":rows}))
 }

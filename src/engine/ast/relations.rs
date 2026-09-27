@@ -268,8 +268,6 @@ pub(crate) fn implicit_fields(facts: &mut Facts) {
             is_test,
             language: &language,
         };
-        add_field(
-            facts, &owner_meta, &name, line, line,
-        );
+        add_field(facts, &owner_meta, &name, line, line);
     }
 }

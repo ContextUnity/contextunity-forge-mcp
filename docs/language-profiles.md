@@ -48,10 +48,16 @@ belong to the selected module and compatible language family.
 Owner-workspace namespace alternatives are considered before linked providers,
 including Rust inline modules represented inside a parent module file.
 
-Missing or ambiguous imports remain visible in resolution coverage. Discovery
-by suffix is insufficient evidence for an exact dependency. Names of standard
-library methods alone are also insufficient: the caller may use a user-defined
-object, local binding or imported alias.
+Missing or ambiguous imports remain visible in resolution coverage. A known
+external import has status `external` when no indexed provider matches: Rust
+`std::`, `core::` and `alloc::` paths and explicit JavaScript/TypeScript `node:`
+paths have this classification. Unknown absolute imports stay `unresolved` with
+evidence that the provider may be external or missing. An `external` import has
+no invented graph edge; calls through it can still be unresolved. Overview and
+analysis count known external imports separately from unresolved references.
+Discovery by suffix is insufficient evidence for an exact dependency. Names of
+standard library methods alone are also insufficient: the caller may use a
+user-defined object, local binding or imported alias.
 
 Adapter scan roots describe which paths enter the index. They do not declare
 runtime import roots or compiler package mappings. Resolving `src` layouts,
@@ -137,14 +143,14 @@ the compiled provider set invalidates existing index semantics.
 | `python` | `.py`, `.pyi` | Lexical imports, functions/classes, decorators and Python receivers; dynamic receiver types remain unknown |
 | `typescript` | `.ts`, `.tsx` | TypeScript/TSX grammar, symbols, imports, inheritance and routes; no compiler type inference |
 | `javascript` | `.js`, `.jsx` | JavaScript/JSX grammar with shared ECMAScript extraction; dynamic imports remain conservative |
-| `vue` | `.vue` | Script blocks with absolute source coordinates; template/style dependencies are outside extraction |
+| `vue` | `.vue` | Script blocks with absolute source coordinates and basic template bindings; styles and complex expressions remain outside extraction |
 | `rust` | `.rs` | Syntax, imports, traits/implementations and test attributes; macro expansion and Cargo configuration are not compiler-resolved |
-| `go` | `.go` | Declarations and local calls; same-package resolution across files remains limited |
+| `go` | `.go` | Declarations, local calls and same-package sibling function links; build tags and external test packages remain unmodeled |
 | `proto` | `.proto` | Messages, enums, services and RPC type references; broader package/public-import resolution remains limited |
 | `java` | `.java` | Declarations, local calls and inheritance; classpath imports and overload/type resolution are conservative |
 | `csharp` | `.cs` | Declarations, local calls and base relations; assembly/namespace imports and dynamic dispatch are conservative |
 | `kotlin` | `.kt`, `.kts` | Declarations, local calls and base relations; classpath imports, extensions and inferred receiver types are conservative |
-| `php` | `.php` | PHP grammar, declarations and supported calls/relations; autoload and dynamic dispatch remain unresolved |
+| `php` | `.php` | PHP grammar, declarations, grouped import paths and supported calls/relations; autoload and dynamic dispatch remain unresolved |
 | `ruby` | `.rb` | Declarations and supported calls; bare identifiers and metaprogramming can invoke code without explicit call syntax |
 | `c` | `.c`, `.h` | Declarations, local calls and include facts; preprocessing and function-pointer targets require additional evidence |
 | `cpp` | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | Declarations, local calls and supported bases; preprocessing, templates and implicit/operator calls remain conservative |

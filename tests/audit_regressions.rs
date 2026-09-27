@@ -233,6 +233,88 @@ fn rust_implementation_resolves_the_imported_type_alias() {
     assert_eq!(endpoints, ("Record".into(), "Save".into()));
 }
 
+#[cfg(feature = "lang-rust")]
+#[test]
+fn nested_rust_imports_retain_module_identity_and_external_scope() {
+    let w = Workspace::new();
+    w.write("src/engine/scanner.rs", "pub fn scan_reusing() {}\n");
+    w.write(
+        "src/db/writer.rs",
+        "use crate::{engine::{scanner::{self, scan_reusing as inspect}}};\nuse std::fmt::Debug;\nuse missing::Widget;\npub fn build() { scanner::scan_reusing(); inspect(); }\n",
+    );
+    w.build();
+    let conn = reader::open(&w.db(), &w.0).unwrap();
+    let calls: i64 = conn.query_row(
+        "SELECT coalesce(sum(occurrence_count),0) FROM edges WHERE kind='calls' AND path='src/db/writer.rs' AND dst_public_id LIKE '%scanner.rs%'",
+        [],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(
+        calls, 2,
+        "both nested imports must reach the indexed scanner"
+    );
+    for (expression, expected) in [
+        ("crate::engine::scanner", "resolved"),
+        ("crate::engine::scanner::scan_reusing", "resolved"),
+        ("std::fmt::Debug", "external"),
+        ("missing::Widget", "unresolved"),
+    ] {
+        let status: String = conn.query_row(
+            "SELECT status FROM resolution_coverage WHERE path='src/db/writer.rs' AND expression=?1",
+            [expression],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, expected, "{expression}");
+    }
+    let overview = reader::overview(&conn).unwrap();
+    assert_eq!(overview["counts"][0]["unresolved"], 1);
+    assert_eq!(overview["counts"][0]["external_imports"], 1);
+    let analysis = reader::analyze(&conn, "src/db/writer.rs").unwrap();
+    assert_eq!(analysis["total_unresolved"], 1);
+    assert_eq!(analysis["total_external_imports"], 1);
+    let options = contextunity_forge_mcp::core::response::QueryOptions {
+        limit: 30,
+        offset: 0,
+        detail: contextunity_forge_mcp::core::response::Detail::Compact,
+        generation: None,
+    };
+    let paged = reader::analyze_paged(&conn, "src/db/writer.rs", None, &options).unwrap();
+    assert_eq!(paged["external_imports"]["total"], 1);
+    assert_eq!(paged["resolution"]["total"], 1);
+    drop(conn);
+    w.write("src/engine/scanner.rs", "\npub fn scan_reusing() {}\n");
+    writer::delta(&w.0, &w.db(), &[PathBuf::from("src/engine/scanner.rs")]).unwrap();
+    let incremental = graph_snapshot(&w, &w.db());
+    let cold = w.0.join(".forge/cold.sqlite");
+    writer::build(&w.0, &cold, None).unwrap();
+    assert_eq!(incremental, graph_snapshot(&w, &cold));
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn explicit_node_builtin_import_is_separate_from_missing_package() {
+    let w = Workspace::new();
+    w.write(
+        "src/main.ts",
+        "import { readFileSync } from 'node:fs';\nimport { unknown } from 'missing-package';\nexport function run() { return readFileSync('x'); }\n",
+    );
+    w.build();
+    let conn = reader::open(&w.db(), &w.0).unwrap();
+    let statuses = reader::rows(
+        &conn,
+        "SELECT expression,status FROM resolution_coverage WHERE path='src/main.ts' AND line IN (1,2) ORDER BY expression",
+        &[],
+        10,
+    ).unwrap();
+    assert_eq!(
+        statuses,
+        vec![
+            serde_json::json!({"expression":"readFileSync","status":"external"}),
+            serde_json::json!({"expression":"unknown","status":"unresolved"}),
+        ]
+    );
+}
+
 #[cfg(feature = "lang-python")]
 #[test]
 fn decorators_have_consistent_dependency_direction() {

@@ -1,0 +1,923 @@
+{
+  "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+  "cpu_count": 16,
+  "rayon_threads": 4,
+  "warmup": 1,
+  "samples": 5,
+  "binaries": {
+    "baseline": {
+      "path": "baseline-forge",
+      "sha256": "b951d20565d0d46208e93066c71430ed960e4e10d67df218faf11355f29a1d71"
+    },
+    "candidate": {
+      "path": "target/release/contextunity-forge-mcp",
+      "sha256": "5a81c194c17a7046f858fce2585f926819efd129dce3a7e4a3cab71c74c1bc87"
+    }
+  },
+  "fixtures": {
+    "python": {
+      "files": 100,
+      "declarations": 1000,
+      "samples": {
+        "baseline": [
+          {
+            "extract_ms": 7.245487,
+            "link_ms": 1.9806540000000001,
+            "persist_ms": 35.950471,
+            "elapsed_ms": 112.721441,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.124569,
+            "link_ms": 1.6535659999999999,
+            "persist_ms": 30.170144999999998,
+            "elapsed_ms": 104.429533,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.323448,
+            "link_ms": 1.779464,
+            "persist_ms": 31.819764,
+            "elapsed_ms": 109.227986,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.648341,
+            "link_ms": 1.752183,
+            "persist_ms": 34.957169,
+            "elapsed_ms": 106.925226,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.998425999999999,
+            "link_ms": 1.93122,
+            "persist_ms": 34.653286,
+            "elapsed_ms": 121.640572,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ],
+        "candidate": [
+          {
+            "extract_ms": 6.136146,
+            "link_ms": 2.3392690000000003,
+            "persist_ms": 33.252385000000004,
+            "elapsed_ms": 114.88222400000001,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.754471,
+            "link_ms": 2.216568,
+            "persist_ms": 37.861132,
+            "elapsed_ms": 120.734926,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.6488320000000005,
+            "link_ms": 1.741622,
+            "persist_ms": 29.752919,
+            "elapsed_ms": 103.842726,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.427976,
+            "link_ms": 1.8110730000000002,
+            "persist_ms": 34.671971000000006,
+            "elapsed_ms": 112.608127,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.233093,
+            "link_ms": 1.9787899999999998,
+            "persist_ms": 33.902461,
+            "elapsed_ms": 111.193331,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ]
+      },
+      "medians": {
+        "baseline": {
+          "extract_ms": 7.124569,
+          "link_ms": 1.779464,
+          "persist_ms": 34.653286,
+          "elapsed_ms": 109.227986,
+          "nodes": 1101,
+          "edges": 1100
+        },
+        "candidate": {
+          "extract_ms": 6.6488320000000005,
+          "link_ms": 1.9787899999999998,
+          "persist_ms": 33.902461,
+          "elapsed_ms": 112.608127,
+          "nodes": 1101,
+          "edges": 1100
+        }
+      },
+      "graph_equal": {
+        "nodes": true,
+        "edges": true,
+        "coverage": true
+      }
+    },
+    "typescript": {
+      "files": 100,
+      "declarations": 1000,
+      "samples": {
+        "baseline": [
+          {
+            "extract_ms": 12.943757,
+            "link_ms": 2.337145,
+            "persist_ms": 39.915665000000004,
+            "elapsed_ms": 128.066364,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 12.821667,
+            "link_ms": 1.965684,
+            "persist_ms": 33.529898,
+            "elapsed_ms": 125.82671300000001,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 13.618389,
+            "link_ms": 2.719586,
+            "persist_ms": 41.428266,
+            "elapsed_ms": 141.314725,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 12.649993,
+            "link_ms": 2.103885,
+            "persist_ms": 34.654708,
+            "elapsed_ms": 123.796075,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 14.043239000000002,
+            "link_ms": 2.236195,
+            "persist_ms": 34.923605,
+            "elapsed_ms": 125.00929199999999,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ],
+        "candidate": [
+          {
+            "extract_ms": 10.415511,
+            "link_ms": 6.289815,
+            "persist_ms": 37.179186,
+            "elapsed_ms": 124.49301899999999,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 14.798442999999999,
+            "link_ms": 2.4451989999999997,
+            "persist_ms": 48.254883,
+            "elapsed_ms": 156.59717,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 15.287815,
+            "link_ms": 2.798545,
+            "persist_ms": 47.284884,
+            "elapsed_ms": 145.46772199999998,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 10.727179,
+            "link_ms": 2.1571659999999997,
+            "persist_ms": 37.815415,
+            "elapsed_ms": 130.045444,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 12.376397,
+            "link_ms": 2.39779,
+            "persist_ms": 39.486185,
+            "elapsed_ms": 136.515049,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ]
+      },
+      "medians": {
+        "baseline": {
+          "extract_ms": 12.943757,
+          "link_ms": 2.236195,
+          "persist_ms": 34.923605,
+          "elapsed_ms": 125.82671300000001,
+          "nodes": 1101,
+          "edges": 1100
+        },
+        "candidate": {
+          "extract_ms": 12.376397,
+          "link_ms": 2.4451989999999997,
+          "persist_ms": 39.486185,
+          "elapsed_ms": 136.515049,
+          "nodes": 1101,
+          "edges": 1100
+        }
+      },
+      "graph_equal": {
+        "nodes": true,
+        "edges": true,
+        "coverage": true
+      }
+    },
+    "javascript": {
+      "files": 100,
+      "declarations": 1000,
+      "samples": {
+        "baseline": [
+          {
+            "extract_ms": 16.586763,
+            "link_ms": 2.891039,
+            "persist_ms": 43.381938000000005,
+            "elapsed_ms": 144.873001,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 15.835287,
+            "link_ms": 2.33974,
+            "persist_ms": 36.426548000000004,
+            "elapsed_ms": 140.130353,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 13.454269,
+            "link_ms": 2.099658,
+            "persist_ms": 46.92349299999999,
+            "elapsed_ms": 146.67281400000002,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 16.993149,
+            "link_ms": 2.436773,
+            "persist_ms": 40.547045,
+            "elapsed_ms": 140.964144,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 12.024995,
+            "link_ms": 2.1082639999999997,
+            "persist_ms": 35.51534,
+            "elapsed_ms": 124.602586,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ],
+        "candidate": [
+          {
+            "extract_ms": 11.934134,
+            "link_ms": 2.529047,
+            "persist_ms": 45.271079,
+            "elapsed_ms": 149.38702,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 12.086781,
+            "link_ms": 2.681594,
+            "persist_ms": 46.069814,
+            "elapsed_ms": 142.694606,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 12.42008,
+            "link_ms": 2.4633730000000003,
+            "persist_ms": 35.834102,
+            "elapsed_ms": 128.315193,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 10.041366,
+            "link_ms": 2.1586779999999997,
+            "persist_ms": 36.884269999999994,
+            "elapsed_ms": 124.127791,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 10.335901,
+            "link_ms": 2.143661,
+            "persist_ms": 42.600024,
+            "elapsed_ms": 135.110361,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ]
+      },
+      "medians": {
+        "baseline": {
+          "extract_ms": 15.835287,
+          "link_ms": 2.33974,
+          "persist_ms": 40.547045,
+          "elapsed_ms": 140.964144,
+          "nodes": 1101,
+          "edges": 1100
+        },
+        "candidate": {
+          "extract_ms": 11.934134,
+          "link_ms": 2.4633730000000003,
+          "persist_ms": 42.600024,
+          "elapsed_ms": 135.110361,
+          "nodes": 1101,
+          "edges": 1100
+        }
+      },
+      "graph_equal": {
+        "nodes": true,
+        "edges": true,
+        "coverage": true
+      }
+    },
+    "rust": {
+      "files": 100,
+      "declarations": 1000,
+      "samples": {
+        "baseline": [
+          {
+            "extract_ms": 12.143709000000001,
+            "link_ms": 2.938208,
+            "persist_ms": 44.800832,
+            "elapsed_ms": 175.92139300000002,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 12.038300999999999,
+            "link_ms": 2.1901479999999998,
+            "persist_ms": 45.250108999999995,
+            "elapsed_ms": 142.322064,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.5182,
+            "link_ms": 1.778211,
+            "persist_ms": 29.963626,
+            "elapsed_ms": 109.294863,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 8.003685,
+            "link_ms": 1.758525,
+            "persist_ms": 32.667423,
+            "elapsed_ms": 120.188165,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 8.925143,
+            "link_ms": 2.232127,
+            "persist_ms": 36.360141999999996,
+            "elapsed_ms": 129.082429,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ],
+        "candidate": [
+          {
+            "extract_ms": 9.131081,
+            "link_ms": 2.1492809999999998,
+            "persist_ms": 39.720015999999994,
+            "elapsed_ms": 140.656755,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 10.083336,
+            "link_ms": 2.856294,
+            "persist_ms": 48.083159,
+            "elapsed_ms": 137.65938599999998,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.951041,
+            "link_ms": 1.810463,
+            "persist_ms": 29.706252,
+            "elapsed_ms": 104.56034,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.761324,
+            "link_ms": 1.695546,
+            "persist_ms": 33.025988,
+            "elapsed_ms": 105.943686,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.969872,
+            "link_ms": 1.9934280000000002,
+            "persist_ms": 32.952149,
+            "elapsed_ms": 109.90622499999999,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ]
+      },
+      "medians": {
+        "baseline": {
+          "extract_ms": 8.925143,
+          "link_ms": 2.1901479999999998,
+          "persist_ms": 36.360141999999996,
+          "elapsed_ms": 129.082429,
+          "nodes": 1101,
+          "edges": 1100
+        },
+        "candidate": {
+          "extract_ms": 7.969872,
+          "link_ms": 1.9934280000000002,
+          "persist_ms": 33.025988,
+          "elapsed_ms": 109.90622499999999,
+          "nodes": 1101,
+          "edges": 1100
+        }
+      },
+      "graph_equal": {
+        "nodes": true,
+        "edges": true,
+        "coverage": true
+      }
+    },
+    "go": {
+      "files": 100,
+      "declarations": 1000,
+      "samples": {
+        "baseline": [
+          {
+            "extract_ms": 7.348661,
+            "link_ms": 1.855768,
+            "persist_ms": 28.860257,
+            "elapsed_ms": 98.590317,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.850872,
+            "link_ms": 1.600246,
+            "persist_ms": 28.909580000000002,
+            "elapsed_ms": 100.062161,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.402762999999999,
+            "link_ms": 1.759446,
+            "persist_ms": 27.862667000000002,
+            "elapsed_ms": 96.51767,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 9.755407,
+            "link_ms": 1.850357,
+            "persist_ms": 32.451856,
+            "elapsed_ms": 109.04355,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 10.497907000000001,
+            "link_ms": 1.933835,
+            "persist_ms": 35.71621,
+            "elapsed_ms": 120.4611,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ],
+        "candidate": [
+          {
+            "extract_ms": 6.595522000000001,
+            "link_ms": 1.823176,
+            "persist_ms": 35.617402999999996,
+            "elapsed_ms": 117.454222,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.185719,
+            "link_ms": 2.023655,
+            "persist_ms": 40.019780999999995,
+            "elapsed_ms": 120.3711,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 5.991884000000001,
+            "link_ms": 1.690486,
+            "persist_ms": 31.600963000000004,
+            "elapsed_ms": 108.86323900000001,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.033102,
+            "link_ms": 1.736162,
+            "persist_ms": 31.606191999999997,
+            "elapsed_ms": 106.402812,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 5.610704999999999,
+            "link_ms": 2.04252,
+            "persist_ms": 27.713445999999998,
+            "elapsed_ms": 103.758898,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ]
+      },
+      "medians": {
+        "baseline": {
+          "extract_ms": 7.402762999999999,
+          "link_ms": 1.850357,
+          "persist_ms": 28.909580000000002,
+          "elapsed_ms": 100.062161,
+          "nodes": 1101,
+          "edges": 1100
+        },
+        "candidate": {
+          "extract_ms": 6.033102,
+          "link_ms": 1.823176,
+          "persist_ms": 31.606191999999997,
+          "elapsed_ms": 108.86323900000001,
+          "nodes": 1101,
+          "edges": 1100
+        }
+      },
+      "graph_equal": {
+        "nodes": true,
+        "edges": true,
+        "coverage": true
+      }
+    },
+    "proto": {
+      "files": 100,
+      "declarations": 1000,
+      "samples": {
+        "baseline": [
+          {
+            "extract_ms": 10.431180999999999,
+            "link_ms": 2.3844640000000004,
+            "persist_ms": 38.373318,
+            "elapsed_ms": 122.67902,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 8.743099,
+            "link_ms": 2.1595400000000002,
+            "persist_ms": 35.018434,
+            "elapsed_ms": 118.455449,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 10.18103,
+            "link_ms": 2.1692679999999998,
+            "persist_ms": 36.519804,
+            "elapsed_ms": 127.98586300000001,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 11.722294,
+            "link_ms": 2.167445,
+            "persist_ms": 36.369882,
+            "elapsed_ms": 129.975283,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 10.360949,
+            "link_ms": 1.881988,
+            "persist_ms": 34.211794,
+            "elapsed_ms": 137.489195,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ],
+        "candidate": [
+          {
+            "extract_ms": 9.541244,
+            "link_ms": 2.476127,
+            "persist_ms": 40.001216,
+            "elapsed_ms": 130.46194,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.954052,
+            "link_ms": 2.0696909999999997,
+            "persist_ms": 37.222739,
+            "elapsed_ms": 128.65395199999998,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.156649,
+            "link_ms": 2.044293,
+            "persist_ms": 37.546219,
+            "elapsed_ms": 129.641243,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.354011,
+            "link_ms": 2.0280720000000003,
+            "persist_ms": 35.718253999999995,
+            "elapsed_ms": 123.199601,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 8.545797,
+            "link_ms": 2.198664,
+            "persist_ms": 39.814724000000005,
+            "elapsed_ms": 129.93189999999998,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ]
+      },
+      "medians": {
+        "baseline": {
+          "extract_ms": 10.360949,
+          "link_ms": 2.167445,
+          "persist_ms": 36.369882,
+          "elapsed_ms": 127.98586300000001,
+          "nodes": 1101,
+          "edges": 1100
+        },
+        "candidate": {
+          "extract_ms": 7.954052,
+          "link_ms": 2.0696909999999997,
+          "persist_ms": 37.546219,
+          "elapsed_ms": 129.641243,
+          "nodes": 1101,
+          "edges": 1100
+        }
+      },
+      "graph_equal": {
+        "nodes": true,
+        "edges": true,
+        "coverage": true
+      }
+    },
+    "vue": {
+      "files": 100,
+      "declarations": 1000,
+      "samples": {
+        "baseline": [
+          {
+            "extract_ms": 10.545084999999998,
+            "link_ms": 2.261833,
+            "persist_ms": 37.972441,
+            "elapsed_ms": 126.09391600000001,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 8.464813999999999,
+            "link_ms": 1.8960439999999998,
+            "persist_ms": 36.045109,
+            "elapsed_ms": 116.93914099999999,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 8.639403999999999,
+            "link_ms": 1.742735,
+            "persist_ms": 30.134098,
+            "elapsed_ms": 183.08325200000002,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.87066,
+            "link_ms": 1.59141,
+            "persist_ms": 37.579972000000005,
+            "elapsed_ms": 230.54979,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.483135,
+            "link_ms": 1.668755,
+            "persist_ms": 30.742385000000002,
+            "elapsed_ms": 233.312145,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ],
+        "candidate": [
+          {
+            "extract_ms": 11.280762,
+            "link_ms": 2.273364,
+            "persist_ms": 40.424644,
+            "elapsed_ms": 136.75917800000002,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 6.9856869999999995,
+            "link_ms": 1.871868,
+            "persist_ms": 30.362298,
+            "elapsed_ms": 116.009108,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 8.384483999999999,
+            "link_ms": 2.155303,
+            "persist_ms": 35.482839000000006,
+            "elapsed_ms": 122.436222,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 5.961094999999999,
+            "link_ms": 1.5728140000000002,
+            "persist_ms": 31.198733999999998,
+            "elapsed_ms": 237.617099,
+            "nodes": 1101,
+            "edges": 1100
+          },
+          {
+            "extract_ms": 7.801695,
+            "link_ms": 1.578174,
+            "persist_ms": 26.168003,
+            "elapsed_ms": 213.412458,
+            "nodes": 1101,
+            "edges": 1100
+          }
+        ]
+      },
+      "medians": {
+        "baseline": {
+          "extract_ms": 8.464813999999999,
+          "link_ms": 1.742735,
+          "persist_ms": 36.045109,
+          "elapsed_ms": 183.08325200000002,
+          "nodes": 1101,
+          "edges": 1100
+        },
+        "candidate": {
+          "extract_ms": 7.801695,
+          "link_ms": 1.871868,
+          "persist_ms": 31.198733999999998,
+          "elapsed_ms": 136.75917800000002,
+          "nodes": 1101,
+          "edges": 1100
+        }
+      },
+      "graph_equal": {
+        "nodes": true,
+        "edges": true,
+        "coverage": true
+      }
+    },
+    "large_ts": {
+      "files": 1,
+      "declarations": 4000,
+      "samples": {
+        "baseline": [
+          {
+            "extract_ms": 3395.894449,
+            "link_ms": 3.5531170000000003,
+            "persist_ms": 143.89702300000002,
+            "elapsed_ms": 3852.6901049999997,
+            "nodes": 4002,
+            "edges": 4001
+          },
+          {
+            "extract_ms": 3213.655872,
+            "link_ms": 3.32662,
+            "persist_ms": 132.28448500000002,
+            "elapsed_ms": 3662.5428319999996,
+            "nodes": 4002,
+            "edges": 4001
+          },
+          {
+            "extract_ms": 3364.652762,
+            "link_ms": 3.6059870000000003,
+            "persist_ms": 144.082293,
+            "elapsed_ms": 3767.625784,
+            "nodes": 4002,
+            "edges": 4001
+          },
+          {
+            "extract_ms": 3266.217561,
+            "link_ms": 2.997239,
+            "persist_ms": 122.83867099999999,
+            "elapsed_ms": 3674.353915,
+            "nodes": 4002,
+            "edges": 4001
+          },
+          {
+            "extract_ms": 2820.440295,
+            "link_ms": 3.3782780000000003,
+            "persist_ms": 128.782395,
+            "elapsed_ms": 3217.740225,
+            "nodes": 4002,
+            "edges": 4001
+          }
+        ],
+        "candidate": [
+          {
+            "extract_ms": 274.345558,
+            "link_ms": 3.126803,
+            "persist_ms": 153.045747,
+            "elapsed_ms": 728.738154,
+            "nodes": 4002,
+            "edges": 4001
+          },
+          {
+            "extract_ms": 259.269031,
+            "link_ms": 3.6068279999999997,
+            "persist_ms": 141.486891,
+            "elapsed_ms": 697.303317,
+            "nodes": 4002,
+            "edges": 4001
+          },
+          {
+            "extract_ms": 256.22308,
+            "link_ms": 3.390802,
+            "persist_ms": 154.510468,
+            "elapsed_ms": 686.704921,
+            "nodes": 4002,
+            "edges": 4001
+          },
+          {
+            "extract_ms": 225.336124,
+            "link_ms": 3.4969710000000003,
+            "persist_ms": 142.503137,
+            "elapsed_ms": 655.833966,
+            "nodes": 4002,
+            "edges": 4001
+          },
+          {
+            "extract_ms": 236.50453399999998,
+            "link_ms": 4.350199,
+            "persist_ms": 153.54561,
+            "elapsed_ms": 694.960604,
+            "nodes": 4002,
+            "edges": 4001
+          }
+        ]
+      },
+      "medians": {
+        "baseline": {
+          "extract_ms": 3266.217561,
+          "link_ms": 3.3782780000000003,
+          "persist_ms": 132.28448500000002,
+          "elapsed_ms": 3674.353915,
+          "nodes": 4002,
+          "edges": 4001
+        },
+        "candidate": {
+          "extract_ms": 256.22308,
+          "link_ms": 3.4969710000000003,
+          "persist_ms": 153.045747,
+          "elapsed_ms": 694.960604,
+          "nodes": 4002,
+          "edges": 4001
+        }
+      },
+      "graph_equal": {
+        "nodes": true,
+        "edges": true,
+        "coverage": true
+      }
+    }
+  }
+}

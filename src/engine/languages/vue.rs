@@ -209,6 +209,9 @@ impl LanguageProfile for Vue {
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
         typescript::TYPESCRIPT.normalize_import(owner, module)
     }
+    fn external_import(&self, module: &str) -> Option<&'static str> {
+        typescript::TYPESCRIPT.external_import(module)
+    }
     fn builtin(&self, name: &str) -> bool {
         typescript::TYPESCRIPT.builtin(name)
     }
