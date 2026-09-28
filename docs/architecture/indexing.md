@@ -34,6 +34,8 @@ A root workspace owns the index under its `.forge` directory by default. Linked 
 
 `build` creates a full index. `delta` updates it from changed and deleted files. `scan` reports admitted files without creating an index. The MCP server checks indexed ownership, source inventory, adapter configuration, and file changes before serving database-backed requests. When the indexed state is stale, it updates affected files or rebuilds as needed. CLI readers use the index already on disk; run `build` or `delta` after editing source before relying on CLI results.
 
+A full build validates a staged database before publication. Forge readers hold a shared generation lock during each query; the builder takes an exclusive lock before replacing the index. MCP connections close after each query so idle sessions do not retain an old database inode. On Linux, the builder checks for open handles from older processes immediately before replacement and rejects detected ones.
+
 ## Resolving a query
 
 `code_map_search` finds candidate symbols. `code_map_inspect` resolves a selector to one node and its immediate evidence. `code_map_explain`, `code_map_impact`, and related tools traverse indexed edges with depth and size limits. `search_docs` and `get_doc` read indexed Markdown, including sections extracted from headings. `code_map_analyze` executes a bounded read-only query over the index.

@@ -116,6 +116,7 @@ impl Mcp {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn call(
         &mut self,
         name: &str,

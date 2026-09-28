@@ -235,6 +235,77 @@ fn external_delta_invalidates_cached_connection_without_another_write() {
 }
 
 #[test]
+#[cfg(unix)]
+fn cold_rebuild_releases_idle_mcp_readers_before_replacing_database() {
+    use std::os::unix::fs::MetadataExt;
+
+    let ws = Workspace::new();
+    ws.write("main.rs", "pub fn before() {}\n");
+    let first = ws.server();
+    let second = ws.server();
+    assert_eq!(snapshot(&first).unwrap()["nodes"][0]["name"], "before");
+    assert_eq!(snapshot(&second).unwrap()["nodes"][0]["name"], "before");
+    assert!(first.connection.lock().unwrap().is_some());
+    assert!(second.connection.lock().unwrap().is_some());
+    let inode = fs::metadata(&first.db).unwrap().ino();
+
+    ws.write("main.rs", "pub fn after() {}\n");
+    let report = db::writer::build(&ws.0, &first.db, None).unwrap();
+
+    assert_ne!(fs::metadata(&first.db).unwrap().ino(), inode);
+    assert_eq!(report["verification_cache"], true);
+    assert_eq!(snapshot(&first).unwrap()["nodes"][0]["name"], "after");
+    assert_eq!(snapshot(&second).unwrap()["nodes"][0]["name"], "after");
+    let conn = rusqlite::Connection::open(&first.db).unwrap();
+    assert_eq!(
+        conn.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn cold_rebuild_waits_for_active_mcp_reader_before_rename() {
+    use std::os::unix::fs::MetadataExt;
+
+    let ws = Workspace::new();
+    ws.write("main.rs", "pub fn before() {}\n");
+    let server = ws.server();
+    snapshot(&server).unwrap();
+    let inode = fs::metadata(&server.db).unwrap().ino();
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        server.read(|conn| {
+            let name: String =
+                conn.query_row("SELECT name FROM nodes WHERE kind='function'", [], |row| {
+                    row.get(0)
+                })?;
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(json!({"name": name}))
+        })
+    });
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    ws.write("main.rs", "pub fn after() {}\n");
+
+    let root = ws.0.clone();
+    let db = ws.server().db;
+    let builder = std::thread::spawn(move || db::writer::build(&root, &db, None));
+    std::thread::sleep(Duration::from_millis(500));
+    let inode_while_reading = fs::metadata(ws.server().db).unwrap().ino();
+    release_tx.send(()).unwrap();
+    assert_eq!(reader.join().unwrap().unwrap()["name"], "before");
+    builder.join().unwrap().unwrap();
+
+    assert_eq!(inode_while_reading, inode);
+    assert_ne!(fs::metadata(ws.server().db).unwrap().ino(), inode);
+    assert_eq!(snapshot(&ws.server()).unwrap()["nodes"][0]["name"], "after");
+}
+
+#[test]
 fn unchanged_warm_reads_and_metadata_only_touch_do_not_rewrite_database() {
     let ws = Workspace::new();
     for i in 0..64 {

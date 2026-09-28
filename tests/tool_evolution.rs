@@ -607,7 +607,7 @@ fn test_safe_selector_resolution_and_disambiguation() {
     // 5. Bare name 'scanner' matches BOTH module 'scanner.py' and function 'scanner()'.
     // Safe disambiguation MUST NOT hijack it to module! It must fail with ambiguous selector.
     let bare_cmd = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
-        .args(&[
+        .args([
             "--root",
             w.0.to_str().unwrap(),
             "query",
@@ -831,7 +831,7 @@ fn mcp_search_ast_and_document_boundaries() {
         "ast_grep_search",
         json!({"pattern":"print($VALUE)","language":"python","path":"src/app.py"}),
     );
-    assert!(ast["matches"]["items"].as_array().unwrap().len() >= 1);
+    assert!(!ast["matches"]["items"].as_array().unwrap().is_empty());
     m.err(
         "ast_grep_search",
         json!({"pattern":"def (","language":"python"}),

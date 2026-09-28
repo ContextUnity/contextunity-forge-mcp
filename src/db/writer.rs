@@ -368,6 +368,7 @@ fn atomic_build(
         report["verify_ms"] = json!(verifying.elapsed().as_secs_f64() * 1000.);
         conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
         conn.close().map_err(|(_, e)| e)?;
+        let _generation_lock = super::cache::exclusive_lock(&output)?;
         let mut wal = output.as_os_str().to_owned();
         wal.push("-wal");
         if fs::symlink_metadata(PathBuf::from(wal)).is_ok_and(|m| m.len() > 0) {
@@ -416,6 +417,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         bail!("delta requires at least one modified path");
     }
     let root = scanner::canonical_root(root)?;
+    let _generation_lock = super::cache::exclusive_lock(db)?;
     let admitted = super::reader::open(db, &root)?;
     let admitted_identity = super::cache::identity(db)?;
     let expected: String = admitted.query_row(
@@ -428,6 +430,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     if current_adapter.digest != adapter.digest
         || current_adapter.linked_workspaces != adapter.linked_workspaces
     {
+        drop(admitted);
         return build(&root, db, adapter.adapter_path.as_deref());
     }
     let previous = super::reader::inventory_snapshot(&admitted)?;
@@ -734,7 +737,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     conn.set_prepared_statement_cache_capacity(128);
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-64000;",
+        "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-64000; PRAGMA mmap_size=268435456;",
     )?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current: String = tx.query_row(

@@ -63,8 +63,8 @@ fn node(c: &Connection, id: usize) -> Result<Hash> {
     let v: Vec<u8> = c
         .prepare_cached("SELECT digest FROM tree WHERE id=?1")?
         .query_row([id], |r| r.get(0))?;
-    Ok(v.try_into()
-        .map_err(|_| anyhow::anyhow!("invalid hash length"))?)
+    v.try_into()
+        .map_err(|_| anyhow::anyhow!("invalid hash length"))
 }
 fn save_node(c: &Connection, id: usize, hash: Hash) -> Result<()> {
     c.prepare_cached("INSERT OR REPLACE INTO tree VALUES(?1,?2)")?
@@ -77,7 +77,7 @@ fn prove(c: &Connection, b: usize, expected: Hash) -> Result<()> {
     ensure!(h == node(c, id)?, "bucket mismatch");
     while id > 1 {
         let sibling = node(c, id ^ 1)?;
-        h = if id % 2 == 0 {
+        h = if id.is_multiple_of(2) {
             branch(h, sibling)
         } else {
             branch(sibling, h)

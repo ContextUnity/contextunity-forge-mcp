@@ -3,7 +3,29 @@ use crate::core::response::{Detail, QueryOptions};
 use anyhow::{bail, Context, Result};
 use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Map, Value};
-use std::path::Path;
+use std::{fs::File, ops::Deref, path::Path};
+
+pub struct LockedConnection {
+    connection: Connection,
+    _lock: File,
+}
+
+impl Deref for LockedConnection {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+pub(crate) fn open_locked(path: &Path, root: &Path) -> Result<LockedConnection> {
+    let lock = super::cache::shared_lock(path)?;
+    Ok(LockedConnection {
+        connection: open(path, root)?,
+        _lock: lock,
+    })
+}
+
 pub fn open(path: &Path, root: &Path) -> Result<Connection> {
     if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
         bail!("database must not be a symlink");
@@ -13,7 +35,9 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
-    conn.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;")?;
+    conn.execute_batch(
+        "PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=268435456;",
+    )?;
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
     conn.execute_batch("BEGIN DEFERRED")?;
     let version: String = conn.query_row(
@@ -462,7 +486,7 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
                 .filter(|v| {
                     v["id"]
                         .as_str()
-                        .map_or(false, |id| id.ends_with(clean_target))
+                        .is_some_and(|id| id.ends_with(clean_target))
                 })
                 .cloned()
                 .collect();
@@ -973,7 +997,7 @@ pub fn analyze_paged(
         result["top_files"] = json!(rows(conn, &format!("SELECT path,sum(parse_errors) parse_errors,sum(unresolved) unresolved FROM (SELECT path,count(*) parse_errors,0 unresolved FROM errors WHERE {scope} GROUP BY path UNION ALL SELECT path,0 parse_errors,count(*) unresolved FROM resolution_coverage WHERE status IN('unresolved','ambiguous') AND {scope} GROUP BY path) GROUP BY path ORDER BY sum(parse_errors)+sum(unresolved) DESC,path LIMIT 5"), params, 5)?);
         result["resolution_statuses"] = json!(rows(conn, &format!("SELECT status,count(*) total FROM resolution_coverage WHERE {scope} GROUP BY status ORDER BY status LIMIT 20"), params, 20)?);
         result["resolution_causes"] = json!(rows(conn, &format!("SELECT status,cause,count(*) total,count(DISTINCT path) affected_files FROM (SELECT c.path,c.status,{} cause FROM resolution_coverage c WHERE c.status IN('unresolved','ambiguous') AND {scope}) GROUP BY status,cause ORDER BY total DESC,status,cause", resolution_cause_sql()), params, 20)?);
-        result["parse_error_languages"] = json!(rows(conn, &format!("SELECT f.language,count(*) errors,count(DISTINCT e.path) affected_files FROM errors e JOIN files f ON f.path=e.path WHERE (?1='' OR e.path=?1 OR (e.path>=?2 AND e.path<?3)) GROUP BY f.language ORDER BY errors DESC,f.language"), params, 100)?);
+        result["parse_error_languages"] = json!(rows(conn, "SELECT f.language,count(*) errors,count(DISTINCT e.path) affected_files FROM errors e JOIN files f ON f.path=e.path WHERE (?1='' OR e.path=?1 OR (e.path>=?2 AND e.path<?3)) GROUP BY f.language ORDER BY errors DESC,f.language", params, 100)?);
         result["cause_note"] = json!("Causes classify recorded resolver evidence; inspect an exact file with detail='full' for evidence and parse error messages.");
         result["continuation_hint"] = json!(
             "Call code_map_analyze with an exact path from top_files to page its diagnostics."

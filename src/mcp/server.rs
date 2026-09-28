@@ -47,6 +47,7 @@ impl Server {
             Ok(metadata) if !metadata.is_file() => anyhow::bail!("database must be a regular file"),
             Ok(_) => {}
         }
+        let _generation_lock = crate::db::cache::shared_lock(&self.db)?;
         let conn = rusqlite::Connection::open_with_flags(
             &self.db,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -266,6 +267,7 @@ impl Server {
                 return Err(error);
             }
         };
+        let _read_lock = crate::db::cache::shared_lock(&self.db)?;
         let (identity, conn) = slot
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("database unavailable"))?;

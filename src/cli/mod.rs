@@ -236,7 +236,7 @@ impl Cli {
                     },
             } => ast::search(&root, &pattern, &language, path.as_deref(), limit)?,
             Command::Query { command } => {
-                let conn = crate::db::reader::open(&db, &root)?;
+                let conn = crate::db::reader::open_locked(&db, &root)?;
                 match command {
                     QueryCommand::Overview => query::overview(&conn)?,
                     QueryCommand::Inspect {
@@ -276,7 +276,7 @@ impl Cli {
                 }
             }
             Command::Docs { command } => {
-                let conn = crate::db::reader::open(&db, &root)?;
+                let conn = crate::db::reader::open_locked(&db, &root)?;
                 match command {
                     DocsCommand::Search {
                         query,

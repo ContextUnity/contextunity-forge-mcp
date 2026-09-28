@@ -1,8 +1,9 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
+    fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,6 +61,64 @@ fn suffix(path: &Path, suffix: &str) -> PathBuf {
     name.push(suffix);
     PathBuf::from(name)
 }
+
+fn generation_lock(path: &Path, exclusive: bool) -> Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(suffix(path, ".lock"))?;
+        if !file.metadata()?.is_file() {
+            bail!("database lock must be a regular file");
+        }
+        let operation = if exclusive {
+            libc::LOCK_EX
+        } else {
+            libc::LOCK_SH
+        };
+        let started = Instant::now();
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), operation | libc::LOCK_NB) } == 0 {
+                return Ok(file);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                if started.elapsed() >= Duration::from_secs(3) {
+                    bail!("database generation lock is busy; retry after active readers finish");
+                }
+            } else {
+                return Err(error.into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, exclusive);
+        bail!("generation locks require Unix file locking")
+    }
+}
+
+pub(crate) fn shared_lock(path: &Path) -> Result<File> {
+    generation_lock(path, false)
+}
+
+pub(crate) fn exclusive_lock(path: &Path) -> Result<File> {
+    generation_lock(path, true)
+}
+
 pub fn identity(path: &Path) -> Result<Identity> {
     let main = file_identity(path)?;
     let wal_path = suffix(path, "-wal");
