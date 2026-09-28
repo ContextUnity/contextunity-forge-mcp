@@ -343,7 +343,6 @@ fn explicit_python_stdlib_and_external_dependency_is_separate_from_missing_packa
     );
 }
 
-
 #[cfg(feature = "lang-python")]
 #[test]
 fn decorators_have_consistent_dependency_direction() {

@@ -11,10 +11,10 @@ title: CLI reference
 
 | Option | Behavior |
 | --- | --- |
-| `--root <PATH>` | Workspace for `serve`, `query`, `docs`, `ast`, `guide`, and `checkpoint`. Defaults to `.`; `FORGE_WORKSPACE_ROOT` can set it. |
+| `--root <PATH>` | Workspace for all commands. Defaults to the current directory; `FORGE_WORKSPACE_ROOT` can set it. |
 | `--db <PATH>` | Index path for commands that read or write the database. Defaults to `<root>/.forge/code-map.sqlite`; `FORGE_DB` can set it. |
 
-`build`, `scan`, and `delta` also accept a positional workspace path. Their path, when supplied, determines the workspace they operate on.
+`build`, `scan`, and `delta` also accept a positional workspace path. Either form selects the workspace; when both are supplied, they must resolve to the same directory.
 
 ## Inventory and indexing
 

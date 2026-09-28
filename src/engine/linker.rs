@@ -131,6 +131,7 @@ pub fn link_with_root(
                 .map(|n| n.qualname.clone())
                 .unwrap_or_else(|| profile.map_or_else(|| module_name(path), |p| p.module_name(path)));
             let mut aliases: HashMap<String, HashMap<String, Vec<&Node>>> = HashMap::new();
+            let mut external_aliases: HashMap<String, HashMap<String, Option<(String, usize)>>> = HashMap::new();
             let mut lookup_key = String::new();
             for r in facts.references.iter().filter(|r| r.kind == "imports") {
                 let normalized = profile.and_then(|p| {
@@ -162,27 +163,51 @@ pub fn link_with_root(
                 }
                 let symbol=normalized.as_ref().map_or_else(||r.expression.clone(),|n|n.namespace.clone());
                 let mut candidates=Vec::new();
+                let mut child_module = false;
                 if let ([module],Some(normalized))=(modules.as_slice(),&normalized) {
                     let tail=if normalized.symbol_path {normalized.namespace.strip_prefix(selected_namespace).unwrap_or("").trim_start_matches('.')}else if r.expression=="*" || r.module.as_deref()==Some(&r.expression) {""}else{&r.expression};
                     if tail.is_empty(){candidates.push(*module);}else{
                         let target = qualified(&mut lookup_key, &module.qualname, tail);
                         candidates=by_module.get(module.path.as_str()).into_iter().flatten().copied().filter(|n| if tail=="default" {n.details["default_export"]==true}else{n.kind!="component" && n.qualname==target}).collect();
+                        if let Some(profile) = profile.filter(|p| p.id() == "python" && candidates.is_empty()) {
+                            let child_namespace = format!("{selected_namespace}.{tail}");
+                            let parent_workspace = languages::workspace_path(&module.path).0;
+                            candidates = modules_by_namespace
+                                .get(&profile.family())
+                                .and_then(|namespaces| namespaces.get(&child_namespace))
+                                .into_iter()
+                                .flatten()
+                                .copied()
+                                .filter(|node| {
+                                    languages::workspace_path(&node.path).0 == parent_workspace
+                                })
+                                .collect();
+                            child_module = candidates.len() == 1;
+                        }
                     }
                 }
                 candidates.sort_by(|a,b|a.id.cmp(&b.id));
                 candidates.dedup_by_key(|n|&n.id);
-                if let Some(alias)=&r.alias {
-                    let scope=by_id.get(r.source.as_str()).map(|n|n.qualname.clone()).unwrap_or_else(||file_module.clone());
-                    let local_declaration=by_qual.get(qualified(&mut lookup_key, &scope, alias)).is_some_and(|nodes|nodes.iter().any(|n|n.path==*path));
-                    let targets=if local_declaration {Vec::new()}else{candidates.clone()};
-                    aliases.entry(scope).or_default().entry(alias.clone()).or_default().extend(targets);
-                }
-                let resolved=modules.len()==1 && (r.alias.is_none() || candidates.len()==1);
                 let external = if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
                     profile.and_then(|p| p.external_import(r.module.as_deref().unwrap_or(&r.expression)))
                 } else {
                     None
                 };
+                if let Some(alias)=&r.alias {
+                    let scope=by_id.get(r.source.as_str()).map(|n|n.qualname.clone()).unwrap_or_else(||file_module.clone());
+                    let local_declaration=by_qual.get(qualified(&mut lookup_key, &scope, alias)).is_some_and(|nodes|nodes.iter().any(|n|n.path==*path));
+                    let targets=if local_declaration {Vec::new()}else{candidates.clone()};
+                    let alias_taken = aliases.get(&scope).is_some_and(|entries| entries.contains_key(alias));
+                    if alias_taken {
+                        if let Some(provenance) = external_aliases.get_mut(&scope).and_then(|entries| entries.get_mut(alias)) {
+                            *provenance = None;
+                        }
+                    } else if external.is_some() && !local_declaration && profile.is_some_and(|p| p.id() == "python") {
+                        external_aliases.entry(scope.clone()).or_default().insert(alias.clone(), Some((symbol.clone(), r.line)));
+                    }
+                    aliases.entry(scope).or_default().entry(alias.clone()).or_default().extend(targets);
+                }
+                let resolved=modules.len()==1 && (r.alias.is_none() || candidates.len()==1);
                 let status=if resolved {"resolved"}else if modules.len()>1 || candidates.len()>1 {"ambiguous"}else if external.is_some() {"external"}else{"unresolved"};
                 let evidence=if let Some(kind)=external {
                     format!("{kind}; no indexed provider for {symbol}")
@@ -208,6 +233,17 @@ pub fn link_with_root(
                         evidence: r.expression.clone(),
                         confidence: "exact".into(),
                     });
+                    if child_module {
+                        graph.edges.push(Edge {
+                            src: r.source.clone(),
+                            dst: candidates[0].id.clone(),
+                            kind: "imports".into(),
+                            path: path.clone(),
+                            line: r.line,
+                            evidence: r.expression.clone(),
+                            confidence: "exact".into(),
+                        });
+                    }
                 }
             }
             let alias_for = |name: &str, owner: Option<&Node>, definition_scope: bool| {
@@ -221,6 +257,19 @@ pub fn link_with_root(
                     }
                     if scope.is_empty() { return None; }
                     scope = scope.rsplit_once('.').map_or("", |(p, _)| p);
+                }
+            };
+            let external_for = |name: &str, owner: Option<&Node>| {
+                let mut scope = owner.map(|n| n.qualname.as_str()).unwrap_or("");
+                loop {
+                    let class_scope = !profile.is_some_and(|p|p.class_scope())
+                        && owner.is_some_and(|n| matches!(n.kind.as_str(), "function" | "method"))
+                        && by_qual.get(scope).is_some_and(|nodes| nodes.iter().any(|n| n.path==*path && matches!(n.kind.as_str(), "class" | "impl")));
+                    if !class_scope && aliases.get(scope).is_some_and(|entries| entries.contains_key(name)) {
+                        return external_aliases.get(scope).and_then(|entries| entries.get(name)).and_then(Option::as_ref);
+                    }
+                    if scope.is_empty() { return None; }
+                    scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
                 }
             };
             let mut candidates = Vec::new();
@@ -382,7 +431,15 @@ pub fn link_with_root(
                 } else {
                     "ambiguous"
                 };
-                let evidence = if is_builtin {
+                let external_origin = if status == "unresolved" && r.kind == "calls" && !shadowed
+                    && candidates.is_empty() && imported.is_some_and(|targets| targets.is_empty()) {
+                    external_for(first, owner).filter(|(_, import_line)| *import_line <= r.line)
+                } else {
+                    None
+                };
+                let evidence = if let Some((module, _)) = external_origin {
+                    format!("call through external import {module}; callable target unverified")
+                } else if is_builtin {
                     format!("standard library or built-in callee: {expression}")
                 } else {
                     format!("{} lexically justified candidates; implementor resolved={}, heuristic={source_heuristic}", candidates.len(), source.is_some())

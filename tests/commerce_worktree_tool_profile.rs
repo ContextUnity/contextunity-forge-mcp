@@ -81,7 +81,10 @@ impl Mcp {
                 "clientInfo":{"name":"commerce-tool-profile","version":"1"}
             }),
         )?;
-        ensure!(response.get("error").is_none(), "MCP initialize failed: {response}");
+        ensure!(
+            response.get("error").is_none(),
+            "MCP initialize failed: {response}"
+        );
         writeln!(
             client.input,
             "{}",
@@ -118,10 +121,8 @@ impl Mcp {
         name: &str,
         arguments: Value,
     ) -> Result<(Duration, usize, bool, Option<Value>, Option<String>)> {
-        let (elapsed, response) = self.request(
-            "tools/call",
-            json!({"name":name,"arguments":arguments}),
-        )?;
+        let (elapsed, response) =
+            self.request("tools/call", json!({"name":name,"arguments":arguments}))?;
         if let Some(error) = response.get("error") {
             return Ok((elapsed, 0, false, None, Some(error.to_string())));
         }
@@ -153,21 +154,35 @@ fn median(values: &[f64]) -> f64 {
 #[ignore = "isolated release profile against the stable phase5 worktree"]
 fn phase5_all_tool_latency_profile() -> Result<()> {
     let root = PathBuf::from(std::env::var("PHASE5_WORKTREE_ROOT")?);
-    ensure!(root.is_dir(), "phase5 worktree does not exist: {}", root.display());
+    ensure!(
+        root.is_dir(),
+        "phase5 worktree does not exist: {}",
+        root.display()
+    );
     let source_db = root.join(".forge/code-map.sqlite");
-    ensure!(source_db.is_file(), "phase5 index is missing: {}", source_db.display());
+    ensure!(
+        source_db.is_file(),
+        "phase5 index is missing: {}",
+        source_db.display()
+    );
     let source_wal = PathBuf::from(format!("{}-wal", source_db.display()));
     ensure!(
-        fs::metadata(&source_wal).map(|metadata| metadata.len()).unwrap_or(0) == 0,
+        fs::metadata(&source_wal)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+            == 0,
         "phase5 index has an active WAL; snapshot it before profiling"
     );
     let source_conn = Connection::open_with_flags(
         &source_db,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
-    let indexed_files: i64 = source_conn.query_row("SELECT count(*) FROM files", [], |row| row.get(0))?;
-    let indexed_nodes: i64 = source_conn.query_row("SELECT count(*) FROM nodes", [], |row| row.get(0))?;
-    let indexed_edges: i64 = source_conn.query_row("SELECT count(*) FROM edges", [], |row| row.get(0))?;
+    let indexed_files: i64 =
+        source_conn.query_row("SELECT count(*) FROM files", [], |row| row.get(0))?;
+    let indexed_nodes: i64 =
+        source_conn.query_row("SELECT count(*) FROM nodes", [], |row| row.get(0))?;
+    let indexed_edges: i64 =
+        source_conn.query_row("SELECT count(*) FROM edges", [], |row| row.get(0))?;
     let source_semantics: String = source_conn.query_row(
         "SELECT value FROM metadata WHERE key='index_semantics_version'",
         [],
@@ -189,12 +204,17 @@ fn phase5_all_tool_latency_profile() -> Result<()> {
 
     let workspace = Workspace::new()?;
     let copy_started = Instant::now();
-    fs::copy(&source_db, workspace.db()).context("copy phase5 index into isolated temporary workspace")?;
+    fs::copy(&source_db, workspace.db())
+        .context("copy phase5 index into isolated temporary workspace")?;
     let index_copy_ms = copy_started.elapsed().as_secs_f64() * 1000.0;
     let integrity_started = Instant::now();
     let copied_conn = Connection::open(workspace.db())?;
-    let integrity: String = copied_conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-    ensure!(integrity == "ok", "isolated index integrity check failed: {integrity}");
+    let integrity: String =
+        copied_conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    ensure!(
+        integrity == "ok",
+        "isolated index integrity check failed: {integrity}"
+    );
     drop(copied_conn);
     let copied_index_integrity_ms = integrity_started.elapsed().as_secs_f64() * 1000.0;
     let copied_index_verify_ms = if index_needs_rebuild {
@@ -206,21 +226,57 @@ fn phase5_all_tool_latency_profile() -> Result<()> {
     };
 
     let selector = format!("{selector_path}:{selector_line}");
-    ensure!(root.join(&selector_path).is_file(), "selected source is missing: {selector_path}");
+    ensure!(
+        root.join(&selector_path).is_file(),
+        "selected source is missing: {selector_path}"
+    );
     let args = vec![
-        ("ast_grep_search", json!({"pattern":"def $NAME($$$ARGS):","language":"python","path":selector_path,"detail":"compact","limit":1})),
-        ("code_map_analyze", json!({"target":"SELECT count(*) AS total FROM nodes","limit":1})),
-        ("code_map_explain", json!({"selector":selector.clone(),"detail":"compact","limit":1})),
-        ("code_map_impact", json!({"selector":selector.clone(),"depth":1,"limit":1})),
-        ("code_map_inspect", json!({"selector":selector.clone(),"detail":"compact"})),
+        (
+            "ast_grep_search",
+            json!({"pattern":"def $NAME($$$ARGS):","language":"python","path":selector_path,"detail":"compact","limit":1}),
+        ),
+        (
+            "code_map_analyze",
+            json!({"target":"SELECT count(*) AS total FROM nodes","limit":1}),
+        ),
+        (
+            "code_map_explain",
+            json!({"selector":selector.clone(),"detail":"compact","limit":1}),
+        ),
+        (
+            "code_map_impact",
+            json!({"selector":selector.clone(),"depth":1,"limit":1}),
+        ),
+        (
+            "code_map_inspect",
+            json!({"selector":selector.clone(),"detail":"compact"}),
+        ),
         ("code_map_overview", json!({"detail":"compact","limit":1})),
-        ("code_map_prove_removal", json!({"selector":selector.clone(),"detail":"compact","limit":1})),
-        ("code_map_query", json!({"operation":"slice","selector":selector.clone(),"depth":1,"detail":"compact","limit":1})),
-        ("code_map_search", json!({"pattern":format!("{selector_name}*"),"detail":"compact","limit":1})),
-        ("code_map_tests", json!({"selector":selector.clone(),"direction":"outbound","limit":1})),
+        (
+            "code_map_prove_removal",
+            json!({"selector":selector.clone(),"detail":"compact","limit":1}),
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"slice","selector":selector.clone(),"depth":1,"detail":"compact","limit":1}),
+        ),
+        (
+            "code_map_search",
+            json!({"pattern":format!("{selector_name}*"),"detail":"compact","limit":1}),
+        ),
+        (
+            "code_map_tests",
+            json!({"selector":selector.clone(),"direction":"outbound","limit":1}),
+        ),
         ("forge_guide", json!({"topic":"query"})),
-        ("get_code_snippet", json!({"selector":selector,"leading_lines":0,"max_body_lines":20})),
-        ("get_doc", json!({"path_or_id":doc_path,"detail":"compact","limit":1})),
+        (
+            "get_code_snippet",
+            json!({"selector":selector,"leading_lines":0,"max_body_lines":20}),
+        ),
+        (
+            "get_doc",
+            json!({"path_or_id":doc_path,"detail":"compact","limit":1}),
+        ),
         ("search_docs", json!({"query":"architecture","limit":1})),
         ("session_checkpoint", json!({"action":"list"})),
     ];
@@ -236,7 +292,10 @@ fn phase5_all_tool_latency_profile() -> Result<()> {
         .collect();
     let expected_names: std::collections::BTreeSet<String> =
         args.iter().map(|(name, _)| (*name).to_owned()).collect();
-    ensure!(listed_names == expected_names, "MCP tool set differs: {listed_names:?}");
+    ensure!(
+        listed_names == expected_names,
+        "MCP tool set differs: {listed_names:?}"
+    );
 
     let (initial_ms, initial_bytes, initial_ok, initial_payload, initial_error) =
         client.call("code_map_overview", json!({"detail":"compact","limit":1}))?;
@@ -274,9 +333,12 @@ fn phase5_all_tool_latency_profile() -> Result<()> {
         workspace.db(),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
-    let current_files: i64 = current_conn.query_row("SELECT count(*) FROM files", [], |row| row.get(0))?;
-    let current_nodes: i64 = current_conn.query_row("SELECT count(*) FROM nodes", [], |row| row.get(0))?;
-    let current_edges: i64 = current_conn.query_row("SELECT count(*) FROM edges", [], |row| row.get(0))?;
+    let current_files: i64 =
+        current_conn.query_row("SELECT count(*) FROM files", [], |row| row.get(0))?;
+    let current_nodes: i64 =
+        current_conn.query_row("SELECT count(*) FROM nodes", [], |row| row.get(0))?;
+    let current_edges: i64 =
+        current_conn.query_row("SELECT count(*) FROM edges", [], |row| row.get(0))?;
     drop(current_conn);
     eprintln!(
         "phase5_tool_profile={}",

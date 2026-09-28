@@ -13,14 +13,24 @@ pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> 
         "lint target must be an indexed workspace-relative path or empty for the workspace"
     );
     let (prefix, end) = reader::path_bounds(path);
-    let profiles: Vec<_> = crate::engine::languages::profiles().map(|profile| profile.id()).collect();
+    let profiles: Vec<_> = crate::engine::languages::profiles()
+        .map(|profile| profile.id())
+        .collect();
     let profiles_json = serde_json::to_string(&profiles)?;
     let params: &[&dyn ToSql] = &[&path, &prefix, &end, &profiles_json];
     let scope = "(?1='' OR f.path=?1 OR (f.path>=?2 AND f.path<?3))";
     let supported = "f.language IN (SELECT value FROM json_each(?4))";
-    let source_files = paging::count(conn, &format!("SELECT count(*) FROM files f WHERE {scope} AND {supported}"), params)?;
+    let source_files = paging::count(
+        conn,
+        &format!("SELECT count(*) FROM files f WHERE {scope} AND {supported}"),
+        params,
+    )?;
     ensure!(source_files > 0, "lint target has no indexed source files with a compiled language profile; excluded, unsupported, and documentation files are not syntax-checked");
-    let indexed_files = paging::count(conn, &format!("SELECT count(*) FROM files f WHERE {scope}"), &params[..3])?;
+    let indexed_files = paging::count(
+        conn,
+        &format!("SELECT count(*) FROM files f WHERE {scope}"),
+        &params[..3],
+    )?;
     let mut languages = reader::rows(conn, &format!("SELECT f.language,count(*) files FROM files f WHERE {scope} AND {supported} GROUP BY f.language ORDER BY f.language"), params, profiles.len())?;
     for language in &mut languages {
         language["diagnostic_scope"] = json!(match language["language"].as_str() {
@@ -30,9 +40,17 @@ pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> 
             _ => "stored Tree-sitter syntax diagnostics",
         });
     }
-    let message = if options.detail == Detail::Full { "e.message" } else { "substr(e.message,1,512)" };
+    let message = if options.detail == Detail::Full {
+        "e.message"
+    } else {
+        "substr(e.message,1,512)"
+    };
     let diagnostics = paging::query(conn, &format!("SELECT 'syntax.parse' rule_id,'error' severity,f.language,e.path,e.line,{message} message,{} message_truncated FROM errors e JOIN files f ON f.path=e.path WHERE {scope} AND {supported} ORDER BY e.path,e.line,e.message,e.rowid", if options.detail == Detail::Full { "0" } else { "length(e.message)>512" }), params, options)?;
-    let status = if diagnostics["total"] == 0 { "no_stored_syntax_diagnostics" } else { "diagnostics_found" };
+    let status = if diagnostics["total"] == 0 {
+        "no_stored_syntax_diagnostics"
+    } else {
+        "diagnostics_found"
+    };
     Ok(json!({
         "target": target, "mode": "lint", "generation": generation, "status": status,
         "diagnostics": diagnostics,

@@ -125,6 +125,68 @@ pub(crate) fn path_bounds(path: &str) -> (String, String) {
     (format!("{path}/"), format!("{path}0"))
 }
 
+// Directory selectors are resolved from indexed paths. A suffix is accepted only when it
+// identifies one directory; otherwise the caller must supply a workspace-relative path.
+pub(crate) fn directory_path(conn: &Connection, selector: &str) -> Result<Option<String>> {
+    let selector = selector.trim();
+    let unprefixed = selector
+        .strip_prefix("file://")
+        .or_else(|| selector.strip_prefix("file:"))
+        .unwrap_or(selector);
+    let selector = unprefixed.strip_prefix("./").unwrap_or(unprefixed);
+    let selector = selector.trim_end_matches('/');
+    if selector.is_empty()
+        || selector.starts_with('/')
+        || selector
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        bail!("invalid directory selector: {selector}");
+    }
+    let (lower, upper) = path_bounds(selector);
+    let exact: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM files WHERE path>=?1 AND path<?2)",
+        [&lower, &upper],
+        |row| row.get(0),
+    )?;
+    if exact {
+        return Ok(Some(selector.to_owned()));
+    }
+    let needle = format!("/{selector}/");
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT substr(path,1,instr(path,?1)+length(?1)-2) AS directory \
+         FROM files WHERE instr(path,?1)>0 ORDER BY directory LIMIT 11",
+    )?;
+    let candidates = statement
+        .query_map([&needle], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    match candidates.as_slice() {
+        [] => Ok(None),
+        [path] => Ok(Some(path.clone())),
+        _ => bail!(
+            "ambiguous directory selector {selector}; use a workspace-relative path; candidates: {}",
+            serde_json::to_string(&candidates)?
+        ),
+    }
+}
+
+pub(crate) fn indexed_path_suggestions(conn: &Connection, selector: &str) -> Result<Vec<String>> {
+    let name = selector
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    if name.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let mut statement =
+        conn.prepare("SELECT path FROM files WHERE instr(path,?1)>0 ORDER BY path LIMIT 5")?;
+    let suggestions = statement
+        .query_map([name], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(suggestions)
+}
+
 pub fn rows(
     conn: &Connection,
     sql: &str,
@@ -897,11 +959,22 @@ pub fn analyze_paged(
             &[&path],
             options,
         )?;
-        result["resolution"] = paging::query(conn, &format!("SELECT {} FROM resolution_coverage c WHERE c.status IN('unresolved','ambiguous') AND c.path=?1 ORDER BY c.line,c.expression,c.status,c.evidence", paging::coverage("c", options.detail)), &[&path], options)?;
+        let resolution_columns = if options.detail == Detail::Full {
+            format!("c.*,{} cause", resolution_cause_sql())
+        } else {
+            format!(
+                "c.line,c.expression,c.status,{} cause",
+                resolution_cause_sql()
+            )
+        };
+        result["resolution"] = paging::query(conn, &format!("SELECT {resolution_columns} FROM resolution_coverage c WHERE c.status IN('unresolved','ambiguous') AND c.path=?1 ORDER BY c.line,c.expression,c.status,c.evidence"), &[&path], options)?;
         result["external_imports"] = paging::query(conn, &format!("SELECT {} FROM resolution_coverage c WHERE c.status='external' AND c.path=?1 ORDER BY c.line,c.expression,c.evidence", paging::coverage("c", options.detail)), &[&path], options)?;
     } else {
         result["top_files"] = json!(rows(conn, &format!("SELECT path,sum(parse_errors) parse_errors,sum(unresolved) unresolved FROM (SELECT path,count(*) parse_errors,0 unresolved FROM errors WHERE {scope} GROUP BY path UNION ALL SELECT path,0 parse_errors,count(*) unresolved FROM resolution_coverage WHERE status IN('unresolved','ambiguous') AND {scope} GROUP BY path) GROUP BY path ORDER BY sum(parse_errors)+sum(unresolved) DESC,path LIMIT 5"), params, 5)?);
         result["resolution_statuses"] = json!(rows(conn, &format!("SELECT status,count(*) total FROM resolution_coverage WHERE {scope} GROUP BY status ORDER BY status LIMIT 20"), params, 20)?);
+        result["resolution_causes"] = json!(rows(conn, &format!("SELECT status,cause,count(*) total,count(DISTINCT path) affected_files FROM (SELECT c.path,c.status,{} cause FROM resolution_coverage c WHERE c.status IN('unresolved','ambiguous') AND {scope}) GROUP BY status,cause ORDER BY total DESC,status,cause", resolution_cause_sql()), params, 20)?);
+        result["parse_error_languages"] = json!(rows(conn, &format!("SELECT f.language,count(*) errors,count(DISTINCT e.path) affected_files FROM errors e JOIN files f ON f.path=e.path WHERE (?1='' OR e.path=?1 OR (e.path>=?2 AND e.path<?3)) GROUP BY f.language ORDER BY errors DESC,f.language"), params, 100)?);
+        result["cause_note"] = json!("Causes classify recorded resolver evidence; inspect an exact file with detail='full' for evidence and parse error messages.");
         result["continuation_hint"] = json!(
             "Call code_map_analyze with an exact path from top_files to page its diagnostics."
         );
@@ -913,4 +986,8 @@ pub fn analyze_paged(
         json!({"omitted": true, "hint": "Pass include_cycles=true to compute cyclic dependencies."})
     };
     Ok(result)
+}
+
+fn resolution_cause_sql() -> &'static str {
+    "CASE WHEN c.status='ambiguous' THEN 'ambiguous_candidates' WHEN c.evidence='computed receiver or dynamic callee; callable identity is unknown' THEN 'dynamic_callee' WHEN c.evidence='callee is shadowed by a parameter or local binding of unknown callable identity' THEN 'shadowed_binding' WHEN c.evidence LIKE 'call through external import %' THEN 'external_import_call' WHEN c.evidence LIKE 'import %: 1 modules, 0 alias targets' THEN 'alias_target_missing' WHEN c.evidence LIKE 'no indexed provider for absolute import %' THEN 'missing_indexed_import' WHEN c.evidence LIKE 'import %: 0 modules, %' THEN 'missing_indexed_import' WHEN c.evidence LIKE '0 lexically justified candidates;%' THEN 'no_lexical_candidate' ELSE 'other' END"
 }

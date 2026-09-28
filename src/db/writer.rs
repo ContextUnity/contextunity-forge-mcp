@@ -534,9 +534,16 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                 .prepare_cached("SELECT public_id,qualname,language FROM owned_nodes WHERE owner=?1 AND kind='module'")?
                 .query_row([path], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                 .optional()?;
-            stable_module = previous_module.as_ref().is_some_and(|(id, qualname, language)| {
-                f.nodes.iter().any(|n| n.kind == "module" && &n.id == id && &n.qualname == qualname && &n.language == language)
-            });
+            stable_module = previous_module
+                .as_ref()
+                .is_some_and(|(id, qualname, language)| {
+                    f.nodes.iter().any(|n| {
+                        n.kind == "module"
+                            && &n.id == id
+                            && &n.qualname == qualname
+                            && &n.language == language
+                    })
+                });
             for n in &f.nodes {
                 names.insert(n.qualname.clone());
                 if !matches!(n.kind.as_str(), "field" | "method" | "route" | "document") {
@@ -592,14 +599,76 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     }
     assign_components(&mut facts, &component_owners);
     let mut tokens = BTreeSet::new();
+    let mut doc_symbols = BTreeSet::new();
     for f in facts.values() {
         tokens.extend(reference_keys(f));
+        doc_symbols.extend(
+            f.docs
+                .iter()
+                .flat_map(|doc| doc.referenced_symbols.iter())
+                .map(|symbol| symbol.replace("::", "."))
+                .filter(|symbol| !symbol.is_empty()),
+        );
+    }
+    // Cold linking discovers documentation targets by any qualified-name suffix.
+    // Reuse the existing FTS index to narrow delta candidates before checking
+    // the exact dot-boundary suffix. Symbols outside its ASCII token contract
+    // retain the full scan so their links cannot silently disappear.
+    let mut suffix_ids = BTreeSet::new();
+    if !doc_symbols.is_empty() {
+        let mut terms = BTreeSet::new();
+        let mut fallback_symbols = BTreeSet::new();
+        for symbol in &doc_symbols {
+            let token = symbol
+                .is_ascii()
+                .then(|| symbol.rsplit(|c: char| !c.is_ascii_alphanumeric()).next())
+                .flatten()
+                .filter(|token| !token.is_empty() && token.len() <= 128);
+            if let Some(token) = token {
+                terms.insert(token.to_owned());
+            } else {
+                fallback_symbols.insert(symbol.as_str());
+            }
+        }
+        let mut st = admitted.prepare("SELECT n.id,n.qualname FROM node_search s JOIN nodes n ON n.node_id=s.rowid WHERE node_search MATCH ?1")?;
+        for chunk in terms.into_iter().collect::<Vec<_>>().chunks(32) {
+            let query = chunk
+                .iter()
+                .map(|term| format!("\"{term}\""))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            for row in st.query_map([query], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })? {
+                let (id, qualname) = row?;
+                if qualname
+                    .match_indices('.')
+                    .any(|(at, _)| doc_symbols.contains(&qualname[at + 1..]))
+                {
+                    suffix_ids.insert(id);
+                }
+            }
+        }
+        if !fallback_symbols.is_empty() {
+            let mut st =
+                admitted.prepare("SELECT id,qualname FROM nodes WHERE instr(qualname,'.')>0")?;
+            for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+                let (id, qualname) = row?;
+                if qualname
+                    .match_indices('.')
+                    .any(|(at, _)| fallback_symbols.contains(&qualname[at + 1..]))
+                {
+                    suffix_ids.insert(id);
+                }
+            }
+        }
     }
     let encoded = serde_json::to_string(&tokens)?;
+    let suffix_ids = serde_json::to_string(&suffix_ids)?;
     {
-        let sql="SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line,n.end_line,n.is_test,n.language,n.generated,EXISTS(SELECT 1 FROM shared_owners s WHERE s.kind='default_export' AND s.key=n.id) FROM nodes n WHERE n.id IN(SELECT id FROM nodes WHERE kind='module' UNION SELECT id FROM nodes WHERE name IN(SELECT value FROM json_each(?1)) UNION SELECT id FROM nodes WHERE qualname IN(SELECT value FROM json_each(?1)) UNION SELECT key FROM shared_owners WHERE kind='default_export')";
+        let sql="SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line,n.end_line,n.is_test,n.language,n.generated,EXISTS(SELECT 1 FROM shared_owners s WHERE s.kind='default_export' AND s.key=n.id) FROM nodes n WHERE n.id IN(SELECT id FROM nodes WHERE kind='module' UNION SELECT id FROM nodes WHERE name IN(SELECT value FROM json_each(?1)) UNION SELECT id FROM nodes WHERE qualname IN(SELECT value FROM json_each(?1)) UNION SELECT key FROM shared_owners WHERE kind='default_export' UNION SELECT value FROM json_each(?2))";
         let mut st = admitted.prepare(sql)?;
-        let nodes = st.query_map([encoded], |r| {
+        let nodes = st.query_map(params![encoded, suffix_ids], |r| {
             Ok(Node {
                 id: r.get(0)?,
                 kind: r.get(1)?,
@@ -788,7 +857,9 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
 fn resolution_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> Result<bool> {
     let identity = |node: &Node| -> Result<String> {
         let mut value = serde_json::to_value(node)?;
-        let object = value.as_object_mut().context("node identity must be an object")?;
+        let object = value
+            .as_object_mut()
+            .context("node identity must be an object")?;
         object.remove("line");
         object.remove("end_line");
         Ok(serde_json::to_string(&value)?)
@@ -797,11 +868,22 @@ fn resolution_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> 
         "SELECT public_id,kind,name,qualname,path,line,end_line,is_test,language,generated,details_json FROM owned_nodes WHERE owner=?1",
     )?;
     let rows = statement.query_map([path], |row| {
-        Ok((Node {
-            id: row.get(0)?, kind: row.get(1)?, name: row.get(2)?, qualname: row.get(3)?,
-            path: row.get(4)?, line: row.get(5)?, end_line: row.get(6)?, is_test: row.get(7)?,
-            language: row.get(8)?, generated: row.get(9)?, details: Value::Null,
-        }, row.get::<_, String>(10)?))
+        Ok((
+            Node {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                name: row.get(2)?,
+                qualname: row.get(3)?,
+                path: row.get(4)?,
+                line: row.get(5)?,
+                end_line: row.get(6)?,
+                is_test: row.get(7)?,
+                language: row.get(8)?,
+                generated: row.get(9)?,
+                details: Value::Null,
+            },
+            row.get::<_, String>(10)?,
+        ))
     })?;
     let mut old = BTreeSet::new();
     for row in rows {
@@ -812,8 +894,12 @@ fn resolution_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> 
         node.details = serde_json::from_str(&details)?;
         old.insert(identity(&node)?);
     }
-    let new = facts.nodes.iter().filter(|node| node.kind != "component")
-        .map(identity).collect::<Result<BTreeSet<_>>>()?;
+    let new = facts
+        .nodes
+        .iter()
+        .filter(|node| node.kind != "component")
+        .map(identity)
+        .collect::<Result<BTreeSet<_>>>()?;
     Ok(old != new)
 }
 fn delete_file(tx: &Connection, path: &str) -> Result<()> {

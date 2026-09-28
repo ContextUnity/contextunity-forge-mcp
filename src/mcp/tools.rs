@@ -249,7 +249,13 @@ impl Server {
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         self.responding(|policy| {
             self.read(|c| {
-                symbols::search_paged_in_path(c, &p.pattern, p.kind.as_deref(), p.path.as_deref(), &p.page.resolve(policy)?)
+                symbols::search_paged_in_path(
+                    c,
+                    &p.pattern,
+                    p.kind.as_deref(),
+                    p.path.as_deref(),
+                    &p.page.resolve(policy)?,
+                )
             })
         })
     }
@@ -314,7 +320,10 @@ impl Server {
     )]
     fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
         self.responding(|policy| {
-            anyhow::ensure!(!p.lint || p.include_cycles != Some(true), "lint=true cannot be combined with include_cycles=true");
+            anyhow::ensure!(
+                !p.lint || p.include_cycles != Some(true),
+                "lint=true cannot be combined with include_cycles=true"
+            );
             self.read(|c| {
                 let options = p.page.resolve(policy)?;
                 if p.lint {
@@ -373,14 +382,7 @@ impl Server {
             if p.page.detail.is_none() {
                 page.detail = Detail::Full;
             }
-            self.read(|c| {
-                reader::get_doc_paged(
-                    c,
-                    &p.path_or_id,
-                    p.section.as_deref(),
-                    &page,
-                )
-            })
+            self.read(|c| reader::get_doc_paged(c, &p.path_or_id, p.section.as_deref(), &page))
         })
     }
     #[tool(

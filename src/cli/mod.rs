@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[derive(Parser, Debug)]
 #[command(
     name = "contextunity-forge-mcp",
@@ -16,8 +16,8 @@ use std::path::PathBuf;
     about = "Native code graph, documentation engine, MCP server and CLI"
 )]
 pub struct Cli {
-    #[arg(long, global = true, default_value = ".", env = "FORGE_WORKSPACE_ROOT")]
-    pub root: PathBuf,
+    #[arg(long, global = true, env = "FORGE_WORKSPACE_ROOT")]
+    pub root: Option<PathBuf>,
     #[arg(long, global = true, env = "FORGE_DB")]
     pub db: Option<PathBuf>,
     #[command(subcommand)]
@@ -27,8 +27,7 @@ pub struct Cli {
 pub enum Command {
     Serve,
     Build {
-        #[arg(default_value = ".")]
-        workspace_root: PathBuf,
+        workspace_root: Option<PathBuf>,
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long)]
@@ -37,17 +36,17 @@ pub enum Command {
         verbose: bool,
     },
     Scan {
-        #[arg(default_value = ".")]
-        workspace_root: PathBuf,
+        workspace_root: Option<PathBuf>,
         #[arg(long)]
         adapter: Option<PathBuf>,
         #[arg(long)]
         pretty: bool,
     },
     Delta {
-        workspace_root: PathBuf,
-        #[arg(required = true)]
+        workspace_root: Option<PathBuf>,
         modified_files: Vec<PathBuf>,
+        #[arg(long = "modified", value_name = "FILE")]
+        modified: Vec<PathBuf>,
     },
     Query {
         #[command(subcommand)]
@@ -154,9 +153,25 @@ pub enum AstCommand {
 pub fn default_db(root: &std::path::Path) -> PathBuf {
     root.join(".forge/code-map.sqlite")
 }
+fn command_root(global: Option<&Path>, positional: Option<&Path>) -> Result<PathBuf> {
+    let global = global.map(Path::canonicalize).transpose()?;
+    let positional = positional.map(Path::canonicalize).transpose()?;
+    if let (Some(global), Some(positional)) = (&global, &positional) {
+        if global != positional {
+            bail!(
+                "conflicting workspace roots: --root {} and positional {}",
+                global.display(),
+                positional.display()
+            );
+        }
+    }
+    Ok(positional
+        .or(global)
+        .unwrap_or(std::env::current_dir()?.canonicalize()?))
+}
 impl Cli {
     pub async fn run(self) -> Result<()> {
-        let root = self.root.canonicalize()?;
+        let root = command_root(self.root.as_deref(), None)?;
         let db = self.db.clone().unwrap_or_else(|| default_db(&root));
         let command = self.command.unwrap_or(Command::Serve);
         let result: Value = match command {
@@ -170,7 +185,7 @@ impl Cli {
                 adapter,
                 verbose: _,
             } => {
-                let workspace_root = workspace_root.canonicalize()?;
+                let workspace_root = command_root(self.root.as_deref(), workspace_root.as_deref())?;
                 let output = output
                     .or(self.db)
                     .unwrap_or_else(|| default_db(&workspace_root));
@@ -180,15 +195,23 @@ impl Cli {
                 workspace_root,
                 adapter,
                 pretty: _,
-            } => json!(crate::engine::scanner::scan(
-                &workspace_root,
-                adapter.as_deref()
-            )?),
+            } => {
+                let workspace_root = command_root(self.root.as_deref(), workspace_root.as_deref())?;
+                json!(crate::engine::scanner::scan(
+                    &workspace_root,
+                    adapter.as_deref()
+                )?)
+            }
             Command::Delta {
                 workspace_root,
-                modified_files,
+                mut modified_files,
+                modified,
             } => {
-                let workspace_root = workspace_root.canonicalize()?;
+                let workspace_root = command_root(self.root.as_deref(), workspace_root.as_deref())?;
+                modified_files.extend(modified);
+                if modified_files.is_empty() {
+                    bail!("delta requires at least one modified file");
+                }
                 let db = self.db.unwrap_or_else(|| default_db(&workspace_root));
                 delta::delta(&workspace_root, &db, &modified_files)?
             }

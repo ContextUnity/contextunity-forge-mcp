@@ -1,18 +1,32 @@
 #![cfg(all(feature = "lang-yaml", feature = "lang-toml"))]
 
 use contextunity_forge_mcp::{
-    core::{commitments, response::{QueryOptions, ResponsePolicy, SourceOptions}},
+    core::{
+        commitments,
+        response::{QueryOptions, ResponsePolicy, SourceOptions},
+    },
     db::{reader, symbols, writer},
     engine::{ast, scanner},
 };
 use rusqlite::Connection;
-use std::{collections::BTreeSet, fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 struct Workspace(PathBuf);
 impl Workspace {
     fn new() -> Self {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(format!("forge_config_profiles_{}_{nonce}", std::process::id()));
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "forge_config_profiles_{}_{nonce}",
+            std::process::id()
+        ));
         fs::create_dir_all(&path).unwrap();
         Self(path)
     }
@@ -21,8 +35,12 @@ impl Workspace {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, source).unwrap();
     }
-    fn db(&self) -> PathBuf { self.0.join(".forge/code-map.sqlite") }
-    fn build(&self) { writer::build(&self.0, &self.db(), None).unwrap(); }
+    fn db(&self) -> PathBuf {
+        self.0.join(".forge/code-map.sqlite")
+    }
+    fn build(&self) {
+        writer::build(&self.0, &self.db(), None).unwrap();
+    }
     fn cold_parity(&self, path: &str) {
         writer::delta(&self.0, &self.db(), &[PathBuf::from(path)]).unwrap();
         let incremental = reader::open(&self.db(), &self.0).unwrap();
@@ -38,9 +56,18 @@ impl Workspace {
         ] { assert_eq!(rows(&incremental, sql), rows(&cold, sql), "{sql}"); }
     }
 }
-impl Drop for Workspace { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 fn rows(conn: &Connection, sql: &str) -> Vec<String> {
-    conn.prepare(sql).unwrap().query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
+    conn.prepare(sql)
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
 }
 
 fn assert_snippet(workspace: &Workspace, conn: &Connection, selector: &str, expected: &str) {
@@ -48,7 +75,10 @@ fn assert_snippet(workspace: &Workspace, conn: &Connection, selector: &str, expe
     let options = QueryOptions::resolve(&policy, None, 0, None, None).unwrap();
     let source = SourceOptions::resolve(&policy, Some(true), Some(0), None, 0).unwrap();
     let snippet = symbols::snippet_paged(conn, &workspace.0, selector, &source, &options).unwrap();
-    assert!(snippet["source"].as_str().unwrap().contains(expected), "{snippet}");
+    assert!(
+        snippet["source"].as_str().unwrap().contains(expected),
+        "{snippet}"
+    );
 }
 
 #[test]
@@ -58,9 +88,22 @@ fn yaml_indexes_nested_quoted_flow_and_sequence_keys_with_unique_ids() {
     w.write("settings.yml", source);
     w.build();
     let conn = reader::open(&w.db(), &w.0).unwrap();
-    let names = rows(&conn, "SELECT qualname FROM nodes WHERE kind='variable' ORDER BY qualname");
-    for expected in ["settings.service", "settings.service.port", "settings.service.\"literal.dot\"", "settings.flow.left.port", "settings.flow.right.port", "settings.items.name"] {
-        assert!(names.iter().any(|name| name == expected), "missing {expected}: {names:?}");
+    let names = rows(
+        &conn,
+        "SELECT qualname FROM nodes WHERE kind='variable' ORDER BY qualname",
+    );
+    for expected in [
+        "settings.service",
+        "settings.service.port",
+        "settings.service.\"literal.dot\"",
+        "settings.flow.left.port",
+        "settings.flow.right.port",
+        "settings.items.name",
+    ] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "missing {expected}: {names:?}"
+        );
     }
     let ids = rows(&conn, "SELECT id FROM nodes");
     assert_eq!(ids.len(), ids.iter().collect::<BTreeSet<_>>().len());
@@ -81,16 +124,37 @@ fn toml_indexes_tables_array_tables_dotted_and_inline_keys() {
     w.build();
     let conn = reader::open(&w.db(), &w.0).unwrap();
     let names = rows(&conn, "SELECT qualname FROM nodes ORDER BY qualname");
-    for expected in ["settings.title", "settings.server", "settings.server.port", "settings.server.\"literal.dot\"", "settings.server.limits.cpu", "settings.server.inline.left.value", "settings.workers.name"] {
-        assert!(names.iter().any(|name| name == expected), "missing {expected}: {names:?}");
+    for expected in [
+        "settings.title",
+        "settings.server",
+        "settings.server.port",
+        "settings.server.\"literal.dot\"",
+        "settings.server.limits.cpu",
+        "settings.server.inline.left.value",
+        "settings.workers.name",
+    ] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "missing {expected}: {names:?}"
+        );
     }
-    assert_eq!(rows(&conn, "SELECT id FROM nodes WHERE kind='namespace' AND name='workers'").len(), 2);
+    assert_eq!(
+        rows(
+            &conn,
+            "SELECT id FROM nodes WHERE kind='namespace' AND name='workers'"
+        )
+        .len(),
+        2
+    );
     let ids = rows(&conn, "SELECT id FROM nodes");
     assert_eq!(ids.len(), ids.iter().collect::<BTreeSet<_>>().len());
     assert!(rows(&conn, "SELECT message FROM errors").is_empty());
     assert_snippet(&w, &conn, "settings.toml:3", "port = 8080");
     drop(conn);
-    w.write("settings.toml", &source.replace("port = 8080", "timeout = 15"));
+    w.write(
+        "settings.toml",
+        &source.replace("port = 8080", "timeout = 15"),
+    );
     w.cold_parity("settings.toml");
 }
 
@@ -98,12 +162,27 @@ fn toml_indexes_tables_array_tables_dotted_and_inline_keys() {
 fn config_ast_search_finds_inner_pairs_and_key_captures() {
     let w = Workspace::new();
     for (path, language, source, patterns) in [
-        ("settings.yml", "yaml", "service:\n  port: 8080\n  host: local\n", ["port: 8080", "$KEY: 8080"]),
-        ("settings.toml", "toml", "[server]\nport = 8080\nhost = 'local'\n", ["port = 8080", "$KEY = 8080"]),
+        (
+            "settings.yml",
+            "yaml",
+            "service:\n  port: 8080\n  host: local\n",
+            ["port: 8080", "$KEY: 8080"],
+        ),
+        (
+            "settings.toml",
+            "toml",
+            "[server]\nport = 8080\nhost = 'local'\n",
+            ["port = 8080", "$KEY = 8080"],
+        ),
     ] {
         w.write(path, source);
         for pattern in patterns {
-            assert!(!ast::search(source, path, language, pattern, 20).unwrap().is_empty(), "{language}: {pattern}");
+            assert!(
+                !ast::search(source, path, language, pattern, 20)
+                    .unwrap()
+                    .is_empty(),
+                "{language}: {pattern}"
+            );
         }
     }
     assert!(ast::search("key: 1\n", "settings.yaml", "yaml", "key: [", 20).is_err());

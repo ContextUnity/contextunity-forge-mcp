@@ -105,7 +105,10 @@ impl Mcp {
         self.input.flush().unwrap();
         loop {
             let mut line = String::new();
-            assert!(self.output.read_line(&mut line).unwrap() > 0, "MCP closed stdout on {method}");
+            assert!(
+                self.output.read_line(&mut line).unwrap() > 0,
+                "MCP closed stdout on {method}"
+            );
             let response: Value = serde_json::from_str(&line).unwrap();
             if response["id"] == id {
                 return response;
@@ -122,14 +125,16 @@ impl Mcp {
         let response = self.call(name, arguments);
         assert!(response.get("error").is_none(), "{name}: {response}");
         assert_ne!(response["result"]["isError"], true, "{name}: {response}");
-        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
-            .unwrap()
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
     }
     fn err(&mut self, name: &str, arguments: Value, expected: &str) {
         let response = self.call(name, arguments);
         assert_eq!(response["result"]["isError"], true, "{name}: {response}");
         let message = response["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(message.contains(expected), "{name}: expected {expected:?}, got {message:?}");
+        assert!(
+            message.contains(expected),
+            "{name}: expected {expected:?}, got {message:?}"
+        );
     }
 }
 impl Drop for Mcp {
@@ -602,7 +607,13 @@ fn test_safe_selector_resolution_and_disambiguation() {
     // 5. Bare name 'scanner' matches BOTH module 'scanner.py' and function 'scanner()'.
     // Safe disambiguation MUST NOT hijack it to module! It must fail with ambiguous selector.
     let bare_cmd = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
-        .args(&["--root", w.0.to_str().unwrap(), "query", "inspect", "scanner"])
+        .args(&[
+            "--root",
+            w.0.to_str().unwrap(),
+            "query",
+            "inspect",
+            "scanner",
+        ])
         .output()
         .unwrap();
     assert!(
@@ -621,19 +632,38 @@ fn mcp_selector_and_source_boundaries() {
     use serde_json::json;
     let w = Workspace::new();
     w.write("scanner.py", "def scanner():\n    return 42\n");
-    w.write("src/app.py", "# license\ndef first(): pass\ndef last(): pass\n");
+    w.write(
+        "src/app.py",
+        "# license\ndef first(): pass\ndef last(): pass\n",
+    );
     w.write("comments.py", "# license only\n# no code body\n");
     w.write("docs/contract.md", "# Contract\n\nA documented contract.\n");
     w.build();
     let mut m = Mcp::new(&w);
 
-    for tool in ["code_map_inspect", "code_map_explain", "code_map_impact", "code_map_tests", "code_map_prove_removal", "get_code_snippet"] {
+    for tool in [
+        "code_map_inspect",
+        "code_map_explain",
+        "code_map_impact",
+        "code_map_tests",
+        "code_map_prove_removal",
+        "get_code_snippet",
+    ] {
         m.err(tool, json!({"selector":"scanner"}), "ambiguous selector");
         m.err(tool, json!({"selector":""}), "selector is empty");
         m.err(tool, json!({"selector":"   "}), "selector is empty");
-        m.err(tool, json!({"selector":"docs/contract.md"}), "get_doc or search_docs");
+        m.err(
+            tool,
+            json!({"selector":"docs/contract.md"}),
+            "get_doc or search_docs",
+        );
     }
-    for selector in ["scanner.py:scanner", "scanner.py::scanner", "scanner.py:1", "scanner.py#L1"] {
+    for selector in [
+        "scanner.py:scanner",
+        "scanner.py::scanner",
+        "scanner.py:1",
+        "scanner.py#L1",
+    ] {
         let result = m.ok("code_map_inspect", json!({"selector":selector}));
         assert_eq!(result["node"]["kind"], "function", "{selector}: {result}");
     }
@@ -642,17 +672,47 @@ fn mcp_selector_and_source_boundaries() {
         assert_eq!(result["node"]["kind"], "module", "{selector}: {result}");
     }
     for selector in [":::", "#Labc", "nonexistent/path.py:9999"] {
-        m.err("code_map_inspect", json!({"selector":selector}), "selector not found");
+        m.err(
+            "code_map_inspect",
+            json!({"selector":selector}),
+            "selector not found",
+        );
     }
-    m.err("code_map_inspect", json!({"selector":"%.py:scanner"}), "selector not found");
-    let first = m.ok("get_code_snippet", json!({"selector":"src/app.py:first","leading_lines":0}));
+    m.err(
+        "code_map_inspect",
+        json!({"selector":"%.py:scanner"}),
+        "selector not found",
+    );
+    let first = m.ok(
+        "get_code_snippet",
+        json!({"selector":"src/app.py:first","leading_lines":0}),
+    );
     assert_eq!(first["source"], "def first(): pass\n");
-    let last = m.ok("get_code_snippet", json!({"selector":"src/app.py:last","leading_lines":0}));
+    let last = m.ok(
+        "get_code_snippet",
+        json!({"selector":"src/app.py:last","leading_lines":0}),
+    );
     assert_eq!(last["source"], "def last(): pass\n");
-    m.err("get_code_snippet", json!({"selector":"src/app.py:first","max_body_lines":0}), "max_body_lines");
-    m.err("get_code_snippet", json!({"selector":"src/app.py:first","leading_lines":-1}), "expected usize");
-    m.err("get_code_snippet", json!({"selector":"src/app.py:first","max_body_lines":-1}), "expected usize");
-    m.err("get_code_snippet", json!({"selector":"src/app.py:first","source_offset":-1}), "expected usize");
+    m.err(
+        "get_code_snippet",
+        json!({"selector":"src/app.py:first","max_body_lines":0}),
+        "max_body_lines",
+    );
+    m.err(
+        "get_code_snippet",
+        json!({"selector":"src/app.py:first","leading_lines":-1}),
+        "expected usize",
+    );
+    m.err(
+        "get_code_snippet",
+        json!({"selector":"src/app.py:first","max_body_lines":-1}),
+        "expected usize",
+    );
+    m.err(
+        "get_code_snippet",
+        json!({"selector":"src/app.py:first","source_offset":-1}),
+        "expected usize",
+    );
     let comments = m.ok("get_code_snippet", json!({"selector":"comments.py"}));
     assert_eq!(comments["node"]["kind"], "module");
     assert_eq!(comments["source"], "# license only\n# no code body\n");
@@ -663,23 +723,56 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     use serde_json::json;
     let w = Workspace::new();
     w.write("cycle.py", "def a(): b()\ndef b(): a()\n");
-    w.write("tests/test_cycle.py", "from cycle import a\ndef test_a(): a()\n");
+    w.write(
+        "tests/test_cycle.py",
+        "from cycle import a\ndef test_a(): a()\n",
+    );
     w.build();
     let mut m = Mcp::new(&w);
     for depth in [0, 1, 16] {
-        let result = m.ok("code_map_impact", json!({"selector":"cycle.py:a","depth":depth}));
+        let result = m.ok(
+            "code_map_impact",
+            json!({"selector":"cycle.py:a","depth":depth}),
+        );
         assert_eq!(result["depth"], depth);
         assert!(result["nodes"]["total"].as_u64().unwrap() >= 1);
     }
-    m.err("code_map_impact", json!({"selector":"cycle.py:a","depth":17}), "depth must be <=16");
-    let inbound = m.ok("code_map_tests", json!({"selector":"cycle.py:a","direction":"inbound"}));
-    assert!(inbound["nodes"]["items"].as_array().unwrap().iter().any(|node| node["name"] == "test_a"));
-    let test = inbound["nodes"]["items"].as_array().unwrap().iter().find(|node| node["name"] == "test_a").unwrap();
+    m.err(
+        "code_map_impact",
+        json!({"selector":"cycle.py:a","depth":17}),
+        "depth must be <=16",
+    );
+    let inbound = m.ok(
+        "code_map_tests",
+        json!({"selector":"cycle.py:a","direction":"inbound"}),
+    );
+    assert!(inbound["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["name"] == "test_a"));
+    let test = inbound["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "test_a")
+        .unwrap();
     assert_eq!(test["connection"]["relation"], "direct");
     assert_eq!(test["connection"]["edge_kind"], "calls");
-    let outbound = m.ok("code_map_tests", json!({"selector":"tests/test_cycle.py:test_a","direction":"outbound"}));
-    assert!(outbound["nodes"]["items"].as_array().unwrap().iter().any(|node| node["name"] == "a"));
-    m.err("code_map_tests", json!({"selector":"cycle.py:a","direction":"sideways"}), "direction must be inbound or outbound");
+    let outbound = m.ok(
+        "code_map_tests",
+        json!({"selector":"tests/test_cycle.py:test_a","direction":"outbound"}),
+    );
+    assert!(outbound["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["name"] == "a"));
+    m.err(
+        "code_map_tests",
+        json!({"selector":"cycle.py:a","direction":"sideways"}),
+        "direction must be inbound or outbound",
+    );
     let explained = m.ok("code_map_explain", json!({"selector":"cycle.py:a"}));
     assert_eq!(explained["node"]["kind"], "function");
     let removal = m.ok("code_map_prove_removal", json!({"selector":"cycle.py:a"}));
@@ -690,23 +783,43 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
 fn mcp_search_ast_and_document_boundaries() {
     use serde_json::json;
     let w = Workspace::new();
-    w.write("src/app.py", "def item_name(): pass\ndef itemXname(): pass\nprint(item_name())\n");
-    w.write("docs/intro.md", "---\ndoc_type: guide\ntitle: Intro\n---\n# Intro\n\nA searchable contract.\n");
+    w.write(
+        "src/app.py",
+        "def item_name(): pass\ndef itemXname(): pass\nprint(item_name())\n",
+    );
+    w.write(
+        "docs/intro.md",
+        "---\ndoc_type: guide\ntitle: Intro\n---\n# Intro\n\nA searchable contract.\n",
+    );
     w.build();
     let mut m = Mcp::new(&w);
     let overview = m.ok("code_map_overview", json!({"limit":1}));
     assert!(overview["generation"].is_string());
     for pattern in ["*", "***", "_", "%", "\\", "'", "\""] {
-        m.err("code_map_search", json!({"pattern":pattern}), "pattern must contain");
+        m.err(
+            "code_map_search",
+            json!({"pattern":pattern}),
+            "pattern must contain",
+        );
     }
-    let prefix = m.ok("code_map_search", json!({"pattern":"item*","kind":"function","limit":1}));
+    let prefix = m.ok(
+        "code_map_search",
+        json!({"pattern":"item*","kind":"function","limit":1}),
+    );
     assert_eq!(prefix["nodes"]["items"].as_array().unwrap().len(), 1);
     assert_eq!(prefix["nodes"]["total"], 2);
-    let scoped = m.ok("code_map_search", json!({"pattern":"item*","kind":"function","path":"src/app.py"}));
+    let scoped = m.ok(
+        "code_map_search",
+        json!({"pattern":"item*","kind":"function","path":"src/app.py"}),
+    );
     assert_eq!(scoped["nodes"]["total"], 2);
     let outside = m.ok("code_map_search", json!({"pattern":"item*","path":"docs"}));
     assert_eq!(outside["nodes"]["total"], 0);
-    m.err("code_map_search", json!({"pattern":"item*","path":"../src"}), "workspace-relative");
+    m.err(
+        "code_map_search",
+        json!({"pattern":"item*","path":"../src"}),
+        "workspace-relative",
+    );
     let literal_underscore = m.ok("code_map_search", json!({"pattern":"item_*"}));
     assert_eq!(literal_underscore["nodes"]["total"], 1);
     for pattern in ["item%*", "item\\*", "item'*", "item\"*"] {
@@ -714,25 +827,53 @@ fn mcp_search_ast_and_document_boundaries() {
         assert_eq!(result["nodes"]["total"], 0, "{pattern}: {result}");
     }
 
-    let ast = m.ok("ast_grep_search", json!({"pattern":"print($VALUE)","language":"python","path":"src/app.py"}));
+    let ast = m.ok(
+        "ast_grep_search",
+        json!({"pattern":"print($VALUE)","language":"python","path":"src/app.py"}),
+    );
     assert!(ast["matches"]["items"].as_array().unwrap().len() >= 1);
-    m.err("ast_grep_search", json!({"pattern":"def (","language":"python"}), "pattern");
-    m.err("ast_grep_search", json!({"pattern":"print($VALUE)","language":"unknown"}), "unknown");
-    m.err("ast_grep_search", json!({"pattern":"print($VALUE)","language":"python","path":""}), "path");
+    m.err(
+        "ast_grep_search",
+        json!({"pattern":"def (","language":"python"}),
+        "pattern",
+    );
+    m.err(
+        "ast_grep_search",
+        json!({"pattern":"print($VALUE)","language":"unknown"}),
+        "unknown",
+    );
+    m.err(
+        "ast_grep_search",
+        json!({"pattern":"print($VALUE)","language":"python","path":""}),
+        "path",
+    );
 
     let docs = m.ok("search_docs", json!({"query":"searchable"}));
     assert!(docs["sections"]["total"].as_u64().unwrap() >= 1);
     assert!(docs["sections"]["items"][0].get("excerpt").is_none());
-    let excerpt = m.ok("search_docs", json!({"query":"searchable","include_excerpt":true}));
-    assert!(excerpt["sections"]["items"][0]["excerpt"].as_str().unwrap().contains("[searchable]"));
+    let excerpt = m.ok(
+        "search_docs",
+        json!({"query":"searchable","include_excerpt":true}),
+    );
+    assert!(excerpt["sections"]["items"][0]["excerpt"]
+        .as_str()
+        .unwrap()
+        .contains("[searchable]"));
     m.err("search_docs", json!({"query":""}), "search query is empty");
     let quoted = m.ok("search_docs", json!({"query":"\""}));
     assert_eq!(quoted["sections"]["total"], 0);
-    let filtered = m.ok("search_docs", json!({"query":"searchable","doc_type":"no-such-type"}));
+    let filtered = m.ok(
+        "search_docs",
+        json!({"query":"searchable","doc_type":"no-such-type"}),
+    );
     assert_eq!(filtered["sections"]["total"], 0);
     let doc = m.ok("get_doc", json!({"path_or_id":"docs/intro.md"}));
     assert!(doc["sections"]["total"].as_u64().unwrap() >= 1);
-    m.err("get_doc", json!({"path_or_id":"docs/intro.md","section":"NonExistentSection"}), "document or section not found");
+    m.err(
+        "get_doc",
+        json!({"path_or_id":"docs/intro.md","section":"NonExistentSection"}),
+        "document or section not found",
+    );
 }
 
 #[test]
@@ -752,20 +893,43 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
         "PRAGMA journal_mode=WAL",
     ] {
         let response = m.call("code_map_analyze", json!({"target":target}));
-        assert_eq!(response["result"]["isError"], true, "unsafe target accepted: {target}: {response}");
+        assert_eq!(
+            response["result"]["isError"], true,
+            "unsafe target accepted: {target}: {response}"
+        );
         let message = response["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(message.contains("write or administrative SQL is not allowed") || message.contains("exactly one SELECT or WITH statement is allowed"), "{target}: {message}");
+        assert!(
+            message.contains("write or administrative SQL is not allowed")
+                || message.contains("exactly one SELECT or WITH statement is allowed"),
+            "{target}: {message}"
+        );
     }
-    m.err("code_map_analyze", json!({"target":"SELECT count(*) FROM nodes; DROP TABLE nodes"}), "exactly one SELECT or WITH statement is allowed");
-    let count = m.ok("code_map_analyze", json!({"target":"SELECT count(*) AS count FROM nodes","limit":1}));
+    m.err(
+        "code_map_analyze",
+        json!({"target":"SELECT count(*) FROM nodes; DROP TABLE nodes"}),
+        "exactly one SELECT or WITH statement is allowed",
+    );
+    let count = m.ok(
+        "code_map_analyze",
+        json!({"target":"SELECT count(*) AS count FROM nodes","limit":1}),
+    );
     assert!(count["rows"]["items"][0]["count"].as_u64().unwrap() >= 2);
-    let paged = m.ok("code_map_analyze", json!({"target":"SELECT id FROM nodes ORDER BY id","limit":1}));
+    let paged = m.ok(
+        "code_map_analyze",
+        json!({"target":"SELECT id FROM nodes ORDER BY id","limit":1}),
+    );
     assert_eq!(paged["rows"]["items"].as_array().unwrap().len(), 1);
     assert!(paged["rows"]["total"].as_u64().unwrap() > 1);
     for target in ["", "cycle.py", "other.py"] {
-        let off = m.ok("code_map_analyze", json!({"target":target,"include_cycles":false}));
+        let off = m.ok(
+            "code_map_analyze",
+            json!({"target":target,"include_cycles":false}),
+        );
         assert_eq!(off["cycles"]["omitted"], true);
-        let on = m.ok("code_map_analyze", json!({"target":target,"include_cycles":true}));
+        let on = m.ok(
+            "code_map_analyze",
+            json!({"target":target,"include_cycles":true}),
+        );
         if target == "other.py" {
             assert_eq!(on["cycles"]["total"], 0);
         } else {
@@ -774,39 +938,120 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
     }
 
     for (operation, selector) in [
-        ("overview", ""), ("inspect", "cycle.py:a"), ("explain", "cycle.py:a"),
-        ("impact", "cycle.py:a"), ("slice", "cycle.py:a"), ("unwired", ""),
-        ("cypher", "MATCH (n) RETURN n"), ("raw_cypher", "MATCH (n) RETURN n"),
-        ("doctor", ""), ("search", "a"),
+        ("overview", ""),
+        ("inspect", "cycle.py:a"),
+        ("explain", "cycle.py:a"),
+        ("impact", "cycle.py:a"),
+        ("slice", "cycle.py:a"),
+        ("unwired", ""),
+        ("cypher", "MATCH (n) RETURN n"),
+        ("raw_cypher", "MATCH (n) RETURN n"),
+        ("doctor", ""),
+        ("search", "a"),
     ] {
-        m.ok("code_map_query", json!({"operation":operation,"selector":selector,"depth":1,"limit":5}));
+        m.ok(
+            "code_map_query",
+            json!({"operation":operation,"selector":selector,"depth":1,"limit":5}),
+        );
     }
-    m.ok("code_map_query", json!({"operation":"MATCH (n) RETURN n","limit":5}));
-    m.err("code_map_query", json!({"operation":"MATCH (n) RETURN n LIMIT 5"}), "Pass limit as a separate tool argument");
-    m.err("code_map_query", json!({"operation":"delete_all"}), "supported: overview,inspect,explain,impact,slice,unwired,cypher");
+    m.ok(
+        "code_map_query",
+        json!({"operation":"MATCH (n) RETURN n","limit":5}),
+    );
+    m.err(
+        "code_map_query",
+        json!({"operation":"MATCH (n) RETURN n LIMIT 5"}),
+        "Pass limit as a separate tool argument",
+    );
+    m.err(
+        "code_map_query",
+        json!({"operation":"delete_all"}),
+        "supported: overview,inspect,explain,impact,slice,unwired,cypher",
+    );
 
-    assert!(m.ok("session_checkpoint", json!({"action":"list"})).is_object());
-    m.err("session_checkpoint", json!({"action":"save","content":{"note":"x"}}), "name");
-    m.err("session_checkpoint", json!({"action":"save","name":"note"}), "content required");
-    m.err("session_checkpoint", json!({"action":"get","name":"missing"}), "not found");
-    m.err("session_checkpoint", json!({"action":"delete","name":"missing"}), "not found");
-    m.err("session_checkpoint", json!({"action":"save","name":"../../etc/passwd","content":{"note":"x"}}), "path traversal");
-    m.err("session_checkpoint", json!({"action":"save","name":"..\n/../etc/passwd","content":{"note":"x"}}), "path traversal");
-    m.ok("session_checkpoint", json!({"action":"save","name":"note","content":{"state":1}}));
-    assert_eq!(m.ok("session_checkpoint", json!({"action":"get","name":"note"}))["state"], 1);
-    assert!(m.ok("session_checkpoint", json!({"action":"list"})).get("note").is_some());
-    m.ok("session_checkpoint", json!({"action":"delete","name":"note"}));
-    m.err("session_checkpoint", json!({"action":"get","name":"note"}), "not found");
-    let malformed = w.cli(&["checkpoint", "save", "--name", "malformed", "--content", "{invalid"]);
+    assert!(m
+        .ok("session_checkpoint", json!({"action":"list"}))
+        .is_object());
+    m.err(
+        "session_checkpoint",
+        json!({"action":"save","content":{"note":"x"}}),
+        "name",
+    );
+    m.err(
+        "session_checkpoint",
+        json!({"action":"save","name":"note"}),
+        "content required",
+    );
+    m.err(
+        "session_checkpoint",
+        json!({"action":"get","name":"missing"}),
+        "not found",
+    );
+    m.err(
+        "session_checkpoint",
+        json!({"action":"delete","name":"missing"}),
+        "not found",
+    );
+    m.err(
+        "session_checkpoint",
+        json!({"action":"save","name":"../../etc/passwd","content":{"note":"x"}}),
+        "path traversal",
+    );
+    m.err(
+        "session_checkpoint",
+        json!({"action":"save","name":"..\n/../etc/passwd","content":{"note":"x"}}),
+        "path traversal",
+    );
+    m.ok(
+        "session_checkpoint",
+        json!({"action":"save","name":"note","content":{"state":1}}),
+    );
+    assert_eq!(
+        m.ok("session_checkpoint", json!({"action":"get","name":"note"}))["state"],
+        1
+    );
+    assert!(m
+        .ok("session_checkpoint", json!({"action":"list"}))
+        .get("note")
+        .is_some());
+    m.ok(
+        "session_checkpoint",
+        json!({"action":"delete","name":"note"}),
+    );
+    m.err(
+        "session_checkpoint",
+        json!({"action":"get","name":"note"}),
+        "not found",
+    );
+    let malformed = w.cli(&[
+        "checkpoint",
+        "save",
+        "--name",
+        "malformed",
+        "--content",
+        "{invalid",
+    ]);
     assert!(!malformed.status.success());
     assert!(String::from_utf8_lossy(&malformed.stderr).contains("key must be a string"));
-    m.err("session_checkpoint", json!({"action":"get","name":"malformed"}), "not found");
+    m.err(
+        "session_checkpoint",
+        json!({"action":"get","name":"malformed"}),
+        "not found",
+    );
     w.write(".forge/checkpoints.json", "{invalid JSON");
-    m.err("session_checkpoint", json!({"action":"list"}), "key must be a string");
+    m.err(
+        "session_checkpoint",
+        json!({"action":"list"}),
+        "key must be a string",
+    );
 
     let guide = m.ok("forge_guide", json!({"topic":"query"}));
     assert!(guide["start"].is_string());
-    m.err("forge_guide", json!({"topic":"no-such-topic"}), "unknown guide topic");
+    m.err(
+        "forge_guide",
+        json!({"topic":"no-such-topic"}),
+        "unknown guide topic",
+    );
 }
 
 #[test]
@@ -820,8 +1065,15 @@ fn mcp_rejects_wide_graph_before_deep_traversal() {
     w.write("wide.py", &code);
     w.build();
     let mut m = Mcp::new(&w);
-    m.err("code_map_impact", json!({"selector":"wide.py:target","depth":2,"limit":1}), "Retry with depth=1");
-    let shallow = m.ok("code_map_impact", json!({"selector":"wide.py:target","depth":1,"limit":1}));
+    m.err(
+        "code_map_impact",
+        json!({"selector":"wide.py:target","depth":2,"limit":1}),
+        "Retry with depth=1",
+    );
+    let shallow = m.ok(
+        "code_map_impact",
+        json!({"selector":"wide.py:target","depth":1,"limit":1}),
+    );
     assert!(shallow["nodes"]["total"].as_u64().unwrap() > 1000);
 }
 
@@ -836,7 +1088,11 @@ fn mcp_rejects_removal_scope_over_ten_thousand_nodes() {
     w.write("scope.py", &code);
     w.build();
     let mut m = Mcp::new(&w);
-    m.err("code_map_prove_removal", json!({"selector":"scope.py"}), "removal scope exceeds 10000 nodes");
+    m.err(
+        "code_map_prove_removal",
+        json!({"selector":"scope.py"}),
+        "removal scope exceeds 10000 nodes",
+    );
 }
 
 #[test]
@@ -846,9 +1102,25 @@ fn mcp_enforces_page_row_and_time_budgets() {
     w.write("app.py", "def one(): pass\ndef two(): pass\n");
     w.build();
     let mut m = Mcp::new(&w);
-    m.err("code_map_search", json!({"pattern":"one","limit":0}), "limit must be 1..=100");
-    m.err("code_map_search", json!({"pattern":"one","limit":101}), "limit must be 1..=100");
-    m.err("code_map_search", json!({"pattern":"one","offset":1}), "continuation requires generation");
-    m.err("code_map_analyze", json!({"target":"SELECT hex(zeroblob(2000000)) AS giant FROM nodes LIMIT 1"}), "8 MiB row budget");
+    m.err(
+        "code_map_search",
+        json!({"pattern":"one","limit":0}),
+        "limit must be 1..=100",
+    );
+    m.err(
+        "code_map_search",
+        json!({"pattern":"one","limit":101}),
+        "limit must be 1..=100",
+    );
+    m.err(
+        "code_map_search",
+        json!({"pattern":"one","offset":1}),
+        "continuation requires generation",
+    );
+    m.err(
+        "code_map_analyze",
+        json!({"target":"SELECT hex(zeroblob(2000000)) AS giant FROM nodes LIMIT 1"}),
+        "8 MiB row budget",
+    );
     m.err("code_map_analyze", json!({"target":"WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<100000000) SELECT max(x) FROM seq"}), "2-second SQLite budget");
 }

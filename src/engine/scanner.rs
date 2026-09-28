@@ -479,9 +479,9 @@ pub fn scan_reusing(
     let mut candidates = Vec::new();
     let mut seen_rel_paths = BTreeSet::new();
     let configuration_paths: BTreeSet<_> = [root.join("forge-mcp.yaml")]
-    .into_iter()
-    .chain(adapter.adapter_path.iter().cloned())
-    .collect();
+        .into_iter()
+        .chain(adapter.adapter_path.iter().cloned())
+        .collect();
 
     for source_root in &adapter.roots {
         if !source_root.exists() {

@@ -84,15 +84,7 @@ pub(crate) fn nodes(alias: &str, detail: Detail) -> String {
     columns(
         alias,
         detail,
-        &[
-            "id",
-            "kind",
-            "name",
-            "path",
-            "line",
-            "end_line",
-            "language",
-        ],
+        &["id", "kind", "name", "path", "line", "end_line", "language"],
     )
 }
 
@@ -128,11 +120,7 @@ pub(crate) fn edges(alias: &str, detail: Detail) -> String {
 }
 
 pub(crate) fn coverage(alias: &str, detail: Detail) -> String {
-    columns(
-        alias,
-        detail,
-        &["line", "expression", "status"],
-    )
+    columns(alias, detail, &["line", "expression", "status"])
 }
 
 fn columns(alias: &str, detail: Detail, names: &[&str]) -> String {

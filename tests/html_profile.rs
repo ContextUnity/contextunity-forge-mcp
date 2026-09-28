@@ -49,7 +49,8 @@ fn html_files_are_indexed_and_snippets_preserve_markup_after_delta() {
     );
     writer::build(&workspace.0, &workspace.db(), None).unwrap();
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let options = QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
+    let options =
+        QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
     let preview = SourceOptions {
         enabled: true,
         leading_lines: 0,
@@ -72,7 +73,12 @@ fn html_files_are_indexed_and_snippets_preserve_markup_after_delta() {
     drop(conn);
     let updated = "<html>\n<body>Updated</body>\n</html>\n";
     workspace.write("index.html", updated);
-    writer::delta(&workspace.0, &workspace.db(), &[PathBuf::from("index.html")]).unwrap();
+    writer::delta(
+        &workspace.0,
+        &workspace.db(),
+        &[PathBuf::from("index.html")],
+    )
+    .unwrap();
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
     let snippet =
         symbols::snippet_paged(&conn, &workspace.0, "index.html", &preview, &options).unwrap();
@@ -239,24 +245,52 @@ fn htmx_declarations_are_searchable_without_inventing_handler_edges() {
     workspace.write("page.html", source);
     let facts = ast::extract("page.html", "html", source).unwrap();
     assert!(facts.references.is_empty());
-    let requests: Vec<_> = facts.nodes.iter().filter(|node| node.kind == "htmx_request").collect();
+    let requests: Vec<_> = facts
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "htmx_request")
+        .collect();
     assert_eq!(requests.len(), 5);
-    let get = requests.iter().find(|node| node.name == "GET /orders?state=open").unwrap();
+    let get = requests
+        .iter()
+        .find(|node| node.name == "GET /orders?state=open")
+        .unwrap();
     assert_eq!(get.line, 2);
     assert_eq!(get.details["url_status"], "local_unverified");
     assert_eq!(get.details["trigger"], "click");
     assert_eq!(get.details["include"], "#filter");
     assert_eq!(get.details["vals_key_count"], 1);
     assert!(requests.iter().any(|node| node.name == "POST /orders"));
-    assert!(requests.iter().any(|node| node.name == "DELETE https://example.invalid/orders" && node.details["url_status"] == "remote"));
-    assert!(requests.iter().any(|node| node.name == "PATCH {{ route }}" && node.details["url_status"] == "dynamic_or_nonlocal" && node.details["vals_status"] == "dynamic"));
-    assert!(requests.iter().any(|node| node.name == "PUT " && node.details["url_status"] == "current_page"));
-    assert_eq!(facts.nodes.iter().filter(|node| node.kind == "htmx_context").count(), 1);
+    assert!(requests
+        .iter()
+        .any(|node| node.name == "DELETE https://example.invalid/orders"
+            && node.details["url_status"] == "remote"));
+    assert!(requests.iter().any(|node| node.name == "PATCH {{ route }}"
+        && node.details["url_status"] == "dynamic_or_nonlocal"
+        && node.details["vals_status"] == "dynamic"));
+    assert!(requests
+        .iter()
+        .any(|node| node.name == "PUT " && node.details["url_status"] == "current_page"));
+    assert_eq!(
+        facts
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "htmx_context")
+            .count(),
+        1
+    );
     assert!(!serde_json::to_string(&facts).unwrap().contains("secret"));
 
     writer::build(&workspace.0, &workspace.db(), None).unwrap();
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let options = QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, Some(Detail::Full), None).unwrap();
+    let options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        0,
+        Some(Detail::Full),
+        None,
+    )
+    .unwrap();
     let inspected = reader::inspect_paged(&conn, &get.id, false, &options).unwrap();
     assert_eq!(inspected["node"]["name"], "GET /orders?state=open");
     assert_eq!(inspected["node"]["details"]["vals_key_count"], 1);
@@ -266,7 +300,13 @@ fn htmx_declarations_are_searchable_without_inventing_handler_edges() {
     let searched = symbols::search_paged(&conn, "orders", Some("htmx_request"), &options).unwrap();
     assert_eq!(searched["nodes"]["total"], 3);
     assert_eq!(searched["nodes"]["items"][0]["path"], "page.html");
-    let edges: i64 = conn.query_row("SELECT count(*) FROM edges WHERE src_public_id='module:page.html' AND kind='imports'", [], |row| row.get(0)).unwrap();
+    let edges: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM edges WHERE src_public_id='module:page.html' AND kind='imports'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(edges, 0);
 }
 
@@ -279,7 +319,10 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
     for index in 0..70 {
         updated.push_str(&format!("<button hx-get='/route-{index}'>Go</button>\n"));
     }
-    updated.push_str(&format!("<button hx-post='{}'>Large</button>", "x".repeat(300)));
+    updated.push_str(&format!(
+        "<button hx-post='{}'>Large</button>",
+        "x".repeat(300)
+    ));
     workspace.write("page.html", &updated);
     writer::delta(&workspace.0, &workspace.db(), &[PathBuf::from("page.html")]).unwrap();
     let delta = reader::open(&workspace.db(), &workspace.0).unwrap();
@@ -287,30 +330,66 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
     writer::build(&workspace.0, &cold, None).unwrap();
     let rebuilt = reader::open(&cold, &workspace.0).unwrap();
     let rows = |conn: &rusqlite::Connection| {
-        conn.prepare("SELECT id,name,line,details FROM nodes WHERE kind='htmx_request' ORDER BY line,id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap()
+        conn.prepare(
+            "SELECT id,name,line,details FROM nodes WHERE kind='htmx_request' ORDER BY line,id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
     };
     let requests = rows(&delta);
     assert_eq!(requests, rows(&rebuilt));
     assert_eq!(requests.len(), 71);
     assert_eq!(requests.first().unwrap().1, "GET /route-0");
-    assert!(requests.iter().any(|(_, name, line, _)| name == "GET /route-69" && *line == 70));
-    let options = QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, Some(Detail::Compact), None).unwrap();
+    assert!(requests
+        .iter()
+        .any(|(_, name, line, _)| name == "GET /route-69" && *line == 70));
+    let options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        0,
+        Some(Detail::Compact),
+        None,
+    )
+    .unwrap();
     let first = symbols::search_paged(&delta, "route", Some("htmx_request"), &options).unwrap();
     assert_eq!(first["nodes"]["total"], 70);
     assert_eq!(first["nodes"]["items"].as_array().unwrap().len(), 10);
     assert_eq!(first["nodes"]["next_offset"], 10);
     let generation = first["nodes"]["generation"].as_str().unwrap().to_owned();
-    let second_options = QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 10, Some(Detail::Compact), Some(generation)).unwrap();
-    let second = symbols::search_paged(&delta, "route", Some("htmx_request"), &second_options).unwrap();
+    let second_options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        10,
+        Some(Detail::Compact),
+        Some(generation),
+    )
+    .unwrap();
+    let second =
+        symbols::search_paged(&delta, "route", Some("htmx_request"), &second_options).unwrap();
     assert_eq!(second["nodes"]["total"], 70);
     assert_eq!(second["nodes"]["items"].as_array().unwrap().len(), 10);
-    assert_ne!(first["nodes"]["items"][0]["id"], second["nodes"]["items"][0]["id"]);
-    let full_options = QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, Some(Detail::Full), None).unwrap();
+    assert_ne!(
+        first["nodes"]["items"][0]["id"],
+        second["nodes"]["items"][0]["id"]
+    );
+    let full_options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        0,
+        Some(Detail::Full),
+        None,
+    )
+    .unwrap();
     let inspected = reader::inspect_paged(&delta, &requests[69].0, false, &full_options).unwrap();
     let inspect_bytes = serde_json::to_vec(&inspected).unwrap().len();
     assert!(inspect_bytes < 64 * 1024, "{inspect_bytes} bytes");
@@ -324,11 +403,24 @@ fn htmx_large_attribute_sets_use_bounded_values_per_request() {
         .map(|index| format!("<button hx-get='/route-{index}' hx-trigger='{value}' hx-target='{value}' hx-swap='{value}' hx-include='{value}'>Go</button>\n"))
         .collect::<String>();
     let facts = ast::extract("page.html", "html", &source).unwrap();
-    let requests: Vec<_> = facts.nodes.iter().filter(|node| node.kind == "htmx_request").collect();
+    let requests: Vec<_> = facts
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "htmx_request")
+        .collect();
     assert_eq!(requests.len(), 64);
-    assert!(requests.iter().all(|node| node.details.to_string().len() < 2048));
+    assert!(requests
+        .iter()
+        .all(|node| node.details.to_string().len() < 2048));
     assert!(requests.iter().any(|node| node.name == "GET /route-63"));
-    println!("HTMX 64 requests, largest node details={} bytes", requests.iter().map(|node| node.details.to_string().len()).max().unwrap());
+    println!(
+        "HTMX 64 requests, largest node details={} bytes",
+        requests
+            .iter()
+            .map(|node| node.details.to_string().len())
+            .max()
+            .unwrap()
+    );
 }
 
 #[test]
@@ -336,12 +428,19 @@ fn htmx_same_line_requests_have_distinct_stable_ids() {
     let source = "<button hx-get='/same'></button><button hx-get='/same'></button><button data-hx-get='/old' hx-get='/right' hx-post='/save'></button>";
     let first = ast::extract("page.html", "html", source).unwrap();
     let second = ast::extract("page.html", "html", source).unwrap();
-    let requests: Vec<_> = first.nodes.iter().filter(|node| node.kind == "htmx_request").collect();
+    let requests: Vec<_> = first
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "htmx_request")
+        .collect();
     assert_eq!(requests.len(), 4);
     assert!(requests.iter().all(|node| node.line == 1));
     let ids: std::collections::HashSet<_> = requests.iter().map(|node| &node.id).collect();
     assert_eq!(ids.len(), 4);
-    assert_eq!(first.nodes.iter().map(|node| &node.id).collect::<Vec<_>>(), second.nodes.iter().map(|node| &node.id).collect::<Vec<_>>());
+    assert_eq!(
+        first.nodes.iter().map(|node| &node.id).collect::<Vec<_>>(),
+        second.nodes.iter().map(|node| &node.id).collect::<Vec<_>>()
+    );
     assert!(requests.iter().any(|node| node.name == "GET /right"));
     assert!(requests.iter().any(|node| node.name == "POST /save"));
     assert!(!requests.iter().any(|node| node.name == "GET /old"));

@@ -1,5 +1,9 @@
 use contextunity_forge_mcp::engine::scanner;
-use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 struct Workspace(PathBuf);
 
@@ -55,6 +59,10 @@ fn default_scope_excludes_common_generated_directories() {
     }
 
     let report = scanner::scan(&workspace.0, None).unwrap();
-    let paths: Vec<_> = report.entries.iter().map(|entry| entry.path.as_str()).collect();
+    let paths: Vec<_> = report
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
     assert_eq!(paths, ["src/build_helpers.py", "src/main.py"]);
 }

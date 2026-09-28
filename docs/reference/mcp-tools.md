@@ -12,7 +12,7 @@ The server exposes 15 tools over standard input and output. Start with `code_map
 | Tool | Purpose and main input |
 | --- | --- |
 | `code_map_overview` | Workspace, index, language and documentation summary. |
-| `code_map_search` | Search code symbols by `pattern`; supports an FTS prefix such as `parse*` and optional file or directory `path` scope. |
+| `code_map_search` | Search code symbols by `pattern`; exact name matches rank first, followed by name fragments and indexed text. Supports an FTS prefix such as `parse*` and optional file or directory `path` scope. |
 | `code_map_inspect` | Resolve a `selector` and show its symbol, file, and relationships. |
 | `get_code_snippet` | Read indexed source around a `selector` with `leading_lines` and `max_body_lines` bounds. |
 | `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; set `direction` if needed. |
@@ -35,9 +35,13 @@ Use a symbol identifier returned by search whenever possible. A file path select
 
 Depth is limited to 16. A deep traversal whose first frontier exceeds 1,000 links is rejected; retry with depth 1 or a narrower selector. Removal analysis rejects scopes above 10,000 nodes. Graph results describe indexed, statically resolved relationships.
 
-`code_map_search.path` accepts an exact indexed file or a directory whose descendants should be searched. `code_map_impact` and `code_map_query` operations `impact` and `slice` mark the selected node with `is_seed=true`; at depth greater than one, other nodes include one `via` predecessor ID and edge kind along a shortest indexed path. Page totals and offsets include the seed. `code_map_tests` includes a direct edge witness when one exists; `scope_or_transitive` identifies a relationship through a broader selected scope or multiple graph steps. `code_map_prove_removal.assessment` leads with a verdict and blocking reasons while `safe_to_remove` keeps its existing fail-closed meaning. Workspace-wide unresolved references and parse errors are labeled as such.
+`code_map_search.path` accepts an exact indexed file or a directory whose descendants should be searched. `code_map_impact` and node-scoped `code_map_query` operations `impact` and `slice` mark the selected node with `is_seed=true`; at depth greater than one, other nodes include one `via` predecessor ID and edge kind along a shortest indexed path. Page totals and offsets include the seed. A directory selector in `code_map_query(operation="slice")` lists its indexed nodes with `graph_depth_applied=0` and exact selectors for subsequent graph traversal. A unique directory suffix is accepted; ambiguous suffixes return candidate full paths. `code_map_tests` puts direct edge witnesses before `scope_or_transitive` results, which identify a relationship through a broader scope or multiple graph steps. `code_map_prove_removal.assessment` leads with a verdict and blocking reasons while `safe_to_remove` keeps its existing fail-closed meaning. Workspace-wide unresolved references and parse errors are labeled as such.
 
 `code_map_explain` accepts `incoming`, `outgoing`, or `both`; `inbound` and `outbound` are aliases. Set `show_doc=false` to omit linked document results.
+
+For Python `from package import child`, a unique indexed child module contributes an import edge to that module and can resolve calls through its alias. Multiple child candidates, including paired `.py` and `.pyi` files, remain ambiguous.
+
+`code_map_analyze` groups unresolved references by recorded resolver cause and counts affected files. It also groups parse error records by language and affected files. A call through a proven external import is labeled `external_import_call` and remains in unresolved coverage for removal safety. Use an exact indexed file as `target` to page individual locations; `detail="full"` includes the underlying resolver evidence.
 
 Compact `code_map_explain` edge rows identify the other endpoint relative to the selected node; full detail includes both endpoints. `code_map_inspect` reports an empty linked-document set as `{ "total": 0 }`. `code_map_overview` provides the workspace root, schema version, counts, and page generation.
 

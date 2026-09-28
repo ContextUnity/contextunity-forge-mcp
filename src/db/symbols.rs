@@ -170,7 +170,9 @@ pub fn search_paged_in_path(
         if path.is_empty()
             || path.starts_with('/')
             || path.contains('\\')
-            || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+            || path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
         {
             bail!("path must be a nonempty workspace-relative file or directory");
         }
@@ -178,7 +180,7 @@ pub fn search_paged_in_path(
     let path = path.unwrap_or("");
     let (path_start, path_end) = reader::path_bounds(path);
     let columns = paging::nodes("n", options.detail);
-    let nodes = if pattern.contains('*') {
+    let mut nodes = if pattern.contains('*') {
         let like = pattern
             .replace('\\', "\\\\")
             .replace('%', "\\%")
@@ -189,9 +191,9 @@ pub fn search_paged_in_path(
             .filter(|p| !p.is_empty() && p.chars().all(char::is_alphanumeric))
         {
             let query = format!("\"{prefix}\"*");
-            paging::query(conn, &format!("SELECT {columns} FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) ORDER BY n.path,n.line,n.id"), &[&like,&kind,&query,&path,&path_start,&path_end], options)?
+            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) ORDER BY n.path,n.line,n.id"), &[&like,&kind,&query,&path,&path_start,&path_end], options)?
         } else {
-            paging::query(conn, &format!("SELECT {columns} FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) ORDER BY n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end], options)?
+            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) ORDER BY n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end], options)?
         }
     } else {
         let query = pattern
@@ -203,8 +205,45 @@ pub fn search_paged_in_path(
         if query.is_empty() {
             bail!("pattern must contain a symbol fragment");
         }
-        paging::query(conn, &format!("SELECT {columns} FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) ORDER BY n.path,n.line,n.id"), &[&query,&kind,&path,&path_start,&path_end], options)?
+        let escaped = pattern
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let prefix = format!("{escaped}%");
+        let fragment = format!("%{escaped}%");
+        let rank = "CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.name LIKE ?8 ESCAPE '\\' THEN 2 WHEN n.qualname=?6 COLLATE NOCASE THEN 3 WHEN n.qualname LIKE ?7 ESCAPE '\\' THEN 4 WHEN n.qualname LIKE ?8 ESCAPE '\\' THEN 5 ELSE 6 END";
+        paging::query(conn, &format!("SELECT {columns},{rank} match_rank FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) ORDER BY match_rank,n.path,n.line,n.id"), &[&query,&kind,&path,&path_start,&path_end,&pattern,&prefix,&fragment], options)?
     };
+    if let Some(items) = nodes["items"].as_array_mut() {
+        for item in items {
+            if options.detail == crate::core::response::Detail::Compact
+                && item["match_reason"] == "name_pattern"
+            {
+                item.as_object_mut()
+                    .context("invalid search result")?
+                    .remove("match_reason");
+            }
+            if let Some(rank) = item
+                .as_object_mut()
+                .and_then(|item| item.remove("match_rank"))
+            {
+                let reason = match rank.as_u64() {
+                    Some(0) => "exact_name",
+                    Some(1) => "name_prefix",
+                    Some(2) => "name_fragment",
+                    Some(3) => "exact_qualified_name",
+                    Some(4) => "qualified_name_prefix",
+                    Some(5) => "qualified_name_fragment",
+                    _ => "indexed_text",
+                };
+                if options.detail == crate::core::response::Detail::Full
+                    || !matches!(rank.as_u64(), Some(0..=2))
+                {
+                    item["match_reason"] = json!(reason);
+                }
+            }
+        }
+    }
     Ok(json!({"pattern":pattern,"nodes":nodes}))
 }
 
@@ -236,9 +275,31 @@ pub fn tests_paged(
         .unwrap_or(0);
 
     let steps = super::traversal::dependency_steps(inbound, false, false);
-    let sql = format!("WITH RECURSIVE seeds(id) AS (SELECT ?1 UNION SELECT e.dst_public_id FROM seeds s JOIN edges e ON e.src_public_id=s.id WHERE e.kind='contains'), walk(id) AS (SELECT id FROM seeds UNION {steps}) SELECT {} FROM walk w JOIN nodes n ON n.id=w.id WHERE n.is_test=?2 AND n.kind IN ('function','method','class','struct') AND n.id!=?1 ORDER BY n.path,n.line,n.id", paging::nodes("n", options.detail));
+    let (forward_candidate, forward_selected, reverse_candidate, reverse_selected) = if inbound {
+        (
+            "src_public_id",
+            "dst_public_id",
+            "dst_public_id",
+            "src_public_id",
+        )
+    } else {
+        (
+            "dst_public_id",
+            "src_public_id",
+            "src_public_id",
+            "dst_public_id",
+        )
+    };
+    let sql = format!("WITH RECURSIVE seeds(id) AS (SELECT ?1 UNION SELECT e.dst_public_id FROM seeds s JOIN edges e ON e.src_public_id=s.id WHERE e.kind='contains'), walk(id) AS (SELECT id FROM seeds UNION {steps}) SELECT {} FROM walk w JOIN nodes n ON n.id=w.id WHERE n.is_test=?2 AND n.kind IN ('function','method','class','struct') AND n.id!=?1 ORDER BY CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.{forward_selected}=?1 AND e.{forward_candidate}=n.id AND e.kind IN({})) OR EXISTS(SELECT 1 FROM edges e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate}=n.id AND e.kind IN({})) THEN 0 ELSE 1 END,n.path,n.line,n.id", paging::nodes("n", options.detail), super::traversal::FORWARD_DEPENDENCIES, super::traversal::REVERSE_DEPENDENCIES);
     let mut nodes = paging::query(conn, &sql, &[&id, &is_test], options)?;
-    annotate_test_connections(conn, &mut nodes, id, inbound)?;
+    annotate_test_connections(
+        conn,
+        &mut nodes,
+        id,
+        path,
+        inbound,
+        options.detail == crate::core::response::Detail::Compact,
+    )?;
     let scope_note = if unresolved_count > 0 {
         format!("indexed static dependencies; {unresolved_count} unresolved reference(s) within symbol scope may conceal dynamic test callers")
     } else {
@@ -253,24 +314,43 @@ fn annotate_test_connections(
     conn: &Connection,
     page: &mut Value,
     selected_id: &str,
+    selected_path: &str,
     inbound: bool,
+    compact: bool,
 ) -> Result<()> {
-    let items = page["items"].as_array_mut().context("missing test result items")?;
+    let items = page["items"]
+        .as_array_mut()
+        .context("missing test result items")?;
     if items.is_empty() {
         return Ok(());
     }
     let ids: Vec<String> = items
         .iter()
-        .map(|item| item["id"].as_str().context("invalid test result id").map(str::to_owned))
+        .map(|item| {
+            item["id"]
+                .as_str()
+                .context("invalid test result id")
+                .map(str::to_owned)
+        })
         .collect::<Result<_>>()?;
     let placeholders = (2..=ids.len() + 1)
         .map(|index| format!("?{index}"))
         .collect::<Vec<_>>()
         .join(",");
     let (forward_candidate, forward_selected, reverse_candidate, reverse_selected) = if inbound {
-        ("src_public_id", "dst_public_id", "dst_public_id", "src_public_id")
+        (
+            "src_public_id",
+            "dst_public_id",
+            "dst_public_id",
+            "src_public_id",
+        )
     } else {
-        ("dst_public_id", "src_public_id", "src_public_id", "dst_public_id")
+        (
+            "dst_public_id",
+            "src_public_id",
+            "src_public_id",
+            "dst_public_id",
+        )
     };
     let sql = format!(
         "SELECT e.{forward_candidate} related_id,e.kind,e.path,e.line FROM edges e WHERE e.{forward_selected}=?1 AND e.{forward_candidate} IN ({placeholders}) AND e.kind IN({}) UNION ALL SELECT e.{reverse_candidate} related_id,e.kind,e.path,e.line FROM edges e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate} IN ({placeholders}) AND e.kind IN({}) ORDER BY related_id,kind,path,line",
@@ -284,17 +364,36 @@ fn annotate_test_connections(
     let direct = reader::rows(conn, &sql, &bindings, ids.len() * 7)?;
     let mut reasons = HashMap::new();
     for edge in direct {
-        let related_id = edge["related_id"].as_str().context("invalid related node id")?.to_owned();
-        reasons.entry(related_id).or_insert_with(|| json!({
-            "relation": "direct",
-            "edge_kind": edge["kind"],
-            "path": edge["path"],
-            "line": edge["line"],
-        }));
+        let related_id = edge["related_id"]
+            .as_str()
+            .context("invalid related node id")?
+            .to_owned();
+        reasons.entry(related_id).or_insert_with(|| {
+            json!({
+                "relation": "direct",
+                "edge_kind": edge["kind"],
+                "path": edge["path"],
+                "line": edge["line"],
+            })
+        });
     }
     for item in items {
         let id = item["id"].as_str().context("invalid test result id")?;
-        item["connection"] = reasons.remove(id).unwrap_or_else(|| json!({"relation":"scope_or_transitive"}));
+        let mut connection = reasons
+            .remove(id)
+            .unwrap_or_else(|| json!({"relation":"scope_or_transitive"}));
+        if compact && connection["relation"] == "direct" {
+            let evidence_path = connection["path"].as_str().unwrap_or("");
+            if evidence_path == selected_path
+                || evidence_path == item["path"].as_str().unwrap_or("")
+            {
+                connection
+                    .as_object_mut()
+                    .context("invalid direct connection")?
+                    .remove("path");
+            }
+        }
+        item["connection"] = connection;
     }
     Ok(())
 }
