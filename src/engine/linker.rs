@@ -161,9 +161,15 @@ pub fn link_with_root(
                         if !modules.is_empty(){break;}
                     }
                 }
+                let mut paired_stub = if profile.is_some_and(|p| p.id() == "python") {
+                    prefer_python_runtime_module(&mut modules)
+                } else {
+                    None
+                };
                 let symbol=normalized.as_ref().map_or_else(||r.expression.clone(),|n|n.namespace.clone());
                 let mut candidates=Vec::new();
                 let mut child_module = false;
+                let mut stub_symbol = false;
                 if let ([module],Some(normalized))=(modules.as_slice(),&normalized) {
                     let tail=if normalized.symbol_path {normalized.namespace.strip_prefix(selected_namespace).unwrap_or("").trim_start_matches('.')}else if r.expression=="*" || r.module.as_deref()==Some(&r.expression) {""}else{&r.expression};
                     if tail.is_empty(){candidates.push(*module);}else{
@@ -182,7 +188,19 @@ pub fn link_with_root(
                                     languages::workspace_path(&node.path).0 == parent_workspace
                                 })
                                 .collect();
+                            if let Some(stub) = prefer_python_runtime_module(&mut candidates) {
+                                paired_stub = Some(stub);
+                            }
                             child_module = candidates.len() == 1;
+                        }
+                        if candidates.is_empty() {
+                            if let Some(stub) = paired_stub {
+                                let target = qualified(&mut lookup_key, &stub.qualname, tail);
+                                candidates = by_module.get(stub.path.as_str()).into_iter().flatten().copied()
+                                    .filter(|node| node.kind != "component" && node.qualname == target)
+                                    .collect();
+                                stub_symbol = !candidates.is_empty();
+                            }
                         }
                     }
                 }
@@ -209,7 +227,9 @@ pub fn link_with_root(
                 }
                 let resolved=modules.len()==1 && (r.alias.is_none() || candidates.len()==1);
                 let status=if resolved {"resolved"}else if modules.len()>1 || candidates.len()>1 {"ambiguous"}else if external.is_some() {"external"}else{"unresolved"};
-                let evidence=if let Some(kind)=external {
+                let evidence=if stub_symbol {
+                    format!("import {symbol}: declaration from paired type stub; runtime declaration not indexed")
+                } else if let Some(kind)=external {
                     format!("{kind}; no indexed provider for {symbol}")
                 } else if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
                     format!("no indexed provider for absolute import {symbol}; external dependency or missing source remains unverified")
@@ -243,6 +263,19 @@ pub fn link_with_root(
                             evidence: r.expression.clone(),
                             confidence: "exact".into(),
                         });
+                    }
+                    if stub_symbol {
+                        if let Some(stub) = paired_stub {
+                            graph.edges.push(Edge {
+                                src: r.source.clone(),
+                                dst: stub.id.clone(),
+                                kind: "imports".into(),
+                                path: path.clone(),
+                                line: r.line,
+                                evidence: r.expression.clone(),
+                                confidence: "exact".into(),
+                            });
+                        }
                     }
                 }
             }
@@ -354,6 +387,17 @@ pub fn link_with_root(
                             for n in imported {
                                 candidates.extend(lookup(qualified(&mut lookup_key, &n.qualname, tail)).iter().copied().filter(|target|target.path==n.path));
                             }
+                            if candidates.is_empty() && profile.is_some_and(|p| p.id() == "python") {
+                                if let [module] = imported.as_slice() {
+                                    if module.kind == "module" && module.path.ends_with(".py") {
+                                        let stub_path = format!("{}i", module.path);
+                                        if let Some(stub) = by_module.get(stub_path.as_str()).into_iter().flatten()
+                                            .find(|node| node.kind == "module" && node.qualname == module.qualname) {
+                                            candidates.extend(lookup(qualified(&mut lookup_key, &stub.qualname, tail)).iter().copied().filter(|target| target.path == stub.path));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -437,7 +481,13 @@ pub fn link_with_root(
                 } else {
                     None
                 };
-                let evidence = if let Some((module, _)) = external_origin {
+                let stub_target = match candidates.as_slice() {
+                    [candidate] if candidate.path.ends_with(".pyi") => Some(candidate.path.as_str()),
+                    _ => None,
+                };
+                let evidence = if let Some(stub_path) = stub_target {
+                    format!("type-stub declaration at {stub_path}; runtime implementation not statically indexed")
+                } else if let Some((module, _)) = external_origin {
                     format!("call through external import {module}; callable target unverified")
                 } else if is_builtin {
                     format!("standard library or built-in callee: {expression}")
@@ -520,4 +570,27 @@ fn qualified<'a>(buffer: &'a mut String, namespace: &str, name: &str) -> &'a str
     buffer.push('.');
     buffer.push_str(name);
     buffer
+}
+
+fn prefer_python_runtime_module<'a>(modules: &mut Vec<&'a Node>) -> Option<&'a Node> {
+    if modules.len() != 2 {
+        return None;
+    }
+    let runtime = modules.iter().position(|node| node.path.ends_with(".py"));
+    let stub = modules.iter().position(|node| node.path.ends_with(".pyi"));
+    let (Some(runtime), Some(stub)) = (runtime, stub) else {
+        return None;
+    };
+    let runtime_stem = modules[runtime].path.strip_suffix(".py");
+    let stub_stem = modules[stub].path.strip_suffix(".pyi");
+    if runtime_stem == stub_stem
+        && languages::workspace_path(&modules[runtime].path).0
+            == languages::workspace_path(&modules[stub].path).0
+    {
+        let stub_node = modules[stub];
+        modules.swap(0, runtime);
+        modules.truncate(1);
+        return Some(stub_node);
+    }
+    None
 }

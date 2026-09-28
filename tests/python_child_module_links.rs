@@ -87,8 +87,16 @@ fn call_targets(conn: &Connection) -> Vec<String> {
     rows(conn, "SELECT dst.qualname FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.qualname='consumer.consume' AND e.kind='calls' ORDER BY dst.qualname")
 }
 
+fn call_target_paths(conn: &Connection) -> Vec<String> {
+    rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.qualname='consumer.consume' AND e.kind='calls' ORDER BY dst.path")
+}
+
 fn import_targets(conn: &Connection) -> Vec<String> {
     rows(conn, "SELECT dst.qualname FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.qualname='consumer' AND e.kind='imports' ORDER BY dst.qualname")
+}
+
+fn import_target_paths(conn: &Connection) -> Vec<String> {
+    rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.qualname='consumer' AND e.kind='imports' ORDER BY dst.path")
 }
 
 #[test]
@@ -108,7 +116,7 @@ fn unique_child_module_is_imported_and_its_calls_resolve() {
 }
 
 #[test]
-fn duplicate_child_modules_do_not_choose_a_target() {
+fn paired_runtime_and_stub_choose_runtime_child() {
     let w = Workspace::new();
     w.write("pkg/__init__.py", "# package\n");
     w.write("pkg/child.py", "def value(): return 1\n");
@@ -119,8 +127,124 @@ fn duplicate_child_modules_do_not_choose_a_target() {
     );
     w.build();
     let conn = w.open();
+    assert_eq!(status(&conn, "child"), "resolved");
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/child.py"]
+    );
+    assert_eq!(call_targets(&conn), ["pkg.child.value"]);
+    let stub: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM nodes WHERE path='pkg/child.pyi'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(stub > 0);
+}
+
+#[test]
+fn paired_runtime_and_stub_choose_runtime_for_direct_module_import() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def value(): return 1\n");
+    w.write("pkg/child.pyi", "def value() -> int: ...\n");
+    w.write(
+        "consumer.py",
+        "import pkg.child as child\ndef consume(): return child.value()\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "pkg.child"), "resolved");
+    assert_eq!(import_target_paths(&conn), ["pkg/child.py"]);
+    assert_eq!(call_targets(&conn), ["pkg.child.value"]);
+}
+
+#[test]
+fn paired_stub_supplies_declaration_missing_from_generated_runtime() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def __getattr__(name): return None\n");
+    w.write(
+        "pkg/child.pyi",
+        "class ContextUnit:\n    def value(self) -> int: ...\n",
+    );
+    w.write(
+        "consumer.py",
+        "from pkg.child import ContextUnit\ndef consume(): return ContextUnit()\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "ContextUnit"), "resolved");
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/child.py", "pkg/child.pyi"]
+    );
+    assert_eq!(call_target_paths(&conn), ["pkg/child.pyi"]);
+    let evidence: String = conn.query_row("SELECT evidence FROM resolution_coverage WHERE path='consumer.py' AND line=1 AND expression='ContextUnit'", [], |row| row.get(0)).unwrap();
+    assert!(evidence.contains("type stub"), "{evidence}");
+    drop(conn);
+    w.write("pkg/child.py", "def __getattr__(name): return name\n");
+    w.delta("pkg/child.py");
+    w.assert_cold_equivalent();
+    w.write("pkg/child.py", "def __getattr__(name): return None\n");
+    w.delta("pkg/child.py");
+    w.assert_cold_equivalent();
+}
+
+#[test]
+fn child_module_call_uses_stub_only_member() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def __getattr__(name): return None\n");
+    w.write("pkg/child.pyi", "class ContextUnit: ...\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child.ContextUnit()\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "child"), "resolved");
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/child.py"]
+    );
+    assert_eq!(call_target_paths(&conn), ["pkg/child.pyi"]);
+}
+
+#[test]
+fn stub_only_module_remains_navigable() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.pyi", "def value() -> int: ...\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child.value()\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "child"), "resolved");
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/child.pyi"]
+    );
+    assert_eq!(call_targets(&conn), ["pkg.child.value"]);
+}
+
+#[test]
+fn multiple_runtime_modules_remain_ambiguous() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def value(): return 1\n");
+    w.write("src/pkg/child.py", "def value(): return 2\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child.value()\n",
+    );
+    w.build();
+    let conn = w.open();
     assert_eq!(status(&conn, "child"), "ambiguous");
-    assert_eq!(import_targets(&conn), ["pkg"]);
+    assert_eq!(import_target_paths(&conn), ["pkg/__init__.py"]);
     assert!(call_targets(&conn).is_empty());
 }
 
@@ -161,6 +285,7 @@ fn child_edit_and_restore_match_cold_graph() {
     let w = Workspace::new();
     w.write("pkg/__init__.py", "# package\n");
     w.write("pkg/child.py", "def value(): return 1\n");
+    w.write("pkg/child.pyi", "def value() -> int: ...\n");
     w.write(
         "consumer.py",
         "from pkg import child\ndef consume(): return child.value()\n",
