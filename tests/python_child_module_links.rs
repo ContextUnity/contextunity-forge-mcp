@@ -116,6 +116,59 @@ fn unique_child_module_is_imported_and_its_calls_resolve() {
 }
 
 #[test]
+fn explicit_package_reexport_resolves_import_and_call() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "from .logging import get_log\n");
+    w.write("pkg/logging.py", "def get_log(): return 1\n");
+    w.write("other.py", "def helper(): return 2\n");
+    w.write(
+        "consumer.py",
+        "from pkg import get_log\ndef consume(): return get_log()\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "get_log"), "resolved");
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/logging.py"]
+    );
+    assert_eq!(call_targets(&conn), ["pkg.logging.get_log"]);
+    drop(conn);
+
+    w.write("pkg/__init__.py", "# export removed\n");
+    w.delta("pkg/__init__.py");
+    assert_eq!(status(&w.open(), "get_log"), "unresolved");
+    w.assert_cold_equivalent();
+    w.write("pkg/__init__.py", "from .logging import get_log\n");
+    w.delta("pkg/__init__.py");
+    assert_eq!(status(&w.open(), "get_log"), "resolved");
+    w.assert_cold_equivalent();
+    w.write("other.py", "def get_log(): return 2\n");
+    w.delta("other.py");
+    assert_eq!(status(&w.open(), "get_log"), "resolved");
+    w.assert_cold_equivalent();
+}
+
+#[test]
+fn duplicate_package_reexports_do_not_choose_a_target() {
+    let w = Workspace::new();
+    w.write(
+        "pkg/__init__.py",
+        "from .a import get_log\nfrom .b import get_log\n",
+    );
+    w.write("pkg/a.py", "def get_log(): return 1\n");
+    w.write("pkg/b.py", "def get_log(): return 2\n");
+    w.write(
+        "consumer.py",
+        "from pkg import get_log\ndef consume(): return get_log()\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "get_log"), "unresolved");
+    assert!(call_targets(&conn).is_empty());
+}
+
+#[test]
 fn paired_runtime_and_stub_choose_runtime_child() {
     let w = Workspace::new();
     w.write("pkg/__init__.py", "# package\n");

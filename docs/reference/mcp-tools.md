@@ -39,7 +39,7 @@ Depth is limited to 16. A deep traversal whose first frontier exceeds 1,000 link
 
 `code_map_explain` accepts `incoming`, `outgoing`, or `both`; `inbound` and `outbound` are aliases. Set `show_doc=false` to omit linked document results.
 
-For Python `from package import child`, a unique indexed child module contributes an import edge to that module and can resolve calls through its alias. When matching `.py` and `.pyi` modules exist, imports select the runtime `.py` module. If its indexed declarations omit a symbol, the matching type stub can supply that declaration; call evidence identifies the stub target. Other multiple child candidates remain ambiguous.
+For Python `from package import child`, a unique indexed child module contributes an import edge to that module and can resolve calls through its alias. A package can also expose a symbol through one explicit relative import in `__init__.py`; the graph links that import to the indexed declaration. When matching `.py` and `.pyi` modules exist, imports select the runtime `.py` module. If its indexed declarations omit a symbol, the matching type stub can supply that declaration; call evidence identifies the stub target. Other multiple child candidates remain ambiguous.
 
 `code_map_analyze` groups unresolved references by recorded resolver cause and counts affected files. It also groups parse error records by language and affected files. A call through a proven external import is labeled `external_import_call` and remains in unresolved coverage for removal safety. Use an exact indexed file as `target` to page individual locations; `detail="full"` includes the underlying resolver evidence.
 

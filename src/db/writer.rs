@@ -471,6 +471,8 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             let extracted = extract(&root, file, &adapter)?;
             if !previous.contains_key(path.as_str())
                 || resolution_identity_changed(&admitted, path, &extracted)?
+                || (linker::needs_reference_identity(path, &extracted)
+                    && reference_identity_changed(&admitted, path, &extracted)?)
             {
                 changed_resolution.insert(path.clone());
             }
@@ -595,6 +597,26 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             let f: Facts = serde_json::from_str(&raw)?;
             facts.insert(path, f);
             loaded_fact_files += 1;
+        }
+    }
+    {
+        let catalog: Vec<_> = scan
+            .entries
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.language.as_str()))
+            .collect();
+        let mut st = admitted.prepare("SELECT facts_json FROM local_facts WHERE path=?1")?;
+        for path in linker::required_full_facts(&facts, &affected, &catalog) {
+            if facts.contains_key(&path) {
+                continue;
+            }
+            if let Some(raw) = st
+                .query_row([&path], |row| row.get::<_, String>(0))
+                .optional()?
+            {
+                facts.insert(path, serde_json::from_str(&raw)?);
+                loaded_fact_files += 1;
+            }
         }
     }
     assign_components(&mut facts, &component_owners);
@@ -901,6 +923,20 @@ fn resolution_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> 
         .map(identity)
         .collect::<Result<BTreeSet<_>>>()?;
     Ok(old != new)
+}
+fn reference_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> Result<bool> {
+    let old: Option<String> = conn
+        .query_row(
+            "SELECT facts_json FROM local_facts WHERE path=?1",
+            [path],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(old) = old else {
+        return Ok(true);
+    };
+    let old: Facts = serde_json::from_str(&old)?;
+    Ok(linker::reference_identity_changed(path, &old, facts))
 }
 fn delete_file(tx: &Connection, path: &str) -> Result<()> {
     let mut stmt=tx.prepare_cached("SELECT n.node_id,s.search_text FROM nodes n JOIN search_text s ON s.public_id=n.id JOIN owned_nodes o ON o.public_id=n.id WHERE o.owner=?1")?;

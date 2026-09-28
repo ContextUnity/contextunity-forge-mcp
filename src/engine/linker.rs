@@ -4,6 +4,20 @@ use hashbrown::HashMap;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
+mod python;
+pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
+    python::needs_reference_identity(path, facts)
+}
+pub fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool {
+    python::reference_identity_changed(path, old, new)
+}
+pub fn required_full_facts(
+    facts: &BTreeMap<String, Facts>,
+    affected: &std::collections::BTreeSet<String>,
+    catalog: &[(&str, &str)],
+) -> std::collections::BTreeSet<String> {
+    python::required_full_facts(facts, affected, catalog)
+}
 pub fn link(all: &BTreeMap<String, Facts>) -> Graph {
     link_with_root(all, None, None)
 }
@@ -115,6 +129,7 @@ pub fn link_with_root(
             }
         }
     }
+    let package_exports = python::package_exports(all, &modules_by_namespace, &by_module, root);
     let parts: Vec<Graph> = all
         .par_iter()
         .filter(|(path, _)| owners.is_none_or(|o| o.contains(*path)))
@@ -162,7 +177,7 @@ pub fn link_with_root(
                     }
                 }
                 let mut paired_stub = if profile.is_some_and(|p| p.id() == "python") {
-                    prefer_python_runtime_module(&mut modules)
+                    python::prefer_runtime_module(&mut modules)
                 } else {
                     None
                 };
@@ -170,6 +185,7 @@ pub fn link_with_root(
                 let mut candidates=Vec::new();
                 let mut child_module = false;
                 let mut stub_symbol = false;
+                let mut reexport_symbol = false;
                 if let ([module],Some(normalized))=(modules.as_slice(),&normalized) {
                     let tail=if normalized.symbol_path {normalized.namespace.strip_prefix(selected_namespace).unwrap_or("").trim_start_matches('.')}else if r.expression=="*" || r.module.as_deref()==Some(&r.expression) {""}else{&r.expression};
                     if tail.is_empty(){candidates.push(*module);}else{
@@ -188,7 +204,7 @@ pub fn link_with_root(
                                     languages::workspace_path(&node.path).0 == parent_workspace
                                 })
                                 .collect();
-                            if let Some(stub) = prefer_python_runtime_module(&mut candidates) {
+                            if let Some(stub) = python::prefer_runtime_module(&mut candidates) {
                                 paired_stub = Some(stub);
                             }
                             child_module = candidates.len() == 1;
@@ -200,6 +216,12 @@ pub fn link_with_root(
                                     .filter(|node| node.kind != "component" && node.qualname == target)
                                     .collect();
                                 stub_symbol = !candidates.is_empty();
+                            }
+                        }
+                        if candidates.is_empty() {
+                            if let Some(target) = python::resolve_export(&package_exports, module, tail) {
+                                candidates.push(target);
+                                reexport_symbol = true;
                             }
                         }
                     }
@@ -227,7 +249,9 @@ pub fn link_with_root(
                 }
                 let resolved=modules.len()==1 && (r.alias.is_none() || candidates.len()==1);
                 let status=if resolved {"resolved"}else if modules.len()>1 || candidates.len()>1 {"ambiguous"}else if external.is_some() {"external"}else{"unresolved"};
-                let evidence=if stub_symbol {
+                let evidence=if reexport_symbol {
+                    format!("import {symbol}: explicit local package re-export")
+                } else if stub_symbol {
                     format!("import {symbol}: declaration from paired type stub; runtime declaration not indexed")
                 } else if let Some(kind)=external {
                     format!("{kind}; no indexed provider for {symbol}")
@@ -276,6 +300,17 @@ pub fn link_with_root(
                                 confidence: "exact".into(),
                             });
                         }
+                    }
+                    if reexport_symbol {
+                        graph.edges.push(Edge {
+                            src: r.source.clone(),
+                            dst: candidates[0].id.clone(),
+                            kind: "imports".into(),
+                            path: path.clone(),
+                            line: r.line,
+                            evidence: r.expression.clone(),
+                            confidence: "exact".into(),
+                        });
                     }
                 }
             }
@@ -570,27 +605,4 @@ fn qualified<'a>(buffer: &'a mut String, namespace: &str, name: &str) -> &'a str
     buffer.push('.');
     buffer.push_str(name);
     buffer
-}
-
-fn prefer_python_runtime_module<'a>(modules: &mut Vec<&'a Node>) -> Option<&'a Node> {
-    if modules.len() != 2 {
-        return None;
-    }
-    let runtime = modules.iter().position(|node| node.path.ends_with(".py"));
-    let stub = modules.iter().position(|node| node.path.ends_with(".pyi"));
-    let (Some(runtime), Some(stub)) = (runtime, stub) else {
-        return None;
-    };
-    let runtime_stem = modules[runtime].path.strip_suffix(".py");
-    let stub_stem = modules[stub].path.strip_suffix(".pyi");
-    if runtime_stem == stub_stem
-        && languages::workspace_path(&modules[runtime].path).0
-            == languages::workspace_path(&modules[stub].path).0
-    {
-        let stub_node = modules[stub];
-        modules.swap(0, runtime);
-        modules.truncate(1);
-        return Some(stub_node);
-    }
-    None
 }
