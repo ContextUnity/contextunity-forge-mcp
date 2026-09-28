@@ -93,9 +93,9 @@ pub fn search(conn: &Connection, pattern: &str, kind: Option<&str>, limit: usize
             .filter(|p| !p.is_empty() && p.chars().all(char::is_alphanumeric))
         {
             let query = format!("\"{prefix}\"*");
-            reader::rows(conn, "SELECT n.* FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?4 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) ORDER BY n.path,n.line,n.id LIMIT ?3", &[&like, &kind, &size, &query], size)?
+            reader::rows(conn, "SELECT n.* FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?4 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id LIMIT ?3", &[&like, &kind, &size, &query], size)?
         } else {
-            reader::rows(conn, "SELECT * FROM nodes WHERE (name LIKE ?1 ESCAPE '\\' OR qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR kind=?2) ORDER BY path,line,id LIMIT ?3", &[&like, &kind, &size], size)?
+            reader::rows(conn, "SELECT * FROM nodes WHERE (name LIKE ?1 ESCAPE '\\' OR qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR kind=?2) ORDER BY CASE WHEN name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,path,line,id LIMIT ?3", &[&like, &kind, &size], size)?
         }
     } else {
         let query = pattern
@@ -191,9 +191,9 @@ pub fn search_paged_in_path(
             .filter(|p| !p.is_empty() && p.chars().all(char::is_alphanumeric))
         {
             let query = format!("\"{prefix}\"*");
-            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) ORDER BY n.path,n.line,n.id"), &[&like,&kind,&query,&path,&path_start,&path_end], options)?
+            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&query,&path,&path_start,&path_end], options)?
         } else {
-            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) ORDER BY n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end], options)?
+            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end], options)?
         }
     } else {
         let query = pattern

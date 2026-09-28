@@ -706,6 +706,53 @@ fn search_ranks_symbol_names_before_doc_text_and_preserves_pages() {
 }
 
 #[test]
+fn search_ranking_applies_to_other_names_and_wildcard_pages() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "a.py",
+        "def unrelated():\n    \"\"\"resolve_conflict helper\"\"\"\n    pass\n",
+    );
+    workspace.write("b.py", "def _resolve_conflict(): pass\n");
+    workspace.write("z.py", "def resolve_conflict(): pass\n");
+    workspace.write("build.py", "def unrelated(): pass\n");
+    workspace.write("zz.py", "def build_target(): pass\n");
+    let conn = workspace.build();
+
+    let ranked =
+        symbols::search_paged(&conn, "resolve_conflict", Some("function"), &options(10)).unwrap();
+    let names = ranked["nodes"]["items"].as_array().unwrap();
+    assert_eq!(ranked["nodes"]["total"], 3);
+    assert_eq!(names[0]["name"], "resolve_conflict");
+    assert_eq!(names[1]["name"], "_resolve_conflict");
+    assert_eq!(names[2]["name"], "unrelated");
+
+    let mut page_options = options(1);
+    let mut wildcard_names = Vec::new();
+    let mut reasons = Vec::new();
+    loop {
+        let result =
+            symbols::search_paged(&conn, "build*", Some("function"), &page_options).unwrap();
+        let page = &result["nodes"];
+        assert_eq!(page["total"], 2);
+        wildcard_names.push(page["items"][0]["name"].as_str().unwrap().to_owned());
+        reasons.push(page["items"][0]["match_reason"].as_str().map(str::to_owned));
+        if !continue_page(&mut page_options, page) {
+            break;
+        }
+    }
+    assert_eq!(wildcard_names, ["build_target", "unrelated"]);
+    assert_eq!(reasons, [None, Some("qualified_pattern".to_owned())]);
+    let interior_wildcard =
+        symbols::search_paged(&conn, "*build*", Some("function"), &options(10)).unwrap();
+    assert_eq!(interior_wildcard["nodes"]["total"], 2);
+    assert_eq!(
+        interior_wildcard["nodes"]["items"][0]["name"],
+        "build_target"
+    );
+    assert_eq!(interior_wildcard["nodes"]["items"][1]["name"], "unrelated");
+}
+
+#[test]
 fn test_mapping_marks_direct_evidence_and_does_not_invent_transitive_paths() {
     let workspace = Workspace::new();
     workspace.write(
