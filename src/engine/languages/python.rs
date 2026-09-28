@@ -1,5 +1,7 @@
 use super::*;
 use crate::engine::ast::{relations, routes};
+#[path = "python/fastmcp.rs"]
+mod fastmcp;
 pub fn language() -> tree_sitter::Language {
     tree_sitter_python::language()
 }
@@ -336,6 +338,7 @@ impl LanguageProfile for Python {
             }
         }
         relations::decorator_references(ctx, facts);
+        fastmcp::decorator_candidates(ctx, facts);
         routes::declaration(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
@@ -356,9 +359,11 @@ impl LanguageProfile for Python {
         if ctx.node.kind() == "call" {
             routes::registration(ctx.node, ctx.source, ctx.owner, facts, ctx.offset, symbols);
         }
+        fastmcp::module_assignment(ctx, facts);
     }
     fn finish(&self, facts: &mut Facts) {
         relations::implicit_fields(facts);
+        fastmcp::registrations(facts);
     }
     fn prepare_pattern(&self, pattern: &mut String) -> bool {
         let partial = pattern.trim_end().ends_with(':');

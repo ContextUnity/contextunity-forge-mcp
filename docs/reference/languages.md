@@ -57,6 +57,12 @@ The index records declarations, imports, references, and relationships recoverab
 
 Use [configuration](configuration.md) to control admitted paths and [indexing architecture](../architecture/indexing.md) to understand the extraction and linker boundary.
 
+## Python registrations
+
+For an indexed module that imports `FastMCP` from `fastmcp` or `mcp.server.fastmcp`, Forge records `@server.tool` and `@server.tool(...)` on module-level functions when `server` is assigned a `FastMCP(...)` instance. Each confirmed tool has a `tool_registration` node, a `contains` edge from its module, and a `handles` edge to its function. A literal `name=` sets the advertised name; a dynamic name is marked unknown. Import aliases and module-qualified constructors are supported. Reassignment of the constructor before instance creation, or the server before registration, prevents a confirmed link.
+
+The graph records registrations evident in source. Runtime-created tools, factory-returned servers, and imported server instances require runtime confirmation. Other decorator-based frameworks use their own registration rules; a method named `tool` alone does not identify FastMCP.
+
 ## HTML and configuration files
 
 HTML and HTMX share one HTML Tree-sitter grammar and one language profile. HTMX attributes are read from the parsed HTML tags.
