@@ -88,13 +88,10 @@ pub(crate) fn nodes(alias: &str, detail: Detail) -> String {
             "id",
             "kind",
             "name",
-            "qualname",
             "path",
             "line",
             "end_line",
-            "is_test",
             "language",
-            "generated",
         ],
     )
 }
@@ -134,7 +131,7 @@ pub(crate) fn coverage(alias: &str, detail: Detail) -> String {
     columns(
         alias,
         detail,
-        &["path", "line", "expression", "status", "evidence"],
+        &["line", "expression", "status"],
     )
 }
 

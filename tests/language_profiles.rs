@@ -137,8 +137,19 @@ fn persisted_imports_require_complete_language_and_workspace_identity() {
         )
         .unwrap();
     assert_eq!(
-        unresolved, 8,
-        "four unbound imports and four calls remain unresolved"
+        unresolved, 6,
+        "two unbound imports and four calls remain unresolved"
+    );
+    let external: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM resolution_coverage WHERE path='main.py' AND status='external'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        external, 2,
+        "two stdlib imports (time, typing) are recognized as external"
     );
 }
 

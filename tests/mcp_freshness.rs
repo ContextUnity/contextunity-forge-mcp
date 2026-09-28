@@ -69,6 +69,76 @@ fn same_server_metadata_query_refreshes_edited_source() {
 }
 
 #[test]
+fn verified_reader_restores_missing_receipt_for_unchanged_index() {
+    let ws = Workspace::new();
+    ws.write("main.rs", "pub fn current() {}\n");
+    let server = ws.server();
+    let first = snapshot(&server).unwrap();
+    let receipt = PathBuf::from(format!("{}.verified.json", server.db.display()));
+    assert!(receipt.exists());
+    fs::remove_file(&receipt).unwrap();
+
+    let reopened = snapshot(&ws.server()).unwrap();
+    assert_eq!(reopened["corpus_hash"], first["corpus_hash"]);
+    assert_eq!(reopened["freshness"]["refresh"], "none");
+    assert!(receipt.exists(), "verified database should regain its receipt");
+}
+
+#[test]
+fn receipt_recovery_rejects_database_changed_after_verification() {
+    let ws = Workspace::new();
+    ws.write("main.rs", "pub fn current() {}\n");
+    let server = ws.server();
+    let first = snapshot(&server).unwrap();
+    let database = server.db.clone();
+    drop(server);
+    let verified = db::cache::identity(&database).unwrap();
+    db::cache::invalidate(&database);
+    let conn = rusqlite::Connection::open(&database).unwrap();
+    conn.execute("UPDATE nodes SET name='tampered' WHERE kind='function'", []).unwrap();
+    drop(conn);
+    assert!(!db::cache::publish_verified_identity(
+        &database, &ws.0, first["output_root"].as_str().unwrap(), &verified
+    ).unwrap());
+    assert!(!PathBuf::from(format!("{}.verified.json", database.display())).exists());
+    assert!(db::reader::open(&database, &ws.0).is_err());
+}
+
+#[test]
+fn failed_delta_keeps_receipt_for_rolled_back_index() {
+    let ws = Workspace::new();
+    ws.write("main.rs", "pub fn before() {}\n");
+    let server = ws.server();
+    let first = snapshot(&server).unwrap();
+    let database = server.db.clone();
+    drop(server);
+    let conn = rusqlite::Connection::open(&database).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER reject_file_delete BEFORE DELETE ON files BEGIN SELECT RAISE(ABORT, 'forced delta rollback'); END;",
+    )
+    .unwrap();
+    drop(conn);
+    assert!(db::cache::publish_verified(
+        &database,
+        &ws.0,
+        first["output_root"].as_str().unwrap()
+    )
+    .unwrap());
+    let receipt = PathBuf::from(format!("{}.verified.json", database.display()));
+
+    ws.write("main.rs", "pub fn after_() {}\n");
+    let error = db::writer::delta(&ws.0, &database, &[PathBuf::from("main.rs")]).unwrap_err();
+    assert!(error.to_string().contains("forced delta rollback"), "{error:#}");
+    assert!(receipt.exists(), "rollback must preserve the verified receipt");
+    assert!(db::cache::matches(
+        &database,
+        &ws.0,
+        first["output_root"].as_str().unwrap(),
+        &db::cache::identity(&database).unwrap()
+    ));
+}
+
+#[test]
 fn same_server_refreshes_add_delete_and_rename() {
     let ws = Workspace::new();
     ws.write("first.rs", "pub fn first() {}\n");
@@ -307,6 +377,37 @@ struct StdioClient {
     output: mpsc::Receiver<String>,
     id: usize,
 }
+
+#[test]
+fn mcp_document_retrieval_and_explain_output_controls() {
+    let ws = Workspace::new();
+    ws.write("main.rs", "pub fn target() {}\npub fn caller() { target(); }\n");
+    ws.write("README.md", "# Contract\n\nThe `target` function preserves the documented contract.\n");
+    let mut client = StdioClient::new(&ws);
+    let document = client.document(json!({"path_or_id":"README.md"}));
+    assert!(document["sections"]["items"][0]["content"].as_str().unwrap().contains("documented contract"));
+    let outline = client.document(json!({"path_or_id":"README.md","detail":"compact"}));
+    assert!(outline["sections"]["items"][0].get("content").is_none());
+    assert_eq!(document["sections"]["total"], outline["sections"]["total"]);
+    let mut explain = |arguments: Value| {
+        let response = client.request("tools/call", json!({"name":"code_map_explain","arguments":arguments}));
+        assert_ne!(response["result"]["isError"], true, "{response}");
+        serde_json::from_str::<Value>(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    };
+    let with_docs = explain(json!({"selector":"target"}));
+    assert!(with_docs["documents"]["total"].as_u64().unwrap() > 0);
+    let without_docs = explain(json!({"selector":"target","show_doc":false}));
+    assert_eq!(without_docs["documents"]["total"], 0);
+    assert_eq!(with_docs["coverage"], without_docs["coverage"]);
+    assert_eq!(with_docs["incoming"], without_docs["incoming"]);
+    for (alias, canonical, omitted) in [("inbound", "incoming", "outgoing"), ("outbound", "outgoing", "incoming")] {
+        let alias_result = explain(json!({"selector":"target","direction":alias}));
+        let canonical_result = explain(json!({"selector":"target","direction":canonical}));
+        assert_eq!(alias_result["direction"], canonical);
+        assert_eq!(alias_result[canonical], canonical_result[canonical]);
+        assert_eq!(alias_result[omitted]["omitted"], true);
+    }
+}
 impl StdioClient {
     fn new(ws: &Workspace) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
@@ -377,6 +478,105 @@ impl Drop for StdioClient {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+#[test]
+fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
+    let ws = Workspace::new();
+    ws.write("main.rs", "pub fn current() {}\n");
+    ws.write("docs/intro.md", "# Intro\n\nCurrent documentation.\n");
+    let database = ws.0.join(".forge/code-map.sqlite");
+    db::writer::build(&ws.0, &database, None).unwrap();
+
+    let conn = rusqlite::Connection::open(&database).unwrap();
+    let inventory: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='inventory_snapshot'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let padded = format!("{inventory}{}", " ".repeat(8 * 1024 * 1024));
+    conn.execute(
+        "UPDATE metadata SET value=?1 WHERE key='inventory_snapshot'",
+        [&padded],
+    )
+    .unwrap();
+    contextunity_forge_mcp::core::commitments::seal(&conn).unwrap();
+    drop(conn);
+
+    let mut client = StdioClient::new(&ws);
+    let calls = [
+        ("code_map_overview", json!({"detail":"compact","limit":1})),
+        ("code_map_inspect", json!({"selector":"main.rs:current"})),
+        ("get_code_snippet", json!({"selector":"main.rs:current"})),
+        (
+            "code_map_search",
+            json!({"pattern":"current","detail":"compact","limit":10}),
+        ),
+        ("code_map_tests", json!({"selector":"main.rs:current"})),
+        (
+            "code_map_impact",
+            json!({"selector":"main.rs:current","depth":1}),
+        ),
+        ("code_map_explain", json!({"selector":"main.rs:current"})),
+        ("code_map_query", json!({"operation":"overview"})),
+        ("code_map_analyze", json!({"target":""})),
+        (
+            "code_map_prove_removal",
+            json!({"selector":"main.rs:current"}),
+        ),
+        (
+            "ast_grep_search",
+            json!({"pattern":"pub fn current() {}","language":"rust","path":"main.rs"}),
+        ),
+        ("search_docs", json!({"query":"documentation"})),
+        ("get_doc", json!({"path_or_id":"docs/intro.md"})),
+        ("forge_guide", json!({"topic":"query"})),
+        ("session_checkpoint", json!({"action":"list"})),
+    ];
+    for (name, arguments) in calls {
+        let response = client.request("tools/call", json!({"name":name,"arguments":arguments}));
+        assert!(response.get("error").is_none(), "{name}: {response}");
+        assert_ne!(response["result"]["isError"], true, "{name}: {response}");
+        if name == "get_code_snippet" {
+            let snippet: Value = serde_json::from_str(
+                response["result"]["content"][0]["text"].as_str().unwrap()
+            ).unwrap();
+            assert!(snippet.get("source").is_some(), "{snippet}");
+            assert!(snippet.get("coverage").is_none(), "{snippet}");
+            assert!(snippet.get("documents").is_none(), "{snippet}");
+        }
+        if name == "code_map_overview" {
+            let overview: Value =
+                serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(overview["counts"]["files"], 2);
+            assert_eq!(overview["freshness"]["files_checked"], 2);
+        }
+    }
+
+    ws.write("main.rs", "pub fn current() { let value = 1; }\n");
+    let response = client.request(
+        "tools/call",
+        json!({"name":"code_map_overview","arguments":{"detail":"compact","limit":1}}),
+    );
+    assert!(response.get("error").is_none(), "{response}");
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    let refreshed: Value =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(refreshed["freshness"]["refresh"], "delta");
+
+    let server = Server::new(ws.0.clone(), database);
+    server
+        .read(|conn| {
+            assert_eq!(
+                conn.limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH),
+                1_000_000_000
+            );
+            Ok(Value::Null)
+        })
+        .unwrap();
 }
 
 #[test]

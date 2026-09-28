@@ -317,6 +317,35 @@ fn explicit_node_builtin_import_is_separate_from_missing_package() {
 
 #[cfg(feature = "lang-python")]
 #[test]
+fn explicit_python_stdlib_and_external_dependency_is_separate_from_missing_package() {
+    let w = Workspace::new();
+    w.write(
+        "src/main.py",
+        "import json\nfrom typing import Any\nimport pytest\nimport nonexistent_xyz_package\n\ndef run():\n    raise ValueError('error')\n",
+    );
+    w.build();
+    let conn = reader::open(&w.db(), &w.0).unwrap();
+    let statuses = reader::rows(
+        &conn,
+        "SELECT expression,status FROM resolution_coverage WHERE path='src/main.py' ORDER BY line,expression",
+        &[],
+        10,
+    ).unwrap();
+    assert_eq!(
+        statuses,
+        vec![
+            serde_json::json!({"expression":"json","status":"external"}),
+            serde_json::json!({"expression":"Any","status":"external"}),
+            serde_json::json!({"expression":"pytest","status":"external"}),
+            serde_json::json!({"expression":"nonexistent_xyz_package","status":"unresolved"}),
+            serde_json::json!({"expression":"ValueError","status":"resolved"}),
+        ]
+    );
+}
+
+
+#[cfg(feature = "lang-python")]
+#[test]
 fn decorators_have_consistent_dependency_direction() {
     let w = Workspace::new();
     w.write(

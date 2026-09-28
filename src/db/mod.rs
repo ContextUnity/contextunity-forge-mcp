@@ -1,5 +1,6 @@
 pub mod cache;
 mod cycles;
+pub mod lint;
 mod paging;
 pub mod reader;
 pub mod symbols;

@@ -14,6 +14,27 @@ struct Fixture {
 
 const FIXTURES: &[Fixture] = &[
     Fixture {
+        id: "html",
+        feature: "lang-html",
+        enabled: cfg!(feature = "lang-html"),
+        path: "sample.html",
+        source: "<html><body><p>marker</p></body></html>\n",
+    },
+    Fixture {
+        id: "yaml",
+        feature: "lang-yaml",
+        enabled: cfg!(feature = "lang-yaml"),
+        path: "sample.yaml",
+        source: "marker: true\n",
+    },
+    Fixture {
+        id: "toml",
+        feature: "lang-toml",
+        enabled: cfg!(feature = "lang-toml"),
+        path: "sample.toml",
+        source: "marker = true\n",
+    },
+    Fixture {
         id: "python",
         feature: "lang-python",
         enabled: cfg!(feature = "lang-python"),
@@ -178,7 +199,13 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
                 facts.errors
             );
             assert!(
-                facts.nodes.iter().any(|node| node.name == "marker"),
+                facts.nodes.iter().any(|node| {
+                    if fixture.id == "html" {
+                        node.id == "module:sample.html" && node.kind == "module"
+                    } else {
+                        node.name == "marker"
+                    }
+                }),
                 "{}",
                 fixture.id
             );

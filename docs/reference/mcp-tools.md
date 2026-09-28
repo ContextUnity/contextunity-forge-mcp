@@ -12,17 +12,17 @@ The server exposes 15 tools over standard input and output. Start with `code_map
 | Tool | Purpose and main input |
 | --- | --- |
 | `code_map_overview` | Workspace, index, language and documentation summary. |
-| `code_map_search` | Search code symbols by `pattern`; supports an FTS prefix such as `parse*`. |
+| `code_map_search` | Search code symbols by `pattern`; supports an FTS prefix such as `parse*` and optional file or directory `path` scope. |
 | `code_map_inspect` | Resolve a `selector` and show its symbol, file, and relationships. |
 | `get_code_snippet` | Read indexed source around a `selector` with `leading_lines` and `max_body_lines` bounds. |
 | `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; set `direction` if needed. |
-| `code_map_impact` | Find inbound users affected by a `selector`; set `depth`. |
-| `code_map_tests` | Find test relationships for a `selector`; `direction` accepts `inbound` or `outbound`. |
+| `code_map_impact` | Find inbound users affected by a `selector`; set `depth`. Each reached node identifies one shortest predecessor edge. |
+| `code_map_tests` | Find test relationships for a `selector`; `direction` accepts `inbound` or `outbound`. Results distinguish direct evidence from broader indexed reachability. |
 | `code_map_prove_removal` | Estimate what a `selector` removal could affect; structural evidence, not a proof of runtime safety. |
 | `code_map_query` | Route an `operation` to graph queries or the supported Cypher subset. |
-| `code_map_analyze` | Read workspace or path diagnostics through `target`, or run one read-only SQL statement; `include_cycles` opts into cycle analysis. |
+| `code_map_analyze` | Read workspace or path diagnostics, run read-only SQL, or request stored syntax diagnostics with `lint:true`; `include_cycles` opts into cycle analysis. |
 | `ast_grep_search` | Match a language-specific AST `pattern` in admitted source. |
-| `search_docs` | Search indexed Markdown by `query` and optional `doc_type`. |
+| `search_docs` | Search indexed Markdown by `query` and optional `doc_type`; `include_excerpt=true` adds a bounded match excerpt. |
 | `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`. |
 | `session_checkpoint` | `list`, `save`, `get`, or `delete` a named local JSON checkpoint. |
 | `forge_guide` | Return the built-in usage guide. |
@@ -35,11 +35,17 @@ Use a symbol identifier returned by search whenever possible. A file path select
 
 Depth is limited to 16. A deep traversal whose first frontier exceeds 1,000 links is rejected; retry with depth 1 or a narrower selector. Removal analysis rejects scopes above 10,000 nodes. Graph results describe indexed, statically resolved relationships.
 
+`code_map_search.path` accepts an exact indexed file or a directory whose descendants should be searched. `code_map_impact` and `code_map_query` operations `impact` and `slice` mark the selected node with `is_seed=true`; at depth greater than one, other nodes include one `via` predecessor ID and edge kind along a shortest indexed path. Page totals and offsets include the seed. `code_map_tests` includes a direct edge witness when one exists; `scope_or_transitive` identifies a relationship through a broader selected scope or multiple graph steps. `code_map_prove_removal.assessment` leads with a verdict and blocking reasons while `safe_to_remove` keeps its existing fail-closed meaning. Workspace-wide unresolved references and parse errors are labeled as such.
+
+`code_map_explain` accepts `incoming`, `outgoing`, or `both`; `inbound` and `outbound` are aliases. Set `show_doc=false` to omit linked document results.
+
+Compact `code_map_explain` edge rows identify the other endpoint relative to the selected node; full detail includes both endpoints. `code_map_inspect` reports an empty linked-document set as `{ "total": 0 }`. `code_map_overview` provides the workspace root, schema version, counts, and page generation.
+
 ## Result size and source
 
 Paged tools accept `limit` (default 30, range 1–100) and `offset`. A response may be truncated by its byte budget even when more rows exist; use the returned continuation information to request the next page. A `generation` can pin pages to one index generation. The response byte budget is configurable from 1,024 to 65,536 bytes.
 
-Source text is off by default. Request it explicitly, or call `get_code_snippet`. Snippets check that the on-disk source still matches the indexed digest. `leading_lines` ranges from 0 to 20; `max_body_lines` ranges from 1 to 100. If source changed, refresh the index before relying on the result.
+Code source previews are off by default. Request them explicitly, or call `get_code_snippet`. Snippets check that the on-disk source still matches the indexed digest. `leading_lines` ranges from 0 to 20; `max_body_lines` ranges from 1 to 100. If source changed, refresh the index before relying on the result.
 
 ## SQL and checkpoints
 
@@ -47,6 +53,18 @@ Source text is off by default. Request it explicitly, or call `get_code_snippet`
 
 A checkpoint saves a JSON value under a local name in `.forge/checkpoints.json`. `save` needs both a name and valid JSON content. Names are 1–200 UTF-8 bytes and cannot contain `..`, `/`, `\`, or a NUL byte. Values are limited to 1 MiB. A checkpoint is local session data, not part of the source index.
 
+## Syntax diagnostics on demand
+
+Call `code_map_analyze` with `lint:true` and an indexed file or directory in `target`; an empty target covers indexed sources in the workspace. This reads the syntax diagnostics already stored by compiled language profiles. It does not run another parser, an external linter, or additional work during indexing. The usual source freshness check still applies to MCP reads.
+
+```json
+{"target":"src","lint":true,"limit":30}
+```
+
+Results include a rule ID, severity, language, path, line, and message, with pagination and generation checks. Coverage describes indexed sources and language-specific limits; excluded or unsupported files are not checked. An empty diagnostics page does not certify semantic correctness or compliance with style rules. Vue coverage is limited to its embedded scripts; HTML template expressions and styles are not validated.
+
+Syntax lint mode does not execute SQL or cycle analysis. Use a separate request for those operations. Ruff, Clippy, application-specific rules, and automatic fixes are outside this mode.
+
 ## Documentation queries
 
-Markdown and MDX in admitted roots are indexed as documents. Optional frontmatter `doc_type` and `title` help `search_docs`. `get_doc` addresses the document path and an exact heading section; a missing path or section is an error.
+Markdown and MDX in admitted roots are indexed as documents. Optional frontmatter `doc_type` and `title` help `search_docs`. `get_doc` addresses the document path and an exact heading section; a missing path or section is an error. Its default MCP response includes section content. Set `detail="compact"` explicitly for a section outline without content; `search_docs` keeps compact discovery results by default. Set `include_excerpt=true` to add a short excerpt centered on a search match.

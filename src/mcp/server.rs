@@ -173,8 +173,7 @@ impl Server {
                     })?,
                 )
             };
-            let previous: Vec<scanner::FileEntry> =
-                serde_json::from_str(&metadata("inventory_snapshot")?)?;
+            let previous = crate::db::reader::inventory_snapshot(conn)?;
             let started = Instant::now();
             let scan = scanner::scan_reusing(&root, &adapter, &previous)?;
             let inventory_scan_ms = started.elapsed().as_secs_f64() * 1000.;
@@ -238,8 +237,13 @@ impl Server {
                 crate::db::writer::build(&root, &self.db, None)?;
                 refresh = "rebuild";
             } else {
-                crate::db::writer::delta(&root, &self.db, &modified)?;
-                refresh = "delta";
+                match crate::db::writer::delta(&root, &self.db, &modified) {
+                    Ok(_) => refresh = "delta",
+                    Err(error) if error.is::<crate::db::writer::SourceSnapshotMismatch>() => {
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         }
         anyhow::bail!(

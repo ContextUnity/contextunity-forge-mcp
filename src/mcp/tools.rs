@@ -122,6 +122,8 @@ impl Explain {
 pub struct SearchSymbols {
     pub pattern: String,
     pub kind: Option<String>,
+    /// Restrict results to a workspace-relative file or directory.
+    pub path: Option<String>,
     #[serde(flatten)]
     pub page: PageInput,
 }
@@ -154,6 +156,9 @@ pub struct Query {
 pub struct Analyze {
     pub target: String,
     pub include_cycles: Option<bool>,
+    /// Read stored syntax diagnostics only; does not run a linter or reparse source.
+    #[serde(default)]
+    pub lint: bool,
     #[serde(flatten)]
     pub page: PageInput,
 }
@@ -170,6 +175,9 @@ pub struct SearchDocs {
     pub query: String,
     pub doc_type: Option<String>,
     pub component: Option<String>,
+    /// Include a short match-centered content excerpt in each result.
+    #[serde(default)]
+    pub include_excerpt: bool,
     #[serde(flatten)]
     pub page: PageInput,
 }
@@ -214,7 +222,7 @@ impl Server {
         self.responding(|policy| self.read(|c| reader::overview_paged(c, &p.resolve(policy)?)))
     }
     #[tool(
-        description = "Inspect an indexed symbol by selector (e.g. 'function:name', 'class:Name', 'module:path'). Returns definition, signature, docstring, and architectural invariants. Set show_source=true for bounded AST preview or use get_code_snippet."
+        description = "Inspect an indexed symbol by selector (e.g. 'function:name', 'class:Name', 'module:path'). Compact output includes location and paged references with whole-symbol resolution counts; detail='full' includes node details and per-reference evidence. Set show_source=true for bounded source or use get_code_snippet."
     )]
     fn code_map_inspect(&self, Parameters(p): Parameters<Inspect>) -> CallToolResult {
         self.responding(|policy| {
@@ -226,27 +234,27 @@ impl Server {
         })
     }
     #[tool(
-        description = "Read a bounded AST source preview for a symbol selector (default 5 leading + 35 body lines). Pass source_offset with previous generation for next lines. Keeps context compact; use ctx_read for full file edits."
+        description = "Read source and location for a symbol selector (default 5 leading + 35 body lines). Pass source_offset with previous generation for next lines. Use code_map_inspect for resolution coverage and evidence; use ctx_read for full file edits."
     )]
     fn get_code_snippet(&self, Parameters(p): Parameters<Inspect>) -> CallToolResult {
         self.responding(|policy| {
             let page = p.page.resolve(policy)?;
             let source = p.source(policy, true)?;
-            self.read(|c| symbols::inspect_paged(c, &self.root, &p.selector, false, &source, &page))
+            self.read(|c| symbols::snippet_paged(c, &self.root, &p.selector, &source, &page))
         })
     }
     #[tool(
-        description = "Search indexed symbols with FTS terms or prefix* pattern (e.g. 'Token*', 'router'). Prefer prefix* for fast prefix lookup. Returns symbol IDs, kinds, and paths. Compact pages default to 30; max 100."
+        description = "Search indexed symbols with FTS terms or prefix* pattern (e.g. 'Token*', 'router'). Optional path restricts results to a workspace-relative file or directory. Returns symbol IDs, kinds, and paths. Compact pages default to 30; max 100."
     )]
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         self.responding(|policy| {
             self.read(|c| {
-                symbols::search_paged(c, &p.pattern, p.kind.as_deref(), &p.page.resolve(policy)?)
+                symbols::search_paged_in_path(c, &p.pattern, p.kind.as_deref(), p.path.as_deref(), &p.page.resolve(policy)?)
             })
         })
     }
     #[tool(
-        description = "Find test relationships: 'inbound' finds tests exercising a target symbol/module; 'outbound' finds production dependencies of a test. Narrow symbol or leaf module required; broad scopes are rejected."
+        description = "Find test relationships: 'inbound' finds tests exercising a target symbol/module; 'outbound' finds production dependencies of a test. Each result labels a direct edge witness or a scope/transitive connection; it does not prove a full path. Narrow symbol or leaf module required; broad scopes are rejected."
     )]
     fn code_map_tests(&self, Parameters(p): Parameters<Tests>) -> CallToolResult {
         self.responding(|policy| {
@@ -266,18 +274,19 @@ impl Server {
         })
     }
     #[tool(
-        description = "Explain symbol ownership, direct edge directions (inbound/outbound), and architectural invariants for a selector. Set show_source=true for bounded AST preview."
+        description = "Explain symbol ownership, direct edges, and architectural invariants. direction: both (default), incoming/inbound, or outgoing/outbound. Set show_doc=false to omit linked documents; show_source=true adds bounded source."
     )]
     fn code_map_explain(&self, Parameters(p): Parameters<Explain>) -> CallToolResult {
         self.responding(|policy| {
             let page = p.page.resolve(policy)?;
             let source = p.source(policy, false)?;
             self.read(|c| {
-                symbols::explain_paged(
+                symbols::explain_paged_with_docs(
                     c,
                     &self.root,
                     &p.selector,
                     p.direction.as_deref(),
+                    p.show_doc,
                     &source,
                     &page,
                 )
@@ -301,12 +310,18 @@ impl Server {
         })
     }
     #[tool(
-        description = "Analyze diagnostics, errors, and cycles. target='' for workspace totals; target='path/to/file.py' for paged file diagnostics; include_cycles=true to compute cycles. Also accepts read-only SELECT/WITH SQL queries."
+        description = "Analyze diagnostics, errors, and cycles. target='' for workspace totals or an indexed path for diagnostics; include_cycles=true computes cycles. Also accepts read-only SELECT/WITH SQL. lint=true returns only stored parser syntax diagnostics across compiled profiles, with explicit coverage; no style/type/security checks or external process."
     )]
     fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
         self.responding(|policy| {
+            anyhow::ensure!(!p.lint || p.include_cycles != Some(true), "lint=true cannot be combined with include_cycles=true");
             self.read(|c| {
-                reader::analyze_paged(c, &p.target, p.include_cycles, &p.page.resolve(policy)?)
+                let options = p.page.resolve(policy)?;
+                if p.lint {
+                    crate::db::lint::syntax_paged(c, &p.target, &options)
+                } else {
+                    reader::analyze_paged(c, &p.target, p.include_cycles, &options)
+                }
             })
         })
     }
@@ -319,7 +334,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Syntactic pattern search across code using Tree-sitter AST ($NAME captures nodes, $$$ARGS captures sequences). Requires language ('python', 'typescript', 'rust') and pattern. Optional path filters scope."
+        description = "Syntactic pattern search using Tree-sitter AST ($NAME captures nodes, $$$ARGS captures sequences where valid in the language). Requires a compiled language id, such as python, typescript, rust, html, yaml, or toml, and a valid pattern. Optional path filters scope."
     )]
     fn ast_grep_search(&self, Parameters(p): Parameters<Ast>) -> CallToolResult {
         self.responding(|policy| {
@@ -333,32 +348,37 @@ impl Server {
         })
     }
     #[tool(
-        description = "Full-text search indexed documentation and ADRs. Optional doc_type filter ('architecture', 'adr', 'guide', 'api', 'plan') and component filter. Returns section anchors for get_doc."
+        description = "Full-text search indexed documentation and ADRs. Optional doc_type filter ('architecture', 'adr', 'guide', 'api', 'plan') and component filter. Returns section anchors for get_doc; include_excerpt=true adds a bounded match-centered preview."
     )]
     fn search_docs(&self, Parameters(p): Parameters<SearchDocs>) -> CallToolResult {
         self.responding(|policy| {
             self.read(|c| {
-                reader::search_docs_paged(
+                reader::search_docs_paged_with_excerpt(
                     c,
                     &p.query,
                     p.doc_type.as_deref(),
                     p.component.as_deref(),
+                    p.include_excerpt,
                     &p.page.resolve(policy)?,
                 )
             })
         })
     }
     #[tool(
-        description = "Read documentation content by path or ID (e.g. 'docs/architecture/router.md'). Optional section parameter narrows read to an exact Markdown header anchor."
+        description = "Read documentation content by path or ID (e.g. 'docs/architecture/router.md'). Returns content by default; detail='compact' returns a section outline. Optional section narrows to an exact section title."
     )]
     fn get_doc(&self, Parameters(p): Parameters<GetDoc>) -> CallToolResult {
         self.responding(|policy| {
+            let mut page = p.page.resolve(policy)?;
+            if p.page.detail.is_none() {
+                page.detail = Detail::Full;
+            }
             self.read(|c| {
                 reader::get_doc_paged(
                     c,
                     &p.path_or_id,
                     p.section.as_deref(),
-                    &p.page.resolve(policy)?,
+                    &page,
                 )
             })
         })

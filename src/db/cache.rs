@@ -100,6 +100,17 @@ pub fn matches(path: &Path, root: &Path, seal: &str, identity: &Identity) -> boo
 }
 pub fn publish_verified(path: &Path, root: &Path, seal: &str) -> Result<bool> {
     let before = identity(path)?;
+    publish_verified_identity(path, root, seal, &before)
+}
+pub fn publish_verified_identity(
+    path: &Path,
+    root: &Path,
+    seal: &str,
+    before: &Identity,
+) -> Result<bool> {
+    if identity(path)? != *before {
+        return Ok(false);
+    }
     if before.wal.is_some() {
         invalidate(path);
         return Ok(false);
@@ -118,7 +129,7 @@ pub fn publish_verified(path: &Path, root: &Path, seal: &str) -> Result<bool> {
         &serde_json::to_vec(&receipt)?,
         false,
     )?;
-    if identity(path)? != before {
+    if identity(path)? != *before {
         invalidate(path);
         return Ok(false);
     }

@@ -18,11 +18,26 @@ use std::{
     time::Instant,
 };
 static NONCE: AtomicU64 = AtomicU64::new(0);
+#[derive(Debug)]
+pub struct SourceSnapshotMismatch(pub String);
+
+impl std::fmt::Display for SourceSnapshotMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SourceSnapshotMismatch {}
+
 pub fn extract(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> Result<Facts> {
     let path = scanner::resolve_file_path(root, adapter, &file.path)?;
     let source = fs::read_to_string(&path)?;
     if commitments::hash(source.as_bytes()) != file.digest {
-        bail!("source changed during extraction: {}", file.path);
+        return Err(SourceSnapshotMismatch(format!(
+            "source changed during extraction: {}",
+            file.path
+        ))
+        .into());
     }
     if file.is_doc {
         let sections = docs::extract(&file.path, &source, file.mtime_ns as f64 / 1e9)?;
@@ -53,6 +68,7 @@ pub fn extract(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> Res
 }
 fn policy(root: &Path, adapter: &scanner::Adapter) -> Value {
     json!({
+        "adapter_path": adapter.adapter_path.as_ref().map(|path| path.strip_prefix(root).unwrap_or(path).to_string_lossy()),
         "roots": adapter.roots.iter().map(|p| p.strip_prefix(root).unwrap_or(p).to_string_lossy()).collect::<Vec<_>>(),
         "ignored_names": adapter.ignored_names,
         "adapter_version": adapter.adapter_version,
@@ -86,12 +102,20 @@ fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
         .map(|v| v.as_str().map(str::to_owned).context("invalid ignore name"))
         .collect::<Result<BTreeSet<_>>>()?;
     let adapter_version = value["adapter_version"].as_str().map(str::to_owned);
+    let adapter_path = match value.get("adapter_path") {
+        None | Some(Value::Null) => None,
+        Some(path) => Some(scanner::checked_child(
+            root,
+            Path::new(path.as_str().context("invalid persisted adapter path")?),
+        )?),
+    };
     let digest = value["digest"].as_str().unwrap_or_default().to_owned();
     let linked_workspaces: Vec<scanner::LinkedWorkspace> = value
         .get("linked_workspaces")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
     Ok(scanner::Adapter {
+        adapter_path,
         roots,
         ignored_names,
         adapter_version,
@@ -171,7 +195,7 @@ fn populate(
         }
     }
     let (node_id, docs_count) = persist_files(&tx, entries, facts)?;
-    persist_graph(&tx, &graph, &mut node_paths)?;
+    persist_graph(&tx, &graph, &mut node_paths, true)?;
     persist_file_commitments(&tx, entries, facts, &graph)?;
     let rows_ms = writing.elapsed().as_secs_f64() * 1000.;
     let indexing = Instant::now();
@@ -363,6 +387,7 @@ fn atomic_build(
     let _ = fs::remove_dir_all(stage);
     result
 }
+
 pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<Value> {
     let started = Instant::now();
     let root = scanner::canonical_root(root)?;
@@ -399,18 +424,13 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         |r| r.get(0),
     )?;
     let adapter = read_policy(&root, &admitted)?;
-    let current_adapter = scanner::load_adapter(&root, None)?;
+    let current_adapter = scanner::load_adapter(&root, adapter.adapter_path.as_deref())?;
     if current_adapter.digest != adapter.digest
         || current_adapter.linked_workspaces != adapter.linked_workspaces
     {
-        return build(&root, db, None);
+        return build(&root, db, adapter.adapter_path.as_deref());
     }
-    let previous: String = admitted.query_row(
-        "SELECT value FROM metadata WHERE key='inventory_snapshot'",
-        [],
-        |r| r.get(0),
-    )?;
-    let previous: Vec<FileEntry> = serde_json::from_str(&previous)?;
+    let previous = super::reader::inventory_snapshot(&admitted)?;
     let scanning = Instant::now();
     let scan = scanner::scan_reusing(&root, &adapter, &previous)?;
     let scan_ms = scanning.elapsed().as_secs_f64() * 1000.;
@@ -425,12 +445,12 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let previous: BTreeMap<_, _> = previous.iter().map(|f| (f.path.as_str(), f)).collect();
     for (path, old) in &previous {
         if !modified.contains(*path) && inventory.get(path).is_none_or(|f| f.digest != old.digest) {
-            bail!("unlisted source change: {path}");
+            return Err(SourceSnapshotMismatch(format!("unlisted source change: {path}")).into());
         }
     }
     for path in inventory.keys() {
         if !previous.contains_key(path) && !modified.contains(*path) {
-            bail!("unlisted source addition: {path}");
+            return Err(SourceSnapshotMismatch(format!("unlisted source addition: {path}")).into());
         }
     }
     for path in &modified {
@@ -443,9 +463,24 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             }
         }
     }
+    let extracting = Instant::now();
     let mut facts = BTreeMap::new();
+    let mut changed_resolution = BTreeSet::new();
+    for path in &modified {
+        if let Some(file) = inventory.get(path.as_str()) {
+            let extracted = extract(&root, file, &adapter)?;
+            if !previous.contains_key(path.as_str())
+                || resolution_identity_changed(&admitted, path, &extracted)?
+            {
+                changed_resolution.insert(path.clone());
+            }
+            facts.insert(path.clone(), extracted);
+        } else {
+            changed_resolution.insert(path.clone());
+        }
+    }
     let mut names = BTreeSet::new();
-    let encoded = serde_json::to_string(&modified)?;
+    let encoded = serde_json::to_string(&changed_resolution)?;
     {
         let mut st = admitted.prepare(
             "SELECT owner,name,qualname,kind FROM owned_nodes WHERE owner IN(SELECT value FROM json_each(?1))",
@@ -480,16 +515,12 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             }
         }
     }
-    let extracting = Instant::now();
-    for path in &modified {
+    for path in &changed_resolution {
         let mod_name = module_name(path);
         names.insert(mod_name.clone());
         let (_, local_path) = crate::engine::languages::workspace_path(path);
         let local_module = module_name(local_path);
         names.insert(local_module.clone());
-        if let Some((_, last)) = local_module.rsplit_once('.') {
-            names.insert(last.to_owned());
-        }
         let src_module = local_path
             .split_once("/src/")
             .map(|(_, r)| module_name(r))
@@ -497,8 +528,15 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         if let Some(src_mod) = &src_module {
             names.insert(src_mod.clone());
         }
-        if let Some(file) = inventory.get(path.as_str()) {
-            let f = extract(&root, file, &adapter)?;
+        let mut stable_module = false;
+        if let Some(f) = facts.get(path) {
+            let previous_module: Option<(String, String, String)> = admitted
+                .prepare_cached("SELECT public_id,qualname,language FROM owned_nodes WHERE owner=?1 AND kind='module'")?
+                .query_row([path], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .optional()?;
+            stable_module = previous_module.as_ref().is_some_and(|(id, qualname, language)| {
+                f.nodes.iter().any(|n| n.kind == "module" && &n.id == id && &n.qualname == qualname && &n.language == language)
+            });
             for n in &f.nodes {
                 names.insert(n.qualname.clone());
                 if !matches!(n.kind.as_str(), "field" | "method" | "route" | "document") {
@@ -513,7 +551,11 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                     }
                 }
             }
-            facts.insert(path.clone(), f);
+        }
+        if !stable_module {
+            if let Some((_, last)) = local_module.rsplit_once('.') {
+                names.insert(last.to_owned());
+            }
         }
     }
     let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
@@ -601,7 +643,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     conn.set_prepared_statement_cache_capacity(128);
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY;",
+        "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-64000;",
     )?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current: String = tx.query_row(
@@ -612,7 +654,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     if current != expected {
         bail!("generation changed during delta admission");
     }
-    super::cache::invalidate(db);
+    let deleting = Instant::now();
     tx.execute_batch("CREATE TEMP TABLE changed_edge_keys(src TEXT,dst TEXT,kind TEXT,PRIMARY KEY(src,dst,kind));")?;
     for path in &affected {
         cached(&tx,"INSERT OR IGNORE INTO changed_edge_keys SELECT src,dst,kind FROM edge_occurrences WHERE owner=?1",[path])?;
@@ -651,6 +693,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     for path in &replace_files {
         delete_file(&tx, path)?;
     }
+    let delete_ms = deleting.elapsed().as_secs_f64() * 1000.;
     let changed_entries: Vec<_> = scan
         .entries
         .iter()
@@ -664,25 +707,48 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             node_paths.insert(n.id.clone(), Some(n.path.clone()));
         }
     }
+    let files_writing = Instant::now();
     persist_files(&tx, &changed_entries, &facts)?;
-    persist_graph(&tx, &graph, &mut node_paths)?;
+    let files_ms = files_writing.elapsed().as_secs_f64() * 1000.;
+    let graph_writing = Instant::now();
+    persist_graph(&tx, &graph, &mut node_paths, false)?;
+    let graph_ms = graph_writing.elapsed().as_secs_f64() * 1000.;
+    let aggregating = Instant::now();
     let dangling: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM replaced_nodes r WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE n.id=r.id) AND (EXISTS(SELECT 1 FROM edges e WHERE e.src_public_id=r.id) OR EXISTS(SELECT 1 FROM edges e WHERE e.dst_public_id=r.id)))", [], |r| r.get(0))?;
     if dangling {
         bail!("delta leaves an edge with a missing endpoint; rebuild index");
     }
-    tx.execute("INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)SELECT e.src,e.dst,e.kind,min(e.path),min(e.line),min(e.evidence),min(e.confidence),count(*) FROM edge_occurrences e JOIN changed_edge_keys k ON k.src=e.src AND k.dst=e.dst AND k.kind=e.kind GROUP BY e.src,e.dst,e.kind ON CONFLICT(src_public_id,dst_public_id,kind)DO UPDATE SET occurrence_count=excluded.occurrence_count,path=excluded.path,line=excluded.line,evidence=excluded.evidence,confidence=excluded.confidence",[])?;
+    tx.execute(
+        "WITH ranked AS (
+            SELECT e.*,row_number() OVER edge_group AS representative,
+                   count(*) OVER edge_group AS occurrences
+            FROM changed_edge_keys k CROSS JOIN edge_occurrences e
+              ON k.src=e.src AND k.dst=e.dst AND k.kind=e.kind
+            WINDOW edge_group AS (
+                PARTITION BY e.src,e.dst,e.kind ORDER BY e.owner,e.ordinal
+                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+            )
+        )
+        INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)
+        SELECT src,dst,kind,path,line,evidence,confidence,occurrences
+        FROM ranked WHERE representative=1",
+        [],
+    )?;
     commitment_owners.extend(
         tx.prepare_cached("SELECT DISTINCT path FROM edges WHERE (src_public_id,dst_public_id,kind)IN(SELECT src,dst,kind FROM changed_edge_keys)")?
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
+    let aggregate_ms = aggregating.elapsed().as_secs_f64() * 1000.;
     let affected_entries: Vec<_> = scan
         .entries
         .iter()
         .filter(|f| affected.contains(&f.path))
         .cloned()
         .collect();
+    let commitments_writing = Instant::now();
     persist_file_commitments(&tx, &affected_entries, &facts, &graph)?;
+    let commitments_ms = commitments_writing.elapsed().as_secs_f64() * 1000.;
     cached(
         &tx,
         "INSERT OR REPLACE INTO metadata VALUES('corpus_hash',?1)",
@@ -701,16 +767,54 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     commitments::verify_owners(&tx, Some(&commitment_owners))?;
     let latest = scanner::scan_reusing(&root, &adapter, &scan.entries)?;
     if latest.entries != scan.entries {
-        bail!("workspace changed during delta; transaction rolled back");
+        return Err(SourceSnapshotMismatch(format!(
+            "workspace changed during delta; transaction rolled back (scan={scan_ms:.0}ms extract={extract_ms:.0}ms hydrate={hydrate_ms:.0}ms link={link_ms:.0}ms persist={persist_ms:.0}ms seal={seal_ms:.0}ms verify={:.0}ms)",
+            verifying.elapsed().as_secs_f64() * 1000.
+        ))
+        .into());
     }
     let verify_ms = verifying.elapsed().as_secs_f64() * 1000.;
+    let committing = Instant::now();
     tx.commit()?;
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+    let commit_ms = committing.elapsed().as_secs_f64() * 1000.;
     drop(conn);
     let cached = super::cache::publish_verified(db, &root, &seal).unwrap_or(false);
     Ok(
-        json!({"files":scan.files,"changed_files":modified.len(),"affected_owners":affected.len(),"reparsed_files":modified.iter().filter(|p|inventory.contains_key(p.as_str())).count(),"loaded_fact_files":loaded_fact_files,"rewritten_files":changed_entries.len(),"verification_cache":cached,"output_root":seal,"scan_ms":scan_ms,"extract_ms":extract_ms,"hydrate_ms":hydrate_ms,"link_ms":link_ms,"persist_ms":persist_ms,"seal_ms":seal_ms,"verify_ms":verify_ms,"elapsed_ms":started.elapsed().as_secs_f64()*1000.}),
+        json!({"files":scan.files,"changed_files":modified.len(),"affected_owners":affected.len(),"reparsed_files":modified.iter().filter(|p|inventory.contains_key(p.as_str())).count(),"loaded_fact_files":loaded_fact_files,"rewritten_files":changed_entries.len(),"verification_cache":cached,"output_root":seal,"scan_ms":scan_ms,"extract_ms":extract_ms,"hydrate_ms":hydrate_ms,"link_ms":link_ms,"persist_ms":persist_ms,"delete_ms":delete_ms,"files_ms":files_ms,"graph_ms":graph_ms,"aggregate_ms":aggregate_ms,"commitments_ms":commitments_ms,"seal_ms":seal_ms,"verify_ms":verify_ms,"commit_ms":commit_ms,"elapsed_ms":started.elapsed().as_secs_f64()*1000.}),
     )
+}
+
+fn resolution_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> Result<bool> {
+    let identity = |node: &Node| -> Result<String> {
+        let mut value = serde_json::to_value(node)?;
+        let object = value.as_object_mut().context("node identity must be an object")?;
+        object.remove("line");
+        object.remove("end_line");
+        Ok(serde_json::to_string(&value)?)
+    };
+    let mut statement = conn.prepare_cached(
+        "SELECT public_id,kind,name,qualname,path,line,end_line,is_test,language,generated,details_json FROM owned_nodes WHERE owner=?1",
+    )?;
+    let rows = statement.query_map([path], |row| {
+        Ok((Node {
+            id: row.get(0)?, kind: row.get(1)?, name: row.get(2)?, qualname: row.get(3)?,
+            path: row.get(4)?, line: row.get(5)?, end_line: row.get(6)?, is_test: row.get(7)?,
+            language: row.get(8)?, generated: row.get(9)?, details: Value::Null,
+        }, row.get::<_, String>(10)?))
+    })?;
+    let mut old = BTreeSet::new();
+    for row in rows {
+        let (mut node, details) = row?;
+        if node.kind == "component" {
+            continue;
+        }
+        node.details = serde_json::from_str(&details)?;
+        old.insert(identity(&node)?);
+    }
+    let new = facts.nodes.iter().filter(|node| node.kind != "component")
+        .map(identity).collect::<Result<BTreeSet<_>>>()?;
+    Ok(old != new)
 }
 fn delete_file(tx: &Connection, path: &str) -> Result<()> {
     let mut stmt=tx.prepare_cached("SELECT n.node_id,s.search_text FROM nodes n JOIN search_text s ON s.public_id=n.id JOIN owned_nodes o ON o.public_id=n.id WHERE o.owner=?1")?;
@@ -882,11 +986,14 @@ fn persist_graph(
     tx: &Connection,
     graph: &Graph,
     node_paths: &mut hashbrown::HashMap<String, Option<String>>,
+    materialize_edges: bool,
 ) -> Result<()> {
     let mut ordinals: BTreeMap<&str, usize> = BTreeMap::new();
     let mut stmt_occ =
         tx.prepare("INSERT INTO edge_occurrences VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)")?;
-    let mut stmt_edges = tx.prepare("INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,1)ON CONFLICT(src_public_id,dst_public_id,kind)DO UPDATE SET occurrence_count=occurrence_count+1")?;
+    let mut stmt_edges = materialize_edges
+        .then(|| tx.prepare("INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,1)ON CONFLICT(src_public_id,dst_public_id,kind)DO UPDATE SET occurrence_count=occurrence_count+1"))
+        .transpose()?;
     let mut stmt_deps = tx.prepare("INSERT INTO dependencies VALUES(?1,?2,?3,?4,'resolved')")?;
     let mut stmt_rdeps =
         tx.prepare("INSERT INTO reverse_dependencies VALUES(?1,?2,?3,?4,'resolved')")?;
@@ -906,15 +1013,17 @@ fn persist_graph(
             e.confidence
         ])?;
         *ordinal += 1;
-        stmt_edges.execute(params![
-            e.src,
-            e.dst,
-            e.kind,
-            e.path,
-            e.line,
-            e.evidence,
-            e.confidence
-        ])?;
+        if let Some(stmt_edges) = stmt_edges.as_mut() {
+            stmt_edges.execute(params![
+                e.src,
+                e.dst,
+                e.kind,
+                e.path,
+                e.line,
+                e.evidence,
+                e.confidence
+            ])?;
+        }
         let mut targets = BTreeSet::new();
         for endpoint in [&e.src, &e.dst] {
             let target: Option<String> = if let Some(p) = node_paths.get(endpoint) {

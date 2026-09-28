@@ -4,7 +4,7 @@ use crate::engine::scanner;
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::{fs::File, io::Read, path::Path};
+use std::{collections::HashMap, fs::File, io::Read, path::Path};
 
 fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> {
     let seeds = paging::count(
@@ -142,11 +142,41 @@ pub fn search_paged(
     kind: Option<&str>,
     options: &QueryOptions,
 ) -> Result<Value> {
+    search_paged_in_path(conn, pattern, kind, None, options)
+}
+
+pub fn search_paged_in_path(
+    conn: &Connection,
+    pattern: &str,
+    kind: Option<&str>,
+    path: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
     let pattern = pattern.trim();
     if pattern.is_empty() || pattern.len() > 1024 || pattern.chars().all(|c| c == '*') {
         bail!("pattern must contain a symbol fragment and be at most 1024 bytes");
     }
     let kind = kind.unwrap_or("");
+    let path = path.map(|value| {
+        value
+            .trim()
+            .strip_prefix("file://")
+            .or_else(|| value.trim().strip_prefix("file:"))
+            .unwrap_or(value.trim())
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+    });
+    if let Some(path) = path {
+        if path.is_empty()
+            || path.starts_with('/')
+            || path.contains('\\')
+            || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            bail!("path must be a nonempty workspace-relative file or directory");
+        }
+    }
+    let path = path.unwrap_or("");
+    let (path_start, path_end) = reader::path_bounds(path);
     let columns = paging::nodes("n", options.detail);
     let nodes = if pattern.contains('*') {
         let like = pattern
@@ -159,9 +189,9 @@ pub fn search_paged(
             .filter(|p| !p.is_empty() && p.chars().all(char::is_alphanumeric))
         {
             let query = format!("\"{prefix}\"*");
-            paging::query(conn, &format!("SELECT {columns} FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) ORDER BY n.path,n.line,n.id"), &[&like,&kind,&query], options)?
+            paging::query(conn, &format!("SELECT {columns} FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) ORDER BY n.path,n.line,n.id"), &[&like,&kind,&query,&path,&path_start,&path_end], options)?
         } else {
-            paging::query(conn, &format!("SELECT {columns} FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) ORDER BY n.path,n.line,n.id"), &[&like,&kind], options)?
+            paging::query(conn, &format!("SELECT {columns} FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) ORDER BY n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end], options)?
         }
     } else {
         let query = pattern
@@ -173,7 +203,7 @@ pub fn search_paged(
         if query.is_empty() {
             bail!("pattern must contain a symbol fragment");
         }
-        paging::query(conn, &format!("SELECT {columns} FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (?2='' OR n.kind=?2) ORDER BY n.path,n.line,n.id"), &[&query,&kind], options)?
+        paging::query(conn, &format!("SELECT {columns} FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) ORDER BY n.path,n.line,n.id"), &[&query,&kind,&path,&path_start,&path_end], options)?
     };
     Ok(json!({"pattern":pattern,"nodes":nodes}))
 }
@@ -207,7 +237,8 @@ pub fn tests_paged(
 
     let steps = super::traversal::dependency_steps(inbound, false, false);
     let sql = format!("WITH RECURSIVE seeds(id) AS (SELECT ?1 UNION SELECT e.dst_public_id FROM seeds s JOIN edges e ON e.src_public_id=s.id WHERE e.kind='contains'), walk(id) AS (SELECT id FROM seeds UNION {steps}) SELECT {} FROM walk w JOIN nodes n ON n.id=w.id WHERE n.is_test=?2 AND n.kind IN ('function','method','class','struct') AND n.id!=?1 ORDER BY n.path,n.line,n.id", paging::nodes("n", options.detail));
-    let nodes = paging::query(conn, &sql, &[&id, &is_test], options)?;
+    let mut nodes = paging::query(conn, &sql, &[&id, &is_test], options)?;
+    annotate_test_connections(conn, &mut nodes, id, inbound)?;
     let scope_note = if unresolved_count > 0 {
         format!("indexed static dependencies; {unresolved_count} unresolved reference(s) within symbol scope may conceal dynamic test callers")
     } else {
@@ -216,6 +247,56 @@ pub fn tests_paged(
     Ok(
         json!({"selector":node,"direction":direction,"nodes":nodes,"unresolved_references":unresolved_count,"scope":scope_note}),
     )
+}
+
+fn annotate_test_connections(
+    conn: &Connection,
+    page: &mut Value,
+    selected_id: &str,
+    inbound: bool,
+) -> Result<()> {
+    let items = page["items"].as_array_mut().context("missing test result items")?;
+    if items.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<String> = items
+        .iter()
+        .map(|item| item["id"].as_str().context("invalid test result id").map(str::to_owned))
+        .collect::<Result<_>>()?;
+    let placeholders = (2..=ids.len() + 1)
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let (forward_candidate, forward_selected, reverse_candidate, reverse_selected) = if inbound {
+        ("src_public_id", "dst_public_id", "dst_public_id", "src_public_id")
+    } else {
+        ("dst_public_id", "src_public_id", "src_public_id", "dst_public_id")
+    };
+    let sql = format!(
+        "SELECT e.{forward_candidate} related_id,e.kind,e.path,e.line FROM edges e WHERE e.{forward_selected}=?1 AND e.{forward_candidate} IN ({placeholders}) AND e.kind IN({}) UNION ALL SELECT e.{reverse_candidate} related_id,e.kind,e.path,e.line FROM edges e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate} IN ({placeholders}) AND e.kind IN({}) ORDER BY related_id,kind,path,line",
+        super::traversal::FORWARD_DEPENDENCIES,
+        super::traversal::REVERSE_DEPENDENCIES,
+    );
+    let bindings: Vec<&dyn rusqlite::ToSql> = std::iter::once(&selected_id as &dyn rusqlite::ToSql)
+        .chain(ids.iter().map(|id| id as &dyn rusqlite::ToSql))
+        .collect();
+    // At most seven dependency kinds are persisted per selected/candidate pair.
+    let direct = reader::rows(conn, &sql, &bindings, ids.len() * 7)?;
+    let mut reasons = HashMap::new();
+    for edge in direct {
+        let related_id = edge["related_id"].as_str().context("invalid related node id")?.to_owned();
+        reasons.entry(related_id).or_insert_with(|| json!({
+            "relation": "direct",
+            "edge_kind": edge["kind"],
+            "path": edge["path"],
+            "line": edge["line"],
+        }));
+    }
+    for item in items {
+        let id = item["id"].as_str().context("invalid test result id")?;
+        item["connection"] = reasons.remove(id).unwrap_or_else(|| json!({"relation":"scope_or_transitive"}));
+    }
+    Ok(())
 }
 
 pub fn inspect_paged(
@@ -235,6 +316,24 @@ pub fn inspect_paged(
     )
 }
 
+pub fn snippet_paged(
+    conn: &Connection,
+    root: &Path,
+    selector: &str,
+    source: &SourceOptions,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let generation = paging::generation(conn, options)?;
+    let node = reader::select_detail(conn, selector, options.detail)?;
+    with_source(
+        conn,
+        root,
+        json!({"node":node,"generation":generation}),
+        source,
+        options,
+    )
+}
+
 pub fn explain_paged(
     conn: &Connection,
     root: &Path,
@@ -243,10 +342,22 @@ pub fn explain_paged(
     source: &SourceOptions,
     options: &QueryOptions,
 ) -> Result<Value> {
+    explain_paged_with_docs(conn, root, selector, direction, true, source, options)
+}
+
+pub fn explain_paged_with_docs(
+    conn: &Connection,
+    root: &Path,
+    selector: &str,
+    direction: Option<&str>,
+    show_doc: bool,
+    source: &SourceOptions,
+    options: &QueryOptions,
+) -> Result<Value> {
     with_source(
         conn,
         root,
-        reader::explain_paged(conn, selector, direction, options)?,
+        reader::explain_paged_with_docs(conn, selector, direction, show_doc, options)?,
         source,
         options,
     )

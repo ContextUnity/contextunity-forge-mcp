@@ -669,12 +669,7 @@ fn search_range(
         bail!("pattern is not valid {language} syntax");
     }
     let mut pn = pt.root_node();
-    while pn.named_child_count() == 1
-        && matches!(
-            pn.kind(),
-            "module" | "program" | "source_file" | "expression_statement"
-        )
-    {
+    while pn.named_child_count() == 1 && profile.pattern_wrapper(pn.kind()) {
         pn = pn.named_child(0).context("empty pattern")?;
     }
     if !budget.prepare_parser(&mut parser) {

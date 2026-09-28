@@ -29,7 +29,24 @@ linked_workspaces:
 
 `roots` and `doc_roots` are literal, relative directories or paths inside the workspace. `ignore` matches file or directory basenames. The scanner admits compiled source extensions and Markdown/MDX within these roots; scan roots do not define import or package roots. Unavailable linked workspaces are skipped. A linked entry with `enabled: false` is excluded; omission of `enabled` means true.
 
+The default basename exclusions cover `.git`, `.forge`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.gradle`. The scanner also honors `.gitignore` and skips symbolic links. Add project-specific generated directories with `ignore`; authored source under an excluded basename can be scoped explicitly with a different directory name.
+
 The index records linked paths under their configured workspace names. Changing source scope or linked-workspace settings causes the MCP server to rebuild or update its owned index on the next database read. CLI readers use the index already on disk, so run `build` or `delta` after source changes when using only the CLI.
+
+## Source-only linked libraries
+
+Set `ignore` inside each linked entry to exclude that library's vendor directories and build outputs. A linked entry does not inherit the target library's `forge-mcp.yaml` settings. Keep the same roots and exclusions in the library's own adapter and its consumers.
+
+```yaml
+linked_workspaces:
+  - name: shared-library
+    path: ../shared-library
+    roots: [src, frontend, tests]
+    doc_roots: [docs]
+    ignore: [vendor, vendors, dist, build]
+```
+
+Ignore names are literal basenames, not glob patterns. Add a directory such as `static` only when the library builds all of its contents from sources retained elsewhere. Keep authored host assets and source-level type contracts. Excluded bundles neither enter the index nor trigger source refresh when rebuilt.
 
 ## MCP response policy
 
@@ -45,5 +62,7 @@ response:
 ```
 
 `page_size` accepts 1–100; `max_output_bytes` accepts 1,024–65,536. Source previews accept 0–20 leading lines and 1–100 body lines. `detail` is `compact` or `full`. These settings control presentation and do not change extracted facts or require an index rebuild. Unknown response fields and out-of-range values are rejected.
+
+The root `forge-mcp.yaml` and the file selected with CLI `--adapter` are configuration rather than indexed sources. Nested files with that name and linked-workspace adapters remain ordinary YAML sources when admitted by their configured roots. A linked workspace's own adapter does not control the parent index.
 
 See [MCP tools](mcp-tools.md) for continuation arguments and [limits and freshness](../operations/limits-and-freshness.md) for computation budgets.

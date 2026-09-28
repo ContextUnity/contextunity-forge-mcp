@@ -651,6 +651,7 @@ fn mcp_selector_and_source_boundaries() {
     assert_eq!(last["source"], "def last(): pass\n");
     m.err("get_code_snippet", json!({"selector":"src/app.py:first","max_body_lines":0}), "max_body_lines");
     m.err("get_code_snippet", json!({"selector":"src/app.py:first","leading_lines":-1}), "expected usize");
+    m.err("get_code_snippet", json!({"selector":"src/app.py:first","max_body_lines":-1}), "expected usize");
     m.err("get_code_snippet", json!({"selector":"src/app.py:first","source_offset":-1}), "expected usize");
     let comments = m.ok("get_code_snippet", json!({"selector":"comments.py"}));
     assert_eq!(comments["node"]["kind"], "module");
@@ -673,6 +674,9 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     m.err("code_map_impact", json!({"selector":"cycle.py:a","depth":17}), "depth must be <=16");
     let inbound = m.ok("code_map_tests", json!({"selector":"cycle.py:a","direction":"inbound"}));
     assert!(inbound["nodes"]["items"].as_array().unwrap().iter().any(|node| node["name"] == "test_a"));
+    let test = inbound["nodes"]["items"].as_array().unwrap().iter().find(|node| node["name"] == "test_a").unwrap();
+    assert_eq!(test["connection"]["relation"], "direct");
+    assert_eq!(test["connection"]["edge_kind"], "calls");
     let outbound = m.ok("code_map_tests", json!({"selector":"tests/test_cycle.py:test_a","direction":"outbound"}));
     assert!(outbound["nodes"]["items"].as_array().unwrap().iter().any(|node| node["name"] == "a"));
     m.err("code_map_tests", json!({"selector":"cycle.py:a","direction":"sideways"}), "direction must be inbound or outbound");
@@ -698,6 +702,11 @@ fn mcp_search_ast_and_document_boundaries() {
     let prefix = m.ok("code_map_search", json!({"pattern":"item*","kind":"function","limit":1}));
     assert_eq!(prefix["nodes"]["items"].as_array().unwrap().len(), 1);
     assert_eq!(prefix["nodes"]["total"], 2);
+    let scoped = m.ok("code_map_search", json!({"pattern":"item*","kind":"function","path":"src/app.py"}));
+    assert_eq!(scoped["nodes"]["total"], 2);
+    let outside = m.ok("code_map_search", json!({"pattern":"item*","path":"docs"}));
+    assert_eq!(outside["nodes"]["total"], 0);
+    m.err("code_map_search", json!({"pattern":"item*","path":"../src"}), "workspace-relative");
     let literal_underscore = m.ok("code_map_search", json!({"pattern":"item_*"}));
     assert_eq!(literal_underscore["nodes"]["total"], 1);
     for pattern in ["item%*", "item\\*", "item'*", "item\"*"] {
@@ -713,6 +722,9 @@ fn mcp_search_ast_and_document_boundaries() {
 
     let docs = m.ok("search_docs", json!({"query":"searchable"}));
     assert!(docs["sections"]["total"].as_u64().unwrap() >= 1);
+    assert!(docs["sections"]["items"][0].get("excerpt").is_none());
+    let excerpt = m.ok("search_docs", json!({"query":"searchable","include_excerpt":true}));
+    assert!(excerpt["sections"]["items"][0]["excerpt"].as_str().unwrap().contains("[searchable]"));
     m.err("search_docs", json!({"query":""}), "search query is empty");
     let quoted = m.ok("search_docs", json!({"query":"\""}));
     assert_eq!(quoted["sections"]["total"], 0);
@@ -785,6 +797,10 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
     assert!(m.ok("session_checkpoint", json!({"action":"list"})).get("note").is_some());
     m.ok("session_checkpoint", json!({"action":"delete","name":"note"}));
     m.err("session_checkpoint", json!({"action":"get","name":"note"}), "not found");
+    let malformed = w.cli(&["checkpoint", "save", "--name", "malformed", "--content", "{invalid"]);
+    assert!(!malformed.status.success());
+    assert!(String::from_utf8_lossy(&malformed.stderr).contains("key must be a string"));
+    m.err("session_checkpoint", json!({"action":"get","name":"malformed"}), "not found");
     w.write(".forge/checkpoints.json", "{invalid JSON");
     m.err("session_checkpoint", json!({"action":"list"}), "key must be a string");
 

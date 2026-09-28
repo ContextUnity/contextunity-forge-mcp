@@ -9,6 +9,7 @@ Use the [repository README](../README.md) to build the binary and run a first qu
 
 ## Reference
 
+- [MCP setup](reference/mcp-setup.md): install, connect a client, select the workspace, and verify the first index.
 - [CLI](reference/cli.md): commands, arguments, and examples.
 - [MCP tools](reference/mcp-tools.md): all 15 tools, selectors, paging, and a discovery workflow.
 - [Configuration](reference/configuration.md): indexing roots, linked workspaces, and response settings.

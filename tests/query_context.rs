@@ -511,14 +511,123 @@ fn source_preview_resolves_vue_script_boundaries() {
 fn overview_reports_language_breakdown_and_compiled_profiles() {
     let workspace = Workspace::new();
     workspace.write("a.py", "def f(): return unknown_func()\n");
+    #[cfg(feature = "lang-rust")]
+    workspace.write("b.rs", "pub fn f() {}\n");
     let conn = workspace.build();
-    let overview = reader::overview_paged(&conn, &options(10)).unwrap();
+    let overview = reader::overview_paged(&conn, &options(1)).unwrap();
+    assert!(overview["generation"].is_string());
+    assert!(overview["metadata"].as_array().unwrap().iter().any(|row| row["key"] == "workspace_root"));
+    assert!(!overview["metadata"].as_array().unwrap().iter().any(|row| row["key"] == "output_root" || row["key"] == "corpus_hash"));
     let langs = overview["languages"]["items"].as_array().unwrap();
     let py = langs.iter().find(|l| l["language"] == "python").unwrap();
     assert!(py["files"].as_u64().unwrap() >= 1);
     assert!(py["unresolved"].as_u64().unwrap() >= 1);
     let profiles = overview["compiled_profiles"].as_array().unwrap();
     assert!(profiles.iter().any(|p| p.as_str() == Some("python")));
+    #[cfg(feature = "lang-rust")]
+    {
+        let mut page_options = options(1);
+        assert_eq!(overview["languages"]["total"], 2);
+        assert!(continue_page(&mut page_options, &overview["languages"]));
+        let next = reader::overview_paged(&conn, &page_options).unwrap();
+        assert_eq!(next["languages"]["total"], 2);
+        assert_eq!(next["languages"]["items"][0]["language"], "rust");
+        assert!(!next["languages"]["has_more"].as_bool().unwrap());
+    }
+}
+
+#[test]
+fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
+    let workspace = Workspace::new();
+    workspace.write("graph.py", "def target(): pass\ndef caller(): target()\n");
+    let conn = workspace.build();
+    let compact = reader::inspect_paged(&conn, "target", false, &options(10)).unwrap();
+    assert_eq!(compact["documents"], serde_json::json!({"total": 0}));
+    let incoming = reader::explain_paged(&conn, "target", Some("incoming"), &options(10)).unwrap();
+    let edge = &incoming["incoming"]["items"][0];
+    assert_eq!(edge["kind"], "calls");
+    assert!(edge["src_public_id"].is_string());
+    assert!(edge.get("dst_public_id").is_none());
+    assert!(incoming["incoming"]["generation"].is_string());
+    let mut full = options(10);
+    full.detail = Detail::Full;
+    let full_edge = reader::explain_paged(&conn, "target", Some("incoming"), &full).unwrap();
+    assert_eq!(full_edge["incoming"]["items"][0]["dst_public_id"], full_edge["node"]["id"]);
+}
+
+#[test]
+fn document_excerpt_is_opt_in_and_bounded_around_match() {
+    let workspace = Workspace::new();
+    workspace.write("docs/guide.md", &format!("# Guide\n\n{} needle {}\n", "before ".repeat(80), "after ".repeat(80)));
+    let conn = workspace.build();
+    let basic = reader::search_docs_paged(&conn, "needle", None, None, &options(10)).unwrap();
+    assert!(basic["sections"]["items"][0].get("excerpt").is_none());
+    let with_excerpt = reader::search_docs_paged_with_excerpt(&conn, "needle", None, None, true, &options(10)).unwrap();
+    let excerpt = with_excerpt["sections"]["items"][0]["excerpt"].as_str().unwrap();
+    assert!(excerpt.contains("[needle]"), "{excerpt}");
+    assert!(excerpt.chars().count() <= 240);
+    assert_eq!(basic["sections"]["total"], with_excerpt["sections"]["total"]);
+    assert_eq!(basic["sections"]["generation"], with_excerpt["sections"]["generation"]);
+}
+
+#[test]
+fn document_excerpt_uses_the_matching_fts_column() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);\
+         INSERT INTO metadata VALUES('output_root','test-generation');\
+         CREATE TABLE doc_sections(doc_id TEXT PRIMARY KEY,path TEXT,section_title TEXT,doc_type TEXT,content TEXT,invariants TEXT,size INTEGER,is_invariant INTEGER);\
+         CREATE VIRTUAL TABLE doc_search USING fts5(section_title,content,invariants,content='doc_sections',content_rowid='rowid');\
+         INSERT INTO doc_sections VALUES('doc:1','docs/one.md','titlematch','guide','ordinary body','rulematch',13,1);\
+         INSERT INTO doc_search(rowid,section_title,content,invariants) SELECT rowid,section_title,content,invariants FROM doc_sections;",
+    ).unwrap();
+    for query in ["titlematch", "rulematch"] {
+        let result = reader::search_docs_paged_with_excerpt(&conn, query, None, None, true, &options(10)).unwrap();
+        assert_eq!(result["sections"]["total"], 1);
+        let excerpt = result["sections"]["items"][0]["excerpt"].as_str().unwrap();
+        assert!(excerpt.contains(&format!("[{query}]")), "{query}: {excerpt}");
+    }
+}
+
+#[test]
+fn search_path_scopes_file_and_descendants_without_changing_page_contract() {
+    let workspace = Workspace::new();
+    workspace.write("pkg/a.py", "def lookup(): pass\n");
+    workspace.write("pkg/sub/b.py", "def lookup(): pass\n");
+    workspace.write("other.py", "def lookup(): pass\n");
+    let conn = workspace.build();
+    let all = symbols::search_paged(&conn, "lookup", Some("function"), &options(10)).unwrap();
+    assert_eq!(all["nodes"]["total"], 3);
+    let directory = symbols::search_paged_in_path(&conn, "lookup", Some("function"), Some("./pkg"), &options(1)).unwrap();
+    assert_eq!(directory["nodes"]["total"], 2);
+    assert_eq!(directory["nodes"]["items"][0]["path"], "pkg/a.py");
+    assert!(directory["nodes"]["has_more"].as_bool().unwrap());
+    let file = symbols::search_paged_in_path(&conn, "lookup", Some("function"), Some("file:pkg/sub/b.py"), &options(10)).unwrap();
+    assert_eq!(file["nodes"]["total"], 1);
+    assert_eq!(file["nodes"]["items"][0]["path"], "pkg/sub/b.py");
+    for invalid in ["", "../other.py", "/tmp/other.py", "pkg//sub", "pkg\\sub"] {
+        assert!(symbols::search_paged_in_path(&conn, "lookup", None, Some(invalid), &options(10)).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn test_mapping_marks_direct_evidence_and_does_not_invent_transitive_paths() {
+    let workspace = Workspace::new();
+    workspace.write("service.py", "def target(): pass\ndef wrapper(): target()\n");
+    workspace.write("tests/test_service.py", "from service import target, wrapper\ndef test_direct(): target()\ndef test_indirect(): wrapper()\n");
+    let conn = workspace.build();
+    let inbound = symbols::tests_paged(&conn, "target", "inbound", &options(10)).unwrap();
+    let items = inbound["nodes"]["items"].as_array().unwrap();
+    let direct = items.iter().find(|item| item["name"] == "test_direct").unwrap();
+    assert_eq!(direct["connection"]["relation"], "direct");
+    assert_eq!(direct["connection"]["edge_kind"], "calls");
+    assert_eq!(direct["connection"]["path"], "tests/test_service.py");
+    let indirect = items.iter().find(|item| item["name"] == "test_indirect").unwrap();
+    assert_eq!(indirect["connection"]["relation"], "scope_or_transitive");
+    assert!(indirect["connection"].get("path").is_none());
+    let outbound = symbols::tests_paged(&conn, "test_direct", "outbound", &options(10)).unwrap();
+    let target = outbound["nodes"]["items"].as_array().unwrap().iter().find(|item| item["name"] == "target").unwrap();
+    assert_eq!(target["connection"]["relation"], "direct");
 }
 
 #[test]
@@ -598,7 +707,7 @@ fn tests_reports_unresolved_references_in_symbol_scope() {
 }
 
 #[test]
-fn compact_coverage_includes_expression_and_evidence() {
+fn compact_coverage_keeps_scope_counts_and_full_detail_keeps_evidence() {
     let workspace = Workspace::new();
     workspace.write(
         "target.py",
@@ -610,6 +719,117 @@ fn compact_coverage_includes_expression_and_evidence() {
     assert!(coverage["total"].as_u64().unwrap() >= 1);
     let item = &coverage["items"][0];
     assert_eq!(item["expression"], "unresolved_dependency");
-    assert!(item.get("evidence").is_some());
+    assert!(item.get("evidence").is_none());
+    assert!(item.get("path").is_none());
     assert_eq!(item["status"], "unresolved");
+    assert!(coverage["statuses"].as_array().unwrap().iter().any(|s| {
+        s["status"] == "unresolved" && s["total"].as_u64().unwrap() > 0
+    }));
+    let mut full = options(10);
+    full.detail = Detail::Full;
+    let detailed = reader::inspect_paged(&conn, "target_func", false, &full).unwrap();
+    assert_eq!(detailed["coverage"]["total"], coverage["total"]);
+    assert!(detailed["coverage"]["items"][0]["evidence"].is_string());
+    assert_eq!(detailed["coverage"]["items"][0]["path"], "target.py");
+}
+
+#[test]
+fn compact_search_preserves_distinct_selectors_and_locations() {
+    let workspace = Workspace::new();
+    workspace.write("a.py", "class First:\n    def shared(self): pass\nclass Second:\n    def shared(self): pass\n");
+    let conn = workspace.build();
+    let compact = symbols::search_paged(&conn, "shared", None, &options(10)).unwrap();
+    let mut full_options = options(10);
+    full_options.detail = Detail::Full;
+    let full = symbols::search_paged(&conn, "shared", None, &full_options).unwrap();
+    let items = compact["nodes"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_ne!(items[0]["id"], items[1]["id"]);
+    for (index, item) in items.iter().enumerate() {
+        for field in ["id", "kind", "name", "path", "line", "end_line", "language"] {
+            assert_eq!(item[field], full["nodes"]["items"][index][field]);
+        }
+        let selected =
+            reader::inspect_paged(&conn, item["id"].as_str().unwrap(), false, &options(10))
+                .unwrap();
+        assert_eq!(selected["node"], *item);
+    }
+    assert!(
+        serde_json::to_vec(&compact).unwrap().len() < serde_json::to_vec(&full).unwrap().len()
+    );
+}
+
+#[test]
+fn compact_coverage_pages_keep_scope_totals_and_every_reference() {
+    let workspace = Workspace::new();
+    let mut code = String::from("def target():\n");
+    for i in 0..17 {
+        code.push_str(&format!("    missing_{i:02}()\n"));
+    }
+    workspace.write("code.py", &code);
+    let conn = workspace.build();
+    let mut query = options(4);
+    let mut references = Vec::new();
+    loop {
+        let result = reader::inspect_paged(&conn, "target", false, &query).unwrap();
+        let coverage = &result["coverage"];
+        assert_eq!(coverage["total"], 17);
+        assert_eq!(
+            coverage["statuses"],
+            serde_json::json!([{"status":"unresolved","total":17}])
+        );
+        references.extend(coverage["items"].as_array().unwrap().iter().map(|item| {
+            item["expression"].as_str().unwrap().to_owned()
+        }));
+        if !continue_page(&mut query, coverage) {
+            break;
+        }
+    }
+    assert_eq!(
+        references,
+        (0..17).map(|i| format!("missing_{i:02}")).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn snippet_avoids_coverage_reads_and_preserves_source_continuation() {
+    let workspace = Workspace::new();
+    let mut code = String::from("def target():\n");
+    for i in 0..45 {
+        code.push_str(&format!("    missing_{i:02}()\n"));
+    }
+    workspace.write("code.py", &code);
+    let conn = workspace.build();
+    let policy = ResponsePolicy::default();
+    let source = SourceOptions::resolve(&policy, Some(true), Some(0), None, 0).unwrap();
+    let inspect = symbols::inspect_paged(&conn, &workspace.0, "target", false, &source, &options(30)).unwrap();
+    conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Read { table_name: "resolution_coverage", .. } => Authorization::Deny,
+        _ => Authorization::Allow,
+    }));
+    assert!(symbols::inspect_paged(
+        &conn, &workspace.0, "target", false, &source, &options(30)
+    ).is_err());
+    let snippet = symbols::snippet_paged(&conn, &workspace.0, "target", &source, &options(30)).unwrap();
+    assert_eq!(snippet["source"], inspect["source"]);
+    assert_eq!(snippet["source_preview"], inspect["source_preview"]);
+    assert_eq!(snippet["node"], inspect["node"]);
+    assert!(snippet.get("coverage").is_none());
+    assert!(snippet.get("documents").is_none());
+    let before = serde_json::to_vec(&inspect).unwrap().len();
+    let after = serde_json::to_vec(&snippet).unwrap().len();
+    assert!(after * 2 < before, "snippet {after} versus inspect {before}");
+    eprintln!("snippet fixture: inspect={before} bytes, snippet={after} bytes");
+    let offset = snippet["source_preview"]["next_source_offset"].as_u64().unwrap() as usize;
+    let next_source = SourceOptions::resolve(&policy, Some(true), Some(0), None, offset).unwrap();
+    assert!(symbols::snippet_paged(&conn, &workspace.0, "target", &next_source, &options(30)).is_err());
+    let mut query = options(30);
+    query.generation = Some(snippet["generation"].as_str().unwrap().to_owned());
+    let next = symbols::snippet_paged(&conn, &workspace.0, "target", &next_source, &query).unwrap();
+    assert_eq!(next["source_preview"]["has_more"], false);
+    assert_eq!(format!("{}{}", snippet["source"].as_str().unwrap(), next["source"].as_str().unwrap()), code);
+    query.generation = Some("stale-generation".to_owned());
+    assert!(symbols::snippet_paged(&conn, &workspace.0, "target", &next_source, &query).is_err());
+    workspace.write("code.py", "def target(): pass\n");
+    assert!(symbols::snippet_paged(&conn, &workspace.0, "target", &source, &options(30)).is_err());
 }

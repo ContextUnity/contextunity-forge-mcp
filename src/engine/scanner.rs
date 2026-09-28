@@ -14,6 +14,25 @@ pub const INDEX_SEMANTICS_VERSION: &str = concat!("5:", env!("FORGE_LANGUAGE_PRO
 const MAX_FILES: usize = 100_000;
 pub(crate) const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;
+const DEFAULT_IGNORED_NAMES: &[&str] = &[
+    ".git",
+    ".forge",
+    ".venv",
+    "__pycache__",
+    "target",
+    "node_modules",
+    "build",
+    "dist",
+    "coverage",
+    ".cache",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".gradle",
+];
 
 #[derive(Debug, Clone, Deserialize, Default, Serialize, PartialEq, Eq)]
 pub struct LinkedWorkspaceConfig {
@@ -54,6 +73,7 @@ struct AdapterFile {
 
 #[derive(Debug, Clone)]
 pub struct Adapter {
+    pub adapter_path: Option<PathBuf>,
     pub response: crate::core::response::ResponsePolicy,
     pub roots: Vec<PathBuf>,
     pub ignored_names: BTreeSet<String>,
@@ -168,11 +188,10 @@ fn ensure_bounds(files: usize, bytes: u64) -> std::io::Result<()> {
 }
 
 pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<Adapter> {
-    let default_path = ["forge-mcp.yaml", "contextunity-forge-mcp.yaml"]
-        .iter()
-        .map(|name| root.join(name))
-        .find(|candidate| candidate.exists());
+    let default_path = root.join("forge-mcp.yaml");
+    let default_path = default_path.exists().then_some(default_path);
     let selected = adapter_path.or(default_path.as_deref());
+    let mut explicit_adapter_path = None;
     let (raw, digest, adapter_version) = match selected {
         None => (AdapterFile::default(), String::new(), None),
         Some(path) => {
@@ -183,6 +202,9 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
             let canonical = path.canonicalize()?;
             if !canonical.starts_with(root) {
                 return Err(error("adapter must be inside workspace root"));
+            }
+            if adapter_path.is_some() {
+                explicit_adapter_path = Some(canonical.clone());
             }
             let content = fs::read_to_string(&canonical)?;
             let mut identity: serde_yaml::Value =
@@ -313,18 +335,11 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         ws_roots.sort();
         ws_roots.dedup();
 
-        let mut ignored: BTreeSet<String> = [
-            ".git",
-            "target",
-            "node_modules",
-            ".venv",
-            "__pycache__",
-            ".forge",
-            "dist",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+        let mut ignored: BTreeSet<String> = DEFAULT_IGNORED_NAMES
+            .iter()
+            .copied()
+            .map(str::to_owned)
+            .collect();
         if let Some(user_ignores) = lw_cfg.ignore {
             ignored.extend(user_ignores);
         }
@@ -338,6 +353,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     }
 
     Ok(Adapter {
+        adapter_path: explicit_adapter_path,
         response: raw.response,
         roots,
         ignored_names: raw
@@ -346,18 +362,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
             .into_iter()
             .chain(raw.excluded_directory_names.unwrap_or_default())
             .chain(raw.excluded_file_names.unwrap_or_default())
-            .chain(
-                [
-                    ".git",
-                    "target",
-                    "node_modules",
-                    ".venv",
-                    "__pycache__",
-                    ".forge",
-                ]
-                .into_iter()
-                .map(str::to_owned),
-            )
+            .chain(DEFAULT_IGNORED_NAMES.iter().copied().map(str::to_owned))
             .collect(),
         adapter_version,
         digest,
@@ -473,6 +478,10 @@ pub fn scan_reusing(
     let started = Instant::now();
     let mut candidates = Vec::new();
     let mut seen_rel_paths = BTreeSet::new();
+    let configuration_paths: BTreeSet<_> = [root.join("forge-mcp.yaml")]
+    .into_iter()
+    .chain(adapter.adapter_path.iter().cloned())
+    .collect();
 
     for source_root in &adapter.roots {
         if !source_root.exists() {
@@ -500,6 +509,9 @@ pub fn scan_reusing(
             }
             if item.file_type().is_some_and(|kind| kind.is_file()) {
                 let full = item.into_path();
+                if configuration_paths.contains(&full) {
+                    continue;
+                }
                 if let Ok(rel) = full.strip_prefix(root) {
                     let rel_str = rel.to_string_lossy().replace('\\', "/");
                     if seen_rel_paths.insert(rel_str.clone()) {

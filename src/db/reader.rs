@@ -53,18 +53,33 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
         [],
         |r| r.get(0),
     )?;
-    if !super::cache::matches(path, root, &seal, &before) {
+    let receipt_missing = !super::cache::matches(path, root, &seal, &before);
+    if receipt_missing {
         crate::core::commitments::verify(&conn)?;
     }
     if super::cache::identity(path)? != before {
         bail!("database changed during reader admission");
     }
-    conn.set_limit(
-        rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,
-        8 * 1024 * 1024,
-    );
+    if receipt_missing {
+        let _ = super::cache::publish_verified_identity(path, root, &seal, &before);
+    }
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, 1_000_000_000);
     conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024);
     Ok(conn)
+}
+pub(crate) fn inventory_snapshot(
+    conn: &Connection,
+) -> Result<Vec<crate::engine::scanner::FileEntry>> {
+    // Sealed inventory metadata can exceed the public SQL cell limit; restore it before tool queries.
+    let previous_limit = conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, i32::MAX);
+    let inventory = conn.query_row(
+        "SELECT value FROM metadata WHERE key='inventory_snapshot'",
+        [],
+        |row| row.get::<_, String>(0),
+    );
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, previous_limit);
+    serde_json::from_str(&inventory.context("cannot read inventory snapshot")?)
+        .context("invalid inventory snapshot")
 }
 pub(crate) fn validate_workspace(conn: &Connection, root: &Path) -> Result<()> {
     let stored: String = conn.query_row(
@@ -614,6 +629,15 @@ pub fn validate_limit(limit: usize) -> Result<()> {
 pub fn overview_paged(conn: &Connection, options: &QueryOptions) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
     let lang_sql = "SELECT l.language,l.files,coalesce(r.resolved,0) resolved,coalesce(r.unresolved,0) unresolved,coalesce(r.external_imports,0) external_imports,coalesce(e.parse_errors,0) parse_errors FROM (SELECT language,count(*) files FROM files GROUP BY language) l LEFT JOIN (SELECT f.language,count(CASE WHEN rc.status='resolved' THEN 1 END) resolved,count(CASE WHEN rc.status IN('unresolved','ambiguous') THEN 1 END) unresolved,count(CASE WHEN rc.status='external' THEN 1 END) external_imports FROM resolution_coverage rc JOIN files f ON f.path=rc.path GROUP BY f.language) r ON r.language=l.language LEFT JOIN (SELECT f.language,count(*) parse_errors FROM errors er JOIN files f ON f.path=er.path GROUP BY f.language) e ON e.language=l.language ORDER BY l.language";
+    let language_total = paging::count(conn, "SELECT count(DISTINCT language) FROM files", &[])?;
+    let limit = options.limit as i64;
+    let offset = options.offset as i64;
+    let languages = rows(
+        conn,
+        &format!("{lang_sql} LIMIT ?1 OFFSET ?2"),
+        &[&limit, &offset],
+        options.limit,
+    )?;
     let compiled_profiles: std::collections::BTreeSet<_> = crate::engine::languages::profiles()
         .map(|p| p.id())
         .collect();
@@ -621,9 +645,9 @@ pub fn overview_paged(conn: &Connection, options: &QueryOptions) -> Result<Value
         "generation": generation,
         "components": paging::query(conn, "SELECT id,name,path FROM nodes WHERE kind='component' ORDER BY path,id", &[], options)?,
         "counts": rows(conn,"SELECT (SELECT count(*) FROM files) files,(SELECT count(*) FROM nodes) nodes,(SELECT count(*) FROM edges) edges,(SELECT count(*) FROM doc_sections) doc_sections,(SELECT count(*) FROM errors) parse_errors,(SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous')) unresolved,(SELECT count(*) FROM resolution_coverage WHERE status='external') external_imports", &[], 1)?.remove(0),
-        "languages": paging::query(conn, lang_sql, &[], options)?,
+        "languages": paging::value(languages, language_total, options, &generation),
         "compiled_profiles": compiled_profiles,
-        "metadata": rows(conn,"SELECT key,value FROM metadata WHERE key IN('schema_version','output_root','corpus_hash','workspace_root') ORDER BY key", &[], 4)?
+        "metadata": rows(conn,"SELECT key,value FROM metadata WHERE key IN('schema_version','workspace_root') ORDER BY key", &[], 2)?
     }))
 }
 
@@ -636,12 +660,25 @@ pub fn inspect_paged(
     let generation = paging::generation(conn, options)?;
     let node = select_detail(conn, selector, options.detail)?;
     let id = node["id"].as_str().context("invalid node id")?;
-    let documents = if show_doc {
+    let mut documents = if show_doc {
         paging::query(conn, &format!("SELECT {} FROM doc_sections d JOIN edges e ON e.dst_public_id=d.doc_id WHERE e.src_public_id=?1 AND e.kind='references_doc' ORDER BY d.is_invariant DESC,d.path,d.doc_id", paging::docs("d", options.detail)), &[&id], options)?
     } else {
         paging::value(Vec::new(), 0, options, &generation)
     };
-    let coverage = paging::query(conn, &format!("SELECT {} FROM resolution_coverage c WHERE c.path=?1 AND c.line BETWEEN ?2 AND ?3 ORDER BY c.line,c.expression,c.status,c.evidence", paging::coverage("c", options.detail)), &[&node["path"].as_str().unwrap_or(""), &node["line"].as_i64().unwrap_or(0), &node["end_line"].as_i64().unwrap_or(i64::MAX)], options)?;
+    if documents["total"] == 0 {
+        documents = json!({"total": 0});
+    }
+    let path = node["path"].as_str().context("invalid node path")?;
+    let line = node["line"].as_i64().context("invalid start line")?;
+    let end_line = node["end_line"].as_i64().context("invalid end line")?;
+    let scope: &[&dyn rusqlite::ToSql] = &[&path, &line, &end_line];
+    let mut coverage = paging::query(conn, &format!("SELECT {} FROM resolution_coverage c WHERE c.path=?1 AND c.line BETWEEN ?2 AND ?3 ORDER BY c.line,c.expression,c.status,c.evidence", paging::coverage("c", options.detail)), scope, options)?;
+    coverage["statuses"] = json!(rows(conn,
+        "SELECT status,count(*) total FROM resolution_coverage WHERE path=?1 AND line BETWEEN ?2 AND ?3 GROUP BY status ORDER BY status",
+        scope, 20)?);
+    if options.detail == Detail::Compact {
+        coverage["detail_hint"] = json!("detail='full' includes per-reference evidence; statuses count the entire selected scope.");
+    }
     Ok(json!({"node":node, "documents":documents, "coverage":coverage, "generation":generation}))
 }
 
@@ -651,15 +688,33 @@ pub fn explain_paged(
     direction: Option<&str>,
     options: &QueryOptions,
 ) -> Result<Value> {
-    let mut result = inspect_paged(conn, selector, true, options)?;
+    explain_paged_with_docs(conn, selector, direction, true, options)
+}
+
+pub fn explain_paged_with_docs(
+    conn: &Connection,
+    selector: &str,
+    direction: Option<&str>,
+    show_doc: bool,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let mut result = inspect_paged(conn, selector, show_doc, options)?;
     let id = result["node"]["id"]
         .as_str()
         .context("invalid node id")?
         .to_owned();
-    let dir = direction.unwrap_or("both");
+    let dir = match direction.unwrap_or("both") {
+        "inbound" => "incoming",
+        "outbound" => "outgoing",
+        direction => direction,
+    };
     match dir {
         "both" | "incoming" => {
-            result["incoming"] = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.dst_public_id=?1 ORDER BY e.kind,e.src_public_id,e.edge_id", paging::edges("e", options.detail)), &[&id], options)?;
+            let mut incoming = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.dst_public_id=?1 ORDER BY e.kind,e.src_public_id,e.edge_id", paging::edges("e", options.detail)), &[&id], options)?;
+            if options.detail == Detail::Compact {
+                omit_selected_endpoint(&mut incoming, "dst_public_id");
+            }
+            result["incoming"] = incoming;
         }
         "outgoing" => {
             let total = paging::count(
@@ -669,11 +724,15 @@ pub fn explain_paged(
             )?;
             result["incoming"] = json!({"total": total, "omitted": true, "hint": "Pass direction='incoming' to page incoming edges."});
         }
-        _ => bail!("direction must be both, incoming, or outgoing"),
+        _ => bail!("direction must be both, incoming (inbound), or outgoing (outbound)"),
     }
     match dir {
         "both" | "outgoing" => {
-            result["outgoing"] = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.src_public_id=?1 ORDER BY e.kind,e.dst_public_id,e.edge_id", paging::edges("e", options.detail)), &[&id], options)?;
+            let mut outgoing = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.src_public_id=?1 ORDER BY e.kind,e.dst_public_id,e.edge_id", paging::edges("e", options.detail)), &[&id], options)?;
+            if options.detail == Detail::Compact {
+                omit_selected_endpoint(&mut outgoing, "src_public_id");
+            }
+            result["outgoing"] = outgoing;
         }
         "incoming" => {
             let total = paging::count(
@@ -689,11 +748,32 @@ pub fn explain_paged(
     Ok(result)
 }
 
+fn omit_selected_endpoint(page: &mut Value, field: &str) {
+    if let Some(items) = page["items"].as_array_mut() {
+        for item in items {
+            if let Some(edge) = item.as_object_mut() {
+                edge.remove(field);
+            }
+        }
+    }
+}
+
 pub fn search_docs_paged(
     conn: &Connection,
     query: &str,
     doc_type: Option<&str>,
     component: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    search_docs_paged_with_excerpt(conn, query, doc_type, component, false, options)
+}
+
+pub fn search_docs_paged_with_excerpt(
+    conn: &Connection,
+    query: &str,
+    doc_type: Option<&str>,
+    component: Option<&str>,
+    include_excerpt: bool,
     options: &QueryOptions,
 ) -> Result<Value> {
     let query = query
@@ -707,7 +787,12 @@ pub fn search_docs_paged(
     let kind = doc_type.unwrap_or("");
     let component = component.unwrap_or("").trim_end_matches('/');
     let (prefix, end) = path_bounds(component);
-    let sql = format!("SELECT {},bm25(doc_search) rank FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 AND (?2='' OR d.doc_type=?2) AND (?3='' OR d.path=?3 OR (d.path>=?4 AND d.path<?5)) ORDER BY rank,d.path,d.doc_id", paging::docs("d", options.detail));
+    let excerpt = if include_excerpt {
+        ",substr(snippet(doc_search,-1,'[',']',' … ',16),1,240) excerpt"
+    } else {
+        ""
+    };
+    let sql = format!("SELECT {},bm25(doc_search) rank{excerpt} FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 AND (?2='' OR d.doc_type=?2) AND (?3='' OR d.path=?3 OR (d.path>=?4 AND d.path<?5)) ORDER BY rank,d.path,d.doc_id", paging::docs("d", options.detail));
     Ok(
         json!({"sections":paging::query(conn, &sql, &[&query,&kind,&component,&prefix,&end], options)?}),
     )

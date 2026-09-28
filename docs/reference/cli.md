@@ -68,4 +68,4 @@ contextunity-forge-mcp checkpoint list
 contextunity-forge-mcp checkpoint delete --name review
 ```
 
-`serve` uses stdin and stdout for MCP messages. `guide` accepts `init`, `adapter`, `docs`, `query`, and `validate`. `guide init` creates `forge-mcp.yaml` and requires `--force` to replace it. Checkpoint content must be valid JSON; entries live in `.forge/checkpoints.json`.
+`serve` uses stdin and stdout for MCP messages; the [MCP setup guide](mcp-setup.md) covers client configuration and automatic indexing. `guide` accepts `init`, `adapter`, `docs`, `query`, and `validate`. `guide init` creates `forge-mcp.yaml` and requires `--force` to replace it. Checkpoint content must be valid JSON; entries live in `.forge/checkpoints.json`.

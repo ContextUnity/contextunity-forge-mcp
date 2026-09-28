@@ -172,6 +172,12 @@ pub trait LanguageProfile: Send + Sync {
     fn prepare_pattern(&self, _pattern: &mut String) -> bool {
         false
     }
+    fn pattern_wrapper(&self, kind: &str) -> bool {
+        matches!(
+            kind,
+            "module" | "program" | "source_file" | "expression_statement"
+        )
+    }
     fn extract_file(&self, path: &str, source: &str, module: &str, facts: &mut Facts)
         -> Result<()>;
 }

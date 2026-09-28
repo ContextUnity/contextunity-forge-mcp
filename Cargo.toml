@@ -6,8 +6,11 @@ authors = ["ContextUnity Team"]
 description = "Pure Rust ContextUnity Forge MCP Server, Code Map and Documentation Engine"
 
 [features]
-default = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto"]
-all-languages = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto", "lang-go", "lang-java", "lang-csharp", "lang-kotlin", "lang-php", "lang-ruby", "lang-c", "lang-cpp"]
+default = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto", "lang-html", "lang-yaml", "lang-toml"]
+all-languages = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto", "lang-html", "lang-yaml", "lang-toml", "lang-go", "lang-java", "lang-csharp", "lang-kotlin", "lang-php", "lang-ruby", "lang-c", "lang-cpp"]
+lang-html = ["dep:tree-sitter-html"]
+lang-yaml = ["dep:tree-sitter-yaml"]
+lang-toml = ["dep:tree-sitter-toml-ng"]
 lang-python = ["dep:tree-sitter-python"]
 lang-rust = ["dep:tree-sitter-rust"]
 lang-typescript = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
@@ -27,6 +30,9 @@ rmcp = { version = "3.4", features = ["transport-io", "schemars"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 rusqlite = { version = "0.31", features = ["bundled", "modern_sqlite", "hooks", "limits"] }
 tree-sitter = "0.22"
+tree-sitter-html = { version = "=0.20.4", optional = true }
+tree-sitter-yaml = { version = "=0.6.1", optional = true }
+tree-sitter-toml-ng = { version = "=0.6.0", optional = true }
 tree-sitter-python = { version = "0.21", optional = true }
 tree-sitter-typescript = { version = "0.21", optional = true }
 tree-sitter-javascript = { version = "0.21", optional = true }
