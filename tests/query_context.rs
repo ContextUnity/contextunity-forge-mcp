@@ -203,6 +203,43 @@ fn compact_queries_never_read_heavy_columns_and_full_detail_is_explicit() {
 }
 
 #[test]
+fn natural_symbol_queries_use_bm25_and_skip_markdown_by_default() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "service.py",
+        "def request_cache():\n    \"\"\"Caches request state.\"\"\"\n    return None\n\ndef publish_request():\n    \"\"\"Publishes request messages to connected clients.\"\"\"\n    return None\n",
+    );
+    workspace.write(
+        "README.md",
+        "# Architecture\n\nThe architecture describes request processing.\n",
+    );
+    let conn = workspace.build();
+    let natural = symbols::search_paged(
+        &conn,
+        "publish request messages connected clients",
+        None,
+        &options(30),
+    )
+    .unwrap();
+    assert_eq!(natural["nodes"]["total"], 2);
+    assert_eq!(natural["nodes"]["items"][0]["name"], "publish_request");
+
+    let hidden_docs = symbols::search_paged(&conn, "Architecture", None, &options(30)).unwrap();
+    assert_eq!(hidden_docs["nodes"]["total"], 0);
+    let visible_docs = symbols::search_paged_in_path_with_docs(
+        &conn,
+        "Architecture",
+        None,
+        None,
+        true,
+        &options(30),
+    )
+    .unwrap();
+    assert_eq!(visible_docs["nodes"]["total"], 1);
+    assert_eq!(visible_docs["nodes"]["items"][0]["language"], "markdown");
+}
+
+#[test]
 fn diagnostics_summarize_directories_and_page_exact_files() {
     let workspace = Workspace::new();
     for file in 0..12 {
@@ -795,6 +832,24 @@ fn test_mapping_marks_direct_evidence_and_does_not_invent_transitive_paths() {
         .find(|item| item["name"] == "test_direct")
         .unwrap();
     assert_eq!(direct["connection"]["path"], "tests/test_service.py");
+}
+
+#[test]
+fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
+    let workspace = Workspace::new();
+    workspace.write("service.py", "def ChannelSyncEntry(): pass\n");
+    workspace.write(
+        "tests/test_service.py",
+        "def test_ChannelSyncEntry(): pass\n",
+    );
+    let conn = workspace.build();
+    let inbound = symbols::tests_paged(&conn, "ChannelSyncEntry", "inbound", &options(10)).unwrap();
+    assert_eq!(inbound["discovery_method"], "lexical_fallback");
+    assert_eq!(inbound["nodes"]["total"], 1);
+    assert_eq!(
+        inbound["nodes"]["items"][0]["name"],
+        "test_ChannelSyncEntry"
+    );
 }
 
 #[test]

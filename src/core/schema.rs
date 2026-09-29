@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS nodes (
 );
 
 CREATE TABLE IF NOT EXISTS edges (
-    edge_id INTEGER PRIMARY KEY,
     src_public_id TEXT NOT NULL,
     dst_public_id TEXT NOT NULL,
     kind TEXT NOT NULL,
@@ -46,8 +45,8 @@ CREATE TABLE IF NOT EXISTS edges (
     evidence TEXT NOT NULL,
     confidence TEXT NOT NULL,
     occurrence_count INTEGER NOT NULL,
-    UNIQUE (src_public_id, dst_public_id, kind)
-);
+    PRIMARY KEY (src_public_id, kind, dst_public_id)
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS local_facts (
     path TEXT PRIMARY KEY,
@@ -55,7 +54,7 @@ CREATE TABLE IF NOT EXISTS local_facts (
     language TEXT NOT NULL,
     is_test INTEGER NOT NULL,
     generated INTEGER NOT NULL,
-    facts_json TEXT NOT NULL
+    facts_blob BLOB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS owned_nodes (
@@ -85,7 +84,7 @@ CREATE TABLE IF NOT EXISTS edge_occurrences (
     evidence TEXT NOT NULL,
     confidence TEXT NOT NULL,
     PRIMARY KEY (owner, ordinal)
-);
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS owned_search (
     owner TEXT NOT NULL,
@@ -93,19 +92,11 @@ CREATE TABLE IF NOT EXISTS owned_search (
     ordinal INTEGER NOT NULL,
     search_text TEXT NOT NULL,
     PRIMARY KEY (owner, public_id, ordinal)
-);
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS dependencies (
     owner TEXT NOT NULL,
     target TEXT,
-    kind TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    resolution TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS reverse_dependencies (
-    target TEXT NOT NULL,
-    owner TEXT NOT NULL,
     kind TEXT NOT NULL,
     symbol TEXT NOT NULL,
     resolution TEXT NOT NULL
@@ -117,7 +108,7 @@ CREATE TABLE IF NOT EXISTS shared_owners (
     owner TEXT NOT NULL,
     ordinal INTEGER NOT NULL,
     PRIMARY KEY (kind, key, owner, ordinal)
-);
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS file_commitments (
     path TEXT PRIMARY KEY,
@@ -130,24 +121,44 @@ CREATE TABLE IF NOT EXISTS file_commitments (
     deps_hash TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS search_text (
-    public_id TEXT PRIMARY KEY,
-    search_text TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS errors (
     path TEXT NOT NULL,
     line INTEGER NOT NULL,
     message TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS resolution_coverage (
+CREATE TABLE IF NOT EXISTS coverage_evidence (
+    evidence_id INTEGER PRIMARY KEY,
+    evidence TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS resolution_coverage_data (
     path TEXT NOT NULL,
     line INTEGER NOT NULL,
     expression TEXT NOT NULL,
     status TEXT NOT NULL,
-    evidence TEXT NOT NULL
-);
+    evidence_id INTEGER NOT NULL,
+    PRIMARY KEY (path, line, expression, status, evidence_id)
+) WITHOUT ROWID;
+
+CREATE VIEW IF NOT EXISTS resolution_coverage AS
+SELECT c.path,c.line,c.expression,c.status,e.evidence
+FROM resolution_coverage_data c JOIN coverage_evidence e ON e.evidence_id=c.evidence_id;
+
+CREATE TRIGGER IF NOT EXISTS resolution_coverage_insert
+INSTEAD OF INSERT ON resolution_coverage BEGIN
+    INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES(NEW.evidence);
+    INSERT OR IGNORE INTO resolution_coverage_data(path,line,expression,status,evidence_id)
+    VALUES(NEW.path,NEW.line,NEW.expression,NEW.status,
+        (SELECT evidence_id FROM coverage_evidence WHERE evidence=NEW.evidence));
+END;
+
+CREATE TRIGGER IF NOT EXISTS resolution_coverage_delete
+INSTEAD OF DELETE ON resolution_coverage BEGIN
+    DELETE FROM resolution_coverage_data
+    WHERE path=OLD.path AND line=OLD.line AND expression=OLD.expression AND status=OLD.status
+      AND evidence_id=(SELECT evidence_id FROM coverage_evidence WHERE evidence=OLD.evidence);
+END;
 
 CREATE TABLE IF NOT EXISTS domain_commitments (
     domain TEXT PRIMARY KEY,
@@ -172,8 +183,8 @@ CREATE TABLE IF NOT EXISTS doc_sections (
 CREATE VIRTUAL TABLE IF NOT EXISTS node_search USING fts5(
     search_text,
     content='',
-    detail='none',
-    columnsize=0,
+    detail='full',
+    columnsize=1,
     tokenize='unicode61 separators ''._-/'''
 );
 
@@ -192,18 +203,15 @@ CREATE INDEX IF NOT EXISTS idx_nodes_qualname ON nodes(qualname);
 CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_nodes_path ON nodes(path);
 CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_public_id, kind);
-CREATE INDEX IF NOT EXISTS idx_edges_src_kind ON edges(src_public_id, kind);
-CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_path ON edges(path);
 CREATE INDEX IF NOT EXISTS idx_doc_sections_path ON doc_sections(path);
 CREATE INDEX IF NOT EXISTS idx_doc_sections_type ON doc_sections(doc_type);
 CREATE INDEX IF NOT EXISTS idx_owned_nodes_public ON owned_nodes(public_id);
 CREATE INDEX IF NOT EXISTS idx_occurrences_pair ON edge_occurrences(src,dst,kind);
 CREATE INDEX IF NOT EXISTS idx_dependencies_owner ON dependencies(owner);
-CREATE INDEX IF NOT EXISTS idx_reverse_owner ON reverse_dependencies(owner);
-CREATE INDEX IF NOT EXISTS idx_reverse_target ON reverse_dependencies(target);
-CREATE INDEX IF NOT EXISTS idx_coverage_owner ON resolution_coverage(path);
-CREATE INDEX IF NOT EXISTS idx_coverage_status ON resolution_coverage(status);
+CREATE INDEX IF NOT EXISTS idx_dependencies_target ON dependencies(target, kind);
+CREATE INDEX IF NOT EXISTS idx_coverage_status ON resolution_coverage_data(status);
+CREATE INDEX IF NOT EXISTS idx_coverage_evidence ON resolution_coverage_data(evidence_id);
 CREATE INDEX IF NOT EXISTS idx_errors_owner ON errors(path);
 CREATE INDEX IF NOT EXISTS idx_shared_owners_owner ON shared_owners(owner);
 "#;

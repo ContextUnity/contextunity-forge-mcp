@@ -170,11 +170,16 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     assert_eq!(isolated["nodes"]["total"], 1);
     assert_eq!(isolated["nodes"]["items"][0]["distance"], 0);
     assert_eq!(isolated["nodes"]["items"][0]["is_seed"], true);
-    conn.execute("INSERT INTO resolution_coverage(path,line,expression,status,evidence) VALUES('fixture.py',1,'dynamic()','unresolved','fixture')",[])?;
+    conn.execute("INSERT INTO resolution_coverage(path,line,expression,status,evidence) VALUES('other.py',1,'dynamic()','unresolved','fixture')",[])?;
     conn.execute(
-        "INSERT INTO errors(path,line,message) VALUES('fixture.py',1,'syntax error')",
+        "INSERT INTO errors(path,line,message) VALUES('other.py',1,'syntax error')",
         [],
     )?;
+    let unrelated = traversal::removal_paged(&conn, "orphan", &options(10, 0, Detail::Compact)?)?;
+    assert_eq!(unrelated["safe_to_remove"], true);
+    assert_eq!(unrelated["target_unresolved_references"], 0);
+    assert_eq!(unrelated["workspace_has_unresolved"], true);
+    assert_eq!(unrelated["workspace_errors_count"], 1);
     let result = traversal::removal_paged(&conn, "b", &options(10, 0, Detail::Compact)?)?;
     assert_eq!(result["assessment"]["verdict"], "blocked");
     assert_eq!(
@@ -182,7 +187,7 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
             .as_array()
             .expect("reasons")
             .len(),
-        3
+        1
     );
     assert_eq!(
         result["assessment"]["blocking_reasons"][0]["kind"],
@@ -193,22 +198,10 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
         "selection"
     );
     assert_eq!(result["assessment"]["blocking_reasons"][0]["count"], 1);
-    assert_eq!(
-        result["assessment"]["blocking_reasons"][1]["kind"],
-        "unresolved_references"
-    );
-    assert_eq!(
-        result["assessment"]["blocking_reasons"][1]["scope"],
-        "workspace"
-    );
-    assert_eq!(
-        result["assessment"]["blocking_reasons"][2]["kind"],
-        "parse_errors"
-    );
-    assert_eq!(
-        result["assessment"]["blocking_reasons"][2]["scope"],
-        "workspace"
-    );
+    assert_eq!(result["target_unresolved_references"], 0);
+    assert_eq!(result["unresolved_references"], 1);
+    assert_eq!(result["parse_errors"], 1);
+    assert_eq!(result["workspace_errors_count"], 1);
     assert_eq!(result["safe_to_remove"], false);
     assert_eq!(result["incoming_dependencies"]["total"], 1);
     assert!(result["proof_scope"]

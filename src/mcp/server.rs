@@ -9,9 +9,19 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-type ConnectionSlot = Option<(Identity, rusqlite::Connection)>;
+const INVENTORY_FRESHNESS_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
-#[derive(serde::Serialize)]
+pub struct CachedConnection {
+    identity: Identity,
+    connection: rusqlite::Connection,
+    adapter_digest: String,
+    inventory_checked_at: Option<Instant>,
+    freshness: Option<Freshness>,
+}
+
+pub type ConnectionSlot = Option<CachedConnection>;
+
+#[derive(Clone, serde::Serialize)]
 struct Freshness {
     status: &'static str,
     output_root: String,
@@ -157,16 +167,37 @@ impl Server {
                 continue;
             }
             let identity = crate::db::cache::identity(&self.db)?;
-            if slot.as_ref().is_none_or(|(old, _)| *old != identity) {
+            if slot
+                .as_ref()
+                .is_none_or(|cached| cached.identity != identity)
+            {
                 *slot = None;
-                *slot = Some((identity.clone(), crate::db::reader::open(&self.db, &root)?));
-            } else if let Some((_, conn)) = slot.as_ref() {
-                conn.execute_batch("BEGIN DEFERRED")?;
+                *slot = Some(CachedConnection {
+                    identity: identity.clone(),
+                    connection: crate::db::reader::open(&self.db, &root)?,
+                    adapter_digest: adapter.digest.clone(),
+                    inventory_checked_at: None,
+                    freshness: None,
+                });
+            } else if let Some(cached) = slot.as_ref() {
+                cached.connection.execute_batch("BEGIN DEFERRED")?;
             }
             let conn = &slot
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("database unavailable"))?
-                .1;
+                .connection;
+            if let Some(cached) = slot.as_ref().filter(|cached| {
+                cached.adapter_digest == adapter.digest
+                    && cached
+                        .inventory_checked_at
+                        .is_some_and(|checked| checked.elapsed() < INVENTORY_FRESHNESS_TTL)
+            }) {
+                if let Some(freshness) = &cached.freshness {
+                    let mut freshness = freshness.clone();
+                    freshness.refresh = "none";
+                    return Ok(freshness);
+                }
+            }
             let metadata = |key: &str| -> Result<String> {
                 Ok(
                     conn.query_row("SELECT value FROM metadata WHERE key=?1", [key], |row| {
@@ -212,7 +243,7 @@ impl Server {
                 );
             }
             if changed.is_empty() {
-                return Ok(Freshness {
+                let freshness = Freshness {
                     status: "source_inventory_matched",
                     output_root: metadata("output_root")?,
                     corpus_hash: metadata("corpus_hash")?,
@@ -220,7 +251,13 @@ impl Server {
                     files_checked: scan.files,
                     inventory_scan_ms,
                     refresh,
-                });
+                };
+                if let Some(cached) = slot.as_mut() {
+                    cached.adapter_digest = adapter.digest.clone();
+                    cached.inventory_checked_at = Some(Instant::now());
+                    cached.freshness = Some(freshness.clone());
+                }
+                return Ok(freshness);
             }
             let mut rebuild = false;
             for path in &changed {
@@ -268,12 +305,12 @@ impl Server {
             }
         };
         let _read_lock = crate::db::cache::shared_lock(&self.db)?;
-        let (identity, conn) = slot
+        let cached = slot
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("database unavailable"))?;
-        let result = f(conn);
-        let unchanged = crate::db::cache::identity(&self.db).map(|after| after == *identity);
-        let ended = conn.execute_batch("ROLLBACK");
+        let result = f(&cached.connection);
+        let unchanged = crate::db::cache::identity(&self.db).map(|after| after == cached.identity);
+        let ended = cached.connection.execute_batch("ROLLBACK");
         if let Err(error) = ended {
             *slot = None;
             return Err(error.into());

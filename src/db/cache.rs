@@ -95,7 +95,7 @@ fn generation_lock(path: &Path, exclusive: bool) -> Result<File> {
                 continue;
             }
             if error.kind() == std::io::ErrorKind::WouldBlock {
-                if started.elapsed() >= Duration::from_secs(3) {
+                if started.elapsed() >= Duration::from_secs(30) {
                     bail!("database generation lock is busy; retry after active readers finish");
                 }
             } else {

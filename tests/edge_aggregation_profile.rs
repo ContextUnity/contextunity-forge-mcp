@@ -151,7 +151,7 @@ fn edge_persistence_profile_worker() {
         .unwrap();
     assert_eq!((unique_count, occurrences), (200_000, edges.len()));
     let mut hash = Sha256::new();
-    let mut statement = conn.prepare("SELECT json_array(edge_id,src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count) FROM edges ORDER BY edge_id").unwrap();
+    let mut statement = conn.prepare("SELECT json_array(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count) FROM edges ORDER BY src_public_id,dst_public_id,kind").unwrap();
     for row in statement
         .query_map([], |row| row.get::<_, String>(0))
         .unwrap()

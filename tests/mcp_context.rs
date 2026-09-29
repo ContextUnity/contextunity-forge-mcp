@@ -120,6 +120,10 @@ impl Drop for Client {
     }
 }
 
+fn wait_for_source_inventory_ttl() {
+    std::thread::sleep(Duration::from_millis(2100));
+}
+
 #[cfg(feature = "lang-rust")]
 #[test]
 fn stdio_distinguishes_known_external_imports_from_missing_sources() {
@@ -328,11 +332,36 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
     let (_, missing) = client.call("code_map_search", json!({"pattern":"symbol_*","offset":30}));
     assert_eq!(missing["result"]["isError"], true);
     workspace.write("service.py", &format!("{source}\ndef added(): return 0\n"));
+    wait_for_source_inventory_ttl();
     let (_, stale) = client.call(
         "code_map_search",
         json!({"pattern":"symbol_*","offset":30,"generation":initial["nodes"]["generation"]}),
     );
     assert_eq!(stale["result"]["isError"], true);
+}
+
+#[cfg(feature = "lang-python")]
+#[test]
+fn stdio_symbol_search_groups_the_current_page_by_file() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "service.py",
+        "def target(): return 1\ndef target_helper(): return target()\n",
+    );
+    let mut client = Client::new(&workspace);
+    let response = client.payload(
+        "code_map_search",
+        json!({"pattern":"target","kind":"function","group_by_file":true}),
+    );
+    assert_eq!(response["nodes"]["total"], 2);
+    assert_eq!(response["nodes"]["items"], json!([]));
+    assert_eq!(
+        response["nodes"]["grouped_by_file"]["service.py"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[cfg(feature = "lang-python")]
@@ -370,6 +399,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         "huge.py",
         &format!("def enormous(): return '{}'\n", "Привіт".repeat(50_000)),
     );
+    wait_for_source_inventory_ttl();
     let enormous = client.payload("get_code_snippet", json!({"selector":"enormous"}));
     assert_eq!(enormous["source_preview"]["truncated_line"], true);
     assert!(enormous["source_preview"]["next_source_offset"].is_null());
@@ -498,6 +528,7 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
 
     let source = "f(1, 2, missing)\nf(1, 1)\nf(1, 2)\n";
     workspace.write("service.py", source);
+    wait_for_source_inventory_ttl();
     for pattern in ["f($$$A, $$$B, missing)", "f($VALUE, $VALUE)"] {
         let ordinary = client.payload(
             "ast_grep_search",

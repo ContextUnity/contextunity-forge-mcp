@@ -59,28 +59,25 @@ impl Workspace {
         let cold = reader::open(&cold, &self.0).unwrap();
         commitments::verify(&cold).unwrap();
         for conn in [&incremental, &cold] {
-            let mut statement = conn.prepare("SELECT f.path,f.facts_json,c.facts_hash FROM local_facts f JOIN file_commitments c ON c.path=f.path").unwrap();
+            let mut statement = conn.prepare("SELECT f.path,f.facts_blob,c.facts_hash FROM local_facts f JOIN file_commitments c ON c.path=f.path").unwrap();
             let rows = statement
                 .query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(1)?,
                         row.get::<_, String>(2)?,
                     ))
                 })
                 .unwrap();
             for row in rows {
-                let (path, facts_json, facts_hash) = row.unwrap();
-                assert_eq!(
-                    facts_hash,
-                    commitments::hash(facts_json.as_bytes()),
-                    "{path}"
-                );
+                let (path, facts_blob, facts_hash) = row.unwrap();
+                let facts_json = zstd::stream::decode_all(&facts_blob[..]).unwrap();
+                assert_eq!(facts_hash, commitments::hash(&facts_json), "{path}");
             }
         }
         for sql in [
             "SELECT owner||'|'||public_id||'|'||kind||'|'||path FROM owned_nodes ORDER BY owner,public_id",
-            "SELECT path||'|'||facts_json FROM local_facts ORDER BY path",
+            "SELECT path||'|'||hex(facts_blob) FROM local_facts ORDER BY path",
             "SELECT owner||'|'||ordinal||'|'||src||'|'||dst||'|'||kind||'|'||line||'|'||confidence FROM edge_occurrences ORDER BY owner,ordinal",
             "SELECT path||'|'||line||'|'||expression||'|'||status||'|'||evidence FROM resolution_coverage ORDER BY path,line,expression,status,evidence",
             "SELECT path||'|'||facts_hash||'|'||nodes_hash||'|'||edges_hash||'|'||search_hash||'|'||deps_hash FROM file_commitments ORDER BY path",

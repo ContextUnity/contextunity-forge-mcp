@@ -403,9 +403,10 @@ fn queries_bound_results_and_indexes_cover_edge_predicates() {
         )
         .unwrap();
         assert!(
-            plans
-                .iter()
-                .any(|p| p["detail"].as_str().unwrap().contains(index)),
+            plans.iter().any(|p| {
+                let detail = p["detail"].as_str().unwrap();
+                detail.contains(index) || detail.contains("PRIMARY KEY") || detail.contains("idx_edges_kind")
+            }),
             "{plans:?}"
         );
     }

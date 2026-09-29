@@ -14,6 +14,7 @@ mod c_family;
 mod syntax;
 use crate::core::models::{Facts, Node, Reference};
 use crate::engine::ast::{self, field, text};
+use crate::engine::linker::traits::{LanguageLinker, GENERIC_LINKER};
 use anyhow::{Context, Result};
 use std::{
     collections::{HashMap, HashSet},
@@ -224,6 +225,14 @@ pub fn profiles() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone 
 }
 pub fn by_id(id: &str) -> Option<&'static dyn LanguageProfile> {
     profiles().find(|p| p.id() == id)
+}
+pub fn linker_for(id: &str) -> &'static dyn LanguageLinker {
+    #[cfg(feature = "lang-python")]
+    if id == "python" {
+        return &python::linker::PYTHON_LINKER;
+    }
+    let _ = id;
+    &GENERIC_LINKER
 }
 pub fn require(id: &str) -> Result<&'static dyn LanguageProfile> {
     if let Some(profile) = by_id(id) {

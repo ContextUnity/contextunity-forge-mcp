@@ -169,6 +169,29 @@ fn command_root(global: Option<&Path>, positional: Option<&Path>) -> Result<Path
         .or(global)
         .unwrap_or(std::env::current_dir()?.canonicalize()?))
 }
+
+fn open_or_rebuild(db: &Path, root: &Path) -> Result<crate::db::reader::LockedConnection> {
+    match crate::db::reader::open_locked(db, root) {
+        Ok(conn) => Ok(conn),
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("incompatible")
+                || msg.contains("rebuild index")
+                || msg.contains("No such file")
+                || !db.exists()
+            {
+                eprintln!(
+                    "Forge index incompatible or missing ({msg}); auto-rebuilding for {}...",
+                    root.display()
+                );
+                crate::db::writer::build(root, db, None)?;
+                crate::db::reader::open_locked(db, root)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
 impl Cli {
     pub async fn run(self) -> Result<()> {
         let root = command_root(self.root.as_deref(), None)?;
@@ -234,9 +257,12 @@ impl Cli {
                         path,
                         limit,
                     },
-            } => ast::search(&root, &pattern, &language, path.as_deref(), limit)?,
+            } => {
+                let conn = open_or_rebuild(&db, &root)?;
+                ast::search(&conn, &root, &pattern, &language, path.as_deref(), limit)?
+            }
             Command::Query { command } => {
-                let conn = crate::db::reader::open_locked(&db, &root)?;
+                let conn = open_or_rebuild(&db, &root)?;
                 match command {
                     QueryCommand::Overview => query::overview(&conn)?,
                     QueryCommand::Inspect {
@@ -276,7 +302,7 @@ impl Cli {
                 }
             }
             Command::Docs { command } => {
-                let conn = crate::db::reader::open_locked(&db, &root)?;
+                let conn = open_or_rebuild(&db, &root)?;
                 match command {
                     DocsCommand::Search {
                         query,

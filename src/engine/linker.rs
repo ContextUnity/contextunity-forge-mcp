@@ -1,22 +1,44 @@
 use crate::core::models::*;
 use crate::engine::languages::{self, module_name, LanguageFamily, LanguageProfile};
-use hashbrown::HashMap;
+use crate::engine::linker::traits::{
+    ImportContext, ImportResolution, LanguageLinker, PackageExports, GENERIC_LINKER,
+};
+use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
-mod python;
+pub mod traits;
 pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
-    python::needs_reference_identity(path, facts)
+    let language = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == "module")
+        .map_or("", |node| node.language.as_str());
+    languages::linker_for(language).needs_reference_identity(path, facts)
 }
 pub fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool {
-    python::reference_identity_changed(path, old, new)
+    let language = new
+        .nodes
+        .iter()
+        .find(|node| node.kind == "module")
+        .map_or("", |node| node.language.as_str());
+    languages::linker_for(language).reference_identity_changed(path, old, new)
 }
 pub fn required_full_facts(
     facts: &BTreeMap<String, Facts>,
     affected: &std::collections::BTreeSet<String>,
     catalog: &[(&str, &str)],
 ) -> std::collections::BTreeSet<String> {
-    python::required_full_facts(facts, affected, catalog)
+    let mut required = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for profile in languages::profiles() {
+        if seen.insert(profile.id()) {
+            required.extend(
+                languages::linker_for(profile.id()).required_full_facts(facts, affected, catalog),
+            );
+        }
+    }
+    required
 }
 pub fn link(all: &BTreeMap<String, Facts>) -> Graph {
     link_with_root(all, None, None)
@@ -129,7 +151,22 @@ pub fn link_with_root(
             }
         }
     }
-    let package_exports = python::package_exports(all, &modules_by_namespace, &by_module, root);
+    let language_ids: HashSet<&str> = profiles.values().map(|profile| profile.id()).collect();
+    let mut package_exports: HashMap<&str, PackageExports<'_>> = language_ids
+        .into_iter()
+        .map(|id| {
+            (
+                id,
+                languages::linker_for(id).package_exports(
+                    all,
+                    &modules_by_namespace,
+                    &by_module,
+                    root,
+                ),
+            )
+        })
+        .collect();
+    package_exports.insert("", HashMap::new());
     let parts: Vec<Graph> = all
         .par_iter()
         .filter(|(path, _)| owners.is_none_or(|o| o.contains(*path)))
@@ -139,6 +176,12 @@ pub fn link_with_root(
                 coverage: Vec::with_capacity(facts.references.len()),
             };
             let profile = profiles.get(path.as_str()).copied();
+            let language_linker = profile.map_or(&GENERIC_LINKER as &dyn LanguageLinker, |profile| {
+                languages::linker_for(profile.id())
+            });
+            let language_package_exports = package_exports
+                .get(profile.map_or("", |profile| profile.id()))
+                .expect("package export index exists for every linked language");
             let file_module = facts
                 .nodes
                 .iter()
@@ -176,56 +219,28 @@ pub fn link_with_root(
                         if !modules.is_empty(){break;}
                     }
                 }
-                let mut paired_stub = if profile.is_some_and(|p| p.id() == "python") {
-                    python::prefer_runtime_module(&mut modules)
-                } else {
-                    None
-                };
                 let symbol=normalized.as_ref().map_or_else(||r.expression.clone(),|n|n.namespace.clone());
                 let mut candidates=Vec::new();
-                let mut child_module = false;
-                let mut stub_symbol = false;
-                let mut reexport_symbol = false;
-                if let ([module],Some(normalized))=(modules.as_slice(),&normalized) {
-                    let tail=if normalized.symbol_path {normalized.namespace.strip_prefix(selected_namespace).unwrap_or("").trim_start_matches('.')}else if r.expression=="*" || r.module.as_deref()==Some(&r.expression) {""}else{&r.expression};
-                    if tail.is_empty(){candidates.push(*module);}else{
-                        let target = qualified(&mut lookup_key, &module.qualname, tail);
-                        candidates=by_module.get(module.path.as_str()).into_iter().flatten().copied().filter(|n| if tail=="default" {n.details["default_export"]==true}else{n.kind!="component" && n.qualname==target}).collect();
-                        if let Some(profile) = profile.filter(|p| p.id() == "python" && candidates.is_empty()) {
-                            let child_namespace = format!("{selected_namespace}.{tail}");
-                            let parent_workspace = languages::workspace_path(&module.path).0;
-                            candidates = modules_by_namespace
-                                .get(&profile.family())
-                                .and_then(|namespaces| namespaces.get(&child_namespace))
-                                .into_iter()
-                                .flatten()
-                                .copied()
-                                .filter(|node| {
-                                    languages::workspace_path(&node.path).0 == parent_workspace
-                                })
-                                .collect();
-                            if let Some(stub) = python::prefer_runtime_module(&mut candidates) {
-                                paired_stub = Some(stub);
-                            }
-                            child_module = candidates.len() == 1;
-                        }
-                        if candidates.is_empty() {
-                            if let Some(stub) = paired_stub {
-                                let target = qualified(&mut lookup_key, &stub.qualname, tail);
-                                candidates = by_module.get(stub.path.as_str()).into_iter().flatten().copied()
-                                    .filter(|node| node.kind != "component" && node.qualname == target)
-                                    .collect();
-                                stub_symbol = !candidates.is_empty();
-                            }
-                        }
-                        if candidates.is_empty() {
-                            if let Some(target) = python::resolve_export(&package_exports, module, tail) {
-                                candidates.push(target);
-                                reexport_symbol = true;
-                            }
-                        }
-                    }
-                }
+                let resolution = language_linker.resolve_import(&mut ImportContext {
+                    path,
+                    reference: r,
+                    normalized: normalized.as_ref(),
+                    selected_namespace,
+                    family: profile.map_or(LanguageFamily(""), |profile| profile.family()),
+                    modules: &mut modules,
+                    candidates: &mut candidates,
+                    modules_by_namespace: &modules_by_namespace,
+                    by_module: &by_module,
+                    by_qual: &by_qual,
+                    package_exports: language_package_exports,
+                    lookup_key: &mut lookup_key,
+                });
+                let ImportResolution {
+                    paired_stub,
+                    child_module,
+                    stub_symbol,
+                    reexport_symbol,
+                } = resolution;
                 candidates.sort_by(|a,b|a.id.cmp(&b.id));
                 candidates.dedup_by_key(|n|&n.id);
                 let external = if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
@@ -242,7 +257,7 @@ pub fn link_with_root(
                         if let Some(provenance) = external_aliases.get_mut(&scope).and_then(|entries| entries.get_mut(alias)) {
                             *provenance = None;
                         }
-                    } else if external.is_some() && !local_declaration && profile.is_some_and(|p| p.id() == "python") {
+                    } else if external.is_some() && !local_declaration && language_linker.tracks_external_aliases() {
                         external_aliases.entry(scope.clone()).or_default().insert(alias.clone(), Some((symbol.clone(), r.line)));
                     }
                     aliases.entry(scope).or_default().entry(alias.clone()).or_default().extend(targets);
@@ -388,7 +403,7 @@ pub fn link_with_root(
                     scope = scope.rsplit_once('.').map_or("", |(p, _)| p);
                 }
                 let known_receiver = !tail.is_empty()
-                    && owner.is_some_and(|n|profile.is_some_and(|p|p.receiver(first,n)))
+                    && owner.is_some_and(|n|profile.is_some_and(|p|language_linker.resolve_receiver(p,first,n)))
                     && owner.is_some_and(|n| {
                         if node_rebindings.get(n.id.as_str()).is_some_and(|b| b.contains(first)) {
                             return false;
@@ -422,14 +437,16 @@ pub fn link_with_root(
                             for n in imported {
                                 candidates.extend(lookup(qualified(&mut lookup_key, &n.qualname, tail)).iter().copied().filter(|target|target.path==n.path));
                             }
-                            if candidates.is_empty() && profile.is_some_and(|p| p.id() == "python") {
+                            if candidates.is_empty() {
                                 if let [module] = imported.as_slice() {
-                                    if module.kind == "module" && module.path.ends_with(".py") {
-                                        let stub_path = format!("{}i", module.path);
-                                        if let Some(stub) = by_module.get(stub_path.as_str()).into_iter().flatten()
-                                            .find(|node| node.kind == "module" && node.qualname == module.qualname) {
-                                            candidates.extend(lookup(qualified(&mut lookup_key, &stub.qualname, tail)).iter().copied().filter(|target| target.path == stub.path));
-                                        }
+                                    if module.kind == "module" {
+                                        candidates.extend(language_linker.resolve_imported_member(
+                                            module,
+                                            tail,
+                                            &by_module,
+                                            &by_qual,
+                                            &mut lookup_key,
+                                        ));
                                     }
                                 }
                             }
@@ -517,7 +534,9 @@ pub fn link_with_root(
                     None
                 };
                 let stub_target = match candidates.as_slice() {
-                    [candidate] if candidate.path.ends_with(".pyi") => Some(candidate.path.as_str()),
+                    [candidate] if language_linker.is_declaration_only(&candidate.path) => {
+                        Some(candidate.path.as_str())
+                    }
                     _ => None,
                 };
                 let evidence = if let Some(stub_path) = stub_target {

@@ -125,10 +125,51 @@ pub fn tests(conn: &Connection, selector: &str, direction: &str, limit: usize) -
     let id = node["id"].as_str().context("invalid node id")?;
     admit_test_mapping(conn, id, inbound)?;
     // Containment expands only the selected scope; UNION visits each dependency once.
-    let steps = super::traversal::dependency_steps(inbound, false, false);
-    let sql = format!("WITH RECURSIVE seeds(id) AS (SELECT ?1 UNION SELECT e.dst_public_id FROM seeds s JOIN edges e ON e.src_public_id=s.id WHERE e.kind='contains'), walk(id) AS (SELECT id FROM seeds UNION {steps}) SELECT n.* FROM walk w JOIN nodes n ON n.id=w.id WHERE n.is_test=?2 AND n.kind IN ('function','method','class','struct') AND n.id!=?1 ORDER BY n.path,n.line,n.id LIMIT ?3");
+    let max_depth = 4;
+    let steps = super::traversal::dependency_steps(inbound, true, false);
+    let sql = format!("WITH RECURSIVE seeds(id,depth) AS (SELECT ?1,0 UNION SELECT e.dst_public_id,s.depth+1 FROM seeds s JOIN edges e ON e.src_public_id=s.id WHERE e.kind='contains' AND s.depth<?2), walk(id,depth) AS (SELECT id,depth FROM seeds UNION {steps}), reached(id) AS (SELECT id FROM walk GROUP BY id) SELECT n.* FROM reached w JOIN nodes n ON n.id=w.id WHERE n.is_test=?3 AND n.kind IN ('function','method','class','struct') AND n.id!=?1 ORDER BY n.path,n.line,n.id LIMIT ?4");
     let size = limit + 1;
-    let mut nodes = reader::rows(conn, &sql, &[&id, &is_test, &size], size)?;
+    let mut nodes = reader::rows(conn, &sql, &[&id, &max_depth, &is_test, &size], size)?;
+    if inbound && nodes.is_empty() {
+        let name = node["name"].as_str().unwrap_or_default();
+        let mut words = Vec::new();
+        let mut current = String::new();
+        for ch in name.chars() {
+            if ch.is_uppercase() && !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            if ch.is_alphanumeric() {
+                current.push(ch.to_ascii_lowercase());
+            } else if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+        }
+        if !current.is_empty() {
+            words.push(current);
+        }
+        let snake = words.join("_");
+        let lexical_query = if words.len() > 1 {
+            format!(
+                "\"{}\" OR ({})",
+                name,
+                words
+                    .iter()
+                    .map(|w| format!("\"{w}\""))
+                    .collect::<Vec<_>>()
+                    .join(" AND ")
+            )
+        } else {
+            format!("\"{name}\"")
+        };
+        if !lexical_query.is_empty() {
+            nodes = reader::rows(
+                conn,
+                "SELECT n.* FROM node_search JOIN nodes n ON n.node_id=node_search.rowid JOIN files f ON f.path=n.path WHERE node_search MATCH ?1 AND n.is_test=1 AND f.is_test=1 AND n.kind IN('function','method','class','struct') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),n.path,n.line,n.id LIMIT ?5",
+                &[&lexical_query, &id, &name, &snake, &size],
+                size,
+            )?;
+        }
+    }
     let truncated = nodes.len() > limit;
     nodes.truncate(limit);
     Ok(
@@ -150,6 +191,17 @@ pub fn search_paged_in_path(
     pattern: &str,
     kind: Option<&str>,
     path: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    search_paged_in_path_with_docs(conn, pattern, kind, path, false, options)
+}
+
+pub fn search_paged_in_path_with_docs(
+    conn: &Connection,
+    pattern: &str,
+    kind: Option<&str>,
+    path: Option<&str>,
+    include_docs: bool,
     options: &QueryOptions,
 ) -> Result<Value> {
     let pattern = pattern.trim();
@@ -191,9 +243,9 @@ pub fn search_paged_in_path(
             .filter(|p| !p.is_empty() && p.chars().all(char::is_alphanumeric))
         {
             let query = format!("\"{prefix}\"*");
-            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&query,&path,&path_start,&path_end], options)?
+            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&query,&path,&path_start,&path_end,&include_docs], options)?
         } else {
-            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end], options)?
+            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end,&include_docs], options)?
         }
     } else {
         let query = pattern
@@ -201,7 +253,7 @@ pub fn search_paged_in_path(
             .filter(|s| !s.is_empty())
             .map(|s| format!("\"{s}\""))
             .collect::<Vec<_>>()
-            .join(" AND ");
+            .join(" OR ");
         if query.is_empty() {
             bail!("pattern must contain a symbol fragment");
         }
@@ -211,8 +263,24 @@ pub fn search_paged_in_path(
             .replace('_', "\\_");
         let prefix = format!("{escaped}%");
         let fragment = format!("%{escaped}%");
-        let rank = "CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.name LIKE ?8 ESCAPE '\\' THEN 2 WHEN n.qualname=?6 COLLATE NOCASE THEN 3 WHEN n.qualname LIKE ?7 ESCAPE '\\' THEN 4 WHEN n.qualname LIKE ?8 ESCAPE '\\' THEN 5 ELSE 6 END";
-        paging::query(conn, &format!("SELECT {columns},{rank} match_rank FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) ORDER BY match_rank,n.path,n.line,n.id"), &[&query,&kind,&path,&path_start,&path_end,&pattern,&prefix,&fragment], options)?
+        let graph_boost = "(CASE WHEN (SELECT count(*) FROM edges e WHERE e.src_public_id=n.id OR e.dst_public_id=n.id)>=5 THEN 50 ELSE 0 END + CASE WHEN EXISTS(SELECT 1 FROM shared_owners s WHERE s.kind='default_export' AND s.key=n.id) THEN 50 ELSE 0 END)";
+        let sql = format!("WITH fts AS (SELECT rowid node_id,bm25(node_search) rank FROM node_search WHERE node_search MATCH ?1) SELECT {columns},CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.qualname=?6 COLLATE NOCASE THEN 2 WHEN n.name LIKE ?9 ESCAPE '\\' THEN 3 ELSE 4 END match_rank,coalesce(fts.rank,0.0) bm25_rank,{graph_boost} graph_boost FROM nodes n LEFT JOIN fts ON fts.node_id=n.node_id WHERE (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?8=1 OR n.language!='markdown') AND (n.name=?6 COLLATE NOCASE OR n.name LIKE ?7 ESCAPE '\\' OR n.qualname=?6 COLLATE NOCASE OR n.name LIKE ?9 ESCAPE '\\' OR fts.node_id IS NOT NULL) ORDER BY CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.qualname=?6 COLLATE NOCASE THEN 2 WHEN n.name LIKE ?9 ESCAPE '\\' THEN 3 ELSE 4 END,CASE WHEN fts.node_id IS NOT NULL THEN fts.rank ELSE 0.0 END,graph_boost DESC,n.path,n.line,n.id");
+        paging::query(
+            conn,
+            &sql,
+            &[
+                &query,
+                &kind,
+                &path,
+                &path_start,
+                &path_end,
+                &pattern,
+                &prefix,
+                &include_docs,
+                &fragment,
+            ],
+            options,
+        )?
     };
     if let Some(items) = nodes["items"].as_array_mut() {
         for item in items {
@@ -230,17 +298,21 @@ pub fn search_paged_in_path(
                 let reason = match rank.as_u64() {
                     Some(0) => "exact_name",
                     Some(1) => "name_prefix",
-                    Some(2) => "name_fragment",
-                    Some(3) => "exact_qualified_name",
-                    Some(4) => "qualified_name_prefix",
-                    Some(5) => "qualified_name_fragment",
+                    Some(2) => "exact_qualified_name",
+                    Some(3) => "name_fragment",
                     _ => "indexed_text",
                 };
                 if options.detail == crate::core::response::Detail::Full
-                    || !matches!(rank.as_u64(), Some(0..=2))
+                    || !matches!(rank.as_u64(), Some(0..=1 | 3))
                 {
                     item["match_reason"] = json!(reason);
                 }
+                item.as_object_mut()
+                    .context("invalid search result")?
+                    .remove("bm25_rank");
+                item.as_object_mut()
+                    .context("invalid search result")?
+                    .remove("graph_boost");
             }
         }
     }
@@ -274,7 +346,7 @@ pub fn tests_paged(
         )
         .unwrap_or(0);
 
-    let steps = super::traversal::dependency_steps(inbound, false, false);
+    let steps = super::traversal::dependency_steps(inbound, true, false);
     let (forward_candidate, forward_selected, reverse_candidate, reverse_selected) = if inbound {
         (
             "src_public_id",
@@ -290,8 +362,53 @@ pub fn tests_paged(
             "dst_public_id",
         )
     };
-    let sql = format!("WITH RECURSIVE seeds(id) AS (SELECT ?1 UNION SELECT e.dst_public_id FROM seeds s JOIN edges e ON e.src_public_id=s.id WHERE e.kind='contains'), walk(id) AS (SELECT id FROM seeds UNION {steps}) SELECT {} FROM walk w JOIN nodes n ON n.id=w.id WHERE n.is_test=?2 AND n.kind IN ('function','method','class','struct') AND n.id!=?1 ORDER BY CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.{forward_selected}=?1 AND e.{forward_candidate}=n.id AND e.kind IN({})) OR EXISTS(SELECT 1 FROM edges e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate}=n.id AND e.kind IN({})) THEN 0 ELSE 1 END,n.path,n.line,n.id", paging::nodes("n", options.detail), super::traversal::FORWARD_DEPENDENCIES, super::traversal::REVERSE_DEPENDENCIES);
-    let mut nodes = paging::query(conn, &sql, &[&id, &is_test], options)?;
+    let max_depth = 4;
+    let sql = format!("WITH RECURSIVE seeds(id,depth) AS (SELECT ?1,0 UNION SELECT e.dst_public_id,s.depth+1 FROM seeds s JOIN edges e ON e.src_public_id=s.id WHERE e.kind='contains' AND s.depth<?2), walk(id,depth) AS (SELECT id,depth FROM seeds UNION {steps}), reached(id) AS (SELECT id FROM walk GROUP BY id) SELECT {} FROM reached w JOIN nodes n ON n.id=w.id WHERE n.is_test=?3 AND n.kind IN ('function','method','class','struct') AND n.id!=?1 ORDER BY CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.{forward_selected}=?1 AND e.{forward_candidate}=n.id AND e.kind IN({})) OR EXISTS(SELECT 1 FROM edges e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate}=n.id AND e.kind IN({})) THEN 0 ELSE 1 END,n.path,n.line,n.id", paging::nodes("n", options.detail), super::traversal::FORWARD_DEPENDENCIES, super::traversal::REVERSE_DEPENDENCIES);
+    let mut nodes = paging::query(conn, &sql, &[&id, &max_depth, &is_test], options)?;
+    let mut discovery_method = "graph";
+    if inbound && nodes["total"].as_u64() == Some(0) {
+        let name = node["name"].as_str().unwrap_or_default();
+        let mut words = Vec::new();
+        let mut current = String::new();
+        for ch in name.chars() {
+            if ch.is_uppercase() && !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            if ch.is_alphanumeric() {
+                current.push(ch.to_ascii_lowercase());
+            } else if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+        }
+        if !current.is_empty() {
+            words.push(current);
+        }
+        let snake = words.join("_");
+        let lexical_query = if words.len() > 1 {
+            format!(
+                "\"{}\" OR ({})",
+                name,
+                words
+                    .iter()
+                    .map(|w| format!("\"{w}\""))
+                    .collect::<Vec<_>>()
+                    .join(" AND ")
+            )
+        } else {
+            format!("\"{name}\"")
+        };
+        if !lexical_query.is_empty() {
+            nodes = paging::query(
+                conn,
+                &format!("SELECT {} FROM node_search JOIN nodes n ON n.node_id=node_search.rowid JOIN files f ON f.path=n.path WHERE node_search MATCH ?1 AND n.is_test=1 AND f.is_test=1 AND n.kind IN('function','method','class','struct') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),n.path,n.line,n.id", paging::nodes("n", options.detail)),
+                &[&lexical_query, &id, &name, &snake],
+                options,
+            )?;
+            if nodes["total"].as_u64().is_some_and(|total| total > 0) {
+                discovery_method = "lexical_fallback";
+            }
+        }
+    }
     annotate_test_connections(
         conn,
         &mut nodes,
@@ -306,7 +423,7 @@ pub fn tests_paged(
         "indexed static dependencies; no unresolved references in symbol scope".to_string()
     };
     Ok(
-        json!({"selector":node,"direction":direction,"nodes":nodes,"unresolved_references":unresolved_count,"scope":scope_note}),
+        json!({"selector":node,"direction":direction,"nodes":nodes,"discovery_method":discovery_method,"unresolved_references":unresolved_count,"scope":scope_note}),
     )
 }
 

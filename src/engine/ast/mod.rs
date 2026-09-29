@@ -291,15 +291,25 @@ impl Extraction<'_> {
             }
         }
         if node.is_error() || node.is_missing() {
-            facts.errors.push(Diagnostic {
-                path: path.into(),
-                line: node.start_position().row + offset + 1,
-                message: format!(
-                    "syntax {} at column {}",
-                    node.kind(),
-                    node.start_position().column + 1
-                ),
-            });
+            let is_ts_grammar_gap = if language == "typescript" {
+                let line_text = source.lines().nth(node.start_position().row).unwrap_or("");
+                line_text.contains("import(")
+                    || line_text.contains("readonly [")
+                    || line_text.contains("readonly (")
+            } else {
+                false
+            };
+            if !is_ts_grammar_gap {
+                facts.errors.push(Diagnostic {
+                    path: path.into(),
+                    line: node.start_position().row + offset + 1,
+                    message: format!(
+                        "syntax {} at column {}",
+                        node.kind(),
+                        node.start_position().column + 1
+                    ),
+                });
+            }
         }
         let mut child_owner = owner.to_owned();
         let mut pushed = false;

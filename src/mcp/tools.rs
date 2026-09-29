@@ -124,6 +124,12 @@ pub struct SearchSymbols {
     pub kind: Option<String>,
     /// Restrict results to a workspace-relative file or directory.
     pub path: Option<String>,
+    /// Group results by file path.
+    #[serde(default)]
+    pub group_by_file: bool,
+    /// Include Markdown documentation nodes in the code symbol search.
+    #[serde(default)]
+    pub include_docs: bool,
     #[serde(flatten)]
     pub page: PageInput,
 }
@@ -249,13 +255,31 @@ impl Server {
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         self.responding(|policy| {
             self.read(|c| {
-                symbols::search_paged_in_path(
+                let mut res = symbols::search_paged_in_path_with_docs(
                     c,
                     &p.pattern,
                     p.kind.as_deref(),
                     p.path.as_deref(),
+                    p.include_docs,
                     &p.page.resolve(policy)?,
-                )
+                )?;
+                if p.group_by_file {
+                    if let Some(items) = res
+                        .get_mut("nodes")
+                        .and_then(|nodes| nodes.get_mut("items"))
+                        .and_then(Value::as_array_mut)
+                    {
+                        let mut grouped: std::collections::BTreeMap<String, Vec<Value>> =
+                            std::collections::BTreeMap::new();
+                        for item in items.drain(..) {
+                            let path = item["path"].as_str().unwrap_or("").to_string();
+                            grouped.entry(path).or_default().push(item);
+                        }
+                        res["nodes"]["grouped_by_file"] =
+                            serde_json::to_value(grouped).unwrap_or_default();
+                    }
+                }
+                Ok(res)
             })
         })
     }
@@ -335,7 +359,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Check removal safety using indexed incoming dependencies and unresolved edges before deleting a symbol or module. Complete coverage required before absence claims."
+        description = "Check one candidate's removal safety using indexed incoming dependencies and candidate-scoped unresolved references. Workspace unresolved and parse-error diagnostics are reported separately."
     )]
     fn code_map_prove_removal(&self, Parameters(p): Parameters<Selector>) -> CallToolResult {
         self.responding(|policy| {
@@ -347,13 +371,16 @@ impl Server {
     )]
     fn ast_grep_search(&self, Parameters(p): Parameters<Ast>) -> CallToolResult {
         self.responding(|policy| {
-            cli::ast::search_paged(
-                &self.root,
-                &p.pattern,
-                &p.language,
-                p.path.as_deref(),
-                &p.page.resolve(policy)?,
-            )
+            self.read(|conn| {
+                cli::ast::search_paged(
+                    conn,
+                    &self.root,
+                    &p.pattern,
+                    &p.language,
+                    p.path.as_deref(),
+                    &p.page.resolve(policy)?,
+                )
+            })
         })
     }
     #[tool(

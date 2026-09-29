@@ -2,6 +2,8 @@ use super::*;
 use crate::engine::ast::{relations, routes};
 #[path = "python/fastmcp.rs"]
 mod fastmcp;
+#[path = "python/linker.rs"]
+pub(crate) mod linker;
 pub fn language() -> tree_sitter::Language {
     tree_sitter_python::language()
 }

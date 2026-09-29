@@ -113,7 +113,8 @@ fn extract_event_handler(owner: &str, expr: &str, line: usize, facts: &mut Facts
 }
 
 fn extract_simple_expressions(owner: &str, expr: &str, line: usize, facts: &mut Facts) {
-    for word in expr.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '$') {
+    let stripped = strip_string_literals(expr);
+    for word in stripped.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '$') {
         let word = word.trim();
         if is_valid_ident(word) && !is_js_keyword(word) {
             facts.references.push(Reference {
@@ -127,6 +128,74 @@ fn extract_simple_expressions(owner: &str, expr: &str, line: usize, facts: &mut 
             });
         }
     }
+}
+
+fn strip_string_literals(expr: &str) -> String {
+    let mut out = String::with_capacity(expr.len());
+    let mut chars = expr.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\'' || c == '"' {
+            let quote = c;
+            let mut escaped = false;
+            for sc in chars.by_ref() {
+                if escaped {
+                    escaped = false;
+                } else if sc == '\\' {
+                    escaped = true;
+                } else if sc == quote {
+                    break;
+                }
+            }
+            out.push(' ');
+        } else if c == '`' {
+            let mut escaped = false;
+            while let Some(sc) = chars.next() {
+                if escaped {
+                    escaped = false;
+                } else if sc == '\\' {
+                    escaped = true;
+                } else if sc == '`' {
+                    break;
+                } else if sc == '$' && chars.peek() == Some(&'{') {
+                    chars.next();
+                    out.push(' ');
+                    let mut brace_depth = 1;
+                    while let Some(ic) = chars.next() {
+                        if ic == '\'' || ic == '"' {
+                            let quote = ic;
+                            let mut nescaped = false;
+                            for nsc in chars.by_ref() {
+                                if nescaped {
+                                    nescaped = false;
+                                } else if nsc == '\\' {
+                                    nescaped = true;
+                                } else if nsc == quote {
+                                    break;
+                                }
+                            }
+                            out.push(' ');
+                        } else if ic == '{' {
+                            brace_depth += 1;
+                            out.push(ic);
+                        } else if ic == '}' {
+                            brace_depth -= 1;
+                            if brace_depth == 0 {
+                                out.push(' ');
+                                break;
+                            }
+                            out.push(ic);
+                        } else {
+                            out.push(ic);
+                        }
+                    }
+                }
+            }
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn is_valid_ident(s: &str) -> bool {

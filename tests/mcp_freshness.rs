@@ -47,6 +47,10 @@ fn snapshot(server: &Server) -> anyhow::Result<Value> {
     })
 }
 
+fn wait_for_inventory_ttl() {
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+}
+
 #[test]
 fn same_server_metadata_query_refreshes_edited_source() {
     let ws = Workspace::new();
@@ -58,6 +62,7 @@ fn same_server_metadata_query_refreshes_edited_source() {
         "main.rs",
         "pub fn current() {\n    let value = 1;\n    let next = value + 1;\n}\n",
     );
+    wait_for_inventory_ttl();
     let after = snapshot(&server).unwrap();
     assert_eq!(after["nodes"][0]["end_line"], 4);
     assert_ne!(before["corpus_hash"], after["corpus_hash"]);
@@ -157,12 +162,15 @@ fn same_server_refreshes_add_delete_and_rename() {
     let server = ws.server();
     snapshot(&server).unwrap();
     ws.write("added.rs", "pub fn added() {}\n");
+    wait_for_inventory_ttl();
     let added = snapshot(&server).unwrap();
     assert_eq!(added["nodes"].as_array().unwrap().len(), 2);
     fs::rename(ws.0.join("added.rs"), ws.0.join("renamed.rs")).unwrap();
+    wait_for_inventory_ttl();
     let renamed = snapshot(&server).unwrap();
     assert_eq!(renamed["nodes"][1]["path"], "renamed.rs");
     fs::remove_file(ws.0.join("first.rs")).unwrap();
+    wait_for_inventory_ttl();
     let deleted = snapshot(&server).unwrap();
     assert_eq!(deleted["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(deleted["nodes"][0]["name"], "added");
@@ -183,6 +191,7 @@ fn restored_mtime_and_same_length_edit_refreshes_digest() {
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(old_modified))
         .unwrap();
+    wait_for_inventory_ttl();
     let after = snapshot(&server).unwrap();
     assert_eq!(after["nodes"][0]["name"], "after_");
     assert_ne!(before["corpus_hash"], after["corpus_hash"]);
@@ -205,13 +214,16 @@ fn linked_source_edits_and_renames_refresh_in_same_server() {
     let before = snapshot(&server).unwrap();
     assert_eq!(before["nodes"][0]["path"], "[library]/lib.rs");
     linked.write("lib.rs", "pub fn changed() {}\n");
+    wait_for_inventory_ttl();
     assert_eq!(snapshot(&server).unwrap()["nodes"][0]["name"], "changed");
     fs::rename(linked.0.join("lib.rs"), linked.0.join("next.rs")).unwrap();
+    wait_for_inventory_ttl();
     assert_eq!(
         snapshot(&server).unwrap()["nodes"][0]["path"],
         "[library]/next.rs"
     );
     fs::remove_file(linked.0.join("next.rs")).unwrap();
+    wait_for_inventory_ttl();
     assert!(snapshot(&server).unwrap()["nodes"]
         .as_array()
         .unwrap()
@@ -408,6 +420,7 @@ fn newly_created_configured_root_is_admitted() {
         .unwrap()
         .is_empty());
     ws.write("src/created.rs", "pub fn created() {}\n");
+    wait_for_inventory_ttl();
     let after = snapshot(&server).unwrap();
     assert_eq!(after["nodes"][0]["name"], "created");
     assert_eq!(after["freshness"]["refresh"], "rebuild");
@@ -428,6 +441,7 @@ fn changed_ignore_file_removes_existing_source_from_inventory() {
         2
     );
     ws.write(".gitignore", "ignored.rs\n");
+    wait_for_inventory_ttl();
     let after = snapshot(&server).unwrap();
     assert_eq!(after["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(after["nodes"][0]["name"], "visible");
@@ -656,6 +670,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
     }
 
     ws.write("main.rs", "pub fn current() { let value = 1; }\n");
+    wait_for_inventory_ttl();
     let response = client.request(
         "tools/call",
         json!({"name":"code_map_overview","arguments":{"detail":"compact","limit":1}}),

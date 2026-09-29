@@ -54,7 +54,7 @@ contextunity-forge-mcp docs get 'docs/architecture/indexing.md' --section 'Owner
 contextunity-forge-mcp ast grep 'print($VALUE)' --lang python --path src
 ```
 
-`docs` reads the index. `ast grep` scans admitted source directly and requires a compiled language profile. `docs search` accepts `--component` and `--limit`; `ast grep` accepts `--limit`.
+`docs` reads the index. `ast grep` reads admitted file paths from the index, narrows them with FTS terms, and parses matching source after checking its indexed digest. It requires a built index and a compiled language profile. `docs search` accepts `--component` and `--limit`; `ast grep` accepts `--limit`.
 
 ## Server, guide, and checkpoints
 

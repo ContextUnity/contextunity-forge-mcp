@@ -130,6 +130,7 @@ fn populate(
     adapter: &scanner::Adapter,
     entries: &[FileEntry],
     facts: &BTreeMap<String, Facts>,
+    encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
 ) -> Result<Value> {
     conn.execute_batch("PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128000; PRAGMA cache_spill=OFF;")?;
     conn.set_prepared_statement_cache_capacity(128);
@@ -154,9 +155,15 @@ fn populate(
     )
     .ok();
     for table in commitments::DOMAINS {
-        cached(&tx, &format!("DELETE FROM {table}"), [])?;
+        let storage_table = if *table == "resolution_coverage" {
+            "resolution_coverage_data"
+        } else {
+            table
+        };
+        cached(&tx, &format!("DELETE FROM {storage_table}"), [])?;
     }
     cached(&tx, "DELETE FROM domain_commitments", [])?;
+    cached(&tx, "DELETE FROM coverage_evidence", [])?;
     for (k, v) in [
         ("schema_version", scanner::ENGINE_SCHEMA_VERSION.to_owned()),
         (
@@ -194,7 +201,7 @@ fn populate(
             node_paths.insert(n.id.clone(), Some(n.path.clone()));
         }
     }
-    let (node_id, docs_count) = persist_files(&tx, entries, facts)?;
+    let (node_id, docs_count) = persist_files(&tx, entries, facts, encoded_facts)?;
     persist_graph(&tx, &graph, &mut node_paths, true)?;
     persist_file_commitments(&tx, entries, facts, &graph)?;
     let rows_ms = writing.elapsed().as_secs_f64() * 1000.;
@@ -208,7 +215,7 @@ fn populate(
     tx.commit()?;
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     Ok(
-        json!({"files":entries.len(),"nodes":node_id,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":"2","link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms}),
+        json!({"files":entries.len(),"nodes":node_id,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms}),
     )
 }
 fn components(facts: &mut BTreeMap<String, Facts>) {
@@ -312,6 +319,7 @@ fn atomic_build(
     adapter: &scanner::Adapter,
     entries: &[FileEntry],
     facts: &BTreeMap<String, Facts>,
+    encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
 ) -> Result<Value> {
     let output = if output.is_absolute() {
         output.to_owned()
@@ -359,7 +367,7 @@ fn atomic_build(
             &temporary,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
-        let mut report = populate(&mut conn, root, adapter, entries, facts)?;
+        let mut report = populate(&mut conn, root, adapter, entries, facts, encoded_facts)?;
         let verifying = Instant::now();
         let integrity: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
         if integrity != "ok" {
@@ -369,11 +377,10 @@ fn atomic_build(
         conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
         conn.close().map_err(|(_, e)| e)?;
         let _generation_lock = super::cache::exclusive_lock(&output)?;
-        let mut wal = output.as_os_str().to_owned();
-        wal.push("-wal");
-        if fs::symlink_metadata(PathBuf::from(wal)).is_ok_and(|m| m.len() > 0) {
-            bail!("output has active WAL frames; finish current readers/writers before a cold rebuild");
-        }
+        let wal = PathBuf::from(format!("{}-wal", output.display()));
+        let shm = PathBuf::from(format!("{}-shm", output.display()));
+        let _ = fs::remove_file(&wal);
+        let _ = fs::remove_file(&shm);
         fs::rename(&temporary, &output)?;
         report["verification_cache"] = json!(super::cache::publish_verified(
             &output,
@@ -404,7 +411,11 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
         .collect::<Result<_>>()?;
     let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
     components(&mut facts);
-    let mut report = atomic_build(&root, output, &adapter, &scan.entries, &facts)?;
+    let encoded_facts: hashbrown::HashMap<String, Vec<u8>> = facts
+        .par_iter()
+        .map(|(path, f)| Ok((path.clone(), encode_facts(f)?)))
+        .collect::<Result<_>>()?;
+    let mut report = atomic_build(&root, output, &adapter, &scan.entries, &facts, Some(&encoded_facts))?;
     report["scan_ms"] = json!(scan_ms);
     report["extract_ms"] = json!(extract_ms);
     report["elapsed_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
@@ -417,7 +428,26 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         bail!("delta requires at least one modified path");
     }
     let root = scanner::canonical_root(root)?;
-    let _generation_lock = super::cache::exclusive_lock(db)?;
+    let generation_lock = super::cache::exclusive_lock(db)?;
+    let schema_compatible = {
+        let probe = Connection::open_with_flags(
+            db,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        probe
+            .query_row(
+                "SELECT value FROM metadata WHERE key='schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .as_deref()
+            == Some(scanner::ENGINE_SCHEMA_VERSION)
+    };
+    if !schema_compatible {
+        drop(generation_lock);
+        return build(&root, db, None);
+    }
     let admitted = super::reader::open(db, &root)?;
     let admitted_identity = super::cache::identity(db)?;
     let expected: String = admitted.query_row(
@@ -574,7 +604,9 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let hydrating = Instant::now();
     let mut affected = modified.clone();
     {
-        let mut st=admitted.prepare("SELECT owner FROM reverse_dependencies WHERE target IN(SELECT value FROM json_each(?1))")?;
+        let mut st = admitted.prepare(
+            "SELECT owner FROM dependencies WHERE target IN(SELECT value FROM json_each(?1))",
+        )?;
         for owner in st.query_map([&encoded], |r| r.get::<_, String>(0))? {
             affected.insert(owner?);
         }
@@ -592,12 +624,12 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         .collect();
     let mut loaded_fact_files = 0;
     {
-        let mut st=admitted.prepare("SELECT path,facts_json FROM local_facts WHERE path IN(SELECT value FROM json_each(?1))")?;
+        let mut st=admitted.prepare("SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT value FROM json_each(?1))")?;
         for row in st.query_map([serde_json::to_string(&load_owners)?], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
         })? {
-            let (path, raw) = row?;
-            let f: Facts = serde_json::from_str(&raw)?;
+            let (path, blob) = row?;
+            let f = decode_facts(&blob)?;
             facts.insert(path, f);
             loaded_fact_files += 1;
         }
@@ -608,16 +640,16 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             .iter()
             .map(|entry| (entry.path.as_str(), entry.language.as_str()))
             .collect();
-        let mut st = admitted.prepare("SELECT facts_json FROM local_facts WHERE path=?1")?;
+        let mut st = admitted.prepare("SELECT facts_blob FROM local_facts WHERE path=?1")?;
         for path in linker::required_full_facts(&facts, &affected, &catalog) {
             if facts.contains_key(&path) {
                 continue;
             }
             if let Some(raw) = st
-                .query_row([&path], |row| row.get::<_, String>(0))
+                .query_row([&path], |row| row.get::<_, Vec<u8>>(0))
                 .optional()?
             {
-                facts.insert(path, serde_json::from_str(&raw)?);
+                facts.insert(path, decode_facts(&raw)?);
                 loaded_fact_files += 1;
             }
         }
@@ -771,8 +803,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         for (table, column) in [
             ("edge_occurrences", "owner"),
             ("dependencies", "owner"),
-            ("reverse_dependencies", "owner"),
-            ("resolution_coverage", "path"),
+            ("resolution_coverage_data", "path"),
             ("file_commitments", "path"),
         ] {
             cached(
@@ -802,10 +833,14 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         }
     }
     let files_writing = Instant::now();
-    persist_files(&tx, &changed_entries, &facts)?;
+    persist_files(&tx, &changed_entries, &facts, None)?;
     let files_ms = files_writing.elapsed().as_secs_f64() * 1000.;
     let graph_writing = Instant::now();
     persist_graph(&tx, &graph, &mut node_paths, false)?;
+    tx.execute(
+        "DELETE FROM coverage_evidence WHERE evidence_id NOT IN(SELECT evidence_id FROM resolution_coverage_data)",
+        [],
+    )?;
     let graph_ms = graph_writing.elapsed().as_secs_f64() * 1000.;
     let aggregating = Instant::now();
     let dangling: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM replaced_nodes r WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE n.id=r.id) AND (EXISTS(SELECT 1 FROM edges e WHERE e.src_public_id=r.id) OR EXISTS(SELECT 1 FROM edges e WHERE e.dst_public_id=r.id)))", [], |r| r.get(0))?;
@@ -928,21 +963,23 @@ fn resolution_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> 
     Ok(old != new)
 }
 fn reference_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> Result<bool> {
-    let old: Option<String> = conn
+    let old: Option<Vec<u8>> = conn
         .query_row(
-            "SELECT facts_json FROM local_facts WHERE path=?1",
+            "SELECT facts_blob FROM local_facts WHERE path=?1",
             [path],
-            |row| row.get(0),
+            |row| row.get::<_, Vec<u8>>(0),
         )
         .optional()?;
     let Some(old) = old else {
         return Ok(true);
     };
-    let old: Facts = serde_json::from_str(&old)?;
+    let old = decode_facts(&old)?;
     Ok(linker::reference_identity_changed(path, &old, facts))
 }
 fn delete_file(tx: &Connection, path: &str) -> Result<()> {
-    let mut stmt=tx.prepare_cached("SELECT n.node_id,s.search_text FROM nodes n JOIN search_text s ON s.public_id=n.id JOIN owned_nodes o ON o.public_id=n.id WHERE o.owner=?1")?;
+    let mut stmt = tx.prepare_cached(
+        "SELECT n.node_id,s.search_text FROM nodes n JOIN owned_search s ON s.public_id=n.id WHERE s.owner=?1"
+    )?;
     let old: Vec<(i64, String)> = stmt
         .query_map([path], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
@@ -954,7 +991,6 @@ fn delete_file(tx: &Connection, path: &str) -> Result<()> {
         )?;
     }
     cached(tx,"INSERT INTO doc_search(doc_search,rowid,section_title,content,invariants)SELECT 'delete',rowid,section_title,content,invariants FROM doc_sections WHERE path=?1",[path])?;
-    cached(tx,"DELETE FROM search_text WHERE public_id IN(SELECT public_id FROM owned_nodes WHERE owner=?1)",[path])?;
     cached(
         tx,
         "DELETE FROM nodes WHERE id IN(SELECT public_id FROM owned_nodes WHERE owner=?1)",
@@ -983,10 +1019,21 @@ fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqli
     conn.prepare_cached(sql)?.execute(params)
 }
 
+fn encode_facts(facts: &Facts) -> Result<Vec<u8>> {
+    let json = serde_json::to_vec(facts)?;
+    Ok(zstd::stream::encode_all(json.as_slice(), 1)?)
+}
+
+fn decode_facts(blob: &[u8]) -> Result<Facts> {
+    let json = zstd::stream::decode_all(blob)?;
+    Ok(serde_json::from_slice(&json)?)
+}
+
 fn persist_files(
     tx: &Connection,
     entries: &[FileEntry],
     facts: &BTreeMap<String, Facts>,
+    encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
 ) -> Result<(i64, usize)> {
     let mut node_id: i64 = tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
         r.get(0)
@@ -1001,7 +1048,6 @@ fn persist_files(
         tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
     let mut stmt_owned_nodes =
         tx.prepare("INSERT INTO owned_nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
-    let mut stmt_search_text = tx.prepare("INSERT INTO search_text VALUES(?1,?2)")?;
     let mut stmt_owned_search = tx.prepare("INSERT INTO owned_search VALUES(?1,?2,0,?3)")?;
     let mut stmt_node_search =
         tx.prepare("INSERT INTO node_search(rowid,search_text)VALUES(?1,?2)")?;
@@ -1026,12 +1072,16 @@ fn persist_files(
             file.language,
             is_test(&file.path)
         ])?;
+        let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)) {
+            Some(blob) => blob.clone(),
+            None => encode_facts(f)?,
+        };
         stmt_local_facts.execute(params![
             file.path,
             file.digest,
             file.language,
             is_test(&file.path),
-            serde_json::to_string(f)?
+            facts_blob
         ])?;
         for n in &f.nodes {
             node_id += 1;
@@ -1065,12 +1115,17 @@ fn persist_files(
                 details
             ])?;
             let doc = n.details.get("doc").and_then(|d| d.as_str()).unwrap_or("");
-            let search = if doc.is_empty() {
+            let mut search = if doc.is_empty() {
                 format!("{} {} {}", n.name, n.qualname, n.path)
             } else {
                 format!("{} {} {} {}", n.name, n.qualname, n.path, doc)
             };
-            stmt_search_text.execute(params![n.id, search])?;
+            if n.kind == "module" {
+                for reference in &f.references {
+                    search.push(' ');
+                    search.push_str(&reference.expression);
+                }
+            }
             stmt_owned_search.execute(params![file.path, n.id, search])?;
             stmt_node_search.execute(params![node_id, search])?;
             stmt_shared_symbol.execute(params![n.qualname, file.path, node_id])?;
@@ -1120,8 +1175,6 @@ fn persist_graph(
         .then(|| tx.prepare("INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,1)ON CONFLICT(src_public_id,dst_public_id,kind)DO UPDATE SET occurrence_count=occurrence_count+1"))
         .transpose()?;
     let mut stmt_deps = tx.prepare("INSERT INTO dependencies VALUES(?1,?2,?3,?4,'resolved')")?;
-    let mut stmt_rdeps =
-        tx.prepare("INSERT INTO reverse_dependencies VALUES(?1,?2,?3,?4,'resolved')")?;
     let mut stmt_select_path = tx.prepare_cached("SELECT path FROM nodes WHERE id=?1")?;
 
     for e in &graph.edges {
@@ -1168,7 +1221,6 @@ fn persist_graph(
         }
         for target in targets {
             stmt_deps.execute(params![e.path, target, e.kind, e.evidence])?;
-            stmt_rdeps.execute(params![target, e.path, e.kind, e.evidence])?;
         }
     }
     let mut stmt_cov = tx.prepare("INSERT INTO resolution_coverage VALUES(?1,?2,?3,?4,?5)")?;

@@ -50,7 +50,9 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
         [],
         |r| r.get(0),
     )?;
-    if version != "2" || engine != "contextunity-forge-mcp-rust" {
+    if version != crate::engine::scanner::ENGINE_SCHEMA_VERSION
+        || engine != "contextunity-forge-mcp-rust"
+    {
         bail!("incompatible database schema or engine");
     }
     validate_workspace(&conn, root)?;
@@ -796,7 +798,7 @@ pub fn explain_paged_with_docs(
     };
     match dir {
         "both" | "incoming" => {
-            let mut incoming = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.dst_public_id=?1 ORDER BY e.kind,e.src_public_id,e.edge_id", paging::edges("e", options.detail)), &[&id], options)?;
+            let mut incoming = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.dst_public_id=?1 ORDER BY e.kind,e.src_public_id,e.path,e.line", paging::edges("e", options.detail)), &[&id], options)?;
             if options.detail == Detail::Compact {
                 omit_selected_endpoint(&mut incoming, "dst_public_id");
             }
@@ -814,7 +816,7 @@ pub fn explain_paged_with_docs(
     }
     match dir {
         "both" | "outgoing" => {
-            let mut outgoing = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.src_public_id=?1 ORDER BY e.kind,e.dst_public_id,e.edge_id", paging::edges("e", options.detail)), &[&id], options)?;
+            let mut outgoing = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.src_public_id=?1 ORDER BY e.kind,e.dst_public_id,e.path,e.line", paging::edges("e", options.detail)), &[&id], options)?;
             if options.detail == Detail::Compact {
                 omit_selected_endpoint(&mut outgoing, "src_public_id");
             }

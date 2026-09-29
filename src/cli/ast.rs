@@ -1,54 +1,59 @@
-use crate::core::response::QueryOptions;
+use crate::core::response::{Detail, QueryOptions, ResponsePolicy};
 use crate::engine::{ast, scanner};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::path::Path;
 pub fn search(
+    conn: &rusqlite::Connection,
     root: &Path,
     pattern: &str,
     language: &str,
     path: Option<&str>,
     limit: usize,
 ) -> Result<Value> {
-    crate::engine::languages::require(language)?;
     if limit == 0 || limit > 10000 {
         bail!("limit must be1..10000");
     }
-    let root = scanner::canonical_root(root)?;
-    let adapter = scanner::load_adapter(&root, None)?;
-    let scan = scanner::scan_with_adapter(&root, &adapter)?;
-    if let Some(path) = path {
-        scanner::checked_child(&root, Path::new(path))?;
-    }
-    let prefix = path.map(|p| format!("{}/", p.trim_end_matches('/')));
     let mut matches = Vec::new();
-    for file in scan.entries {
-        if file.language != language {
-            continue;
+    let mut offset = 0;
+    let mut generation = None;
+    let mut truncated = false;
+    while matches.len() < limit {
+        let page_limit = (limit - matches.len()).min(100);
+        let options = QueryOptions::resolve(
+            &ResponsePolicy::default(),
+            Some(page_limit),
+            offset,
+            Some(Detail::Compact),
+            generation.clone(),
+        )?;
+        let page = search_paged(conn, root, pattern, language, path, &options)?;
+        let payload = &page["matches"];
+        if let Some(items) = payload["items"].as_array() {
+            matches.extend(items.iter().cloned());
         }
-        if path.is_some_and(|p| {
-            file.path != p && !file.path.starts_with(prefix.as_deref().unwrap_or(""))
-        }) {
-            continue;
-        }
-        let source =
-            std::fs::read_to_string(scanner::checked_child(&root, Path::new(&file.path))?)?;
-        matches.extend(ast::search(
-            &source,
-            &file.path,
-            language,
-            pattern,
-            limit - matches.len(),
-        )?);
-        if matches.len() >= limit {
+        if payload["computation_truncated"] == true {
+            truncated = true;
             break;
         }
+        if payload["has_more"] != true {
+            break;
+        }
+        if matches.len() >= limit {
+            truncated = true;
+            break;
+        }
+        generation = payload["generation"].as_str().map(str::to_owned);
+        offset = payload["next_offset"]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .context("AST continuation offset is missing")?;
     }
-    Ok(json!({"matches":matches,"limit":limit,"truncated":matches.len()>=limit}))
+    Ok(json!({"matches":matches,"limit":limit,"truncated":truncated}))
 }
 
 pub fn search_paged(
+    conn: &rusqlite::Connection,
     root: &Path,
     pattern: &str,
     language: &str,
@@ -70,39 +75,51 @@ pub fn search_paged(
     );
     let root = scanner::canonical_root(root)?;
     let adapter = scanner::load_adapter(&root, None)?;
-    let mut scan = scanner::scan_with_adapter(&root, &adapter)?;
-    scan.entries
-        .sort_by(|left, right| left.path.cmp(&right.path));
-    let mut hash = Sha256::new();
-    hash.update(scanner::INDEX_SEMANTICS_VERSION);
-    hash.update(&adapter.digest);
-    for file in &scan.entries {
-        hash.update(file.path.as_bytes());
-        hash.update([0]);
-        hash.update(file.digest.as_bytes());
-    }
-    let generation = format!("{:x}", hash.finalize());
-    anyhow::ensure!(
-        options
-            .generation
-            .as_ref()
-            .is_none_or(|old| old == &generation),
-        "source generation changed; restart AST search at offset 0 without generation"
-    );
+    let generation = crate::db::paging::generation(conn, options)?;
     if let Some(path) = path {
         scanner::resolve_file_path(&root, &adapter, path)?;
     }
-    let prefix = path.map(|p| format!("{}/", p.trim_end_matches('/')));
+    let path = path.unwrap_or("");
+    let (path_start, path_end) = crate::db::reader::path_bounds(path);
+    let files = crate::db::reader::rows(
+        conn,
+        "SELECT path,digest FROM files WHERE status='indexed' AND language=?1 AND (?2='' OR path=?2 OR (path>=?3 AND path<?4)) ORDER BY path",
+        &[&language, &path, &path_start, &path_end],
+        500000,
+    )?;
+    let literal_tokens = ast_literal_tokens(pattern);
+    let candidate_paths = if literal_tokens.is_empty() {
+        None
+    } else {
+        let query = literal_tokens
+            .iter()
+            .map(|token| format!("\"{token}\""))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let candidates = crate::db::reader::rows(
+            conn,
+            "SELECT DISTINCT n.path FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND n.language=?2",
+            &[&query, &language],
+            500000,
+        )?;
+        (!candidates.is_empty()).then(|| {
+            candidates
+                .iter()
+                .filter_map(|candidate| candidate["path"].as_str().map(str::to_owned))
+                .collect::<std::collections::HashSet<_>>()
+        })
+    };
     let mut items = Vec::new();
     let mut matched = 0;
     let mut complete = true;
     let mut work_limited = false;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    for file in scan.entries {
-        if file.language != language
-            || path.is_some_and(|p| {
-                file.path != p && !file.path.starts_with(prefix.as_deref().unwrap_or(""))
-            })
+    for file in files {
+        let file_path = file["path"].as_str().unwrap_or_default();
+        let file_digest = file["digest"].as_str().unwrap_or_default();
+        if candidate_paths
+            .as_ref()
+            .is_some_and(|candidates| !candidates.contains(file_path))
         {
             continue;
         }
@@ -112,9 +129,9 @@ pub fn search_paged(
             break;
         }
         let source =
-            std::fs::read_to_string(scanner::resolve_file_path(&root, &adapter, &file.path)?)?;
+            std::fs::read_to_string(scanner::resolve_file_path(&root, &adapter, file_path)?)?;
         anyhow::ensure!(
-            scanner::digest(source.as_bytes()) == file.digest,
+            scanner::digest(source.as_bytes()) == file_digest,
             "source changed during AST query; retry"
         );
         let remaining = limit - items.len();
@@ -124,7 +141,7 @@ pub fn search_paged(
         }
         let page = ast::search_page(
             &source,
-            &file.path,
+            file_path,
             language,
             pattern,
             options.offset.saturating_sub(matched),
@@ -153,4 +170,49 @@ pub fn search_paged(
     Ok(
         json!({"generation":generation,"matches":{"total":if complete {Some(matched)} else {None},"total_status":if complete {"exact"} else {"unavailable"},"offset":options.offset,"limit":limit,"items":items,"has_more":has_more,"next_offset":if can_continue {Some(next)} else {None},"generation":generation,"computation_truncated":work_limited,"continuation_hint":hint}}),
     )
+}
+
+fn ast_literal_tokens(pattern: &str) -> Vec<String> {
+    const TREE_SITTER_KINDS: &[&str] = &[
+        "identifier",
+        "function_item",
+        "function_declaration",
+        "call_expression",
+        "expression_statement",
+        "string_literal",
+        "integer_literal",
+        "block",
+        "arguments",
+        "parameters",
+        "parameter",
+        "module",
+    ];
+    let mut tokens = Vec::new();
+    let bytes = pattern.as_bytes();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        if !bytes[offset].is_ascii_alphanumeric() && bytes[offset] != b'_' {
+            offset += 1;
+            continue;
+        }
+        let start = offset;
+        while offset < bytes.len()
+            && (bytes[offset].is_ascii_alphanumeric() || bytes[offset] == b'_')
+        {
+            offset += 1;
+        }
+        let token = &pattern[start..offset];
+        let after = pattern[start + token.len()..].trim_start();
+        let before = pattern[..start].trim_end();
+        let is_capture = before.ends_with('@');
+        let is_field = after.starts_with(':');
+        let is_node_kind = token.contains('_') && !after.starts_with('(');
+        if is_capture || is_field || is_node_kind || TREE_SITTER_KINDS.contains(&token) {
+            continue;
+        }
+        tokens.push(token.to_owned());
+    }
+    tokens.sort();
+    tokens.dedup();
+    tokens
 }

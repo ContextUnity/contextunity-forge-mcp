@@ -104,11 +104,51 @@ impl LanguageProfile for Html {
         module: &str,
         facts: &mut Facts,
     ) -> Result<()> {
+        let (parsed_source, _has_template_tags) = preprocess_template(source, path, facts);
+        let parse_input = parsed_source.as_deref().unwrap_or(source);
+        let is_script_fragment = (path.contains("_script") || path.contains("script"))
+            && !parse_input.contains("<html")
+            && !parse_input.contains("<div")
+            && !parse_input.contains("<body")
+            && !parse_input.contains("<template")
+            && !parse_input.contains("<script");
+        if is_script_fragment {
+            if let Some(javascript) = by_id("javascript") {
+                let mut wrapped = String::with_capacity(parse_input.len() + 8);
+                wrapped.push_str("({\n");
+                wrapped.push_str(parse_input);
+                wrapped.push_str("\n})");
+                if let Ok(mut parser) = javascript.create_parser(path) {
+                    if let Some(tree) = parser.parse(&wrapped, None) {
+                        let owner = format!("module:{path}");
+                        let mut nodes = vec![tree.root_node()];
+                        while let Some(node) = nodes.pop() {
+                            javascript.extract_imports(
+                                &SyntaxContext {
+                                    node,
+                                    source: &wrapped,
+                                    owner: &owner,
+                                    offset: 0,
+                                },
+                                facts,
+                            );
+                            let mut cursor = node.walk();
+                            nodes.extend(node.named_children(&mut cursor));
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
         let tree = self
             .create_parser(path)?
-            .parse(source, None)
+            .parse(parse_input, None)
             .context("HTML parse cancelled")?;
+        let err_count = facts.errors.len();
         ast::extract_tree(self, tree.root_node(), path, source, module, facts);
+        if _has_template_tags {
+            facts.errors.truncate(err_count);
+        }
         let javascript = by_id("javascript");
         let mut parser = javascript
             .map(|profile| profile.create_parser(path))
@@ -128,13 +168,17 @@ impl LanguageProfile for Html {
                             .filter(|n| n.kind() == "raw_text")
                         {
                             let script = text(body, source);
+                            let has_script_templates = script.contains("{%")
+                                || script.contains("{{");
                             let parsed = parser
                                 .parse(script, None)
                                 .context("embedded JavaScript parse cancelled")?;
                             let offset = body.start_position().row;
                             let mut script_nodes = vec![parsed.root_node()];
                             while let Some(script_node) = script_nodes.pop() {
-                                if script_node.is_error() || script_node.is_missing() {
+                                if (script_node.is_error() || script_node.is_missing())
+                                    && !has_script_templates
+                                {
                                     facts.errors.push(Diagnostic {
                                         path: path.into(),
                                         line: offset + script_node.start_position().row + 1,
@@ -163,6 +207,141 @@ impl LanguageProfile for Html {
         }
         Ok(())
     }
+}
+
+fn is_html_entity(slice: &str) -> bool {
+    if !slice.starts_with('&') {
+        return false;
+    }
+    if let Some(semi) = slice.find(';') {
+        if semi > 1 && semi <= 12 {
+            let inner = &slice[1..semi];
+            if let Some(num) = inner.strip_prefix('#') {
+                if let Some(hex) = num.strip_prefix(['x', 'X']) {
+                    !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit())
+                } else {
+                    !num.is_empty() && num.chars().all(|c| c.is_ascii_digit())
+                }
+            } else {
+                inner.chars().all(|c| c.is_ascii_alphanumeric())
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+fn preprocess_template(
+    source: &str,
+    path: &str,
+    facts: &mut Facts,
+) -> (Option<String>, bool) {
+    let has_templates = source.contains("{%") || source.contains("{{") || source.contains("{#");
+    let has_amp = source.contains('&');
+    if !has_templates && !has_amp {
+        return (None, false);
+    }
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'{' {
+            if bytes[i + 1] == b'#' {
+                let start = i;
+                let end = match source[start + 2..].find("#}") {
+                    Some(rel) => start + 2 + rel + 2,
+                    None => bytes.len(),
+                };
+                for b in &bytes[start..end] {
+                    out.push(if *b == b'\n' { '\n' } else { ' ' });
+                }
+                i = end;
+                continue;
+            } else if bytes[i + 1] == b'%' {
+                let start = i;
+                let (end, closed) = match source[start + 2..].find("%}") {
+                    Some(rel) => (start + 2 + rel + 2, true),
+                    None => (bytes.len(), false),
+                };
+                if closed && end >= start + 4 {
+                    let tag_content = source[start + 2..end - 2].trim();
+                    let line = source[..start].bytes().filter(|b| *b == b'\n').count() + 1;
+
+                    if let Some(rest) = tag_content.strip_prefix("include ") {
+                        if let Some(target) = extract_template_target(rest) {
+                            emit_template_reference(path, target, "includes", line, facts);
+                        }
+                    } else if let Some(rest) = tag_content.strip_prefix("extends ") {
+                        if let Some(target) = extract_template_target(rest) {
+                            emit_template_reference(path, target, "extends", line, facts);
+                        }
+                    }
+                }
+
+                for b in &bytes[start..end] {
+                    out.push(if *b == b'\n' { '\n' } else { ' ' });
+                }
+                i = end;
+                continue;
+            } else if bytes[i + 1] == b'{' {
+                let start = i;
+                let end = match source[start + 2..].find("}}") {
+                    Some(rel) => start + 2 + rel + 2,
+                    None => bytes.len(),
+                };
+                for b in &bytes[start..end] {
+                    out.push(if *b == b'\n' { '\n' } else { ' ' });
+                }
+                i = end;
+                continue;
+            }
+        }
+        if bytes[i] == b'&' && !is_html_entity(&source[i..]) {
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+        let c = source[i..].chars().next().unwrap();
+        out.push(c);
+        i += c.len_utf8();
+    }
+    (Some(out), true)
+}
+
+fn extract_template_target(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    let quote = trimmed.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let rest = &trimmed[1..];
+    let end = rest.find(quote)?;
+    let target = &rest[..end];
+    if target.is_empty() {
+        None
+    } else {
+        Some(target)
+    }
+}
+
+fn emit_template_reference(
+    path: &str,
+    target: &str,
+    kind: &str,
+    line: usize,
+    facts: &mut Facts,
+) {
+    facts.references.push(Reference {
+        source: format!("module:{path}"),
+        dynamic: false,
+        expression: target.to_string(),
+        kind: kind.into(),
+        line,
+        alias: None,
+        module: Some(target.to_string()),
+    });
 }
 
 struct HtmxAttribute<'a> {

@@ -9,8 +9,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const ENGINE_SCHEMA_VERSION: &str = "2";
-pub const INDEX_SEMANTICS_VERSION: &str = concat!("5:", env!("FORGE_LANGUAGE_PROFILE_DIGEST"));
+pub const ENGINE_SCHEMA_VERSION: &str = "3";
+pub const INDEX_SEMANTICS_VERSION: &str = concat!("6:", env!("FORGE_LANGUAGE_PROFILE_DIGEST"));
 const MAX_FILES: usize = 100_000;
 pub(crate) const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;
