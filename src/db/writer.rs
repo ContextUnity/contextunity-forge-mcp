@@ -224,7 +224,11 @@ fn populate(
         .chain(graph.coverage.iter().map(|c| c.path.as_str()));
     path_cache.bulk_insert(&tx, all_paths)?;
 
-    let (node_id, docs_count) = persist_files(&tx, &mut path_cache, entries, facts, encoded_facts)?;
+    let (node_id, docs_count) = persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
+    tx.execute(
+        "INSERT INTO node_search(rowid,search_text) SELECT node_id,search_text FROM owned_search_raw",
+        [],
+    )?;
     persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, true)?;
     persist_file_commitments(&tx, entries, facts, &graph)?;
     let rows_ms = writing.elapsed().as_secs_f64() * 1000.;
@@ -885,7 +889,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         }
     }
     let files_writing = Instant::now();
-    persist_files(&tx, &mut path_cache, &changed_entries, &facts, None)?;
+    persist_files(&tx, &mut path_cache, &changed_entries, &facts, None, false)?;
     let files_ms = files_writing.elapsed().as_secs_f64() * 1000.;
     let graph_writing = Instant::now();
     persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, false)?;
@@ -1131,55 +1135,88 @@ impl PathDictionaryCache {
     }
 }
 
-fn shared_key_hash(
-    conn: &Connection,
-    cache: &mut hashbrown::HashMap<String, i64>,
-    key: &str,
-) -> Result<i64> {
-    if let Some(hash) = cache.get(key) {
-        return Ok(*hash);
-    }
-    let hash = stable_hash64(key);
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT key FROM shared_keys WHERE key_hash=?1",
-            [hash],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(existing) = existing {
-        if existing != key {
-            bail!("shared key hash collision detected");
-        }
-    } else {
-        conn.execute(
-            "INSERT INTO shared_keys(key_hash,key) VALUES(?1,?2)",
-            params![hash, key],
-        )?;
-    }
-    cache.insert(key.to_owned(), hash);
-    Ok(hash)
+pub struct SharedKeyCache<'conn> {
+    cache: hashbrown::HashMap<String, i64>,
+    hash_to_key: hashbrown::HashMap<i64, String>,
+    stmt_insert: rusqlite::Statement<'conn>,
+    stmt_select: Option<rusqlite::Statement<'conn>>,
 }
 
-fn coverage_expression_id(
-    conn: &Connection,
-    cache: &mut hashbrown::HashMap<String, i64>,
-    expression: &str,
-) -> Result<i64> {
-    if let Some(id) = cache.get(expression) {
-        return Ok(*id);
+impl<'conn> SharedKeyCache<'conn> {
+    pub fn new(conn: &'conn Connection, is_delta: bool) -> Result<Self> {
+        let stmt_insert = conn.prepare("INSERT INTO shared_keys(key_hash,key) VALUES(?1,?2)")?;
+        let stmt_select = if is_delta {
+            Some(conn.prepare("SELECT key FROM shared_keys WHERE key_hash=?1")?)
+        } else {
+            None
+        };
+        Ok(Self {
+            cache: hashbrown::HashMap::new(),
+            hash_to_key: hashbrown::HashMap::new(),
+            stmt_insert,
+            stmt_select,
+        })
     }
-    conn.execute(
-        "INSERT OR IGNORE INTO coverage_expressions(expression) VALUES(?1)",
-        [expression],
-    )?;
-    let id = conn.query_row(
-        "SELECT expression_id FROM coverage_expressions WHERE expression=?1",
-        [expression],
-        |row| row.get(0),
-    )?;
-    cache.insert(expression.to_owned(), id);
-    Ok(id)
+
+    pub fn get_or_insert(&mut self, key: &str) -> Result<i64> {
+        if let Some(&hash) = self.cache.get(key) {
+            return Ok(hash);
+        }
+        let hash = stable_hash64(key);
+        if let Some(existing) = self.hash_to_key.get(&hash) {
+            if existing != key {
+                bail!("shared key hash collision detected");
+            }
+        } else {
+            if let Some(stmt) = self.stmt_select.as_mut() {
+                let existing: Option<String> = stmt
+                    .query_row([hash], |row| row.get(0))
+                    .optional()?;
+                if let Some(existing) = existing {
+                    if existing != key {
+                        bail!("shared key hash collision detected");
+                    }
+                    self.hash_to_key.insert(hash, existing);
+                    self.cache.insert(key.to_owned(), hash);
+                    return Ok(hash);
+                }
+            }
+            self.stmt_insert.execute(params![hash, key])?;
+            self.hash_to_key.insert(hash, key.to_owned());
+        }
+        self.cache.insert(key.to_owned(), hash);
+        Ok(hash)
+    }
+}
+
+pub struct CoverageExpressionCache<'conn> {
+    cache: hashbrown::HashMap<String, i64>,
+    stmt_insert: rusqlite::Statement<'conn>,
+    stmt_select: rusqlite::Statement<'conn>,
+}
+
+impl<'conn> CoverageExpressionCache<'conn> {
+    pub fn new(conn: &'conn Connection) -> Result<Self> {
+        let stmt_insert =
+            conn.prepare("INSERT OR IGNORE INTO coverage_expressions(expression) VALUES(?1)")?;
+        let stmt_select =
+            conn.prepare("SELECT expression_id FROM coverage_expressions WHERE expression=?1")?;
+        Ok(Self {
+            cache: hashbrown::HashMap::new(),
+            stmt_insert,
+            stmt_select,
+        })
+    }
+
+    pub fn get_or_insert(&mut self, expression: &str) -> Result<i64> {
+        if let Some(&id) = self.cache.get(expression) {
+            return Ok(id);
+        }
+        self.stmt_insert.execute([expression])?;
+        let id: i64 = self.stmt_select.query_row([expression], |row| row.get(0))?;
+        self.cache.insert(expression.to_owned(), id);
+        Ok(id)
+    }
 }
 
 fn encode_facts(facts: &Facts) -> Result<Vec<u8>> {
@@ -1198,6 +1235,7 @@ fn persist_files(
     entries: &[FileEntry],
     facts: &BTreeMap<String, Facts>,
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
+    bulk_search: bool,
 ) -> Result<(i64, usize)> {
     let mut node_id: i64 = tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
         r.get(0)
@@ -1212,12 +1250,13 @@ fn persist_files(
         tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")?;
     let mut stmt_owner_override = tx.prepare("INSERT INTO node_owner_overrides VALUES(?1,?2)")?;
     let mut stmt_owned_search = tx.prepare("INSERT INTO owned_search_raw VALUES(?1,?2)")?;
-    let mut stmt_node_search =
-        tx.prepare("INSERT INTO node_search(rowid,search_text)VALUES(?1,?2)")?;
+    let mut stmt_node_search = (!bulk_search)
+        .then(|| tx.prepare("INSERT INTO node_search(rowid,search_text)VALUES(?1,?2)"))
+        .transpose()?;
     let mut stmt_shared_owner = tx.prepare(
         "INSERT OR IGNORE INTO shared_owners_raw(kind_id,key_hash,owner_id,ordinal) VALUES(?1,?2,?3,?4)",
     )?;
-    let mut shared_key_cache = hashbrown::HashMap::new();
+    let mut shared_key_cache = SharedKeyCache::new(tx, !bulk_search)?;
     let mut stmt_doc_sec =
         tx.prepare("INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")?;
     let mut stmt_doc_search = tx.prepare("INSERT INTO doc_search(rowid,section_title,content,invariants)SELECT rowid,section_title,content,invariants FROM doc_sections WHERE path=?1")?;
@@ -1280,17 +1319,19 @@ fn persist_files(
                 }
             }
             stmt_owned_search.execute(params![node_id, search])?;
-            stmt_node_search.execute(params![node_id, search])?;
-            let key_hash = shared_key_hash(tx, &mut shared_key_cache, &n.qualname)?;
+            if let Some(stmt_node_search) = stmt_node_search.as_mut() {
+                stmt_node_search.execute(params![node_id, search])?;
+            }
+            let key_hash = shared_key_cache.get_or_insert(&n.qualname)?;
             stmt_shared_owner.execute(params![0, key_hash, owner_id, node_id])?;
         }
         for key in reference_keys(f) {
-            let key_hash = shared_key_hash(tx, &mut shared_key_cache, &key)?;
+            let key_hash = shared_key_cache.get_or_insert(&key)?;
             stmt_shared_owner.execute(params![1, key_hash, owner_id, 0])?;
         }
         for n in &f.nodes {
             if n.details["default_export"] == true {
-                let key_hash = shared_key_hash(tx, &mut shared_key_cache, &n.id)?;
+                let key_hash = shared_key_cache.get_or_insert(&n.id)?;
                 stmt_shared_owner.execute(params![2, key_hash, owner_id, 0])?;
             }
         }
@@ -1309,7 +1350,9 @@ fn persist_files(
                 d.is_invariant
             ])?;
         }
-        stmt_doc_search.execute([&file.path])?;
+        if !f.docs.is_empty() {
+            stmt_doc_search.execute([&file.path])?;
+        }
         for e in &f.errors {
             stmt_errors.execute(params![e.path, e.line, e.message])?;
         }
@@ -1328,9 +1371,8 @@ fn persist_graph(
     let mut ordinals: hashbrown::HashMap<&str, usize> = hashbrown::HashMap::new();
     let mut stmt_occ =
         tx.prepare("INSERT INTO edge_occurrences_raw VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
-    let mut stmt_edges = materialize_edges
-        .then(|| tx.prepare("INSERT INTO edges_raw(src_hash,kind,dst_hash,path_id,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,1)ON CONFLICT(src_hash,kind,dst_hash)DO UPDATE SET occurrence_count=occurrence_count+1"))
-        .transpose()?;
+    let mut unique_edges: hashbrown::HashMap<(i64, &str, i64), (i64, usize, &str, &str, i64)> =
+        hashbrown::HashMap::with_capacity(if materialize_edges { graph.edges.len() } else { 0 });
     let mut stmt_deps =
         tx.prepare("INSERT INTO dependencies_raw VALUES(?1,?2,?3,?4,?5,'resolved')")?;
     let mut stmt_select_path = tx.prepare_cached("SELECT path FROM nodes WHERE id=?1")?;
@@ -1341,7 +1383,7 @@ fn persist_graph(
     )?;
     let mut stmt_unres =
         tx.prepare("INSERT INTO dependencies_raw VALUES(?1,?2,NULL,'unresolved',?3,?4)")?;
-    let mut coverage_expression_ids = hashbrown::HashMap::new();
+    let mut coverage_expression_cache = CoverageExpressionCache::new(tx)?;
     let mut dependency_ordinals = hashbrown::HashMap::<i64, i64>::new();
 
     for e in &graph.edges {
@@ -1360,30 +1402,28 @@ fn persist_graph(
             e.confidence
         ])?;
         *ordinal += 1;
-        if let Some(stmt_edges) = stmt_edges.as_mut() {
-            stmt_edges.execute(params![
-                src_hash,
-                e.kind,
-                dst_hash,
-                owner_id,
-                e.line,
-                e.evidence,
-                e.confidence
-            ])?;
+        if materialize_edges {
+            unique_edges
+                .entry((src_hash, e.kind.as_str(), dst_hash))
+                .and_modify(|entry| entry.4 += 1)
+                .or_insert((owner_id, e.line, e.evidence.as_str(), e.confidence.as_str(), 1));
         }
         let mut target_hashes = [None, None];
         let mut targets_len = 0;
         for endpoint in [&e.src, &e.dst] {
-            if !node_paths.contains_key(endpoint.as_str()) {
-                let p: Option<String> = stmt_select_path
-                    .query_row([endpoint], |r| r.get(0))
-                    .optional()?;
-                node_paths.insert(endpoint.clone(), p);
-            }
-            let target = node_paths
-                .get(endpoint.as_str())
-                .and_then(Option::as_deref)
-                .with_context(|| format!("edge {} has missing endpoint {endpoint}", e.kind))?;
+            let target = match node_paths.get(endpoint.as_str()) {
+                Some(Some(target)) => target.as_str(),
+                Some(None) => bail!("edge {} has missing endpoint {endpoint}", e.kind),
+                None => {
+                    let p: Option<String> = stmt_select_path
+                        .query_row([endpoint], |r| r.get(0))
+                        .optional()?;
+                    let entry = node_paths.entry(endpoint.to_string()).or_insert(p);
+                    entry.as_deref().with_context(|| {
+                        format!("edge {} has missing endpoint {endpoint}", e.kind)
+                    })?
+                }
+            };
             if target != e.path {
                 let target_hash = stable_hash64(target);
                 if !target_hashes[..targets_len].contains(&Some(target_hash)) {
@@ -1398,10 +1438,28 @@ fn persist_graph(
             *ordinal += 1;
         }
     }
+    if materialize_edges {
+        let mut stmt_insert_edge = tx.prepare(
+            "INSERT INTO edges_raw(src_hash,kind,dst_hash,path_id,line,evidence,confidence,occurrence_count) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        )?;
+        for ((src_hash, kind, dst_hash), (path_id, line, evidence, confidence, count)) in
+            unique_edges
+        {
+            stmt_insert_edge.execute(params![
+                src_hash,
+                kind,
+                dst_hash,
+                path_id,
+                line,
+                evidence,
+                confidence,
+                count
+            ])?;
+        }
+    }
     for c in &graph.coverage {
         let owner_id = path_cache.get_or_insert(tx, &c.path)?;
-        let expression_id =
-            coverage_expression_id(tx, &mut coverage_expression_ids, &c.expression)?;
+        let expression_id = coverage_expression_cache.get_or_insert(&c.expression)?;
         stmt_cov_evidence.execute([&c.evidence])?;
         stmt_cov.execute(params![
             owner_id,
@@ -1426,11 +1484,11 @@ fn persist_file_commitments(
     facts: &BTreeMap<String, Facts>,
     graph: &Graph,
 ) -> Result<()> {
-    let mut owned_edges: BTreeMap<&str, Vec<&Edge>> = BTreeMap::new();
+    let mut owned_edges: hashbrown::HashMap<&str, Vec<&Edge>> = hashbrown::HashMap::new();
     for e in &graph.edges {
         owned_edges.entry(&e.path).or_default().push(e);
     }
-    let mut owned_coverage: BTreeMap<&str, Vec<&Coverage>> = BTreeMap::new();
+    let mut owned_coverage: hashbrown::HashMap<&str, Vec<&Coverage>> = hashbrown::HashMap::new();
     for c in &graph.coverage {
         owned_coverage.entry(&c.path).or_default().push(c);
     }

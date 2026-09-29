@@ -120,7 +120,9 @@
       "documentation_search": "approximate: Forge uses indexed Markdown section search and anchors; Codebase literal-searches the Markdown file and returns a graph-enriched source window, without doc-type/section semantics",
       "documentation_read": "not equivalent: Forge retrieves indexed Markdown by path/section; Codebase search_code gives matching snippets, not a full document read",
       "tool_guide": "not equivalent: Codebase schema describes labels/edges but does not provide an interactive tool-selection or budget guide",
-      "session_checkpoint": "no counterpart: Codebase exposes no session checkpoint persistence tool"
+      "session_checkpoint": "no counterpart: Codebase exposes no session checkpoint persistence tool",
+      "codebase_low_confidence_summary": "diagnostic only: confidence < 0.5 is an analyst-selected triage threshold, not Codebase's canonical unresolved status",
+      "codebase_low_confidence_examples": "diagnostic only: raw candidate witnesses supplement index_status but do not form a complete unresolved-reference ledger"
     },
     "scenario_overrides": {
       "ast_pattern_search": {
@@ -344,6 +346,228 @@
           }
         },
         "reason": "replacement run verified read-only list against the isolated snapshot without checkpoint state"
+      },
+      "codebase_low_confidence_summary": {
+        "source_metadata": {
+          "created_at_utc": "2026-09-29T14:05:00.910340+00:00",
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp",
+          "source_snapshot": "both backends read the same temporary copy; Forge's indexed file count and resolver output_root are retained in index_builds and response examples",
+          "codebase_project": "home-oleksii-ContextUnity-projects-contextunity-forge-mcp",
+          "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+          "python": "3.13.11 (main, Dec 17 2025, 21:08:16) [Clang 21.1.4 ]",
+          "cpu_count": 16,
+          "cpu_measurement": "sum of Linux /proc/<pid>/task/<tid>/schedstat runtime nanoseconds across each tracked process tree",
+          "repeats_per_state": 5,
+          "cold_definition": "first request in a fresh Forge server/SQLite connection; Codebase daemon and graph connection are restarted before each cold repetition; both use freshly built isolated index files; Linux page cache is not flushed; startup time is reported separately",
+          "warm_definition": "same MCP process and SQLite connection after one discarded warm-up call",
+          "rss_definition": "summed process-tree VmRSS sampled every 5ms during the request; VmHWM is summed process-lifetime high water",
+          "cpu_definition": "summed process-tree scheduled runtime delta from /proc/<pid>/schedstat",
+          "index_mutations": "only disposable Forge DB and CBM_CACHE_DIR under /tmp/kilo were built; existing .forge and Codebase indexes/config were not modified",
+          "index_builds": {
+            "forge": {
+              "command": [
+                "/home/oleksii/.local/bin/contextunity-forge-mcp",
+                "--root",
+                "/tmp/kilo/forge-codebase-mcp-bench-z_8888ee/codebase-source",
+                "--db",
+                "/tmp/kilo/forge-codebase-mcp-bench-z_8888ee/forge-code-map.sqlite",
+                "build"
+              ],
+              "exit_code": 0,
+              "wall_ms": 711.966589,
+              "cpu_ms": 1875.1963329999999,
+              "rss_peak_kib": 63088,
+              "rss_hwm_kib": 63088,
+              "process_count": 1,
+              "stdout_tail": "{\n  \"files\": 110,\n  \"nodes\": 1927,\n  \"edges\": 4017,\n  \"doc_sections\": 49,\n  \"output_root\": \"4e3317c90c7352222bb87355efc18915c86460c6f2d8e7741f07f573fee88d2e\",\n  \"schema_version\": \"7\",\n  \"link_ms\": 16.894663,\n  \"persist_ms\": 263.30119,\n  \"rows_ms\": 234.22994,\n  \"indexes_ms\": 29.070479,\n  \"seal_ms\": 80.30546600000001,\n  \"verify_ms\": 14.714492,\n  \"verification_cache\": true,\n  \"scan_ms\": 4.017454,\n  \"extract_ms\": 129.27464999999998,\n  \"elapsed_ms\": 698.566154,\n  \"output\": \"/tmp/kilo/forge-codebase-mcp-bench-z_8888ee/forge-code-map.sqlite\"\n}\n",
+              "stderr_tail": "",
+              "db_bytes": 8617984
+            },
+            "codebase": {
+              "startup_ms": 4956.724069,
+              "wall_ms": 3464.832644,
+              "cpu_ms": 5768.604195,
+              "rss_before_kib": 13652,
+              "rss_peak_kib": 223900,
+              "rss_hwm_kib": 13728,
+              "process_count": 3,
+              "content_bytes": 503,
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "{\"project\":\"home-oleksii-ContextUnity-projects-contextunity-forge-mcp\",\"not_indexed_files_count\":0,\"skipped_count\":0,\"parse_partial_count\":0,\"nodes\":2019,\"edges\":9197,\"expected_nodes\":2019,\"expected_edges\":9197,\"adr_present\":false,\"adr_hint\":\"Project indexed. Consider creating an Architecture Decision Record: explore the codebase with get_architecture(aspects=['all']), then use manage_adr(mode='update') to persist architectural insights across sessions.\",\"artifact_present\":false,\"status\":\"indexed\"}"
+                    }
+                  ],
+                  "structuredContent": {
+                    "project": "home-oleksii-ContextUnity-projects-contextunity-forge-mcp",
+                    "not_indexed_files_count": 0,
+                    "skipped_count": 0,
+                    "parse_partial_count": 0,
+                    "nodes": 2019,
+                    "edges": 9197,
+                    "expected_nodes": 2019,
+                    "expected_edges": 9197,
+                    "adr_present": false,
+                    "adr_hint": "Project indexed. Consider creating an Architecture Decision Record: explore the codebase with get_architecture(aspects=['all']), then use manage_adr(mode='update') to persist architectural insights across sessions.",
+                    "artifact_present": false,
+                    "status": "indexed"
+                  },
+                  "isError": false
+                }
+              },
+              "cache_bytes": 13185828
+            },
+            "codebase_source_copy": {
+              "root": "/tmp/kilo/forge-codebase-mcp-bench-z_8888ee/codebase-source",
+              "included_roots": [
+                ".gitignore",
+                "Cargo.toml",
+                "Cargo.lock",
+                "build.rs",
+                "forge-mcp.yaml",
+                "README.md",
+                "docs",
+                "src",
+                "tests"
+              ],
+              "excluded": [
+                ".git",
+                ".forge",
+                ".codebase-memory",
+                "target",
+                "vendor",
+                "AGENTS.md",
+                ".agents",
+                "skills",
+                "mcp_tool_comparison_benchmark.py",
+                "mcp_tool_comparison_report.md",
+                "mcp_tool_comparison_results.json"
+              ]
+            }
+          },
+          "forge_index_bytes": 8617984,
+          "codebase_index_cache_bytes": 13191091,
+          "codebase_cache_dir_isolated": true,
+          "scenario_match": {
+            "codebase_low_confidence_summary": "diagnostic only: confidence < 0.5 is an analyst-selected triage threshold, not Codebase's canonical unresolved status"
+          }
+        },
+        "reason": "supplemental five-repeat Codebase-only triage query using an explicit confidence threshold"
+      },
+      "codebase_low_confidence_examples": {
+        "source_metadata": {
+          "created_at_utc": "2026-09-29T14:06:32.240162+00:00",
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp",
+          "source_snapshot": "both backends read the same temporary copy; Forge's indexed file count and resolver output_root are retained in index_builds and response examples",
+          "codebase_project": "home-oleksii-ContextUnity-projects-contextunity-forge-mcp",
+          "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+          "python": "3.13.11 (main, Dec 17 2025, 21:08:16) [Clang 21.1.4 ]",
+          "cpu_count": 16,
+          "cpu_measurement": "sum of Linux /proc/<pid>/task/<tid>/schedstat runtime nanoseconds across each tracked process tree",
+          "repeats_per_state": 5,
+          "cold_definition": "first request in a fresh Forge server/SQLite connection; Codebase daemon and graph connection are restarted before each cold repetition; both use freshly built isolated index files; Linux page cache is not flushed; startup time is reported separately",
+          "warm_definition": "same MCP process and SQLite connection after one discarded warm-up call",
+          "rss_definition": "summed process-tree VmRSS sampled every 5ms during the request; VmHWM is summed process-lifetime high water",
+          "cpu_definition": "summed process-tree scheduled runtime delta from /proc/<pid>/schedstat",
+          "index_mutations": "only disposable Forge DB and CBM_CACHE_DIR under /tmp/kilo were built; existing .forge and Codebase indexes/config were not modified",
+          "index_builds": {
+            "forge": {
+              "command": [
+                "/home/oleksii/.local/bin/contextunity-forge-mcp",
+                "--root",
+                "/tmp/kilo/forge-codebase-mcp-bench-8rt67tnv/codebase-source",
+                "--db",
+                "/tmp/kilo/forge-codebase-mcp-bench-8rt67tnv/forge-code-map.sqlite",
+                "build"
+              ],
+              "exit_code": 0,
+              "wall_ms": 1095.016587,
+              "cpu_ms": 2183.208689,
+              "rss_peak_kib": 64484,
+              "rss_hwm_kib": 64484,
+              "process_count": 1,
+              "stdout_tail": "{\n  \"files\": 110,\n  \"nodes\": 1927,\n  \"edges\": 4017,\n  \"doc_sections\": 49,\n  \"output_root\": \"915919a2b818115046c1e8374ff948bcb5dcca42a96462a7c6a9949e1b009edf\",\n  \"schema_version\": \"7\",\n  \"link_ms\": 38.338652,\n  \"persist_ms\": 270.847566,\n  \"rows_ms\": 241.823085,\n  \"indexes_ms\": 29.023981,\n  \"seal_ms\": 99.171645,\n  \"verify_ms\": 14.647185,\n  \"verification_cache\": true,\n  \"scan_ms\": 3.503716,\n  \"extract_ms\": 138.121199,\n  \"elapsed_ms\": 1081.936347,\n  \"output\": \"/tmp/kilo/forge-codebase-mcp-bench-8rt67tnv/forge-code-map.sqlite\"\n}\n",
+              "stderr_tail": "",
+              "db_bytes": 8617984
+            },
+            "codebase": {
+              "startup_ms": 5078.969667,
+              "wall_ms": 3919.929883,
+              "cpu_ms": 6387.748402000001,
+              "rss_before_kib": 13648,
+              "rss_peak_kib": 225340,
+              "rss_hwm_kib": 13724,
+              "process_count": 3,
+              "content_bytes": 503,
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "{\"project\":\"home-oleksii-ContextUnity-projects-contextunity-forge-mcp\",\"not_indexed_files_count\":0,\"skipped_count\":0,\"parse_partial_count\":0,\"nodes\":2019,\"edges\":9197,\"expected_nodes\":2019,\"expected_edges\":9197,\"adr_present\":false,\"adr_hint\":\"Project indexed. Consider creating an Architecture Decision Record: explore the codebase with get_architecture(aspects=['all']), then use manage_adr(mode='update') to persist architectural insights across sessions.\",\"artifact_present\":false,\"status\":\"indexed\"}"
+                    }
+                  ],
+                  "structuredContent": {
+                    "project": "home-oleksii-ContextUnity-projects-contextunity-forge-mcp",
+                    "not_indexed_files_count": 0,
+                    "skipped_count": 0,
+                    "parse_partial_count": 0,
+                    "nodes": 2019,
+                    "edges": 9197,
+                    "expected_nodes": 2019,
+                    "expected_edges": 9197,
+                    "adr_present": false,
+                    "adr_hint": "Project indexed. Consider creating an Architecture Decision Record: explore the codebase with get_architecture(aspects=['all']), then use manage_adr(mode='update') to persist architectural insights across sessions.",
+                    "artifact_present": false,
+                    "status": "indexed"
+                  },
+                  "isError": false
+                }
+              },
+              "cache_bytes": 13185828
+            },
+            "codebase_source_copy": {
+              "root": "/tmp/kilo/forge-codebase-mcp-bench-8rt67tnv/codebase-source",
+              "included_roots": [
+                ".gitignore",
+                "Cargo.toml",
+                "Cargo.lock",
+                "build.rs",
+                "forge-mcp.yaml",
+                "README.md",
+                "docs",
+                "src",
+                "tests"
+              ],
+              "excluded": [
+                ".git",
+                ".forge",
+                ".codebase-memory",
+                "target",
+                "vendor",
+                "AGENTS.md",
+                ".agents",
+                "skills",
+                "mcp_tool_comparison_benchmark.py",
+                "mcp_tool_comparison_report.md",
+                "mcp_tool_comparison_results.json"
+              ]
+            }
+          },
+          "forge_index_bytes": 8617984,
+          "codebase_index_cache_bytes": 13191145,
+          "codebase_cache_dir_isolated": true,
+          "scenario_match": {
+            "codebase_low_confidence_examples": "diagnostic only: raw candidate witnesses supplement index_status but do not form a complete unresolved-reference ledger"
+          }
+        },
+        "reason": "supplemental five-repeat Codebase-only candidate query using the same confidence threshold"
       }
     },
     "redactions": [
@@ -6116,6 +6340,350 @@
           "response_sha256": "9c19c05d8ebdd6fd5e90b9e5da3ba4de295f143298006d31c65fd37eb48c4c3a"
         }
       ]
+    },
+    {
+      "scenario_id": "codebase_low_confidence_summary",
+      "scenario": "Codebase-only diagnostic: group CALLS below confidence 0.5",
+      "backend": "codebase",
+      "tool": "query_graph",
+      "arguments": {
+        "project": "home-oleksii-ContextUnity-projects-contextunity-forge-mcp",
+        "query": "MATCH ()-[r:CALLS]->() WHERE r.confidence < 0.5 RETURN r.confidence AS confidence, r.strategy AS strategy, count(r) AS calls ORDER BY calls DESC LIMIT 50"
+      },
+      "state": "cold_process",
+      "repeats": 5,
+      "startup_median_ms": 5317.841054,
+      "summary": {
+        "median_wall_ms": 213.444892,
+        "median_cpu_ms": 195.11559499999987,
+        "median_rss_before_kib": 13652,
+        "median_rss_after_kib": 13864,
+        "median_rss_peak_kib": 34212,
+        "median_rss_hwm_kib": 36592,
+        "median_process_count": 2,
+        "median_wire_bytes": 806,
+        "median_content_bytes": 609
+      },
+      "runs": [
+        {
+          "wall_ms": 217.881167,
+          "cpu_ms": 204.6834430000004,
+          "rss_before_kib": 13652,
+          "rss_after_kib": 13864,
+          "rss_peak_kib": 33508,
+          "rss_hwm_kib": 36592,
+          "process_count": 2,
+          "wire_bytes": 806,
+          "content_bytes": 609,
+          "response_sha256": "17c48ab0c4618f11b3d38eda703d60bb649c0f854a563895fc34c03358dd1734"
+        },
+        {
+          "wall_ms": 209.499805,
+          "cpu_ms": 182.87784400000007,
+          "rss_before_kib": 13652,
+          "rss_after_kib": 13864,
+          "rss_peak_kib": 34516,
+          "rss_hwm_kib": 36592,
+          "process_count": 2,
+          "wire_bytes": 806,
+          "content_bytes": 609,
+          "response_sha256": "17c48ab0c4618f11b3d38eda703d60bb649c0f854a563895fc34c03358dd1734"
+        },
+        {
+          "wall_ms": 239.538147,
+          "cpu_ms": 234.3256329999992,
+          "rss_before_kib": 13652,
+          "rss_after_kib": 13864,
+          "rss_peak_kib": 34212,
+          "rss_hwm_kib": 36760,
+          "process_count": 2,
+          "wire_bytes": 806,
+          "content_bytes": 609,
+          "response_sha256": "17c48ab0c4618f11b3d38eda703d60bb649c0f854a563895fc34c03358dd1734"
+        },
+        {
+          "wall_ms": 204.801737,
+          "cpu_ms": 177.77905400000014,
+          "rss_before_kib": 13652,
+          "rss_after_kib": 13864,
+          "rss_peak_kib": 35924,
+          "rss_hwm_kib": 36896,
+          "process_count": 2,
+          "wire_bytes": 806,
+          "content_bytes": 609,
+          "response_sha256": "17c48ab0c4618f11b3d38eda703d60bb649c0f854a563895fc34c03358dd1734"
+        },
+        {
+          "wall_ms": 213.444892,
+          "cpu_ms": 195.11559499999987,
+          "rss_before_kib": 13648,
+          "rss_after_kib": 13860,
+          "rss_peak_kib": 33520,
+          "rss_hwm_kib": 36364,
+          "process_count": 2,
+          "wire_bytes": 806,
+          "content_bytes": 609,
+          "response_sha256": "17c48ab0c4618f11b3d38eda703d60bb649c0f854a563895fc34c03358dd1734"
+        }
+      ]
+    },
+    {
+      "scenario_id": "codebase_low_confidence_summary",
+      "scenario": "Codebase-only diagnostic: group CALLS below confidence 0.5",
+      "backend": "codebase",
+      "tool": "query_graph",
+      "arguments": {
+        "project": "home-oleksii-ContextUnity-projects-contextunity-forge-mcp",
+        "query": "MATCH ()-[r:CALLS]->() WHERE r.confidence < 0.5 RETURN r.confidence AS confidence, r.strategy AS strategy, count(r) AS calls ORDER BY calls DESC LIMIT 50"
+      },
+      "state": "warm_process",
+      "repeats": 5,
+      "startup_median_ms": 5963.702849,
+      "summary": {
+        "median_wall_ms": 103.970652,
+        "median_cpu_ms": 97.85168600000027,
+        "median_rss_before_kib": 13904,
+        "median_rss_after_kib": 13956,
+        "median_rss_peak_kib": 34168,
+        "median_rss_hwm_kib": 36584,
+        "median_process_count": 2,
+        "median_wire_bytes": 806,
+        "median_content_bytes": 609
+      },
+      "runs": [
+        {
+          "wall_ms": 130.416603,
+          "cpu_ms": 103.28653799999987,
+          "rss_before_kib": 13860,
+          "rss_after_kib": 13904,
+          "rss_peak_kib": 36448,
+          "rss_hwm_kib": 36116,
+          "process_count": 2,
+          "wire_bytes": 806,
+          "content_bytes": 609,
+          "response_sha256": "f04ddb3bf8865f06975e4919dcaef4ceb7de506afeaf793ef616072c5c08d32f"
+        },
+        {
+          "wall_ms": 132.920925,
+          "cpu_ms": 97.85168600000027,
+          "rss_before_kib": 13904,
+          "rss_after_kib": 13904,
+          "rss_peak_kib": 34168,
+          "rss_hwm_kib": 36228,
+          "process_count": 2,
+          "wire_bytes": 806,
+          "content_bytes": 609,
+          "response_sha256": "98012f64396fe21e80797bc8997b36215190a89791be9b09186f1979e1c1c8be"
+        },
+        {
+          "wall_ms": 103.970652,
+          "cpu_ms": 100.60897299999993,
+          "rss_before_kib": 13904,
+          "rss_after_kib": 13956,
+          "rss_peak_kib": 34504,
+          "rss_hwm_kib": 36584,
+          "process_count": 2,
+          "wire_bytes": 806,
+          "content_bytes": 609,
+          "response_sha256": "1ea8cce23c37dd68eb208ccc818aeed9a453f37fcd9b870ce9adec23c2490220"
+        },
+        {
+          "wall_ms": 100.763546,
+          "cpu_ms": 92.14925299999965,
+          "rss_before_kib": 13956,
+          "rss_after_kib": 14008,
+          "rss_peak_kib": 34144,
+          "rss_hwm_kib": 36584,
+          "process_count": 2,
+          "wire_bytes": 806,
+          "content_bytes": 609,
+          "response_sha256": "2434d6e2e52da211866353f45826bf61171a3e57247d36a5cfaa38604054b69d"
+        },
+        {
+          "wall_ms": 93.38723,
+          "cpu_ms": 84.58367300000091,
+          "rss_before_kib": 14008,
+          "rss_after_kib": 14012,
+          "rss_peak_kib": 33740,
+          "rss_hwm_kib": 36596,
+          "process_count": 2,
+          "wire_bytes": 806,
+          "content_bytes": 609,
+          "response_sha256": "8d3e46c198aab21c7aa0f542b0288c5924498b1f3ab0dc99b230128bdc9aa926"
+        }
+      ]
+    },
+    {
+      "scenario_id": "codebase_low_confidence_examples",
+      "scenario": "Codebase-only diagnostic: inspect low-confidence call candidates",
+      "backend": "codebase",
+      "tool": "query_graph",
+      "arguments": {
+        "project": "home-oleksii-ContextUnity-projects-contextunity-forge-mcp",
+        "query": "MATCH (caller)-[r:CALLS]->(target) WHERE r.confidence < 0.5 RETURN caller.qualified_name, r.callee, r.confidence, r.strategy, r.candidates, target.qualified_name LIMIT 30"
+      },
+      "state": "cold_process",
+      "repeats": 5,
+      "startup_median_ms": 5191.681457,
+      "summary": {
+        "median_wall_ms": 199.578438,
+        "median_cpu_ms": 180.58378900000082,
+        "median_rss_before_kib": 13648,
+        "median_rss_after_kib": 13864,
+        "median_rss_peak_kib": 34016,
+        "median_rss_hwm_kib": 36636,
+        "median_process_count": 2,
+        "median_wire_bytes": 7076,
+        "median_content_bytes": 6814
+      },
+      "runs": [
+        {
+          "wall_ms": 198.772349,
+          "cpu_ms": 180.58378900000082,
+          "rss_before_kib": 13644,
+          "rss_after_kib": 13860,
+          "rss_peak_kib": 33088,
+          "rss_hwm_kib": 36644,
+          "process_count": 2,
+          "wire_bytes": 7076,
+          "content_bytes": 6814,
+          "response_sha256": "7b5796d885cbab43e863a34e6e9bd338a907c30320138e511010dcc928b37fc5"
+        },
+        {
+          "wall_ms": 218.296719,
+          "cpu_ms": 206.09672699999936,
+          "rss_before_kib": 13652,
+          "rss_after_kib": 13868,
+          "rss_peak_kib": 34016,
+          "rss_hwm_kib": 35964,
+          "process_count": 2,
+          "wire_bytes": 7076,
+          "content_bytes": 6814,
+          "response_sha256": "7b5796d885cbab43e863a34e6e9bd338a907c30320138e511010dcc928b37fc5"
+        },
+        {
+          "wall_ms": 233.823803,
+          "cpu_ms": 207.8614959999996,
+          "rss_before_kib": 13652,
+          "rss_after_kib": 13868,
+          "rss_peak_kib": 36484,
+          "rss_hwm_kib": 36240,
+          "process_count": 2,
+          "wire_bytes": 7076,
+          "content_bytes": 6814,
+          "response_sha256": "7b5796d885cbab43e863a34e6e9bd338a907c30320138e511010dcc928b37fc5"
+        },
+        {
+          "wall_ms": 171.237024,
+          "cpu_ms": 161.8866170000004,
+          "rss_before_kib": 13648,
+          "rss_after_kib": 13864,
+          "rss_peak_kib": 33652,
+          "rss_hwm_kib": 36772,
+          "process_count": 2,
+          "wire_bytes": 7076,
+          "content_bytes": 6814,
+          "response_sha256": "7b5796d885cbab43e863a34e6e9bd338a907c30320138e511010dcc928b37fc5"
+        },
+        {
+          "wall_ms": 199.578438,
+          "cpu_ms": 176.94541299999943,
+          "rss_before_kib": 13648,
+          "rss_after_kib": 13864,
+          "rss_peak_kib": 35292,
+          "rss_hwm_kib": 36636,
+          "process_count": 2,
+          "wire_bytes": 7076,
+          "content_bytes": 6814,
+          "response_sha256": "7b5796d885cbab43e863a34e6e9bd338a907c30320138e511010dcc928b37fc5"
+        }
+      ]
+    },
+    {
+      "scenario_id": "codebase_low_confidence_examples",
+      "scenario": "Codebase-only diagnostic: inspect low-confidence call candidates",
+      "backend": "codebase",
+      "tool": "query_graph",
+      "arguments": {
+        "project": "home-oleksii-ContextUnity-projects-contextunity-forge-mcp",
+        "query": "MATCH (caller)-[r:CALLS]->(target) WHERE r.confidence < 0.5 RETURN caller.qualified_name, r.callee, r.confidence, r.strategy, r.candidates, target.qualified_name LIMIT 30"
+      },
+      "state": "warm_process",
+      "repeats": 5,
+      "startup_median_ms": 4992.472874,
+      "summary": {
+        "median_wall_ms": 74.911385,
+        "median_cpu_ms": 58.92956000000016,
+        "median_rss_before_kib": 13904,
+        "median_rss_after_kib": 13952,
+        "median_rss_peak_kib": 34920,
+        "median_rss_hwm_kib": 36560,
+        "median_process_count": 2,
+        "median_wire_bytes": 7076,
+        "median_content_bytes": 6814
+      },
+      "runs": [
+        {
+          "wall_ms": 92.749687,
+          "cpu_ms": 79.77853799999934,
+          "rss_before_kib": 13864,
+          "rss_after_kib": 13904,
+          "rss_peak_kib": 32880,
+          "rss_hwm_kib": 36560,
+          "process_count": 2,
+          "wire_bytes": 7076,
+          "content_bytes": 6814,
+          "response_sha256": "bceb591390565f6deff4ce88c89194c6d457d427583a5a20826156080ef5ef57"
+        },
+        {
+          "wall_ms": 73.645488,
+          "cpu_ms": 57.12077300000029,
+          "rss_before_kib": 13904,
+          "rss_after_kib": 13904,
+          "rss_peak_kib": 34696,
+          "rss_hwm_kib": 36560,
+          "process_count": 2,
+          "wire_bytes": 7076,
+          "content_bytes": 6814,
+          "response_sha256": "65d5e96e7c82a6bbc9799a68ce7f643cb5f90b9fb52a269a4d278d10d2d696e9"
+        },
+        {
+          "wall_ms": 73.101563,
+          "cpu_ms": 57.52512799999998,
+          "rss_before_kib": 13904,
+          "rss_after_kib": 13952,
+          "rss_peak_kib": 34920,
+          "rss_hwm_kib": 36560,
+          "process_count": 2,
+          "wire_bytes": 7076,
+          "content_bytes": 6814,
+          "response_sha256": "fb058c76753b5dadcd9eae4b44b27c24e3d48c0412d7a9855fc02eff3a495380"
+        },
+        {
+          "wall_ms": 74.911385,
+          "cpu_ms": 58.92956000000016,
+          "rss_before_kib": 13952,
+          "rss_after_kib": 14000,
+          "rss_peak_kib": 35380,
+          "rss_hwm_kib": 36560,
+          "process_count": 2,
+          "wire_bytes": 7076,
+          "content_bytes": 6814,
+          "response_sha256": "bca8639f48a39b9a5205229648fb6c9875e4ad643075908cd28a228f9a5da34a"
+        },
+        {
+          "wall_ms": 84.558403,
+          "cpu_ms": 68.71626600000091,
+          "rss_before_kib": 14000,
+          "rss_after_kib": 14004,
+          "rss_peak_kib": 36352,
+          "rss_hwm_kib": 36560,
+          "process_count": 2,
+          "wire_bytes": 7076,
+          "content_bytes": 6814,
+          "response_sha256": "878e8e3cd08e4214ed76d063fe4e7bbc35182c0f8bd6d5f43f4c2f6e686c5a3a"
+        }
+      ]
     }
   ],
   "response_examples": {
@@ -8496,6 +9064,58 @@
           "elapsed_ms": 7,
           "dedup_ratio": "1.0x"
         },
+        "isError": false
+      }
+    },
+    "codebase_low_confidence_summary:codebase:cold_process": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "rows: 21  (cols: confidence strategy calls)\n  \"0.04\" suffix_match \"118\"\n  \"0.38\" unique_name \"64\"\n  \"0.02\" suffix_match \"38\"\n  \"0.18\" suffix_match \"33\"\n  \"0.07\" suffix_match \"25\"\n  \"0.21\" suffix_match \"20\"\n  \"0.28\" suffix_match \"19\"\n  \"0.41\" suffix_match \"11\"\n  \"0.17\" suffix_match \"11\"\n  \"0.33\" suffix_match \"9\"\n  \"0.24\" suffix_match \"9\"\n  \"0.10\" suffix_match \"7\"\n  \"0.12\" suffix_match \"5\"\n  \"0.03\" suffix_match \"4\"\n  \"0.05\" suffix_match \"3\"\n  \"0.14\" suffix_match \"2\"\n  \"0.15\" suffix_match \"1\"\n  \"0.08\" suffix_match \"1\"\n  \"0.09\" suffix_match \"1\"\n  \"0.06\" suffix_match \"1\"\n  \"0.11\" suffix_match \"1\"\ntotal: 21\n"
+          }
+        ],
+        "isError": false
+      }
+    },
+    "codebase_low_confidence_summary:codebase:warm_process": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "rows: 21  (cols: confidence strategy calls)\n  \"0.04\" suffix_match \"118\"\n  \"0.38\" unique_name \"64\"\n  \"0.02\" suffix_match \"38\"\n  \"0.18\" suffix_match \"33\"\n  \"0.07\" suffix_match \"25\"\n  \"0.21\" suffix_match \"20\"\n  \"0.28\" suffix_match \"19\"\n  \"0.41\" suffix_match \"11\"\n  \"0.17\" suffix_match \"11\"\n  \"0.33\" suffix_match \"9\"\n  \"0.24\" suffix_match \"9\"\n  \"0.10\" suffix_match \"7\"\n  \"0.12\" suffix_match \"5\"\n  \"0.03\" suffix_match \"4\"\n  \"0.05\" suffix_match \"3\"\n  \"0.14\" suffix_match \"2\"\n  \"0.15\" suffix_match \"1\"\n  \"0.08\" suffix_match \"1\"\n  \"0.09\" suffix_match \"1\"\n  \"0.06\" suffix_match \"1\"\n  \"0.11\" suffix_match \"1\"\ntotal: 21\n"
+          }
+        ],
+        "isError": false
+      }
+    },
+    "codebase_low_confidence_examples:codebase:cold_process": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "rows: 30  (cols: caller.qualified_name r.callee r.confidence r.strategy r.candidates target.qualified_name)\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.build.main std::path::Path::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.build.generate_profiles std::path::Path::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.build.generate_profiles std::fs::write \"0.07\" suffix_match \"25\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.tests.language_profiles.Workspace.write\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.ast.search Vec::new \"0.02\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.ast.search usize::try_from(value).ok \"0.38\" unique_name \"1\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.tests.tool_evolution.Mcp.ok\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.ast.search_paged Vec::new \"0.02\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.ast.ast_literal_tokens Vec::new \"0.02\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.guide.checkpoint Path::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.guide.checkpoint Checkpoints::default \"0.41\" suffix_match \"4\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.engine.scanner.ScannerLimits.default\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.mod.Cli.run query::query \"0.33\" suffix_match \"5\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.tools.SearchDocs.query\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.leaves Vec::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.leaves stmt.query \"0.33\" suffix_match \"5\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.tools.SearchDocs.query\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.fts_digest stmt.query \"0.33\" suffix_match \"5\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.tools.SearchDocs.query\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.fts_digest Sha256::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.root Sha256::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.aggregate Sha256::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.fs AtomicU64::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.fs.atomic_write PathBuf::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.fs.atomic_write options.write \"0.07\" suffix_match \"25\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.tests.language_profiles.Workspace.write\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.fs.atomic_write options.open \"0.24\" suffix_match \"7\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.open\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cache.generation_lock \"OpenOptions::new()\\\\n            .read(true)\\\\n            .write(true)\\\\n            .create(true)\\\\n            .mode(0o600)\\\\n            .custom_flags(libc::O_NOFOLLOW)\\\\n            .open\" \"0.24\" suffix_match \"7\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.open\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cache.generation_lock \"OpenOptions::new()\\\\n            .read(true)\\\\n            .write\" \"0.07\" suffix_match \"25\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.tests.language_profiles.Workspace.write\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cache.generation_lock OpenOptions::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.QueryBudget.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cache.generation_lock file.metadata \"0.33\" suffix_match \"5\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.engine.languages.mod.LanguageProfile.metadata\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cache.generation_lock error.kind \"0.18\" suffix_match \"9\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.tools.SearchSymbols.kind\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cycles.components conn.prepare \"0.28\" suffix_match \"2\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.engine.languages.mod.LanguageProfile.prepare\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cycles.components graph.add_edge \"0.38\" unique_name \"1\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.tests.traversal_profile.add_edge\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cycles.components budget.check \"0.38\" unique_name \"1\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.QueryBudget.check\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cycles.cycles budget.check \"0.38\" unique_name \"1\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.QueryBudget.check\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cycles.summary Vec::new \"0.02\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.QueryBudget.new\ntotal: 30\n"
+          }
+        ],
+        "isError": false
+      }
+    },
+    "codebase_low_confidence_examples:codebase:warm_process": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "rows: 30  (cols: caller.qualified_name r.callee r.confidence r.strategy r.candidates target.qualified_name)\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.build.main std::path::Path::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.build.generate_profiles std::path::Path::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.build.generate_profiles std::fs::write \"0.07\" suffix_match \"25\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.tests.language_profiles.Workspace.write\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.ast.search Vec::new \"0.02\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.ast.search usize::try_from(value).ok \"0.38\" unique_name \"1\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.tests.tool_evolution.Mcp.ok\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.ast.search_paged Vec::new \"0.02\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.ast.ast_literal_tokens Vec::new \"0.02\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.guide.checkpoint Path::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.guide.checkpoint Checkpoints::default \"0.41\" suffix_match \"4\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.engine.scanner.ScannerLimits.default\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.cli.mod.Cli.run query::query \"0.33\" suffix_match \"5\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.tools.SearchDocs.query\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.leaves Vec::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.leaves stmt.query \"0.33\" suffix_match \"5\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.tools.SearchDocs.query\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.fts_digest stmt.query \"0.33\" suffix_match \"5\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.tools.SearchDocs.query\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.fts_digest Sha256::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.root Sha256::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.commitments.aggregate Sha256::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.fs AtomicU64::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.fs.atomic_write PathBuf::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.response.BoundedWriter.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.fs.atomic_write options.write \"0.07\" suffix_match \"25\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.tests.language_profiles.Workspace.write\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.core.fs.atomic_write options.open \"0.24\" suffix_match \"7\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.open\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cache.generation_lock \"OpenOptions::new()\\\\n            .read(true)\\\\n            .write(true)\\\\n            .create(true)\\\\n            .mode(0o600)\\\\n            .custom_flags(libc::O_NOFOLLOW)\\\\n            .open\" \"0.24\" suffix_match \"7\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.open\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cache.generation_lock \"OpenOptions::new()\\\\n            .read(true)\\\\n            .write\" \"0.07\" suffix_match \"25\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.tests.language_profiles.Workspace.write\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cache.generation_lock OpenOptions::new \"0.04\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.QueryBudget.new\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cache.generation_lock file.metadata \"0.33\" suffix_match \"5\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.engine.languages.mod.LanguageProfile.metadata\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cache.generation_lock error.kind \"0.18\" suffix_match \"9\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.mcp.tools.SearchSymbols.kind\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cycles.components conn.prepare \"0.28\" suffix_match \"2\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.engine.languages.mod.LanguageProfile.prepare\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cycles.components graph.add_edge \"0.38\" unique_name \"1\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.tests.traversal_profile.add_edge\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cycles.components budget.check \"0.38\" unique_name \"1\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.QueryBudget.check\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cycles.cycles budget.check \"0.38\" unique_name \"1\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.QueryBudget.check\n  home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.cycles.summary Vec::new \"0.02\" suffix_match \"45\" home-oleksii-ContextUnity-projects-contextunity-forge-mcp.src.db.reader.QueryBudget.new\ntotal: 30\n"
+          }
+        ],
         "isError": false
       }
     }

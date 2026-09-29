@@ -286,6 +286,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_nodes_path ON nodes(path);
 CREATE INDEX IF NOT EXISTS idx_node_owner_overrides_owner ON node_owner_overrides(owner);
 CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges_raw(dst_hash, kind);
+CREATE INDEX IF NOT EXISTS idx_edges_raw_path ON edges_raw(path_id);
 CREATE INDEX IF NOT EXISTS idx_doc_sections_path ON doc_sections(path);
 CREATE INDEX IF NOT EXISTS idx_doc_sections_type ON doc_sections(doc_type);
 CREATE INDEX IF NOT EXISTS idx_occurrences_pair ON edge_occurrences_raw(src_hash,dst_hash,kind);

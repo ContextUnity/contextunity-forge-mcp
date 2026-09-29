@@ -819,9 +819,16 @@ def replace_scenario_results(target_path: pathlib.Path, source_path: pathlib.Pat
         if key.startswith(f"{scenario_id}:"):
             del examples[key]
     examples.update(source.get("response_examples", {}))
+    target.setdefault("metadata", {}).setdefault("scenario_match", {}).update(
+        {
+            scenario_id: source.get("metadata", {}).get("scenario_match", {}).get(scenario_id)
+        }
+    )
     reasons = {
         "ast_pattern_search": "replacement run used a validated positive AST pattern and same-file text-search scope",
         "session_checkpoint": "replacement run verified read-only list against the isolated snapshot without checkpoint state",
+        "codebase_low_confidence_summary": "supplemental five-repeat Codebase-only triage query using an explicit confidence threshold",
+        "codebase_low_confidence_examples": "supplemental five-repeat Codebase-only candidate query using the same confidence threshold",
     }
     target.setdefault("metadata", {}).setdefault("scenario_overrides", {})[scenario_id] = {
         "source_metadata": source.get("metadata", {}),
