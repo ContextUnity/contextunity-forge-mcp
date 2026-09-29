@@ -118,16 +118,6 @@ SCENARIOS: list[dict[str, Any]] = [
         "match": "diagnostic only: raw candidate witnesses supplement index_status but do not form a complete unresolved-reference ledger",
     },
     {
-        "id": "codebase_low_confidence_examples",
-        "scenario": "Codebase-only diagnostic: inspect low-confidence call candidates",
-        "forge": None,
-        "codebase": (
-            "query_graph",
-            {"project": CODEBASE_PROJECT, "query": "MATCH (caller)-[r:CALLS]->(target) WHERE r.confidence < 0.5 RETURN caller.qualified_name, r.callee, r.confidence, r.strategy, r.candidates, target.qualified_name LIMIT 30"},
-        ),
-        "match": "diagnostic only: raw candidate witnesses supplement index_status but do not form a complete unresolved-reference ledger",
-    },
-    {
         "id": "impact_analysis",
         "scenario": "Trace incoming callers/dependencies at depth one",
         "forge": ("code_map_impact", {"selector": TARGET, "depth": 1, "limit": 30}),
