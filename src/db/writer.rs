@@ -134,7 +134,7 @@ fn populate(
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
 ) -> Result<Value> {
     let budget = scanner::memory_budget_bytes();
-    let cache_kb = (budget / 4 / 1024).clamp(64_000, 512_000);
+    let cache_kb = (budget / 8 / 1024).clamp(32_000, 128_000);
     conn.execute_batch(&format!(
         "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-{cache_kb}; PRAGMA cache_spill=OFF;"
     ))?;
@@ -222,15 +222,29 @@ fn populate(
         .map(|e| e.path.as_str())
         .chain(graph.edges.iter().map(|e| e.path.as_str()))
         .chain(graph.coverage.iter().map(|c| c.path.as_str()));
+    let t_bulk = Instant::now();
     path_cache.bulk_insert(&tx, all_paths)?;
+    let bulk_paths_ms = t_bulk.elapsed().as_secs_f64() * 1000.;
 
+    let t_files = Instant::now();
     let (node_id, docs_count) = persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
+    let persist_files_ms = t_files.elapsed().as_secs_f64() * 1000.;
+
+    let t_fts = Instant::now();
     tx.execute(
         "INSERT INTO node_search(rowid,search_text) SELECT node_id,search_text FROM owned_search_raw",
         [],
     )?;
+    let fts_insert_ms = t_fts.elapsed().as_secs_f64() * 1000.;
+
+    let t_graph = Instant::now();
     persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, true)?;
+    let persist_graph_ms = t_graph.elapsed().as_secs_f64() * 1000.;
+
+    let t_fcomm = Instant::now();
     persist_file_commitments(&tx, entries, facts, &graph)?;
+    let file_commitments_ms = t_fcomm.elapsed().as_secs_f64() * 1000.;
+
     let rows_ms = writing.elapsed().as_secs_f64() * 1000.;
     let indexing = Instant::now();
     tx.execute_batch(&format!("CREATE INDEX{indexes}"))?;
@@ -240,8 +254,9 @@ fn populate(
     let seal = commitments::seal(&tx)?;
     let seal_ms = sealing.elapsed().as_secs_f64() * 1000.;
     tx.commit()?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     Ok(
-        json!({"files":entries.len(),"nodes":node_id,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms}),
+        json!({"files":entries.len(),"nodes":node_id,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"persist_graph_ms":persist_graph_ms,"file_commitments_ms":file_commitments_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms}),
     )
 }
 fn components(facts: &mut BTreeMap<String, Facts>) {
@@ -394,10 +409,8 @@ fn atomic_build(
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         conn.execute_batch("PRAGMA page_size=32768;")?;
-        let mut report = populate(&mut conn, root, adapter, entries, facts, encoded_facts)?;
-        conn.execute_batch(
-            "PRAGMA journal_mode=DELETE; PRAGMA page_size=32768; VACUUM; PRAGMA journal_mode=WAL;",
-        )?;
+        let mut report =
+            populate(&mut conn, root, adapter, entries, facts, encoded_facts)?;
         let verifying = Instant::now();
         let integrity: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
         if integrity != "ok" {
@@ -447,13 +460,17 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
     }
     let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
     components(&mut facts);
+    let encoded_facts: hashbrown::HashMap<String, Vec<u8>> = facts
+        .par_iter()
+        .map(|(path, f)| Ok((path.clone(), encode_facts(f)?)))
+        .collect::<Result<_>>()?;
     let mut report = atomic_build(
         &root,
         output,
         &adapter,
         &scan.entries,
         &facts,
-        None,
+        Some(&encoded_facts),
     )?;
     report["scan_ms"] = json!(scan_ms);
     report["extract_ms"] = json!(extract_ms);
@@ -1106,10 +1123,11 @@ impl PathDictionaryCache {
     }
 
     pub fn bulk_insert(&mut self, conn: &Connection, paths: impl IntoIterator<Item = impl AsRef<str>>) -> Result<()> {
+        let mut seen = hashbrown::HashSet::new();
         let mut stmt_insert = conn.prepare_cached("INSERT OR IGNORE INTO path_dictionary(path) VALUES(?1)")?;
         for p in paths {
             let path_ref = p.as_ref();
-            if !self.cache.contains_key(path_ref) {
+            if !self.cache.contains_key(path_ref) && seen.insert(path_ref.to_owned()) {
                 stmt_insert.execute([path_ref])?;
             }
         }
@@ -1215,6 +1233,36 @@ impl<'conn> CoverageExpressionCache<'conn> {
         self.stmt_insert.execute([expression])?;
         let id: i64 = self.stmt_select.query_row([expression], |row| row.get(0))?;
         self.cache.insert(expression.to_owned(), id);
+        Ok(id)
+    }
+}
+
+pub struct CoverageEvidenceCache<'conn> {
+    cache: hashbrown::HashMap<String, i64>,
+    stmt_insert: rusqlite::Statement<'conn>,
+    stmt_select: rusqlite::Statement<'conn>,
+}
+
+impl<'conn> CoverageEvidenceCache<'conn> {
+    pub fn new(conn: &'conn Connection) -> Result<Self> {
+        let stmt_insert =
+            conn.prepare("INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES(?1)")?;
+        let stmt_select =
+            conn.prepare("SELECT evidence_id FROM coverage_evidence WHERE evidence=?1")?;
+        Ok(Self {
+            cache: hashbrown::HashMap::new(),
+            stmt_insert,
+            stmt_select,
+        })
+    }
+
+    pub fn get_or_insert(&mut self, evidence: &str) -> Result<i64> {
+        if let Some(&id) = self.cache.get(evidence) {
+            return Ok(id);
+        }
+        self.stmt_insert.execute([evidence])?;
+        let id: i64 = self.stmt_select.query_row([evidence], |row| row.get(0))?;
+        self.cache.insert(evidence.to_owned(), id);
         Ok(id)
     }
 }
@@ -1361,6 +1409,7 @@ fn persist_files(
     Ok((node_id, docs_count))
 }
 
+#[allow(clippy::type_complexity)]
 fn persist_graph(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
@@ -1376,14 +1425,13 @@ fn persist_graph(
     let mut stmt_deps =
         tx.prepare("INSERT INTO dependencies_raw VALUES(?1,?2,?3,?4,?5,'resolved')")?;
     let mut stmt_select_path = tx.prepare_cached("SELECT path FROM nodes WHERE id=?1")?;
-    let mut stmt_cov_evidence =
-        tx.prepare("INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES(?1)")?;
     let mut stmt_cov = tx.prepare(
-        "INSERT OR IGNORE INTO resolution_coverage_data(path_id,line,expression_id,status,evidence_id) VALUES(?1,?2,?3,?4,(SELECT evidence_id FROM coverage_evidence WHERE evidence=?5))",
+        "INSERT OR IGNORE INTO resolution_coverage_data(path_id,line,expression_id,status,evidence_id) VALUES(?1,?2,?3,?4,?5)",
     )?;
     let mut stmt_unres =
         tx.prepare("INSERT INTO dependencies_raw VALUES(?1,?2,NULL,'unresolved',?3,?4)")?;
     let mut coverage_expression_cache = CoverageExpressionCache::new(tx)?;
+    let mut coverage_evidence_cache = CoverageEvidenceCache::new(tx)?;
     let mut dependency_ordinals = hashbrown::HashMap::<i64, i64>::new();
 
     for e in &graph.edges {
@@ -1460,13 +1508,13 @@ fn persist_graph(
     for c in &graph.coverage {
         let owner_id = path_cache.get_or_insert(tx, &c.path)?;
         let expression_id = coverage_expression_cache.get_or_insert(&c.expression)?;
-        stmt_cov_evidence.execute([&c.evidence])?;
+        let evidence_id = coverage_evidence_cache.get_or_insert(&c.evidence)?;
         stmt_cov.execute(params![
             owner_id,
             c.line,
             expression_id,
             c.status,
-            c.evidence
+            evidence_id
         ])?;
         if c.status != "resolved" {
             let ordinal = dependency_ordinals.entry(owner_id).or_default();

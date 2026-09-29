@@ -15,7 +15,7 @@ pub fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallTool
     let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
     match value {
         Ok(mut value) => {
-            compact_mcp_metadata(&mut value);
+            super::metadata::finalize_mcp_metadata(&mut value);
             loop {
                 let result = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
                 if serialized_bytes(&result) <= budget {
@@ -49,32 +49,13 @@ pub fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallTool
     }
 }
 
-fn compact_mcp_metadata(value: &mut Value) {
-    if let Value::Object(map) = value {
-        if let Some(mut freshness) = map.remove("freshness") {
-            if let Value::Object(fmap) = &mut freshness {
-                fmap.remove("checked_at_unix_ms");
-                fmap.remove("inventory_scan_ms");
-                if let Some(Value::String(hash)) = fmap.get_mut("corpus_hash") {
-                    if hash.len() > 6 {
-                        *hash = hash[hash.len() - 6..].to_string();
-                    }
-                }
-                if let Some(Value::String(hash)) = fmap.get_mut("output_root") {
-                    if hash.len() > 6 {
-                        *hash = hash[hash.len() - 6..].to_string();
-                    }
-                }
-            }
-            map.insert("freshness".into(), freshness);
-        }
-    }
+pub fn compact_mcp_metadata(value: &mut Value) {
+    super::metadata::finalize_mcp_metadata(value);
 }
 
 pub fn checkpoint_result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
     match value {
-        Ok(mut value) => {
-            compact_mcp_metadata(&mut value);
+        Ok(value) => {
             let result = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
             let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
             if serialized_bytes(&result) <= budget {

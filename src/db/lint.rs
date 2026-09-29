@@ -52,13 +52,14 @@ pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> 
         "diagnostics_found"
     };
     Ok(json!({
-        "target": target, "mode": "lint", "generation": generation, "status": status,
+        "target": target, "mode": "lint", "status": status,
         "diagnostics": diagnostics,
         "coverage": {
             "scope": "indexed_sources_only", "indexed_source_files": source_files,
             "other_indexed_files": indexed_files - source_files, "languages": languages,
             "unindexed_files": "not_enumerated", "checks": ["stored_parser_diagnostics"],
             "limitations": "No style, type, semantic, or security rules. Excluded and unsupported files are not checked; absence of stored diagnostics does not prove syntactic validity."
-        }
+        },
+        "generation": generation,
     }))
 }

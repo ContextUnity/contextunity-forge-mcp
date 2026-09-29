@@ -595,6 +595,24 @@ pub fn explain(conn: &Connection, selector: &str) -> Result<Value> {
         &[&id],
         1000
     )?);
+    let implementors = rows(
+        conn,
+        "SELECT e.src_public_id, e.kind, e.path, e.line, e.evidence, n.name, n.kind as node_kind FROM edges e JOIN nodes n ON n.id=e.src_public_id WHERE e.dst_public_id=?1 AND e.kind IN('implements','overrides','extends') ORDER BY e.path, e.line",
+        &[&id],
+        50,
+    )?;
+    if !implementors.is_empty() {
+        result["implementors"] = json!(implementors);
+    }
+    let implements = rows(
+        conn,
+        "SELECT e.dst_public_id, e.kind, e.path, e.line, e.evidence, n.name, n.kind as node_kind FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.src_public_id=?1 AND e.kind IN('implements','overrides','extends') ORDER BY e.path, e.line",
+        &[&id],
+        50,
+    )?;
+    if !implements.is_empty() {
+        result["implements"] = json!(implements);
+    }
     Ok(result)
 }
 pub fn search_docs(
@@ -718,28 +736,89 @@ pub fn validate_limit(limit: usize) -> Result<()> {
 }
 
 pub fn overview_paged(conn: &Connection, options: &QueryOptions) -> Result<Value> {
+    overview_paged_with_aspects(conn, None, options)
+}
+
+pub fn overview_paged_with_aspects(
+    conn: &Connection,
+    aspects: Option<&[String]>,
+    options: &QueryOptions,
+) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
-    let lang_sql = "SELECT l.language,l.files,coalesce(r.resolved,0) resolved,coalesce(r.unresolved,0) unresolved,coalesce(r.external_imports,0) external_imports,coalesce(e.parse_errors,0) parse_errors FROM (SELECT language,count(*) files FROM files GROUP BY language) l LEFT JOIN (SELECT f.language,count(CASE WHEN rc.status='resolved' THEN 1 END) resolved,count(CASE WHEN rc.status IN('unresolved','ambiguous') THEN 1 END) unresolved,count(CASE WHEN rc.status='external' THEN 1 END) external_imports FROM resolution_coverage rc JOIN files f ON f.path=rc.path GROUP BY f.language) r ON r.language=l.language LEFT JOIN (SELECT f.language,count(*) parse_errors FROM errors er JOIN files f ON f.path=er.path GROUP BY f.language) e ON e.language=l.language ORDER BY l.language";
-    let language_total = paging::count(conn, "SELECT count(DISTINCT language) FROM files", &[])?;
-    let limit = options.limit as i64;
-    let offset = options.offset as i64;
-    let languages = rows(
-        conn,
-        &format!("{lang_sql} LIMIT ?1 OFFSET ?2"),
-        &[&limit, &offset],
-        options.limit,
-    )?;
-    let compiled_profiles: std::collections::BTreeSet<_> = crate::engine::languages::profiles()
-        .map(|p| p.id())
-        .collect();
-    Ok(json!({
-        "generation": generation,
-        "components": paging::query(conn, "SELECT id,name,path FROM nodes WHERE kind='component' ORDER BY path,id", &[], options)?,
-        "counts": rows(conn,"SELECT (SELECT count(*) FROM files) files,(SELECT count(*) FROM nodes) nodes,(SELECT count(*) FROM edges) edges,(SELECT count(*) FROM doc_sections) doc_sections,(SELECT count(*) FROM errors) parse_errors,(SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous')) unresolved,(SELECT count(*) FROM resolution_coverage WHERE status='external') external_imports", &[], 1)?.remove(0),
-        "languages": paging::value(languages, language_total, options, &generation),
-        "compiled_profiles": compiled_profiles,
-        "metadata": rows(conn,"SELECT key,value FROM metadata WHERE key IN('schema_version','workspace_root') ORDER BY key", &[], 2)?
-    }))
+    let has_aspect = |name: &str| -> bool {
+        match aspects {
+            None => name != "cycles",
+            Some(list) => {
+                if list.is_empty() {
+                    name != "cycles"
+                } else {
+                    list.iter().any(|a| a.eq_ignore_ascii_case(name))
+                }
+            }
+        }
+    };
+
+    let mut result = serde_json::Map::new();
+
+    if has_aspect("components") {
+        let components = paging::query(
+            conn,
+            "SELECT id,name,path FROM nodes WHERE kind='component' ORDER BY path,id",
+            &[],
+            options,
+        )?;
+        result.insert("components".into(), components);
+    }
+
+    if has_aspect("counts") {
+        let counts = rows(
+            conn,
+            "SELECT (SELECT count(*) FROM files) files,(SELECT count(*) FROM nodes) nodes,(SELECT count(*) FROM edges) edges,(SELECT count(*) FROM doc_sections) doc_sections,(SELECT count(*) FROM errors) parse_errors,(SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous')) unresolved,(SELECT count(*) FROM resolution_coverage WHERE status='external') external_imports",
+            &[],
+            1,
+        )?.remove(0);
+        result.insert("counts".into(), counts);
+    }
+
+    if has_aspect("languages") {
+        let lang_sql = "SELECT l.language,l.files,coalesce(r.resolved,0) resolved,coalesce(r.unresolved,0) unresolved,coalesce(r.external_imports,0) external_imports,coalesce(e.parse_errors,0) parse_errors FROM (SELECT language,count(*) files FROM files GROUP BY language) l LEFT JOIN (SELECT f.language,count(CASE WHEN rc.status='resolved' THEN 1 END) resolved,count(CASE WHEN rc.status IN('unresolved','ambiguous') THEN 1 END) unresolved,count(CASE WHEN rc.status='external' THEN 1 END) external_imports FROM resolution_coverage_data rc JOIN path_dictionary p ON p.path_id=rc.path_id JOIN files f ON f.path=p.path GROUP BY f.language) r ON r.language=l.language LEFT JOIN (SELECT f.language,count(*) parse_errors FROM errors er JOIN files f ON f.path=er.path GROUP BY f.language) e ON e.language=l.language ORDER BY l.language";
+        let language_total = paging::count(conn, "SELECT count(DISTINCT language) FROM files", &[])?;
+        let limit = options.limit as i64;
+        let offset = options.offset as i64;
+        let languages = rows(
+            conn,
+            &format!("{lang_sql} LIMIT ?1 OFFSET ?2"),
+            &[&limit, &offset],
+            options.limit,
+        )?;
+        result.insert("languages".into(), paging::value(languages, language_total, options, &generation));
+    }
+
+    if has_aspect("compiled_profiles") {
+        let compiled_profiles: std::collections::BTreeSet<_> = crate::engine::languages::profiles()
+            .map(|p| p.id())
+            .collect();
+        result.insert("compiled_profiles".into(), serde_json::to_value(compiled_profiles)?);
+    }
+
+    if has_aspect("cycles") {
+        let cycles = super::cycles::summary(conn, None)?;
+        result.insert("cycles".into(), cycles);
+    }
+
+    if has_aspect("metadata") {
+        let metadata = rows(
+            conn,
+            "SELECT key,value FROM metadata WHERE key IN('schema_version','workspace_root') ORDER BY key",
+            &[],
+            2,
+        )?;
+        result.insert("metadata".into(), serde_json::Value::Array(metadata));
+    }
+
+    result.insert("generation".into(), serde_json::Value::String(generation));
+
+    Ok(serde_json::Value::Object(result))
 }
 
 pub fn inspect_paged(
@@ -835,7 +914,30 @@ pub fn explain_paged_with_docs(
         }
         _ => {}
     }
+    let implementors = rows(
+        conn,
+        "SELECT e.src_public_id, e.kind, e.path, e.line, e.evidence, n.name, n.kind as node_kind FROM edges e JOIN nodes n ON n.id=e.src_public_id WHERE e.dst_public_id=?1 AND e.kind IN('implements','overrides','extends') ORDER BY e.path, e.line",
+        &[&id],
+        50,
+    )?;
+    if !implementors.is_empty() {
+        result["implementors"] = json!(implementors);
+    }
+    let implements = rows(
+        conn,
+        "SELECT e.dst_public_id, e.kind, e.path, e.line, e.evidence, n.name, n.kind as node_kind FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.src_public_id=?1 AND e.kind IN('implements','overrides','extends') ORDER BY e.path, e.line",
+        &[&id],
+        50,
+    )?;
+    if !implements.is_empty() {
+        result["implements"] = json!(implements);
+    }
     result["direction"] = json!(dir);
+    if let Some(gen) = result.as_object_mut().and_then(|m| m.remove("generation")) {
+        if let Some(m) = result.as_object_mut() {
+            m.insert("generation".into(), gen);
+        }
+    }
     Ok(result)
 }
 
@@ -973,7 +1075,7 @@ pub fn analyze_paged(
         [path],
         |r| r.get(0),
     )?;
-    let mut result = json!({"target":target,"generation":generation,"total_errors":total_errors,"total_unresolved":total_unresolved,"total_external_imports":total_external_imports,"scope":if exact_file {"file"} else {"summary"}});
+    let mut result = json!({"target":target,"total_errors":total_errors,"total_unresolved":total_unresolved,"total_external_imports":total_external_imports,"scope":if exact_file {"file"} else {"summary"}});
     if exact_file {
         let error_columns = if options.detail == Detail::Full {
             "*"
@@ -1014,6 +1116,7 @@ pub fn analyze_paged(
     } else {
         json!({"omitted": true, "hint": "Pass include_cycles=true to compute cyclic dependencies."})
     };
+    result["generation"] = json!(generation);
     Ok(result)
 }
 

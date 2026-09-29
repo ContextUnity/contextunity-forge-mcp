@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use rayon::prelude::*;
+use hashbrown::HashMap;
 use rusqlite::{params, types::ValueRef, Connection};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -60,32 +60,13 @@ fn encode_row(hasher: &mut Sha256, row: &rusqlite::Row<'_>, columns: usize) -> R
     }
     Ok(())
 }
-fn encode_row_bytes(buf: &mut Vec<u8>, row: &rusqlite::Row<'_>, columns: usize) -> Result<()> {
-    buf.push(0xff);
-    for i in 0..columns {
-        match row.get_ref(i)? {
-            ValueRef::Null => buf.push(b'n'),
-            ValueRef::Integer(n) => {
-                buf.push(b'i');
-                buf.extend_from_slice(&n.to_le_bytes());
-            }
-            ValueRef::Real(n) => {
-                buf.push(b'r');
-                buf.extend_from_slice(&n.to_bits().to_le_bytes());
-            }
-            ValueRef::Text(s) => {
-                buf.push(b't');
-                buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
-                buf.extend_from_slice(s);
-            }
-            ValueRef::Blob(s) => {
-                buf.push(b'b');
-                buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
-                buf.extend_from_slice(s);
-            }
-        }
-    }
-    Ok(())
+fn new_leaf_hasher(table: &str, owner: &str) -> Sha256 {
+    let mut h = Sha256::new();
+    h.update(ALGORITHM);
+    h.update(table);
+    h.update((owner.len() as u64).to_le_bytes());
+    h.update(owner.as_bytes());
+    h
 }
 fn key(table: &str, owner: &str) -> String {
     format!("leaf:{}", serde_json::json!([table, owner]))
@@ -109,11 +90,377 @@ fn shape(table: &str) -> (&'static str, &'static str, &'static str) {
         _ => ("t.path", "", "t.path"),
     }
 }
+#[inline]
+fn encode_text(h: &mut Sha256, s: &str) {
+    h.update(b"t");
+    h.update((s.len() as u64).to_le_bytes());
+    h.update(s.as_bytes());
+}
+
+#[inline]
+fn encode_int(h: &mut Sha256, n: i64) {
+    h.update(b"i");
+    h.update(n.to_le_bytes());
+}
+
+#[inline]
+fn encode_null(h: &mut Sha256) {
+    h.update(b"n");
+}
+
+fn leaves_edge_occurrences(
+    conn: &Connection,
+    owners: Option<&BTreeSet<String>>,
+) -> Result<BTreeMap<String, String>> {
+    let mut stmt_p = conn.prepare_cached("SELECT path_id, path FROM path_dictionary")?;
+    let path_map: HashMap<i64, String> = stmt_p
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut stmt_n = conn.prepare_cached("SELECT node_hash, id FROM nodes")?;
+    let node_map: HashMap<i64, String> = stmt_n
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let filter = if owners.is_some() {
+        "WHERE owner_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT owner_id, ordinal, src_hash, dst_hash, kind, line, evidence, confidence FROM edge_occurrences_raw {filter}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let encoded = owners.map(serde_json::to_string).transpose()?;
+    let mut rows = if let Some(encoded) = &encoded {
+        stmt.query([encoded])?
+    } else {
+        stmt.query([])?
+    };
+
+    let mut result = BTreeMap::new();
+    let mut current_owner_id: Option<i64> = None;
+    let mut current_hasher = Sha256::new();
+    let mut current_owner_path = String::new();
+
+    while let Some(row) = rows.next()? {
+        let owner_id: i64 = row.get(0)?;
+        let ordinal: i64 = row.get(1)?;
+        let src_hash: i64 = row.get(2)?;
+        let dst_hash: i64 = row.get(3)?;
+        let kind: &str = row.get_ref(4)?.as_str()?;
+        let line: i64 = row.get(5)?;
+        let evidence: &str = row.get_ref(6)?.as_str()?;
+        let confidence: &str = row.get_ref(7)?.as_str()?;
+
+        if current_owner_id != Some(owner_id) {
+            if current_owner_id.is_some() {
+                result.insert(
+                    key("edge_occurrences", &current_owner_path),
+                    hex::encode(std::mem::take(&mut current_hasher).finalize()),
+                );
+            }
+            if let Some(p) = path_map.get(&owner_id) {
+                current_owner_path = p.clone();
+                current_hasher = new_leaf_hasher("edge_occurrences", &current_owner_path);
+                current_owner_id = Some(owner_id);
+            } else {
+                current_owner_id = None;
+                continue;
+            }
+        }
+
+        let src = node_map.get(&src_hash).map(|s| s.as_str()).unwrap_or("");
+        let dst = node_map.get(&dst_hash).map(|s| s.as_str()).unwrap_or("");
+
+        current_hasher.update([0xff]);
+        encode_text(&mut current_hasher, &current_owner_path);
+        encode_int(&mut current_hasher, ordinal);
+        encode_text(&mut current_hasher, src);
+        encode_text(&mut current_hasher, dst);
+        encode_text(&mut current_hasher, kind);
+        encode_text(&mut current_hasher, &current_owner_path);
+        encode_int(&mut current_hasher, line);
+        encode_text(&mut current_hasher, evidence);
+        encode_text(&mut current_hasher, confidence);
+    }
+
+    if current_owner_id.is_some() {
+        result.insert(
+            key("edge_occurrences", &current_owner_path),
+            hex::encode(current_hasher.finalize()),
+        );
+    }
+    Ok(result)
+}
+
+fn leaves_edges(
+    conn: &Connection,
+    owners: Option<&BTreeSet<String>>,
+) -> Result<BTreeMap<String, String>> {
+    let mut stmt_p = conn.prepare_cached("SELECT path_id, path FROM path_dictionary")?;
+    let path_map: HashMap<i64, String> = stmt_p
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut stmt_n = conn.prepare_cached("SELECT node_hash, id FROM nodes")?;
+    let node_map: HashMap<i64, String> = stmt_n
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let filter = if owners.is_some() {
+        "WHERE path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT src_hash, kind, dst_hash, path_id, line, evidence, confidence, occurrence_count FROM edges_raw {filter}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let encoded = owners.map(serde_json::to_string).transpose()?;
+    let mut rows = if let Some(encoded) = &encoded {
+        stmt.query([encoded])?
+    } else {
+        stmt.query([])?
+    };
+
+    struct EdgeRow<'a> {
+        src: &'a str,
+        dst: &'a str,
+        kind: String,
+        line: i64,
+        evidence: String,
+        confidence: String,
+        count: i64,
+    }
+
+    let mut by_owner: HashMap<&str, Vec<EdgeRow<'_>>> = HashMap::new();
+
+    while let Some(row) = rows.next()? {
+        let src_hash: i64 = row.get(0)?;
+        let kind: String = row.get(1)?;
+        let dst_hash: i64 = row.get(2)?;
+        let path_id: i64 = row.get(3)?;
+        let line: i64 = row.get(4)?;
+        let evidence: String = row.get(5)?;
+        let confidence: String = row.get(6)?;
+        let count: i64 = row.get(7)?;
+
+        if let Some(path) = path_map.get(&path_id) {
+            let src = node_map.get(&src_hash).map(|s| s.as_str()).unwrap_or("");
+            let dst = node_map.get(&dst_hash).map(|s| s.as_str()).unwrap_or("");
+            by_owner.entry(path.as_str()).or_default().push(EdgeRow {
+                src,
+                dst,
+                kind,
+                line,
+                evidence,
+                confidence,
+                count,
+            });
+        }
+    }
+
+    let mut result = BTreeMap::new();
+    for (owner, mut edge_rows) in by_owner {
+        edge_rows.sort_unstable_by(|a, b| {
+            a.src
+                .cmp(b.src)
+                .then_with(|| a.dst.cmp(b.dst))
+                .then_with(|| a.kind.cmp(&b.kind))
+        });
+        let mut hasher = new_leaf_hasher("edges", owner);
+        for e in edge_rows {
+            hasher.update([0xff]);
+            encode_text(&mut hasher, e.src);
+            encode_text(&mut hasher, e.dst);
+            encode_text(&mut hasher, &e.kind);
+            encode_text(&mut hasher, owner);
+            encode_int(&mut hasher, e.line);
+            encode_text(&mut hasher, &e.evidence);
+            encode_text(&mut hasher, &e.confidence);
+            encode_int(&mut hasher, e.count);
+        }
+        result.insert(key("edges", owner), hex::encode(hasher.finalize()));
+    }
+    Ok(result)
+}
+
+fn leaves_shared_owners(
+    conn: &Connection,
+    owners: Option<&BTreeSet<String>>,
+) -> Result<BTreeMap<String, String>> {
+    let mut stmt_p = conn.prepare_cached("SELECT path_id, path FROM path_dictionary")?;
+    let path_map: HashMap<i64, String> = stmt_p
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut stmt_k = conn.prepare_cached("SELECT key_hash, key FROM shared_keys")?;
+    let key_map: HashMap<i64, String> = stmt_k
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let filter = if owners.is_some() {
+        "WHERE owner_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
+    } else {
+        ""
+    };
+    let sql = format!("SELECT kind_id, key_hash, owner_id, ordinal FROM shared_owners_raw {filter}");
+    let mut stmt = conn.prepare(&sql)?;
+    let encoded = owners.map(serde_json::to_string).transpose()?;
+    let mut rows = if let Some(encoded) = &encoded {
+        stmt.query([encoded])?
+    } else {
+        stmt.query([])?
+    };
+
+    struct SharedRow<'a> {
+        kind: &'static str,
+        key: &'a str,
+        ordinal: i64,
+    }
+
+    let mut by_owner: HashMap<&str, Vec<SharedRow<'_>>> = HashMap::new();
+
+    while let Some(row) = rows.next()? {
+        let kind_id: i64 = row.get(0)?;
+        let key_hash: i64 = row.get(1)?;
+        let owner_id: i64 = row.get(2)?;
+        let ordinal: i64 = row.get(3)?;
+
+        if let Some(owner) = path_map.get(&owner_id) {
+            let key = key_map.get(&key_hash).map(|s| s.as_str()).unwrap_or("");
+            let kind = match kind_id {
+                0 => "symbol",
+                1 => "reference",
+                _ => "default_export",
+            };
+            by_owner.entry(owner.as_str()).or_default().push(SharedRow {
+                kind,
+                key,
+                ordinal,
+            });
+        }
+    }
+
+    let mut result = BTreeMap::new();
+    for (owner, mut shared_rows) in by_owner {
+        shared_rows.sort_unstable_by(|a, b| {
+            a.kind
+                .cmp(b.kind)
+                .then_with(|| a.key.cmp(b.key))
+                .then_with(|| a.ordinal.cmp(&b.ordinal))
+        });
+        let mut hasher = new_leaf_hasher("shared_owners", owner);
+        for s in shared_rows {
+            hasher.update([0xff]);
+            encode_text(&mut hasher, s.kind);
+            encode_text(&mut hasher, s.key);
+            encode_text(&mut hasher, owner);
+            encode_int(&mut hasher, s.ordinal);
+        }
+        result.insert(key("shared_owners", owner), hex::encode(hasher.finalize()));
+    }
+    Ok(result)
+}
+
+fn leaves_dependencies(
+    conn: &Connection,
+    owners: Option<&BTreeSet<String>>,
+) -> Result<BTreeMap<String, String>> {
+    let mut stmt_p = conn.prepare_cached("SELECT path_id, path FROM path_dictionary")?;
+    let path_map: HashMap<i64, String> = stmt_p
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut stmt_f = conn.prepare_cached("SELECT path_hash, path FROM files")?;
+    let file_map: HashMap<i64, String> = stmt_f
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let filter = if owners.is_some() {
+        "WHERE owner_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT owner_id, ordinal, target_hash, kind, symbol, resolution FROM dependencies_raw {filter}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let encoded = owners.map(serde_json::to_string).transpose()?;
+    let mut rows = if let Some(encoded) = &encoded {
+        stmt.query([encoded])?
+    } else {
+        stmt.query([])?
+    };
+
+    struct DepRow<'a> {
+        target: Option<&'a str>,
+        kind: String,
+        symbol: String,
+        resolution: String,
+    }
+
+    let mut by_owner: HashMap<&str, Vec<DepRow<'_>>> = HashMap::new();
+
+    while let Some(row) = rows.next()? {
+        let owner_id: i64 = row.get(0)?;
+        let _ordinal: i64 = row.get(1)?;
+        let target_hash: Option<i64> = row.get(2)?;
+        let kind: String = row.get(3)?;
+        let symbol: String = row.get(4)?;
+        let resolution: String = row.get(5)?;
+
+        if let Some(owner) = path_map.get(&owner_id) {
+            let target = target_hash.and_then(|h| file_map.get(&h).map(|s| s.as_str()));
+            by_owner.entry(owner.as_str()).or_default().push(DepRow {
+                target,
+                kind,
+                symbol,
+                resolution,
+            });
+        }
+    }
+
+    let mut result = BTreeMap::new();
+    for (owner, mut dep_rows) in by_owner {
+        dep_rows.sort_unstable_by(|a, b| {
+            a.target
+                .cmp(&b.target)
+                .then_with(|| a.kind.cmp(&b.kind))
+                .then_with(|| a.symbol.cmp(&b.symbol))
+                .then_with(|| a.resolution.cmp(&b.resolution))
+        });
+        let mut hasher = new_leaf_hasher("dependencies", owner);
+        for d in dep_rows {
+            hasher.update([0xff]);
+            encode_text(&mut hasher, owner);
+            if let Some(target) = d.target {
+                encode_text(&mut hasher, target);
+            } else {
+                encode_null(&mut hasher);
+            }
+            encode_text(&mut hasher, &d.kind);
+            encode_text(&mut hasher, &d.symbol);
+            encode_text(&mut hasher, &d.resolution);
+        }
+        result.insert(key("dependencies", owner), hex::encode(hasher.finalize()));
+    }
+    Ok(result)
+}
+
 fn leaves(
     conn: &Connection,
     table: &str,
     owners: Option<&BTreeSet<String>>,
 ) -> Result<BTreeMap<String, String>> {
+    match table {
+        "edge_occurrences" => return leaves_edge_occurrences(conn, owners),
+        "edges" => return leaves_edges(conn, owners),
+        "shared_owners" => return leaves_shared_owners(conn, owners),
+        "dependencies" => return leaves_dependencies(conn, owners),
+        _ => {}
+    }
     let (ownership, join, order) = shape(table);
     let filter = if owners.is_some() {
         format!("WHERE {ownership} IN(SELECT value FROM json_each(?1))")
@@ -130,40 +477,23 @@ fn leaves(
     } else {
         stmt.query([])?
     };
-    let mut owner_chunks: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut result = BTreeMap::new();
     let mut current_owner: Option<String> = None;
-    let mut current_buf = Vec::with_capacity(4096);
+    let mut current_hasher = Sha256::new();
 
     while let Some(row) = rows.next()? {
-        let owner: String = row.get(columns)?;
-        if current_owner.as_deref() != Some(&owner) {
+        let owner = row.get_ref(columns)?.as_str()?;
+        if current_owner.as_deref() != Some(owner) {
             if let Some(old_owner) = current_owner.take() {
-                owner_chunks.push((old_owner, std::mem::take(&mut current_buf)));
+                result.insert(key(table, &old_owner), hex::encode(current_hasher.finalize()));
             }
-            current_owner = Some(owner);
+            current_hasher = new_leaf_hasher(table, owner);
+            current_owner = Some(owner.to_owned());
         }
-        encode_row_bytes(&mut current_buf, row, columns)?;
+        encode_row(&mut current_hasher, row, columns)?;
     }
     if let Some(old_owner) = current_owner {
-        owner_chunks.push((old_owner, current_buf));
-    }
-
-    let hashed: Vec<(String, String)> = owner_chunks
-        .into_par_iter()
-        .map(|(owner, bytes)| {
-            let mut h = Sha256::new();
-            h.update(ALGORITHM);
-            h.update(table);
-            h.update((owner.len() as u64).to_le_bytes());
-            h.update(owner.as_bytes());
-            h.update(&bytes);
-            (key(table, &owner), hex::encode(h.finalize()))
-        })
-        .collect();
-
-    let mut result = BTreeMap::new();
-    for (k, v) in hashed {
-        result.insert(k, v);
+        result.insert(key(table, &old_owner), hex::encode(current_hasher.finalize()));
     }
     Ok(result)
 }
@@ -209,6 +539,43 @@ fn aggregate(table: &str, leaves: &BTreeMap<String, String>) -> String {
     }
     hex::encode(h.finalize())
 }
+
+fn batch_insert_commitments(conn: &Connection, entries: &BTreeMap<String, String>) -> Result<()> {
+    const CHUNK_SIZE: usize = 250;
+    let mut chunk = Vec::with_capacity(CHUNK_SIZE);
+    for (k, v) in entries {
+        chunk.push((k.as_str(), v.as_str()));
+        if chunk.len() == CHUNK_SIZE {
+            insert_commitment_chunk(conn, &chunk)?;
+            chunk.clear();
+        }
+    }
+    if !chunk.is_empty() {
+        insert_commitment_chunk(conn, &chunk)?;
+    }
+    Ok(())
+}
+
+fn insert_commitment_chunk(conn: &Connection, chunk: &[(&str, &str)]) -> Result<()> {
+    if chunk.is_empty() {
+        return Ok(());
+    }
+    let mut sql = String::from("INSERT OR REPLACE INTO domain_commitments VALUES");
+    for i in 0..chunk.len() {
+        if i > 0 {
+            sql.push(',');
+        }
+        sql.push_str("(?,?)");
+    }
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 2);
+    for (k, v) in chunk {
+        params_vec.push(k);
+        params_vec.push(v);
+    }
+    stmt.execute(rusqlite::params_from_iter(params_vec))?;
+    Ok(())
+}
 fn stored(conn: &Connection, table: &str) -> Result<BTreeMap<String, String>> {
     let prefix = format!("leaf:[\"{table}\",");
     let mut stmt = conn.prepare_cached(
@@ -243,17 +610,14 @@ pub fn seal_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Resu
                 params![prefix, format!("{prefix}\u{10ffff}")],
             )?;
         }
-        let mut st =
-            conn.prepare_cached("INSERT OR REPLACE INTO domain_commitments VALUES(?1,?2)")?;
-        for (k, v) in &changed {
-            st.execute(params![k, v])?;
-        }
+        batch_insert_commitments(conn, &changed)?;
         let digest = if owners.is_none() {
             aggregate(table, &changed)
         } else {
             aggregate(table, &stored(conn, table)?)
         };
-        st.execute(params![table, digest])?;
+        conn.prepare_cached("INSERT OR REPLACE INTO domain_commitments VALUES(?1,?2)")?
+            .execute(params![table, digest])?;
     }
     for table in FTS {
         conn.execute(

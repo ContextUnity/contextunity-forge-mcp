@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 // Stored decorates edges point from decorator to target; dependency walks reverse them.
 pub(super) const FORWARD_DEPENDENCIES: &str =
-    "'calls','inherits','implements','mutates','handles','references'";
+    "'calls','inherits','implements','overrides','extends','includes','mutates','handles','references'";
 pub(super) const REVERSE_DEPENDENCIES: &str = "'decorates'";
 const STRUCTURAL_DEPENDENCIES: &str = ",'imports','contains','documents'";
 const MAX_DEEP_TRAVERSAL_FRONTIER: usize = 1000;
@@ -106,7 +106,61 @@ fn admit_traversal(conn: &Connection, id: &str, depth: u32, inbound: bool) -> Re
     Ok(immediate)
 }
 
-pub(super) fn dependency_steps(inbound: bool, bounded: bool, structural: bool) -> String {
+pub(super) fn resolve_traversal_kinds(
+    mode: Option<&str>,
+    edge_types: Option<&[String]>,
+    structural: bool,
+) -> (String, String) {
+    if let Some(types) = edge_types {
+        if !types.is_empty() {
+            let mut forward = Vec::new();
+            let mut reverse = Vec::new();
+            for t in types {
+                let lower = t.to_ascii_lowercase();
+                if lower == "decorates" {
+                    reverse.push(format!("'{lower}'"));
+                } else {
+                    forward.push(format!("'{lower}'"));
+                }
+            }
+            let f_str = if forward.is_empty() {
+                "'__none__'".into()
+            } else {
+                forward.join(",")
+            };
+            let r_str = reverse.join(",");
+            return (f_str, r_str);
+        }
+    }
+
+    match mode {
+        Some("data-flow") | Some("dataflow") => {
+            ("'mutates','references','handles'".into(), String::new())
+        }
+        Some("all") => (
+            format!("{FORWARD_DEPENDENCIES}{STRUCTURAL_DEPENDENCIES}"),
+            REVERSE_DEPENDENCIES.into(),
+        ),
+        _ => {
+            let extra = if structural {
+                STRUCTURAL_DEPENDENCIES
+            } else {
+                ""
+            };
+            (
+                format!("{FORWARD_DEPENDENCIES}{extra}"),
+                REVERSE_DEPENDENCIES.into(),
+            )
+        }
+    }
+}
+
+pub(super) fn custom_dependency_steps(
+    inbound: bool,
+    bounded: bool,
+    forward: &str,
+    reverse: &str,
+) -> String {
     let (from, to) = if inbound {
         ("dst_hash", "src_hash")
     } else {
@@ -114,12 +168,16 @@ pub(super) fn dependency_steps(inbound: bool, bounded: bool, structural: bool) -
     };
     let depth = if bounded { ",w.depth+1" } else { "" };
     let guard = if bounded { "w.depth<?2 AND " } else { "" };
-    let extra = if structural {
-        STRUCTURAL_DEPENDENCIES
+    if reverse.is_empty() {
+        format!("SELECT e.{to}{depth} FROM walk w JOIN edges_raw e ON e.{from}=w.id WHERE {guard}e.kind IN({forward})")
     } else {
-        ""
-    };
-    format!("SELECT e.{to}{depth} FROM walk w JOIN edges_raw e ON e.{from}=w.id WHERE {guard}e.kind IN({FORWARD_DEPENDENCIES}{extra}) UNION SELECT e.{from}{depth} FROM walk w JOIN edges_raw e ON e.{to}=w.id WHERE {guard}e.kind IN({REVERSE_DEPENDENCIES})")
+        format!("SELECT e.{to}{depth} FROM walk w JOIN edges_raw e ON e.{from}=w.id WHERE {guard}e.kind IN({forward}) UNION SELECT e.{from}{depth} FROM walk w JOIN edges_raw e ON e.{to}=w.id WHERE {guard}e.kind IN({reverse})")
+    }
+}
+
+pub(super) fn dependency_steps(inbound: bool, bounded: bool, structural: bool) -> String {
+    let (forward, reverse) = resolve_traversal_kinds(None, None, structural);
+    custom_dependency_steps(inbound, bounded, &forward, &reverse)
 }
 pub fn traverse(
     conn: &Connection,
@@ -249,6 +307,18 @@ pub fn traverse_paged(
     inbound: bool,
     options: &QueryOptions,
 ) -> Result<Value> {
+    traverse_paged_with_filter(conn, selector, depth, inbound, None, None, options)
+}
+
+pub fn traverse_paged_with_filter(
+    conn: &Connection,
+    selector: &str,
+    depth: u32,
+    inbound: bool,
+    mode: Option<&str>,
+    edge_types: Option<&[String]>,
+    options: &QueryOptions,
+) -> Result<Value> {
     if depth > 16 {
         bail!("depth must be <=16");
     }
@@ -257,6 +327,9 @@ pub fn traverse_paged(
     let id = node["id"].as_str().context("selected node has no id")?;
     let id_hash = stable_hash64(id);
     let immediate = admit_traversal(conn, id, depth, inbound)?;
+    let (forward, reverse) = resolve_traversal_kinds(mode, edge_types, true);
+    let mode_str = mode.unwrap_or("calls");
+
     if depth == 0 || (depth > 1 && immediate == 0) {
         let items = if options.offset == 0 {
             let mut seed = node.clone();
@@ -267,12 +340,20 @@ pub fn traverse_paged(
         } else {
             Vec::new()
         };
-        return Ok(
-            json!({"selector":node,"direction":if inbound {"inbound"} else {"outbound"},"depth":depth,"nodes":paging::value(items,1,options,&generation)}),
-        );
+        let mut result = json!({
+            "selector": node,
+            "direction": if inbound { "inbound" } else { "outbound" },
+            "depth": depth,
+            "mode": mode_str,
+            "nodes": paging::value(items, 1, options, &generation)
+        });
+        if let Some(types) = edge_types {
+            result["edge_types"] = json!(types);
+        }
+        return Ok(result);
     }
+    let steps = custom_dependency_steps(inbound, true, &forward, &reverse);
     if depth == 1 {
-        let steps = dependency_steps(inbound, true, true);
         let columns = paging::nodes("n", options.detail);
         let base = format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}), reached(id,distance) AS (SELECT id,min(depth) FROM walk GROUP BY id) SELECT {columns},r.distance FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id");
         let count = reader::rows(
@@ -300,17 +381,29 @@ pub fn traverse_paged(
                 json!(fields.get("id").and_then(Value::as_str) == Some(id)),
             );
         }
-        return Ok(
-            json!({"selector":node,"direction":if inbound {"inbound"} else {"outbound"},"depth":depth,"nodes":paging::value(items,total,options,&generation)}),
-        );
+        let mut result = json!({
+            "selector": node,
+            "direction": if inbound { "inbound" } else { "outbound" },
+            "depth": depth,
+            "mode": mode_str,
+            "nodes": paging::value(items, total, options, &generation)
+        });
+        if let Some(types) = edge_types {
+            result["edge_types"] = json!(types);
+        }
+        return Ok(result);
     }
     // Reuse the bounded reachability result for the exact count, page, and path evidence.
-    let steps = dependency_steps(inbound, true, true);
     let columns = paging::nodes("n", options.detail);
     let (forward_from, forward_to, reverse_from, reverse_to) = if inbound {
         ("src_hash", "dst_hash", "dst_hash", "src_hash")
     } else {
         ("dst_hash", "src_hash", "src_hash", "dst_hash")
+    };
+    let reverse_union = if reverse.is_empty() {
+        String::new()
+    } else {
+        format!("UNION ALL SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{reverse_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{reverse_to} WHERE e.{reverse_from}=p.__hash AND e.kind IN({reverse})")
     };
     let sql = if immediate <= 3 && options.offset == 0 {
         // On sparse walks, count the reached rows in the page scan itself.
@@ -318,16 +411,16 @@ pub fn traverse_paged(
         reached(id,distance) AS (SELECT id,min(depth) FROM walk GROUP BY id), \
         page AS (SELECT {columns},n.node_hash __hash,r.distance,count(*) OVER() __total FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4) \
         SELECT p.*,CASE WHEN p.distance=0 THEN NULL ELSE (SELECT json_array(predecessor,edge_kind) FROM ( \
-            SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{forward_to} WHERE e.{forward_from}=p.__hash AND e.kind IN({FORWARD_DEPENDENCIES}{STRUCTURAL_DEPENDENCIES}) \
-            UNION ALL SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{reverse_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{reverse_to} WHERE e.{reverse_from}=p.__hash AND e.kind IN({REVERSE_DEPENDENCIES}) \
+            SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{forward_to} WHERE e.{forward_from}=p.__hash AND e.kind IN({forward}) \
+            {reverse_union} \
         ) ORDER BY predecessor,edge_kind LIMIT 1) END __reason FROM page p")
     } else {
         format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}), \
         reached(id,distance) AS MATERIALIZED (SELECT id,min(depth) FROM walk GROUP BY id), \
         page AS (SELECT {columns},n.node_hash __hash,r.distance FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4) \
         SELECT totals.__total,p.*,CASE WHEN p.distance=0 THEN NULL ELSE (SELECT json_array(predecessor,edge_kind) FROM ( \
-            SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{forward_to} WHERE e.{forward_from}=p.__hash AND e.kind IN({FORWARD_DEPENDENCIES}{STRUCTURAL_DEPENDENCIES}) \
-            UNION ALL SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{reverse_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{reverse_to} WHERE e.{reverse_from}=p.__hash AND e.kind IN({REVERSE_DEPENDENCIES}) \
+            SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{forward_to} WHERE e.{forward_from}=p.__hash AND e.kind IN({forward}) \
+            {reverse_union} \
         ) ORDER BY predecessor,edge_kind LIMIT 1) END __reason \
         FROM (SELECT count(*) __total FROM reached r JOIN nodes n ON n.node_hash=r.id) totals \
         LEFT JOIN page p ON 1 ORDER BY p.distance,p.id")
@@ -371,9 +464,17 @@ pub fn traverse_paged(
             item.insert("via".into(), json!({"id":predecessor.context("reached node has no predecessor")?,"kind":edge_kind.context("reached node has no edge kind")?}));
         }
     }
-    Ok(
-        json!({"selector":node,"direction":if inbound {"inbound"} else {"outbound"},"depth":depth,"nodes":paging::value(items,total,options,&generation)}),
-    )
+    let mut result = json!({
+        "selector": node,
+        "direction": if inbound { "inbound" } else { "outbound" },
+        "depth": depth,
+        "mode": mode_str,
+        "nodes": paging::value(items, total, options, &generation),
+    });
+    if let Some(types) = edge_types {
+        result["edge_types"] = json!(types);
+    }
+    Ok(result)
 }
 
 fn slice_paged(
@@ -460,12 +561,13 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
         removal_diagnostics(conn, &selected_ids)?;
     let callers = paging::query(conn, &format!("SELECT {} FROM ({dependencies}) d JOIN edges e ON e.src_public_id=d.src_public_id AND e.dst_public_id=d.dst_public_id AND e.kind=d.kind ORDER BY e.path,e.line,e.src_public_id,e.dst_public_id,e.kind", paging::edges("e", options.detail)), &[&selected_id], options)?;
     Ok(
-        json!({"assessment":removal_assessment(dependency_count,true,target_unresolved,target_errors),"selector":selector,"generation":generation,
+        json!({"assessment":removal_assessment(dependency_count,true,target_unresolved,target_errors),"selector":selector,
         "selected_ids":paging::value(selected, file_count.max(1), options, &generation),
         "incoming_dependencies":callers,"unresolved_references":workspace_unresolved,"target_unresolved_references":target_unresolved,"parse_errors":workspace_errors,
         "workspace_has_unresolved":workspace_unresolved>0,"workspace_errors_count":workspace_errors,
         "safe_to_remove":dependency_count == 0 && target_unresolved == 0 && target_errors == 0,
-        "proof_scope":"indexed static references only; dynamic entrypoints and external callers require separate authority"}),
+        "proof_scope":"indexed static references only; dynamic entrypoints and external callers require separate authority",
+        "generation":generation}),
     )
 }
 

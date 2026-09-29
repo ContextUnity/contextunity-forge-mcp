@@ -163,7 +163,7 @@ fn repeated_reachability(
         } else {
             ("src_public_id", "dst_public_id")
         };
-        let links = reader::rows(conn, &format!("SELECT (SELECT count(*) FROM edges WHERE {forward}=?1 AND kind IN('calls','inherits','implements','mutates','handles','references','imports','contains','documents'))+(SELECT count(*) FROM edges WHERE {reverse}=?1 AND kind='decorates') count"), &[&id], 1)?;
+        let links = reader::rows(conn, &format!("SELECT (SELECT count(*) FROM edges WHERE {forward}=?1 AND kind IN('calls','inherits','implements','overrides','extends','includes','mutates','handles','references','imports','contains','documents'))+(SELECT count(*) FROM edges WHERE {reverse}=?1 AND kind='decorates') count"), &[&id], 1)?;
         ensure!(
             links[0]["count"].as_u64().context("invalid link count")? <= 1000,
             "retry with depth=1"
@@ -267,6 +267,10 @@ fn reset_memory_peak() {
 }
 
 fn without_explanations(mut output: Value) -> Value {
+    if let Some(obj) = output.as_object_mut() {
+        obj.remove("mode");
+        obj.remove("edge_types");
+    }
     if let Some(items) = output["nodes"]["items"].as_array_mut() {
         for item in items {
             if let Some(item) = item.as_object_mut() {
@@ -381,7 +385,7 @@ fn materialized_reachability_preserves_cycles_pages_and_admission() -> Result<()
                     )?;
                     ensure!(
                         without_explanations(traversal::traverse_paged(
-                            &conn, "a", depth, inbound, &options
+                            &conn, "a", depth, inbound, &options,
                         )?) == repeated_reachability(&conn, "a", depth, inbound, &options)?,
                         "different reachability/page"
                     );

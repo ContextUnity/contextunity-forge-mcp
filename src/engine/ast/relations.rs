@@ -34,6 +34,39 @@ pub(crate) fn type_name<'a>(node: Syntax<'_>, source: &'a str) -> &'a str {
     }
 }
 
+pub(crate) fn type_references(
+    facts: &mut Facts,
+    owner: &str,
+    type_node: Syntax<'_>,
+    source: &str,
+    line: usize,
+) {
+    let mut stack = vec![type_node];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "scoped_type_identifier" | "attribute" => {
+                let name = text(n, source);
+                reference(facts, owner, name, "references", line);
+            }
+            "type_identifier" | "identifier" => {
+                let name = text(n, source);
+                if !matches!(
+                    name,
+                    "self" | "cls" | "this" | "true" | "false" | "None" | "nil" | "null"
+                ) {
+                    reference(facts, owner, name, "references", line);
+                }
+            }
+            _ => {
+                let mut cursor = n.walk();
+                for child in n.named_children(&mut cursor) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn decorator_references(
     ctx: &crate::engine::languages::SyntaxContext<'_, '_>,
     facts: &mut Facts,
@@ -209,6 +242,38 @@ pub(crate) fn mutation(
     }
 }
 
+pub(crate) fn member_access(
+    ctx: &crate::engine::languages::SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    member_kinds: &[&str],
+) {
+    let node = ctx.node;
+    if !member_kinds.contains(&node.kind()) {
+        return;
+    }
+    if let Some(parent) = node.parent() {
+        if matches!(
+            parent.kind(),
+            "assignment"
+                | "augmented_assignment"
+                | "assignment_expr"
+                | "compound_assignment_expr"
+                | "assignment_expression"
+                | "augmented_assignment_expression"
+                | "update_expression"
+        ) && (parent.child_by_field_name("left") == Some(node)
+            || parent.child_by_field_name("argument") == Some(node))
+        {
+            return;
+        }
+    }
+    let expr = text(node, ctx.source);
+    if expr.starts_with("self.") || expr.starts_with("this.") || expr.starts_with("cls.") {
+        let line = node.start_position().row + ctx.offset + 1;
+        reference(facts, ctx.owner, expr, "references", line);
+    }
+}
+
 pub(crate) fn implicit_fields(facts: &mut Facts) {
     let fields_to_add = {
         let node_map: hashbrown::HashMap<&str, (&str, &str)> = facts
@@ -220,13 +285,13 @@ pub(crate) fn implicit_fields(facts: &mut Facts) {
             .nodes
             .iter()
             .enumerate()
-            .filter(|(_, n)| n.kind == "class")
+            .filter(|(_, n)| matches!(n.kind.as_str(), "class" | "interface" | "struct"))
             .map(|(idx, n)| (n.qualname.as_str(), idx))
             .collect();
 
         let mut list = Vec::new();
         for r in &facts.references {
-            if r.kind != "mutates" {
+            if r.kind != "mutates" && r.kind != "references" {
                 continue;
             }
             let Some(name) = r

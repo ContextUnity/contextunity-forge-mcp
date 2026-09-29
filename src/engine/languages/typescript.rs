@@ -276,6 +276,35 @@ impl LanguageProfile for TypeScript {
                 | "clearTimeout"
                 | "setInterval"
                 | "clearInterval"
+                | "string"
+                | "number"
+                | "boolean"
+                | "any"
+                | "unknown"
+                | "never"
+                | "void"
+                | "undefined"
+                | "null"
+                | "Promise"
+                | "Array"
+                | "Record"
+                | "Map"
+                | "Set"
+                | "Object"
+                | "Function"
+                | "Symbol"
+                | "Error"
+                | "Uint8Array"
+                | "Partial"
+                | "Required"
+                | "Readonly"
+                | "Pick"
+                | "Omit"
+                | "Exclude"
+                | "Extract"
+                | "NonNullable"
+                | "ReturnType"
+                | "InstanceType"
         )
     }
 
@@ -444,6 +473,38 @@ impl LanguageProfile for TypeScript {
 
         relations::decorator_references(ctx, facts);
         routes::declaration(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
+
+        if matches!(
+            ctx.node.kind(),
+            "function_declaration"
+                | "function_signature"
+                | "method_definition"
+                | "method_signature"
+                | "arrow_function"
+                | "function"
+        ) {
+            if let Some(params) = ctx.node.child_by_field_name("parameters") {
+                let mut c = params.walk();
+                for param in params.named_children(&mut c) {
+                    if let Some(ty) = param.child_by_field_name("type") {
+                        relations::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
+                    }
+                }
+            }
+            if let Some(ret) = ctx.node.child_by_field_name("return_type") {
+                relations::type_references(facts, ctx.owner, ret, ctx.source, ctx.line());
+            }
+        }
+        if matches!(ctx.node.kind(), "property_signature" | "field_definition") {
+            if let Some(ty) = ctx.node.child_by_field_name("type") {
+                relations::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
+            }
+        }
+        if ctx.node.kind() == "type_alias_declaration" {
+            if let Some(val) = ctx.node.child_by_field_name("value") {
+                relations::type_references(facts, ctx.owner, val, ctx.source, ctx.line());
+            }
+        }
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         relations::mutation(
@@ -457,6 +518,7 @@ impl LanguageProfile for TypeScript {
             ],
             &["member_expression"],
         );
+        relations::member_access(ctx, facts, &["member_expression"]);
     }
     fn extract_routes(
         &self,

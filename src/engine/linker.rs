@@ -96,6 +96,16 @@ pub fn link_with_root(
             }
         }
     }
+    let mut children_by_parent: HashMap<&str, Vec<&Node>> = HashMap::new();
+    for f in all.values() {
+        for e in &f.edges {
+            if e.kind == "contains" {
+                if let Some(target_node) = by_id.get(e.dst.as_str()) {
+                    children_by_parent.entry(e.src.as_str()).or_default().push(target_node);
+                }
+            }
+        }
+    }
     let discovery_lookup = |name: &str| -> &[&Node] {
         by_qual
             .get(name)
@@ -248,10 +258,22 @@ pub fn link_with_root(
                 } else {
                     None
                 };
-                if let Some(alias)=&r.alias {
-                    let scope=by_id.get(r.source.as_str()).map(|n|n.qualname.clone()).unwrap_or_else(||file_module.clone());
-                    let local_declaration=by_qual.get(qualified(&mut lookup_key, &scope, alias)).is_some_and(|nodes|nodes.iter().any(|n|n.path==*path));
-                    let targets=if local_declaration {Vec::new()}else{candidates.clone()};
+                let is_wildcard = r.alias.as_deref() == Some("*") || r.expression == "*";
+                if is_wildcard {
+                    let scope = by_id.get(r.source.as_str()).map(|n| n.qualname.clone()).unwrap_or_else(|| file_module.clone());
+                    for target_module in &modules {
+                        if let Some(module_nodes) = by_module.get(target_module.path.as_str()) {
+                            for n in module_nodes {
+                                if n.kind != "module" && !n.name.is_empty() {
+                                    aliases.entry(scope.clone()).or_default().entry(n.name.clone()).or_default().push(n);
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(alias) = &r.alias {
+                    let scope = by_id.get(r.source.as_str()).map(|n| n.qualname.clone()).unwrap_or_else(|| file_module.clone());
+                    let local_declaration = by_qual.get(qualified(&mut lookup_key, &scope, alias)).is_some_and(|nodes| nodes.iter().any(|n| n.path == *path));
+                    let targets = if local_declaration { Vec::new() } else { candidates.clone() };
                     let alias_taken = aliases.get(&scope).is_some_and(|entries| entries.contains_key(alias));
                     if alias_taken {
                         if let Some(provenance) = external_aliases.get_mut(&scope).and_then(|entries| entries.get_mut(alias)) {
@@ -262,9 +284,11 @@ pub fn link_with_root(
                     }
                     aliases.entry(scope).or_default().entry(alias.clone()).or_default().extend(targets);
                 }
-                let resolved=modules.len()==1 && (r.alias.is_none() || candidates.len()==1);
-                let status=if resolved {"resolved"}else if modules.len()>1 || candidates.len()>1 {"ambiguous"}else if external.is_some() {"external"}else{"unresolved"};
-                let evidence=if reexport_symbol {
+                let resolved = modules.len() == 1 && (r.alias.is_none() || is_wildcard || candidates.len() == 1);
+                let status = if resolved { "resolved" } else if modules.len() > 1 || candidates.len() > 1 { "ambiguous" } else if external.is_some() { "external" } else { "unresolved" };
+                let evidence = if is_wildcard && resolved {
+                    format!("wildcard import from {symbol}: imported from {}", modules[0].path)
+                } else if reexport_symbol {
                     format!("import {symbol}: explicit local package re-export")
                 } else if stub_symbol {
                     format!("import {symbol}: declaration from paired type stub; runtime declaration not indexed")
@@ -355,6 +379,49 @@ pub fn link_with_root(
                     scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
                 }
             };
+            for r in facts
+                .references
+                .iter()
+                .filter(|r| r.kind == "extends" || r.kind == "includes")
+            {
+                let target_path = r.expression.trim();
+                let candidate = nodes
+                    .iter()
+                    .find(|n| n.kind == "module" && n.path == target_path)
+                    .or_else(|| {
+                        let suffix = format!("/{target_path}");
+                        nodes
+                            .iter()
+                            .find(|n| n.kind == "module" && n.path.ends_with(&suffix))
+                    });
+                if let Some(target) = candidate {
+                    graph.edges.push(Edge {
+                        src: r.source.clone(),
+                        dst: target.id.clone(),
+                        kind: r.kind.clone(),
+                        path: path.clone(),
+                        line: r.line,
+                        evidence: format!("{path}: {} {}", r.kind, target.path),
+                        confidence: "exact".into(),
+                    });
+                    graph.coverage.push(Coverage {
+                        path: path.clone(),
+                        line: r.line,
+                        expression: r.expression.clone(),
+                        status: "resolved".into(),
+                        evidence: format!("template target: {}", target.path),
+                    });
+                } else {
+                    graph.coverage.push(Coverage {
+                        path: path.clone(),
+                        line: r.line,
+                        expression: r.expression.clone(),
+                        status: "unresolved".into(),
+                        evidence: format!("template '{}' not found", r.expression),
+                    });
+                }
+            }
+
             let mut candidates = Vec::new();
             for r in facts.references.iter().filter(|r| {
                 matches!(
@@ -486,7 +553,7 @@ pub fn link_with_root(
                     "inherits" | "bases" => matches!(n.kind.as_str(), "class" | "interface" | "struct"),
                     "implements" => matches!(n.kind.as_str(), "trait" | "interface"),
                     "mutates" => n.kind == "field",
-                    "references" => matches!(n.kind.as_str(), "class" | "enum" | "type" | "struct"),
+                    "references" => matches!(n.kind.as_str(), "class" | "enum" | "type" | "struct" | "trait" | "interface" | "field"),
                     _ => matches!(
                         n.kind.as_str(),
                         "function" | "method" | "class" | "struct" | "enum" | "macro"
@@ -562,15 +629,56 @@ pub fn link_with_root(
                     } else {
                         (source, target)
                     };
+                    let kind_str = if r.kind == "bases" || r.kind == "inherits" {
+                        let is_interface = candidate.kind == "interface"
+                            || candidate.details.get("bases").and_then(|b| b.as_str()).is_some_and(|b| b.contains("Protocol") || b.contains("ABC"));
+                        if is_interface && owner.is_some_and(|n| n.kind != "interface") {
+                            "implements"
+                        } else {
+                            "inherits"
+                        }
+                    } else {
+                        r.kind.as_str()
+                    };
                     graph.edges.push(Edge {
-                        src,
-                        dst,
-                        kind: if r.kind=="bases" { if candidate.kind=="interface" && owner.is_some_and(|n|n.kind!="interface") {"implements"}else{"inherits"}.into() }else{r.kind.clone()},
+                        src: src.clone(),
+                        dst: dst.clone(),
+                        kind: kind_str.into(),
                         path: path.clone(),
                         line: r.line,
                         evidence: r.expression.clone(),
                         confidence: if source_heuristic { "heuristic" } else { "exact" }.into(),
                     });
+                    if (kind_str == "implements" || kind_str == "inherits") && r.kind != "decorates" {
+                        if let Some(target_methods) = children_by_parent.get(candidate.id.as_str()) {
+                            let source_container_id = if owner.is_some_and(|n| n.kind == "impl") {
+                                r.source.as_str()
+                            } else {
+                                src.as_str()
+                            };
+                            if let Some(source_methods) = children_by_parent.get(source_container_id) {
+                                let is_interface = candidate.kind == "interface"
+                                    || candidate.kind == "trait"
+                                    || candidate.details.get("bases").and_then(|b| b.as_str()).is_some_and(|b| b.contains("Protocol") || b.contains("ABC"));
+                                let method_kind = if is_interface { "implements" } else { "overrides" };
+                                for sm in source_methods {
+                                    if matches!(sm.kind.as_str(), "function" | "method") {
+                                        if let Some(tm) = target_methods.iter().find(|tm| tm.name == sm.name && matches!(tm.kind.as_str(), "function" | "method")) {
+                                            graph.edges.push(Edge {
+                                                src: sm.id.clone(),
+                                                dst: tm.id.clone(),
+                                                kind: method_kind.into(),
+                                                path: path.clone(),
+                                                line: sm.line,
+                                                evidence: format!("{}::{}: {method_kind} {}::{}", sm.qualname, sm.name, tm.qualname, tm.name),
+                                                confidence: "exact".into(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             for doc in &facts.docs {

@@ -74,6 +74,12 @@ impl LanguageProfile for Rust {
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if matches!(ctx.node.kind(), "call_expression" | "macro_invocation") {
             call(ctx, facts, false);
+        } else if ctx.node.kind() == "struct_expression" {
+            if let Some(name) = ctx.node.child_by_field_name("name") {
+                let text = relations::type_name(name, ctx.source);
+                let clean = text.split('<').next().unwrap_or(text).trim();
+                relations::reference(facts, ctx.owner, clean, "references", ctx.line());
+            }
         }
     }
     fn builtin(&self, symbol: &str) -> bool {
@@ -96,6 +102,35 @@ impl LanguageProfile for Rust {
                 | "todo"
                 | "unimplemented"
                 | "unreachable"
+                | "str"
+                | "bool"
+                | "char"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "f32"
+                | "f64"
+                | "String"
+                | "Vec"
+                | "Option"
+                | "Result"
+                | "Box"
+                | "Rc"
+                | "Arc"
+                | "HashMap"
+                | "HashSet"
+                | "BTreeMap"
+                | "BTreeSet"
+                | "Self"
         )
     }
 
@@ -171,6 +206,18 @@ impl LanguageProfile for Rust {
                     ctx.line(),
                 );
             }
+        } else if matches!(ctx.node.kind(), "function_item" | "function_signature_item") {
+            if let Some(parameters) = ctx.node.child_by_field_name("parameters") {
+                let mut c = parameters.walk();
+                for param in parameters.named_children(&mut c) {
+                    if let Some(ty) = param.child_by_field_name("type") {
+                        relations::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
+                    }
+                }
+            }
+            if let Some(ret) = ctx.node.child_by_field_name("return_type") {
+                relations::type_references(facts, ctx.owner, ret, ctx.source, ctx.line());
+            }
         }
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
@@ -181,6 +228,7 @@ impl LanguageProfile for Rust {
             &["compound_assignment_expr", "assignment_expr"],
             &["field_expression"],
         );
+        relations::member_access(ctx, facts, &["field_expression"]);
     }
     fn test_attribute(&self, node: Syntax<'_>, source: &str) -> bool {
         let mut previous = node.prev_named_sibling();

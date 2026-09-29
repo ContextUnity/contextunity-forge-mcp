@@ -23,6 +23,11 @@ fn inbound() -> String {
     "inbound".into()
 }
 
+// An empty schema object accepts any JSON value and stays valid for MCP clients.
+fn checkpoint_content_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    serde_json::Map::new().into()
+}
+
 #[derive(Default, Deserialize, JsonSchema)]
 pub struct PageInput {
     /// Items per collection, 1..=100; defaults to adapter response.page_size (30).
@@ -44,6 +49,13 @@ impl PageInput {
             self.generation.clone(),
         )
     }
+}
+#[derive(Default, Deserialize, JsonSchema)]
+pub struct OverviewInput {
+    /// Optional aspects to include: 'counts', 'components', 'languages', 'cycles', 'compiled_profiles', 'metadata'. If omitted, all standard aspects are included.
+    pub aspects: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
 pub struct Selector {
@@ -146,6 +158,10 @@ pub struct Impact {
     pub selector: String,
     #[serde(default = "depth")]
     pub depth: u32,
+    /// Traversal mode: 'calls' (default, invocation/call graph), 'data-flow' (parameter/assignment flow), 'all' (all dependency edges).
+    pub mode: Option<String>,
+    /// Optional specific edge kinds to follow (e.g. ['calls', 'mutates', 'inherits', 'implements', 'imports']).
+    pub edge_types: Option<Vec<String>>,
     #[serde(flatten)]
     pub page: PageInput,
 }
@@ -205,6 +221,7 @@ pub struct Guide {
 pub struct Checkpoint {
     pub action: String,
     pub name: Option<String>,
+    #[schemars(schema_with = "checkpoint_content_schema")]
     pub content: Option<Value>,
 }
 impl Server {
@@ -222,10 +239,13 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "Workspace overview: components, modules, and coverage. Start here to verify workspace_root matches active worktree and check coverage before making absence claims. Collections independently paginated."
+        description = "Workspace overview: components, modules, counts, and coverage. Optional aspects: 'counts', 'components', 'languages', 'cycles', 'compiled_profiles', 'metadata'. Start here to verify workspace_root matches active worktree and check coverage before making absence claims. Collections independently paginated."
     )]
-    fn code_map_overview(&self, Parameters(p): Parameters<PageInput>) -> CallToolResult {
-        self.responding(|policy| self.read(|c| reader::overview_paged(c, &p.resolve(policy)?)))
+    fn code_map_overview(&self, Parameters(p): Parameters<OverviewInput>) -> CallToolResult {
+        self.responding(|policy| {
+            let page = p.page.resolve(policy)?;
+            self.read(|c| reader::overview_paged_with_aspects(c, p.aspects.as_deref(), &page))
+        })
     }
     #[tool(
         description = "Inspect an indexed symbol by selector (e.g. 'function:name', 'class:Name', 'module:path'). Compact output includes location and paged references with whole-symbol resolution counts; detail='full' includes node details and per-reference evidence. Set show_source=true for bounded source or use get_code_snippet."
@@ -294,12 +314,21 @@ impl Server {
         })
     }
     #[tool(
-        description = "Trace incoming dependencies (blast radius) for a selector. Always start with depth=1 to avoid exponential graph fan-out. Paged results require offset + generation for continuation."
+        description = "Trace incoming dependencies (blast radius) for a selector. Optional mode: 'calls' (default, invocation/call graph), 'data-flow' (parameter/assignment flow), 'all' (all dependency edges). Optional edge_types: ['calls', 'mutates', 'inherits', 'implements', 'imports']. Always start with depth=1 to avoid exponential graph fan-out. Paged results require offset + generation for continuation."
     )]
     fn code_map_impact(&self, Parameters(p): Parameters<Impact>) -> CallToolResult {
         self.responding(|policy| {
+            let page = p.page.resolve(policy)?;
             self.read(|c| {
-                traversal::traverse_paged(c, &p.selector, p.depth, true, &p.page.resolve(policy)?)
+                traversal::traverse_paged_with_filter(
+                    c,
+                    &p.selector,
+                    p.depth,
+                    true,
+                    p.mode.as_deref(),
+                    p.edge_types.as_deref(),
+                    &page,
+                )
             })
         })
     }

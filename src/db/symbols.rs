@@ -602,10 +602,15 @@ fn with_source(
     let node = &result["node"];
     let path = node["path"].as_str().context("invalid node path")?;
     let text = verified_source(conn, root, path)?;
-    let (snippet, mut preview) = source_preview(conn, node, &text, source)?;
-    preview["generation"] = result["generation"].clone();
+    let (snippet, preview) = source_preview(conn, node, &text, source)?;
+    let gen = result.as_object_mut().and_then(|m| m.remove("generation"));
     result["source"] = json!(snippet);
     result["source_preview"] = preview;
+    if let Some(gen) = gen {
+        if let Some(m) = result.as_object_mut() {
+            m.insert("generation".into(), gen);
+        }
+    }
     Ok(result)
 }
 

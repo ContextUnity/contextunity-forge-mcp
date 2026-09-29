@@ -73,7 +73,7 @@ impl LanguageProfile for Python {
                     );
                 }
                 if statement.contains('*') {
-                    add("*".into(), None, Some(module));
+                    add("*".into(), Some("*".into()), Some(module));
                 }
             }
             "import_statement"
@@ -245,6 +245,23 @@ impl LanguageProfile for Python {
                 | "UnicodeWarning"
                 | "BytesWarning"
                 | "ResourceWarning"
+                | "Any"
+                | "Optional"
+                | "Union"
+                | "List"
+                | "Dict"
+                | "Set"
+                | "Tuple"
+                | "Callable"
+                | "Iterator"
+                | "Generator"
+                | "Sequence"
+                | "Mapping"
+                | "Literal"
+                | "TypeVar"
+                | "Generic"
+                | "Annotated"
+                | "Protocol"
         )
     }
 
@@ -339,6 +356,19 @@ impl LanguageProfile for Python {
                 );
             }
         }
+        if ctx.node.kind() == "function_definition" {
+            if let Some(parameters) = ctx.node.child_by_field_name("parameters") {
+                let mut c = parameters.walk();
+                for param in parameters.named_children(&mut c) {
+                    if let Some(ty) = param.child_by_field_name("type") {
+                        relations::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
+                    }
+                }
+            }
+            if let Some(ret) = ctx.node.child_by_field_name("return_type") {
+                relations::type_references(facts, ctx.owner, ret, ctx.source, ctx.line());
+            }
+        }
         relations::decorator_references(ctx, facts);
         fastmcp::decorator_candidates(ctx, facts);
         routes::declaration(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
@@ -351,6 +381,7 @@ impl LanguageProfile for Python {
             &["assignment", "augmented_assignment"],
             &["attribute"],
         );
+        relations::member_access(ctx, facts, &["attribute"]);
     }
     fn extract_routes(
         &self,
