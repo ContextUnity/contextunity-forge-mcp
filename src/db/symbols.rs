@@ -1,5 +1,8 @@
 use super::{paging, reader};
-use crate::core::response::{QueryOptions, SourceOptions};
+use crate::core::{
+    models::stable_hash64,
+    response::{QueryOptions, SourceOptions},
+};
 use crate::engine::scanner;
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
@@ -9,8 +12,8 @@ use std::{collections::HashMap, fs::File, io::Read, path::Path};
 fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> {
     let seeds = paging::count(
         conn,
-        "SELECT count(*) FROM edges WHERE src_public_id=?1 AND kind='contains'",
-        &[&id],
+        "SELECT count(*) FROM edges_raw WHERE src_hash=?1 AND kind='contains'",
+        &[&stable_hash64(id)],
     )?;
     let dependencies = super::traversal::immediate_links(conn, id, inbound, false)?;
     let immediate = seeds.saturating_add(dependencies);
@@ -98,12 +101,19 @@ pub fn search(conn: &Connection, pattern: &str, kind: Option<&str>, limit: usize
             reader::rows(conn, "SELECT * FROM nodes WHERE (name LIKE ?1 ESCAPE '\\' OR qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR kind=?2) ORDER BY CASE WHEN name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,path,line,id LIMIT ?3", &[&like, &kind, &size], size)?
         }
     } else {
-        let query = pattern
+        let terms: Vec<_> = pattern
             .split(|c: char| !c.is_alphanumeric())
             .filter(|s| !s.is_empty())
-            .map(|s| format!("\"{s}\""))
-            .collect::<Vec<_>>()
-            .join(" AND ");
+            .collect();
+        let query = if terms.len() == 1 && pattern.chars().all(char::is_alphanumeric) {
+            format!("\"{}\"*", terms[0])
+        } else {
+            terms
+                .iter()
+                .map(|s| format!("\"{s}\""))
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        };
         if query.is_empty() {
             bail!("pattern must contain a symbol fragment");
         }
@@ -123,13 +133,14 @@ pub fn tests(conn: &Connection, selector: &str, direction: &str, limit: usize) -
     };
     let node = reader::select(conn, selector)?;
     let id = node["id"].as_str().context("invalid node id")?;
+    let id_hash = stable_hash64(id);
     admit_test_mapping(conn, id, inbound)?;
     // Containment expands only the selected scope; UNION visits each dependency once.
     let max_depth = 4;
     let steps = super::traversal::dependency_steps(inbound, true, false);
-    let sql = format!("WITH RECURSIVE seeds(id,depth) AS (SELECT ?1,0 UNION SELECT e.dst_public_id,s.depth+1 FROM seeds s JOIN edges e ON e.src_public_id=s.id WHERE e.kind='contains' AND s.depth<?2), walk(id,depth) AS (SELECT id,depth FROM seeds UNION {steps}), reached(id) AS (SELECT id FROM walk GROUP BY id) SELECT n.* FROM reached w JOIN nodes n ON n.id=w.id WHERE n.is_test=?3 AND n.kind IN ('function','method','class','struct') AND n.id!=?1 ORDER BY n.path,n.line,n.id LIMIT ?4");
+    let sql = format!("WITH RECURSIVE seeds(id,depth) AS (SELECT ?1,0 UNION SELECT e.dst_hash,s.depth+1 FROM seeds s JOIN edges_raw e ON e.src_hash=s.id WHERE e.kind='contains' AND s.depth<?2), walk(id,depth) AS (SELECT id,depth FROM seeds UNION {steps}), reached(id) AS (SELECT id FROM walk GROUP BY id) SELECT n.* FROM reached w JOIN nodes n ON n.node_hash=w.id WHERE n.is_test=?3 AND n.kind IN ('function','method','class','struct') AND n.node_hash!=?1 ORDER BY n.path,n.line,n.id LIMIT ?4");
     let size = limit + 1;
-    let mut nodes = reader::rows(conn, &sql, &[&id, &max_depth, &is_test, &size], size)?;
+    let mut nodes = reader::rows(conn, &sql, &[&id_hash, &max_depth, &is_test, &size], size)?;
     if inbound && nodes.is_empty() {
         let name = node["name"].as_str().unwrap_or_default();
         let mut words = Vec::new();
@@ -263,7 +274,7 @@ pub fn search_paged_in_path_with_docs(
             .replace('_', "\\_");
         let prefix = format!("{escaped}%");
         let fragment = format!("%{escaped}%");
-        let graph_boost = "(CASE WHEN (SELECT count(*) FROM edges e WHERE e.src_public_id=n.id OR e.dst_public_id=n.id)>=5 THEN 50 ELSE 0 END + CASE WHEN EXISTS(SELECT 1 FROM shared_owners s WHERE s.kind='default_export' AND s.key=n.id) THEN 50 ELSE 0 END)";
+        let graph_boost = "(CASE WHEN (SELECT count(*) FROM edges_raw e WHERE e.src_hash=n.node_hash OR e.dst_hash=n.node_hash)>=5 THEN 50 ELSE 0 END + CASE WHEN EXISTS(SELECT 1 FROM shared_owners_raw s JOIN shared_keys k ON k.key_hash=s.key_hash WHERE s.kind_id=2 AND s.key_hash=n.node_hash AND k.key=n.id) THEN 50 ELSE 0 END)";
         let sql = format!("WITH fts AS (SELECT rowid node_id,bm25(node_search) rank FROM node_search WHERE node_search MATCH ?1) SELECT {columns},CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.qualname=?6 COLLATE NOCASE THEN 2 WHEN n.name LIKE ?9 ESCAPE '\\' THEN 3 ELSE 4 END match_rank,coalesce(fts.rank,0.0) bm25_rank,{graph_boost} graph_boost FROM nodes n LEFT JOIN fts ON fts.node_id=n.node_id WHERE (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?8=1 OR n.language!='markdown') AND (n.name=?6 COLLATE NOCASE OR n.name LIKE ?7 ESCAPE '\\' OR n.qualname=?6 COLLATE NOCASE OR n.name LIKE ?9 ESCAPE '\\' OR fts.node_id IS NOT NULL) ORDER BY CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.qualname=?6 COLLATE NOCASE THEN 2 WHEN n.name LIKE ?9 ESCAPE '\\' THEN 3 ELSE 4 END,CASE WHEN fts.node_id IS NOT NULL THEN fts.rank ELSE 0.0 END,graph_boost DESC,n.path,n.line,n.id");
         paging::query(
             conn,
@@ -333,6 +344,7 @@ pub fn tests_paged(
     paging::generation(conn, options)?;
     let node = reader::select_detail(conn, selector, options.detail)?;
     let id = node["id"].as_str().context("invalid node id")?;
+    let id_hash = stable_hash64(id);
     admit_test_mapping(conn, id, inbound)?;
     let path = node["path"].as_str().unwrap_or("");
     let start_line = node["line"].as_i64().unwrap_or(0);
@@ -348,23 +360,13 @@ pub fn tests_paged(
 
     let steps = super::traversal::dependency_steps(inbound, true, false);
     let (forward_candidate, forward_selected, reverse_candidate, reverse_selected) = if inbound {
-        (
-            "src_public_id",
-            "dst_public_id",
-            "dst_public_id",
-            "src_public_id",
-        )
+        ("src_hash", "dst_hash", "dst_hash", "src_hash")
     } else {
-        (
-            "dst_public_id",
-            "src_public_id",
-            "src_public_id",
-            "dst_public_id",
-        )
+        ("dst_hash", "src_hash", "src_hash", "dst_hash")
     };
     let max_depth = 4;
-    let sql = format!("WITH RECURSIVE seeds(id,depth) AS (SELECT ?1,0 UNION SELECT e.dst_public_id,s.depth+1 FROM seeds s JOIN edges e ON e.src_public_id=s.id WHERE e.kind='contains' AND s.depth<?2), walk(id,depth) AS (SELECT id,depth FROM seeds UNION {steps}), reached(id) AS (SELECT id FROM walk GROUP BY id) SELECT {} FROM reached w JOIN nodes n ON n.id=w.id WHERE n.is_test=?3 AND n.kind IN ('function','method','class','struct') AND n.id!=?1 ORDER BY CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.{forward_selected}=?1 AND e.{forward_candidate}=n.id AND e.kind IN({})) OR EXISTS(SELECT 1 FROM edges e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate}=n.id AND e.kind IN({})) THEN 0 ELSE 1 END,n.path,n.line,n.id", paging::nodes("n", options.detail), super::traversal::FORWARD_DEPENDENCIES, super::traversal::REVERSE_DEPENDENCIES);
-    let mut nodes = paging::query(conn, &sql, &[&id, &max_depth, &is_test], options)?;
+    let sql = format!("WITH RECURSIVE seeds(id,depth) AS (SELECT ?1,0 UNION SELECT e.dst_hash,s.depth+1 FROM seeds s JOIN edges_raw e ON e.src_hash=s.id WHERE e.kind='contains' AND s.depth<?2), walk(id,depth) AS (SELECT id,depth FROM seeds UNION {steps}), reached(id) AS (SELECT id FROM walk GROUP BY id) SELECT {} FROM reached w JOIN nodes n ON n.node_hash=w.id WHERE n.is_test=?3 AND n.kind IN ('function','method','class','struct') AND n.node_hash!=?1 ORDER BY CASE WHEN EXISTS(SELECT 1 FROM edges_raw e WHERE e.{forward_selected}=?1 AND e.{forward_candidate}=n.node_hash AND e.kind IN({})) OR EXISTS(SELECT 1 FROM edges_raw e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate}=n.node_hash AND e.kind IN({})) THEN 0 ELSE 1 END,n.path,n.line,n.id", paging::nodes("n", options.detail), super::traversal::FORWARD_DEPENDENCIES, super::traversal::REVERSE_DEPENDENCIES);
+    let mut nodes = paging::query(conn, &sql, &[&id_hash, &max_depth, &is_test], options)?;
     let mut discovery_method = "graph";
     if inbound && nodes["total"].as_u64() == Some(0) {
         let name = node["name"].as_str().unwrap_or_default();

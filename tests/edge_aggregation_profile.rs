@@ -1,4 +1,7 @@
-use contextunity_forge_mcp::core::{models::Edge, schema::SCHEMA_DDL};
+use contextunity_forge_mcp::core::{
+    models::{stable_hash64, Edge},
+    schema::SCHEMA_DDL,
+};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -77,27 +80,29 @@ fn edge_persistence_profile_worker() {
     let mut conn = Connection::open(workspace.0.join("edges.sqlite")).unwrap();
     conn.execute_batch("PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128000; PRAGMA cache_spill=OFF;").unwrap();
     let table = SCHEMA_DDL
-        .split_once("CREATE TABLE IF NOT EXISTS edges (")
+        .split_once("CREATE TABLE IF NOT EXISTS edges_raw (")
         .unwrap()
         .1
         .split_once("\n);")
         .unwrap()
         .0;
-    conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS edges ({table}\n);"))
-        .unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS edges_raw ({table}\n);"
+    ))
+    .unwrap();
     let tx = conn.transaction().unwrap();
     let started = Instant::now();
     let mut map_capacity = 0usize;
     let mut vector_capacity = 0usize;
     if algorithm == "legacy" {
-        let mut statement = tx.prepare("INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,1)ON CONFLICT(src_public_id,dst_public_id,kind)DO UPDATE SET occurrence_count=occurrence_count+1").unwrap();
+        let mut statement = tx.prepare("INSERT INTO edges_raw(src_hash,kind,dst_hash,path_id,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,1)ON CONFLICT(src_hash,kind,dst_hash)DO UPDATE SET occurrence_count=occurrence_count+1").unwrap();
         for edge in &edges {
             statement
                 .execute(params![
-                    edge.src,
-                    edge.dst,
+                    stable_hash64(&edge.src),
                     edge.kind,
-                    edge.path,
+                    stable_hash64(&edge.dst),
+                    stable_hash64(&edge.path),
                     edge.line,
                     edge.evidence,
                     edge.confidence
@@ -121,14 +126,14 @@ fn edge_persistence_profile_worker() {
         map_capacity = indices.capacity();
         vector_capacity = unique.capacity();
         drop(indices);
-        let mut statement = tx.prepare("INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,?8)").unwrap();
+        let mut statement = tx.prepare("INSERT INTO edges_raw(src_hash,kind,dst_hash,path_id,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,?8)").unwrap();
         for (edge, count) in unique {
             statement
                 .execute(params![
-                    edge.src,
-                    edge.dst,
+                    stable_hash64(&edge.src),
                     edge.kind,
-                    edge.path,
+                    stable_hash64(&edge.dst),
+                    stable_hash64(&edge.path),
                     edge.line,
                     edge.evidence,
                     edge.confidence,
@@ -144,14 +149,14 @@ fn edge_persistence_profile_worker() {
     let rss = peak_rss_kib();
     let (unique_count, occurrences): (usize, usize) = conn
         .query_row(
-            "SELECT count(*),sum(occurrence_count) FROM edges",
+            "SELECT count(*),sum(occurrence_count) FROM edges_raw",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
     assert_eq!((unique_count, occurrences), (200_000, edges.len()));
     let mut hash = Sha256::new();
-    let mut statement = conn.prepare("SELECT json_array(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count) FROM edges ORDER BY src_public_id,dst_public_id,kind").unwrap();
+    let mut statement = conn.prepare("SELECT json_array(src_hash,dst_hash,kind,path_id,line,evidence,confidence,occurrence_count) FROM edges_raw ORDER BY src_hash,dst_hash,kind").unwrap();
     for row in statement
         .query_map([], |row| row.get::<_, String>(0))
         .unwrap()

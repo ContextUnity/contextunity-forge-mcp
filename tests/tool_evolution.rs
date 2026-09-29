@@ -7,8 +7,10 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+static WORKSPACE_NONCE: AtomicU64 = AtomicU64::new(0);
 
 struct Workspace(PathBuf);
 impl Workspace {
@@ -17,8 +19,13 @@ impl Workspace {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p =
-            std::env::temp_dir().join(format!("forge_evolution_{}_{nonce}", std::process::id()));
+        let sequence = WORKSPACE_NONCE.fetch_add(1, Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!(
+            "forge_evolution_{}_{}_{}",
+            std::process::id(),
+            nonce,
+            sequence
+        ));
         fs::create_dir_all(&p).unwrap();
         Self(p)
     }
@@ -244,6 +251,7 @@ fn source_search_and_stale_source_through_cli() {
     let w = Workspace::new();
     let code = "def OrderRevert():\r\n    return 'Привіт'\r\n";
     w.write("service.py", code);
+    w.write("types.py", "class PimProductApiRow: pass\n");
     w.build();
     let default = w.query(&["query", "inspect", "OrderRevert"]);
     assert!(default.get("source").is_none());
@@ -253,6 +261,9 @@ fn source_search_and_stale_source_through_cli() {
         let found = w.query(&["query", "search", pattern, "--kind", "function"]);
         assert_eq!(found["nodes"].as_array().unwrap().len(), 1);
     }
+    let prefix = w.query(&["query", "search", "PimProduct"]);
+    assert_eq!(prefix["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(prefix["nodes"][0]["name"], "PimProductApiRow");
     w.write("service.py", "def OrderRevert():\n    return 'changed'\n");
     assert!(!w
         .cli(&["query", "inspect", "OrderRevert", "--show-source"])
@@ -405,7 +416,9 @@ fn queries_bound_results_and_indexes_cover_edge_predicates() {
         assert!(
             plans.iter().any(|p| {
                 let detail = p["detail"].as_str().unwrap();
-                detail.contains(index) || detail.contains("PRIMARY KEY") || detail.contains("idx_edges_kind")
+                detail.contains(index)
+                    || detail.contains("PRIMARY KEY")
+                    || detail.contains("idx_edges_kind")
             }),
             "{plans:?}"
         );

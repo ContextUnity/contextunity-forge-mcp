@@ -116,12 +116,13 @@ fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
         .unwrap_or_default();
     Ok(scanner::Adapter {
         adapter_path,
+        response: Default::default(),
+        limits: Default::default(),
         roots,
         ignored_names,
         adapter_version,
         digest,
         linked_workspaces,
-        response: Default::default(),
     })
 }
 fn populate(
@@ -132,7 +133,11 @@ fn populate(
     facts: &BTreeMap<String, Facts>,
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
 ) -> Result<Value> {
-    conn.execute_batch("PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128000; PRAGMA cache_spill=OFF;")?;
+    let budget = scanner::memory_budget_bytes();
+    let cache_kb = (budget / 4 / 1024).clamp(64_000, 512_000);
+    conn.execute_batch(&format!(
+        "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-{cache_kb}; PRAGMA cache_spill=OFF;"
+    ))?;
     conn.set_prepared_statement_cache_capacity(128);
     let (tables, indexes) = SCHEMA_DDL
         .split_once("CREATE INDEX")
@@ -155,15 +160,25 @@ fn populate(
     )
     .ok();
     for table in commitments::DOMAINS {
-        let storage_table = if *table == "resolution_coverage" {
-            "resolution_coverage_data"
-        } else {
-            table
+        let storage_table = match *table {
+            "resolution_coverage" => "resolution_coverage_data",
+            "edges" => "edges_raw",
+            "edge_occurrences" => "edge_occurrences_raw",
+            "dependencies" => "dependencies_raw",
+            "owned_search" => "owned_search_raw",
+            "shared_owners" => "shared_owners_raw",
+            // These domains are read-only projections.
+            "owned_nodes" => continue,
+            table => table,
         };
         cached(&tx, &format!("DELETE FROM {storage_table}"), [])?;
     }
+    cached(&tx, "DELETE FROM node_owner_overrides", [])?;
+    cached(&tx, "DELETE FROM shared_keys", [])?;
+    cached(&tx, "DELETE FROM path_dictionary", [])?;
     cached(&tx, "DELETE FROM domain_commitments", [])?;
     cached(&tx, "DELETE FROM coverage_evidence", [])?;
+    cached(&tx, "DELETE FROM coverage_expressions", [])?;
     for (k, v) in [
         ("schema_version", scanner::ENGINE_SCHEMA_VERSION.to_owned()),
         (
@@ -201,8 +216,16 @@ fn populate(
             node_paths.insert(n.id.clone(), Some(n.path.clone()));
         }
     }
-    let (node_id, docs_count) = persist_files(&tx, entries, facts, encoded_facts)?;
-    persist_graph(&tx, &graph, &mut node_paths, true)?;
+    let mut path_cache = PathDictionaryCache::new();
+    let all_paths = entries
+        .iter()
+        .map(|e| e.path.as_str())
+        .chain(graph.edges.iter().map(|e| e.path.as_str()))
+        .chain(graph.coverage.iter().map(|c| c.path.as_str()));
+    path_cache.bulk_insert(&tx, all_paths)?;
+
+    let (node_id, docs_count) = persist_files(&tx, &mut path_cache, entries, facts, encoded_facts)?;
+    persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, true)?;
     persist_file_commitments(&tx, entries, facts, &graph)?;
     let rows_ms = writing.elapsed().as_secs_f64() * 1000.;
     let indexing = Instant::now();
@@ -213,7 +236,6 @@ fn populate(
     let seal = commitments::seal(&tx)?;
     let seal_ms = sealing.elapsed().as_secs_f64() * 1000.;
     tx.commit()?;
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     Ok(
         json!({"files":entries.len(),"nodes":node_id,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms}),
     )
@@ -367,7 +389,11 @@ fn atomic_build(
             &temporary,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
+        conn.execute_batch("PRAGMA page_size=32768;")?;
         let mut report = populate(&mut conn, root, adapter, entries, facts, encoded_facts)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=DELETE; PRAGMA page_size=32768; VACUUM; PRAGMA journal_mode=WAL;",
+        )?;
         let verifying = Instant::now();
         let integrity: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
         if integrity != "ok" {
@@ -400,22 +426,31 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
     let started = Instant::now();
     let root = scanner::canonical_root(root)?;
     let adapter = scanner::load_adapter(&root, adapter_path)?;
+    scanner::check_root_scope(&root, adapter.limits.allow_broad_root)?;
     let scanning = Instant::now();
     let scan = scanner::scan_with_adapter(&root, &adapter)?;
     let scan_ms = scanning.elapsed().as_secs_f64() * 1000.;
     let extracting = Instant::now();
-    let mut facts: BTreeMap<_, _> = scan
-        .entries
-        .par_iter()
-        .map(|file| Ok((file.path.clone(), extract(&root, file, &adapter)?)))
-        .collect::<Result<_>>()?;
+    let budget = scanner::memory_budget_bytes();
+    let batch_size = ((budget / (200 * 1024)) as usize).clamp(1_000, 25_000);
+    let mut facts: BTreeMap<_, _> = BTreeMap::new();
+    for chunk in scan.entries.chunks(batch_size) {
+        let chunk_facts: Vec<(String, Facts)> = chunk
+            .par_iter()
+            .map(|file| Ok((file.path.clone(), extract(&root, file, &adapter)?)))
+            .collect::<Result<_>>()?;
+        facts.extend(chunk_facts);
+    }
     let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
     components(&mut facts);
-    let encoded_facts: hashbrown::HashMap<String, Vec<u8>> = facts
-        .par_iter()
-        .map(|(path, f)| Ok((path.clone(), encode_facts(f)?)))
-        .collect::<Result<_>>()?;
-    let mut report = atomic_build(&root, output, &adapter, &scan.entries, &facts, Some(&encoded_facts))?;
+    let mut report = atomic_build(
+        &root,
+        output,
+        &adapter,
+        &scan.entries,
+        &facts,
+        None,
+    )?;
     report["scan_ms"] = json!(scan_ms);
     report["extract_ms"] = json!(extract_ms);
     report["elapsed_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
@@ -428,6 +463,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         bail!("delta requires at least one modified path");
     }
     let root = scanner::canonical_root(root)?;
+    scanner::check_root_scope(&root, false)?;
     let generation_lock = super::cache::exclusive_lock(db)?;
     let schema_compatible = {
         let probe = Connection::open_with_flags(
@@ -610,8 +646,13 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         for owner in st.query_map([&encoded], |r| r.get::<_, String>(0))? {
             affected.insert(owner?);
         }
-        let mut st=admitted.prepare("SELECT owner FROM shared_owners WHERE kind='reference' AND key IN(SELECT value FROM json_each(?1))")?;
-        for owner in st.query_map([serde_json::to_string(&names)?], |r| r.get::<_, String>(0))? {
+        let name_hashes: Vec<_> = names.iter().map(|name| stable_hash64(name)).collect();
+        let encoded_names = serde_json::to_string(&names)?;
+        let encoded_hashes = serde_json::to_string(&name_hashes)?;
+        let mut st=admitted.prepare("SELECT p.path FROM shared_owners_raw s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND s.key_hash IN(SELECT value FROM json_each(?1)) AND k.key IN(SELECT value FROM json_each(?2))")?;
+        for owner in st.query_map(params![encoded_hashes, encoded_names], |r| {
+            r.get::<_, String>(0)
+        })? {
             affected.insert(owner?);
         }
     }
@@ -723,7 +764,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let encoded = serde_json::to_string(&tokens)?;
     let suffix_ids = serde_json::to_string(&suffix_ids)?;
     {
-        let sql="SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line,n.end_line,n.is_test,n.language,n.generated,EXISTS(SELECT 1 FROM shared_owners s WHERE s.kind='default_export' AND s.key=n.id) FROM nodes n WHERE n.id IN(SELECT id FROM nodes WHERE kind='module' UNION SELECT id FROM nodes WHERE name IN(SELECT value FROM json_each(?1)) UNION SELECT id FROM nodes WHERE qualname IN(SELECT value FROM json_each(?1)) UNION SELECT key FROM shared_owners WHERE kind='default_export' UNION SELECT value FROM json_each(?2))";
+        let sql="SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line,n.end_line,n.is_test,n.language,n.generated,EXISTS(SELECT 1 FROM shared_owners_raw s JOIN shared_keys k ON k.key_hash=s.key_hash WHERE s.kind_id=2 AND s.key_hash=n.node_hash AND k.key=n.id) FROM nodes n WHERE n.id IN(SELECT id FROM nodes WHERE kind='module' UNION SELECT id FROM nodes WHERE name IN(SELECT value FROM json_each(?1)) UNION SELECT id FROM nodes WHERE qualname IN(SELECT value FROM json_each(?1)) UNION SELECT n2.id FROM shared_owners_raw s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN nodes n2 ON n2.node_hash=s.key_hash AND n2.id=k.key WHERE s.kind_id=2 UNION SELECT value FROM json_each(?2))";
         let mut st = admitted.prepare(sql)?;
         let nodes = st.query_map(params![encoded, suffix_ids], |r| {
             Ok(Node {
@@ -781,42 +822,53 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         bail!("generation changed during delta admission");
     }
     let deleting = Instant::now();
-    tx.execute_batch("CREATE TEMP TABLE changed_edge_keys(src TEXT,dst TEXT,kind TEXT,PRIMARY KEY(src,dst,kind));")?;
+    let mut path_cache = PathDictionaryCache::new();
+    path_cache.load_from_db(&tx)?;
+    tx.execute_batch("CREATE TEMP TABLE changed_edge_keys(src_hash INTEGER,dst_hash INTEGER,kind TEXT,PRIMARY KEY(src_hash,dst_hash,kind));")?;
     for path in &affected {
-        cached(&tx,"INSERT OR IGNORE INTO changed_edge_keys SELECT src,dst,kind FROM edge_occurrences WHERE owner=?1",[path])?;
+        let owner_id = path_cache.get_or_insert(&tx, path)?;
+        cached(&tx,"INSERT OR IGNORE INTO changed_edge_keys SELECT src_hash,dst_hash,kind FROM edge_occurrences_raw WHERE owner_id=?1",[owner_id])?;
     }
     for e in &graph.edges {
         cached(
             &tx,
             "INSERT OR IGNORE INTO changed_edge_keys VALUES(?1,?2,?3)",
-            params![e.src, e.dst, e.kind],
+            params![stable_hash64(&e.src), stable_hash64(&e.dst), e.kind],
         )?;
     }
     let mut commitment_owners = affected.clone();
     commitment_owners.extend(
-        tx.prepare_cached("SELECT DISTINCT path FROM edges WHERE (src_public_id,dst_public_id,kind)IN(SELECT src,dst,kind FROM changed_edge_keys)")?
+        tx.prepare_cached("SELECT DISTINCT p.path FROM edges_raw e JOIN path_dictionary p ON p.path_id=e.path_id WHERE (e.src_hash,e.dst_hash,e.kind)IN(SELECT src_hash,dst_hash,kind FROM changed_edge_keys)")?
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
-    tx.execute("DELETE FROM edges WHERE (src_public_id,dst_public_id,kind)IN(SELECT src,dst,kind FROM changed_edge_keys)",[])?;
+    tx.execute("DELETE FROM edges_raw WHERE (src_hash,dst_hash,kind)IN(SELECT src_hash,dst_hash,kind FROM changed_edge_keys)",[])?;
     for path in &affected {
+        let owner_id = path_cache.get_or_insert(&tx, path)?;
         for (table, column) in [
-            ("edge_occurrences", "owner"),
-            ("dependencies", "owner"),
-            ("resolution_coverage_data", "path"),
+            ("edge_occurrences_raw", "owner_id"),
+            ("dependencies_raw", "owner_id"),
+            ("resolution_coverage_data", "path_id"),
             ("file_commitments", "path"),
         ] {
+            let value = if column == "path" {
+                rusqlite::types::Value::Text(path.clone())
+            } else {
+                rusqlite::types::Value::Integer(owner_id)
+            };
             cached(
                 &tx,
                 &format!("DELETE FROM {table} WHERE {column}=?1"),
-                [path],
+                [value],
             )?;
         }
     }
-    tx.execute_batch("CREATE TEMP TABLE replaced_nodes(id TEXT PRIMARY KEY)")?;
-    tx.execute("INSERT OR IGNORE INTO replaced_nodes SELECT public_id FROM owned_nodes WHERE owner IN(SELECT value FROM json_each(?1))", [serde_json::to_string(&replace_files)?])?;
+    tx.execute_batch(
+        "CREATE TEMP TABLE replaced_nodes(id TEXT PRIMARY KEY,node_hash INTEGER NOT NULL)",
+    )?;
+    tx.execute("INSERT OR IGNORE INTO replaced_nodes SELECT n.id,n.node_hash FROM nodes n JOIN owned_nodes o ON o.public_id=n.id WHERE o.owner IN(SELECT value FROM json_each(?1))", [serde_json::to_string(&replace_files)?])?;
     for path in &replace_files {
-        delete_file(&tx, path)?;
+        delete_file(&tx, &mut path_cache, path)?;
     }
     let delete_ms = deleting.elapsed().as_secs_f64() * 1000.;
     let changed_entries: Vec<_> = scan
@@ -833,38 +885,40 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         }
     }
     let files_writing = Instant::now();
-    persist_files(&tx, &changed_entries, &facts, None)?;
+    persist_files(&tx, &mut path_cache, &changed_entries, &facts, None)?;
     let files_ms = files_writing.elapsed().as_secs_f64() * 1000.;
     let graph_writing = Instant::now();
-    persist_graph(&tx, &graph, &mut node_paths, false)?;
+    persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, false)?;
     tx.execute(
         "DELETE FROM coverage_evidence WHERE evidence_id NOT IN(SELECT evidence_id FROM resolution_coverage_data)",
         [],
     )?;
     let graph_ms = graph_writing.elapsed().as_secs_f64() * 1000.;
     let aggregating = Instant::now();
-    let dangling: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM replaced_nodes r WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE n.id=r.id) AND (EXISTS(SELECT 1 FROM edges e WHERE e.src_public_id=r.id) OR EXISTS(SELECT 1 FROM edges e WHERE e.dst_public_id=r.id)))", [], |r| r.get(0))?;
+    let dangling: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM replaced_nodes r WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE n.id=r.id AND n.node_hash=r.node_hash) AND EXISTS(SELECT 1 FROM edges_raw e WHERE e.src_hash=r.node_hash OR e.dst_hash=r.node_hash))", [], |r| r.get(0))?;
     if dangling {
         bail!("delta leaves an edge with a missing endpoint; rebuild index");
     }
     tx.execute(
         "WITH ranked AS (
-            SELECT e.*,row_number() OVER edge_group AS representative,
+            SELECT e.*,e.owner_id AS path_id,p.path AS owner_path,
+                   row_number() OVER edge_group AS representative,
                    count(*) OVER edge_group AS occurrences
-            FROM changed_edge_keys k CROSS JOIN edge_occurrences e
-              ON k.src=e.src AND k.dst=e.dst AND k.kind=e.kind
+            FROM changed_edge_keys k JOIN edge_occurrences_raw e
+              ON k.src_hash=e.src_hash AND k.dst_hash=e.dst_hash AND k.kind=e.kind
+            JOIN path_dictionary p ON p.path_id=e.owner_id
             WINDOW edge_group AS (
-                PARTITION BY e.src,e.dst,e.kind ORDER BY e.owner,e.ordinal
+                PARTITION BY e.src_hash,e.dst_hash,e.kind ORDER BY p.path,e.ordinal
                 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
             )
         )
-        INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)
-        SELECT src,dst,kind,path,line,evidence,confidence,occurrences
+        INSERT INTO edges_raw(src_hash,kind,dst_hash,path_id,line,evidence,confidence,occurrence_count)
+        SELECT src_hash,kind,dst_hash,path_id,line,evidence,confidence,occurrences
         FROM ranked WHERE representative=1",
         [],
     )?;
     commitment_owners.extend(
-        tx.prepare_cached("SELECT DISTINCT path FROM edges WHERE (src_public_id,dst_public_id,kind)IN(SELECT src,dst,kind FROM changed_edge_keys)")?
+        tx.prepare_cached("SELECT DISTINCT p.path FROM edges_raw e JOIN path_dictionary p ON p.path_id=e.path_id WHERE (e.src_hash,e.dst_hash,e.kind)IN(SELECT src_hash,dst_hash,kind FROM changed_edge_keys)")?
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
@@ -976,9 +1030,10 @@ fn reference_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> R
     let old = decode_facts(&old)?;
     Ok(linker::reference_identity_changed(path, &old, facts))
 }
-fn delete_file(tx: &Connection, path: &str) -> Result<()> {
+fn delete_file(tx: &Connection, path_cache: &mut PathDictionaryCache, path: &str) -> Result<()> {
+    let owner_id = path_cache.get_or_insert(tx, path)?;
     let mut stmt = tx.prepare_cached(
-        "SELECT n.node_id,s.search_text FROM nodes n JOIN owned_search s ON s.public_id=n.id WHERE s.owner=?1"
+        "SELECT n.node_id,s.search_text FROM nodes n JOIN owned_search_raw s ON s.node_id=n.node_id JOIN owned_nodes o ON o.public_id=n.id WHERE o.owner=?1"
     )?;
     let old: Vec<(i64, String)> = stmt
         .query_map([path], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -989,6 +1044,7 @@ fn delete_file(tx: &Connection, path: &str) -> Result<()> {
             "INSERT INTO node_search(node_search,rowid,search_text)VALUES('delete',?1,?2)",
             params![id, text],
         )?;
+        cached(tx, "DELETE FROM owned_search_raw WHERE node_id=?1", [id])?;
     }
     cached(tx,"INSERT INTO doc_search(doc_search,rowid,section_title,content,invariants)SELECT 'delete',rowid,section_title,content,invariants FROM doc_sections WHERE path=?1",[path])?;
     cached(
@@ -1000,16 +1056,20 @@ fn delete_file(tx: &Connection, path: &str) -> Result<()> {
         ("source_inventory", "path"),
         ("files", "path"),
         ("local_facts", "path"),
-        ("owned_nodes", "owner"),
-        ("owned_search", "owner"),
-        ("shared_owners", "owner"),
+        ("node_owner_overrides", "owner"),
+        ("shared_owners_raw", "owner_id"),
         ("errors", "path"),
         ("doc_sections", "path"),
     ] {
+        let value = if column == "owner_id" {
+            rusqlite::types::Value::Integer(owner_id)
+        } else {
+            rusqlite::types::Value::Text(path.to_owned())
+        };
         cached(
             tx,
             &format!("DELETE FROM {table} WHERE {column}=?1"),
-            [path],
+            [value],
         )?;
     }
     Ok(())
@@ -1017,6 +1077,109 @@ fn delete_file(tx: &Connection, path: &str) -> Result<()> {
 
 fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqlite::Result<usize> {
     conn.prepare_cached(sql)?.execute(params)
+}
+
+#[derive(Default)]
+pub struct PathDictionaryCache {
+    cache: hashbrown::HashMap<String, i64>,
+}
+
+impl PathDictionaryCache {
+    pub fn new() -> Self {
+        Self {
+            cache: hashbrown::HashMap::new(),
+        }
+    }
+
+    pub fn load_from_db(&mut self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("SELECT path, path_id FROM path_dictionary")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+        for r in rows {
+            let (path, id) = r?;
+            self.cache.insert(path, id);
+        }
+        Ok(())
+    }
+
+    pub fn bulk_insert(&mut self, conn: &Connection, paths: impl IntoIterator<Item = impl AsRef<str>>) -> Result<()> {
+        let mut stmt_insert = conn.prepare_cached("INSERT OR IGNORE INTO path_dictionary(path) VALUES(?1)")?;
+        for p in paths {
+            let path_ref = p.as_ref();
+            if !self.cache.contains_key(path_ref) {
+                stmt_insert.execute([path_ref])?;
+            }
+        }
+        self.load_from_db(conn)?;
+        Ok(())
+    }
+
+    pub fn get_or_insert(&mut self, conn: &Connection, path: &str) -> Result<i64> {
+        if let Some(&id) = self.cache.get(path) {
+            return Ok(id);
+        }
+        conn.execute(
+            "INSERT OR IGNORE INTO path_dictionary(path) VALUES(?1)",
+            [path],
+        )?;
+        let id: i64 = conn.query_row(
+            "SELECT path_id FROM path_dictionary WHERE path=?1",
+            [path],
+            |row| row.get(0),
+        )?;
+        self.cache.insert(path.to_owned(), id);
+        Ok(id)
+    }
+}
+
+fn shared_key_hash(
+    conn: &Connection,
+    cache: &mut hashbrown::HashMap<String, i64>,
+    key: &str,
+) -> Result<i64> {
+    if let Some(hash) = cache.get(key) {
+        return Ok(*hash);
+    }
+    let hash = stable_hash64(key);
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT key FROM shared_keys WHERE key_hash=?1",
+            [hash],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        if existing != key {
+            bail!("shared key hash collision detected");
+        }
+    } else {
+        conn.execute(
+            "INSERT INTO shared_keys(key_hash,key) VALUES(?1,?2)",
+            params![hash, key],
+        )?;
+    }
+    cache.insert(key.to_owned(), hash);
+    Ok(hash)
+}
+
+fn coverage_expression_id(
+    conn: &Connection,
+    cache: &mut hashbrown::HashMap<String, i64>,
+    expression: &str,
+) -> Result<i64> {
+    if let Some(id) = cache.get(expression) {
+        return Ok(*id);
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO coverage_expressions(expression) VALUES(?1)",
+        [expression],
+    )?;
+    let id = conn.query_row(
+        "SELECT expression_id FROM coverage_expressions WHERE expression=?1",
+        [expression],
+        |row| row.get(0),
+    )?;
+    cache.insert(expression.to_owned(), id);
+    Ok(id)
 }
 
 fn encode_facts(facts: &Facts) -> Result<Vec<u8>> {
@@ -1031,6 +1194,7 @@ fn decode_facts(blob: &[u8]) -> Result<Facts> {
 
 fn persist_files(
     tx: &Connection,
+    path_cache: &mut PathDictionaryCache,
     entries: &[FileEntry],
     facts: &BTreeMap<String, Facts>,
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
@@ -1042,21 +1206,18 @@ fn persist_files(
 
     let mut stmt_source_inv =
         tx.prepare("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
-    let mut stmt_files = tx.prepare("INSERT INTO files VALUES(?1,'indexed',?2,?3,?4,?5,0)")?;
+    let mut stmt_files = tx.prepare("INSERT INTO files VALUES(?1,'indexed',?2,?3,?4,?5,0,?6)")?;
     let mut stmt_local_facts = tx.prepare("INSERT INTO local_facts VALUES(?1,?2,?3,?4,0,?5)")?;
     let mut stmt_nodes =
-        tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
-    let mut stmt_owned_nodes =
-        tx.prepare("INSERT INTO owned_nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
-    let mut stmt_owned_search = tx.prepare("INSERT INTO owned_search VALUES(?1,?2,0,?3)")?;
+        tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")?;
+    let mut stmt_owner_override = tx.prepare("INSERT INTO node_owner_overrides VALUES(?1,?2)")?;
+    let mut stmt_owned_search = tx.prepare("INSERT INTO owned_search_raw VALUES(?1,?2)")?;
     let mut stmt_node_search =
         tx.prepare("INSERT INTO node_search(rowid,search_text)VALUES(?1,?2)")?;
-    let mut stmt_shared_symbol =
-        tx.prepare("INSERT INTO shared_owners VALUES('symbol',?1,?2,?3)")?;
-    let mut stmt_shared_ref =
-        tx.prepare("INSERT OR IGNORE INTO shared_owners VALUES('reference',?1,?2,0)")?;
-    let mut stmt_shared_def =
-        tx.prepare("INSERT OR IGNORE INTO shared_owners VALUES('default_export',?1,?2,0)")?;
+    let mut stmt_shared_owner = tx.prepare(
+        "INSERT OR IGNORE INTO shared_owners_raw(kind_id,key_hash,owner_id,ordinal) VALUES(?1,?2,?3,?4)",
+    )?;
+    let mut shared_key_cache = hashbrown::HashMap::new();
     let mut stmt_doc_sec =
         tx.prepare("INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")?;
     let mut stmt_doc_search = tx.prepare("INSERT INTO doc_search(rowid,section_title,content,invariants)SELECT rowid,section_title,content,invariants FROM doc_sections WHERE path=?1")?;
@@ -1064,13 +1225,15 @@ fn persist_files(
 
     for file in entries {
         let f = facts.get(&file.path).context("missing extracted facts")?;
+        let owner_id = path_cache.get_or_insert(tx, &file.path)?;
         stmt_source_inv.execute(params![file.path, file.digest, file.bytes])?;
         stmt_files.execute(params![
             file.path,
             file.digest,
             file.bytes,
             file.language,
-            is_test(&file.path)
+            is_test(&file.path),
+            stable_hash64(&file.path)
         ])?;
         let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)) {
             Some(blob) => blob.clone(),
@@ -1098,22 +1261,12 @@ fn persist_files(
                 n.is_test,
                 n.language,
                 n.generated,
-                details
+                details,
+                stable_hash64(&n.id)
             ])?;
-            stmt_owned_nodes.execute(params![
-                file.path,
-                n.id,
-                n.kind,
-                n.name,
-                n.qualname,
-                n.path,
-                n.line,
-                n.end_line,
-                n.is_test,
-                n.language,
-                n.generated,
-                details
-            ])?;
+            if n.path != file.path {
+                stmt_owner_override.execute(params![n.id, file.path])?;
+            }
             let doc = n.details.get("doc").and_then(|d| d.as_str()).unwrap_or("");
             let mut search = if doc.is_empty() {
                 format!("{} {} {}", n.name, n.qualname, n.path)
@@ -1126,16 +1279,19 @@ fn persist_files(
                     search.push_str(&reference.expression);
                 }
             }
-            stmt_owned_search.execute(params![file.path, n.id, search])?;
+            stmt_owned_search.execute(params![node_id, search])?;
             stmt_node_search.execute(params![node_id, search])?;
-            stmt_shared_symbol.execute(params![n.qualname, file.path, node_id])?;
+            let key_hash = shared_key_hash(tx, &mut shared_key_cache, &n.qualname)?;
+            stmt_shared_owner.execute(params![0, key_hash, owner_id, node_id])?;
         }
         for key in reference_keys(f) {
-            stmt_shared_ref.execute(params![key, file.path])?;
+            let key_hash = shared_key_hash(tx, &mut shared_key_cache, &key)?;
+            stmt_shared_owner.execute(params![1, key_hash, owner_id, 0])?;
         }
         for n in &f.nodes {
             if n.details["default_export"] == true {
-                stmt_shared_def.execute(params![n.id, file.path])?;
+                let key_hash = shared_key_hash(tx, &mut shared_key_cache, &n.id)?;
+                stmt_shared_owner.execute(params![2, key_hash, owner_id, 0])?;
             }
         }
         for d in &f.docs {
@@ -1164,28 +1320,41 @@ fn persist_files(
 
 fn persist_graph(
     tx: &Connection,
+    path_cache: &mut PathDictionaryCache,
     graph: &Graph,
     node_paths: &mut hashbrown::HashMap<String, Option<String>>,
     materialize_edges: bool,
 ) -> Result<()> {
-    let mut ordinals: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut ordinals: hashbrown::HashMap<&str, usize> = hashbrown::HashMap::new();
     let mut stmt_occ =
-        tx.prepare("INSERT INTO edge_occurrences VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)")?;
+        tx.prepare("INSERT INTO edge_occurrences_raw VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
     let mut stmt_edges = materialize_edges
-        .then(|| tx.prepare("INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,1)ON CONFLICT(src_public_id,dst_public_id,kind)DO UPDATE SET occurrence_count=occurrence_count+1"))
+        .then(|| tx.prepare("INSERT INTO edges_raw(src_hash,kind,dst_hash,path_id,line,evidence,confidence,occurrence_count)VALUES(?1,?2,?3,?4,?5,?6,?7,1)ON CONFLICT(src_hash,kind,dst_hash)DO UPDATE SET occurrence_count=occurrence_count+1"))
         .transpose()?;
-    let mut stmt_deps = tx.prepare("INSERT INTO dependencies VALUES(?1,?2,?3,?4,'resolved')")?;
+    let mut stmt_deps =
+        tx.prepare("INSERT INTO dependencies_raw VALUES(?1,?2,?3,?4,?5,'resolved')")?;
     let mut stmt_select_path = tx.prepare_cached("SELECT path FROM nodes WHERE id=?1")?;
+    let mut stmt_cov_evidence =
+        tx.prepare("INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES(?1)")?;
+    let mut stmt_cov = tx.prepare(
+        "INSERT OR IGNORE INTO resolution_coverage_data(path_id,line,expression_id,status,evidence_id) VALUES(?1,?2,?3,?4,(SELECT evidence_id FROM coverage_evidence WHERE evidence=?5))",
+    )?;
+    let mut stmt_unres =
+        tx.prepare("INSERT INTO dependencies_raw VALUES(?1,?2,NULL,'unresolved',?3,?4)")?;
+    let mut coverage_expression_ids = hashbrown::HashMap::new();
+    let mut dependency_ordinals = hashbrown::HashMap::<i64, i64>::new();
 
     for e in &graph.edges {
         let ordinal = ordinals.entry(&e.path).or_default();
+        let owner_id = path_cache.get_or_insert(tx, &e.path)?;
+        let src_hash = stable_hash64(&e.src);
+        let dst_hash = stable_hash64(&e.dst);
         stmt_occ.execute(params![
-            e.path,
+            owner_id,
             *ordinal,
-            e.src,
-            e.dst,
+            src_hash,
+            dst_hash,
             e.kind,
-            e.path,
             e.line,
             e.evidence,
             e.confidence
@@ -1193,43 +1362,58 @@ fn persist_graph(
         *ordinal += 1;
         if let Some(stmt_edges) = stmt_edges.as_mut() {
             stmt_edges.execute(params![
-                e.src,
-                e.dst,
+                src_hash,
                 e.kind,
-                e.path,
+                dst_hash,
+                owner_id,
                 e.line,
                 e.evidence,
                 e.confidence
             ])?;
         }
-        let mut targets = BTreeSet::new();
+        let mut target_hashes = [None, None];
+        let mut targets_len = 0;
         for endpoint in [&e.src, &e.dst] {
-            let target: Option<String> = if let Some(p) = node_paths.get(endpoint) {
-                p.clone()
-            } else {
+            if !node_paths.contains_key(endpoint.as_str()) {
                 let p: Option<String> = stmt_select_path
                     .query_row([endpoint], |r| r.get(0))
                     .optional()?;
-                node_paths.insert(endpoint.clone(), p.clone());
-                p
-            };
-            let target = target
+                node_paths.insert(endpoint.clone(), p);
+            }
+            let target = node_paths
+                .get(endpoint.as_str())
+                .and_then(Option::as_deref)
                 .with_context(|| format!("edge {} has missing endpoint {endpoint}", e.kind))?;
             if target != e.path {
-                targets.insert(target);
+                let target_hash = stable_hash64(target);
+                if !target_hashes[..targets_len].contains(&Some(target_hash)) {
+                    target_hashes[targets_len] = Some(target_hash);
+                    targets_len += 1;
+                }
             }
         }
-        for target in targets {
-            stmt_deps.execute(params![e.path, target, e.kind, e.evidence])?;
+        for target_hash in target_hashes[..targets_len].iter().flatten() {
+            let ordinal = dependency_ordinals.entry(owner_id).or_default();
+            stmt_deps.execute(params![owner_id, *ordinal, target_hash, e.kind, e.evidence])?;
+            *ordinal += 1;
         }
     }
-    let mut stmt_cov = tx.prepare("INSERT INTO resolution_coverage VALUES(?1,?2,?3,?4,?5)")?;
-    let mut stmt_unres =
-        tx.prepare("INSERT INTO dependencies VALUES(?1,NULL,'unresolved',?2,?3)")?;
     for c in &graph.coverage {
-        stmt_cov.execute(params![c.path, c.line, c.expression, c.status, c.evidence])?;
+        let owner_id = path_cache.get_or_insert(tx, &c.path)?;
+        let expression_id =
+            coverage_expression_id(tx, &mut coverage_expression_ids, &c.expression)?;
+        stmt_cov_evidence.execute([&c.evidence])?;
+        stmt_cov.execute(params![
+            owner_id,
+            c.line,
+            expression_id,
+            c.status,
+            c.evidence
+        ])?;
         if c.status != "resolved" {
-            stmt_unres.execute(params![c.path, c.expression, c.status])?;
+            let ordinal = dependency_ordinals.entry(owner_id).or_default();
+            stmt_unres.execute(params![owner_id, *ordinal, c.expression, c.status])?;
+            *ordinal += 1;
         }
     }
 

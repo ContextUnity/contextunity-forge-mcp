@@ -1,6 +1,7 @@
 use anyhow::Result;
 use contextunity_forge_mcp::{
     core::{
+        models::stable_hash64,
         response::{Detail, QueryOptions, ResponsePolicy},
         schema::SCHEMA_DDL,
     },
@@ -34,7 +35,7 @@ impl Workspace {
             [],
         )?;
         for id in ["a", "b", "c", "d", "decorator"] {
-            conn.execute("INSERT INTO nodes(id,kind,name,qualname,path,line,end_line,is_test,language,generated,details) VALUES(?1,'function',?1,?1,'fixture.py',1,1,0,'python',0,'{}')", [id])?;
+            conn.execute("INSERT INTO nodes(id,kind,name,qualname,path,line,end_line,is_test,language,generated,details,node_hash) VALUES(?1,'function',?1,?1,'fixture.py',1,1,0,'python',0,'{}',?2)", params![id, stable_hash64(id)])?;
         }
         for (from, to, kind) in [
             ("a", "b", "calls"),
@@ -137,7 +138,7 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
 fn structural_dependency_uses_the_same_edge_kind_for_reachability_and_explanation() -> Result<()> {
     let workspace = Workspace::new()?;
     let conn = workspace.database()?;
-    conn.execute("INSERT INTO nodes(id,kind,name,qualname,path,line,end_line,is_test,language,generated,details) VALUES('module','module','module','module','module.py',1,1,0,'python',0,'{}')",[])?;
+    conn.execute("INSERT INTO nodes(id,kind,name,qualname,path,line,end_line,is_test,language,generated,details,node_hash) VALUES('module','module','module','module','module.py',1,1,0,'python',0,'{}',?1)", [stable_hash64("module")])?;
     conn.execute("INSERT INTO edges(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count) VALUES('a','module','imports','fixture.py',1,'fixture','exact',1)",[])?;
     let page = traversal::traverse_paged(&conn, "a", 16, false, &options(10, 0, Detail::Compact)?)?;
     let imported = page["nodes"]["items"]
@@ -156,7 +157,7 @@ fn structural_dependency_uses_the_same_edge_kind_for_reachability_and_explanatio
 fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> Result<()> {
     let workspace = Workspace::new()?;
     let conn = workspace.database()?;
-    conn.execute("INSERT INTO nodes(id,kind,name,qualname,path,line,end_line,is_test,language,generated,details) VALUES('orphan','function','orphan','orphan','orphan.py',1,1,0,'python',0,'{}')",[])?;
+    conn.execute("INSERT INTO nodes(id,kind,name,qualname,path,line,end_line,is_test,language,generated,details,node_hash) VALUES('orphan','function','orphan','orphan','orphan.py',1,1,0,'python',0,'{}',?1)", [stable_hash64("orphan")])?;
     let clean = traversal::removal_paged(&conn, "orphan", &options(10, 0, Detail::Compact)?)?;
     assert_eq!(clean["assessment"]["verdict"], "no_indexed_blockers");
     assert_eq!(clean["safe_to_remove"], true);

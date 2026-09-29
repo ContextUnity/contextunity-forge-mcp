@@ -241,6 +241,9 @@ pub fn rows(
     while let Some(row) = query.next()? {
         let mut value = Map::new();
         for (i, name) in names.iter().enumerate() {
+            if matches!(name.as_str(), "node_hash" | "path_hash") {
+                continue;
+            }
             let raw = row.get_ref(i)?;
             total_bytes = total_bytes.saturating_add(
                 name.len()

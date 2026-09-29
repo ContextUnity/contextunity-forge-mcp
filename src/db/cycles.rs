@@ -11,7 +11,7 @@ fn components(conn: &Connection, filter_path: Option<&str>) -> Result<Vec<Vec<i6
         let path = path.trim_end_matches('/');
         let (prefix, end) = path_bounds(path);
         let mut statement = conn.prepare(
-            "SELECT node_id FROM nodes WHERE path=?1 OR (path>=?2 AND path<?3) LIMIT 1000001",
+            "SELECT node_hash FROM nodes WHERE path=?1 OR (path>=?2 AND path<?3) LIMIT 1000001",
         )?;
         let selected = statement
             .query_map([path, &prefix, &end], |r| r.get::<_, i64>(0))?
@@ -28,7 +28,9 @@ fn components(conn: &Connection, filter_path: Option<&str>) -> Result<Vec<Vec<i6
     };
 
     // Internal graph data uses integer keys. The response byte budget applies only to output.
-    let mut statement = conn.prepare("SELECT a.node_id,b.node_id FROM edges e JOIN nodes a ON a.id=e.src_public_id JOIN nodes b ON b.id=e.dst_public_id WHERE e.kind IN('calls','imports') LIMIT 500001")?;
+    let mut statement = conn.prepare(
+        "SELECT src_hash,dst_hash FROM edges_raw WHERE kind IN('calls','imports') LIMIT 500001",
+    )?;
     let edges = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
     let mut graph = DiGraphMap::<i64, ()>::new();
     for (count, edge) in edges.enumerate() {
@@ -62,7 +64,7 @@ fn components(conn: &Connection, filter_path: Option<&str>) -> Result<Vec<Vec<i6
 pub fn cycles(conn: &Connection, filter_path: Option<&str>) -> Result<Value> {
     let components = components(conn, filter_path)?;
     let budget = QueryBudget::new(conn);
-    let mut lookup = conn.prepare_cached("SELECT id FROM nodes WHERE node_id=?1")?;
+    let mut lookup = conn.prepare_cached("SELECT id FROM nodes WHERE node_hash=?1")?;
     let mut output = Vec::new();
     let mut bytes = 2usize;
     for component in components {
@@ -88,7 +90,7 @@ pub(super) fn summary(conn: &Connection, filter_path: Option<&str>) -> Result<Va
     components.sort_unstable_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
     let total = components.len();
     let total_nodes: usize = components.iter().map(Vec::len).sum();
-    let mut lookup = conn.prepare_cached("SELECT id,path,line FROM nodes WHERE node_id=?1")?;
+    let mut lookup = conn.prepare_cached("SELECT id,path,line FROM nodes WHERE node_hash=?1")?;
     let mut largest = Vec::new();
     for component in components.iter().take(5) {
         let (id, path, line): (String, String, i64) =

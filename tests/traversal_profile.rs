@@ -1,6 +1,7 @@
 use anyhow::{ensure, Context, Result};
 use contextunity_forge_mcp::{
     core::{
+        models::stable_hash64,
         response::{Detail, QueryOptions, ResponsePolicy},
         schema::SCHEMA_DDL,
     },
@@ -203,7 +204,7 @@ fn repeated_reachability(
 }
 
 fn add_node(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute("INSERT INTO nodes(id,kind,name,qualname,path,line,end_line,is_test,language,generated,details) VALUES(?1,'function',?1,?1,'fixture.py',1,1,0,'python',0,'{}')", [id])?;
+    conn.execute("INSERT INTO nodes(id,kind,name,qualname,path,line,end_line,is_test,language,generated,details,node_hash) VALUES(?1,'function',?1,?1,'fixture.py',1,1,0,'python',0,'{}',?2)", params![id, stable_hash64(id)])?;
     Ok(())
 }
 fn add_edge(conn: &Connection, from: &str, to: &str, kind: &str) -> Result<()> {

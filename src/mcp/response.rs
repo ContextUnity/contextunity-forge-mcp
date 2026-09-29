@@ -14,18 +14,21 @@ const ENVELOPE_RESERVE: usize = 256;
 pub fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
     let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
     match value {
-        Ok(mut value) => loop {
-            let result = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
-            if serialized_bytes(&result) <= budget {
-                return result;
+        Ok(mut value) => {
+            compact_mcp_metadata(&mut value);
+            loop {
+                let result = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+                if serialized_bytes(&result) <= budget {
+                    return result;
+                }
+                if !trim_page_tail(&mut value) {
+                    return bounded_error(
+                        "Output exceeds the response byte limit. Use detail='compact', a smaller limit, or a narrower selector/SQL projection. A single oversized item must be read from its local file; no items were skipped and no continuation was consumed.",
+                        budget,
+                    );
+                }
             }
-            if !trim_page_tail(&mut value) {
-                return bounded_error(
-                    "Output exceeds the response byte limit. Use detail='compact', a smaller limit, or a narrower selector/SQL projection. A single oversized item must be read from its local file; no items were skipped and no continuation was consumed.",
-                    budget,
-                );
-            }
-        },
+        }
         Err(error) => {
             let interrupted = error.chain().any(|cause| {
                 matches!(
@@ -46,9 +49,32 @@ pub fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallTool
     }
 }
 
+fn compact_mcp_metadata(value: &mut Value) {
+    if let Value::Object(map) = value {
+        if let Some(mut freshness) = map.remove("freshness") {
+            if let Value::Object(fmap) = &mut freshness {
+                fmap.remove("checked_at_unix_ms");
+                fmap.remove("inventory_scan_ms");
+                if let Some(Value::String(hash)) = fmap.get_mut("corpus_hash") {
+                    if hash.len() > 6 {
+                        *hash = hash[hash.len() - 6..].to_string();
+                    }
+                }
+                if let Some(Value::String(hash)) = fmap.get_mut("output_root") {
+                    if hash.len() > 6 {
+                        *hash = hash[hash.len() - 6..].to_string();
+                    }
+                }
+            }
+            map.insert("freshness".into(), freshness);
+        }
+    }
+}
+
 pub fn checkpoint_result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
     match value {
-        Ok(value) => {
+        Ok(mut value) => {
+            compact_mcp_metadata(&mut value);
             let result = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
             let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
             if serialized_bytes(&result) <= budget {

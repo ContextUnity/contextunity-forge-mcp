@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use rayon::prelude::*;
 use rusqlite::{params, types::ValueRef, Connection};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,14 +60,41 @@ fn encode_row(hasher: &mut Sha256, row: &rusqlite::Row<'_>, columns: usize) -> R
     }
     Ok(())
 }
+fn encode_row_bytes(buf: &mut Vec<u8>, row: &rusqlite::Row<'_>, columns: usize) -> Result<()> {
+    buf.push(0xff);
+    for i in 0..columns {
+        match row.get_ref(i)? {
+            ValueRef::Null => buf.push(b'n'),
+            ValueRef::Integer(n) => {
+                buf.push(b'i');
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
+            ValueRef::Real(n) => {
+                buf.push(b'r');
+                buf.extend_from_slice(&n.to_bits().to_le_bytes());
+            }
+            ValueRef::Text(s) => {
+                buf.push(b't');
+                buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                buf.extend_from_slice(s);
+            }
+            ValueRef::Blob(s) => {
+                buf.push(b'b');
+                buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                buf.extend_from_slice(s);
+            }
+        }
+    }
+    Ok(())
+}
 fn key(table: &str, owner: &str) -> String {
     format!("leaf:{}", serde_json::json!([table, owner]))
 }
 fn shape(table: &str) -> (&'static str, &'static str, &'static str) {
     match table {
         "nodes" => (
-            "o.owner",
-            "LEFT JOIN owned_nodes o ON o.public_id=t.id",
+            "coalesce(o.owner, t.path)",
+            "LEFT JOIN node_owner_overrides o ON o.public_id=t.id",
             "t.id",
         ),
         "edges" => ("t.path", "", "t.src_public_id,t.dst_public_id,t.kind"),
@@ -102,29 +130,40 @@ fn leaves(
     } else {
         stmt.query([])?
     };
-    let mut result = BTreeMap::new();
-    let mut current: Option<(String, Sha256)> = None;
+    let mut owner_chunks: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut current_owner: Option<String> = None;
+    let mut current_buf = Vec::with_capacity(4096);
+
     while let Some(row) = rows.next()? {
         let owner: String = row.get(columns)?;
-        if current.as_ref().is_none_or(|(old, _)| *old != owner) {
-            if let Some((old, h)) = current.take() {
-                result.insert(key(table, &old), hex::encode(h.finalize()));
+        if current_owner.as_deref() != Some(&owner) {
+            if let Some(old_owner) = current_owner.take() {
+                owner_chunks.push((old_owner, std::mem::take(&mut current_buf)));
             }
+            current_owner = Some(owner);
+        }
+        encode_row_bytes(&mut current_buf, row, columns)?;
+    }
+    if let Some(old_owner) = current_owner {
+        owner_chunks.push((old_owner, current_buf));
+    }
+
+    let hashed: Vec<(String, String)> = owner_chunks
+        .into_par_iter()
+        .map(|(owner, bytes)| {
             let mut h = Sha256::new();
             h.update(ALGORITHM);
             h.update(table);
             h.update((owner.len() as u64).to_le_bytes());
-            h.update(&owner);
-            current = Some((owner, h));
-        }
-        encode_row(
-            &mut current.as_mut().expect("owner initialized").1,
-            row,
-            columns,
-        )?;
-    }
-    if let Some((owner, h)) = current {
-        result.insert(key(table, &owner), hex::encode(h.finalize()));
+            h.update(owner.as_bytes());
+            h.update(&bytes);
+            (key(table, &owner), hex::encode(h.finalize()))
+        })
+        .collect();
+
+    let mut result = BTreeMap::new();
+    for (k, v) in hashed {
+        result.insert(k, v);
     }
     Ok(result)
 }

@@ -1,5 +1,5 @@
 use super::{paging, reader, symbols};
-use crate::core::response::QueryOptions;
+use crate::core::{models::stable_hash64, response::QueryOptions};
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -71,9 +71,9 @@ pub(super) fn immediate_links(
     structural: bool,
 ) -> Result<usize> {
     let (forward, reverse) = if inbound {
-        ("dst_public_id", "src_public_id")
+        ("dst_hash", "src_hash")
     } else {
-        ("src_public_id", "dst_public_id")
+        ("src_hash", "dst_hash")
     };
     let extra = if structural {
         STRUCTURAL_DEPENDENCIES
@@ -82,15 +82,15 @@ pub(super) fn immediate_links(
     };
     let forward = paging::count(
         conn,
-        &format!("SELECT count(*) FROM edges WHERE {forward}=?1 AND kind IN({FORWARD_DEPENDENCIES}{extra})"),
-        &[&id],
+        &format!("SELECT count(*) FROM edges_raw WHERE {forward}=?1 AND kind IN({FORWARD_DEPENDENCIES}{extra})"),
+        &[&stable_hash64(id)],
     )?;
     let reverse = paging::count(
         conn,
         &format!(
-            "SELECT count(*) FROM edges WHERE {reverse}=?1 AND kind IN({REVERSE_DEPENDENCIES})"
+            "SELECT count(*) FROM edges_raw WHERE {reverse}=?1 AND kind IN({REVERSE_DEPENDENCIES})"
         ),
-        &[&id],
+        &[&stable_hash64(id)],
     )?;
     Ok(forward.saturating_add(reverse))
 }
@@ -108,9 +108,9 @@ fn admit_traversal(conn: &Connection, id: &str, depth: u32, inbound: bool) -> Re
 
 pub(super) fn dependency_steps(inbound: bool, bounded: bool, structural: bool) -> String {
     let (from, to) = if inbound {
-        ("dst_public_id", "src_public_id")
+        ("dst_hash", "src_hash")
     } else {
-        ("src_public_id", "dst_public_id")
+        ("src_hash", "dst_hash")
     };
     let depth = if bounded { ",w.depth+1" } else { "" };
     let guard = if bounded { "w.depth<?2 AND " } else { "" };
@@ -119,7 +119,7 @@ pub(super) fn dependency_steps(inbound: bool, bounded: bool, structural: bool) -
     } else {
         ""
     };
-    format!("SELECT e.{to}{depth} FROM walk w JOIN edges e ON e.{from}=w.id WHERE {guard}e.kind IN({FORWARD_DEPENDENCIES}{extra}) UNION SELECT e.{from}{depth} FROM walk w JOIN edges e ON e.{to}=w.id WHERE {guard}e.kind IN({REVERSE_DEPENDENCIES})")
+    format!("SELECT e.{to}{depth} FROM walk w JOIN edges_raw e ON e.{from}=w.id WHERE {guard}e.kind IN({FORWARD_DEPENDENCIES}{extra}) UNION SELECT e.{from}{depth} FROM walk w JOIN edges_raw e ON e.{to}=w.id WHERE {guard}e.kind IN({REVERSE_DEPENDENCIES})")
 }
 pub fn traverse(
     conn: &Connection,
@@ -134,11 +134,12 @@ pub fn traverse(
     reader::validate_limit(limit)?;
     let node = reader::select(conn, selector)?;
     let id = node["id"].as_str().context("selected node has no id")?;
+    let id_hash = stable_hash64(id);
     admit_traversal(conn, id, depth, inbound)?;
     let size = limit + 1;
     let steps = dependency_steps(inbound, true, true);
-    let sql = format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}) SELECT n.*,min(w.depth) distance FROM walk w JOIN nodes n ON n.id=w.id GROUP BY n.id ORDER BY distance,n.id LIMIT ?3");
-    let mut nodes = reader::rows(conn, &sql, &[&id, &depth, &size], size)?;
+    let sql = format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}) SELECT n.*,min(w.depth) distance FROM walk w JOIN nodes n ON n.node_hash=w.id GROUP BY n.id ORDER BY distance,n.id LIMIT ?3");
+    let mut nodes = reader::rows(conn, &sql, &[&id_hash, &depth, &size], size)?;
     let truncated = nodes.len() > limit;
     nodes.truncate(limit);
     Ok(
@@ -254,6 +255,7 @@ pub fn traverse_paged(
     let generation = paging::generation(conn, options)?;
     let node = reader::select_detail(conn, selector, options.detail)?;
     let id = node["id"].as_str().context("selected node has no id")?;
+    let id_hash = stable_hash64(id);
     let immediate = admit_traversal(conn, id, depth, inbound)?;
     if depth == 0 || (depth > 1 && immediate == 0) {
         let items = if options.offset == 0 {
@@ -272,11 +274,11 @@ pub fn traverse_paged(
     if depth == 1 {
         let steps = dependency_steps(inbound, true, true);
         let columns = paging::nodes("n", options.detail);
-        let base = format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}), reached(id,distance) AS (SELECT id,min(depth) FROM walk GROUP BY id) SELECT {columns},r.distance FROM reached r JOIN nodes n ON n.id=r.id ORDER BY r.distance,n.id");
+        let base = format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}), reached(id,distance) AS (SELECT id,min(depth) FROM walk GROUP BY id) SELECT {columns},r.distance FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id");
         let count = reader::rows(
             conn,
             &format!("SELECT count(*) total FROM ({base})"),
-            &[&id, &depth],
+            &[&id_hash, &depth],
             1,
         )?;
         let total = count[0]["total"]
@@ -288,7 +290,7 @@ pub fn traverse_paged(
         let mut items = reader::rows(
             conn,
             &format!("SELECT * FROM ({base}) LIMIT ?3 OFFSET ?4"),
-            &[&id, &depth, &limit, &offset],
+            &[&id_hash, &depth, &limit, &offset],
             options.limit,
         )?;
         for item in &mut items {
@@ -306,43 +308,38 @@ pub fn traverse_paged(
     let steps = dependency_steps(inbound, true, true);
     let columns = paging::nodes("n", options.detail);
     let (forward_from, forward_to, reverse_from, reverse_to) = if inbound {
-        (
-            "src_public_id",
-            "dst_public_id",
-            "dst_public_id",
-            "src_public_id",
-        )
+        ("src_hash", "dst_hash", "dst_hash", "src_hash")
     } else {
-        (
-            "dst_public_id",
-            "src_public_id",
-            "src_public_id",
-            "dst_public_id",
-        )
+        ("dst_hash", "src_hash", "src_hash", "dst_hash")
     };
     let sql = if immediate <= 3 && options.offset == 0 {
         // On sparse walks, count the reached rows in the page scan itself.
         format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}), \
         reached(id,distance) AS (SELECT id,min(depth) FROM walk GROUP BY id), \
-        page AS (SELECT {columns},r.distance,count(*) OVER() __total FROM reached r JOIN nodes n ON n.id=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4) \
+        page AS (SELECT {columns},n.node_hash __hash,r.distance,count(*) OVER() __total FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4) \
         SELECT p.*,CASE WHEN p.distance=0 THEN NULL ELSE (SELECT json_array(predecessor,edge_kind) FROM ( \
-            SELECT e.{forward_to} predecessor,e.kind edge_kind FROM edges e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 WHERE e.{forward_from}=p.id AND e.kind IN({FORWARD_DEPENDENCIES}{STRUCTURAL_DEPENDENCIES}) \
-            UNION ALL SELECT e.{reverse_to},e.kind FROM edges e JOIN reached prior ON prior.id=e.{reverse_to} AND prior.distance=p.distance-1 WHERE e.{reverse_from}=p.id AND e.kind IN({REVERSE_DEPENDENCIES}) \
+            SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{forward_to} WHERE e.{forward_from}=p.__hash AND e.kind IN({FORWARD_DEPENDENCIES}{STRUCTURAL_DEPENDENCIES}) \
+            UNION ALL SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{reverse_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{reverse_to} WHERE e.{reverse_from}=p.__hash AND e.kind IN({REVERSE_DEPENDENCIES}) \
         ) ORDER BY predecessor,edge_kind LIMIT 1) END __reason FROM page p")
     } else {
         format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}), \
         reached(id,distance) AS MATERIALIZED (SELECT id,min(depth) FROM walk GROUP BY id), \
-        page AS (SELECT {columns},r.distance FROM reached r JOIN nodes n ON n.id=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4) \
+        page AS (SELECT {columns},n.node_hash __hash,r.distance FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4) \
         SELECT totals.__total,p.*,CASE WHEN p.distance=0 THEN NULL ELSE (SELECT json_array(predecessor,edge_kind) FROM ( \
-            SELECT e.{forward_to} predecessor,e.kind edge_kind FROM edges e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 WHERE e.{forward_from}=p.id AND e.kind IN({FORWARD_DEPENDENCIES}{STRUCTURAL_DEPENDENCIES}) \
-            UNION ALL SELECT e.{reverse_to},e.kind FROM edges e JOIN reached prior ON prior.id=e.{reverse_to} AND prior.distance=p.distance-1 WHERE e.{reverse_from}=p.id AND e.kind IN({REVERSE_DEPENDENCIES}) \
+            SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{forward_to} WHERE e.{forward_from}=p.__hash AND e.kind IN({FORWARD_DEPENDENCIES}{STRUCTURAL_DEPENDENCIES}) \
+            UNION ALL SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{reverse_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{reverse_to} WHERE e.{reverse_from}=p.__hash AND e.kind IN({REVERSE_DEPENDENCIES}) \
         ) ORDER BY predecessor,edge_kind LIMIT 1) END __reason \
-        FROM (SELECT count(*) __total FROM reached r JOIN nodes n ON n.id=r.id) totals \
+        FROM (SELECT count(*) __total FROM reached r JOIN nodes n ON n.node_hash=r.id) totals \
         LEFT JOIN page p ON 1 ORDER BY p.distance,p.id")
     };
     let limit = i64::try_from(options.limit)?;
     let offset = i64::try_from(options.offset)?;
-    let mut items = reader::rows(conn, &sql, &[&id, &depth, &limit, &offset], options.limit)?;
+    let mut items = reader::rows(
+        conn,
+        &sql,
+        &[&id_hash, &depth, &limit, &offset],
+        options.limit,
+    )?;
     let total = items
         .first()
         .and_then(|row| row["__total"].as_u64())
@@ -352,6 +349,7 @@ pub fn traverse_paged(
     for item in &mut items {
         let item = item.as_object_mut().context("invalid traversal node")?;
         item.remove("__total");
+        item.remove("__hash");
         let reason = item
             .remove("__reason")
             .and_then(|value| value.as_str().map(str::to_owned));

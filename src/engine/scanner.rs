@@ -9,11 +9,48 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const ENGINE_SCHEMA_VERSION: &str = "3";
+pub const ENGINE_SCHEMA_VERSION: &str = "7";
 pub const INDEX_SEMANTICS_VERSION: &str = concat!("6:", env!("FORGE_LANGUAGE_PROFILE_DIGEST"));
-const MAX_FILES: usize = 100_000;
-pub(crate) const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
-const MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;
+pub const DEFAULT_MAX_FILES: usize = 100_000;
+pub const DEFAULT_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;
+pub(crate) const MAX_FILE_BYTES: u64 = DEFAULT_MAX_FILE_BYTES;
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ScannerLimits {
+    #[serde(default = "default_max_files")]
+    pub max_files: usize,
+    #[serde(default = "default_max_file_bytes")]
+    pub max_file_bytes: u64,
+    #[serde(default = "default_max_total_bytes")]
+    pub max_total_bytes: u64,
+    #[serde(default)]
+    pub allow_broad_root: bool,
+}
+
+fn default_max_files() -> usize {
+    DEFAULT_MAX_FILES
+}
+
+fn default_max_file_bytes() -> u64 {
+    DEFAULT_MAX_FILE_BYTES
+}
+
+fn default_max_total_bytes() -> u64 {
+    DEFAULT_MAX_TOTAL_BYTES
+}
+
+impl Default for ScannerLimits {
+    fn default() -> Self {
+        Self {
+            max_files: default_max_files(),
+            max_file_bytes: default_max_file_bytes(),
+            max_total_bytes: default_max_total_bytes(),
+            allow_broad_root: false,
+        }
+    }
+}
+
 const DEFAULT_IGNORED_NAMES: &[&str] = &[
     ".git",
     ".forge",
@@ -32,6 +69,14 @@ const DEFAULT_IGNORED_NAMES: &[&str] = &[
     ".mypy_cache",
     ".ruff_cache",
     ".gradle",
+    "vendor",
+    ".cargo",
+    ".idea",
+    ".vscode",
+    ".tox",
+    ".turbo",
+    "out",
+    ".output",
 ];
 
 #[derive(Debug, Clone, Deserialize, Default, Serialize, PartialEq, Eq)]
@@ -60,6 +105,8 @@ pub struct LinkedWorkspace {
 struct AdapterFile {
     #[serde(default)]
     response: crate::core::response::ResponsePolicy,
+    #[serde(default)]
+    limits: Option<ScannerLimits>,
     adapter_version: Option<serde_json::Value>,
     roots: Option<Vec<String>>,
     ignore: Option<Vec<String>>,
@@ -75,6 +122,7 @@ struct AdapterFile {
 pub struct Adapter {
     pub adapter_path: Option<PathBuf>,
     pub response: crate::core::response::ResponsePolicy,
+    pub limits: ScannerLimits,
     pub roots: Vec<PathBuf>,
     pub ignored_names: BTreeSet<String>,
     pub adapter_version: Option<String>,
@@ -177,14 +225,118 @@ pub fn resolve_file_path(
     checked_child(root, Path::new(file_path))
 }
 
-fn ensure_bounds(files: usize, bytes: u64) -> std::io::Result<()> {
-    if files > MAX_FILES {
-        return Err(error("workspace exceeds file limit"));
+fn ensure_bounds(files: usize, bytes: u64, limits: &ScannerLimits) -> std::io::Result<()> {
+    if files > limits.max_files {
+        return Err(error(format!(
+            "workspace exceeds file limit ({} > max_files {})",
+            files, limits.max_files
+        )));
     }
-    if bytes > MAX_TOTAL_BYTES {
-        return Err(error("workspace exceeds total byte limit"));
+    if bytes > limits.max_total_bytes {
+        return Err(error(format!(
+            "workspace exceeds total byte limit ({} > max_total_bytes {})",
+            bytes, limits.max_total_bytes
+        )));
     }
     Ok(())
+}
+
+pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
+    if allow_broad
+        || std::env::var("FORGE_ALLOW_BROAD_ROOT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    // 1. Filesystem root
+    if root == Path::new("/") {
+        return Err(error(
+            "refusing to index filesystem root '/'; specify a repository directory or set limits.allow_broad_root: true",
+        ));
+    }
+
+    // 2. Direct parent is / or /home or /Users
+    if let Some(parent) = root.parent() {
+        if parent == Path::new("/") {
+            let name = root.file_name().unwrap_or_default().to_string_lossy();
+            if matches!(name.as_ref(), "home" | "Users" | "var" | "tmp" | "usr" | "etc" | "opt") {
+                return Err(error(format!(
+                    "refusing to index system directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
+                )));
+            }
+        } else if parent == Path::new("/home") || parent == Path::new("/Users") {
+            return Err(error(format!(
+                "refusing to index user home directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
+            )));
+        }
+    }
+
+    // 3. Multi-repository container check:
+    let is_git_repo = root.join(".git").exists();
+    let has_manifest = root.join("forge-mcp.yaml").exists()
+        || root.join("Cargo.toml").exists()
+        || root.join("package.json").exists()
+        || root.join("pyproject.toml").exists()
+        || root.join("go.mod").exists();
+
+    if !is_git_repo && !has_manifest {
+        if let Ok(entries) = fs::read_dir(root) {
+            let mut git_subdirs = 0;
+            for entry in entries.flatten() {
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_dir() {
+                        let p = entry.path();
+                        if p.join(".git").exists() {
+                            git_subdirs += 1;
+                        } else if let Ok(sub_entries) = fs::read_dir(&p) {
+                            for sub_entry in sub_entries.flatten() {
+                                if let Ok(sft) = sub_entry.file_type() {
+                                    if sft.is_dir() && sub_entry.path().join(".git").exists() {
+                                        git_subdirs += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if git_subdirs >= 2 {
+                    return Err(error(format!(
+                        "workspace root '{root:?}' appears to be a multi-repository container ({git_subdirs}+ repos detected); specify a single repository or set limits.allow_broad_root: true"
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn available_memory_bytes() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = fs::read_to_string("/proc/meminfo") {
+            for line in content.lines() {
+                if let Some(rest) = line.strip_prefix("MemAvailable:") {
+                    let parts: Vec<&str> = rest.split_whitespace().collect();
+                    if let Some(kb_str) = parts.first() {
+                        if let Ok(kb) = kb_str.parse::<u64>() {
+                            return kb * 1024;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: 2 GB
+    2 * 1024 * 1024 * 1024
+}
+
+pub fn memory_budget_bytes() -> u64 {
+    let available = available_memory_bytes();
+    // 1/3 of available memory, clamped to [256MB, 16GB]
+    (available / 3).clamp(256 * 1024 * 1024, 16 * 1024 * 1024 * 1024)
 }
 
 pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<Adapter> {
@@ -355,6 +507,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     Ok(Adapter {
         adapter_path: explicit_adapter_path,
         response: raw.response,
+        limits: raw.limits.unwrap_or_default(),
         roots,
         ignored_names: raw
             .ignore
@@ -384,7 +537,11 @@ pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-pub fn entry_with_rel(path: &Path, relative: String) -> std::io::Result<Option<FileEntry>> {
+pub fn entry_with_rel(
+    path: &Path,
+    relative: String,
+    max_file_bytes: u64,
+) -> std::io::Result<Option<FileEntry>> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Ok(None);
@@ -392,10 +549,12 @@ pub fn entry_with_rel(path: &Path, relative: String) -> std::io::Result<Option<F
     let Some((language, is_doc)) = language(path) else {
         return Ok(None);
     };
-    if metadata.len() > MAX_FILE_BYTES {
+    if metadata.len() > max_file_bytes {
         return Err(error(format!(
-            "file exceeds byte limit: {}",
-            path.display()
+            "file exceeds byte limit: {} ({} > max_file_bytes {})",
+            path.display(),
+            metadata.len(),
+            max_file_bytes
         )));
     }
     let bytes = fs::read(path)?;
@@ -420,7 +579,7 @@ pub fn entry(root: &Path, path: &Path) -> std::io::Result<Option<FileEntry>> {
         .strip_prefix(root)
         .map_err(|_| error("file escapes root"))?;
     let path = checked_child(root, relative)?;
-    entry_with_rel(&path, relative.to_string_lossy().replace('\\', "/"))
+    entry_with_rel(&path, relative.to_string_lossy().replace('\\', "/"), DEFAULT_MAX_FILE_BYTES)
 }
 
 fn metadata_identity(metadata: &fs::Metadata) -> [u64; 3] {
@@ -445,6 +604,7 @@ fn cached_entry(
     full_path: &Path,
     rel_path: &str,
     previous: &std::collections::BTreeMap<&str, &FileEntry>,
+    max_file_bytes: u64,
 ) -> std::io::Result<Option<FileEntry>> {
     if let Some(old) = previous.get(rel_path) {
         let metadata = fs::symlink_metadata(full_path)?;
@@ -463,10 +623,11 @@ fn cached_entry(
             return Ok(Some((*old).clone()));
         }
     }
-    entry_with_rel(full_path, rel_path.to_owned())
+    entry_with_rel(full_path, rel_path.to_owned(), max_file_bytes)
 }
 
 pub fn scan_with_adapter(root: &Path, adapter: &Adapter) -> std::io::Result<ScanReport> {
+    check_root_scope(root, adapter.limits.allow_broad_root)?;
     scan_reusing(root, adapter, &[])
 }
 
@@ -563,14 +724,15 @@ pub fn scan_reusing(
 
     let previous: std::collections::BTreeMap<_, _> =
         previous.iter().map(|f| (f.path.as_str(), f)).collect();
+    let max_file_bytes = adapter.limits.max_file_bytes;
     let entries: std::io::Result<Vec<_>> = candidates
         .par_iter()
-        .map(|(full_path, rel_path)| cached_entry(full_path, rel_path, &previous))
+        .map(|(full_path, rel_path)| cached_entry(full_path, rel_path, &previous, max_file_bytes))
         .collect();
     let mut entries: Vec<_> = entries?.into_iter().flatten().collect();
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     let bytes = entries.iter().map(|item| item.bytes).sum();
-    ensure_bounds(entries.len(), bytes)?;
+    ensure_bounds(entries.len(), bytes, &adapter.limits)?;
     Ok(ScanReport {
         files: entries.len(),
         bytes,
@@ -582,5 +744,6 @@ pub fn scan_reusing(
 pub fn scan(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<ScanReport> {
     let root = canonical_root(root)?;
     let adapter = load_adapter(&root, adapter_path)?;
+    check_root_scope(&root, adapter.limits.allow_broad_root)?;
     scan_with_adapter(&root, &adapter)
 }
