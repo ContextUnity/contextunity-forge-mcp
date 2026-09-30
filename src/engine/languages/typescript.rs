@@ -29,17 +29,35 @@ pub fn kind(kind: &str) -> Option<&'static str> {
     }
 }
 
+fn method_owner<'tree>(node: Syntax<'tree>) -> Option<Syntax<'tree>> {
+    let mut current = node.parent()?;
+    while matches!(
+        current.kind(),
+        "class_body" | "interface_body" | "object_type"
+    ) {
+        if let Some(owner) = current.parent() {
+            if matches!(
+                owner.kind(),
+                "class_declaration" | "class" | "interface_declaration"
+            ) {
+                return Some(owner);
+            }
+        }
+        current = current.parent()?;
+    }
+    None
+}
+
 fn resolve_export_target(val: &serde_json::Value) -> Option<String> {
     match val {
         serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Object(conds) => {
-            conds.get("import")
-                .or_else(|| conds.get("default"))
-                .or_else(|| conds.get("types"))
-                .or_else(|| conds.get("require"))
-                .or_else(|| conds.get("node"))
-                .and_then(resolve_export_target)
-        }
+        serde_json::Value::Object(conds) => conds
+            .get("import")
+            .or_else(|| conds.get("default"))
+            .or_else(|| conds.get("types"))
+            .or_else(|| conds.get("require"))
+            .or_else(|| conds.get("node"))
+            .and_then(resolve_export_target),
         _ => None,
     }
 }
@@ -60,16 +78,34 @@ fn resolve_exports_field(exports: &serde_json::Value, subpath: &str) -> Option<S
     }
 }
 
-fn resolve_package_json_exports(root: Option<&Path>, owner: &str, module: &str) -> Option<ImportPath> {
+fn resolve_package_json_exports(
+    root: Option<&Path>,
+    owner: &str,
+    module: &str,
+) -> Option<ImportPath> {
     let (pkg_name, subpath) = if module.starts_with('@') {
         let mut parts = module.splitn(3, '/');
         let scope = parts.next()?;
         let name = parts.next()?;
         let rest = parts.next().unwrap_or("");
-        (format!("{scope}/{name}"), if rest.is_empty() { ".".to_string() } else { format!("./{rest}") })
+        (
+            format!("{scope}/{name}"),
+            if rest.is_empty() {
+                ".".to_string()
+            } else {
+                format!("./{rest}")
+            },
+        )
     } else if !module.starts_with('.') && !module.starts_with('/') {
         let (name, rest) = module.split_once('/').unwrap_or((module, ""));
-        (name.to_string(), if rest.is_empty() { ".".to_string() } else { format!("./{rest}") })
+        (
+            name.to_string(),
+            if rest.is_empty() {
+                ".".to_string()
+            } else {
+                format!("./{rest}")
+            },
+        )
     } else {
         return None;
     };
@@ -82,7 +118,10 @@ fn resolve_package_json_exports(root: Option<&Path>, owner: &str, module: &str) 
     let mut found_pkg_json: Option<(std::path::PathBuf, serde_json::Value)> = None;
 
     while let Some(dir) = current_dir {
-        let nm_candidate = dir.join("node_modules").join(&pkg_name).join("package.json");
+        let nm_candidate = dir
+            .join("node_modules")
+            .join(&pkg_name)
+            .join("package.json");
         if nm_candidate.exists() {
             if let Ok(content) = std::fs::read_to_string(&nm_candidate) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -153,17 +192,234 @@ fn resolve_package_json_exports(root: Option<&Path>, owner: &str, module: &str) 
     let clean_target = target_file_rel.trim_start_matches("./");
     let target_path = pkg_dir.join(clean_target);
     let target_str = if let Some(r) = root {
-        target_path.strip_prefix(r).unwrap_or(&target_path).to_string_lossy().replace('\\', "/")
+        target_path
+            .strip_prefix(r)
+            .unwrap_or(&target_path)
+            .to_string_lossy()
+            .replace('\\', "/")
     } else {
         target_path.to_string_lossy().replace('\\', "/")
     };
-    let target_mod = module_stem(&target_str).trim_end_matches("/index").replace('/', ".");
+    let target_mod = module_stem(&target_str)
+        .trim_end_matches("/index")
+        .replace('/', ".");
 
     Some(ImportPath {
         namespace: target_mod,
         relative: false,
         symbol_path: false,
     })
+}
+
+fn required_module(value: Syntax<'_>, source: &str) -> Option<String> {
+    if value.kind() != "call_expression" {
+        return None;
+    }
+    let callee = value.child_by_field_name("function")?;
+    if text(callee, source).trim() != "require" {
+        return None;
+    }
+    let argument = value.child_by_field_name("arguments")?.named_child(0)?;
+    if argument.kind() != "string" {
+        return None;
+    }
+    let raw = text(argument, source).trim();
+    let quote = raw.chars().next()?;
+    if !matches!(quote, '\'' | '"') || raw.chars().last()? != quote {
+        return None;
+    }
+    Some(raw[1..raw.len() - 1].to_owned())
+}
+
+fn collect_require_bindings(
+    pattern: Syntax<'_>,
+    source: &str,
+    imports: &mut Vec<(String, Option<String>)>,
+) {
+    match pattern.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => {
+            let name = text(pattern, source).to_owned();
+            imports.push((name.clone(), Some(name)));
+        }
+        "pair_pattern" => {
+            let Some(key) = pattern.child_by_field_name("key") else {
+                return;
+            };
+            let Some(value) = pattern.child_by_field_name("value") else {
+                return;
+            };
+            let local = if value.kind() == "assignment_pattern" {
+                value.child_by_field_name("left").unwrap_or(value)
+            } else {
+                value
+            };
+            if matches!(
+                local.kind(),
+                "identifier" | "shorthand_property_identifier_pattern"
+            ) {
+                imports.push((
+                    text(key, source).to_owned(),
+                    Some(text(local, source).to_owned()),
+                ));
+            }
+        }
+        "assignment_pattern" => {
+            if let Some(left) = pattern.child_by_field_name("left") {
+                collect_require_bindings(left, source, imports);
+            }
+        }
+        "object_pattern" | "array_pattern" | "rest_pattern" => {
+            let mut cursor = pattern.walk();
+            for child in pattern.named_children(&mut cursor) {
+                collect_require_bindings(child, source, imports);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn require_is_shadowed(ctx: &SyntaxContext<'_, '_>) -> bool {
+    let mut current = Some(ctx.node);
+    while let Some(scope) = current {
+        if ctx.shadowed_require_scopes.contains(&scope.id()) {
+            return true;
+        }
+        current = scope.parent();
+    }
+    false
+}
+
+fn pattern_binds_require(pattern: Syntax<'_>, source: &str) -> bool {
+    match pattern.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => {
+            text(pattern, source).trim() == "require"
+        }
+        "pair_pattern" => pattern
+            .child_by_field_name("value")
+            .is_some_and(|value| pattern_binds_require(value, source)),
+        "assignment_pattern" => pattern
+            .child_by_field_name("left")
+            .is_some_and(|left| pattern_binds_require(left, source)),
+        "formal_parameters" | "object_pattern" | "array_pattern" | "rest_pattern"
+        | "required_parameter" | "optional_parameter" | "formal_parameter" => {
+            let candidate = pattern
+                .child_by_field_name("name")
+                .or_else(|| pattern.child_by_field_name("pattern"));
+            if let Some(candidate) = candidate {
+                return pattern_binds_require(candidate, source);
+            }
+            let mut cursor = pattern.walk();
+            let binds = pattern
+                .named_children(&mut cursor)
+                .any(|child| pattern_binds_require(child, source));
+            binds
+        }
+        _ => false,
+    }
+}
+
+fn nearest_binding_scope(node: Syntax<'_>, var_scoped: bool) -> Option<Syntax<'_>> {
+    let mut current = Some(node);
+    while let Some(scope) = current {
+        if var_scoped {
+            if matches!(
+                scope.kind(),
+                "program"
+                    | "source_file"
+                    | "function_declaration"
+                    | "generator_function_declaration"
+                    | "function_expression"
+                    | "generator_function"
+                    | "generator_function_expression"
+                    | "arrow_function"
+                    | "method_definition"
+            ) {
+                return Some(scope);
+            }
+        } else if matches!(
+            scope.kind(),
+            "statement_block"
+                | "catch_clause"
+                | "for_statement"
+                | "for_in_statement"
+                | "program"
+                | "source_file"
+        ) {
+            return Some(scope);
+        }
+        current = scope.parent();
+    }
+    None
+}
+
+fn collect_shadowed_require_scopes(root: Syntax<'_>, source: &str, file: &mut FileContext) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let (binding, var_scoped) = match node.kind() {
+            "variable_declarator" => (
+                node.child_by_field_name("name")
+                    .is_some_and(|name| pattern_binds_require(name, source)),
+                node.parent()
+                    .is_some_and(|parent| parent.kind() == "variable_declaration"),
+            ),
+            "formal_parameters" | "required_parameter" | "optional_parameter"
+            | "formal_parameter" => (pattern_binds_require(node, source), true),
+            "arrow_function" => (
+                node.child_by_field_name("parameter")
+                    .is_some_and(|parameter| pattern_binds_require(parameter, source)),
+                true,
+            ),
+            "function_expression" | "generator_function" | "generator_function_expression" => (
+                field(node, source, "name").is_some_and(|name| name.trim() == "require"),
+                true,
+            ),
+            "function_declaration" | "generator_function_declaration" | "class_declaration" => (
+                field(node, source, "name").is_some_and(|name| name.trim() == "require"),
+                false,
+            ),
+            "import_statement" => (import_binds_require(node, source), false),
+            "catch_clause" => (
+                node.child_by_field_name("parameter")
+                    .is_some_and(|pattern| pattern_binds_require(pattern, source)),
+                false,
+            ),
+            _ => (false, false),
+        };
+        if binding {
+            if let Some(scope) = nearest_binding_scope(node, var_scoped) {
+                std::sync::Arc::make_mut(&mut file.shadowed_require_scopes).insert(scope.id());
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+}
+
+fn import_binds_require(node: Syntax<'_>, source: &str) -> bool {
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        match current.kind() {
+            "import_clause" | "namespace_import" => {
+                let mut cursor = current.walk();
+                if current.named_children(&mut cursor).any(|child| {
+                    child.kind() == "identifier" && text(child, source).trim() == "require"
+                }) {
+                    return true;
+                }
+            }
+            "import_specifier" => {
+                let local =
+                    field(current, source, "alias").or_else(|| field(current, source, "name"));
+                if local.is_some_and(|name| name.trim() == "require") {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = current.walk();
+        stack.extend(current.named_children(&mut cursor));
+    }
+    false
 }
 
 pub struct TypeScript {
@@ -178,6 +434,87 @@ impl LanguageProfile for TypeScript {
         } else {
             "typescript"
         }
+    }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &["package.json"]
+    }
+    fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
+        if filename != "package.json" {
+            return Vec::new();
+        }
+        let Ok(manifest) = serde_json::from_str::<serde_json::Value>(content) else {
+            return Vec::new();
+        };
+        ["dependencies", "devDependencies", "peerDependencies"]
+            .into_iter()
+            .filter_map(|section| manifest.get(section)?.as_object())
+            .flat_map(|dependencies| dependencies.keys().cloned())
+            .collect()
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        const NODE_BUILTINS: &[&str] = &[
+            "assert",
+            "assert/strict",
+            "async_hooks",
+            "buffer",
+            "child_process",
+            "cluster",
+            "console",
+            "constants",
+            "crypto",
+            "dgram",
+            "diagnostics_channel",
+            "dns",
+            "dns/promises",
+            "domain",
+            "events",
+            "fs",
+            "fs/promises",
+            "http",
+            "http2",
+            "https",
+            "inspector",
+            "inspector/promises",
+            "module",
+            "net",
+            "os",
+            "path",
+            "path/posix",
+            "path/win32",
+            "perf_hooks",
+            "process",
+            "punycode",
+            "querystring",
+            "readline",
+            "readline/promises",
+            "repl",
+            "stream",
+            "stream/consumers",
+            "stream/promises",
+            "stream/web",
+            "string_decoder",
+            "sys",
+            "timers",
+            "timers/promises",
+            "tls",
+            "trace_events",
+            "tty",
+            "url",
+            "util",
+            "util/types",
+            "v8",
+            "vm",
+            "wasi",
+            "worker_threads",
+            "zlib",
+            "test",
+            "test/reporters",
+        ];
+        if module.starts_with("node:") {
+            return true;
+        }
+        let specifier = module.strip_prefix("node:").unwrap_or(module);
+        NODE_BUILTINS.contains(&specifier)
     }
     fn extensions(&self) -> &'static [&'static str] {
         if self.javascript {
@@ -260,11 +597,46 @@ impl LanguageProfile for TypeScript {
                     add(name, alias, module.clone());
                 }
             }
+        } else if node.kind() == "variable_declarator" {
+            let Some(value) = node.child_by_field_name("value") else {
+                return;
+            };
+            let Some(module) = required_module(value, source) else {
+                return;
+            };
+            if require_is_shadowed(ctx) {
+                return;
+            }
+            let Some(pattern) = node.child_by_field_name("name") else {
+                add(module.clone(), None, Some(module));
+                return;
+            };
+            let mut imports = Vec::new();
+            collect_require_bindings(pattern, source, &mut imports);
+            if imports.is_empty() {
+                add(module.clone(), None, Some(module));
+            } else {
+                for (name, alias) in imports {
+                    add(name, alias, Some(module.clone()));
+                }
+            }
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if matches!(ctx.node.kind(), "call_expression") {
-            call(ctx, facts, true);
+            if required_module(ctx.node, ctx.source).is_some() {
+                if require_is_shadowed(ctx) {
+                    call(ctx, facts, false);
+                } else if !ctx
+                    .node
+                    .parent()
+                    .is_some_and(|parent| parent.kind() == "variable_declarator")
+                {
+                    call(ctx, facts, true);
+                }
+            } else {
+                call(ctx, facts, true);
+            }
         }
     }
     fn builtin(&self, symbol: &str) -> bool {
@@ -305,6 +677,17 @@ impl LanguageProfile for TypeScript {
                 | "NonNullable"
                 | "ReturnType"
                 | "InstanceType"
+                | "Buffer"
+                | "__dirname"
+                | "__filename"
+                | "clearImmediate"
+                | "exports"
+                | "global"
+                | "globalThis"
+                | "module"
+                | "process"
+                | "require"
+                | "setImmediate"
         )
     }
 
@@ -338,10 +721,11 @@ impl LanguageProfile for TypeScript {
         }
     }
     fn external_import(&self, module: &str) -> Option<&'static str> {
-        module.starts_with("node:").then_some("Node.js built-in module")
+        self.is_stdlib(module).then_some("Node.js standard library")
     }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
         let mut file = FileContext::default();
+        collect_shadowed_require_scopes(root, source, &mut file);
         let mut c = root.walk();
         for node in root
             .named_children(&mut c)
@@ -375,6 +759,7 @@ impl LanguageProfile for TypeScript {
         }
         file
     }
+
     fn metadata(
         &self,
         mut node: Syntax<'_>,
@@ -382,7 +767,50 @@ impl LanguageProfile for TypeScript {
         name: &str,
         file: &FileContext,
     ) -> SymbolMetadata {
+        let mut param_types = BTreeMap::new();
+        if let Some(parameters) = node.child_by_field_name("parameters") {
+            let mut cursor = parameters.walk();
+            for parameter in parameters.named_children(&mut cursor) {
+                let name = parameter
+                    .child_by_field_name("pattern")
+                    .or_else(|| parameter.child_by_field_name("name"))
+                    .filter(|node| node.kind() == "identifier")
+                    .map(|node| text(node, source).trim().to_owned());
+                let ty = parameter.child_by_field_name("type").map(|node| {
+                    text(node, source)
+                        .trim()
+                        .trim_start_matches(':')
+                        .trim()
+                        .to_owned()
+                });
+                if let (Some(name), Some(ty)) = (name, ty) {
+                    if !name.is_empty() && !ty.is_empty() {
+                        param_types.insert(name, ty);
+                    }
+                }
+            }
+        }
         let is_async = text(node, source).trim_start().starts_with("async ");
+        let is_method_node = matches!(node.kind(), "method_definition" | "method_signature");
+        let (receiver_type, is_method, is_static) = if is_method_node {
+            let owner = method_owner(node);
+            let receiver_type = owner
+                .and_then(|o| o.child_by_field_name("name"))
+                .map(|n| text(n, source).trim().to_owned());
+            let is_static = (0..node.child_count()).any(|i| {
+                node.child(i)
+                    .is_some_and(|c| c.kind() == "static" || text(c, source).trim() == "static")
+            });
+            (receiver_type, Some(true), Some(is_static))
+        } else {
+            (None, None, None)
+        };
+        let is_ts_without_body = matches!(
+            node.kind(),
+            "function_declaration" | "method_definition" | "method_signature"
+        ) && node.child_by_field_name("body").is_none();
+        let is_overload = is_ts_without_body;
+        let is_stub = is_ts_without_body;
         let mut default_export = false;
         while let Some(parent) = node.parent() {
             if parent.kind() == "export_statement"
@@ -409,8 +837,19 @@ impl LanguageProfile for TypeScript {
             node = parent;
         }
         SymbolMetadata {
+            param_types,
             default_export,
             is_async,
+            receiver_name: if is_method == Some(true) && is_static != Some(true) {
+                Some("this".into())
+            } else {
+                None
+            },
+            receiver_type,
+            is_method,
+            is_static,
+            is_overload,
+            is_stub,
             ..Default::default()
         }
     }

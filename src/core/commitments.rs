@@ -1,5 +1,6 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use hashbrown::HashMap;
+use rayon::prelude::*;
 use rusqlite::{params, types::ValueRef, Connection};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,40 +21,44 @@ pub const DOMAINS: &[&str] = &[
     "resolution_coverage",
     "doc_sections",
 ];
-const FTS: &[&str] = &[
-    "node_search_data",
-    "node_search_idx",
-    "node_search_docsize",
-    "node_search_config",
-    "doc_search_data",
-    "doc_search_idx",
-    "doc_search_docsize",
-    "doc_search_config",
+const FTS: &[(&str, &str)] = &[
+    ("node_search_data", "id"),
+    ("node_search_idx", "segid,term"),
+    ("node_search_docsize", "id"),
+    ("node_search_config", "k"),
+    ("doc_search_data", "id"),
+    ("doc_search_idx", "segid,term"),
+    ("doc_search_docsize", "id"),
+    ("doc_search_config", "k"),
 ];
 pub fn hash(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
-fn encode_row(hasher: &mut Sha256, row: &rusqlite::Row<'_>, columns: usize) -> Result<()> {
-    hasher.update([0xff]);
+fn encode_row(
+    hasher: &mut impl sha2::digest::Update,
+    row: &rusqlite::Row<'_>,
+    columns: usize,
+) -> Result<()> {
+    hasher.update(&[0xff]);
     for i in 0..columns {
         match row.get_ref(i)? {
             ValueRef::Null => hasher.update(b"n"),
             ValueRef::Integer(n) => {
                 hasher.update(b"i");
-                hasher.update(n.to_le_bytes());
+                hasher.update(&n.to_le_bytes());
             }
             ValueRef::Real(n) => {
                 hasher.update(b"r");
-                hasher.update(n.to_bits().to_le_bytes());
+                hasher.update(&n.to_bits().to_le_bytes());
             }
             ValueRef::Text(s) => {
                 hasher.update(b"t");
-                hasher.update((s.len() as u64).to_le_bytes());
+                hasher.update(&(s.len() as u64).to_le_bytes());
                 hasher.update(s);
             }
             ValueRef::Blob(s) => {
                 hasher.update(b"b");
-                hasher.update((s.len() as u64).to_le_bytes());
+                hasher.update(&(s.len() as u64).to_le_bytes());
                 hasher.update(s);
             }
         }
@@ -91,20 +96,20 @@ fn shape(table: &str) -> (&'static str, &'static str, &'static str) {
     }
 }
 #[inline]
-fn encode_text(h: &mut Sha256, s: &str) {
+fn encode_text(h: &mut impl sha2::digest::Update, s: &str) {
     h.update(b"t");
-    h.update((s.len() as u64).to_le_bytes());
+    h.update(&(s.len() as u64).to_le_bytes());
     h.update(s.as_bytes());
 }
 
 #[inline]
-fn encode_int(h: &mut Sha256, n: i64) {
+fn encode_int(h: &mut impl sha2::digest::Update, n: i64) {
     h.update(b"i");
-    h.update(n.to_le_bytes());
+    h.update(&n.to_le_bytes());
 }
 
 #[inline]
-fn encode_null(h: &mut Sha256) {
+fn encode_null(h: &mut impl sha2::digest::Update) {
     h.update(b"n");
 }
 
@@ -128,7 +133,7 @@ fn leaves_edge_occurrences(
         ""
     };
     let sql = format!(
-        "SELECT owner_id, ordinal, src_hash, dst_hash, kind, line, evidence, confidence FROM edge_occurrences_raw {filter}"
+        "SELECT owner_id, ordinal, src_hash, dst_hash, kind, line, evidence, confidence FROM edge_occurrences_raw {filter} ORDER BY owner_id, ordinal"
     );
     let mut stmt = conn.prepare(&sql)?;
     let encoded = owners.map(serde_json::to_string).transpose()?;
@@ -141,45 +146,56 @@ fn leaves_edge_occurrences(
     let mut result = BTreeMap::new();
     let mut current_owner_id: Option<i64> = None;
     let mut current_hasher = Sha256::new();
-    let mut current_owner_path = String::new();
+    let mut current_owner_path = "";
 
     while let Some(row) = rows.next()? {
         let owner_id: i64 = row.get(0)?;
         let ordinal: i64 = row.get(1)?;
         let src_hash: i64 = row.get(2)?;
         let dst_hash: i64 = row.get(3)?;
-        let kind: &str = row.get_ref(4)?.as_str()?;
+        let kind = row.get_ref(4)?.as_str()?;
         let line: i64 = row.get(5)?;
-        let evidence: &str = row.get_ref(6)?.as_str()?;
-        let confidence: &str = row.get_ref(7)?.as_str()?;
+        let evidence = row.get_ref(6)?.as_str()?;
+        let confidence = row.get_ref(7)?.as_str()?;
+
+        let owner_path = path_map
+            .get(&owner_id)
+            .with_context(|| {
+                format!("edge occurrence commitment references missing owner path {owner_id}")
+            })?
+            .as_str();
+        let src = node_map
+            .get(&src_hash)
+            .with_context(|| {
+                format!("edge occurrence commitment references missing source node {src_hash}")
+            })?
+            .as_str();
+        let dst = node_map
+            .get(&dst_hash)
+            .with_context(|| {
+                format!("edge occurrence commitment references missing destination node {dst_hash}")
+            })?
+            .as_str();
 
         if current_owner_id != Some(owner_id) {
             if current_owner_id.is_some() {
                 result.insert(
-                    key("edge_occurrences", &current_owner_path),
-                    hex::encode(std::mem::take(&mut current_hasher).finalize()),
+                    key("edge_occurrences", current_owner_path),
+                    hex::encode(current_hasher.finalize()),
                 );
             }
-            if let Some(p) = path_map.get(&owner_id) {
-                current_owner_path = p.clone();
-                current_hasher = new_leaf_hasher("edge_occurrences", &current_owner_path);
-                current_owner_id = Some(owner_id);
-            } else {
-                current_owner_id = None;
-                continue;
-            }
+            current_hasher = new_leaf_hasher("edge_occurrences", owner_path);
+            current_owner_path = owner_path;
+            current_owner_id = Some(owner_id);
         }
 
-        let src = node_map.get(&src_hash).map(|s| s.as_str()).unwrap_or("");
-        let dst = node_map.get(&dst_hash).map(|s| s.as_str()).unwrap_or("");
-
-        current_hasher.update([0xff]);
-        encode_text(&mut current_hasher, &current_owner_path);
+        sha2::digest::Update::update(&mut current_hasher, &[0xff]);
+        encode_text(&mut current_hasher, current_owner_path);
         encode_int(&mut current_hasher, ordinal);
         encode_text(&mut current_hasher, src);
         encode_text(&mut current_hasher, dst);
         encode_text(&mut current_hasher, kind);
-        encode_text(&mut current_hasher, &current_owner_path);
+        encode_text(&mut current_hasher, current_owner_path);
         encode_int(&mut current_hasher, line);
         encode_text(&mut current_hasher, evidence);
         encode_text(&mut current_hasher, confidence);
@@ -187,7 +203,7 @@ fn leaves_edge_occurrences(
 
     if current_owner_id.is_some() {
         result.insert(
-            key("edge_occurrences", &current_owner_path),
+            key("edge_occurrences", current_owner_path),
             hex::encode(current_hasher.finalize()),
         );
     }
@@ -246,23 +262,34 @@ fn leaves_edges(
         let confidence: String = row.get(6)?;
         let count: i64 = row.get(7)?;
 
-        if let Some(path) = path_map.get(&path_id) {
-            let src = node_map.get(&src_hash).map(|s| s.as_str()).unwrap_or("");
-            let dst = node_map.get(&dst_hash).map(|s| s.as_str()).unwrap_or("");
-            by_owner.entry(path.as_str()).or_default().push(EdgeRow {
-                src,
-                dst,
-                kind,
-                line,
-                evidence,
-                confidence,
-                count,
-            });
-        }
+        let path = path_map
+            .get(&path_id)
+            .with_context(|| format!("edge commitment references missing owner path {path_id}"))?
+            .as_str();
+        let src = node_map
+            .get(&src_hash)
+            .with_context(|| format!("edge commitment references missing source node {src_hash}"))?
+            .as_str();
+        let dst = node_map
+            .get(&dst_hash)
+            .with_context(|| {
+                format!("edge commitment references missing destination node {dst_hash}")
+            })?
+            .as_str();
+
+        by_owner.entry(path).or_default().push(EdgeRow {
+            src,
+            dst,
+            kind,
+            line,
+            evidence,
+            confidence,
+            count,
+        });
     }
 
-    let mut result = BTreeMap::new();
-    for (owner, mut edge_rows) in by_owner {
+    let parallel = by_owner.values().map(Vec::len).sum::<usize>() >= 8192;
+    let hash_owner = |(owner, mut edge_rows): (&str, Vec<EdgeRow<'_>>)| {
         edge_rows.sort_unstable_by(|a, b| {
             a.src
                 .cmp(b.src)
@@ -281,8 +308,13 @@ fn leaves_edges(
             encode_text(&mut hasher, &e.confidence);
             encode_int(&mut hasher, e.count);
         }
-        result.insert(key("edges", owner), hex::encode(hasher.finalize()));
-    }
+        (key("edges", owner), hex::encode(hasher.finalize()))
+    };
+    let result = if parallel {
+        by_owner.into_par_iter().map(hash_owner).collect()
+    } else {
+        by_owner.into_iter().map(hash_owner).collect()
+    };
     Ok(result)
 }
 
@@ -305,7 +337,8 @@ fn leaves_shared_owners(
     } else {
         ""
     };
-    let sql = format!("SELECT kind_id, key_hash, owner_id, ordinal FROM shared_owners_raw {filter}");
+    let sql =
+        format!("SELECT kind_id, key_hash, owner_id, ordinal FROM shared_owners_raw {filter}");
     let mut stmt = conn.prepare(&sql)?;
     let encoded = owners.map(serde_json::to_string).transpose()?;
     let mut rows = if let Some(encoded) = &encoded {
@@ -327,20 +360,26 @@ fn leaves_shared_owners(
         let key_hash: i64 = row.get(1)?;
         let owner_id: i64 = row.get(2)?;
         let ordinal: i64 = row.get(3)?;
-
-        if let Some(owner) = path_map.get(&owner_id) {
-            let key = key_map.get(&key_hash).map(|s| s.as_str()).unwrap_or("");
-            let kind = match kind_id {
-                0 => "symbol",
-                1 => "reference",
-                _ => "default_export",
-            };
-            by_owner.entry(owner.as_str()).or_default().push(SharedRow {
-                kind,
-                key,
-                ordinal,
-            });
-        }
+        let owner = path_map
+            .get(&owner_id)
+            .with_context(|| {
+                format!("shared-owner commitment references missing owner path {owner_id}")
+            })?
+            .as_str();
+        let key = key_map
+            .get(&key_hash)
+            .with_context(|| format!("shared-owner commitment references missing key {key_hash}"))?
+            .as_str();
+        let kind = match kind_id {
+            0 => "symbol",
+            1 => "reference",
+            2 => "default_export",
+            _ => bail!("shared-owner commitment contains invalid kind {kind_id}"),
+        };
+        by_owner
+            .entry(owner)
+            .or_default()
+            .push(SharedRow { kind, key, ordinal });
     }
 
     let mut result = BTreeMap::new();
@@ -384,7 +423,7 @@ fn leaves_dependencies(
         ""
     };
     let sql = format!(
-        "SELECT owner_id, ordinal, target_hash, kind, symbol, resolution FROM dependencies_raw {filter}"
+        "SELECT owner_id, ordinal, kind, symbol, resolution, target_hash FROM dependencies_raw {filter}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let encoded = owners.map(serde_json::to_string).transpose()?;
@@ -406,24 +445,27 @@ fn leaves_dependencies(
     while let Some(row) = rows.next()? {
         let owner_id: i64 = row.get(0)?;
         let _ordinal: i64 = row.get(1)?;
-        let target_hash: Option<i64> = row.get(2)?;
-        let kind: String = row.get(3)?;
-        let symbol: String = row.get(4)?;
-        let resolution: String = row.get(5)?;
-
-        if let Some(owner) = path_map.get(&owner_id) {
-            let target = target_hash.and_then(|h| file_map.get(&h).map(|s| s.as_str()));
-            by_owner.entry(owner.as_str()).or_default().push(DepRow {
-                target,
-                kind,
-                symbol,
-                resolution,
-            });
-        }
+        let kind: String = row.get(2)?;
+        let symbol: String = row.get(3)?;
+        let resolution: String = row.get(4)?;
+        let target_hash: Option<i64> = row.get(5)?;
+        let owner = path_map
+            .get(&owner_id)
+            .with_context(|| {
+                format!("dependency commitment references missing owner path {owner_id}")
+            })?
+            .as_str();
+        let target = target_hash.and_then(|h| file_map.get(&h).map(|s| s.as_str()));
+        by_owner.entry(owner).or_default().push(DepRow {
+            target,
+            kind,
+            symbol,
+            resolution,
+        });
     }
 
-    let mut result = BTreeMap::new();
-    for (owner, mut dep_rows) in by_owner {
+    let parallel = by_owner.values().map(Vec::len).sum::<usize>() >= 8192;
+    let hash_owner = |(owner, mut dep_rows): (&str, Vec<DepRow<'_>>)| {
         dep_rows.sort_unstable_by(|a, b| {
             a.target
                 .cmp(&b.target)
@@ -444,8 +486,13 @@ fn leaves_dependencies(
             encode_text(&mut hasher, &d.symbol);
             encode_text(&mut hasher, &d.resolution);
         }
-        result.insert(key("dependencies", owner), hex::encode(hasher.finalize()));
-    }
+        (key("dependencies", owner), hex::encode(hasher.finalize()))
+    };
+    let result = if parallel {
+        by_owner.into_par_iter().map(hash_owner).collect()
+    } else {
+        by_owner.into_iter().map(hash_owner).collect()
+    };
     Ok(result)
 }
 
@@ -485,7 +532,10 @@ fn leaves(
         let owner = row.get_ref(columns)?.as_str()?;
         if current_owner.as_deref() != Some(owner) {
             if let Some(old_owner) = current_owner.take() {
-                result.insert(key(table, &old_owner), hex::encode(current_hasher.finalize()));
+                result.insert(
+                    key(table, &old_owner),
+                    hex::encode(current_hasher.finalize()),
+                );
             }
             current_hasher = new_leaf_hasher(table, owner);
             current_owner = Some(owner.to_owned());
@@ -493,12 +543,15 @@ fn leaves(
         encode_row(&mut current_hasher, row, columns)?;
     }
     if let Some(old_owner) = current_owner {
-        result.insert(key(table, &old_owner), hex::encode(current_hasher.finalize()));
+        result.insert(
+            key(table, &old_owner),
+            hex::encode(current_hasher.finalize()),
+        );
     }
     Ok(result)
 }
-fn fts_digest(conn: &Connection, table: &str) -> Result<String> {
-    let mut stmt = conn.prepare(&format!("SELECT * FROM {table}"))?;
+fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> {
+    let mut stmt = conn.prepare(&format!("SELECT * FROM {table} ORDER BY {order_by}"))?;
     let columns = stmt.column_count();
     let mut rows = stmt.query([])?;
     let mut h = Sha256::new();
@@ -518,7 +571,7 @@ fn root(conn: &Connection) -> Result<String> {
         h.update(k);
         h.update(v);
     }
-    let mut stmt=conn.prepare("SELECT key,value FROM metadata WHERE key IN('schema_version','index_semantics_version','indexer_engine','workspace_root','adapter','corpus_hash','commitment_algorithm','inventory_snapshot')ORDER BY key")?;
+    let mut stmt=conn.prepare("SELECT key,value FROM metadata WHERE key IN('schema_version','index_semantics_version','indexer_engine','workspace_root','adapter','corpus_hash','commitment_algorithm','inventory_snapshot','manifest_digest')ORDER BY key")?;
     for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
         let (k, v) = row?;
         h.update((k.len() as u64).to_le_bytes());
@@ -619,10 +672,10 @@ pub fn seal_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Resu
         conn.prepare_cached("INSERT OR REPLACE INTO domain_commitments VALUES(?1,?2)")?
             .execute(params![table, digest])?;
     }
-    for table in FTS {
+    for &(table, order_by) in FTS {
         conn.execute(
             "INSERT OR REPLACE INTO domain_commitments VALUES(?1,?2)",
-            params![table, fts_digest(conn, table)?],
+            params![table, fts_digest(conn, table, order_by)?],
         )?;
     }
     let root = root(conn)?;
@@ -668,13 +721,13 @@ pub fn verify_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Re
             bail!("domain root mismatch: {table}");
         }
     }
-    for table in FTS {
+    for &(table, order_by) in FTS {
         let stored: String = conn.query_row(
             "SELECT digest FROM domain_commitments WHERE domain=?1",
             [table],
             |r| r.get(0),
         )?;
-        if fts_digest(conn, table)? != stored {
+        if fts_digest(conn, table, order_by)? != stored {
             bail!("FTS commitment mismatch: {table}");
         }
     }

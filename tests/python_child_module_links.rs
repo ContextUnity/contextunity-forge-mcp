@@ -116,6 +116,172 @@ fn unique_child_module_is_imported_and_its_calls_resolve() {
 }
 
 #[test]
+fn ordinary_module_and_transitive_reexports_preserve_delta_resolution() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "from .api import Config\n");
+    w.write("pkg/api.py", "from .models import Config\n");
+    w.write("pkg/models.py", "class Config: pass\n");
+    w.write("pkg/alternate.py", "class Config: pass\n");
+    w.write(
+        "consumer.py",
+        "from pkg import Config\ndef consume(): return Config()\n",
+    );
+    w.build();
+    assert_eq!(status(&w.open(), "Config"), "resolved");
+    assert_eq!(call_target_paths(&w.open()), ["pkg/models.py"]);
+    w.write("pkg/api.py", "from .alternate import Config\n");
+    w.delta("pkg/api.py");
+    assert_eq!(call_target_paths(&w.open()), ["pkg/alternate.py"]);
+    w.assert_cold_equivalent();
+    w.write(
+        "consumer.py",
+        "import pkg.api as api\ndef consume(): return api.Config()\n",
+    );
+    w.delta("consumer.py");
+    assert_eq!(call_target_paths(&w.open()), ["pkg/alternate.py"]);
+    w.assert_cold_equivalent();
+}
+
+#[test]
+fn cyclic_reexports_and_missing_providers_remain_unresolved() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "from .a import Config\n");
+    w.write("pkg/a.py", "from .b import Config\n");
+    w.write("pkg/b.py", "from .a import Config\n");
+    w.write(
+        "consumer.py",
+        "from pkg import Config\ndef consume(): return Config()\n",
+    );
+    w.build();
+    assert_eq!(status(&w.open(), "Config"), "unresolved");
+    assert!(call_target_paths(&w.open()).is_empty());
+    w.write("pkg/a.py", "from .missing import Config\n");
+    w.delta("pkg/a.py");
+    assert_eq!(status(&w.open(), "Config"), "unresolved");
+    w.assert_cold_equivalent();
+}
+
+#[test]
+fn literal_lazy_exports_resolve_existing_providers_and_track_delta() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/models.py", "class Config: pass\n");
+    w.write("pkg/api.py", "_EXPORTS = frozenset({'Config'})\ndef __getattr__(name):\n    if name in _EXPORTS:\n        from . import models\n        return getattr(models, name)\n    raise AttributeError(name)\n");
+    w.write(
+        "consumer.py",
+        "from pkg.api import Config\ndef consume(): return Config()\n",
+    );
+    w.build();
+    assert_eq!(status(&w.open(), "Config"), "resolved");
+    assert_eq!(call_target_paths(&w.open()), ["pkg/models.py"]);
+    w.write("pkg/api.py", "_EXPORTS = frozenset({'Config'})\ndef __getattr__(name):\n    if name in _EXPORTS:\n        from . import missing\n        return getattr(missing, name)\n    raise AttributeError(name)\n");
+    w.delta("pkg/api.py");
+    assert_eq!(status(&w.open(), "Config"), "unresolved");
+    assert!(call_target_paths(&w.open()).is_empty());
+    w.assert_cold_equivalent();
+}
+
+#[test]
+fn lazy_importlib_module_relative_namespace_is_preserved_in_delta() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "class Config: pass\n");
+    w.write("child.py", "class Config: pass\n");
+    w.write("pkg/service.py", "import importlib\ndef __getattr__(name):\n    if name == 'child':\n        return importlib.import_module('..child', __name__)\n    raise AttributeError(name)\n");
+    w.write(
+        "consumer.py",
+        "from pkg.service import child\ndef consume(): return child.Config()\n",
+    );
+    w.build();
+    assert_eq!(call_target_paths(&w.open()), ["pkg/child.py"]);
+    w.write(
+        "consumer.py",
+        "from pkg.service import child\ndef consume():\n    return child.Config()\n",
+    );
+    w.delta("consumer.py");
+    assert_eq!(call_target_paths(&w.open()), ["pkg/child.py"]);
+    w.assert_cold_equivalent();
+    w.write("pkg/service.py", "import importlib\ndef __getattr__(name):\n    if name == 'child':\n        return importlib.import_module('.child', __name__)\n    raise AttributeError(name)\n");
+    w.delta("pkg/service.py");
+    assert!(call_target_paths(&w.open()).is_empty());
+    w.assert_cold_equivalent();
+}
+
+#[test]
+fn src_layout_linked_reexports_preserve_owner_workspace_priority() {
+    let w = Workspace::new();
+    let linked = Workspace::new();
+    linked.write("src/catalogue/__init__.py", "from .api import Config\n");
+    linked.write("src/catalogue/api.py", "from .models import Config\n");
+    linked.write("src/catalogue/models.py", "class Config: pass\n");
+    w.write("forge-mcp.yaml", &format!("roots: [src]\nlinked_workspaces:\n  - name: catalogue\n    path: '{}'\n    roots: [src]\n", linked.0.display()));
+    w.write(
+        "src/consumer.py",
+        "from catalogue.api import Config\ndef consume(): return Config()\n",
+    );
+    w.build();
+    let targets = |conn: &Connection| {
+        rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.path='src/consumer.py' AND e.kind='calls' ORDER BY dst.path")
+    };
+    assert_eq!(targets(&w.open()), ["[catalogue]/src/catalogue/models.py"]);
+    w.write("src/catalogue/__init__.py", "from .api import Config\n");
+    w.write("src/catalogue/api.py", "from .models import Config\n");
+    w.write("src/catalogue/models.py", "class Config: pass\n");
+    w.build();
+    assert_eq!(targets(&w.open()), ["src/catalogue/models.py"]);
+    w.write("src/catalogue/api.py", "from .missing import Config\n");
+    w.delta("src/catalogue/api.py");
+    assert!(targets(&w.open()).is_empty());
+    w.assert_cold_equivalent();
+}
+
+#[test]
+fn bare_dotted_import_does_not_export_child_under_package_binding() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def value(): return 1\n");
+    w.write("api.py", "import pkg.child\n");
+    w.write(
+        "consumer.py",
+        "from api import pkg\ndef consume(): return pkg.value()\n",
+    );
+    w.build();
+    assert!(call_target_paths(&w.open()).is_empty());
+    w.write("api.py", "import pkg.child as alias\n");
+    w.write(
+        "consumer.py",
+        "from api import alias\ndef consume(): return alias.value()\n",
+    );
+    w.build();
+    assert_eq!(call_target_paths(&w.open()), ["pkg/child.py"]);
+}
+
+#[test]
+fn reassigned_module_export_does_not_retain_original_transitive_target() {
+    let w = Workspace::new();
+    w.write("provider.py", "class Config: pass\n");
+    w.write("api.py", "from provider import Config\n");
+    w.write("outer.py", "from api import Config\n");
+    w.write(
+        "consumer.py",
+        "from outer import Config\ndef consume(): return Config()\n",
+    );
+    w.build();
+    assert_eq!(call_target_paths(&w.open()), ["provider.py"]);
+    w.write(
+        "api.py",
+        "from provider import Config\ndef factory(): return None\nConfig = factory()\n",
+    );
+    w.delta("api.py");
+    assert!(call_target_paths(&w.open()).is_empty());
+    w.assert_cold_equivalent();
+    w.write("api.py", "from provider import Config\n");
+    w.delta("api.py");
+    assert_eq!(call_target_paths(&w.open()), ["provider.py"]);
+    w.assert_cold_equivalent();
+}
+
+#[test]
 fn explicit_package_reexport_resolves_import_and_call() {
     let w = Workspace::new();
     w.write("pkg/__init__.py", "from .logging import get_log\n");

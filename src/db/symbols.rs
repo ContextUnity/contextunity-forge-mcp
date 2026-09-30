@@ -1,7 +1,7 @@
 use super::{paging, reader};
 use crate::core::{
     models::stable_hash64,
-    response::{QueryOptions, SourceOptions},
+    response::{CoverageOptions, Detail, QueryOptions, SourceOptions},
 };
 use crate::engine::scanner;
 use anyhow::{bail, Context, Result};
@@ -96,7 +96,7 @@ pub fn search(conn: &Connection, pattern: &str, kind: Option<&str>, limit: usize
             .filter(|p| !p.is_empty() && p.chars().all(char::is_alphanumeric))
         {
             let query = format!("\"{prefix}\"*");
-            reader::rows(conn, "SELECT n.* FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?4 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id LIMIT ?3", &[&like, &kind, &size, &query], size)?
+            reader::rows(conn, "SELECT n.* FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?4 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id LIMIT ?3", &[&like, &kind, &size, &query], size)?
         } else {
             reader::rows(conn, "SELECT * FROM nodes WHERE (name LIKE ?1 ESCAPE '\\' OR qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR kind=?2) ORDER BY CASE WHEN name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,path,line,id LIMIT ?3", &[&like, &kind, &size], size)?
         }
@@ -215,6 +215,18 @@ pub fn search_paged_in_path_with_docs(
     include_docs: bool,
     options: &QueryOptions,
 ) -> Result<Value> {
+    search_paged_in_path_with_options(conn, pattern, kind, path, include_docs, false, options)
+}
+
+pub fn search_paged_in_path_with_options(
+    conn: &Connection,
+    pattern: &str,
+    kind: Option<&str>,
+    path: Option<&str>,
+    include_docs: bool,
+    exact: bool,
+    options: &QueryOptions,
+) -> Result<Value> {
     let pattern = pattern.trim();
     if pattern.is_empty() || pattern.len() > 1024 || pattern.chars().all(|c| c == '*') {
         bail!("pattern must contain a symbol fragment and be at most 1024 bytes");
@@ -243,7 +255,22 @@ pub fn search_paged_in_path_with_docs(
     let path = path.unwrap_or("");
     let (path_start, path_end) = reader::path_bounds(path);
     let columns = paging::nodes("n", options.detail);
-    let mut nodes = if pattern.contains('*') {
+    let mut nodes = if exact {
+        let sql = format!("SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM nodes n WHERE (n.name=?1 COLLATE NOCASE OR n.qualname=?1 COLLATE NOCASE) AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY n.path,n.line,n.id");
+        paging::query(
+            conn,
+            &sql,
+            &[
+                &pattern,
+                &kind,
+                &path,
+                &path_start,
+                &path_end,
+                &include_docs,
+            ],
+            options,
+        )?
+    } else if pattern.contains('*') {
         let like = pattern
             .replace('\\', "\\\\")
             .replace('%', "\\%")
@@ -254,9 +281,9 @@ pub fn search_paged_in_path_with_docs(
             .filter(|p| !p.is_empty() && p.chars().all(char::is_alphanumeric))
         {
             let query = format!("\"{prefix}\"*");
-            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&query,&path,&path_start,&path_end,&include_docs], options)?
+            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&query,&path,&path_start,&path_end,&include_docs], options)?
         } else {
-            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end,&include_docs], options)?
+            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end,&include_docs], options)?
         }
     } else {
         let query = pattern
@@ -275,7 +302,7 @@ pub fn search_paged_in_path_with_docs(
         let prefix = format!("{escaped}%");
         let fragment = format!("%{escaped}%");
         let graph_boost = "(CASE WHEN (SELECT count(*) FROM edges_raw e WHERE e.src_hash=n.node_hash OR e.dst_hash=n.node_hash)>=5 THEN 50 ELSE 0 END + CASE WHEN EXISTS(SELECT 1 FROM shared_owners_raw s JOIN shared_keys k ON k.key_hash=s.key_hash WHERE s.kind_id=2 AND s.key_hash=n.node_hash AND k.key=n.id) THEN 50 ELSE 0 END)";
-        let sql = format!("WITH fts AS (SELECT rowid node_id,bm25(node_search) rank FROM node_search WHERE node_search MATCH ?1) SELECT {columns},CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.qualname=?6 COLLATE NOCASE THEN 2 WHEN n.name LIKE ?9 ESCAPE '\\' THEN 3 ELSE 4 END match_rank,coalesce(fts.rank,0.0) bm25_rank,{graph_boost} graph_boost FROM nodes n LEFT JOIN fts ON fts.node_id=n.node_id WHERE (?2='' OR n.kind=?2) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?8=1 OR n.language!='markdown') AND (n.name=?6 COLLATE NOCASE OR n.name LIKE ?7 ESCAPE '\\' OR n.qualname=?6 COLLATE NOCASE OR n.name LIKE ?9 ESCAPE '\\' OR fts.node_id IS NOT NULL) ORDER BY CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.qualname=?6 COLLATE NOCASE THEN 2 WHEN n.name LIKE ?9 ESCAPE '\\' THEN 3 ELSE 4 END,CASE WHEN fts.node_id IS NOT NULL THEN fts.rank ELSE 0.0 END,graph_boost DESC,n.path,n.line,n.id");
+        let sql = format!("WITH fts AS (SELECT rowid node_id,bm25(node_search) rank FROM node_search WHERE node_search MATCH ?1) SELECT {columns},CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.qualname=?6 COLLATE NOCASE THEN 2 WHEN n.name LIKE ?9 ESCAPE '\\' THEN 3 ELSE 4 END match_rank,coalesce(fts.rank,0.0) bm25_rank,{graph_boost} graph_boost FROM nodes n LEFT JOIN fts ON fts.node_id=n.node_id WHERE (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?8=1 OR n.language!='markdown') AND (n.name=?6 COLLATE NOCASE OR n.name LIKE ?7 ESCAPE '\\' OR n.qualname=?6 COLLATE NOCASE OR n.name LIKE ?9 ESCAPE '\\' OR fts.node_id IS NOT NULL) ORDER BY CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.qualname=?6 COLLATE NOCASE THEN 2 WHEN n.name LIKE ?9 ESCAPE '\\' THEN 3 ELSE 4 END,CASE WHEN fts.node_id IS NOT NULL THEN fts.rank ELSE 0.0 END,graph_boost DESC,n.path,n.line,n.id");
         paging::query(
             conn,
             &sql,
@@ -525,13 +552,28 @@ pub fn inspect_paged(
     source: &SourceOptions,
     options: &QueryOptions,
 ) -> Result<Value> {
-    with_source(
+    inspect_paged_with_coverage(
         conn,
         root,
-        reader::inspect_paged(conn, selector, show_doc, options)?,
+        selector,
+        show_doc,
         source,
         options,
+        CoverageOptions::default(),
     )
+}
+
+pub fn inspect_paged_with_coverage(
+    conn: &Connection,
+    root: &Path,
+    selector: &str,
+    show_doc: bool,
+    source: &SourceOptions,
+    options: &QueryOptions,
+    coverage: CoverageOptions,
+) -> Result<Value> {
+    let result = inspect_paged_response(conn, selector, show_doc, options, coverage)?;
+    with_source(conn, root, result, source, options)
 }
 
 pub fn snippet_paged(
@@ -560,7 +602,29 @@ pub fn explain_paged(
     source: &SourceOptions,
     options: &QueryOptions,
 ) -> Result<Value> {
-    explain_paged_with_docs(conn, root, selector, direction, true, source, options)
+    explain_paged_with_coverage(
+        conn,
+        root,
+        selector,
+        direction,
+        source,
+        options,
+        CoverageOptions::default(),
+    )
+}
+
+pub fn explain_paged_with_coverage(
+    conn: &Connection,
+    root: &Path,
+    selector: &str,
+    direction: Option<&str>,
+    source: &SourceOptions,
+    options: &QueryOptions,
+    coverage: CoverageOptions,
+) -> Result<Value> {
+    explain_paged_with_docs_and_coverage(
+        conn, root, selector, direction, true, source, options, coverage,
+    )
 }
 
 pub fn explain_paged_with_docs(
@@ -572,13 +636,369 @@ pub fn explain_paged_with_docs(
     source: &SourceOptions,
     options: &QueryOptions,
 ) -> Result<Value> {
-    with_source(
+    explain_paged_with_docs_and_coverage(
         conn,
         root,
-        reader::explain_paged_with_docs(conn, selector, direction, show_doc, options)?,
+        selector,
+        direction,
+        show_doc,
         source,
         options,
+        CoverageOptions::default(),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn explain_paged_with_docs_and_coverage(
+    conn: &Connection,
+    root: &Path,
+    selector: &str,
+    direction: Option<&str>,
+    show_doc: bool,
+    source: &SourceOptions,
+    options: &QueryOptions,
+    coverage: CoverageOptions,
+) -> Result<Value> {
+    let result = explain_paged_response(conn, selector, direction, show_doc, options, coverage)?;
+    with_source(conn, root, result, source, options)
+}
+
+pub(crate) fn inspect_paged_response(
+    conn: &Connection,
+    selector: &str,
+    show_doc: bool,
+    options: &QueryOptions,
+    coverage: CoverageOptions,
+) -> Result<Value> {
+    let result = if coverage.include_coverage {
+        reader::inspect_paged(conn, selector, show_doc, options)?
+    } else {
+        inspect_without_coverage(conn, selector, show_doc, options)?
+    };
+    summarize_symbol(conn, result, coverage.include_coverage, options.detail)
+}
+
+pub(crate) fn explain_paged_response(
+    conn: &Connection,
+    selector: &str,
+    direction: Option<&str>,
+    show_doc: bool,
+    options: &QueryOptions,
+    coverage: CoverageOptions,
+) -> Result<Value> {
+    let result = if coverage.include_coverage {
+        reader::explain_paged_with_docs(conn, selector, direction, show_doc, options)?
+    } else {
+        explain_without_coverage(conn, selector, direction, show_doc, options)?
+    };
+    summarize_symbol(conn, result, coverage.include_coverage, options.detail)
+}
+
+fn inspect_without_coverage(
+    conn: &Connection,
+    selector: &str,
+    show_doc: bool,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let generation = paging::generation(conn, options)?;
+    let node = reader::select_detail(conn, selector, options.detail)?;
+    let id = node["id"].as_str().context("invalid node id")?;
+    let mut documents = if show_doc {
+        paging::query(
+            conn,
+            &format!(
+                "SELECT {} FROM doc_sections d JOIN edges e ON e.dst_public_id=d.doc_id WHERE e.src_public_id=?1 AND e.kind='references_doc' ORDER BY d.is_invariant DESC,d.path,d.doc_id",
+                paging::docs("d", options.detail)
+            ),
+            &[&id],
+            options,
+        )?
+    } else {
+        paging::value(Vec::new(), 0, options, &generation)
+    };
+    if documents["total"] == 0 {
+        documents = json!({"total": 0});
+    }
+    Ok(json!({"node":node,"documents":documents,"generation":generation}))
+}
+
+fn explain_without_coverage(
+    conn: &Connection,
+    selector: &str,
+    direction: Option<&str>,
+    show_doc: bool,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let mut result = inspect_without_coverage(conn, selector, show_doc, options)?;
+    let id = result["node"]["id"]
+        .as_str()
+        .context("invalid node id")?
+        .to_owned();
+    let direction = match direction.unwrap_or("both") {
+        "inbound" => "incoming",
+        "outbound" => "outgoing",
+        direction => direction,
+    };
+    match direction {
+        "both" | "incoming" => {
+            let mut incoming = paging::query(
+                conn,
+                &format!(
+                    "SELECT {} FROM edges e WHERE e.dst_public_id=?1 ORDER BY e.kind,e.src_public_id,e.path,e.line",
+                    paging::edges("e", options.detail)
+                ),
+                &[&id],
+                options,
+            )?;
+            if options.detail == Detail::Compact {
+                omit_compact_endpoint(&mut incoming, "dst_public_id");
+            }
+            result["incoming"] = incoming;
+        }
+        "outgoing" => {
+            let total = paging::count(
+                conn,
+                "SELECT count(*) FROM edges WHERE dst_public_id=?1",
+                &[&id],
+            )?;
+            result["incoming"] = json!({"total":total,"omitted":true,"hint":"Pass direction='incoming' to page incoming edges."});
+        }
+        _ => bail!("direction must be both, incoming (inbound), or outgoing (outbound)"),
+    }
+    match direction {
+        "both" | "outgoing" => {
+            let mut outgoing = paging::query(
+                conn,
+                &format!(
+                    "SELECT {} FROM edges e WHERE e.src_public_id=?1 ORDER BY e.kind,e.dst_public_id,e.path,e.line",
+                    paging::edges("e", options.detail)
+                ),
+                &[&id],
+                options,
+            )?;
+            if options.detail == Detail::Compact {
+                omit_compact_endpoint(&mut outgoing, "src_public_id");
+            }
+            result["outgoing"] = outgoing;
+        }
+        "incoming" => {
+            let total = paging::count(
+                conn,
+                "SELECT count(*) FROM edges WHERE src_public_id=?1",
+                &[&id],
+            )?;
+            result["outgoing"] = json!({"total":total,"omitted":true,"hint":"Pass direction='outgoing' to page outgoing edges."});
+        }
+        _ => {}
+    }
+    let implementors = reader::rows(
+        conn,
+        "SELECT e.src_public_id, e.kind, e.path, e.line, e.evidence, n.name, n.kind as node_kind FROM edges e JOIN nodes n ON n.id=e.src_public_id WHERE e.dst_public_id=?1 AND e.kind IN('implements','overrides','extends') ORDER BY e.path, e.line",
+        &[&id],
+        50,
+    )?;
+    if !implementors.is_empty() {
+        result["implementors"] = json!(implementors);
+    }
+    let implements = reader::rows(
+        conn,
+        "SELECT e.dst_public_id, e.kind, e.path, e.line, e.evidence, n.name, n.kind as node_kind FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.src_public_id=?1 AND e.kind IN('implements','overrides','extends') ORDER BY e.path, e.line",
+        &[&id],
+        50,
+    )?;
+    if !implements.is_empty() {
+        result["implements"] = json!(implements);
+    }
+    result["direction"] = json!(direction);
+    Ok(result)
+}
+
+fn omit_compact_endpoint(page: &mut Value, field: &str) {
+    if let Some(items) = page["items"].as_array_mut() {
+        for item in items {
+            if let Some(edge) = item.as_object_mut() {
+                edge.remove(field);
+            }
+        }
+    }
+}
+
+fn summarize_symbol(
+    conn: &Connection,
+    mut result: Value,
+    include_coverage: bool,
+    detail: crate::core::response::Detail,
+) -> Result<Value> {
+    if !include_coverage {
+        result
+            .as_object_mut()
+            .context("invalid symbol result")?
+            .remove("coverage");
+    }
+    if detail == Detail::Compact {
+        let summary = compact_summary(conn, &result["node"])?;
+        result["summary"] = summary;
+    }
+    Ok(result)
+}
+
+fn compact_summary(conn: &Connection, node: &Value) -> Result<Value> {
+    const PREVIEW_LIMIT: i64 = 5;
+    let id = node["id"].as_str().context("selected node has no id")?;
+    let (
+        signature,
+        docstring,
+        receiver_type,
+        receiver,
+        receiver_name,
+        is_method,
+        is_static,
+    ) = conn.query_row(
+        "SELECT json_extract(details,'$.signature'),json_extract(details,'$.doc'),json_extract(details,'$.receiver_type'),json_extract(details,'$.receiver'),json_extract(details,'$.receiver_name'),json_extract(details,'$.is_method'),json_extract(details,'$.is_static') FROM nodes WHERE id=?1",
+        [id],
+        |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<bool>>(5)?,
+                row.get::<_, Option<bool>>(6)?,
+            ))
+        },
+    )?;
+    let mut container = reader::rows(
+        conn,
+        "SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line FROM edges e JOIN nodes n ON n.id=e.src_public_id WHERE e.dst_public_id=?1 AND e.kind='contains' ORDER BY CASE WHEN n.kind IN('module','file') THEN 1 ELSE 0 END,n.line DESC,n.end_line,n.id LIMIT 1",
+        &[&id],
+        1,
+    )?
+    .into_iter()
+    .next()
+    .unwrap_or(Value::Null);
+    let receiver = receiver_type.or(receiver);
+    let is_method = node["kind"] == "method" || is_method.unwrap_or(false);
+    let is_type_container = matches!(
+        container["kind"].as_str(),
+        Some("class" | "enum" | "interface" | "record" | "struct" | "trait" | "type")
+    );
+    if is_method && !is_type_container {
+        if let Some(receiver) = receiver.as_deref() {
+            let path = node["path"].as_str().unwrap_or("");
+            let candidates = reader::rows(
+                conn,
+                "SELECT id,kind,name,qualname,path,line FROM nodes WHERE path=?1 AND name=?2 AND kind IN('class','enum','interface','record','struct','trait','type') ORDER BY line,id LIMIT 101",
+                &[&path, &receiver],
+                101,
+            )?;
+            let receiver_container = if candidates.len() == 1 {
+                candidates.into_iter().next()
+            } else if (2..=100).contains(&candidates.len()) {
+                let method_qualname = node["qualname"].as_str().unwrap_or("");
+                let module_qualname = container["qualname"].as_str().unwrap_or("");
+                let mut scoped = candidates
+                    .into_iter()
+                    .filter(|candidate| {
+                        let qualname = candidate["qualname"].as_str().unwrap_or("");
+                        let impl_owner = !module_qualname.is_empty() && qualname == module_qualname;
+                        let method_owner = [".", "::"].iter().any(|separator| {
+                            method_qualname.starts_with(&format!("{qualname}{separator}"))
+                        });
+                        let module_owner = [".", "::"].iter().any(|separator| {
+                            qualname == format!("{module_qualname}{separator}{receiver}")
+                        });
+                        impl_owner || method_owner || module_owner
+                    })
+                    .collect::<Vec<_>>();
+                if scoped.len() > 1 {
+                    let method_line = node["line"].as_u64().unwrap_or_default();
+                    let nearest_line = scoped
+                        .iter()
+                        .filter_map(|candidate| candidate["line"].as_u64())
+                        .map(|line| line.abs_diff(method_line))
+                        .min();
+                    if let Some(nearest_line) = nearest_line {
+                        scoped.retain(|candidate| {
+                            candidate["line"]
+                                .as_u64()
+                                .is_some_and(|line| line.abs_diff(method_line) == nearest_line)
+                        });
+                    }
+                }
+                if scoped.len() == 1 {
+                    scoped.pop()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(receiver_container) = receiver_container {
+                container = receiver_container;
+            } else {
+                container = json!({
+                    "kind": "receiver",
+                    "name": receiver,
+                    "path": node["path"],
+                    "line": node["line"]
+                });
+            }
+        }
+    }
+    let inbound = direct_call_summary(conn, id, true, PREVIEW_LIMIT)?;
+    let outbound = direct_call_summary(conn, id, false, PREVIEW_LIMIT)?;
+    let mut summary = json!({
+        "signature": signature,
+        "docstring": docstring,
+        "container": container,
+        "calls": {
+            "inbound": inbound,
+            "outbound": outbound
+        }
+    });
+    if is_method {
+        summary["method"] = json!({
+            "receiver": receiver,
+            "receiver_name": receiver_name,
+            "is_static": is_static
+        });
+    }
+    Ok(summary)
+}
+
+fn direct_call_summary(
+    conn: &Connection,
+    id: &str,
+    inbound: bool,
+    preview_limit: i64,
+) -> Result<Value> {
+    let (count_sql, preview_sql) = if inbound {
+        (
+            "SELECT count(*),coalesce(sum(occurrence_count),0) FROM edges WHERE dst_public_id=?1 AND kind='calls'",
+            "SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line FROM edges e JOIN nodes n ON n.id=e.src_public_id WHERE e.dst_public_id=?1 AND e.kind='calls' ORDER BY n.path,n.line,n.id LIMIT ?2",
+        )
+    } else {
+        (
+            "SELECT count(*),coalesce(sum(occurrence_count),0) FROM edges WHERE src_public_id=?1 AND kind='calls'",
+            "SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.src_public_id=?1 AND e.kind='calls' ORDER BY n.path,n.line,n.id LIMIT ?2",
+        )
+    };
+    let (count, occurrences) = {
+        let budget = reader::QueryBudget::new(conn);
+        let counts = conn.query_row(count_sql, [id], |row| {
+            Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?))
+        })?;
+        budget.check()?;
+        counts
+    };
+    let preview = reader::rows(
+        conn,
+        preview_sql,
+        &[&id, &preview_limit],
+        preview_limit as usize,
+    )?;
+    Ok(json!({"count":count,"occurrences":occurrences,"preview":preview}))
 }
 
 fn with_source(

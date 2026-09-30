@@ -283,6 +283,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS doc_search USING fts5(
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 CREATE INDEX IF NOT EXISTS idx_nodes_qualname ON nodes(qualname);
 CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
+CREATE INDEX IF NOT EXISTS idx_nodes_name_nocase ON nodes(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_nodes_qualname_nocase ON nodes(qualname COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_nodes_path ON nodes(path);
 CREATE INDEX IF NOT EXISTS idx_node_owner_overrides_owner ON node_owner_overrides(owner);
 CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges_raw(dst_hash, kind);

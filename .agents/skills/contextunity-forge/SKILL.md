@@ -65,10 +65,10 @@ flowchart TD
 - `get_doc(path_or_id, section?)`: Reads markdown doc or a specific section anchor.
 
 ### Inspection & Hierarchy
-- `code_map_inspect(selector, show_doc?, show_source?, leading_lines?, max_body_lines?)`: Detailed symbol inspection.
+- `code_map_inspect(selector, include_coverage?, show_doc?, show_source?, leading_lines?, max_body_lines?)`: Symbol summary and direct relationships. Request `include_coverage=true` for raw reference diagnostics.
 - `get_code_snippet(selector, leading_lines?, max_body_lines?, source_offset?, generation?)`: Focused AST source preview.
-- `code_map_explain(selector, direction?, show_doc?, show_source?)`: Symbol ownership and direct edge relations.
-- `code_map_impact(selector, depth?, detail?, limit?, offset?, generation?)`: Inbound dependency tracing (blast radius).
+- `code_map_explain(selector, direction?, include_coverage?, show_doc?, show_source?)`: Symbol summary, ownership, and direct edge relations. Raw reference diagnostics are opt-in.
+- `code_map_impact(selector, direction?, depth?, detail?, limit?, offset?, generation?)`: Use `direction="inbound"` for blast radius (default) or `direction="outbound"` for dependencies.
 - `code_map_tests(selector, direction?, detail?, limit?, offset?, generation?)`: Inbound tests or outbound test dependencies.
 
 ### Verification & Safety
@@ -78,7 +78,7 @@ flowchart TD
   - `target="path/to/file.py"`: Paged diagnostics for a specific file.
   - `include_cycles=true`: Computes dependency cycles.
   - Read-only SQL: Run `SELECT ...` queries against index SQLite tables.
-- `code_map_query(operation, selector?, depth?, limit?)`: Low-level graph query (`slice`, `unwired`, or `cypher`). Accepts `MATCH ...` queries directly. Aliases `doctor` -> overview and `search` -> code_map_search.
+- `code_map_query(operation, selector?, include_coverage?, depth?, limit?, offset?, generation?)`: Use `slice` or `unwired` for bounded graph queries. Request `include_coverage=true` with `inspect` or `explain` for raw reference diagnostics. Use `operation="sql"` and a single read-only `SELECT`/`WITH` statement in `selector` for relational queries; request deterministic ordering and pass page bounds as tool arguments. Read schema guidance with `forge_guide`.
 - `session_checkpoint(action, name?, content?)`: Workspace checkpointing in `.forge/checkpoints.json` (`list`, `get`, `save`, `delete`).
 - `forge_guide(topic?, force?)`: Interactive guide (defaults to `query`).
 
@@ -94,7 +94,7 @@ Forge provides intelligent, collision-free selector resolution across all tools 
 - **Bare Name Safety (No Hijacking)**: When a bare name (e.g. `scanner`) matches both a function and a module of the same name, Forge **never** hijacks the symbol into a module. It safely reports ambiguity with exact candidate IDs.
 - **Suffix Matching**: Resolves Python import paths (e.g. `contextunity.shield.cli`), class methods (`FormLoginFetcher.fetch`), and relative subpaths.
 - **Documentation Detection**: Selectors ending in `.md` (e.g. `docs/architecture.md`) return a direct pointer to use `get_doc` or `search_docs`.
-- **Cypher & Search in `code_map_query`**: Passing Cypher (`MATCH ...`), `operation="cypher"`, or legacy `operation="doctor"` / `operation="search"` executes transparently without invalid operation errors.
+- **SQL in `code_map_query`**: Query `nodes`, `edges`, `files`, `errors`, and documented relational views through `operation="sql"`; writes, administrative statements, and multiple statements are rejected.
 
 ---
 

@@ -120,7 +120,7 @@ fn cli_delta_updates_the_index() {
 #[test]
 fn unknown_receivers_and_shadowed_builtins_never_prove_removal() {
     for source in [
-        "class Service:\n    def get(self): return 1\ndef use(): return Service().get()\n",
+        "class Service:\n    def get(self): return 1\ndef make_service(): return Service()\ndef use(): return make_service().get()\n",
         "class Service:\n    def get(self): return 1\ndef use(client): return client.get()\n",
         "def unrelated(): pass\ndef use(client): return client.get()\n",
         "def unrelated(): pass\ndef use(get): return get()\n",
@@ -257,21 +257,24 @@ fn nested_rust_imports_retain_module_identity_and_external_scope() {
         ("crate::engine::scanner", "resolved"),
         ("crate::engine::scanner::scan_reusing", "resolved"),
         ("std::fmt::Debug", "external"),
-        ("missing::Widget", "unresolved"),
+        ("missing::Widget", "external"),
     ] {
-        let status: String = conn.query_row(
-            "SELECT status FROM resolution_coverage WHERE path='src/db/writer.rs' AND expression=?1",
+        let (status, evidence): (String, String) = conn.query_row(
+            "SELECT status,evidence FROM resolution_coverage WHERE path='src/db/writer.rs' AND expression=?1",
             [expression],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
         assert_eq!(status, expected, "{expression}");
+        if expression == "missing::Widget" {
+            assert!(evidence.contains("no indexed provider"), "{evidence}");
+        }
     }
     let overview = reader::overview(&conn).unwrap();
-    assert_eq!(overview["counts"][0]["unresolved"], 1);
-    assert_eq!(overview["counts"][0]["external_imports"], 1);
+    assert_eq!(overview["counts"][0]["unresolved"], 0);
+    assert_eq!(overview["counts"][0]["external_imports"], 2);
     let analysis = reader::analyze(&conn, "src/db/writer.rs").unwrap();
-    assert_eq!(analysis["total_unresolved"], 1);
-    assert_eq!(analysis["total_external_imports"], 1);
+    assert_eq!(analysis["total_unresolved"], 0);
+    assert_eq!(analysis["total_external_imports"], 2);
     let options = contextunity_forge_mcp::core::response::QueryOptions {
         limit: 30,
         offset: 0,
@@ -279,8 +282,8 @@ fn nested_rust_imports_retain_module_identity_and_external_scope() {
         generation: None,
     };
     let paged = reader::analyze_paged(&conn, "src/db/writer.rs", None, &options).unwrap();
-    assert_eq!(paged["external_imports"]["total"], 1);
-    assert_eq!(paged["resolution"]["total"], 1);
+    assert_eq!(paged["external_imports"]["total"], 2);
+    assert_eq!(paged["resolution"]["total"], 0);
     drop(conn);
     w.write("src/engine/scanner.rs", "\npub fn scan_reusing() {}\n");
     writer::delta(&w.0, &w.db(), &[PathBuf::from("src/engine/scanner.rs")]).unwrap();
@@ -302,15 +305,15 @@ fn explicit_node_builtin_import_is_separate_from_missing_package() {
     let conn = reader::open(&w.db(), &w.0).unwrap();
     let statuses = reader::rows(
         &conn,
-        "SELECT expression,status FROM resolution_coverage WHERE path='src/main.ts' AND line IN (1,2) ORDER BY expression",
+        "SELECT expression,status,evidence FROM resolution_coverage WHERE path='src/main.ts' AND line IN (1,2) ORDER BY expression",
         &[],
         10,
     ).unwrap();
     assert_eq!(
         statuses,
         vec![
-            serde_json::json!({"expression":"readFileSync","status":"external"}),
-            serde_json::json!({"expression":"unknown","status":"unresolved"}),
+            serde_json::json!({"expression":"readFileSync","status":"external","evidence":"standard library; no indexed provider for node:fs"}),
+            serde_json::json!({"expression":"unknown","status":"external","evidence":"external dependency; no indexed provider for missing-package"}),
         ]
     );
 }
@@ -327,18 +330,18 @@ fn explicit_python_stdlib_and_external_dependency_is_separate_from_missing_packa
     let conn = reader::open(&w.db(), &w.0).unwrap();
     let statuses = reader::rows(
         &conn,
-        "SELECT expression,status FROM resolution_coverage WHERE path='src/main.py' ORDER BY line,expression",
+        "SELECT expression,status,evidence FROM resolution_coverage WHERE path='src/main.py' ORDER BY line,expression",
         &[],
         10,
     ).unwrap();
     assert_eq!(
         statuses,
         vec![
-            serde_json::json!({"expression":"json","status":"external"}),
-            serde_json::json!({"expression":"Any","status":"external"}),
-            serde_json::json!({"expression":"pytest","status":"external"}),
-            serde_json::json!({"expression":"nonexistent_xyz_package","status":"unresolved"}),
-            serde_json::json!({"expression":"ValueError","status":"resolved"}),
+            serde_json::json!({"expression":"json","status":"external","evidence":"standard library; no indexed provider for json"}),
+            serde_json::json!({"expression":"Any","status":"external","evidence":"standard library; no indexed provider for typing"}),
+            serde_json::json!({"expression":"pytest","status":"external","evidence":"external dependency; no indexed provider for pytest"}),
+            serde_json::json!({"expression":"nonexistent_xyz_package","status":"external","evidence":"external dependency; no indexed provider for nonexistent_xyz_package"}),
+            serde_json::json!({"expression":"ValueError","status":"resolved","evidence":"standard library or built-in callee: ValueError"}),
         ]
     );
 }

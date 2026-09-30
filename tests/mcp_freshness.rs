@@ -51,6 +51,37 @@ fn wait_for_inventory_ttl() {
     std::thread::sleep(std::time::Duration::from_millis(2100));
 }
 
+#[cfg(feature = "lang-python")]
+#[test]
+fn same_server_refreshes_non_source_manifests_outside_source_roots() {
+    let ws = Workspace::new();
+    ws.write("forge-mcp.yaml", "roots: [src]\n");
+    ws.write(
+        "src/consumer.py",
+        "import novel_library\ndef run(): return novel_library.fetch()\n",
+    );
+    let server = ws.server();
+    let evidence = || {
+        server.read(|conn| Ok(json!({
+        "evidence": conn.query_row("SELECT evidence FROM resolution_coverage WHERE expression='novel_library'", [], |row| row.get::<_, String>(0))?,
+        "manifest_digest": conn.query_row("SELECT value FROM metadata WHERE key='manifest_digest'", [], |row| row.get::<_, String>(0))?,
+    }))).unwrap()
+    };
+    let before = evidence();
+    assert!(!before["evidence"].as_str().unwrap().contains("manifest"));
+    ws.write("requirements-dev.txt", "novel_library>=1\n");
+    wait_for_inventory_ttl();
+    let after = evidence();
+    assert!(after["evidence"].as_str().unwrap().contains("manifest"));
+    assert_ne!(before["manifest_digest"], after["manifest_digest"]);
+    assert_eq!(after["freshness"]["refresh"], "rebuild");
+    fs::remove_file(ws.0.join("requirements-dev.txt")).unwrap();
+    wait_for_inventory_ttl();
+    let removed = evidence();
+    assert_eq!(removed["manifest_digest"], before["manifest_digest"]);
+    assert!(!removed["evidence"].as_str().unwrap().contains("manifest"));
+}
+
 #[test]
 fn same_server_metadata_query_refreshes_edited_source() {
     let ws = Workspace::new();
@@ -396,6 +427,143 @@ fn foreign_and_corrupt_databases_remain_rejected_without_replacement() {
 }
 
 #[test]
+fn a_cached_connection_does_not_admit_another_workspace_with_the_same_adapter_digest() {
+    let ws = Workspace::new();
+    let other = Workspace::new();
+    ws.write("main.rs", "pub fn original() {}\n");
+    let server = ws.server();
+    snapshot(&server).unwrap();
+    let identity = db::cache::identity(&server.db).unwrap();
+    let mut foreign = server.clone();
+    foreign.root = other.0.clone();
+    assert!(snapshot(&foreign)
+        .unwrap_err()
+        .to_string()
+        .contains("different workspace"));
+    assert_eq!(identity, db::cache::identity(&server.db).unwrap());
+}
+
+#[test]
+fn cached_header_admission_still_rejects_corrupt_schema_replacement() {
+    let ws = Workspace::new();
+    ws.write("main.rs", "pub fn original() {}\n");
+    let server = ws.server();
+    snapshot(&server).unwrap();
+    let conn = rusqlite::Connection::open(&server.db).unwrap();
+    conn.execute(
+        "UPDATE metadata SET value='0' WHERE key='schema_version'",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    drop(conn);
+    let mut damaged = fs::read(&server.db).unwrap();
+    damaged[36..40].copy_from_slice(&1_u32.to_be_bytes());
+    fs::write(&server.db, &damaged).unwrap();
+    assert!(snapshot(&server).is_err());
+    assert_eq!(fs::read(&server.db).unwrap(), damaged);
+}
+
+#[test]
+fn stdio_rebuild_admission_preserves_corruption_and_rebuilds_valid_legacy_index() {
+    for (mismatch, corruption) in [
+        ("schema", "freelist"),
+        ("schema", "fts_data"),
+        ("semantics", "fts_data"),
+        ("adapter", "freelist"),
+    ] {
+        let ws = Workspace::new();
+        ws.write("main.rs", "pub fn current() {}\n");
+        ws.write("README.md", "# Current\nIndexed documentation.\n");
+        let database = ws.0.join(".forge/code-map.sqlite");
+        db::writer::build(&ws.0, &database, None).unwrap();
+
+        if mismatch == "adapter" {
+            ws.write("forge-mcp.yaml", "adapter_version: 2\n");
+        } else {
+            let conn = rusqlite::Connection::open(&database).unwrap();
+            let key = match mismatch {
+                "schema" => "schema_version",
+                "semantics" => "index_semantics_version",
+                _ => unreachable!(),
+            };
+            conn.execute("UPDATE metadata SET value='0' WHERE key=?1", [key])
+                .unwrap();
+        }
+
+        let mut damaged = fs::read(&database).unwrap();
+        if corruption == "freelist" {
+            damaged[36..40].copy_from_slice(&1_u32.to_be_bytes());
+        } else {
+            let conn = rusqlite::Connection::open(&database).unwrap();
+            let page_size = conn
+                .query_row("PRAGMA page_size", [], |row| row.get::<_, usize>(0))
+                .unwrap();
+            let root_page = conn
+                .query_row(
+                    "SELECT rootpage FROM sqlite_schema WHERE name='doc_search_data'",
+                    [],
+                    |row| row.get::<_, usize>(0),
+                )
+                .unwrap();
+            damaged[(root_page - 1) * page_size] = 0xff;
+        }
+        fs::write(&database, &damaged).unwrap();
+        let before = fs::read(&database).unwrap();
+
+        let mut client = StdioClient::new(&ws);
+        let response = client.request(
+            "tools/call",
+            json!({"name":"code_map_overview","arguments":{"detail":"compact"}}),
+        );
+        assert_eq!(
+            response["result"]["isError"], true,
+            "{mismatch}/{corruption}: {response}"
+        );
+        assert_eq!(
+            fs::read(&database).unwrap(),
+            before,
+            "{mismatch}/{corruption}"
+        );
+    }
+
+    let empty = Workspace::new();
+    empty.write("main.rs", "pub fn current() {}\n");
+    let database = empty.0.join(".forge/code-map.sqlite");
+    fs::create_dir_all(database.parent().unwrap()).unwrap();
+    fs::write(&database, []).unwrap();
+    let before = fs::read(&database).unwrap();
+    let mut client = StdioClient::new(&empty);
+    let response = client.request(
+        "tools/call",
+        json!({"name":"code_map_overview","arguments":{"detail":"compact"}}),
+    );
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    assert_eq!(fs::read(&database).unwrap(), before);
+
+    let legacy = Workspace::new();
+    legacy.write("main.rs", "pub fn current() {}\n");
+    let database = legacy.0.join(".forge/code-map.sqlite");
+    db::writer::build(&legacy.0, &database, None).unwrap();
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute_batch("DROP TABLE metadata")
+        .unwrap();
+
+    let mut client = StdioClient::new(&legacy);
+    let response = client.request(
+        "tools/call",
+        json!({"name":"code_map_overview","arguments":{"detail":"compact"}}),
+    );
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    let overview: Value =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(overview["freshness"]["refresh"], "rebuild");
+    assert!(db::reader::open(&database, &legacy.0).is_ok());
+}
+
+#[test]
 #[cfg(unix)]
 fn symlink_database_is_rejected_without_touching_target() {
     let ws = Workspace::new();
@@ -686,7 +854,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
         .read(|conn| {
             assert_eq!(
                 conn.limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH),
-                1_000_000_000
+                8 * 1024 * 1024
             );
             Ok(Value::Null)
         })

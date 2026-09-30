@@ -25,6 +25,13 @@ pub struct Edge {
     pub confidence: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReceiverHint {
+    StringLiteral { member: String },
+    CallResult { callee: String, member: String },
+    Super { member: String },
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reference {
     pub source: String,
     pub expression: String,
@@ -34,6 +41,8 @@ pub struct Reference {
     pub module: Option<String>,
     #[serde(default)]
     pub dynamic: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_hint: Option<ReceiverHint>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {

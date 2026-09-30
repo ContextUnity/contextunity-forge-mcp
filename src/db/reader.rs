@@ -1,9 +1,154 @@
 use super::paging;
 use crate::core::response::{Detail, QueryOptions};
 use anyhow::{bail, Context, Result};
+use rusqlite::backup::Backup;
 use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Map, Value};
-use std::{fs::File, ops::Deref, path::Path};
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    ops::Deref,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
+
+const MAX_SQLITE_VALUE_BYTES: i32 = 8 * 1024 * 1024;
+const MAX_QUERY_RESULT_BYTES: usize = MAX_SQLITE_VALUE_BYTES as usize;
+const QUERY_RESULT_TOO_LARGE: &str = "query result exceeds the 8 MiB row budget; narrow the selector or path, request detail='compact' with a smaller limit, or select fewer and smaller SQL columns. Continue paged requests with the returned offset and generation";
+
+struct JsonSizeCounter {
+    bytes: usize,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl JsonSizeCounter {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: 0,
+            limit,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for JsonSizeCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes) {
+            self.exceeded = true;
+            return Err(std::io::Error::other("serialized JSON exceeds budget"));
+        }
+        self.bytes += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct IndexRebuildRequired(&'static str);
+
+impl std::fmt::Display for IndexRebuildRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for IndexRebuildRequired {}
+
+static INTEGRITY_SNAPSHOT_NONCE: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn validate_database_header(path: &Path) -> Result<()> {
+    let mut header = [0; 16];
+    File::open(path)?.read_exact(&mut header)?;
+    if &header != b"SQLite format 3\0" {
+        bail!("database has an invalid SQLite header");
+    }
+    Ok(())
+}
+
+struct IntegritySnapshot {
+    directory: PathBuf,
+    path: PathBuf,
+}
+
+impl IntegritySnapshot {
+    fn create() -> Result<Self> {
+        for _ in 0..128 {
+            let nonce = INTEGRITY_SNAPSHOT_NONCE.fetch_add(1, Ordering::Relaxed);
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let directory = std::env::temp_dir().join(format!(
+                "contextunity-forge-integrity-{}-{timestamp}-{nonce}",
+                std::process::id()
+            ));
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            builder.mode(0o700);
+            match builder.create(&directory) {
+                Ok(()) => {
+                    let snapshot = Self {
+                        path: directory.join("snapshot.sqlite"),
+                        directory,
+                    };
+                    let mut options = OpenOptions::new();
+                    options.read(true).write(true).create_new(true);
+                    #[cfg(unix)]
+                    options.mode(0o600);
+                    match options.open(&snapshot.path) {
+                        Ok(file) => {
+                            drop(file);
+                            return Ok(snapshot);
+                        }
+                        Err(error) => {
+                            drop(snapshot);
+                            return Err(error.into());
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        bail!("could not create a unique integrity-check snapshot")
+    }
+}
+
+impl Drop for IntegritySnapshot {
+    fn drop(&mut self) {
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            let mut path = self.path.as_os_str().to_owned();
+            path.push(suffix);
+            let _ = fs::remove_file(PathBuf::from(path));
+        }
+        let _ = fs::remove_dir(&self.directory);
+    }
+}
+
+pub(crate) fn validate_database_integrity(conn: &Connection) -> Result<()> {
+    let snapshot = IntegritySnapshot::create()?;
+    let mut copy = Connection::open_with_flags(
+        &snapshot.path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    {
+        let backup = Backup::new(conn, &mut copy)?;
+        backup.run_to_completion(32, Duration::from_millis(5), None)?;
+    }
+    copy.execute_batch("PRAGMA cache_size=-4096; PRAGMA temp_store=FILE;")?;
+    let integrity: String = copy.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    if integrity != "ok" {
+        bail!("database integrity check failed: {integrity}");
+    }
+    Ok(())
+}
 
 pub struct LockedConnection {
     connection: Connection,
@@ -31,6 +176,7 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
         bail!("database must not be a symlink");
     }
     let before = super::cache::identity(path)?;
+    validate_database_header(path)?;
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -40,6 +186,17 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
     conn.execute_batch("BEGIN DEFERRED")?;
+    let has_metadata_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='metadata')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_metadata_table {
+        validate_database_integrity(&conn)?;
+        return Err(
+            IndexRebuildRequired("legacy database missing metadata table; rebuild index").into(),
+        );
+    }
     let version: String = conn.query_row(
         "SELECT value FROM metadata WHERE key='schema_version'",
         [],
@@ -53,7 +210,8 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
     if version != crate::engine::scanner::ENGINE_SCHEMA_VERSION
         || engine != "contextunity-forge-mcp-rust"
     {
-        bail!("incompatible database schema or engine");
+        validate_database_integrity(&conn)?;
+        return Err(IndexRebuildRequired("incompatible database schema or engine").into());
     }
     validate_workspace(&conn, root)?;
     let semantics: Option<String> = conn
@@ -64,7 +222,8 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
         )
         .optional()?;
     if semantics.as_deref() != Some(crate::engine::scanner::INDEX_SEMANTICS_VERSION) {
-        bail!("incompatible index semantics; rebuild index");
+        validate_database_integrity(&conn)?;
+        return Err(IndexRebuildRequired("incompatible index semantics; rebuild index").into());
     }
     let algorithm: String = conn.query_row(
         "SELECT value FROM metadata WHERE key='commitment_algorithm'",
@@ -72,7 +231,10 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
         |r| r.get(0),
     )?;
     if algorithm != crate::core::commitments::ALGORITHM {
-        bail!("incompatible commitment algorithm; rebuild index");
+        validate_database_integrity(&conn)?;
+        return Err(
+            IndexRebuildRequired("incompatible commitment algorithm; rebuild index").into(),
+        );
     }
     let seal: String = conn.query_row(
         "SELECT value FROM metadata WHERE key='output_root'",
@@ -89,7 +251,10 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
     if receipt_missing {
         let _ = super::cache::publish_verified_identity(path, root, &seal, &before);
     }
-    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, 1_000_000_000);
+    conn.set_limit(
+        rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,
+        MAX_SQLITE_VALUE_BYTES,
+    );
     conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024);
     Ok(conn)
 }
@@ -237,34 +402,53 @@ pub fn rows(
         .collect();
     let mut query = statement.query(params)?;
     let mut result = Vec::new();
-    let mut total_bytes = 0usize;
+    let mut total_bytes = 2usize;
     while let Some(row) = query.next()? {
         let mut value = Map::new();
+        let mut minimum_row_bytes = 2usize;
+        let mut property_count = 0usize;
         for (i, name) in names.iter().enumerate() {
             if matches!(name.as_str(), "node_hash" | "path_hash") {
                 continue;
             }
-            let raw = row.get_ref(i)?;
-            total_bytes = total_bytes.saturating_add(
-                name.len()
-                    + match raw {
-                        ValueRef::Text(v) | ValueRef::Blob(v) => v.len().saturating_mul(6),
-                        _ => 32,
-                    },
-            );
-            if total_bytes > 8 * 1024 * 1024 {
-                bail!("query result exceeds the 8 MiB row budget; narrow the selector or path, request detail='compact' with a smaller limit, or select fewer and smaller SQL columns. Continue paged requests with the returned offset and generation");
+            if names[i + 1..].iter().any(|later| later == name) {
+                value.entry(name.clone()).or_insert(Value::Null);
+                continue;
             }
+            let raw = row.get_ref(i)?;
+            let special_json_column = matches!(
+                name.as_str(),
+                "details" | "invariants" | "referenced_symbols"
+            );
+            let minimum_value_bytes = match raw {
+                ValueRef::Null => 4,
+                ValueRef::Integer(number) => number.to_string().len(),
+                ValueRef::Real(_) => 1,
+                ValueRef::Text(_) if special_json_column => 1,
+                ValueRef::Text(bytes) => bytes.len().saturating_add(2),
+                ValueRef::Blob(bytes) => bytes.len().saturating_mul(2).saturating_add(2),
+            };
+            let minimum_key_bytes = serde_json::to_vec(name)?.len().saturating_add(1);
+            minimum_row_bytes = minimum_row_bytes
+                .saturating_add(usize::from(property_count > 0))
+                .saturating_add(minimum_key_bytes)
+                .saturating_add(minimum_value_bytes);
+            property_count += 1;
+            let row_separator_bytes = usize::from(!result.is_empty());
+            let available_row_bytes = MAX_QUERY_RESULT_BYTES
+                .saturating_sub(total_bytes)
+                .saturating_sub(row_separator_bytes);
+            if minimum_row_bytes > available_row_bytes {
+                bail!(QUERY_RESULT_TOO_LARGE);
+            }
+
             let cell = match raw {
                 ValueRef::Null => Value::Null,
                 ValueRef::Integer(v) => json!(v),
                 ValueRef::Real(v) => json!(v),
                 ValueRef::Text(v) => {
                     let s = String::from_utf8_lossy(v);
-                    if matches!(
-                        name.as_str(),
-                        "details" | "invariants" | "referenced_symbols"
-                    ) {
+                    if special_json_column {
                         serde_json::from_str(&s).unwrap_or_else(|_| json!(s))
                     } else {
                         json!(s)
@@ -274,6 +458,21 @@ pub fn rows(
             };
             value.insert(name.clone(), cell);
         }
+
+        let row_separator_bytes = usize::from(!result.is_empty());
+        let available_row_bytes = MAX_QUERY_RESULT_BYTES
+            .saturating_sub(total_bytes)
+            .saturating_sub(row_separator_bytes);
+        let mut row_size = JsonSizeCounter::new(available_row_bytes);
+        if let Err(error) = serde_json::to_writer(&mut row_size, &value) {
+            if row_size.exceeded {
+                bail!(QUERY_RESULT_TOO_LARGE);
+            }
+            return Err(error.into());
+        }
+        total_bytes = total_bytes
+            .saturating_add(row_separator_bytes)
+            .saturating_add(row_size.bytes);
         result.push(Value::Object(value));
         if result.len() >= limit {
             break;
@@ -448,7 +647,7 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
             let kind = if prefix == "fn" { "function" } else { prefix };
             rows(
                 conn,
-                "SELECT id, kind FROM nodes WHERE (name=?1 OR qualname=?1) AND kind=?2 ORDER BY id LIMIT 101",
+                "SELECT id, kind FROM nodes INDEXED BY idx_nodes_name WHERE name=?1 AND kind=?2 UNION SELECT id, kind FROM nodes INDEXED BY idx_nodes_qualname WHERE qualname=?1 AND kind=?2 ORDER BY id LIMIT 101",
                 &[&symbol_part, &kind],
                 101,
             )?
@@ -532,6 +731,105 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
             .collect();
         if modules.len() == 1 {
             result = modules;
+        }
+    }
+
+    if result.len() > 1 {
+        // Disambiguation pipeline:
+        // 1. If there is a method/function and field with the same name — automatically pick method/function.
+        let has_callable = result
+            .iter()
+            .any(|v| matches!(v["kind"].as_str(), Some("method" | "function")));
+        let has_fields = result.iter().any(|v| v["kind"].as_str() == Some("field"));
+        if has_callable && has_fields {
+            result.retain(|v| v["kind"].as_str() != Some("field"));
+        }
+    }
+
+    if result.len() > 1 {
+        // Fetch full node metadata (id, kind, name, qualname, path, line, end_line, details) for candidates
+        let mut enriched_nodes = Vec::new();
+        for cand in &result {
+            if let Some(id) = cand["id"].as_str() {
+                if let Ok(mut row_vals) = rows(
+                    conn,
+                    "SELECT id, kind, name, qualname, path, line, end_line, details FROM nodes WHERE id=?1 LIMIT 1",
+                    &[&id],
+                    1,
+                ) {
+                    if let Some(node_val) = row_vals.pop() {
+                        enriched_nodes.push(node_val);
+                    }
+                }
+            }
+        }
+
+        // 2. If there is a runtime method and a stub with the same name — pick the runtime method.
+        if enriched_nodes.len() > 1 {
+            let non_stubs: Vec<_> = enriched_nodes
+                .iter()
+                .filter(|v| {
+                    let details_val = match &v["details"] {
+                        Value::String(s) => serde_json::from_str::<Value>(s).unwrap_or(Value::Null),
+                        other => other.clone(),
+                    };
+                    let is_stub = details_val
+                        .get("is_stub")
+                        .and_then(|b| b.as_bool())
+                        .unwrap_or(false);
+                    let is_overload = details_val
+                        .get("is_overload")
+                        .and_then(|b| b.as_bool())
+                        .unwrap_or(false);
+                    !is_stub && !is_overload
+                })
+                .cloned()
+                .collect();
+            if !non_stubs.is_empty() && non_stubs.len() < enriched_nodes.len() {
+                enriched_nodes = non_stubs;
+            }
+        }
+
+        // 3. If selector still has duplicates in the same class — pick the runtime node with body instead of crashing.
+        if enriched_nodes.len() > 1 {
+            let with_body: Vec<_> = enriched_nodes
+                .iter()
+                .filter(|v| {
+                    let line = v["line"].as_i64().unwrap_or(0);
+                    let end_line = v["end_line"].as_i64().unwrap_or(0);
+                    end_line > line
+                })
+                .cloned()
+                .collect();
+            if with_body.len() == 1 {
+                enriched_nodes = with_body;
+            } else if with_body.len() > 1 {
+                let first_path = enriched_nodes[0]["path"].as_str().unwrap_or("");
+                let first_qual_parent = enriched_nodes[0]["qualname"]
+                    .as_str()
+                    .and_then(|q| q.rsplit_once('.').map(|(p, _)| p))
+                    .unwrap_or("");
+                let same_class = enriched_nodes.iter().all(|n| {
+                    n["path"].as_str() == Some(first_path)
+                        && n["qualname"]
+                            .as_str()
+                            .and_then(|q| q.rsplit_once('.').map(|(p, _)| p))
+                            == Some(first_qual_parent)
+                });
+                if same_class {
+                    if let Some(best) = with_body.into_iter().max_by_key(|v| {
+                        let line = v["line"].as_i64().unwrap_or(0);
+                        let end_line = v["end_line"].as_i64().unwrap_or(0);
+                        (end_line - line, line)
+                    }) {
+                        enriched_nodes = vec![best];
+                    }
+                }
+            }
+        }
+
+        if !enriched_nodes.is_empty() {
+            result = enriched_nodes;
         }
     }
 
@@ -782,7 +1080,8 @@ pub fn overview_paged_with_aspects(
 
     if has_aspect("languages") {
         let lang_sql = "SELECT l.language,l.files,coalesce(r.resolved,0) resolved,coalesce(r.unresolved,0) unresolved,coalesce(r.external_imports,0) external_imports,coalesce(e.parse_errors,0) parse_errors FROM (SELECT language,count(*) files FROM files GROUP BY language) l LEFT JOIN (SELECT f.language,count(CASE WHEN rc.status='resolved' THEN 1 END) resolved,count(CASE WHEN rc.status IN('unresolved','ambiguous') THEN 1 END) unresolved,count(CASE WHEN rc.status='external' THEN 1 END) external_imports FROM resolution_coverage_data rc JOIN path_dictionary p ON p.path_id=rc.path_id JOIN files f ON f.path=p.path GROUP BY f.language) r ON r.language=l.language LEFT JOIN (SELECT f.language,count(*) parse_errors FROM errors er JOIN files f ON f.path=er.path GROUP BY f.language) e ON e.language=l.language ORDER BY l.language";
-        let language_total = paging::count(conn, "SELECT count(DISTINCT language) FROM files", &[])?;
+        let language_total =
+            paging::count(conn, "SELECT count(DISTINCT language) FROM files", &[])?;
         let limit = options.limit as i64;
         let offset = options.offset as i64;
         let languages = rows(
@@ -791,14 +1090,20 @@ pub fn overview_paged_with_aspects(
             &[&limit, &offset],
             options.limit,
         )?;
-        result.insert("languages".into(), paging::value(languages, language_total, options, &generation));
+        result.insert(
+            "languages".into(),
+            paging::value(languages, language_total, options, &generation),
+        );
     }
 
     if has_aspect("compiled_profiles") {
         let compiled_profiles: std::collections::BTreeSet<_> = crate::engine::languages::profiles()
             .map(|p| p.id())
             .collect();
-        result.insert("compiled_profiles".into(), serde_json::to_value(compiled_profiles)?);
+        result.insert(
+            "compiled_profiles".into(),
+            serde_json::to_value(compiled_profiles)?,
+        );
     }
 
     if has_aspect("cycles") {
@@ -961,6 +1266,77 @@ pub fn search_docs_paged(
     search_docs_paged_with_excerpt(conn, query, doc_type, component, false, options)
 }
 
+pub fn resolve_component_prefix(conn: &Connection, component: &str) -> String {
+    let comp = component.trim().trim_end_matches('/');
+    if comp.is_empty() {
+        return String::new();
+    }
+    // 1. Direct path check: if any doc begins with `comp/` or equals `comp`, use it as is
+    let direct_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM doc_sections WHERE path=?1 OR (path>=?2 AND path<?3))",
+            rusqlite::params![comp, format!("{comp}/"), format!("{comp}0")],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if direct_exists {
+        return comp.to_string();
+    }
+
+    // 2. Check metadata adapter JSON for aliases and owners
+    if let Ok(raw) =
+        conn.query_row::<String, _, _>("SELECT value FROM metadata WHERE key='adapter'", [], |r| {
+            r.get(0)
+        })
+    {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let aliases = val.get("aliases").and_then(|v| v.as_object());
+            let owners = val.get("owners").and_then(|v| v.as_object());
+
+            // Target name: either alias resolution or component itself
+            let target_owner = aliases
+                .and_then(|a| a.get(comp))
+                .and_then(|v| v.as_str())
+                .unwrap_or(comp);
+
+            // Find matching path in owners
+            if let Some(owners_map) = owners {
+                for (owner_path, owner_name) in owners_map {
+                    if let Some(name_str) = owner_name.as_str() {
+                        if name_str.eq_ignore_ascii_case(target_owner)
+                            || name_str.eq_ignore_ascii_case(comp)
+                        {
+                            return owner_path.trim_end_matches('/').to_string();
+                        }
+                    }
+                }
+                // Also check if comp matches an owner path directly or ends with /{comp}
+                for owner_path in owners_map.keys() {
+                    if owner_path.eq_ignore_ascii_case(comp)
+                        || owner_path.ends_with(&format!("/{comp}"))
+                    {
+                        return owner_path.trim_end_matches('/').to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Fallback: check if any doc_sections path contains `/{comp}/`
+    let pattern = format!("%/{comp}/%");
+    if let Ok(matched_path) = conn.query_row::<String, _, _>(
+        "SELECT path FROM doc_sections WHERE path LIKE ?1 ORDER BY path LIMIT 1",
+        [&pattern],
+        |r| r.get(0),
+    ) {
+        if let Some((prefix, _)) = matched_path.split_once(&format!("/{comp}/")) {
+            return format!("{prefix}/{comp}");
+        }
+    }
+
+    comp.to_string()
+}
+
 pub fn search_docs_paged_with_excerpt(
     conn: &Connection,
     query: &str,
@@ -978,7 +1354,8 @@ pub fn search_docs_paged_with_excerpt(
         bail!("search query is empty");
     }
     let kind = doc_type.unwrap_or("");
-    let component = component.unwrap_or("").trim_end_matches('/');
+    let resolved = resolve_component_prefix(conn, component.unwrap_or(""));
+    let component = resolved.as_str();
     let (prefix, end) = path_bounds(component);
     let excerpt = if include_excerpt {
         ",substr(snippet(doc_search,-1,'[',']',' … ',16),1,240) excerpt"

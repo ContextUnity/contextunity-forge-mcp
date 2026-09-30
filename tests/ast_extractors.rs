@@ -33,7 +33,15 @@ def standalone_helper(x: int) -> int:
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "function" && n.name == "fetch"));
+        .any(|n| n.kind == "method" && n.name == "fetch"));
+    let fetch = facts
+        .nodes
+        .iter()
+        .find(|n| n.name == "fetch")
+        .expect("fetch method missing");
+    assert_eq!(fetch.details["receiver_type"], "ServiceClient");
+    assert_eq!(fetch.details["is_method"], true);
+    assert_eq!(fetch.details["is_static"], false);
     assert!(facts
         .nodes
         .iter()
@@ -74,7 +82,15 @@ impl Config {
     assert!(facts
         .nodes
         .iter()
-        .any(|n| n.kind == "function" && n.name == "new"));
+        .any(|n| n.kind == "method" && n.name == "new"));
+    let constructor = facts
+        .nodes
+        .iter()
+        .find(|n| n.name == "new")
+        .expect("new method missing");
+    assert_eq!(constructor.details["receiver_type"], "Config");
+    assert_eq!(constructor.details["is_method"], true);
+    assert_eq!(constructor.details["is_static"], true);
 }
 
 #[cfg(feature = "lang-typescript")]
@@ -112,6 +128,14 @@ export const processUser = (u: User) => {
         .nodes
         .iter()
         .any(|n| n.kind == "function" && n.name == "processUser"));
+    let process_user = facts
+        .nodes
+        .iter()
+        .find(|n| n.name == "processUser")
+        .expect("processUser function missing");
+    assert!(process_user.details.get("is_method").is_none());
+    assert!(process_user.details.get("is_static").is_none());
+    assert!(process_user.details.get("receiver_type").is_none());
 }
 
 #[cfg(feature = "lang-go")]

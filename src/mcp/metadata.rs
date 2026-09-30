@@ -1,39 +1,82 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 pub const SHORT_HASH_LEN: usize = 8;
 
-/// Shortens a hash string to the first `SHORT_HASH_LEN` (8) characters.
+/// Returns an eight-byte prefix when it ends on a UTF-8 character boundary.
 pub fn shorten_hash(hash: &str) -> &str {
     if hash.len() > SHORT_HASH_LEN {
-        &hash[..SHORT_HASH_LEN]
+        hash.get(..SHORT_HASH_LEN).unwrap_or(hash)
     } else {
         hash
     }
 }
 
-/// Recursively shortens hash fields (`generation`, `output_root`, `corpus_hash`) across JSON values.
+/// Shortens hashes only in verified top-level MCP metadata envelopes.
 pub fn shorten_hashes_in_value(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for (key, val) in map.iter_mut() {
-                if key == "generation" || key == "output_root" || key == "corpus_hash" {
-                    if let Value::String(s) = val {
-                        if s.len() > SHORT_HASH_LEN {
-                            *s = s[..SHORT_HASH_LEN].to_string();
-                        }
-                    }
-                } else {
-                    shorten_hashes_in_value(val);
-                }
-            }
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+
+    if object
+        .get("freshness")
+        .and_then(Value::as_object)
+        .is_some_and(is_freshness_envelope)
+    {
+        if let Some(freshness) = object.get_mut("freshness").and_then(Value::as_object_mut) {
+            shorten_fields(freshness, &["output_root", "corpus_hash"]);
         }
-        Value::Array(arr) => {
-            for item in arr {
-                shorten_hashes_in_value(item);
-            }
+    }
+
+    if object
+        .get("metadata")
+        .and_then(Value::as_object)
+        .is_some_and(is_tool_metadata)
+    {
+        if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
+            shorten_fields(metadata, &["output_root", "corpus_hash"]);
         }
-        _ => {}
+    }
+}
+
+fn is_freshness_envelope(object: &Map<String, Value>) -> bool {
+    const FIELDS: [&str; 7] = [
+        "status",
+        "output_root",
+        "corpus_hash",
+        "checked_at_unix_ms",
+        "files_checked",
+        "inventory_scan_ms",
+        "refresh",
+    ];
+
+    object.len() == FIELDS.len()
+        && FIELDS.iter().all(|field| object.contains_key(*field))
+        && object["status"].is_string()
+        && object["output_root"].is_string()
+        && object["corpus_hash"].is_string()
+        && object["checked_at_unix_ms"].as_u64().is_some()
+        && object["files_checked"].as_u64().is_some()
+        && object["inventory_scan_ms"].is_number()
+        && object["refresh"].is_string()
+}
+
+fn is_tool_metadata(object: &Map<String, Value>) -> bool {
+    object.get("generation").is_some_and(Value::is_string)
+        && object.iter().all(|(key, value)| match key.as_str() {
+            "generation" | "status" | "refresh" | "output_root" | "corpus_hash" => {
+                value.is_string()
+            }
+            "files_checked" => value.as_u64().is_some(),
+            _ => false,
+        })
+}
+
+fn shorten_fields(object: &mut Map<String, Value>, fields: &[&str]) {
+    for field in fields {
+        if let Some(Value::String(hash)) = object.get_mut(*field) {
+            *hash = shorten_hash(hash).to_owned();
+        }
     }
 }
 
@@ -58,7 +101,7 @@ pub struct ToolMetadata {
 /// Ensures:
 /// 1. All primary content fields appear FIRST.
 /// 2. Verbose internal timing/diagnostics are stripped from `freshness`.
-/// 3. All hash identifiers (`generation`, `output_root`, `corpus_hash`) are shortened to first 8 characters.
+/// 3. Display hashes are shortened only in verified top-level freshness or metadata envelopes.
 /// 4. Metadata fields (`metadata`, `generation`, `freshness`) are moved to the VERY END of the object.
 pub fn finalize_mcp_metadata(value: &mut Value) {
     shorten_hashes_in_value(value);
@@ -66,17 +109,9 @@ pub fn finalize_mcp_metadata(value: &mut Value) {
     if let Value::Object(map) = value {
         // Strip verbose freshness timestamps
         if let Some(Value::Object(fmap)) = map.get_mut("freshness") {
-            fmap.remove("checked_at_unix_ms");
-            fmap.remove("inventory_scan_ms");
-            if let Some(Value::String(hash)) = fmap.get_mut("corpus_hash") {
-                if hash.len() > SHORT_HASH_LEN {
-                    *hash = hash[..SHORT_HASH_LEN].to_string();
-                }
-            }
-            if let Some(Value::String(hash)) = fmap.get_mut("output_root") {
-                if hash.len() > SHORT_HASH_LEN {
-                    *hash = hash[..SHORT_HASH_LEN].to_string();
-                }
+            if is_freshness_envelope(fmap) {
+                fmap.remove("checked_at_unix_ms");
+                fmap.remove("inventory_scan_ms");
             }
         }
 
@@ -110,6 +145,7 @@ mod tests {
             "b484bce6"
         );
         assert_eq!(shorten_hash("1234"), "1234");
+        assert_eq!(shorten_hash("1234567é"), "1234567é");
     }
 
     #[test]
@@ -133,12 +169,168 @@ mod tests {
 
         let map = response.as_object().unwrap();
         let keys: Vec<&String> = map.keys().collect();
-        assert_eq!(keys, vec!["components", "metadata", "generation", "freshness"]);
+        assert_eq!(
+            keys,
+            vec!["components", "metadata", "generation", "freshness"]
+        );
 
-        assert_eq!(response["generation"], "abcdef01");
+        assert_eq!(response["generation"], "abcdef0123456789abcdef");
         assert_eq!(response["freshness"]["output_root"], "11223344");
         assert_eq!(response["freshness"]["corpus_hash"], "aabbccdd");
         assert!(response["freshness"].get("checked_at_unix_ms").is_none());
         assert!(response["freshness"].get("inventory_scan_ms").is_none());
+    }
+
+    #[test]
+    fn hash_shortening_is_scoped_to_verified_metadata_envelopes() {
+        let mut response = serde_json::json!({
+            "generation": "a".repeat(64),
+            "metadata": {"output_root": "metadata-root-1234", "corpus_hash": "metadata-hash-1234"},
+            "rows": {"items": [{"generation": "1234567é", "output_root": "0123456789"}]},
+            "nodes": {"items": [{"output_root": "node-root-12345", "corpus_hash": "node-hash-123456"}]},
+            "symbols": [{"output_root": "symbol-root-123", "corpus_hash": "symbol-hash-1234"}],
+            "doc_sections": [{"output_root": "section-root-12", "corpus_hash": "section-hash-123"}],
+            "payload": {
+                "freshness": {"output_root": "nested-root-1234", "corpus_hash": "nested-hash-12345"},
+                "metadata": {"output_root": "nested-meta-1234", "corpus_hash": "nested-meta-12345"}
+            },
+            "freshness": {
+                "status": "source_inventory_matched",
+                "output_root": "0123456789abcdef",
+                "corpus_hash": "abcdef0123456789",
+                "checked_at_unix_ms": 1727630000000_u64,
+                "files_checked": 4,
+                "inventory_scan_ms": 1.5,
+                "refresh": "none"
+            }
+        });
+
+        finalize_mcp_metadata(&mut response);
+
+        assert_eq!(response["generation"].as_str().unwrap().len(), 64);
+        assert_eq!(response["rows"]["items"][0]["generation"], "1234567é");
+        assert_eq!(response["rows"]["items"][0]["output_root"], "0123456789");
+        assert_eq!(response["metadata"]["output_root"], "metadata-root-1234");
+        assert_eq!(response["metadata"]["corpus_hash"], "metadata-hash-1234");
+        assert_eq!(
+            response["nodes"]["items"][0]["output_root"],
+            "node-root-12345"
+        );
+        assert_eq!(
+            response["nodes"]["items"][0]["corpus_hash"],
+            "node-hash-123456"
+        );
+        assert_eq!(response["symbols"][0]["output_root"], "symbol-root-123");
+        assert_eq!(response["symbols"][0]["corpus_hash"], "symbol-hash-1234");
+        assert_eq!(
+            response["doc_sections"][0]["output_root"],
+            "section-root-12"
+        );
+        assert_eq!(
+            response["doc_sections"][0]["corpus_hash"],
+            "section-hash-123"
+        );
+        assert_eq!(
+            response["payload"]["freshness"]["output_root"],
+            "nested-root-1234"
+        );
+        assert_eq!(
+            response["payload"]["freshness"]["corpus_hash"],
+            "nested-hash-12345"
+        );
+        assert_eq!(
+            response["payload"]["metadata"]["output_root"],
+            "nested-meta-1234"
+        );
+        assert_eq!(
+            response["payload"]["metadata"]["corpus_hash"],
+            "nested-meta-12345"
+        );
+        assert_eq!(response["freshness"]["output_root"], "01234567");
+        assert_eq!(response["freshness"]["corpus_hash"], "abcdef01");
+        assert!(response["freshness"].get("checked_at_unix_ms").is_none());
+        assert!(response["freshness"].get("inventory_scan_ms").is_none());
+
+        let mut tool_metadata = serde_json::json!({
+            "metadata": {
+                "generation": "opaque-generation-1234",
+                "status": "source_inventory_matched",
+                "refresh": "none",
+                "files_checked": 4,
+                "output_root": "0123456789abcdef",
+                "corpus_hash": "abcdef0123456789"
+            }
+        });
+        finalize_mcp_metadata(&mut tool_metadata);
+        assert_eq!(
+            tool_metadata["metadata"]["generation"],
+            "opaque-generation-1234"
+        );
+        assert_eq!(tool_metadata["metadata"]["output_root"], "01234567");
+        assert_eq!(tool_metadata["metadata"]["corpus_hash"], "abcdef01");
+
+        let mut extended_tool_metadata = serde_json::json!({
+            "metadata": {
+                "generation": "opaque-generation-1234",
+                "output_root": "0123456789abcdef",
+                "corpus_hash": "abcdef0123456789",
+                "user_payload": "not tool metadata"
+            }
+        });
+        finalize_mcp_metadata(&mut extended_tool_metadata);
+        assert_eq!(
+            extended_tool_metadata["metadata"]["output_root"],
+            "0123456789abcdef"
+        );
+        assert_eq!(
+            extended_tool_metadata["metadata"]["corpus_hash"],
+            "abcdef0123456789"
+        );
+
+        let mut malformed_freshness = serde_json::json!({
+            "freshness": {
+                "output_root": "0123456789abcdef",
+                "corpus_hash": "abcdef0123456789",
+                "checked_at_unix_ms": 1727630000000_u64
+            }
+        });
+        finalize_mcp_metadata(&mut malformed_freshness);
+        assert_eq!(
+            malformed_freshness["freshness"]["output_root"],
+            "0123456789abcdef"
+        );
+        assert_eq!(
+            malformed_freshness["freshness"]["corpus_hash"],
+            "abcdef0123456789"
+        );
+        assert_eq!(
+            malformed_freshness["freshness"]["checked_at_unix_ms"],
+            1727630000000_u64
+        );
+
+        let mut extended_freshness = serde_json::json!({
+            "freshness": {
+                "status": "source_inventory_matched",
+                "output_root": "0123456789abcdef",
+                "corpus_hash": "abcdef0123456789",
+                "checked_at_unix_ms": 1727630000000_u64,
+                "files_checked": 4,
+                "inventory_scan_ms": 1.5,
+                "refresh": "none",
+                "user_payload": "not freshness metadata"
+            }
+        });
+        finalize_mcp_metadata(&mut extended_freshness);
+        assert_eq!(
+            extended_freshness["freshness"]["output_root"],
+            "0123456789abcdef"
+        );
+        assert_eq!(
+            extended_freshness["freshness"]["corpus_hash"],
+            "abcdef0123456789"
+        );
+        assert!(extended_freshness["freshness"]
+            .get("checked_at_unix_ms")
+            .is_some());
     }
 }

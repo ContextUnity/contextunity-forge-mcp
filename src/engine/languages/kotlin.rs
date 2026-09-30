@@ -5,6 +5,24 @@ impl LanguageProfile for Kotlin {
     fn id(&self) -> &'static str {
         "kotlin"
     }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &["pom.xml", "build.gradle", "build.gradle.kts"]
+    }
+    fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
+        super::build_manifest::dependencies(filename, content)
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        [
+            "java.",
+            "javax.",
+            "kotlin.",
+            "org.w3c.",
+            "org.xml.sax.",
+            "org.ietf.jgss.",
+        ]
+        .iter()
+        .any(|prefix| module.starts_with(prefix) || module == prefix.trim_end_matches('.'))
+    }
     fn family(&self) -> LanguageFamily {
         LanguageFamily("kotlin")
     }
@@ -37,8 +55,21 @@ impl LanguageProfile for Kotlin {
     fn node_prefix(&self, _kind: &str) -> &'static str {
         "kt"
     }
-    fn normalize_import(&self, _owner: &str, _module: &str) -> Option<ImportPath> {
-        None
+    fn module_name_for_source(&self, path: &str, source: &str) -> String {
+        source
+            .lines()
+            .map(str::trim)
+            .find_map(|line| line.strip_prefix("package ").map(str::trim))
+            .filter(|package| !package.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.module_name(path))
+    }
+    fn normalize_import(&self, _owner: &str, module: &str) -> Option<ImportPath> {
+        Some(ImportPath {
+            namespace: module.to_owned(),
+            relative: false,
+            symbol_path: true,
+        })
     }
     fn class_scope(&self) -> bool {
         true

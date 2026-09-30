@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "name": "commerce-release-update",
+  "project": "commerce-release-update",
+  "scope_note": "The adapter enables linked traverse and gridviewspec workspaces; Codebase indexes only the selected Commerce monorepo root.",
+  "scenarios": [
+    {
+      "id": "workspace_overview",
+      "scenario": "Workspace orientation and index inventory",
+      "forge": {"tool": "code_map_overview", "arguments": {"detail": "compact", "limit": 30}},
+      "codebase": {"tool": "get_architecture", "arguments": {"project": "${project}"}},
+      "match": "Both report indexed structure; Forge emphasizes scoped coverage and diagnostics, Codebase emphasizes graph/package inventory."
+    },
+    {
+      "id": "symbol_search",
+      "scenario": "Locate run_matcher_pipeline in the commerce matcher module",
+      "forge": {
+        "tool": "code_map_search",
+        "arguments": {"pattern": "run_matcher_pipeline", "kind": "function", "path": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py", "limit": 10, "detail": "compact"}
+      },
+      "codebase": {
+        "tool": "search_graph",
+        "arguments": {"project": "${project}", "name_pattern": "^run_matcher_pipeline$", "label": "Function", "file_pattern": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py", "fields": ["signature", "docstring"], "limit": 10, "format": "json"}
+      },
+      "match": "Both should resolve the same Python function in the same file."
+    },
+    {
+      "id": "symbol_inspection",
+      "scenario": "Inspect matcher pipeline identity, signature, docs, and references",
+      "forge": {"tool": "code_map_inspect", "arguments": {"selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline", "detail": "compact"}},
+      "codebase": {
+        "tool": "search_graph",
+        "arguments": {"project": "${project}", "name_pattern": "^run_matcher_pipeline$", "label": "Function", "file_pattern": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py", "fields": ["signature", "docstring"], "limit": 10, "format": "json"}
+      },
+      "match": "Approximate: Forge has a dedicated selector and reference evidence; Codebase returns a graph row."
+    },
+    {
+      "id": "source_snippet",
+      "scenario": "Read the exact implementation of run_matcher_pipeline",
+      "forge": {"tool": "get_code_snippet", "arguments": {"selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline"}},
+      "codebase": {"tool": "get_code_snippet", "arguments": {"project": "${project}", "qualified_name": "${project}.extensions.commerce.src.contextunity.commerce.modules.matcher.pipeline.run_matcher_pipeline"}},
+      "match": "Strong match: both should return the same Python implementation."
+    },
+    {
+      "id": "test_relationships",
+      "scenario": "Find tests connected to run_matcher_pipeline",
+      "forge": {"tool": "code_map_tests", "arguments": {"selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline", "direction": "inbound", "limit": 30}},
+      "codebase": {
+        "tool": "query_graph",
+        "arguments": {"project": "${project}", "query": "MATCH (test)-[:TESTS]->(target) WHERE target.qualified_name = '${project}.extensions.commerce.src.contextunity.commerce.modules.matcher.pipeline.run_matcher_pipeline' RETURN test.qualified_name, target.qualified_name LIMIT 30"}
+      },
+      "match": "Approximate: compare direct or scoped test witnesses and their labels."
+    },
+    {
+      "id": "unresolved_evidence",
+      "scenario": "Inspect workspace unresolved-reference evidence",
+      "forge": {"tool": "code_map_analyze", "arguments": {"target": "", "limit": 30}},
+      "codebase": {
+        "tool": "query_graph",
+        "arguments": {"project": "${project}", "query": "MATCH (a)-[r:CALL_REFERENCE]->(b) RETURN a.qualified_name, r.callee, b.qualified_name LIMIT 30"}
+      },
+      "match": "Not equivalent: Forge reports resolver classifications; CALL_REFERENCE rows are not a complete unresolved count."
+    },
+    {
+      "id": "codebase_low_confidence_summary",
+      "scenario": "Codebase-only diagnostic: summarize CALLS below confidence 0.5",
+      "forge": null,
+      "codebase": {
+        "tool": "query_graph",
+        "arguments": {"project": "${project}", "query": "MATCH ()-[r:CALLS]->() WHERE r.confidence < 0.5 RETURN r.confidence AS confidence, r.strategy AS strategy, count(r) AS calls ORDER BY calls DESC LIMIT 50"}
+      },
+      "match": "Diagnostic only: the confidence threshold is analyst-selected, not canonical unresolved status."
+    },
+    {
+      "id": "codebase_low_confidence_examples",
+      "scenario": "Codebase-only diagnostic: inspect low-confidence call candidates",
+      "forge": null,
+      "codebase": {
+        "tool": "query_graph",
+        "arguments": {"project": "${project}", "query": "MATCH (caller)-[r:CALLS]->(target) WHERE r.confidence < 0.5 RETURN caller.qualified_name, r.callee, r.confidence, r.strategy, r.candidates, target.qualified_name LIMIT 30"}
+      },
+      "match": "Diagnostic only: candidate rows require source-level verification."
+    },
+    {
+      "id": "impact_analysis",
+      "scenario": "Trace incoming callers of run_matcher_pipeline",
+      "forge": {"tool": "code_map_impact", "arguments": {"selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline", "depth": 1, "limit": 30}},
+      "codebase": {"tool": "trace_path", "arguments": {"project": "${project}", "function_name": "${project}.extensions.commerce.src.contextunity.commerce.modules.matcher.pipeline.run_matcher_pipeline", "direction": "inbound", "depth": 1, "limit": 30, "include_tests": true, "format": "json"}},
+      "match": "Close: compare caller witnesses rather than total counts."
+    },
+    {
+      "id": "symbol_explanation",
+      "scenario": "Explain ownership and direct relationships for the matcher pipeline",
+      "forge": {"tool": "code_map_explain", "arguments": {"selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline", "direction": "both", "show_doc": true, "detail": "compact"}},
+      "codebase": {
+        "tool": "query_graph",
+        "arguments": {"project": "${project}", "query": "MATCH (n) WHERE n.qualified_name = '${project}.extensions.commerce.src.contextunity.commerce.modules.matcher.pipeline.run_matcher_pipeline' OPTIONAL MATCH (n)-[r]-(m) RETURN n.qualified_name, type(r), m.qualified_name LIMIT 30"}
+      },
+      "match": "Approximate: Forge assembles an explanation; Codebase returns rows for agent interpretation."
+    },
+    {
+      "id": "graph_slice_query",
+      "scenario": "Retrieve a bounded graph slice around the matcher pipeline",
+      "forge": {"tool": "code_map_query", "arguments": {"operation": "slice", "selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline", "depth": 1, "limit": 30}},
+      "codebase": {
+        "tool": "query_graph",
+        "arguments": {"project": "${project}", "query": "MATCH (n) WHERE n.qualified_name = '${project}.extensions.commerce.src.contextunity.commerce.modules.matcher.pipeline.run_matcher_pipeline' OPTIONAL MATCH (n)-[r]-(m) RETURN n.qualified_name, type(r), m.qualified_name LIMIT 30"}
+      },
+      "match": "Close with different query models: bounded slice versus explicit Cypher."
+    },
+    {
+      "id": "workspace_diagnostics",
+      "scenario": "Check workspace health, graph diagnostics, and cycles",
+      "forge": {"tool": "code_map_analyze", "arguments": {"target": "", "include_cycles": true, "limit": 30}},
+      "codebase": {"tool": "index_status", "arguments": {"project": "${project}"}},
+      "match": "Partial: index readiness is not equivalent to graph diagnostics or cycle analysis."
+    },
+    {
+      "id": "path_diagnostics_coverage",
+      "scenario": "Check matcher pipeline source and indexing coverage",
+      "forge": {"tool": "code_map_analyze", "arguments": {"target": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py", "limit": 30}},
+      "codebase": {"tool": "check_index_coverage", "arguments": {"project": "${project}", "paths": ["extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py"]}},
+      "match": "Partial: Forge reports stored diagnostics; Codebase reports best-effort path freshness and coverage."
+    },
+    {
+      "id": "removal_safety",
+      "scenario": "Assess whether run_matcher_pipeline can be removed safely",
+      "forge": {"tool": "code_map_prove_removal", "arguments": {"selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline", "detail": "compact", "limit": 30}},
+      "codebase": {
+        "tool": "query_graph",
+        "arguments": {"project": "${project}", "query": "MATCH (caller)-[r]->(target) WHERE target.qualified_name = '${project}.extensions.commerce.src.contextunity.commerce.modules.matcher.pipeline.run_matcher_pipeline' RETURN type(r), caller.qualified_name LIMIT 30"}
+      },
+      "match": "Not equivalent: Codebase lists incoming edges but does not prove removal safety."
+    },
+    {
+      "id": "ast_pattern_search",
+      "scenario": "Find the Python function syntax with a Tree-sitter pattern",
+      "forge": {"tool": "ast_grep_search", "arguments": {"pattern": "def run_matcher_pipeline($$$ARGS) -> MatcherPipelineResult: $$$BODY", "language": "python", "path": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py", "limit": 30}},
+      "codebase": {"tool": "search_code", "arguments": {"project": "${project}", "pattern": "def run_matcher_pipeline", "path_filter": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py", "regex": false, "mode": "full", "limit": 10}},
+      "match": "Not equivalent: Forge matches parsed syntax; Codebase performs bounded text search."
+    },
+    {
+      "id": "documentation_search",
+      "scenario": "Search Commerce documentation for matcher pipeline guidance",
+      "forge": {"tool": "search_docs", "arguments": {"query": "matcher pipeline exact linking adapter review", "include_excerpt": true, "limit": 10}},
+      "codebase": {"tool": "search_code", "arguments": {"project": "${project}", "pattern": "matcher pipeline exact linking adapter review", "regex": false, "mode": "full", "limit": 10}},
+      "match": "Approximate: Forge searches Markdown sections; Codebase searches source text."
+    },
+    {
+      "id": "documentation_read",
+      "scenario": "Read the Commerce package documentation",
+      "forge": {"tool": "get_doc", "arguments": {"path_or_id": "extensions/commerce/README.md", "detail": "full"}},
+      "codebase": {"tool": "search_code", "arguments": {"project": "${project}", "pattern": "ContextUnity Commerce", "regex": false, "mode": "full", "limit": 5}},
+      "match": "Not equivalent: Forge reads indexed Markdown; Codebase returns matching source windows."
+    },
+    {
+      "id": "tool_guide",
+      "scenario": "Ask for agent guidance on using graph tools",
+      "forge": {"tool": "forge_guide", "arguments": {"topic": "query"}},
+      "codebase": {"tool": "get_graph_schema", "arguments": {"project": "${project}"}},
+      "match": "Not equivalent: Codebase schema does not provide a tool-selection guide."
+    },
+    {
+      "id": "session_checkpoint",
+      "scenario": "List saved session checkpoints without changing state",
+      "forge": {"tool": "session_checkpoint", "arguments": {"action": "list"}},
+      "codebase": null,
+      "match": "No Codebase counterpart."
+    }
+  ]
+}

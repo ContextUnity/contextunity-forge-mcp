@@ -124,13 +124,13 @@ Use an exact symbol ID returned by `code_map_search` when available. The resolve
 | Discover | `ast_grep_search` | Matches a syntax pattern in admitted source for a selected language. |
 | Docs | `search_docs` | Searches indexed Markdown sections, with document-type and component filters. |
 | Docs | `get_doc` | Retrieves an indexed document or an exact heading section. |
-| Inspect | `code_map_inspect` | Resolves one selector and returns its definition and immediate evidence. |
+| Inspect | `code_map_inspect` | Resolves one selector and returns a compact signature/docstring, receiver-aware container, and caller/callee summary; set `include_coverage=true` for paged resolution evidence. |
 | Inspect | `get_code_snippet` | Reads a bounded, digest-checked source preview around a selected symbol. |
-| Relationships | `code_map_explain` | Shows a symbol's direct inbound and outbound relationships. |
-| Relationships | `code_map_impact` | Traverses incoming dependencies to estimate change impact; start at depth 1. |
+| Relationships | `code_map_explain` | Shows a compact symbol summary and its direct inbound and outbound relationships. |
+| Relationships | `code_map_impact` | Traverses inbound (default) or outbound dependencies to estimate change impact; start at depth 1. |
 | Relationships | `code_map_tests` | Finds tests exercising a target or production dependencies used by a test. |
 | Verify | `code_map_prove_removal` | Checks indexed callers and unresolved coverage before removal; the result covers static evidence only. |
-| Query | `code_map_query` | Routes graph operations, including `slice`, `unwired`, and a supported Cypher subset. |
+| Query | `code_map_query` | Routes graph operations, including paged read-only SQL via `operation="sql"`. |
 | Query | `code_map_analyze` | Shows diagnostics, stored syntax errors with `lint:true`, optional cycles, or bounded read-only SQL. |
 | Session | `session_checkpoint` | Saves, lists, reads, or deletes local JSON checkpoints in `.forge/checkpoints.json`. |
 | Help | `forge_guide` | Returns built-in guidance on queries, the adapter, and budget recovery. |

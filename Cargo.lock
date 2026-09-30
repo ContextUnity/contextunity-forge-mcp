@@ -224,6 +224,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "cc",
+ "chrono",
  "clap",
  "dirs",
  "hashbrown 0.14.5",

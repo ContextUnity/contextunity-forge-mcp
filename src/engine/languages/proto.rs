@@ -163,6 +163,7 @@ impl LanguageProfile for Proto {
                         line: ctx.line(),
                         alias: None,
                         module: expression.rsplit_once('.').map(|(m, _)| m.into()),
+                        receiver_hint: None,
                     });
                 }
             }
@@ -180,6 +181,7 @@ impl LanguageProfile for Proto {
                             line: ctx.line(),
                             alias: None,
                             module: expression.rsplit_once('.').map(|(m, _)| m.into()),
+                            receiver_hint: None,
                         });
                     }
                 }

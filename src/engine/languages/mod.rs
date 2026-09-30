@@ -17,10 +17,16 @@ use crate::engine::ast::{self, field, text};
 use crate::engine::linker::traits::{LanguageLinker, GENERIC_LINKER};
 use anyhow::{Context, Result};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
+    sync::Arc,
 };
 use tree_sitter::{Node as Syntax, Parser};
+#[cfg(any(feature = "lang-java", feature = "lang-kotlin"))]
+pub(crate) mod build_manifest;
+#[cfg(any(feature = "lang-python", feature = "lang-rust"))]
+pub(crate) mod manifest;
+pub mod manifests;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LanguageFamily(pub &'static str);
@@ -42,17 +48,32 @@ impl ImportPath {
 
 #[derive(Default)]
 pub struct FileContext {
+    pub lazy_exports: Vec<LazyExport>,
     pub default_exports: HashSet<String>,
     pub package: Option<String>,
+    pub shadowed_require_scopes: Arc<HashSet<usize>>,
+}
+#[derive(serde::Serialize)]
+pub struct LazyExport {
+    pub name: String,
+    pub module: String,
+    pub member: Option<String>,
+    pub relative_to_module: bool,
 }
 #[derive(Default)]
 pub struct SymbolMetadata {
+    pub param_types: BTreeMap<String, String>,
     pub receiver_name: Option<String>,
     pub decorators: Vec<String>,
     pub bases: Option<String>,
     pub receiver: Option<String>,
+    pub receiver_type: Option<String>,
+    pub is_method: Option<bool>,
+    pub is_static: Option<bool>,
     pub default_export: bool,
     pub is_async: bool,
+    pub is_overload: bool,
+    pub is_stub: bool,
 }
 
 pub struct SyntaxContext<'a, 'tree> {
@@ -60,6 +81,7 @@ pub struct SyntaxContext<'a, 'tree> {
     pub source: &'a str,
     pub owner: &'a str,
     pub offset: usize,
+    pub shadowed_require_scopes: &'a HashSet<usize>,
 }
 impl SyntaxContext<'_, '_> {
     pub fn line(&self) -> usize {
@@ -80,12 +102,22 @@ impl SyntaxContext<'_, '_> {
             line: self.line(),
             alias,
             module,
+            receiver_hint: None,
         });
     }
 }
 
 pub trait LanguageProfile: Send + Sync {
     fn id(&self) -> &'static str;
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn extract_manifest_dependencies(&self, _filename: &str, _content: &str) -> Vec<String> {
+        Vec::new()
+    }
+    fn is_stdlib(&self, _module: &str) -> bool {
+        false
+    }
     fn family(&self) -> LanguageFamily {
         LanguageFamily(self.id())
     }
@@ -99,6 +131,9 @@ pub trait LanguageProfile: Send + Sync {
     fn symbol_kind(&self, kind: &str) -> Option<&'static str>;
     fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
         self.symbol_kind(node.kind())
+    }
+    fn symbol_with_source(&self, node: Syntax<'_>, _source: &str) -> Option<&'static str> {
+        self.symbol(node)
     }
     fn node_prefix(&self, kind: &str) -> &'static str;
     fn module_name(&self, path: &str) -> String {
@@ -327,6 +362,7 @@ pub fn call(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, dynamic_imports: boo
         line: ctx.line(),
         alias: None,
         module: import_path,
+        receiver_hint: None,
     });
 }
 

@@ -124,3 +124,27 @@ fn module_addition_ambiguity_and_deletion_keep_relative_imports_and_doc_suffixes
         w.assert_cold_equivalent();
     }
 }
+
+#[test]
+fn removing_a_populated_module_directory_prunes_all_its_files() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "from .types import provide\n");
+    w.write("pkg/types.py", "def provide(): return 1\n");
+    w.write("pkg/subpkg/__init__.py", "def helper(): return 2\n");
+    w.write(
+        "consumer.py",
+        "from pkg.types import provide\ndef use(): return provide()\n",
+    );
+    w.build();
+
+    fs::remove_dir_all(w.0.join("pkg")).unwrap();
+    let deleted = ["pkg/__init__.py", "pkg/types.py", "pkg/subpkg/__init__.py"]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    writer::delta(&w.0, &w.db(), &deleted).unwrap();
+    w.assert_cold_equivalent();
+
+    let conn = reader::open(&w.db(), &w.0).unwrap();
+    assert!(rows(&conn, "SELECT path FROM files WHERE path LIKE 'pkg/%'").is_empty());
+}

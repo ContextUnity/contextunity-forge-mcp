@@ -1,12 +1,14 @@
 use crate::core::models::*;
-use crate::engine::languages::{self, module_name, LanguageFamily, LanguageProfile};
+use crate::engine::languages::{self, module_name, ImportPath, LanguageFamily, LanguageProfile};
 use crate::engine::linker::traits::{
     ImportContext, ImportResolution, LanguageLinker, PackageExports, GENERIC_LINKER,
 };
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
+mod receivers;
 pub mod traits;
 pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
     let language = facts
@@ -53,6 +55,16 @@ pub fn link_with_root(
     all: &BTreeMap<String, Facts>,
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&Path>,
+) -> Graph {
+    let dependency_registry = languages::manifests::DependencyRegistry::collect(root);
+    link_with_registry(all, owners, root, &dependency_registry)
+}
+
+pub fn link_with_registry(
+    all: &BTreeMap<String, Facts>,
+    owners: Option<&std::collections::BTreeSet<String>>,
+    root: Option<&Path>,
+    dependency_registry: &languages::manifests::DependencyRegistry,
 ) -> Graph {
     let nodes: Vec<&Node> = all.values().flat_map(|f| f.nodes.iter()).collect();
     let mut by_name: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
@@ -101,7 +113,10 @@ pub fn link_with_root(
         for e in &f.edges {
             if e.kind == "contains" {
                 if let Some(target_node) = by_id.get(e.dst.as_str()) {
-                    children_by_parent.entry(e.src.as_str()).or_default().push(target_node);
+                    children_by_parent
+                        .entry(e.src.as_str())
+                        .or_default()
+                        .push(target_node);
                 }
             }
         }
@@ -125,6 +140,28 @@ pub fn link_with_root(
                 .map(|p| (path.as_str(), p))
         })
         .collect();
+    let mut normalized_imports: HashMap<(&str, &str), Option<ImportPath>> = HashMap::new();
+    for (path, facts) in all.iter() {
+        let profile = profiles.get(path.as_str()).copied();
+        if owners.is_some_and(|owners| !owners.contains(path))
+            && !profile.is_some_and(|profile| profile.id() == "python")
+        {
+            continue;
+        }
+        for reference in facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == "imports")
+        {
+            let module = reference.module.as_deref().unwrap_or(&reference.expression);
+            normalized_imports
+                .entry((path.as_str(), module))
+                .or_insert_with(|| {
+                    profile
+                        .and_then(|profile| profile.normalize_import_with_root(root, path, module))
+                });
+        }
+    }
     let mut modules_by_namespace: HashMap<LanguageFamily, HashMap<String, Vec<&Node>>> =
         HashMap::new();
     for node in nodes.iter().filter(|n| n.kind == "module") {
@@ -177,6 +214,169 @@ pub fn link_with_root(
         })
         .collect();
     package_exports.insert("", HashMap::new());
+    let python_receivers = receivers::PythonReceivers::build(all, |class, reference| {
+        let facts = &all[&class.path];
+        let expression = reference.expression.as_str();
+        let (head, tail) = expression.split_once('.').unwrap_or((expression, ""));
+        let mut scope = class
+            .qualname
+            .rsplit_once('.')
+            .map_or("", |(parent, _)| parent);
+        let mut key = String::new();
+        while !scope.is_empty() {
+            if by_qual.get(scope).is_some_and(|nodes| {
+                nodes.iter().any(|node| {
+                    node.path == class.path
+                        && node_rebindings
+                            .get(node.id.as_str())
+                            .is_some_and(|bindings| bindings.contains(head))
+                })
+            }) {
+                return receivers::Base::Unknown;
+            }
+            let local: Vec<_> = lookup(qualified(&mut key, scope, expression))
+                .iter()
+                .copied()
+                .filter(|node| node.path == class.path && node.kind == "class")
+                .collect();
+            if local.len() == 1 {
+                if facts.references.iter().any(|import| {
+                    import.kind == "imports"
+                        && import.alias.as_deref() == Some(head)
+                        && import.line > local[0].line
+                        && import.line <= class.line
+                        && by_id
+                            .get(import.source.as_str())
+                            .is_some_and(|node| node.qualname == scope)
+                }) {
+                    return receivers::Base::Unknown;
+                }
+                return receivers::Base::Local(&local[0].id);
+            }
+            if local.len() > 1 {
+                return receivers::Base::Unknown;
+            }
+            let imports: Vec<_> = facts
+                .references
+                .iter()
+                .filter(|import| {
+                    import.kind == "imports"
+                        && import.alias.as_deref() == Some(head)
+                        && by_id
+                            .get(import.source.as_str())
+                            .is_some_and(|node| node.qualname == scope)
+                })
+                .collect();
+            if !imports.is_empty() {
+                if imports.len() != 1 {
+                    return receivers::Base::Unknown;
+                }
+                let import = imports[0];
+                if import.line > class.line
+                    || by_qual.get(scope).is_some_and(|nodes| {
+                        nodes.iter().any(|node| {
+                            node.path == class.path
+                                && node_rebindings
+                                    .get(node.id.as_str())
+                                    .is_some_and(|bindings| bindings.contains(head))
+                        })
+                    })
+                {
+                    return receivers::Base::Unknown;
+                }
+                let Some(profile) = profiles.get(class.path.as_str()).copied() else {
+                    return receivers::Base::Unknown;
+                };
+                let normalized = normalized_imports
+                    .get(&(
+                        class.path.as_str(),
+                        import.module.as_deref().unwrap_or(&import.expression),
+                    ))
+                    .and_then(Option::as_ref);
+                let Some(normalized) = normalized else {
+                    return receivers::Base::Unknown;
+                };
+                let mut modules: Vec<_> = modules_by_namespace
+                    .get(&profile.family())
+                    .and_then(|namespaces| namespaces.get(&normalized.namespace))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .collect();
+                let workspace = languages::workspace_path(&class.path).0;
+                if modules
+                    .iter()
+                    .any(|module| languages::workspace_path(&module.path).0 == workspace)
+                {
+                    modules.retain(|module| languages::workspace_path(&module.path).0 == workspace);
+                } else if normalized.relative {
+                    modules.clear();
+                }
+                let mut targets = Vec::new();
+                languages::linker_for(profile.id()).resolve_import(&mut ImportContext {
+                    path: &class.path,
+                    reference: import,
+                    normalized: Some(normalized),
+                    selected_namespace: &normalized.namespace,
+                    family: profile.family(),
+                    modules: &mut modules,
+                    candidates: &mut targets,
+                    modules_by_namespace: &modules_by_namespace,
+                    by_module: &by_module,
+                    by_qual: &by_qual,
+                    package_exports: &package_exports[profile.id()],
+                    lookup_key: &mut key,
+                });
+                if !tail.is_empty() {
+                    targets = targets
+                        .iter()
+                        .flat_map(|target| {
+                            lookup(&format!("{}.{}", target.qualname, tail))
+                                .iter()
+                                .copied()
+                                .filter(move |node| node.path == target.path)
+                        })
+                        .collect();
+                }
+                targets.retain(|target| target.kind == "class");
+                targets.sort_by_key(|target| &target.id);
+                targets.dedup_by_key(|target| &target.id);
+                if targets.len() == 1 {
+                    return receivers::Base::Local(&targets[0].id);
+                }
+                if targets.is_empty() && modules.is_empty() && !normalized.relative {
+                    let module = import.module.as_deref().unwrap_or(&import.expression);
+                    let mut canonical = module.to_owned();
+                    if import.expression != module {
+                        canonical.push('.');
+                        canonical.push_str(&import.expression);
+                    }
+                    if !tail.is_empty() {
+                        canonical.push('.');
+                        canonical.push_str(tail);
+                    }
+                    return receivers::Base::External(canonical, module, import.line);
+                }
+                return receivers::Base::Unknown;
+            }
+            if by_qual.get(scope).is_some_and(|nodes| {
+                nodes.iter().any(|node| {
+                    node.path == class.path
+                        && node_bindings
+                            .get(node.id.as_str())
+                            .is_some_and(|bindings| bindings.contains(head))
+                })
+            }) {
+                return receivers::Base::Unknown;
+            }
+            scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+        }
+        if expression == "object" {
+            receivers::Base::External("builtins.object".into(), "builtins", 0)
+        } else {
+            receivers::Base::Unknown
+        }
+    });
     let parts: Vec<Graph> = all
         .par_iter()
         .filter(|(path, _)| owners.is_none_or(|o| o.contains(*path)))
@@ -202,13 +402,7 @@ pub fn link_with_root(
             let mut external_aliases: HashMap<String, HashMap<String, Option<(String, usize)>>> = HashMap::new();
             let mut lookup_key = String::new();
             for r in facts.references.iter().filter(|r| r.kind == "imports") {
-                let normalized = profile.and_then(|p| {
-                    p.normalize_import_with_root(
-                        root,
-                        path,
-                        r.module.as_deref().unwrap_or(&r.expression),
-                    )
-                });
+                let normalized = normalized_imports.get(&(path.as_str(), r.module.as_deref().unwrap_or(&r.expression))).expect("imports are normalized before parallel resolution");
                 let mut modules=Vec::new();
                 let mut selected_namespace="";
                 if let (Some(profile),Some(normalized))=(profile,&normalized) {
@@ -253,8 +447,22 @@ pub fn link_with_root(
                 } = resolution;
                 candidates.sort_by(|a,b|a.id.cmp(&b.id));
                 candidates.dedup_by_key(|n|&n.id);
+                if candidates.len() > 1 {
+                    let non_stubs: Vec<&Node> = candidates
+                        .iter()
+                        .copied()
+                        .filter(|n| {
+                            let is_stub = n.details.get("is_stub").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let is_overload = n.details.get("is_overload").and_then(|v| v.as_bool()).unwrap_or(false);
+                            !is_stub && !is_overload
+                        })
+                        .collect();
+                    if !non_stubs.is_empty() && non_stubs.len() < candidates.len() {
+                        candidates = non_stubs;
+                    }
+                }
                 let external = if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
-                    profile.and_then(|p| p.external_import(r.module.as_deref().unwrap_or(&r.expression)))
+                    profile.and_then(|p| dependency_registry.classification(p, r.module.as_deref().unwrap_or(&r.expression)))
                 } else {
                     None
                 };
@@ -279,7 +487,7 @@ pub fn link_with_root(
                         if let Some(provenance) = external_aliases.get_mut(&scope).and_then(|entries| entries.get_mut(alias)) {
                             *provenance = None;
                         }
-                    } else if external.is_some() && !local_declaration && language_linker.tracks_external_aliases() {
+                    } else if external.is_some() && !local_declaration {
                         external_aliases.entry(scope.clone()).or_default().insert(alias.clone(), Some((symbol.clone(), r.line)));
                     }
                     aliases.entry(scope).or_default().entry(alias.clone()).or_default().extend(targets);
@@ -366,8 +574,9 @@ pub fn link_with_root(
                     scope = scope.rsplit_once('.').map_or("", |(p, _)| p);
                 }
             };
-            let external_for = |name: &str, owner: Option<&Node>| {
+            let external_for = |name: &str, owner: Option<&Node>, definition_scope: bool| {
                 let mut scope = owner.map(|n| n.qualname.as_str()).unwrap_or("");
+                if definition_scope { scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent); }
                 loop {
                     let class_scope = !profile.is_some_and(|p|p.class_scope())
                         && owner.is_some_and(|n| matches!(n.kind.as_str(), "function" | "method"))
@@ -422,6 +631,93 @@ pub fn link_with_root(
                 }
             }
 
+            let mut alias_import_lines: HashMap<(&str, &str), usize> = HashMap::new();
+            for reference in facts.references.iter().filter(|reference| reference.kind == "imports") {
+                if let Some(alias) = reference.alias.as_deref() {
+                    let scope = by_id.get(reference.source.as_str()).map_or(file_module.as_str(), |node| node.qualname.as_str());
+                    let line = alias_import_lines.entry((scope, alias)).or_default();
+                    *line = (*line).max(reference.line);
+                }
+            }
+            let path_constructor_aliases: HashMap<(&str, &str), &Reference> = facts.references.iter().filter(|reference| reference.kind == "imports" && reference.module.as_deref() == Some("pathlib")).filter_map(|reference| {
+                let alias = reference.alias.as_deref()?;
+                let scope = by_id.get(reference.source.as_str()).map_or(file_module.as_str(), |node| node.qualname.as_str());
+                Some(((scope, alias), reference))
+            }).collect();
+            let mut dynamic_type_aliases: HashMap<&str, HashSet<&str>> = HashMap::new();
+            for reference in facts.references.iter().filter(|reference| reference.kind == "imports" && reference.expression == "Any" && matches!(reference.module.as_deref(), Some("typing" | "typing_extensions"))) {
+                let scope = by_id.get(reference.source.as_str()).map_or(file_module.as_str(), |node| node.qualname.as_str());
+                dynamic_type_aliases.entry(scope).or_default().insert(reference.alias.as_deref().unwrap_or("Any"));
+            }
+            let dynamic_type_for = |name: &str, owner: &Node| {
+                let mut scope = owner.qualname.rsplit_once('.').map_or("", |(parent, _)| parent);
+                loop {
+                    if aliases.get(scope).is_some_and(|entries| entries.contains_key(name)) {
+                        return dynamic_type_aliases.get(scope).is_some_and(|names| names.contains(name));
+                    }
+                    if scope.is_empty() { return false; }
+                    scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+                }
+            };
+            let mut typed_parameters: HashMap<&str, HashMap<&str, ReceiverType<'_>>> = HashMap::new();
+            let mut type_candidates = Vec::new();
+            for node in &facts.nodes {
+                let Some(parameters) = node.details["param_types"].as_object() else { continue; };
+                for (parameter, annotation) in parameters {
+                    if node_rebindings.get(node.id.as_str()).is_some_and(|bindings| bindings.contains(parameter.as_str())) {
+                        continue;
+                    }
+                    let Some(annotation) = annotation.as_str().and_then(receiver_type_name) else { continue; };
+                    let (head, member) = annotation.split_once('.').unwrap_or((&annotation, ""));
+                    type_candidates.clear();
+                    let mut scope = node.qualname.rsplit_once('.').map_or("", |(parent, _)| parent);
+                    let mut annotation_shadowed = false;
+                    while !scope.is_empty() {
+                        if by_qual.get(scope).is_some_and(|scope_nodes| scope_nodes.iter().any(|scope_node| scope_node.path == *path && node_rebindings.get(scope_node.id.as_str()).is_some_and(|bindings| bindings.contains(head)))) {
+                            annotation_shadowed = true; break;
+                        }
+                        type_candidates.extend(lookup(qualified(&mut lookup_key, scope, &annotation)).iter().copied().filter(|candidate| candidate.path == *path));
+                        if !type_candidates.is_empty() && alias_import_lines.get(&(scope, head)).is_some_and(|line| *line <= node.line && type_candidates.iter().any(|candidate| candidate.line < *line)) { type_candidates.clear(); annotation_shadowed = true; break; }
+                        if !type_candidates.is_empty() { break; }
+                        if by_qual.get(scope).is_some_and(|scope_nodes| scope_nodes.iter().filter(|scope_node| scope_node.path == *path).any(|scope_node| node_bindings.get(scope_node.id.as_str()).is_some_and(|bindings| bindings.contains(head)))) {
+                            annotation_shadowed = true;
+                            break;
+                        }
+                        if aliases.get(scope).is_some_and(|entries| entries.contains_key(head)) { break; }
+                        scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+                    }
+                    let imported_type = if annotation_shadowed || !type_candidates.is_empty() { None } else { alias_for(head, Some(node), true) };
+                    if let Some(imported) = imported_type {
+                        if member.is_empty() {
+                            type_candidates.extend_from_slice(imported);
+                        } else {
+                            for target in imported {
+                                type_candidates.extend(lookup(qualified(&mut lookup_key, &target.qualname, member)).iter().copied().filter(|candidate| candidate.path == target.path));
+                            }
+                        }
+                    }
+                    type_candidates.retain(|candidate| matches!(candidate.kind.as_str(), "class" | "struct" | "enum" | "type" | "interface"));
+                    type_candidates.sort_by(|a, b| a.id.cmp(&b.id));
+                    type_candidates.dedup_by_key(|candidate| candidate.id.as_str());
+                    let receiver = match type_candidates.as_slice() {
+                        [target] => ReceiverType::Local(target),
+                        [] => {
+                            if imported_type.is_some_and(|targets| targets.is_empty()) {
+                                external_for(head, Some(node), true)
+                                    .filter(|(module, import_line)| *import_line <= node.line && !(matches!(module.as_str(), "typing" | "typing_extensions") && (member == "Any" || dynamic_type_for(head, node))))
+                                    .map_or(ReceiverType::Unknown, |(module, line)| ReceiverType::External(module, *line))
+                            } else {
+                                ReceiverType::Unknown
+                            }
+                        }
+                        _ => ReceiverType::Ambiguous,
+                    };
+                    if !matches!(receiver, ReceiverType::Unknown) {
+                        typed_parameters.entry(node.id.as_str()).or_default().insert(parameter.as_str(), receiver);
+                    }
+                }
+            }
+
             let mut candidates = Vec::new();
             for r in facts.references.iter().filter(|r| {
                 matches!(
@@ -430,20 +726,93 @@ pub fn link_with_root(
                 )
             }) {
                 if r.dynamic {
+                    let owner = by_id.get(r.source.as_str()).copied();
+                    let mut computed = receivers::Member::Unknown;
+                    let mut literal_builtin = false;
+                    if profile.is_some_and(|profile| profile.id() == "python") {
+                        match r.receiver_hint.as_ref() {
+                            Some(ReceiverHint::StringLiteral { member }) => {
+                                literal_builtin = python_string_method(member);
+                            }
+                            Some(ReceiverHint::Super { member }) => {
+                                let shadowed_super = owner.is_some_and(|owner| {
+                                    let mut scope = owner.qualname.as_str();
+                                    while !scope.is_empty() {
+                                        if by_qual.get(scope).is_some_and(|nodes| nodes.iter().any(|node| node.path == *path && node_bindings.get(node.id.as_str()).is_some_and(|bindings| bindings.contains("super")))) || aliases.get(scope).is_some_and(|bindings| bindings.contains_key("super")) { return true; }
+                                        scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+                                    }
+                                    false
+                                });
+                                if !shadowed_super {
+                                    if let Some(owner) = owner.filter(|owner| owner.details["receiver_name"].as_str().is_some_and(|name| matches!(name, "self" | "cls") && !node_rebindings.get(owner.id.as_str()).is_some_and(|bindings| bindings.contains(name)))) {
+                                        if let Some((scope, _)) = owner.qualname.rsplit_once('.') {
+                                            if let Some([class]) = by_qual.get(scope).map(Vec::as_slice) {
+                                                if class.kind == "class" && class.path == *path { computed = python_receivers.lookup(class, member, true); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Some(ReceiverHint::CallResult { callee, member }) => {
+                                let (head, tail) = callee.split_once('.').unwrap_or((callee, ""));
+                                let mut scope = owner.map_or(file_module.as_str(), |owner| owner.qualname.as_str());
+                                let mut constructor_shadowed = false;
+                                candidates.clear();
+                                while !scope.is_empty() {
+                                    if by_qual.get(scope).is_some_and(|nodes| nodes.iter().any(|node| node.path == *path && node_bindings.get(node.id.as_str()).is_some_and(|bindings| bindings.contains(head)))) { constructor_shadowed = true; break; }
+                                    candidates.extend(lookup(qualified(&mut lookup_key, scope, callee)).iter().copied().filter(|node| node.path == *path));
+                                    if !candidates.is_empty() && alias_import_lines.get(&(scope, head)).is_some_and(|line| *line <= r.line && candidates.iter().any(|candidate| candidate.line < *line)) { candidates.clear(); constructor_shadowed = true; break; }
+                                    if !candidates.is_empty() || aliases.get(scope).is_some_and(|entries| entries.contains_key(head)) { break; }
+                                    scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+                                }
+                                if candidates.is_empty() && !constructor_shadowed && aliases.get(scope).is_some_and(|entries| entries.contains_key(head)) {
+                                    if let Some(imported) = alias_for(head, owner, false) {
+                                        if tail.is_empty() { candidates.extend_from_slice(imported); }
+                                        else { for target in imported { candidates.extend(lookup(qualified(&mut lookup_key, &target.qualname, tail)).iter().copied().filter(|node| node.path == target.path)); } }
+                                    }
+                                }
+                                candidates.sort_by_key(|node| &node.id); candidates.dedup_by_key(|node| &node.id);
+                                if let [class] = candidates.as_slice() {
+                                    if class.kind == "class" { computed = python_receivers.lookup(class, member, false); }
+                                }
+                                if candidates.is_empty() && !constructor_shadowed {
+                                    if let Some((origin, import_line)) = external_for(head, owner, false).filter(|(_, line)| *line <= r.line) {
+                                        if let Some(import) = path_constructor_aliases.get(&(scope, head)).filter(|import| import.line == *import_line && origin == "pathlib") {
+                                            let class = if import.expression == "pathlib" { tail } else if tail.is_empty() { import.expression.as_str() } else { "" };
+                                            let canonical = match class {
+                                                "Path" => "pathlib.Path", "PosixPath" => "pathlib.PosixPath", "WindowsPath" => "pathlib.WindowsPath", "PurePath" => "pathlib.PurePath", "PurePosixPath" => "pathlib.PurePosixPath", "PureWindowsPath" => "pathlib.PureWindowsPath", _ => "",
+                                            };
+                                            if python_constructor_member(canonical, member) { computed = receivers::Member::External(origin, *import_line); }
+                                        }
+                                    }
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                    let (status, evidence) = match computed {
+                        receivers::Member::Local(method) if matches!(method.kind.as_str(), "method" | "function") => {
+                            graph.edges.push(Edge { src: r.source.clone(), dst: method.id.clone(), kind: r.kind.clone(), path: path.clone(), line: r.line, evidence: r.expression.clone(), confidence: "inferred".into() });
+                            ("resolved", format!("computed receiver has statically proven member {}", method.qualname))
+                        }
+                        receivers::Member::External(module, _) => ("external", format!("call through external import {module}; callable target unverified")),
+                        _ if literal_builtin => ("resolved", format!("standard library or built-in callee: {}", r.expression)),
+                        _ => ("unresolved", "computed receiver or dynamic callee; callable identity is unknown".into()),
+                    };
                     graph.coverage.push(Coverage {
                         path: path.clone(), line: r.line, expression: r.expression.clone(),
-                        status: "unresolved".into(),
-                        evidence: "computed receiver or dynamic callee; callable identity is unknown".into(),
+                        status: status.into(), evidence,
                     });
                     continue;
                 }
-                let expression = r.expression.replace("::", ".");
+                let expression = if r.expression.contains("::") { Cow::Owned(r.expression.replace("::", ".")) } else { Cow::Borrowed(r.expression.as_str()) };
                 let (first, tail) = expression.split_once('.').unwrap_or((&expression, ""));
                 let owner = by_id.get(r.source.as_str()).copied();
                 let mut scope = owner.map(|n| n.qualname.as_str()).unwrap_or("");
                 let definition_scope = matches!(r.kind.as_str(), "decorates" | "inherits" | "implements" | "bases");
                 if definition_scope { scope = scope.rsplit_once('.').map_or("", |(p, _)| p); }
                 let mut shadowed = false;
+                let mut typed_receiver = None;
                 let imported = alias_for(first, owner, definition_scope);
                 candidates.clear();
                 while !scope.is_empty() {
@@ -453,11 +822,15 @@ pub fn link_with_root(
                             scope = scope.rsplit_once('.').map_or("", |(p, _)| p);
                             continue;
                         }
-                        if profile.is_none_or(|p|p.value_binding_applies(r)) && scope_nodes.iter().filter(|n|n.path==*path).any(|n| {
-                            node_bindings.get(n.id.as_str()).is_some_and(|b| b.contains(first))
-                        }) {
-                            shadowed = true;
-                            break;
+                        if profile.is_none_or(|p|p.value_binding_applies(r)) {
+                            let mut binding_owners = scope_nodes.iter().filter(|node| node.path == *path && node_bindings.get(node.id.as_str()).is_some_and(|bindings| bindings.contains(first)));
+                            if let Some(binding_owner) = binding_owners.next() {
+                                shadowed = true;
+                                if !tail.is_empty() && binding_owners.next().is_none() {
+                                    typed_receiver = typed_parameters.get(binding_owner.id.as_str()).and_then(|parameters| parameters.get(first));
+                                }
+                                break;
+                            }
                         }
                     }
                     if aliases.get(scope).is_some_and(|a| a.contains_key(first)) { break; }
@@ -481,8 +854,21 @@ pub fn link_with_root(
                             })
                         })
                     });
+                let receiver_class = if profile.is_some_and(|profile| profile.id() == "python") && !tail.is_empty() {
+                    if let Some(ReceiverType::Local(class)) = typed_receiver { Some(*class) }
+                    else if known_receiver { owner.and_then(|owner| owner.qualname.rsplit_once('.')).and_then(|(scope, _)| by_qual.get(scope)).and_then(|nodes| {
+                        let mut classes = nodes.iter().copied().filter(|node| node.path == *path && node.kind == "class");
+                        let class = classes.next()?; classes.next().is_none().then_some(class)
+                    }) }
+                    else if !shadowed {
+                        let classes = imported.map(Vec::as_slice).unwrap_or_else(|| lookup(qualified(&mut lookup_key, &file_module, first)));
+                        match classes { [class] if class.kind == "class" => Some(*class), _ => None }
+                    } else { None }
+                } else { None };
+                let receiver_member = receiver_class.filter(|_| matches!(r.kind.as_str(), "calls" | "handles")).map(|class| python_receivers.lookup(class, tail, false));
                 if shadowed
                     && !known_receiver
+                    && !typed_receiver.is_some_and(|receiver| !matches!(receiver, ReceiverType::Unknown))
                     && matches!(r.kind.as_str(), "calls" | "handles" | "mutates")
                 {
                     graph.coverage.push(Coverage {
@@ -496,7 +882,14 @@ pub fn link_with_root(
                     });
                     continue;
                 }
-                if candidates.is_empty() {
+                if let Some(ReceiverType::Local(receiver)) = typed_receiver {
+                    candidates.extend(lookup(qualified(&mut lookup_key, &receiver.qualname, tail)).iter().copied().filter(|candidate| candidate.path == receiver.path));
+                }
+                if let Some(receivers::Member::Local(method)) = receiver_member {
+                    candidates.clear(); candidates.push(method);
+                }
+                if matches!(receiver_member, Some(receivers::Member::Unknown | receivers::Member::External(..))) { candidates.clear(); }
+                if candidates.is_empty() && typed_receiver.is_none() && receiver_member.is_none() {
                     if let Some(imported) = imported {
                         if tail.is_empty() {
                             candidates.extend_from_slice(imported);
@@ -512,6 +905,7 @@ pub fn link_with_root(
                                             tail,
                                             &by_module,
                                             &by_qual,
+                                            language_package_exports,
                                             &mut lookup_key,
                                         ));
                                     }
@@ -520,7 +914,7 @@ pub fn link_with_root(
                         }
                     }
                 }
-                if candidates.is_empty() && imported.is_none() {
+                if candidates.is_empty() && imported.is_none() && typed_receiver.is_none() && receiver_member.is_none() {
                     if !tail.is_empty() {
                         candidates.extend_from_slice(lookup(&expression));
                     }
@@ -537,7 +931,7 @@ pub fn link_with_root(
                         }
                     }
                 }
-                if imported.is_none() {
+                if imported.is_none() && typed_receiver.is_none() && !matches!(receiver_member, Some(receivers::Member::Local(_))) {
                     candidates.retain(|n| {
                         n.path == *path
                             || (profile.is_some_and(|p| p.sibling_accessible(path, &n.path))
@@ -546,7 +940,7 @@ pub fn link_with_root(
                                     .into_iter()
                                     .flatten()
                                     .any(|m| m.kind == "module" && m.qualname == file_module))
-                            || (r.kind == "references" && n.qualname == expression)
+                            || (r.kind == "references" && n.qualname == expression.as_ref())
                     });
                 }
                 candidates.retain(|n| match r.kind.as_str() {
@@ -561,6 +955,20 @@ pub fn link_with_root(
                 });
                 candidates.sort_by(|a, b| a.id.cmp(&b.id));
                 candidates.dedup_by_key(|n| &n.id);
+                if candidates.len() > 1 {
+                    let non_stubs: Vec<&Node> = candidates
+                        .iter()
+                        .copied()
+                        .filter(|n| {
+                            let is_stub = n.details.get("is_stub").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let is_overload = n.details.get("is_overload").and_then(|v| v.as_bool()).unwrap_or(false);
+                            !is_stub && !is_overload
+                        })
+                        .collect();
+                    if !non_stubs.is_empty() && non_stubs.len() < candidates.len() {
+                        candidates = non_stubs;
+                    }
+                }
                 let mut source = Some(r.source.clone());
                 let mut source_heuristic = false;
                 if r.kind == "implements" {
@@ -587,19 +995,26 @@ pub fn link_with_root(
                     && !shadowed && tail.is_empty() && imported.is_none()
                     && !by_module.get(path.as_str()).into_iter().flatten().any(|n| n.name == first)
                     && profile.is_some_and(|p|p.builtin(&expression));
-                let status = if (candidates.len() == 1 || is_builtin) && source.is_some() && !source_heuristic {
+                let status = if matches!(typed_receiver, Some(ReceiverType::Ambiguous)) {
+                    "ambiguous"
+                } else if (candidates.len() == 1 || is_builtin) && source.is_some() && !source_heuristic {
                     "resolved"
                 } else if candidates.is_empty() || source.is_none() || source_heuristic {
                     "unresolved"
                 } else {
                     "ambiguous"
                 };
-                let external_origin = if status == "unresolved" && r.kind == "calls" && !shadowed
+                let external_origin = if let Some(receivers::Member::External(module, import_line)) = receiver_member {
+                    Some((module, import_line))
+                } else if let Some(ReceiverType::External(module, import_line)) = typed_receiver {
+                    (*import_line <= r.line).then_some((*module, *import_line))
+                } else if status == "unresolved" && !shadowed
                     && candidates.is_empty() && imported.is_some_and(|targets| targets.is_empty()) {
-                    external_for(first, owner).filter(|(_, import_line)| *import_line <= r.line)
+                    external_for(first, owner, false).filter(|(_, import_line)| *import_line <= r.line).map(|(module, line)| (module.as_str(), *line))
                 } else {
                     None
                 };
+                let status = if external_origin.is_some() { "external" } else { status };
                 let stub_target = match candidates.as_slice() {
                     [candidate] if language_linker.is_declaration_only(&candidate.path) => {
                         Some(candidate.path.as_str())
@@ -609,7 +1024,15 @@ pub fn link_with_root(
                 let evidence = if let Some(stub_path) = stub_target {
                     format!("type-stub declaration at {stub_path}; runtime implementation not statically indexed")
                 } else if let Some((module, _)) = external_origin {
-                    format!("call through external import {module}; callable target unverified")
+                    if r.kind == "calls" {
+                        format!("call through external import {module}; callable target unverified")
+                    } else {
+                        format!("reference through external import {module}; target unverified")
+                    }
+                } else if let Some(ReceiverType::Local(receiver)) = typed_receiver {
+                    format!("parameter receiver type {}; {} statically inferred candidates", receiver.qualname, candidates.len())
+                } else if matches!(typed_receiver, Some(ReceiverType::Ambiguous)) {
+                    "parameter receiver type has ambiguous declarations".into()
                 } else if is_builtin {
                     format!("standard library or built-in callee: {expression}")
                 } else {
@@ -647,7 +1070,7 @@ pub fn link_with_root(
                         path: path.clone(),
                         line: r.line,
                         evidence: r.expression.clone(),
-                        confidence: if source_heuristic { "heuristic" } else { "exact" }.into(),
+                        confidence: if source_heuristic { "heuristic" } else if typed_receiver.is_some() || receiver_member.is_some() { "inferred" } else { "exact" }.into(),
                     });
                     if (kind_str == "implements" || kind_str == "inherits") && r.kind != "decorates" {
                         if let Some(target_methods) = children_by_parent.get(candidate.id.as_str()) {
@@ -726,10 +1149,153 @@ pub fn link_with_root(
     result
 }
 
+fn python_string_method(member: &str) -> bool {
+    matches!(
+        member,
+        "capitalize"
+            | "casefold"
+            | "center"
+            | "count"
+            | "encode"
+            | "endswith"
+            | "expandtabs"
+            | "find"
+            | "format"
+            | "format_map"
+            | "index"
+            | "isalnum"
+            | "isalpha"
+            | "isascii"
+            | "isdecimal"
+            | "isdigit"
+            | "isidentifier"
+            | "islower"
+            | "isnumeric"
+            | "isprintable"
+            | "isspace"
+            | "istitle"
+            | "isupper"
+            | "join"
+            | "ljust"
+            | "lower"
+            | "lstrip"
+            | "maketrans"
+            | "partition"
+            | "removeprefix"
+            | "removesuffix"
+            | "replace"
+            | "rfind"
+            | "rindex"
+            | "rjust"
+            | "rpartition"
+            | "rsplit"
+            | "rstrip"
+            | "split"
+            | "splitlines"
+            | "startswith"
+            | "strip"
+            | "swapcase"
+            | "title"
+            | "translate"
+            | "upper"
+            | "zfill"
+    )
+}
+
+fn python_constructor_member(callee: &str, member: &str) -> bool {
+    match callee {
+        "pathlib.PurePath" | "pathlib.PurePosixPath" | "pathlib.PureWindowsPath" => matches!(
+            member,
+            "as_posix"
+                | "as_uri"
+                | "is_absolute"
+                | "is_relative_to"
+                | "is_reserved"
+                | "joinpath"
+                | "match"
+                | "relative_to"
+                | "with_name"
+                | "with_stem"
+                | "with_suffix"
+        ),
+        "pathlib.Path" | "pathlib.PosixPath" | "pathlib.WindowsPath" => {
+            python_constructor_member("pathlib.PurePath", member)
+                || matches!(
+                    member,
+                    "absolute"
+                        | "chmod"
+                        | "exists"
+                        | "expanduser"
+                        | "glob"
+                        | "hardlink_to"
+                        | "is_block_device"
+                        | "is_char_device"
+                        | "is_dir"
+                        | "is_fifo"
+                        | "is_file"
+                        | "is_mount"
+                        | "is_socket"
+                        | "is_symlink"
+                        | "iterdir"
+                        | "lstat"
+                        | "mkdir"
+                        | "open"
+                        | "read_bytes"
+                        | "read_text"
+                        | "readlink"
+                        | "rename"
+                        | "replace"
+                        | "resolve"
+                        | "rglob"
+                        | "rmdir"
+                        | "samefile"
+                        | "stat"
+                        | "symlink_to"
+                        | "touch"
+                        | "unlink"
+                        | "write_bytes"
+                        | "write_text"
+                )
+        }
+        _ => false,
+    }
+}
+
 fn qualified<'a>(buffer: &'a mut String, namespace: &str, name: &str) -> &'a str {
     buffer.clear();
     buffer.push_str(namespace);
     buffer.push('.');
     buffer.push_str(name);
     buffer
+}
+
+#[derive(Clone, Copy)]
+enum ReceiverType<'a> {
+    Local(&'a Node),
+    External(&'a str, usize),
+    Ambiguous,
+    Unknown,
+}
+
+fn receiver_type_name(annotation: &str) -> Option<Cow<'_, str>> {
+    let mut name = annotation.trim().trim_matches(['\'', '"']);
+    while let Some(rest) = name.strip_prefix('&') {
+        name = rest.trim_start();
+        if name.starts_with('\'') {
+            name = name.split_once(char::is_whitespace)?.1.trim_start();
+        }
+        name = name.strip_prefix("mut ").unwrap_or(name).trim_start();
+    }
+    if name.is_empty()
+        || !name.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '_' | '.' | ':' | '$')
+        })
+    {
+        return None;
+    }
+    Some(if name.contains("::") {
+        Cow::Owned(name.replace("::", "."))
+    } else {
+        Cow::Borrowed(name)
+    })
 }

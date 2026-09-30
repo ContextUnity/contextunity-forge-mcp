@@ -16,6 +16,7 @@ pub(crate) fn reference(facts: &mut Facts, owner: &str, expression: &str, kind: 
         dynamic: !expression
             .chars()
             .all(|c| c.is_alphanumeric() || "_.:".contains(c)),
+        receiver_hint: None,
     });
 }
 
@@ -132,7 +133,7 @@ fn add_field(
     if let Some(n) = facts
         .nodes
         .iter()
-        .find(|n| n.kind == "field" && n.qualname == qualname)
+        .find(|n| (n.kind == "field" || matches!(n.kind.as_str(), "method" | "function")) && n.qualname == qualname)
     {
         return n.id.clone();
     }
@@ -288,10 +289,19 @@ pub(crate) fn implicit_fields(facts: &mut Facts) {
             .filter(|(_, n)| matches!(n.kind.as_str(), "class" | "interface" | "struct"))
             .map(|(idx, n)| (n.qualname.as_str(), idx))
             .collect();
+        let class_methods: hashbrown::HashSet<(&str, &str)> = facts
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind.as_str(), "method" | "function"))
+            .filter_map(|n| {
+                let (q, _) = n.qualname.rsplit_once('.')?;
+                Some((q, n.name.as_str()))
+            })
+            .collect();
 
         let mut list = Vec::new();
         for r in &facts.references {
-            if r.kind != "mutates" && r.kind != "references" {
+            if r.kind != "mutates" {
                 continue;
             }
             let Some(name) = r
@@ -306,6 +316,9 @@ pub(crate) fn implicit_fields(facts: &mut Facts) {
             }
             if let Some(&(source_qualname, _)) = node_map.get(r.source.as_str()) {
                 if let Some((q, _)) = source_qualname.rsplit_once('.') {
+                    if class_methods.contains(&(q, name)) {
+                        continue;
+                    }
                     if let Some(&class_idx) = class_map.get(q) {
                         list.push((class_idx, name.to_string(), r.line));
                     }

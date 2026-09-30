@@ -1,7 +1,7 @@
 use super::{response, server::Server};
 use crate::{
     cli,
-    core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions},
+    core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols, traversal},
     engine::scanner,
 };
@@ -68,6 +68,9 @@ pub struct Inspect {
     pub selector: String,
     #[serde(default = "yes")]
     pub show_doc: bool,
+    /// Include paged resolution coverage in addition to the compact summary.
+    #[serde(default)]
+    pub include_coverage: bool,
     pub show_source: Option<bool>,
     pub leading_lines: Option<usize>,
     pub max_body_lines: Option<usize>,
@@ -79,22 +82,64 @@ pub struct Inspect {
 }
 impl Inspect {
     fn source(&self, policy: &ResponsePolicy, required: bool) -> anyhow::Result<SourceOptions> {
-        anyhow::ensure!(
-            self.source_offset == 0 || self.page.generation.is_some(),
-            "source continuation requires generation from the previous preview"
-        );
-        SourceOptions::resolve(
+        source_options(
             policy,
-            if required {
-                Some(true)
-            } else {
-                self.show_source
-            },
+            self.show_source,
             self.leading_lines,
             self.max_body_lines,
             self.source_offset,
+            self.page.generation.as_deref(),
+            required,
         )
     }
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct Snippet {
+    pub selector: String,
+    pub show_source: Option<bool>,
+    pub leading_lines: Option<usize>,
+    pub max_body_lines: Option<usize>,
+    /// Body line offset returned as next_source_offset by a previous preview.
+    #[serde(default)]
+    pub source_offset: usize,
+    #[serde(flatten)]
+    pub page: PageInput,
+}
+impl Snippet {
+    fn source(&self, policy: &ResponsePolicy) -> anyhow::Result<SourceOptions> {
+        source_options(
+            policy,
+            self.show_source,
+            self.leading_lines,
+            self.max_body_lines,
+            self.source_offset,
+            self.page.generation.as_deref(),
+            true,
+        )
+    }
+}
+
+fn source_options(
+    policy: &ResponsePolicy,
+    show_source: Option<bool>,
+    leading_lines: Option<usize>,
+    max_body_lines: Option<usize>,
+    source_offset: usize,
+    generation: Option<&str>,
+    required: bool,
+) -> anyhow::Result<SourceOptions> {
+    anyhow::ensure!(
+        source_offset == 0 || generation.is_some(),
+        "source continuation requires generation from the previous preview"
+    );
+    SourceOptions::resolve(
+        policy,
+        if required { Some(true) } else { show_source },
+        leading_lines,
+        max_body_lines,
+        source_offset,
+    )
 }
 #[derive(Deserialize, JsonSchema)]
 pub struct Explain {
@@ -102,6 +147,9 @@ pub struct Explain {
     pub direction: Option<String>,
     #[serde(default = "yes")]
     pub show_doc: bool,
+    /// Include paged resolution coverage in addition to the compact summary.
+    #[serde(default)]
+    pub include_coverage: bool,
     pub show_source: Option<bool>,
     pub leading_lines: Option<usize>,
     pub max_body_lines: Option<usize>,
@@ -133,6 +181,9 @@ impl Explain {
 #[derive(Deserialize, JsonSchema)]
 pub struct SearchSymbols {
     pub pattern: String,
+    /// Match only the complete symbol name or qualified name, without full-text search.
+    #[serde(default)]
+    pub exact: bool,
     pub kind: Option<String>,
     /// Restrict results to a workspace-relative file or directory.
     pub path: Option<String>,
@@ -156,6 +207,9 @@ pub struct Tests {
 #[derive(Deserialize, JsonSchema)]
 pub struct Impact {
     pub selector: String,
+    /// Impact direction: 'inbound' (default) or 'outbound'.
+    #[serde(default = "inbound")]
+    pub direction: String,
     #[serde(default = "depth")]
     pub depth: u32,
     /// Traversal mode: 'calls' (default, invocation/call graph), 'data-flow' (parameter/assignment flow), 'all' (all dependency edges).
@@ -169,6 +223,11 @@ pub struct Impact {
 pub struct Query {
     pub operation: String,
     pub selector: Option<String>,
+    /// Impact direction: 'inbound' (default) or 'outbound'.
+    pub direction: Option<String>,
+    /// Include paged resolution coverage for inspect and explain operations.
+    #[serde(default)]
+    pub include_coverage: bool,
     #[serde(default = "depth")]
     pub depth: u32,
     #[serde(flatten)]
@@ -248,39 +307,51 @@ impl Server {
         })
     }
     #[tool(
-        description = "Inspect an indexed symbol by selector (e.g. 'function:name', 'class:Name', 'module:path'). Compact output includes location and paged references with whole-symbol resolution counts; detail='full' includes node details and per-reference evidence. Set show_source=true for bounded source or use get_code_snippet."
+        description = "Inspect an indexed symbol by selector (e.g. 'function:name', 'class:Name', 'module:path'). Compact output includes exact signature and docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees. Set include_coverage=true for paged resolution coverage; detail='full' includes node details and per-reference evidence. Set show_source=true for bounded source or use get_code_snippet."
     )]
     fn code_map_inspect(&self, Parameters(p): Parameters<Inspect>) -> CallToolResult {
         self.responding(|policy| {
             let page = p.page.resolve(policy)?;
             let source = p.source(policy, false)?;
+            let coverage = CoverageOptions {
+                include_coverage: p.include_coverage,
+            };
             self.read(|c| {
-                symbols::inspect_paged(c, &self.root, &p.selector, p.show_doc, &source, &page)
+                symbols::inspect_paged_with_coverage(
+                    c,
+                    &self.root,
+                    &p.selector,
+                    p.show_doc,
+                    &source,
+                    &page,
+                    coverage,
+                )
             })
         })
     }
     #[tool(
         description = "Read source and location for a symbol selector (default 5 leading + 35 body lines). Pass source_offset with previous generation for next lines. Use code_map_inspect for resolution coverage and evidence; use ctx_read for full file edits."
     )]
-    fn get_code_snippet(&self, Parameters(p): Parameters<Inspect>) -> CallToolResult {
+    fn get_code_snippet(&self, Parameters(p): Parameters<Snippet>) -> CallToolResult {
         self.responding(|policy| {
             let page = p.page.resolve(policy)?;
-            let source = p.source(policy, true)?;
+            let source = p.source(policy)?;
             self.read(|c| symbols::snippet_paged(c, &self.root, &p.selector, &source, &page))
         })
     }
     #[tool(
-        description = "Search indexed symbols with FTS terms or prefix* pattern (e.g. 'Token*', 'router'). Optional path restricts results to a workspace-relative file or directory. Returns symbol IDs, kinds, and paths. Compact pages default to 30; max 100."
+        description = "Search indexed symbols with FTS terms or prefix* pattern (e.g. 'Token*', 'router'). Set exact=true for indexed, case-insensitive name or qualified-name equality without FTS. Optional path restricts results to a workspace-relative file or directory. Returns symbol IDs, kinds, and paths. Compact pages default to 30; max 100."
     )]
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         self.responding(|policy| {
             self.read(|c| {
-                let mut res = symbols::search_paged_in_path_with_docs(
+                let mut res = symbols::search_paged_in_path_with_options(
                     c,
                     &p.pattern,
                     p.kind.as_deref(),
                     p.path.as_deref(),
                     p.include_docs,
+                    p.exact,
                     &p.page.resolve(policy)?,
                 )?;
                 if p.group_by_file {
@@ -314,7 +385,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Trace incoming dependencies (blast radius) for a selector. Optional mode: 'calls' (default, invocation/call graph), 'data-flow' (parameter/assignment flow), 'all' (all dependency edges). Optional edge_types: ['calls', 'mutates', 'inherits', 'implements', 'imports']. Always start with depth=1 to avoid exponential graph fan-out. Paged results require offset + generation for continuation."
+        description = "Trace dependencies for a selector. direction: 'inbound' (default) or 'outbound'. Optional mode: 'calls' (default, invocation/call graph), 'data-flow' (parameter/assignment flow), 'all' (all dependency edges). Optional edge_types: ['calls', 'mutates', 'inherits', 'implements', 'imports']. Always start with depth=1 to avoid exponential graph fan-out. Paged results require offset + generation for continuation."
     )]
     fn code_map_impact(&self, Parameters(p): Parameters<Impact>) -> CallToolResult {
         self.responding(|policy| {
@@ -324,7 +395,7 @@ impl Server {
                     c,
                     &p.selector,
                     p.depth,
-                    true,
+                    traversal::impact_inbound(Some(p.direction.as_str()))?,
                     p.mode.as_deref(),
                     p.edge_types.as_deref(),
                     &page,
@@ -333,14 +404,17 @@ impl Server {
         })
     }
     #[tool(
-        description = "Explain symbol ownership, direct edges, and architectural invariants. direction: both (default), incoming/inbound, or outgoing/outbound. Set show_doc=false to omit linked documents; show_source=true adds bounded source."
+        description = "Explain symbol ownership, direct edges, and architectural invariants. Compact results include exact signature and docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees. direction: both (default), incoming/inbound, or outgoing/outbound. Set include_coverage=true for paged resolution coverage, show_doc=false to omit linked documents, or show_source=true for bounded source."
     )]
     fn code_map_explain(&self, Parameters(p): Parameters<Explain>) -> CallToolResult {
         self.responding(|policy| {
             let page = p.page.resolve(policy)?;
             let source = p.source(policy, false)?;
+            let coverage = CoverageOptions {
+                include_coverage: p.include_coverage,
+            };
             self.read(|c| {
-                symbols::explain_paged_with_docs(
+                symbols::explain_paged_with_docs_and_coverage(
                     c,
                     &self.root,
                     &p.selector,
@@ -348,21 +422,26 @@ impl Server {
                     p.show_doc,
                     &source,
                     &page,
+                    coverage,
                 )
             })
         })
     }
     #[tool(
-        description = "Advanced graph query. Operation: 'slice' (subgraph around selector), 'unwired' (nodes without edges), or 'cypher' (e.g. 'MATCH (n:Function) RETURN n'). Specify limit and depth as arguments, not inside Cypher text."
+        description = "Run a bounded graph operation: overview, inspect, explain, impact, slice, unwired, or sql. For sql, pass exactly one read-only SELECT/WITH statement in selector; limit, offset, generation, and depth are separate arguments. Impact direction is inbound (default) or outbound. Set include_coverage=true for inspect or explain coverage."
     )]
     fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
         self.responding(|policy| {
             self.read(|c| {
-                traversal::query_paged(
+                traversal::query_paged_with_options(
                     c,
                     &p.operation,
                     p.selector.as_deref(),
                     p.depth,
+                    p.direction.as_deref(),
+                    CoverageOptions {
+                        include_coverage: p.include_coverage,
+                    },
                     &p.page.resolve(policy)?,
                 )
             })
@@ -484,12 +563,16 @@ impl ServerHandler for Server {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let tool_name = request.name.clone();
+        let tool_args = serde_json::to_string_pretty(&request.arguments).unwrap_or_default();
         let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         let result = Self::tool_router().call(call).await;
-        let policy = scanner::load_adapter(&self.root, None)
-            .map(|adapter| adapter.response)
+        let adapter = scanner::load_adapter(&self.root, None).ok();
+        let policy = adapter
+            .as_ref()
+            .map(|a| a.response.clone())
             .unwrap_or_default();
-        match result {
+        let final_response = match result {
             Ok(rmcp::model::CallToolResponse::Complete(result)) => {
                 Ok(response::enforce(result, &policy).into())
             }
@@ -497,6 +580,19 @@ impl ServerHandler for Server {
             Err(error) => {
                 Ok(response::result(Err(anyhow::anyhow!(error.to_string())), &policy).into())
             }
+        };
+        if adapter.as_ref().is_some_and(|a| a.debug) {
+            let output_str = match &final_response {
+                Ok(resp) => format!("{resp:#?}"),
+                Err(err) => format!("ERROR: {err:?}"),
+            };
+            crate::core::debug_log::log_command(
+                &self.root,
+                &tool_name,
+                Some(&tool_args),
+                &output_str,
+            );
         }
+        final_response
     }
 }

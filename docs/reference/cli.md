@@ -37,12 +37,11 @@ contextunity-forge-mcp query explain 'src/module.py:parse'
 contextunity-forge-mcp query impact 'src/module.py:parse' --depth 1
 contextunity-forge-mcp query tests 'src/module.py:parse' --direction inbound
 contextunity-forge-mcp query remove 'src/module.py:parse'
-contextunity-forge-mcp query analyze src/module.py
+contextunity-forge-mcp query analyze 'SELECT name FROM nodes ORDER BY name'
 contextunity-forge-mcp query run slice 'src/module.py:parse' --depth 1 --limit 30
-contextunity-forge-mcp query run cypher 'MATCH (n:function) RETURN n' --limit 30
 ```
 
-`query tests` also accepts `--direction outbound` for dependencies of a test. `query run` accepts `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, and `cypher`; `raw_cypher`, `doctor`, and `search` are accepted aliases. Pass a Cypher page limit with `--limit`, outside the query string. `query analyze` accepts an indexed path, an empty target for the workspace, or one read-only `SELECT`/`WITH` statement. Its diagnostic form computes cycles; the MCP form requires `include_cycles: true`.
+`query tests` also accepts `--direction outbound` for dependencies of a test. `query run` accepts `overview`, `inspect`, `explain`, `impact`, `slice`, and `unwired`. `query analyze` accepts an indexed path, an empty target for the workspace, or one read-only `SELECT`/`WITH` statement. Its diagnostic form computes cycles; the MCP form requires `include_cycles: true`.
 
 The CLI `query inspect --show-source` returns the indexed symbol's full source range after checking the file digest. MCP source previews are bounded; see [limits and freshness](../operations/limits-and-freshness.md).
 

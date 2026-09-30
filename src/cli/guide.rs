@@ -23,9 +23,10 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
         ),
         "query" => Ok(json!({
             "start": "Call code_map_overview to identify indexed paths and coverage.",
-            "symbols": "Use code_map_search with FTS terms or prefix* pattern. Selectors support canonical ID, file path (resolves to module), path:symbol (resolves inner symbol), and path:line/path#Lline (resolves innermost AST node). Bare names never get hijacked into modules. Then use code_map_inspect, code_map_explain, and code_map_impact (depth=1).",
+            "symbols": "Use code_map_search with FTS terms or prefix* pattern. Selectors support canonical ID, file path (resolves to module), path:symbol (resolves inner symbol), and path:line/path#Lline (resolves innermost AST node). Bare names never get hijacked into modules. Compact inspect and explain include signature, docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees; set include_coverage=true when resolution evidence is needed.",
             "snippets": "Use get_code_snippet for a fast, bounded AST preview (default 5 leading + 35 body lines) before reading entire files via ctx_read.",
             "tests": "Call code_map_tests on a narrow symbol or module; broad scopes are rejected before unbounded traversal.",
+            "queries": "Call code_map_query with operation='overview', 'inspect', 'explain', 'impact', 'slice', 'unwired', or 'sql'. For sql, put one read-only SELECT/WITH statement in selector; pages use limit, offset, and generation. Impact direction is inbound by default or outbound.",
             "diagnostics": "Call code_map_analyze with target='' for workspace totals; use an indexed path for a smaller scope or an exact file for paged rows. Cycles require include_cycles=true.",
             "documents": "Use search_docs to find sections and get_doc to read the selected section.",
             "pages": "Start with compact detail and a small limit. Continue with the returned next_offset and generation for the same selector and filters. For tighter agent context, set adapter response.page_size=10 and response.max_output_bytes=16384.",

@@ -21,192 +21,12 @@ import shutil
 from dataclasses import dataclass
 from typing import Any
 
+from benchmark_profile import BenchmarkProfile, copy_workspace_snapshot, load_profile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-FORGE_BIN = "/home/oleksii/.local/bin/contextunity-forge-mcp"
-CODEBASE_BIN = "/home/oleksii/.local/bin/codebase-memory-mcp"
-CODEBASE_PROJECT = "home-oleksii-ContextUnity-projects-contextunity-forge-mcp"
+FORGE_BIN = shutil.which("contextunity-forge-mcp") or "contextunity-forge-mcp"
+CODEBASE_BIN = shutil.which("codebase-memory-mcp") or "codebase-memory-mcp"
 PROTOCOL_VERSION = "2025-03-26"
-TARGET = "src/mcp/server.rs:admit"
-TARGET_QN = f"{CODEBASE_PROJECT}.src.mcp.server.Server.admit"
-TEST_TARGET = "src/mcp/server.rs:read"
-TEST_TARGET_QN = f"{CODEBASE_PROJECT}.src.mcp.server.Server.read"
-CORPUS_ITEMS = (".gitignore", "Cargo.toml", "Cargo.lock", "build.rs", "forge-mcp.yaml", "README.md", "docs", "src", "tests")
-BENCHMARK_ARTIFACTS = {
-    "mcp_tool_comparison_benchmark.py",
-    "mcp_tool_comparison_results.json",
-    "mcp_tool_comparison_report.md",
-}
-
-
-SCENARIOS: list[dict[str, Any]] = [
-    {
-        "id": "workspace_overview",
-        "scenario": "Workspace orientation and index inventory",
-        "forge": ("code_map_overview", {"detail": "compact", "limit": 30}),
-        "codebase": ("get_architecture", {"project": CODEBASE_PROJECT}),
-        "match": "close: both report indexed workspace structure and inventory; Forge emphasizes components/coverage, Codebase emphasizes graph/package counts",
-    },
-    {
-        "id": "symbol_search",
-        "scenario": "Locate Server::admit in one file",
-        "forge": (
-            "code_map_search",
-            {"pattern": "admit", "kind": "method", "path": "src/mcp/server.rs", "limit": 10, "detail": "compact"},
-        ),
-        "codebase": (
-            "search_graph",
-            {"project": CODEBASE_PROJECT, "name_pattern": "^admit$", "label": "Method", "file_pattern": "src/mcp/server.rs", "fields": ["signature", "docstring"], "limit": 10, "format": "json"},
-        ),
-        "match": "close: Forge supports FTS/prefix symbols; Codebase supports BM25/regex/semantic query and returns qualified-name rows",
-    },
-    {
-        "id": "symbol_inspection",
-        "scenario": "Inspect symbol identity, signature, docs, and references",
-        "forge": ("code_map_inspect", {"selector": TARGET, "detail": "compact"}),
-        "codebase": (
-            "search_graph",
-            {"project": CODEBASE_PROJECT, "name_pattern": "^admit$", "label": "Method", "file_pattern": "src/mcp/server.rs", "fields": ["signature", "docstring"], "limit": 10, "format": "json"},
-        ),
-        "match": "approximate: Forge has dedicated selector resolution, docs, reference counts, and evidence; Codebase search fields are a graph row, not an inspect response",
-    },
-    {
-        "id": "source_snippet",
-        "scenario": "Read the exact implementation of Server::admit",
-        "forge": ("get_code_snippet", {"selector": TARGET}),
-        "codebase": ("get_code_snippet", {"project": CODEBASE_PROJECT, "qualified_name": TARGET_QN}),
-        "match": "strong: both resolve the same qualified method and return bounded source",
-    },
-    {
-        "id": "test_relationships",
-        "scenario": "Find tests connected to Server::read",
-        "forge": ("code_map_tests", {"selector": TEST_TARGET, "direction": "inbound", "limit": 30}),
-        "codebase": (
-            "query_graph",
-            {"project": CODEBASE_PROJECT, "query": f"MATCH (test)-[:TESTS]->(target) WHERE target.qualified_name = '{TEST_TARGET_QN}' RETURN test.qualified_name, target.qualified_name LIMIT 30"},
-        ),
-        "match": "approximate: Codebase can query TESTS edges, but has no test-focused tool, direction labels, or witness classifications",
-    },
-    {
-        "id": "unresolved_evidence",
-        "scenario": "Inspect workspace unresolved references and retained unresolved-call evidence",
-        "forge": ("code_map_analyze", {"target": "", "limit": 30}),
-        "codebase": (
-            "query_graph",
-            {"project": CODEBASE_PROJECT, "query": "MATCH (a)-[r:CALL_REFERENCE]->(b) RETURN a.qualified_name, r.callee, b.qualified_name LIMIT 30"},
-        ),
-        "match": "not equivalent: Forge exposes explicit unresolved/ambiguous counts and resolver causes; Codebase CALL_REFERENCE edges are a different evidence type and not a complete unresolved count",
-    },
-    {
-        "id": "codebase_low_confidence_summary",
-        "scenario": "Codebase-only diagnostic: group CALLS below confidence 0.5",
-        "forge": None,
-        "codebase": (
-            "query_graph",
-            {"project": CODEBASE_PROJECT, "query": "MATCH ()-[r:CALLS]->() WHERE r.confidence < 0.5 RETURN r.confidence AS confidence, r.strategy AS strategy, count(r) AS calls ORDER BY calls DESC LIMIT 50"},
-        ),
-        "match": "diagnostic only: confidence < 0.5 is an analyst-selected triage threshold, not Codebase's canonical unresolved status",
-    },
-    {
-        "id": "codebase_low_confidence_examples",
-        "scenario": "Codebase-only diagnostic: inspect low-confidence call candidates",
-        "forge": None,
-        "codebase": (
-            "query_graph",
-            {"project": CODEBASE_PROJECT, "query": "MATCH (caller)-[r:CALLS]->(target) WHERE r.confidence < 0.5 RETURN caller.qualified_name, r.callee, r.confidence, r.strategy, r.candidates, target.qualified_name LIMIT 30"},
-        ),
-        "match": "diagnostic only: raw candidate witnesses supplement index_status but do not form a complete unresolved-reference ledger",
-    },
-    {
-        "id": "impact_analysis",
-        "scenario": "Trace incoming callers/dependencies at depth one",
-        "forge": ("code_map_impact", {"selector": TARGET, "depth": 1, "limit": 30}),
-        "codebase": (
-            "trace_path",
-            {"project": CODEBASE_PROJECT, "function_name": TARGET_QN, "direction": "inbound", "depth": 1, "limit": 30, "include_tests": True, "format": "json"},
-        ),
-        "match": "close: both trace incoming graph paths; edge sets and transitive-count semantics differ, so compare witnesses rather than totals",
-    },
-    {
-        "id": "symbol_explanation",
-        "scenario": "Explain ownership and direct relationships for the target",
-        "forge": ("code_map_explain", {"selector": TARGET, "direction": "both", "show_doc": True, "detail": "compact"}),
-        "codebase": (
-            "query_graph",
-            {"project": CODEBASE_PROJECT, "query": f"MATCH (n) WHERE n.qualified_name = '{TARGET_QN}' OPTIONAL MATCH (n)-[r]-(m) RETURN n.qualified_name, type(r), m.qualified_name LIMIT 30"},
-        ),
-        "match": "approximate: Forge assembles ownership/docs/edges into an explanation; Codebase exposes raw Cypher rows that the agent must interpret",
-    },
-    {
-        "id": "graph_slice_query",
-        "scenario": "Retrieve a bounded subgraph around the target",
-        "forge": ("code_map_query", {"operation": "slice", "selector": TARGET, "depth": 1, "limit": 30}),
-        "codebase": (
-            "query_graph",
-            {"project": CODEBASE_PROJECT, "query": f"MATCH (n) WHERE n.qualified_name = '{TARGET_QN}' OPTIONAL MATCH (n)-[r]-(m) RETURN n.qualified_name, type(r), m.qualified_name LIMIT 30"},
-        ),
-        "match": "close with different query models: Forge owns a bounded slice operation; Codebase supports Cypher and requires explicit clauses/limit",
-    },
-    {
-        "id": "workspace_diagnostics",
-        "scenario": "Check workspace health, index counts, and cycles",
-        "forge": ("code_map_analyze", {"target": "", "include_cycles": True, "limit": 30}),
-        "codebase": ("index_status", {"project": CODEBASE_PROJECT}),
-        "match": "partial: Codebase index_status is strong on indexing coverage/status; it does not provide Forge's graph diagnostics/cycle analysis",
-    },
-    {
-        "id": "path_diagnostics_coverage",
-        "scenario": "Check one cited source file and its indexing coverage",
-        "forge": ("code_map_analyze", {"target": "src/mcp/server.rs", "limit": 30}),
-        "codebase": ("check_index_coverage", {"project": CODEBASE_PROJECT, "paths": ["src/mcp/server.rs"]}),
-        "match": "partial: both scope one file, but Codebase has explicit metadata freshness and coverage status; Forge returns its stored diagnostics",
-    },
-    {
-        "id": "removal_safety",
-        "scenario": "Assess whether the target can be removed safely",
-        "forge": ("code_map_prove_removal", {"selector": TARGET, "detail": "compact", "limit": 30}),
-        "codebase": (
-            "query_graph",
-            {"project": CODEBASE_PROJECT, "query": f"MATCH (caller)-[r]->(target) WHERE target.qualified_name = '{TARGET_QN}' RETURN type(r), caller.qualified_name LIMIT 30"},
-        ),
-        "match": "not equivalent: Codebase can list incoming graph edges, but has no candidate-scoped removal proof or unresolved-reference analysis",
-    },
-    {
-        "id": "ast_pattern_search",
-        "scenario": "Find Rust function syntax with a Tree-sitter pattern",
-        "forge": ("ast_grep_search", {"pattern": "fn admit(&self, slot: &mut ConnectionSlot) -> Result<Freshness> { $$$BODY }", "language": "rust", "path": "src/mcp/server.rs", "limit": 30}),
-        "codebase": ("search_code", {"project": CODEBASE_PROJECT, "pattern": "fn admit", "path_filter": "src/mcp/server\\.rs", "regex": False, "mode": "full", "limit": 10}),
-        "match": "not equivalent: Forge matches parsed AST structure; Codebase search_code is text regex/literal search enriched with graph symbols",
-    },
-    {
-        "id": "documentation_search",
-        "scenario": "Search documentation for indexed response paging limits",
-        "forge": ("search_docs", {"query": "MCP pages default to 30 items", "include_excerpt": True, "limit": 10}),
-        "codebase": ("search_code", {"project": CODEBASE_PROJECT, "pattern": "MCP pages default to 30 items", "regex": False, "mode": "full", "limit": 10}),
-        "match": "approximate: Forge uses indexed Markdown section search and anchors; Codebase literal-searches the Markdown file and returns a graph-enriched source window, without doc-type/section semantics",
-    },
-    {
-        "id": "documentation_read",
-        "scenario": "Read documentation about the graph/MCP workflow",
-        "forge": ("get_doc", {"path_or_id": "README.md", "detail": "full"}),
-        "codebase": ("search_code", {"project": CODEBASE_PROJECT, "pattern": "Native code graph", "regex": False, "mode": "full", "limit": 5}),
-        "match": "not equivalent: Forge retrieves indexed Markdown by path/section; Codebase search_code gives matching snippets, not a full document read",
-    },
-    {
-        "id": "tool_guide",
-        "scenario": "Ask for agent guidance on using the MCP tools",
-        "forge": ("forge_guide", {"topic": "query"}),
-        "codebase": ("get_graph_schema", {"project": CODEBASE_PROJECT}),
-        "match": "not equivalent: Codebase schema describes labels/edges but does not provide an interactive tool-selection or budget guide",
-    },
-    {
-        "id": "session_checkpoint",
-        "scenario": "List saved session checkpoints without changing state",
-        "forge": ("session_checkpoint", {"action": "list"}),
-        "codebase": None,
-        "match": "no counterpart: Codebase exposes no session checkpoint persistence tool",
-    },
-]
 
 
 def process_tree(root_pids: int | set[int]) -> set[int]:
@@ -307,16 +127,17 @@ class McpClient:
         db_path: str | None = None,
         env_overrides: dict[str, str] | None = None,
         workspace_root: str | None = None,
+        binary_path: str | None = None,
     ):
         startup_started = time.perf_counter_ns()
         if backend == "forge":
-            command = [FORGE_BIN, "--root", workspace_root or str(ROOT)]
+            command = [binary_path or FORGE_BIN, "--root", workspace_root or str(ROOT)]
             if db_path:
                 command += ["--db", db_path]
             command += ["serve"]
             env = os.environ.copy()
         elif backend == "codebase":
-            command = [CODEBASE_BIN]
+            command = [binary_path or CODEBASE_BIN]
             env = os.environ.copy()
             env.update(env_overrides or {})
         else:
@@ -507,28 +328,16 @@ def directory_bytes(path: pathlib.Path) -> int:
     return sum(file.stat().st_size for file in path.rglob("*") if file.is_file())
 
 
-def copy_benchmark_corpus(destination: pathlib.Path) -> None:
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        excluded = {".git", ".forge", ".codebase-memory", ".pytest_cache", ".ruff_cache", "__pycache__", "target", "vendor"}
-        return excluded.intersection(names) | BENCHMARK_ARTIFACTS.intersection(names)
-
-    destination.mkdir(parents=True)
-    for name in CORPUS_ITEMS:
-        source = ROOT / name
-        target = destination / name
-        if source.is_dir():
-            shutil.copytree(source, target, ignore=ignore, symlinks=True)
-        elif source.is_file():
-            shutil.copy2(source, target)
-
-
 def prepare_indexes(
     temp_root: pathlib.Path,
+    profile: BenchmarkProfile,
 ) -> tuple[pathlib.Path, pathlib.Path, dict[str, str], pathlib.Path, dict[str, Any]]:
     forge_db = temp_root / "forge-code-map.sqlite"
     codebase_cache = temp_root / "codebase-cache"
     codebase_source = temp_root / "codebase-source"
-    copy_benchmark_corpus(codebase_source)
+    copy_workspace_snapshot(
+        profile.workspace_root, codebase_source, profile.excluded_directories
+    )
     profile_home = temp_root / "codebase-home"
     cbm_env = os.environ.copy()
     cbm_env.update(
@@ -547,7 +356,7 @@ def prepare_indexes(
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     for key in ("auto_watch", "ui_enabled"):
         configured = subprocess.run(
-            [CODEBASE_BIN, "config", "set", key, "false"],
+            [profile.codebase_binary, "config", "set", key, "false"],
             env=cbm_env,
             capture_output=True,
             text=True,
@@ -557,16 +366,16 @@ def prepare_indexes(
             raise RuntimeError(f"failed setting isolated Codebase {key}: {configured.stderr}")
 
     forge_build = measure_process(
-        [FORGE_BIN, "--root", str(codebase_source), "--db", str(forge_db), "build"], os.environ.copy()
+        [profile.forge_binary, "--root", str(codebase_source), "--db", str(forge_db), "build"], os.environ.copy()
     )
     if forge_build["exit_code"]:
         raise RuntimeError(f"Forge index build failed: {forge_build['stderr_tail']}")
     forge_build["db_bytes"] = forge_db.stat().st_size
 
-    with McpClient("codebase", env_overrides=cbm_env) as client:
+    with McpClient("codebase", env_overrides=cbm_env, binary_path=profile.codebase_binary) as client:
         codebase_index = client.call(
             "index_repository",
-            {"repo_path": str(codebase_source), "mode": "full", "name": CODEBASE_PROJECT, "persistence": False},
+            {"repo_path": str(codebase_source), "mode": "full", "name": profile.project, "persistence": False},
         )
         if codebase_index.error:
             raise RuntimeError(f"Codebase index build failed: {codebase_index.error}")
@@ -587,8 +396,9 @@ def prepare_indexes(
         "codebase": codebase_build,
         "codebase_source_copy": {
             "root": str(codebase_source),
-            "included_roots": list(CORPUS_ITEMS),
-            "excluded": [".git", ".forge", ".codebase-memory", "target", "vendor", "AGENTS.md", ".agents", "skills", *sorted(BENCHMARK_ARTIFACTS)],
+            "source_root": str(profile.workspace_root),
+            "included_roots": ["."],
+            "excluded": sorted(profile.excluded_directories),
         },
     }
 
@@ -612,12 +422,17 @@ def stop_isolated_daemon(codebase_cache: pathlib.Path) -> None:
             pass
 
 
-def benchmark(repeats: int, output_path: pathlib.Path, scenario_id: str | None = None) -> None:
+def benchmark(
+    repeats: int,
+    output_path: pathlib.Path,
+    profile: BenchmarkProfile,
+    scenario_id: str | None = None,
+) -> None:
     rows: list[dict[str, Any]] = []
     examples: dict[str, Any] = {}
     temp_root = pathlib.Path(tempfile.mkdtemp(prefix="forge-codebase-mcp-bench-", dir="/tmp/kilo"))
     try:
-        forge_db, codebase_cache, codebase_env, codebase_source, index_builds = prepare_indexes(temp_root)
+        forge_db, codebase_cache, codebase_env, codebase_source, index_builds = prepare_indexes(temp_root, profile)
     except Exception:
         import shutil
 
@@ -625,7 +440,7 @@ def benchmark(repeats: int, output_path: pathlib.Path, scenario_id: str | None =
         raise
 
     try:
-        for scenario in SCENARIOS:
+        for scenario in profile.scenarios:
             if scenario_id and scenario["id"] != scenario_id:
                 continue
             for backend, call_spec in (("forge", scenario["forge"]), ("codebase", scenario["codebase"])):
@@ -643,6 +458,7 @@ def benchmark(repeats: int, output_path: pathlib.Path, scenario_id: str | None =
                         db_path=str(forge_db) if backend == "forge" else None,
                         env_overrides=codebase_env if backend == "codebase" else None,
                         workspace_root=str(codebase_source) if backend == "forge" else None,
+                        binary_path=profile.forge_binary if backend == "forge" else profile.codebase_binary,
                     ) as client:
                         startup_times["cold_process"].append(client.startup_ms)
                         sample = client.call(tool_name, arguments)
@@ -657,6 +473,7 @@ def benchmark(repeats: int, output_path: pathlib.Path, scenario_id: str | None =
                     db_path=str(forge_db) if backend == "forge" else None,
                     env_overrides=codebase_env if backend == "codebase" else None,
                     workspace_root=str(codebase_source) if backend == "forge" else None,
+                    binary_path=profile.forge_binary if backend == "forge" else profile.codebase_binary,
                 ) as client:
                     startup_times["warm_process"].append(client.startup_ms)
                     warmup = client.call(tool_name, arguments)
@@ -713,9 +530,12 @@ def benchmark(repeats: int, output_path: pathlib.Path, scenario_id: str | None =
         result = {
         "metadata": {
             "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "workspace_root": str(ROOT),
-            "source_snapshot": "both backends read the same temporary copy; Forge's indexed file count and resolver output_root are retained in index_builds and response examples",
-            "codebase_project": CODEBASE_PROJECT,
+            "workspace_root": str(profile.workspace_root),
+            "profile": str(profile.path),
+            "profile_name": profile.name,
+            "source_snapshot": "both backends use a temporary workspace copy; Forge may additionally follow enabled linked_workspaces from its adapter policy",
+            "scope_note": profile.scope_note,
+            "codebase_project": profile.project,
             "platform": platform.platform(),
             "python": sys.version,
             "cpu_count": os.cpu_count(),
@@ -732,7 +552,7 @@ def benchmark(repeats: int, output_path: pathlib.Path, scenario_id: str | None =
             "codebase_cache_dir_isolated": True,
             "scenario_match": {
                 scenario["id"]: scenario["match"]
-                for scenario in SCENARIOS
+                for scenario in profile.scenarios
                 if scenario_id is None or scenario["id"] == scenario_id
             },
         },
@@ -841,10 +661,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--discover", action="store_true")
     parser.add_argument("--bench", action="store_true")
+    parser.add_argument("--profile", type=pathlib.Path)
+    parser.add_argument("--workspace", type=pathlib.Path)
     parser.add_argument("--repeats", type=int, default=5)
-    parser.add_argument("--output", type=pathlib.Path, default=ROOT / "tests/mcp_tool_comparison_results.json")
+    parser.add_argument("--output", type=pathlib.Path, default=ROOT / "benchmarks/mcp_tool_comparison_results.json")
     parser.add_argument("--redact-sensitive-results", type=pathlib.Path)
-    parser.add_argument("--scenario", choices=[scenario["id"] for scenario in SCENARIOS])
+    parser.add_argument("--scenario")
     parser.add_argument("--replace-scenario", nargs=3, metavar=("TARGET", "SOURCE", "SCENARIO_ID"))
     args = parser.parse_args()
     if args.redact_sensitive_results:
@@ -860,7 +682,15 @@ def main() -> int:
     if args.bench:
         if args.repeats < 1:
             parser.error("--repeats must be positive")
-        benchmark(args.repeats, args.output, args.scenario)
+        if args.profile is None:
+            parser.error("--bench requires --profile")
+        try:
+            profile = load_profile(args.profile, args.workspace)
+        except ValueError as error:
+            parser.error(str(error))
+        if args.scenario and args.scenario not in {scenario["id"] for scenario in profile.scenarios}:
+            parser.error(f"unknown scenario {args.scenario!r} in profile")
+        benchmark(args.repeats, args.output, profile, args.scenario)
         return 0
     parser.error("select --discover or --bench")
     return 2

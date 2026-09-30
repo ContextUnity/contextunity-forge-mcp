@@ -5,6 +5,17 @@ impl LanguageProfile for Java {
     fn id(&self) -> &'static str {
         "java"
     }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &["pom.xml", "build.gradle", "build.gradle.kts"]
+    }
+    fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
+        super::build_manifest::dependencies(filename, content)
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        ["java.", "javax.", "org.w3c.", "org.xml.sax.", "org.ietf.jgss."]
+            .iter()
+            .any(|prefix| module.starts_with(prefix) || module == prefix.trim_end_matches('.'))
+    }
     fn family(&self) -> LanguageFamily {
         LanguageFamily("java")
     }
@@ -26,8 +37,23 @@ impl LanguageProfile for Java {
     fn node_prefix(&self, _kind: &str) -> &'static str {
         "java"
     }
-    fn normalize_import(&self, _owner: &str, _module: &str) -> Option<ImportPath> {
-        None
+    fn module_name_for_source(&self, path: &str, source: &str) -> String {
+        source
+            .lines()
+            .map(str::trim)
+            .find_map(|line| {
+                line.strip_prefix("package ")
+                    .map(|package| package.trim_end_matches(';').trim().to_owned())
+            })
+            .filter(|package| !package.is_empty())
+            .unwrap_or_else(|| self.module_name(path))
+    }
+    fn normalize_import(&self, _owner: &str, module: &str) -> Option<ImportPath> {
+        Some(ImportPath {
+            namespace: module.to_owned(),
+            relative: false,
+            symbol_path: true,
+        })
     }
     fn class_scope(&self) -> bool {
         true
@@ -105,6 +131,33 @@ impl LanguageProfile for Java {
         {
             syntax::types(ctx, facts, interfaces, "inherits", &[]);
         }
+    }
+    fn metadata(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        _name: &str,
+        _file: &FileContext,
+    ) -> SymbolMetadata {
+        if matches!(node.kind(), "method_declaration" | "constructor_declaration") {
+            let owner = node.parent().and_then(|body| body.parent());
+            let receiver_type = owner
+                .and_then(|o| o.child_by_field_name("name"))
+                .map(|n| text(n, source).trim().to_owned());
+            let is_static = (0..node.child_count()).any(|i| {
+                node.child(i).is_some_and(|c| {
+                    c.kind() == "modifiers" && text(c, source).split_whitespace().any(|w| w == "static")
+                })
+            });
+            return SymbolMetadata {
+                receiver_name: (!is_static).then(|| "this".into()),
+                receiver_type,
+                is_method: Some(true),
+                is_static: Some(is_static),
+                ..Default::default()
+            };
+        }
+        SymbolMetadata::default()
     }
 }
 

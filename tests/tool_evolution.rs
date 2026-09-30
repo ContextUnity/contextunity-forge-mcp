@@ -64,6 +64,56 @@ impl Drop for Workspace {
     }
 }
 
+fn persisted_state(workspace: &Workspace) -> Value {
+    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let schema = reader::rows(
+        &conn,
+        "SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name,tbl_name",
+        &[],
+        100_000,
+    )
+    .unwrap();
+    let table_names = {
+        let mut statement = conn
+            .prepare(
+                "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let tables = table_names
+        .into_iter()
+        .map(|name| {
+            let quoted_name = name.replace('"', "\"\"");
+            let mut rows = reader::rows(
+                &conn,
+                &format!("SELECT * FROM \"{quoted_name}\""),
+                &[],
+                100_000,
+            )
+            .unwrap();
+            rows.sort_by_key(|row| row.to_string());
+            (name, rows)
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema": schema,
+        "tables": tables,
+        "pragmas": {
+            "application_id": conn.query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0)).unwrap(),
+            "freelist_count": conn.query_row("PRAGMA freelist_count", [], |row| row.get::<_, i64>(0)).unwrap(),
+            "journal_mode": conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0)).unwrap(),
+            "page_count": conn.query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0)).unwrap(),
+            "schema_version": conn.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0)).unwrap(),
+            "user_version": conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(),
+        },
+    })
+}
+
 struct Mcp {
     child: Child,
     input: ChildStdin,
@@ -899,13 +949,21 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
     w.build();
     let mut m = Mcp::new(&w);
 
-    for target in [
-        "; DROP TABLE nodes; --",
-        "INSERT INTO files VALUES ('x')",
-        "UPDATE nodes SET kind='hacked'",
-        "ATTACH DATABASE '/tmp/pwn.db' AS pwn",
-        "PRAGMA journal_mode=WAL",
-    ] {
+    let attachment = w.db().parent().unwrap().join("sql-attachment.sqlite");
+    let mut targets = vec![
+        "; DROP TABLE nodes; --".to_owned(),
+        "INSERT INTO metadata(key,value) VALUES ('sql-audit-sentinel','changed')".to_owned(),
+        "UPDATE nodes SET kind='hacked'".to_owned(),
+        "UPDATE metadata SET value='mutated' WHERE key='workspace_root'".to_owned(),
+        "DELETE FROM nodes".to_owned(),
+        "DELETE FROM files".to_owned(),
+        "DROP TABLE nodes".to_owned(),
+        "PRAGMA user_version=32767".to_owned(),
+        "PRAGMA journal_mode=WAL".to_owned(),
+    ];
+    targets.push(format!("ATTACH DATABASE '{}' AS pwn", attachment.display()));
+    let before = persisted_state(&w);
+    for target in &targets {
         let response = m.call("code_map_analyze", json!({"target":target}));
         assert_eq!(
             response["result"]["isError"], true,
@@ -917,11 +975,26 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
                 || message.contains("exactly one SELECT or WITH statement is allowed"),
             "{target}: {message}"
         );
+        assert_eq!(
+            persisted_state(&w),
+            before,
+            "SQL changed database state: {target}"
+        );
+        assert!(
+            !attachment.exists(),
+            "SQL created attached database: {target}"
+        );
     }
+    let multi_statement = "SELECT count(*) FROM nodes; DROP TABLE nodes";
     m.err(
         "code_map_analyze",
-        json!({"target":"SELECT count(*) FROM nodes; DROP TABLE nodes"}),
+        json!({"target":multi_statement}),
         "exactly one SELECT or WITH statement is allowed",
+    );
+    assert_eq!(
+        persisted_state(&w),
+        before,
+        "multi-statement SQL changed database state"
     );
     let count = m.ok(
         "code_map_analyze",
@@ -958,8 +1031,7 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
         ("impact", "cycle.py:a"),
         ("slice", "cycle.py:a"),
         ("unwired", ""),
-        ("cypher", "MATCH (n) RETURN n"),
-        ("raw_cypher", "MATCH (n) RETURN n"),
+        ("sql", "SELECT count(*) AS total FROM nodes"),
         ("doctor", ""),
         ("search", "a"),
     ] {
@@ -968,19 +1040,25 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
             json!({"operation":operation,"selector":selector,"depth":1,"limit":5}),
         );
     }
-    m.ok(
+    m.err(
         "code_map_query",
-        json!({"operation":"MATCH (n) RETURN n","limit":5}),
+        json!({"operation":"cypher","selector":"MATCH (n) RETURN n"}),
+        "supported: overview,inspect,explain,impact,slice,unwired,sql",
     );
     m.err(
         "code_map_query",
-        json!({"operation":"MATCH (n) RETURN n LIMIT 5"}),
-        "Pass limit as a separate tool argument",
+        json!({"operation":"sql","selector":"SELECT 1; SELECT 2"}),
+        "exactly one SELECT or WITH statement is allowed",
+    );
+    m.err(
+        "code_map_query",
+        json!({"operation":"sql"}),
+        "sql operation requires a SELECT or WITH selector",
     );
     m.err(
         "code_map_query",
         json!({"operation":"delete_all"}),
-        "supported: overview,inspect,explain,impact,slice,unwired,cypher",
+        "supported: overview,inspect,explain,impact,slice,unwired,sql",
     );
 
     assert!(m
@@ -1069,6 +1147,120 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
 }
 
 #[test]
+fn mcp_compact_summary_coverage_sql_and_impact_directions() {
+    use serde_json::json;
+    let workspace = Workspace::new();
+    workspace.write(
+        "graph.py",
+        "def target():\n    missing_dependency()\n    helper()\ndef helper(): return 1\ndef caller(): return target()\n",
+    );
+    workspace.write(
+        "record.rs",
+        "struct Record;\nimpl Record { fn persist(&self) {} }\nmod left { struct Item; impl Item { fn persist(&self) {} } }\nmod right { struct Item; impl Item { fn persist(&self) {} } }\n",
+    );
+    workspace.build();
+    let conn = rusqlite::Connection::open(workspace.db()).unwrap();
+    let (record_method, right_method, right_container, right_qualname): (String, String, String, String) = conn
+        .query_row(
+            "SELECT (SELECT method.id FROM nodes method WHERE method.path='record.rs' AND method.name='persist' AND method.line=2), method.id, receiver.id, receiver.qualname FROM nodes method JOIN edges e ON e.dst_public_id=method.id AND e.kind='contains' JOIN nodes receiver ON receiver.path=method.path AND receiver.name='Item' AND receiver.kind='struct' WHERE method.path='record.rs' AND method.name='persist' AND method.kind='method' AND method.line=(SELECT max(line) FROM nodes WHERE path='record.rs' AND name='persist' AND kind='method') AND receiver.qualname LIKE '%right%'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    drop(conn);
+    let mut m = Mcp::new(&workspace);
+
+    let inspected = m.ok("code_map_inspect", json!({"selector":"target"}));
+    assert_eq!(inspected["summary"]["signature"], "def target():");
+    assert!(inspected.get("coverage").is_none());
+    assert_eq!(inspected["summary"]["calls"]["inbound"]["count"], 1);
+    assert_eq!(inspected["summary"]["calls"]["outbound"]["count"], 1);
+    let rust_method = m.ok("code_map_inspect", json!({"selector":record_method}));
+    assert_eq!(rust_method["summary"]["container"]["name"], "Record");
+    assert_eq!(rust_method["summary"]["method"]["receiver"], "Record");
+    assert_eq!(rust_method["summary"]["method"]["receiver_name"], "self");
+    let module_qualified_method = m.ok("code_map_inspect", json!({"selector":right_method}));
+    assert_eq!(
+        module_qualified_method["summary"]["container"]["id"],
+        right_container
+    );
+    assert_eq!(
+        module_qualified_method["summary"]["container"]["qualname"],
+        right_qualname
+    );
+    assert!(right_qualname.contains("right"));
+    let with_coverage = m.ok(
+        "code_map_inspect",
+        json!({"selector":"target","include_coverage":true}),
+    );
+    assert!(with_coverage["coverage"]["total"].as_u64().unwrap() >= 1);
+    let explained = m.ok("code_map_explain", json!({"selector":"target"}));
+    assert_eq!(explained["summary"], inspected["summary"]);
+    let explained_with_coverage = m.ok(
+        "code_map_explain",
+        json!({"selector":"target","include_coverage":true}),
+    );
+    assert!(
+        explained_with_coverage["coverage"]["total"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    let queried_inspect = m.ok(
+        "code_map_query",
+        json!({"operation":"inspect","selector":"target"}),
+    );
+    assert_eq!(queried_inspect["summary"], inspected["summary"]);
+    assert!(queried_inspect.get("coverage").is_none());
+    let queried_with_coverage = m.ok(
+        "code_map_query",
+        json!({"operation":"explain","selector":"target","include_coverage":true}),
+    );
+    assert!(queried_with_coverage["coverage"]["total"].as_u64().unwrap() >= 1);
+
+    let inbound = m.ok("code_map_impact", json!({"selector":"target","depth":1}));
+    assert_eq!(inbound["direction"], "inbound");
+    assert!(inbound["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["name"] == "caller"));
+    let outbound = m.ok(
+        "code_map_impact",
+        json!({"selector":"target","direction":"outbound","depth":1}),
+    );
+    assert_eq!(outbound["direction"], "outbound");
+    assert!(outbound["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["name"] == "helper"));
+    m.err(
+        "code_map_impact",
+        json!({"selector":"target","direction":"sideways","depth":1}),
+        "impact direction must be inbound or outbound",
+    );
+
+    let query_outbound = m.ok(
+        "code_map_query",
+        json!({"operation":"impact","selector":"target","direction":"outbound","depth":1}),
+    );
+    assert_eq!(query_outbound["direction"], "outbound");
+    m.err(
+        "code_map_query",
+        json!({"operation":"impact","selector":"target","direction":"sideways","depth":1}),
+        "impact direction must be inbound or outbound",
+    );
+    let sql = m.ok(
+        "code_map_query",
+        json!({"operation":"sql","selector":"SELECT name FROM nodes WHERE kind='function' ORDER BY name","limit":1}),
+    );
+    assert_eq!(sql["rows"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(sql["rows"]["total"], 3);
+    assert!(sql["rows"]["generation"].is_string());
+}
+
+#[test]
 fn mcp_rejects_wide_graph_before_deep_traversal() {
     use serde_json::json;
     let w = Workspace::new();
@@ -1133,7 +1325,7 @@ fn mcp_enforces_page_row_and_time_budgets() {
     );
     m.err(
         "code_map_analyze",
-        json!({"target":"SELECT hex(zeroblob(2000000)) AS giant FROM nodes LIMIT 1"}),
+        json!({"target":"SELECT hex(zeroblob(3000000)) AS a, hex(zeroblob(3000000)) AS b FROM nodes LIMIT 1"}),
         "8 MiB row budget",
     );
     m.err("code_map_analyze", json!({"target":"WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<100000000) SELECT max(x) FROM seq"}), "2-second SQLite budget");

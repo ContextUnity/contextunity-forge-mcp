@@ -121,6 +121,7 @@ impl LanguageLinker for PythonLinker {
         member: &str,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         by_qual: &HashMap<&'a str, Vec<&'a Node>>,
+        exports: &crate::engine::linker::traits::PackageExports<'a>,
         lookup_key: &mut String,
     ) -> Vec<&'a Node> {
         if Path::new(&module.path).extension().is_none_or(|extension| extension != "py") {
@@ -133,29 +134,29 @@ impl LanguageLinker for PythonLinker {
             .flatten()
             .find(|node| node.kind == "module" && node.qualname == module.qualname)
         else {
-            return Vec::new();
+            return resolve_export(exports, module, member).into_iter().collect();
         };
         lookup_key.clear();
         lookup_key.push_str(&stub.qualname);
         lookup_key.push('.');
         lookup_key.push_str(member);
         let target = lookup_key.as_str();
-        by_qual
+        let mut candidates: Vec<_> = by_qual
             .get(target)
             .into_iter()
             .flatten()
             .copied()
             .filter(|node| node.path == stub.path)
-            .collect()
+            .collect();
+        if candidates.is_empty() {
+            candidates.extend(resolve_export(exports, module, member));
+        }
+        candidates
     }
 }
 
-pub(super) fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
-    path.ends_with("/__init__.py")
-        && facts
-            .nodes
-            .iter()
-            .any(|node| node.kind == "module" && node.language == "python")
+pub(super) fn needs_reference_identity(_path: &str, facts: &Facts) -> bool {
+    facts.nodes.iter().any(|node| node.kind == "module" && node.language == "python")
 }
 
 pub(super) fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool {
@@ -168,10 +169,7 @@ pub(super) fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -
             .iter()
             .filter(|reference| {
                 reference.kind == "imports"
-                    && reference
-                        .module
-                        .as_deref()
-                        .is_some_and(|module| module.starts_with('.'))
+                    && facts.nodes.iter().any(|node| node.kind == "module" && node.id == reference.source)
             })
             .map(|reference| {
                 (
@@ -193,61 +191,46 @@ pub(super) fn required_full_facts(
     affected: &BTreeSet<String>,
     catalog: &[(&str, &str)],
 ) -> BTreeSet<String> {
-    let Some(profile) = languages::by_id("python") else {
-        return BTreeSet::new();
-    };
-    let mut requested = HashSet::new();
-    for path in affected {
-        let Some(file) = facts.get(path) else {
-            continue;
-        };
-        if !file
-            .nodes
-            .iter()
-            .any(|node| node.kind == "module" && node.language == "python")
-        {
-            continue;
+    let Some(profile) = languages::by_id("python") else { return BTreeSet::new(); };
+    let mut requested = HashMap::<&str, HashSet<String>>::new();
+    let mut cross_workspace = HashSet::<String>::new();
+    for (path, file) in facts {
+        let Some(module) = file.nodes.iter().find(|node| node.kind == "module" && node.language == "python") else { continue; };
+        let workspace = languages::workspace_path(path).0;
+        for reference in file.references.iter().filter(|reference| reference.kind == "imports" && (affected.contains(path) || reference.source == module.id)) {
+            if let Some(import) = reference.module.as_deref().and_then(|name| profile.normalize_import(path, name)) {
+                let names = requested.entry(workspace).or_default();
+                if reference.expression != "*" && reference.module.as_deref() != Some(reference.expression.as_str()) {
+                    names.insert(format!("{}.{}", import.namespace, reference.expression));
+                }
+                if !import.relative && import.namespace.contains('.') {
+                    cross_workspace.insert(import.namespace.clone());
+                    if reference.expression != "*" && reference.module.as_deref() != Some(reference.expression.as_str()) {
+                        cross_workspace.insert(format!("{}.{}", import.namespace, reference.expression));
+                    }
+                }
+                names.insert(import.namespace);
+            }
         }
-        for reference in file
-            .references
-            .iter()
-            .filter(|reference| reference.kind == "imports")
-        {
-            if let Some(import) = reference
-                .module
-                .as_deref()
-                .and_then(|module| profile.normalize_import(path, module))
-            {
-                requested.insert(import.namespace);
+        for export in module.details["lazy_exports"].as_array().into_iter().flatten() {
+            if let Some(import) = lazy_import_path(module, export).and_then(|name| profile.normalize_import(path, &name)) {
+                if !import.relative && export["relative_to_module"].as_bool() != Some(true) && import.namespace.contains('.') { cross_workspace.insert(import.namespace.clone()); }
+                requested.entry(workspace).or_default().insert(import.namespace);
             }
         }
     }
-    if requested.is_empty() {
-        return BTreeSet::new();
-    }
-    catalog
-        .iter()
-        .filter_map(|(path, language)| {
-            if *language != "python" || !path.ends_with("/__init__.py") {
-                return None;
-            }
-            let (_, local_path) = languages::workspace_path(path);
-            let local_name = profile.module_name(local_path);
-            let src_name = local_path
-                .split_once("/src/")
-                .map(|(_, relative)| profile.module_name(relative))
-                .or_else(|| {
-                    local_path
-                        .strip_prefix("src/")
-                        .map(|relative| profile.module_name(relative))
-                });
-            (requested.contains(&local_name)
-                || src_name
-                    .as_ref()
-                    .is_some_and(|name| requested.contains(name)))
+    catalog.iter().filter_map(|(path, language)| {
+        if *language != "python" { return None; }
+        let (workspace, local_path) = languages::workspace_path(path);
+        let names = requested.get(workspace);
+        let matches = |name: &str| names.is_some_and(|names| names.contains(name)) || cross_workspace.contains(name);
+        let full_name = profile.module_name(path);
+        let local_name = profile.module_name(local_path);
+        let src_name = local_path.split_once("/src/").map(|(_, path)| profile.module_name(path))
+            .or_else(|| local_path.strip_prefix("src/").map(|path| profile.module_name(path)));
+        (matches(&full_name) || matches(&local_name) || src_name.as_ref().is_some_and(|name| matches(name)))
             .then(|| (*path).to_owned())
-        })
-        .collect()
+    }).collect()
 }
 
 pub(super) fn resolve_export<'a>(
@@ -262,6 +245,70 @@ pub(super) fn resolve_export<'a>(
         .flatten()
 }
 
+fn lazy_import_path(module: &Node, export: &serde_json::Value) -> Option<String> {
+    let path = export["module"].as_str()?;
+    if export["relative_to_module"].as_bool() != Some(true) || !path.starts_with('.') {
+        return Some(path.to_owned());
+    }
+    let levels = path.bytes().take_while(|byte| *byte == b'.').count();
+    let mut namespace = module.qualname.as_str();
+    for _ in 1..levels { namespace = namespace.rsplit_once('.')?.0; }
+    let tail = &path[levels..];
+    Some(if tail.is_empty() { namespace.to_owned() } else { format!("{namespace}.{tail}") })
+}
+
+fn export_provider<'a>(
+    path: &str,
+    module_path: &str,
+    modules: &HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>,
+    root: Option<&Path>,
+) -> Option<&'a Node> {
+    let profile = languages::by_id("python")?;
+    let import = profile.normalize_import_with_root(root, path, module_path)?;
+    let providers = modules.get(&profile.family())?.get(&import.namespace)?;
+    let workspace = languages::workspace_path(path).0;
+    let mut selected: Vec<_> = providers.iter().copied()
+        .filter(|provider| languages::workspace_path(&provider.path).0 == workspace).collect();
+    if selected.is_empty() && !import.relative && import.namespace.contains('.') {
+        selected.extend(providers.iter().copied().filter(|provider| languages::workspace_path(&provider.path).0 != workspace));
+    }
+    prefer_runtime_module(&mut selected);
+    match selected.as_slice() { [provider] => Some(*provider), _ => None }
+}
+
+struct ExportBinding<'a> {
+    owner: &'a str,
+    name: &'a str,
+    provider: Option<&'a Node>,
+    member: Option<&'a str>,
+}
+
+fn register_export<'a>(
+    exports: &mut PackageExports<'a>,
+    pending: &mut Vec<(&'a str, &'a str, &'a Node, &'a str)>,
+    seen: &mut HashSet<(&'a str, &'a str)>,
+    binding: ExportBinding<'a>,
+    by_module: &HashMap<&str, Vec<&'a Node>>,
+) {
+    let ExportBinding {owner, name, provider, member} = binding;
+    if !seen.insert((owner, name)) {
+        exports.entry(owner).or_default().insert(name, None);
+        pending.retain(|(path, alias, _, _)| *path != owner || *alias != name);
+        return;
+    }
+    let Some(provider) = provider else { return; };
+    let target = exports.entry(owner).or_default().entry(name).or_insert(None);
+    let Some(member) = member else { *target = Some(provider); return; };
+    let qualified = format!("{}.{}", provider.qualname, member);
+    let mut candidates = by_module.get(provider.path.as_str()).into_iter().flatten().copied()
+        .filter(|node| node.kind != "component" && node.qualname == qualified);
+    if let Some(candidate) = candidates.next() {
+        if candidates.next().is_none() { *target = Some(candidate); }
+    } else {
+        pending.push((owner, name, provider, member));
+    }
+}
+
 pub(super) fn package_exports<'a>(
     all: &'a BTreeMap<String, Facts>,
     modules_by_namespace: &HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>,
@@ -269,77 +316,54 @@ pub(super) fn package_exports<'a>(
     root: Option<&Path>,
 ) -> PackageExports<'a> {
     let mut exports = HashMap::new();
-    let Some(profile) = languages::by_id("python") else {
-        return exports;
-    };
+    let mut pending = Vec::new();
+    let mut seen = HashSet::new();
     for (path, facts) in all {
-        if !path.ends_with("/__init__.py") {
-            continue;
-        }
-        let Some(module) = facts
-            .nodes
-            .iter()
-            .find(|node| node.kind == "module" && node.language == "python")
-        else {
-            continue;
-        };
-        for reference in facts
-            .references
-            .iter()
-            .filter(|reference| reference.kind == "imports" && reference.source == module.id)
-        {
-            let (Some(alias), Some(import_path)) =
-                (reference.alias.as_deref(), reference.module.as_deref())
-            else {
-                continue;
-            };
-            if !import_path.starts_with('.')
-                || module.details["rebindings"]
-                    .as_array()
-                    .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(alias)))
-            {
+        let Some(module) = facts.nodes.iter().find(|node| node.kind == "module" && node.language == "python") else { continue; };
+        let rebound = |name| module.details["rebindings"].as_array()
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(name)));
+        for reference in facts.references.iter().filter(|reference| reference.kind == "imports" && reference.source == module.id) {
+            let (Some(alias), Some(import_path)) = (reference.alias.as_deref(), reference.module.as_deref()) else { continue; };
+            if rebound(alias) { continue; }
+            if reference.expression == import_path && import_path.contains('.')
+                && import_path.split('.').next() == Some(alias) {
                 continue;
             }
-            let target = profile
-                .normalize_import_with_root(root, path, import_path)
-                .filter(|import| import.relative)
-                .and_then(|import| {
-                    modules_by_namespace
-                        .get(&profile.family())
-                        .and_then(|namespaces| namespaces.get(&import.namespace))
-                })
-                .map(|providers| {
-                    providers
-                        .iter()
-                        .copied()
-                        .filter(|provider| {
-                            languages::workspace_path(&provider.path).0
-                                == languages::workspace_path(path).0
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .and_then(|mut providers| {
-                    prefer_runtime_module(&mut providers);
-                    let [provider] = providers.as_slice() else {
-                        return None;
-                    };
-                    let target_name = format!("{}.{}", provider.qualname, reference.expression);
-                    let mut candidates = by_module
-                        .get(provider.path.as_str())
-                        .into_iter()
-                        .flatten()
-                        .copied()
-                        .filter(|node| node.qualname == target_name && node.kind != "component");
-                    let candidate = candidates.next()?;
-                    candidates.next().is_none().then_some(candidate)
-                });
-            exports
-                .entry(path.as_str())
-                .or_insert_with(HashMap::new)
-                .entry(alias)
-                .and_modify(|existing| *existing = None)
-                .or_insert(target);
+            let mut provider = export_provider(path, import_path, modules_by_namespace, root);
+            let mut member = (reference.module.as_deref() != Some(reference.expression.as_str())).then_some(reference.expression.as_str());
+            if let (Some(parent), Some(name)) = (provider, member) {
+                let qualified = format!("{}.{}", parent.qualname, name);
+                let declared = by_module.get(parent.path.as_str()).into_iter().flatten().any(|node| node.qualname == qualified && node.kind != "component");
+                if !declared {
+                    let child_path = format!("{import_path}{}{name}", if import_path.ends_with('.') { "" } else { "." });
+                    if let Some(child) = export_provider(path, &child_path, modules_by_namespace, root) {
+                        provider = Some(child);
+                        member = None;
+                    }
+                }
+            }
+            register_export(&mut exports, &mut pending, &mut seen, ExportBinding { owner: path, name: alias, provider, member }, by_module);
         }
+        for export in module.details["lazy_exports"].as_array().into_iter().flatten() {
+            let Some(name) = export["name"].as_str() else { continue; };
+            if rebound(name) { continue; }
+            let Some(import_path) = lazy_import_path(module, export) else { continue; };
+            let provider = export_provider(path, &import_path, modules_by_namespace, root)
+                .filter(|provider| export["relative_to_module"].as_bool() != Some(true)
+                    || languages::workspace_path(&provider.path).0 == languages::workspace_path(path).0);
+            register_export(&mut exports, &mut pending, &mut seen, ExportBinding { owner: path, name, provider, member: export["member"].as_str() }, by_module);
+        }
+    }
+    loop {
+        let before = pending.len();
+        pending.retain(|(owner, name, provider, member)| {
+            let target = resolve_export(&exports, provider, member);
+            if let Some(target) = target {
+                exports.get_mut(owner).expect("pending export owner exists").insert(name, Some(target));
+                false
+            } else { true }
+        });
+        if pending.len() == before { break; }
     }
     exports
 }

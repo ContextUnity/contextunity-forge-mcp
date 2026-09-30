@@ -27,11 +27,71 @@ fn parse_package_name(source: &str) -> Option<&str> {
     None
 }
 
+fn dependency_path(line: &str) -> Option<String> {
+    let candidate = line.split_whitespace().next()?;
+    let path = candidate.trim_matches(['\'', '"']);
+    (path.contains('.') || path.contains('/')).then(|| path.to_owned())
+}
+
 pub struct Go;
 pub static GO: Go = Go;
 impl LanguageProfile for Go {
     fn id(&self) -> &'static str {
         "go"
+    }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &["go.mod"]
+    }
+    fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
+        if filename != "go.mod" {
+            return Vec::new();
+        }
+        let mut dependencies = Vec::new();
+        let mut in_require_block = false;
+        for line in content.lines() {
+            let line = line.split_once("//").map_or(line, |(before, _)| before).trim();
+            if line.is_empty() {
+                continue;
+            }
+            if in_require_block {
+                if line.starts_with(')') {
+                    in_require_block = false;
+                } else if let Some(module) = dependency_path(line) {
+                    dependencies.push(module);
+                }
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("require") {
+                if !rest
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_whitespace() || character == '(')
+                {
+                    continue;
+                }
+                let rest = rest.trim();
+                if rest.starts_with('(') {
+                    in_require_block = true;
+                } else if let Some(module) = dependency_path(rest) {
+                    dependencies.push(module);
+                }
+            }
+        }
+        dependencies.sort();
+        dependencies.dedup();
+        dependencies
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        const STANDARD_PACKAGES: &[&str] = &[
+            "archive", "bufio", "bytes", "cmp", "compress", "container", "context",
+            "crypto", "database", "debug", "embed", "encoding", "errors", "expvar",
+            "flag", "fmt", "go", "hash", "html", "image", "index", "io", "iter",
+            "log", "maps", "math", "mime", "net", "os", "path", "plugin", "reflect",
+            "regexp", "runtime", "slices", "sort", "strconv", "strings", "sync",
+            "syscall", "testing", "text", "time", "unicode", "unique", "unsafe",
+        ];
+        let root = module.split('/').next().unwrap_or(module);
+        STANDARD_PACKAGES.contains(&root)
     }
     fn extensions(&self) -> &'static [&'static str] {
         &["go"]
@@ -144,6 +204,26 @@ impl LanguageProfile for Go {
         _name: &str,
         _file: &FileContext,
     ) -> SymbolMetadata {
+        if node.kind() == "method_declaration" {
+            let receiver = field(node, source, "receiver").map(str::to_owned);
+            let param = node
+                .child_by_field_name("receiver")
+                .and_then(|recv| recv.named_child(0));
+            let receiver_type = param
+                .and_then(|p| p.child_by_field_name("type"))
+                .map(|ty| text(ty, source).trim().trim_start_matches('*').to_owned());
+            let receiver_name = param
+                .and_then(|p| p.child_by_field_name("name"))
+                .map(|n| text(n, source).trim().to_owned());
+            return SymbolMetadata {
+                receiver,
+                receiver_name,
+                receiver_type,
+                is_method: Some(true),
+                is_static: Some(false),
+                ..Default::default()
+            };
+        }
         SymbolMetadata {
             receiver: field(node, source, "receiver").map(str::to_owned),
             ..Default::default()

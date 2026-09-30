@@ -15,6 +15,10 @@ pub struct CachedConnection {
     identity: Identity,
     connection: rusqlite::Connection,
     adapter_digest: String,
+    workspace_root: PathBuf,
+    database_path: PathBuf,
+    adapter_roots: Vec<PathBuf>,
+    linked_workspaces: Vec<scanner::LinkedWorkspace>,
     inventory_checked_at: Option<Instant>,
     freshness: Option<Freshness>,
 }
@@ -63,6 +67,16 @@ impl Server {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         conn.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN DEFERRED")?;
+        let has_metadata_table: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='metadata')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_metadata_table {
+            crate::db::reader::validate_database_header(&self.db)?;
+            crate::db::reader::validate_database_integrity(&conn)?;
+            return Ok(true);
+        }
         crate::db::reader::validate_workspace(&conn, &self.root)?;
         let engine: String = conn.query_row(
             "SELECT value FROM metadata WHERE key='indexer_engine'",
@@ -78,6 +92,7 @@ impl Server {
             |r| r.get(0),
         )?;
         if schema_version != crate::engine::scanner::ENGINE_SCHEMA_VERSION {
+            crate::db::reader::validate_database_integrity(&conn)?;
             return Ok(true);
         }
         let semantics: Option<String> = conn
@@ -88,9 +103,11 @@ impl Server {
             )
             .optional()?;
         if semantics.as_deref() != Some(crate::engine::scanner::INDEX_SEMANTICS_VERSION) {
+            crate::db::reader::validate_database_integrity(&conn)?;
             return Ok(true);
         }
         let admit_rebuild = || -> Result<bool> {
+            crate::db::reader::validate_database_integrity(&conn)?;
             crate::db::reader::open(&self.db, &self.root)?;
             Ok(true)
         };
@@ -160,13 +177,32 @@ impl Server {
         let mut refresh = "none";
         for _ in 0..3 {
             let adapter = scanner::load_adapter(&root, None)?;
-            if self.check_rebuild_needed(&adapter)? {
+            let admitted_identity = slot
+                .as_ref()
+                .filter(|cached| {
+                    cached.workspace_root == root
+                        && cached.database_path == self.db
+                        && cached.adapter_digest == adapter.digest
+                        && cached.adapter_roots == adapter.roots
+                        && cached.linked_workspaces == adapter.linked_workspaces
+                })
+                .and_then(|cached| {
+                    if !std::fs::symlink_metadata(&self.db).is_ok_and(|metadata| metadata.is_file())
+                    {
+                        return None;
+                    }
+                    crate::db::cache::identity(&self.db)
+                        .ok()
+                        .filter(|identity| *identity == cached.identity)
+                });
+            if admitted_identity.is_none() && self.check_rebuild_needed(&adapter)? {
                 *slot = None;
                 crate::db::writer::build(&root, &self.db, None)?;
                 refresh = "rebuild";
                 continue;
             }
-            let identity = crate::db::cache::identity(&self.db)?;
+            let identity =
+                admitted_identity.map_or_else(|| crate::db::cache::identity(&self.db), Ok)?;
             if slot
                 .as_ref()
                 .is_none_or(|cached| cached.identity != identity)
@@ -176,6 +212,10 @@ impl Server {
                     identity: identity.clone(),
                     connection: crate::db::reader::open(&self.db, &root)?,
                     adapter_digest: adapter.digest.clone(),
+                    workspace_root: root.clone(),
+                    database_path: self.db.clone(),
+                    adapter_roots: adapter.roots.clone(),
+                    linked_workspaces: adapter.linked_workspaces.clone(),
                     inventory_checked_at: None,
                     freshness: None,
                 });
@@ -208,6 +248,22 @@ impl Server {
             let previous = crate::db::reader::inventory_snapshot(conn)?;
             let started = Instant::now();
             let scan = scanner::scan_reusing(&root, &adapter, &previous)?;
+            let manifests =
+                crate::engine::languages::manifests::DependencyRegistry::collect_with_adapter(
+                    &root,
+                    Some(&adapter),
+                );
+            let previous_manifest_digest = conn.query_row(
+                "SELECT value FROM metadata WHERE key='manifest_digest'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?;
+            if manifests.digest() != previous_manifest_digest {
+                *slot = None;
+                crate::db::writer::build(&root, &self.db, adapter.adapter_path.as_deref())?;
+                refresh = "rebuild";
+                continue;
+            }
             let inventory_scan_ms = started.elapsed().as_secs_f64() * 1000.;
             let previous: BTreeMap<_, _> = previous
                 .iter()

@@ -175,11 +175,10 @@ fn open_or_rebuild(db: &Path, root: &Path) -> Result<crate::db::reader::LockedCo
         Ok(conn) => Ok(conn),
         Err(err) => {
             let msg = err.to_string();
-            if msg.contains("incompatible")
-                || msg.contains("rebuild index")
-                || msg.contains("No such file")
-                || !db.exists()
-            {
+            let requires_rebuild = err
+                .downcast_ref::<crate::db::reader::IndexRebuildRequired>()
+                .is_some();
+            if requires_rebuild || !db.exists() {
                 eprintln!(
                     "Forge index incompatible or missing ({msg}); auto-rebuilding for {}...",
                     root.display()
@@ -197,6 +196,7 @@ impl Cli {
         let root = command_root(self.root.as_deref(), None)?;
         let db = self.db.clone().unwrap_or_else(|| default_db(&root));
         let command = self.command.unwrap_or(Command::Serve);
+        let cmd_desc = format!("{command:?}");
         let result: Value = match command {
             Command::Serve => {
                 crate::mcp::server::serve(root, db).await?;
@@ -324,6 +324,11 @@ impl Cli {
             }
         };
         let formatted = serde_json::to_string_pretty(&result)?;
+        if let Ok(adapter) = crate::engine::scanner::load_adapter(&root, None) {
+            if adapter.debug {
+                crate::core::debug_log::log_command(&root, &cmd_desc, None, &formatted);
+            }
+        }
         if let Err(e) = writeln!(io::stdout(), "{formatted}") {
             if e.kind() == io::ErrorKind::BrokenPipe {
                 return Ok(());

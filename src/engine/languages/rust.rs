@@ -17,11 +17,64 @@ pub fn kind(kind: &str) -> Option<&'static str> {
     }
 }
 
+fn method_owner(node: Syntax<'_>) -> Option<Syntax<'_>> {
+    let mut parent = node.parent();
+    while let Some(ancestor) = parent {
+        match ancestor.kind() {
+            "declaration_list" => parent = ancestor.parent(),
+            "impl_item" | "trait_item" => return Some(ancestor),
+            _ => return None,
+        }
+    }
+    None
+}
+
 pub struct Rust;
 pub static RUST: Rust = Rust;
 impl LanguageProfile for Rust {
     fn id(&self) -> &'static str {
         "rust"
+    }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &["Cargo.toml"]
+    }
+    fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
+        if filename != "Cargo.toml" {
+            return Vec::new();
+        }
+        let mut dependencies = Vec::new();
+        super::manifest::visit_toml_pairs(content, &mut |path, _value| {
+            let parts: Vec<_> = path.split('.').collect();
+            let is_dependency_section = |section: &str| {
+                matches!(
+                    section,
+                    "dependencies" | "dev-dependencies" | "build-dependencies"
+                )
+            };
+            let dependency_name = match parts.as_slice() {
+                [section, name, ..] if is_dependency_section(section) => Some(*name),
+                ["workspace", "dependencies", name, ..] => Some(*name),
+                ["target", _, section, name, ..] if is_dependency_section(section) => {
+                    Some(*name)
+                }
+                _ => None,
+            };
+            if let Some(name) = dependency_name {
+                let name = name.replace('-', "_");
+                if !name.is_empty() {
+                    dependencies.push(name);
+                }
+            }
+        });
+        dependencies.sort();
+        dependencies.dedup();
+        dependencies
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        matches!(
+            module.split("::").next(),
+            Some("std" | "core" | "alloc" | "proc_macro")
+        )
     }
     fn extensions(&self) -> &'static [&'static str] {
         &["rs"]
@@ -34,6 +87,15 @@ impl LanguageProfile for Rust {
     }
     fn symbol_kind(&self, k: &str) -> Option<&'static str> {
         kind(k)
+    }
+    fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
+        if matches!(node.kind(), "function_item" | "function_signature_item")
+            && method_owner(node).is_some()
+        {
+            Some("method")
+        } else {
+            self.symbol_kind(node.kind())
+        }
     }
     fn node_prefix(&self, kind: &str) -> &'static str {
         if kind == "macro" {
@@ -120,6 +182,8 @@ impl LanguageProfile for Rust {
                 | "f32"
                 | "f64"
                 | "String"
+                | "Path"
+                | "PathBuf"
                 | "Vec"
                 | "Option"
                 | "Result"
@@ -218,6 +282,71 @@ impl LanguageProfile for Rust {
             if let Some(ret) = ctx.node.child_by_field_name("return_type") {
                 relations::type_references(facts, ctx.owner, ret, ctx.source, ctx.line());
             }
+        }
+    }
+    fn metadata(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        _name: &str,
+        _file: &FileContext,
+    ) -> SymbolMetadata {
+        let mut param_types = BTreeMap::new();
+        if matches!(node.kind(), "function_item" | "function_signature_item") {
+            if let Some(parameters) = node.child_by_field_name("parameters") {
+                let mut cursor = parameters.walk();
+                for parameter in parameters.named_children(&mut cursor) {
+                    let Some(pattern) = parameter.child_by_field_name("pattern") else {
+                        continue;
+                    };
+                    let Some(ty) = parameter.child_by_field_name("type") else {
+                        continue;
+                    };
+                    let pattern_text = text(pattern, source).trim();
+                    let name = pattern_text
+                        .strip_prefix("mut ")
+                        .or_else(|| pattern_text.strip_prefix("ref "))
+                        .unwrap_or(pattern_text)
+                        .trim();
+                    if name
+                        .chars()
+                        .all(|character| character.is_alphanumeric() || character == '_')
+                        && !name.is_empty()
+                    {
+                        param_types.insert(name.to_owned(), text(ty, source).trim().to_owned());
+                    }
+                }
+            }
+        }
+        let Some(owner) = method_owner(node) else {
+            return SymbolMetadata {
+                param_types,
+                ..Default::default()
+            };
+        };
+        let receiver_type = if owner.kind() == "impl_item" {
+            owner
+                .child_by_field_name("type")
+                .map(|receiver| text(receiver, source).trim().to_owned())
+        } else {
+            Some("Self".into())
+        };
+        let has_receiver = node
+            .child_by_field_name("parameters")
+            .is_some_and(|parameters| {
+                let mut cursor = parameters.walk();
+                let has_receiver = parameters
+                    .named_children(&mut cursor)
+                    .any(|parameter| parameter.kind() == "self_parameter");
+                has_receiver
+            });
+        SymbolMetadata {
+            param_types,
+            receiver_name: has_receiver.then(|| "self".into()),
+            receiver_type,
+            is_method: Some(true),
+            is_static: Some(!has_receiver),
+            ..Default::default()
         }
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {

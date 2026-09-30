@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-python")]
 
 use contextunity_forge_mcp::{
-    core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions},
+    core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols, traversal, writer},
 };
 use rusqlite::{
@@ -53,6 +53,109 @@ fn options(limit: usize) -> QueryOptions {
     QueryOptions::resolve(&ResponsePolicy::default(), Some(limit), 0, None, None).unwrap()
 }
 
+#[test]
+fn exact_symbol_search_bypasses_fts_and_keeps_scope_and_kind_filters() {
+    let workspace = Workspace::new();
+    workspace.write("pkg/service.py", "class Server:\n    def admit(self): pass\n\ndef admission():\n    \"\"\"admit clients\"\"\"\n    pass\n");
+    workspace.write("other/service.py", "def admit(): pass\n");
+    let conn = workspace.build();
+    conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Read {
+            table_name: "node_search" | "edges_raw" | "shared_owners_raw",
+            ..
+        } => Authorization::Deny,
+        _ => Authorization::Allow,
+    }));
+    let exact = symbols::search_paged_in_path_with_options(
+        &conn,
+        "ADMIT",
+        Some("method"),
+        Some("pkg"),
+        false,
+        true,
+        &options(30),
+    )
+    .unwrap();
+    assert_eq!(exact["nodes"]["total"], 1);
+    assert_eq!(exact["nodes"]["items"][0]["name"], "admit");
+    let qualified_name: String = conn
+        .query_row(
+            "SELECT qualname FROM nodes WHERE name='admit' AND path='pkg/service.py'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(qualified_name.ends_with("Server.admit"));
+    let qualified = symbols::search_paged_in_path_with_options(
+        &conn,
+        &qualified_name,
+        None,
+        None,
+        false,
+        true,
+        &options(30),
+    )
+    .unwrap();
+    assert_eq!(qualified["nodes"]["total"], 1);
+    assert_eq!(
+        symbols::search_paged_in_path_with_options(
+            &conn,
+            "admit",
+            Some("class"),
+            None,
+            false,
+            true,
+            &options(30),
+        )
+        .unwrap()["nodes"]["total"],
+        0
+    );
+    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    let plan = reader::rows(&conn,
+        "EXPLAIN QUERY PLAN SELECT n.id FROM nodes n WHERE (n.name=?1 COLLATE NOCASE OR n.qualname=?1 COLLATE NOCASE) AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY n.path,n.line,n.id",
+        &[&"admit", &"method", &"pkg", &"pkg/", &"pkg0", &false], 30).unwrap();
+    let plan = serde_json::to_string(&plan).unwrap();
+    assert!(plan.contains("idx_nodes_name_nocase"), "{plan}");
+    assert!(plan.contains("idx_nodes_qualname_nocase"), "{plan}");
+    assert!(!plan.contains("SCAN n"), "{plan}");
+    let default: contextunity_forge_mcp::mcp::tools::SearchSymbols =
+        serde_json::from_value(serde_json::json!({"pattern":"admit"})).unwrap();
+    assert!(!default.exact);
+    let enabled: contextunity_forge_mcp::mcp::tools::SearchSymbols =
+        serde_json::from_value(serde_json::json!({"pattern":"admit", "exact":true})).unwrap();
+    assert!(enabled.exact);
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn prefix_search_finds_namespaced_rust_methods_using_fts_candidates() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "server.rs",
+        "struct Server;\nimpl Server { fn admit(&self) {} fn reject(&self) {} }\n",
+    );
+    drop(workspace.build());
+    let conn = Connection::open(workspace.db()).unwrap();
+    conn.execute(
+        "UPDATE nodes SET name='Server::admit',qualname='Server::admit' WHERE name='admit'",
+        [],
+    )
+    .unwrap();
+    let found = symbols::search_paged(&conn, "admit*", Some("method"), &options(30)).unwrap();
+    assert_eq!(found["nodes"]["total"], 1);
+    assert_eq!(found["nodes"]["items"][0]["name"], "Server::admit");
+    let plan = reader::rows(&conn,
+        "EXPLAIN QUERY PLAN SELECT n.id FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (n.name LIKE ?2 ESCAPE '\\' OR n.qualname LIKE ?2 ESCAPE '\\' OR n.qualname LIKE '%::' || ?2 ESCAPE '\\' OR n.qualname LIKE '%.' || ?2 ESCAPE '\\')",
+        &[&"\"admit\"*", &"admit%"], 30).unwrap();
+    let plan = serde_json::to_string(&plan).unwrap();
+    assert!(plan.contains("VIRTUAL TABLE INDEX"), "{plan}");
+    assert!(
+        plan.contains("SEARCH n USING INTEGER PRIMARY KEY"),
+        "{plan}"
+    );
+    assert!(!plan.contains("SCAN n\""), "{plan}");
+}
+
 fn continue_page(options: &mut QueryOptions, page: &Value) -> bool {
     assert_eq!(page["limit"], options.limit);
     assert_eq!(page["offset"], options.offset);
@@ -66,6 +169,55 @@ fn continue_page(options: &mut QueryOptions, page: &Value) -> bool {
     options.offset += emitted;
     options.generation = Some(page["generation"].as_str().unwrap().to_owned());
     true
+}
+
+fn persisted_state(conn: &Connection) -> Value {
+    let schema = reader::rows(
+        conn,
+        "SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name,tbl_name",
+        &[],
+        100_000,
+    )
+    .unwrap();
+    let table_names = {
+        let mut statement = conn
+            .prepare(
+                "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let tables = table_names
+        .into_iter()
+        .map(|name| {
+            let quoted_name = name.replace('"', "\"\"");
+            let mut rows = reader::rows(
+                conn,
+                &format!("SELECT * FROM \"{quoted_name}\""),
+                &[],
+                100_000,
+            )
+            .unwrap();
+            rows.sort_by_key(|row| row.to_string());
+            (name, rows)
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema": schema,
+        "tables": tables,
+        "pragmas": {
+            "application_id": conn.query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0)).unwrap(),
+            "freelist_count": conn.query_row("PRAGMA freelist_count", [], |row| row.get::<_, i64>(0)).unwrap(),
+            "journal_mode": conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0)).unwrap(),
+            "page_count": conn.query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0)).unwrap(),
+            "schema_version": conn.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0)).unwrap(),
+            "user_version": conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(),
+        },
+    })
 }
 
 #[test]
@@ -312,24 +464,40 @@ fn sql_pages_count_full_results_preserve_order_and_reject_writes() {
             .map(|i| format!("f{i:03}"))
             .collect::<Vec<_>>()
     );
-    assert!(reader::analyze_paged(&conn, "DELETE FROM nodes", None, &options(8)).is_err());
-    assert!(reader::analyze_paged(
-        &conn,
+    let before = persisted_state(&conn);
+    let attachment = workspace
+        .db()
+        .parent()
+        .unwrap()
+        .join("sql-attachment.sqlite");
+    let attach_sql = format!("ATTACH DATABASE '{}' AS injected", attachment.display());
+    for sql in [
+        "DELETE FROM nodes",
+        "DELETE FROM files",
         "WITH n AS (SELECT 1) DELETE FROM nodes",
-        None,
-        &options(8)
-    )
-    .is_err());
-    assert!(reader::analyze_paged(&conn, "SELECT 1; SELECT 2", None, &options(8)).is_err());
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM nodes WHERE kind='function'",
-            [],
-            |r| r.get::<_, usize>(0)
-        )
-        .unwrap(),
-        73
-    );
+        "UPDATE nodes SET kind='hacked'",
+        "UPDATE metadata SET value='mutated' WHERE key='workspace_root'",
+        "INSERT INTO metadata(key,value) VALUES ('sql-audit-sentinel','changed')",
+        "DROP TABLE nodes",
+        "PRAGMA user_version=32767",
+        "PRAGMA journal_mode=WAL",
+        "SELECT 1; SELECT 2",
+        "SELECT 1; DELETE FROM nodes",
+    ]
+    .into_iter()
+    .chain(std::iter::once(attach_sql.as_str()))
+    {
+        assert!(
+            reader::analyze_paged(&conn, sql, None, &options(8)).is_err(),
+            "accepted unsafe SQL: {sql}"
+        );
+        assert_eq!(
+            persisted_state(&conn),
+            before,
+            "SQL changed database state: {sql}"
+        );
+        assert!(!attachment.exists(), "SQL created attached database: {sql}");
+    }
 }
 
 #[test]
@@ -601,6 +769,266 @@ fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
         full_edge["incoming"]["items"][0]["dst_public_id"],
         full_edge["node"]["id"]
     );
+}
+
+#[test]
+fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
+    let workspace = Workspace::new();
+    let mut code = String::from("def target(value: int):\n    \"\"\"Target documentation.\"\"\"\n");
+    for i in 0..7 {
+        code.push_str(&format!("    helper_{i:02}()\n"));
+    }
+    code.push_str("    missing_dependency()\n\n");
+    for i in 0..7 {
+        code.push_str(&format!("def helper_{i:02}(): return {i}\n"));
+        code.push_str(&format!("def caller_{i:02}(): return target({i})\n"));
+    }
+    workspace.write("graph.py", &code);
+    let conn = workspace.build();
+    let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
+
+    let inspected =
+        symbols::inspect_paged(&conn, &workspace.0, "target", false, &source, &options(20))
+            .unwrap();
+    let summary = &inspected["summary"];
+    assert_eq!(summary["signature"], "def target(value: int):");
+    assert_eq!(summary["docstring"], "\"\"\"Target documentation.\"\"\"");
+    assert_eq!(summary["container"]["kind"], "module");
+    assert_eq!(summary["calls"]["inbound"]["count"], 7);
+    assert_eq!(summary["calls"]["inbound"]["occurrences"], 7);
+    assert_eq!(summary["calls"]["outbound"]["count"], 7);
+    assert_eq!(summary["calls"]["outbound"]["occurrences"], 7);
+    assert_eq!(
+        summary["calls"]["inbound"]["preview"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+    assert_eq!(
+        summary["calls"]["outbound"]["preview"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+    assert_eq!(
+        summary["calls"]["inbound"]["preview"][0]["name"],
+        "caller_00"
+    );
+    assert_eq!(
+        summary["calls"]["outbound"]["preview"][0]["name"],
+        "helper_00"
+    );
+    assert!(inspected.get("coverage").is_none());
+
+    let explained =
+        symbols::explain_paged(&conn, &workspace.0, "target", None, &source, &options(20)).unwrap();
+    assert_eq!(explained["summary"], inspected["summary"]);
+    assert!(explained.get("coverage").is_none());
+
+    let with_coverage = symbols::inspect_paged_with_coverage(
+        &conn,
+        &workspace.0,
+        "target",
+        false,
+        &source,
+        &options(20),
+        CoverageOptions {
+            include_coverage: true,
+        },
+    )
+    .unwrap();
+    assert!(with_coverage["coverage"]["total"].as_u64().unwrap() >= 1);
+    assert_eq!(with_coverage["summary"], inspected["summary"]);
+}
+
+#[test]
+fn compact_summary_preserves_the_exact_nested_python_container() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "nested.py",
+        "class A:\n    class Item:\n        def handle(self): return 1\n\nclass B:\n    class Item:\n        def handle(self): return 2\n",
+    );
+    let conn = workspace.build();
+    let (method_id, receiver_type): (String, String) = conn
+        .query_row(
+            "SELECT id,json_extract(details,'$.receiver_type') FROM nodes WHERE path='nested.py' AND name='handle' AND kind='method' ORDER BY line DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(receiver_type, "Item");
+    let (expected_id, expected_qualname, expected_line): (String, String, usize) = conn
+        .query_row(
+            "SELECT parent.id,parent.qualname,parent.line FROM edges e JOIN nodes parent ON parent.id=e.src_public_id WHERE e.dst_public_id=?1 AND e.kind='contains' AND parent.kind='class'",
+            [&method_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(expected_qualname, "nested.B.Item");
+
+    let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
+    let inspected = symbols::inspect_paged(
+        &conn,
+        &workspace.0,
+        &method_id,
+        false,
+        &source,
+        &options(10),
+    )
+    .unwrap();
+    assert_eq!(inspected["summary"]["container"]["id"], expected_id);
+    assert_eq!(
+        inspected["summary"]["container"]["qualname"],
+        expected_qualname
+    );
+    assert_eq!(inspected["summary"]["container"]["line"], expected_line);
+}
+
+#[test]
+fn compact_summary_call_counts_obey_vm_budget_and_reset_connection() {
+    let workspace = Workspace::new();
+    workspace.write("graph.py", "def target(): pass\n");
+    drop(workspace.build());
+
+    let conn = Connection::open(workspace.db()).unwrap();
+    let target_id: String = conn
+        .query_row(
+            "SELECT id FROM nodes WHERE path='graph.py' AND name='target'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // A bounded virtual fan-out forces the normal inspect path through its SQLite VM budget.
+    conn.execute_batch(&format!(
+        "CREATE TEMP VIEW edges AS
+         WITH RECURSIVE fanout(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM fanout WHERE n<10000000)
+         SELECT * FROM main.edges WHERE kind<>'calls'
+         UNION ALL
+         SELECT '{target_id}','{target_id}','calls','graph.py',1,'forced-budget','exact',1 FROM fanout;
+         PRAGMA query_only=ON;"
+    ))
+    .unwrap();
+    let source =
+        SourceOptions::resolve(&ResponsePolicy::default(), Some(false), None, None, 0).unwrap();
+    let started = std::time::Instant::now();
+    let error = symbols::inspect_paged(
+        &conn,
+        &workspace.0,
+        &target_id,
+        false,
+        &source,
+        &options(10),
+    )
+    .unwrap_err();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "the aggregate count should stop at QueryBudget, elapsed {:?}",
+        started.elapsed()
+    );
+    assert!(
+        error.to_string().contains("interrupt"),
+        "expected the call-count aggregate to be interrupted by QueryBudget, got: {error}"
+    );
+
+    let next_query: i64 = conn
+        .query_row(
+            "WITH RECURSIVE check_rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM check_rows WHERE n<10000) SELECT max(n) FROM check_rows",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(next_query, 10_000);
+}
+
+#[test]
+fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
+    let workspace = Workspace::new();
+    let mut code = (0..21)
+        .map(|i| format!("def f{i:02}(): return {i}\n"))
+        .collect::<String>();
+    code.push_str(
+        "def helper(): return 1\ndef target(): return helper()\ndef caller(): return target()\n",
+    );
+    workspace.write("graph.py", &code);
+    let conn = workspace.build();
+    let sql = "SELECT name FROM nodes WHERE kind='function' AND name LIKE 'f%' ORDER BY name";
+    let mut query = options(6);
+    let mut names = Vec::new();
+    loop {
+        let result =
+            traversal::query_paged_with_direction(&conn, "sql", Some(sql), 1, None, &query)
+                .unwrap();
+        let page = &result["rows"];
+        assert_eq!(page["total"], 21);
+        names.extend(
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["name"].as_str().unwrap().to_owned()),
+        );
+        if !continue_page(&mut query, page) {
+            break;
+        }
+    }
+    assert_eq!(
+        names,
+        (0..21).map(|i| format!("f{i:02}")).collect::<Vec<_>>()
+    );
+    assert!(traversal::query_paged_with_direction(
+        &conn,
+        "sql",
+        Some("UPDATE nodes SET kind='changed'"),
+        1,
+        None,
+        &options(6),
+    )
+    .is_err());
+    assert!(
+        traversal::query_paged_with_direction(&conn, "sql", None, 1, None, &options(6),).is_err()
+    );
+
+    let inbound = traversal::query_paged_with_direction(
+        &conn,
+        "impact",
+        Some("target"),
+        1,
+        None,
+        &options(10),
+    )
+    .unwrap();
+    assert_eq!(inbound["direction"], "inbound");
+    assert!(inbound["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["name"] == "caller"));
+    let outbound = traversal::query_paged_with_direction(
+        &conn,
+        "impact",
+        Some("target"),
+        1,
+        Some("outbound"),
+        &options(10),
+    )
+    .unwrap();
+    assert_eq!(outbound["direction"], "outbound");
+    assert!(outbound["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["name"] == "helper"));
+    assert!(traversal::query_paged_with_direction(
+        &conn,
+        "impact",
+        Some("target"),
+        1,
+        Some("sideways"),
+        &options(10),
+    )
+    .is_err());
 }
 
 #[test]
@@ -1060,7 +1488,7 @@ fn compact_coverage_pages_keep_scope_totals_and_every_reference() {
 }
 
 #[test]
-fn snippet_avoids_coverage_reads_and_preserves_source_continuation() {
+fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     let workspace = Workspace::new();
     let mut code = String::from("def target():\n");
     for i in 0..45 {
@@ -1080,10 +1508,25 @@ fn snippet_avoids_coverage_reads_and_preserves_source_continuation() {
         } => Authorization::Deny,
         _ => Authorization::Allow,
     }));
-    assert!(
+    let compact =
         symbols::inspect_paged(&conn, &workspace.0, "target", false, &source, &options(30))
-            .is_err()
-    );
+            .unwrap();
+    assert!(compact.get("coverage").is_none());
+    let explained =
+        symbols::explain_paged(&conn, &workspace.0, "target", None, &source, &options(30)).unwrap();
+    assert!(explained.get("coverage").is_none());
+    assert!(symbols::inspect_paged_with_coverage(
+        &conn,
+        &workspace.0,
+        "target",
+        false,
+        &source,
+        &options(30),
+        CoverageOptions {
+            include_coverage: true,
+        },
+    )
+    .is_err());
     let snippet =
         symbols::snippet_paged(&conn, &workspace.0, "target", &source, &options(30)).unwrap();
     assert_eq!(snippet["source"], inspect["source"]);
@@ -1093,11 +1536,7 @@ fn snippet_avoids_coverage_reads_and_preserves_source_continuation() {
     assert!(snippet.get("documents").is_none());
     let before = serde_json::to_vec(&inspect).unwrap().len();
     let after = serde_json::to_vec(&snippet).unwrap().len();
-    assert!(
-        after * 2 < before,
-        "snippet {after} versus inspect {before}"
-    );
-    eprintln!("snippet fixture: inspect={before} bytes, snippet={after} bytes");
+    assert!(after < before, "snippet {after} versus inspect {before}");
     let offset = snippet["source_preview"]["next_source_offset"]
         .as_u64()
         .unwrap() as usize;
@@ -1121,4 +1560,79 @@ fn snippet_avoids_coverage_reads_and_preserves_source_continuation() {
     assert!(symbols::snippet_paged(&conn, &workspace.0, "target", &next_source, &query).is_err());
     workspace.write("code.py", "def target(): pass\n");
     assert!(symbols::snippet_paged(&conn, &workspace.0, "target", &source, &options(30)).is_err());
+}
+
+#[test]
+fn search_docs_resolves_component_via_adapter_aliases_and_owners() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "forge-mcp.yaml",
+        r#"roots: [.]
+eligible_roots: [extensions, packages]
+doc_roots: [extensions, packages]
+owners:
+  extensions/commerce: commerce
+  packages/core: core
+aliases:
+  commerce: commerce
+  core: core
+"#,
+    );
+    workspace.write(
+        "extensions/commerce/docs/adr/0001-test.md",
+        "# ADR-0001: Commerce Test\n\nCommerce ADR content for indexing.\n",
+    );
+    workspace.write(
+        "packages/core/docs/adr/0001-core.md",
+        "# ADR-0001: Core Architecture\n\nCore architecture documentation.\n",
+    );
+
+    let conn = workspace.build();
+
+    let query_options = QueryOptions {
+        limit: 10,
+        offset: 0,
+        detail: Detail::Compact,
+        generation: None,
+    };
+
+    // 1. Search with exact component path
+    let by_path = reader::search_docs_paged_with_excerpt(
+        &conn,
+        "Commerce",
+        None,
+        Some("extensions/commerce"),
+        true,
+        &query_options,
+    )
+    .unwrap();
+    assert_eq!(by_path["sections"]["total"], 1);
+
+    // 2. Search with logical component name resolved via adapter owners/aliases
+    let by_alias = reader::search_docs_paged_with_excerpt(
+        &conn,
+        "Commerce",
+        None,
+        Some("commerce"),
+        true,
+        &query_options,
+    )
+    .unwrap();
+    assert_eq!(by_alias["sections"]["total"], 1);
+    assert_eq!(
+        by_alias["sections"]["items"][0]["path"],
+        "extensions/commerce/docs/adr/0001-test.md"
+    );
+
+    // 3. Search with non-matching component returns 0
+    let by_other = reader::search_docs_paged_with_excerpt(
+        &conn,
+        "Commerce",
+        None,
+        Some("core"),
+        true,
+        &query_options,
+    )
+    .unwrap();
+    assert_eq!(by_other["sections"]["total"], 0);
 }

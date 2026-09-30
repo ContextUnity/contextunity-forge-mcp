@@ -1,5 +1,8 @@
 use super::{paging, reader, symbols};
-use crate::core::{models::stable_hash64, response::QueryOptions};
+use crate::core::{
+    models::stable_hash64,
+    response::{CoverageOptions, QueryOptions},
+};
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -238,6 +241,21 @@ pub fn removal(conn: &Connection, selector: &str) -> Result<Value> {
     )
 }
 pub use super::cycles::cycles;
+
+pub fn impact_inbound(direction: Option<&str>) -> Result<bool> {
+    match direction.unwrap_or("inbound") {
+        "inbound" => Ok(true),
+        "outbound" => Ok(false),
+        _ => bail!("impact direction must be inbound or outbound"),
+    }
+}
+
+fn sql_selector(selector: Option<&str>) -> Result<&str> {
+    selector
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("sql operation requires a SELECT or WITH selector"))
+}
+
 pub fn query(
     conn: &Connection,
     operation: &str,
@@ -246,9 +264,6 @@ pub fn query(
     limit: usize,
 ) -> Result<Value> {
     let op = operation.trim();
-    if op.starts_with("MATCH ") || op.starts_with("match ") {
-        return cypher(conn, op, limit);
-    }
     match op {
         "overview" => reader::overview(conn),
         "inspect" => reader::inspect(conn, selector.unwrap_or(""), true),
@@ -264,40 +279,14 @@ pub fn query(
             )?,
             "meaning": "no indexed static caller; not a dead-code proof"
         })),
-        "cypher" | "raw_cypher" => cypher(conn, selector.unwrap_or(""), limit),
         "doctor" => reader::overview(conn),
         "search" | "discover" | "find" => {
             symbols::search(conn, selector.unwrap_or(""), None, limit)
         }
-        _ => bail!(
-            "unknown operation; supported: overview,inspect,explain,impact,slice,unwired,cypher"
-        ),
-    }
-}
-fn cypher(conn: &Connection, query: &str, limit: usize) -> Result<Value> {
-    let normalized = query.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized == "MATCH (n) RETURN n" {
-        return Ok(
-            json!({"rows":reader::rows(conn,"SELECT * FROM nodes ORDER BY node_id",&[],limit)?}),
-        );
-    }
-    if normalized == "MATCH (a)-[e]->(b) RETURN a,e,b" {
-        return Ok(
-            json!({"rows":reader::rows(conn,"SELECT a.id source,e.kind,b.id target FROM edges e JOIN nodes a ON a.id=e.src_public_id JOIN nodes b ON b.id=e.dst_public_id ORDER BY e.src_public_id,e.kind,e.dst_public_id",&[],limit)?}),
-        );
-    }
-    if let Some(kind) = normalized
-        .strip_prefix("MATCH (n:")
-        .and_then(|s| s.strip_suffix(") RETURN n"))
-    {
-        if !kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            bail!("invalid node label");
+        _ => {
+            bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired")
         }
-        return Ok(
-            json!({"rows":reader::rows(conn,"SELECT * FROM nodes WHERE kind=?1 ORDER BY node_id",&[&kind],limit)?}),
-        );
     }
-    bail!("supported Cypher subset: MATCH (n) RETURN n; MATCH (n:kind) RETURN n; MATCH (a)-[e]->(b) RETURN a,e,b. Pass limit as a separate tool argument, not a Cypher LIMIT clause")
 }
 
 pub fn traverse_paged(
@@ -578,57 +567,69 @@ pub fn query_paged(
     depth: u32,
     options: &QueryOptions,
 ) -> Result<Value> {
+    query_paged_with_direction(conn, operation, selector, depth, None, options)
+}
+
+pub fn query_paged_with_direction(
+    conn: &Connection,
+    operation: &str,
+    selector: Option<&str>,
+    depth: u32,
+    direction: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    query_paged_with_options(
+        conn,
+        operation,
+        selector,
+        depth,
+        direction,
+        CoverageOptions::default(),
+        options,
+    )
+}
+
+pub fn query_paged_with_options(
+    conn: &Connection,
+    operation: &str,
+    selector: Option<&str>,
+    depth: u32,
+    direction: Option<&str>,
+    coverage: CoverageOptions,
+    options: &QueryOptions,
+) -> Result<Value> {
     let op = operation.trim();
-    if op.starts_with("MATCH ") || op.starts_with("match ") {
-        return cypher_paged(conn, op, options);
-    }
     match op {
         "overview" => reader::overview_paged(conn, options),
-        "inspect" => reader::inspect_paged(conn, selector.unwrap_or(""), true, options),
-        "explain" => reader::explain_paged(conn, selector.unwrap_or(""), None, options),
-        "impact" => traverse_paged(conn, selector.unwrap_or(""), depth, true, options),
+        "inspect" => {
+            symbols::inspect_paged_response(conn, selector.unwrap_or(""), true, options, coverage)
+        }
+        "explain" => symbols::explain_paged_response(
+            conn,
+            selector.unwrap_or(""),
+            None,
+            true,
+            options,
+            coverage,
+        ),
+        "impact" => traverse_paged(
+            conn,
+            selector.unwrap_or(""),
+            depth,
+            impact_inbound(direction)?,
+            options,
+        ),
         "slice" => slice_paged(conn, selector.unwrap_or(""), depth, options),
         "unwired" => Ok(
             json!({"nodes":paging::query(conn, &format!("SELECT {} FROM nodes n WHERE n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_public_id=n.id AND e.kind='calls') ORDER BY n.path,n.line,n.id", paging::nodes("n", options.detail)), &[], options)?, "meaning":"no indexed static caller; not a dead-code proof"}),
         ),
-        "cypher" | "raw_cypher" => cypher_paged(conn, selector.unwrap_or(""), options),
+        "sql" => reader::analyze_paged(conn, sql_selector(selector)?, None, options),
         "doctor" => reader::overview_paged(conn, options),
         "search" | "discover" | "find" => {
             symbols::search_paged(conn, selector.unwrap_or(""), None, options)
         }
-        _ => bail!(
-            "unknown operation; supported: overview,inspect,explain,impact,slice,unwired,cypher"
-        ),
-    }
-}
-
-fn cypher_paged(conn: &Connection, query: &str, options: &QueryOptions) -> Result<Value> {
-    let normalized = query.split_whitespace().collect::<Vec<_>>().join(" ");
-    let columns = paging::nodes("n", options.detail);
-    let rows = if normalized == "MATCH (n) RETURN n" {
-        paging::query(
-            conn,
-            &format!("SELECT {columns} FROM nodes n ORDER BY n.id"),
-            &[],
-            options,
-        )?
-    } else if normalized == "MATCH (a)-[e]->(b) RETURN a,e,b" {
-        paging::query(conn, "SELECT e.src_public_id source,e.kind,e.dst_public_id target FROM edges e ORDER BY e.src_public_id,e.kind,e.dst_public_id", &[], options)?
-    } else if let Some(kind) = normalized
-        .strip_prefix("MATCH (n:")
-        .and_then(|s| s.strip_suffix(") RETURN n"))
-    {
-        if kind.is_empty() || !kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            bail!("invalid node label");
+        _ => {
+            bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql")
         }
-        paging::query(
-            conn,
-            &format!("SELECT {columns} FROM nodes n WHERE n.kind=?1 ORDER BY n.id"),
-            &[&kind],
-            options,
-        )?
-    } else {
-        bail!("supported Cypher subset: MATCH (n) RETURN n; MATCH (n:kind) RETURN n; MATCH (a)-[e]->(b) RETURN a,e,b. Pass limit as a separate tool argument, not a Cypher LIMIT clause");
-    };
-    Ok(json!({"rows":rows}))
+    }
 }

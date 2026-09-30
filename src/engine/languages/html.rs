@@ -121,6 +121,7 @@ impl LanguageProfile for Html {
                 if let Ok(mut parser) = javascript.create_parser(path) {
                     if let Some(tree) = parser.parse(&wrapped, None) {
                         let owner = format!("module:{path}");
+                        let file = javascript.prepare(tree.root_node(), &wrapped);
                         let mut nodes = vec![tree.root_node()];
                         while let Some(node) = nodes.pop() {
                             javascript.extract_imports(
@@ -129,6 +130,7 @@ impl LanguageProfile for Html {
                                     source: &wrapped,
                                     owner: &owner,
                                     offset: 0,
+                                    shadowed_require_scopes: &file.shadowed_require_scopes,
                                 },
                                 facts,
                             );
@@ -174,6 +176,7 @@ impl LanguageProfile for Html {
                                 .parse(script, None)
                                 .context("embedded JavaScript parse cancelled")?;
                             let offset = body.start_position().row;
+                            let file = javascript.prepare(parsed.root_node(), script);
                             let mut script_nodes = vec![parsed.root_node()];
                             while let Some(script_node) = script_nodes.pop() {
                                 if (script_node.is_error() || script_node.is_missing())
@@ -191,6 +194,7 @@ impl LanguageProfile for Html {
                                         source: script,
                                         owner: &owner,
                                         offset,
+                                        shadowed_require_scopes: &file.shadowed_require_scopes,
                                     },
                                     facts,
                                 );
@@ -341,6 +345,7 @@ fn emit_template_reference(
         line,
         alias: None,
         module: Some(target.to_string()),
+        receiver_hint: None,
     });
 }
 

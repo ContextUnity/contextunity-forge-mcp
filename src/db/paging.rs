@@ -29,15 +29,10 @@ pub(crate) fn generation(conn: &Connection, options: &QueryOptions) -> Result<St
         options
             .generation
             .as_ref()
-            .is_none_or(|previous| current.starts_with(previous) || previous == &current),
+            .is_none_or(|previous| previous == &current),
         "index generation changed; restart at offset 0 without generation"
     );
-    let short = if current.len() > 8 {
-        current[..8].to_string()
-    } else {
-        current
-    };
-    Ok(short)
+    Ok(current)
 }
 
 pub(crate) fn value(

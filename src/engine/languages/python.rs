@@ -4,6 +4,12 @@ use crate::engine::ast::{relations, routes};
 mod fastmcp;
 #[path = "python/linker.rs"]
 pub(crate) mod linker;
+#[path = "python/manifest.rs"]
+mod manifest;
+#[path = "python/computed_receivers.rs"]
+mod computed_receivers;
+#[path = "python/lazy_exports.rs"]
+mod lazy_exports;
 pub fn language() -> tree_sitter::Language {
     tree_sitter_python::language()
 }
@@ -11,8 +17,136 @@ pub fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_definition" | "lambda" => Some("function"),
         "class_definition" => Some("class"),
+        "type_alias_statement" => Some("type"),
         _ => None,
     }
+}
+
+fn class_method_owner(node: Syntax<'_>) -> Option<Syntax<'_>> {
+    let mut parent = node.parent()?;
+    if parent.kind() == "decorated_definition" {
+        parent = parent.parent()?;
+    }
+    if parent.kind() != "block" {
+        return None;
+    }
+    parent
+        .parent()
+        .filter(|owner| owner.kind() == "class_definition")
+}
+
+fn is_static_decorator(decorator: &str) -> bool {
+    let decorator = decorator
+        .trim()
+        .strip_prefix('@')
+        .unwrap_or(decorator.trim());
+    decorator
+        .split('(')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .rsplit('.')
+        .next()
+        == Some("staticmethod")
+}
+
+fn module_scope(node: Syntax<'_>) -> bool {
+    let mut parent = node.parent();
+    while let Some(ancestor) = parent {
+        match ancestor.kind() {
+            "function_definition" | "lambda" | "class_definition" => return false,
+            "module" => return true,
+            _ => parent = ancestor.parent(),
+        }
+    }
+    false
+}
+
+fn typing_name(value: &str) -> &str {
+    value.strip_prefix("typing.")
+        .or_else(|| value.strip_prefix("typing_extensions."))
+        .unwrap_or(value)
+}
+
+fn type_alias(node: Syntax<'_>, source: &str) -> bool {
+    if !matches!(node.kind(), "assignment" | "type_alias_statement") {
+        return false;
+    }
+    if node.kind() == "type_alias_statement" {
+        return module_scope(node);
+    }
+    if !node.child_by_field_name("left").is_some_and(|left| left.kind() == "identifier") {
+        return false;
+    }
+    if field(node, source, "type").is_some_and(|annotation| matches!(typing_name(annotation), "TypeAlias" | "TypeAliasType")) {
+        return module_scope(node);
+    }
+    node.child_by_field_name("right")
+        .filter(|right| right.kind() == "call")
+        .and_then(|call| field(call, source, "function"))
+        .is_some_and(|callee| matches!(typing_name(callee), "TypeVar" | "NewType" | "TypeAliasType"))
+        && module_scope(node)
+}
+
+fn is_inside_type_checking(mut curr: Syntax<'_>, source: &str) -> bool {
+    while let Some(parent) = curr.parent() {
+        if parent.kind() == "if_statement" {
+            if let Some(cond) = parent.child_by_field_name("condition") {
+                let cond_text = text(cond, source).trim();
+                let clean = cond_text.split('(').next().unwrap_or(cond_text).trim();
+                if clean == "TYPE_CHECKING"
+                    || clean == "typing.TYPE_CHECKING"
+                    || clean == "typing_extensions.TYPE_CHECKING"
+                    || clean.ends_with(".TYPE_CHECKING")
+                {
+                    return true;
+                }
+            }
+        }
+        curr = parent;
+    }
+    false
+}
+
+fn is_python_stub_body(node: Syntax<'_>, source: &str) -> bool {
+    let Some(body) = node.child_by_field_name("body") else {
+        return false;
+    };
+    let mut cursor = body.walk();
+    let mut non_trivial = Vec::new();
+    for child in body.named_children(&mut cursor) {
+        if child.kind() == "comment" {
+            continue;
+        }
+        if non_trivial.is_empty() && child.kind() == "expression_statement" {
+            if let Some(first) = child.named_child(0) {
+                if first.kind() == "string" {
+                    continue;
+                }
+            }
+        }
+        non_trivial.push(child);
+    }
+    if non_trivial.is_empty() {
+        return true;
+    }
+    non_trivial.iter().all(|stmt| {
+        if stmt.kind() == "pass_statement" {
+            return true;
+        }
+        if stmt.kind() == "expression_statement" {
+            let t = text(*stmt, source).trim();
+            if t == "..." || t == "Ellipsis" {
+                return true;
+            }
+            if let Some(inner) = stmt.named_child(0) {
+                if inner.kind() == "ellipsis" {
+                    return true;
+                }
+            }
+        }
+        false
+    })
 }
 
 pub struct Python;
@@ -33,11 +167,38 @@ impl LanguageProfile for Python {
     fn symbol_kind(&self, k: &str) -> Option<&'static str> {
         kind(k)
     }
-    fn node_prefix(&self, kind: &str) -> &'static str {
-        if kind == "class" {
-            "class"
+    fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
+        if node.kind() == "function_definition" && class_method_owner(node).is_some() {
+            Some("method")
         } else {
-            "py"
+            self.symbol_kind(node.kind())
+        }
+    }
+    fn symbol_with_source(&self, node: Syntax<'_>, source: &str) -> Option<&'static str> {
+        if matches!(node.kind(), "assignment" | "type_alias_statement") {
+            type_alias(node, source).then_some("type")
+        } else {
+            self.symbol(node)
+        }
+    }
+    fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
+        if node.kind() == "assignment" {
+            return field(node, source, "left");
+        }
+        if node.kind() == "type_alias_statement" {
+            let mut name = node.named_child(0)?;
+            while matches!(name.kind(), "type" | "generic_type") {
+                name = name.named_child(0)?;
+            }
+            return (name.kind() == "identifier").then(|| text(name, source));
+        }
+        ast::symbol_name(node, source)
+    }
+    fn node_prefix(&self, kind: &str) -> &'static str {
+        match kind {
+            "class" => "class",
+            "type" => "type",
+            _ => "py",
         }
     }
     fn module_name(&self, path: &str) -> String {
@@ -53,6 +214,9 @@ impl LanguageProfile for Python {
         facts: &mut Facts,
     ) -> Result<()> {
         parse_file(self, path, source, module, facts)
+    }
+    fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
+        FileContext { lazy_exports: lazy_exports::extract(root, source), ..FileContext::default() }
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
@@ -100,17 +264,29 @@ impl LanguageProfile for Python {
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if matches!(ctx.node.kind(), "call") {
             call(ctx, facts, false);
+            if let Some(hint) = computed_receivers::receiver_hint(ctx.node, ctx.source) {
+                if let Some(reference) = facts.references.last_mut() {
+                    reference.receiver_hint = Some(hint);
+                }
+            }
         }
     }
     fn external_import(&self, module: &str) -> Option<&'static str> {
         let root = module.split('.').next().unwrap_or(module);
         if is_python_stdlib(root) {
             Some("Python standard library")
-        } else if is_python_external_package(root) {
-            Some("Python external dependency")
         } else {
             None
         }
+    }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &["pyproject.toml", "requirements*.txt", "setup.cfg", "Pipfile"]
+    }
+    fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
+        manifest::dependencies(filename, content)
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        is_python_stdlib(module.split('.').next().unwrap_or(module))
     }
     fn builtin(&self, symbol: &str) -> bool {
         matches!(
@@ -316,7 +492,12 @@ impl LanguageProfile for Python {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let receiver_name = if !decorators.iter().any(|d| d.contains("staticmethod")) {
+        let class_owner = class_method_owner(node);
+        let receiver_name = if class_owner.is_some()
+            && !decorators
+                .iter()
+                .any(|decorator| is_static_decorator(decorator))
+        {
             node.child_by_field_name("parameters")
                 .and_then(|p| p.named_child(0))
                 .and_then(|p| {
@@ -329,14 +510,54 @@ impl LanguageProfile for Python {
                     }
                 })
                 .map(str::to_owned)
+                .filter(|name| matches!(name.as_str(), "self" | "cls"))
         } else {
             None
         };
+        let receiver_type = class_owner
+            .and_then(|owner| field(owner, source, "name"))
+            .map(str::to_owned);
+        let is_method = class_owner.is_some().then_some(true);
+        let is_static = class_owner.is_some().then_some(receiver_name.is_none());
+        let mut param_types = std::collections::BTreeMap::new();
+        if let Some(parameters) = node.child_by_field_name("parameters") {
+            let mut cursor = parameters.walk();
+            for parameter in parameters.named_children(&mut cursor) {
+                if !matches!(parameter.kind(), "typed_parameter" | "typed_default_parameter") {
+                    continue;
+                }
+                let Some(annotation) = field(parameter, source, "type") else { continue; };
+                let Some(name) = parameter.child_by_field_name("name").or_else(|| parameter.named_child(0)) else { continue; };
+                if name.kind() != "identifier" { continue; }
+                let annotation = annotation.trim();
+                let annotation = annotation.strip_prefix('\'').and_then(|value| value.strip_suffix('\''))
+                    .or_else(|| annotation.strip_prefix('"').and_then(|value| value.strip_suffix('"')))
+                    .unwrap_or(annotation);
+                param_types.insert(text(name, source).to_owned(), annotation.to_owned());
+            }
+        }
+        let is_overload = decorators.iter().any(|decorator| {
+            let d = decorator.trim_start_matches('@').trim();
+            let name = d.split('(').next().unwrap_or(d).trim();
+            name == "overload"
+                || name == "typing.overload"
+                || name == "typing_extensions.overload"
+                || name.ends_with(".overload")
+        });
+        let is_stub = is_overload
+            || is_inside_type_checking(node, source)
+            || (node.kind() == "function_definition" && is_python_stub_body(node, source));
         SymbolMetadata {
             receiver_name,
             decorators,
             bases: field(node, source, "superclasses").map(str::to_owned),
+            receiver_type,
+            is_method,
+            is_static,
+            param_types,
             is_async: text(node, source).trim_start().starts_with("async "),
+            is_overload,
+            is_stub,
             ..Default::default()
         }
     }
@@ -627,161 +848,5 @@ fn is_python_stdlib(pkg: &str) -> bool {
     )
 }
 
-fn is_python_external_package(pkg: &str) -> bool {
-    matches!(
-        pkg,
-        "aiofiles"
-            | "aiohttp"
-            | "aiosignal"
-            | "alembic"
-            | "anthropic"
-            | "anyio"
-            | "attrs"
-            | "authlib"
-            | "babel"
-            | "bcrypt"
-            | "beautifulsoup4"
-            | "boto3"
-            | "botocore"
-            | "bs4"
-            | "celery"
-            | "certifi"
-            | "cffi"
-            | "charset_normalizer"
-            | "click"
-            | "colorama"
-            | "corsheaders"
-            | "coverage"
-            | "cryptography"
-            | "dateutil"
-            | "diff_match_patch"
-            | "django"
-            | "django_filters"
-            | "django_redis"
-            | "djangorestframework"
-            | "dotenv"
-            | "drf_spectacular"
-            | "elastic_transport"
-            | "elasticsearch"
-            | "email_validator"
-            | "factory"
-            | "faker"
-            | "fastapi"
-            | "flask"
-            | "freezegun"
-            | "google"
-            | "googleapis_common_protos"
-            | "greenlet"
-            | "grpc"
-            | "gunicorn"
-            | "h11"
-            | "httpcore"
-            | "httpx"
-            | "huggingface_hub"
-            | "idna"
-            | "iniconfig"
-            | "jinja2"
-            | "jose"
-            | "jsonschema"
-            | "jwt"
-            | "kombu"
-            | "langchain"
-            | "litellm"
-            | "lxml"
-            | "mako"
-            | "markupsafe"
-            | "marshmallow"
-            | "matplotlib"
-            | "mock"
-            | "more_itertools"
-            | "msgpack"
-            | "multidict"
-            | "mypy"
-            | "mypy_extensions"
-            | "numpy"
-            | "openai"
-            | "openpyxl"
-            | "opentelemetry"
-            | "packaging"
-            | "pandas"
-            | "passlib"
-            | "PIL"
-            | "pillow"
-            | "pip"
-            | "pkg_resources"
-            | "pluggy"
-            | "polars"
-            | "prometheus_client"
-            | "prompt_toolkit"
-            | "proto"
-            | "protobuf"
-            | "psutil"
-            | "psycopg"
-            | "psycopg2"
-            | "py"
-            | "pyarrow"
-            | "pyasn1"
-            | "pycparser"
-            | "pydantic"
-            | "pydantic_core"
-            | "pydantic_settings"
-            | "pygments"
-            | "pyjwt"
-            | "pyopenssl"
-            | "pyparsing"
-            | "pytest"
-            | "pytest_asyncio"
-            | "pytest_django"
-            | "pytest_mock"
-            | "python_dateutil"
-            | "pytz"
-            | "pyyaml"
-            | "redis"
-            | "requests"
-            | "responses"
-            | "rest_framework"
-            | "rich"
-            | "rsa"
-            | "scipy"
-            | "sentry_sdk"
-            | "setuptools"
-            | "six"
-            | "sniffio"
-            | "snowflake"
-            | "soupsieve"
-            | "sqlalchemy"
-            | "starlette"
-            | "stripe"
-            | "structlog"
-            | "temporalio"
-            | "tenacity"
-            | "tensorboard"
-            | "tensorflow"
-            | "tiktoken"
-            | "tokenizers"
-            | "tomli"
-            | "tomli_w"
-            | "torch"
-            | "tornado"
-            | "tqdm"
-            | "traitlets"
-            | "transformers"
-            | "typing_inspect"
-            | "tzdata"
-            | "urllib3"
-            | "uvicorn"
-            | "watchfiles"
-            | "webencodings"
-            | "webtest"
-            | "werkzeug"
-            | "wheel"
-            | "wrapt"
-            | "wtforms"
-            | "xlrd"
-            | "yaml"
-            | "yarl"
-            | "zstandard"
-    )
-}
 
 pub static PROFILES: &[&dyn LanguageProfile] = &[&PYTHON];

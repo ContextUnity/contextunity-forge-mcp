@@ -47,6 +47,7 @@ pub(super) fn call_reference(
             || !expression
                 .chars()
                 .all(|c| c.is_alphanumeric() || "_.:".contains(c)),
+        receiver_hint: None,
     });
 }
 

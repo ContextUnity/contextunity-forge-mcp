@@ -169,19 +169,23 @@ fn stdio_distinguishes_known_external_imports_from_missing_sources() {
     workspace.write("main.rs", "use std::fmt::Debug;\nuse missing::Thing;\n");
     let mut client = Client::new(&workspace);
     let overview = client.payload("code_map_overview", json!({}));
-    assert_eq!(overview["counts"]["external_imports"], 1);
-    assert_eq!(overview["counts"]["unresolved"], 1);
+    assert_eq!(overview["counts"]["external_imports"], 2);
+    assert_eq!(overview["counts"]["unresolved"], 0);
     let analysis = client.payload("code_map_analyze", json!({"target":"main.rs"}));
-    assert_eq!(analysis["total_external_imports"], 1);
-    assert_eq!(analysis["total_unresolved"], 1);
+    assert_eq!(analysis["total_external_imports"], 2);
+    assert_eq!(analysis["total_unresolved"], 0);
     assert_eq!(
         analysis["external_imports"]["items"][0]["expression"],
         "std::fmt::Debug"
     );
     assert_eq!(
-        analysis["resolution"]["items"][0]["expression"],
+        analysis["external_imports"]["items"][1]["expression"],
         "missing::Thing"
     );
+    assert!(analysis["resolution"]["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -192,7 +196,7 @@ fn stdio_budget_and_query_errors_explain_how_to_retry() {
     for (name, arguments, expected) in [
         (
             "code_map_analyze",
-            json!({"target":"SELECT hex(zeroblob(1500000)) AS payload"}),
+            json!({"target":"SELECT hex(zeroblob(3000000)) AS a, hex(zeroblob(3000000)) AS b"}),
             "select fewer and smaller SQL columns",
         ),
         (
@@ -202,8 +206,8 @@ fn stdio_budget_and_query_errors_explain_how_to_retry() {
         ),
         (
             "code_map_query",
-            json!({"operation":"cypher","selector":"MATCH (n) RETURN n LIMIT 3"}),
-            "Pass limit as a separate tool argument",
+            json!({"operation":"cypher","selector":"MATCH (n) RETURN n"}),
+            "supported: overview,inspect,explain,impact,slice,unwired,sql",
         ),
         (
             "code_map_inspect",
@@ -216,6 +220,87 @@ fn stdio_budget_and_query_errors_explain_how_to_retry() {
         let message = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(message.contains(expected), "{name}: {message}");
     }
+}
+
+#[test]
+fn stdio_analyze_preserves_sql_columns_named_like_metadata() {
+    let workspace = Workspace::new();
+    workspace.write("main.py", "def main(): pass\n");
+    let mut client = Client::new(&workspace);
+    let details = json!({
+        "nodes": {"items": [{"output_root": "node-root-12345", "corpus_hash": "node-hash-123456"}]},
+        "symbols": [{"output_root": "symbol-root-123", "corpus_hash": "symbol-hash-1234"}],
+        "doc_sections": [{"output_root": "section-root-12", "corpus_hash": "section-hash-123"}],
+        "freshness": {"output_root": "nested-root-1234", "corpus_hash": "nested-hash-12345"},
+        "metadata": {"output_root": "nested-meta-1234", "corpus_hash": "nested-meta-12345"}
+    })
+    .to_string()
+    .replace('\'', "''");
+    let result = client.payload(
+        "code_map_analyze",
+        json!({"target":format!("SELECT '1234567é' AS generation, '0123456789' AS output_root, 'abcdef0123456789' AS corpus_hash, '{details}' AS details")}),
+    );
+
+    assert_eq!(result["rows"]["items"][0]["generation"], "1234567é");
+    assert_eq!(result["rows"]["items"][0]["output_root"], "0123456789");
+    assert_eq!(
+        result["rows"]["items"][0]["corpus_hash"],
+        "abcdef0123456789"
+    );
+    assert_eq!(
+        result["rows"]["items"][0]["details"]["nodes"]["items"][0]["output_root"],
+        "node-root-12345"
+    );
+    assert_eq!(
+        result["rows"]["items"][0]["details"]["symbols"][0]["corpus_hash"],
+        "symbol-hash-1234"
+    );
+    assert_eq!(
+        result["rows"]["items"][0]["details"]["doc_sections"][0]["output_root"],
+        "section-root-12"
+    );
+    assert_eq!(
+        result["rows"]["items"][0]["details"]["freshness"]["corpus_hash"],
+        "nested-hash-12345"
+    );
+    assert_eq!(
+        result["rows"]["items"][0]["details"]["metadata"]["output_root"],
+        "nested-meta-1234"
+    );
+}
+
+#[test]
+fn stdio_analyze_rejects_oversized_intermediate_sql_values() {
+    let workspace = Workspace::new();
+    workspace.write("main.py", "def main(): pass\n");
+    let mut client = Client::new(&workspace);
+    let exact = client.payload(
+        "code_map_analyze",
+        json!({"target":"SELECT length(randomblob(8388608)) AS payload"}),
+    );
+    assert_eq!(exact["rows"]["items"][0]["payload"], 8388608);
+    let (_, response) = client.call(
+        "code_map_analyze",
+        json!({"target":"SELECT length(randomblob(8388609)) AS payload"}),
+    );
+
+    assert_eq!(response["result"]["isError"], true, "{response}");
+}
+
+#[test]
+fn cold_build_populates_document_fts_search() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "guide.md",
+        "# Guide\nThis document contains quasarneedle for search.\n",
+    );
+    let mut client = Client::new(&workspace);
+    let result = client.payload(
+        "code_map_analyze",
+        json!({"target":"SELECT count(*) AS matches FROM doc_search WHERE doc_search MATCH 'quasarneedle'"}),
+    );
+
+    assert_eq!(result["rows"]["items"][0]["matches"], 1);
 }
 
 #[test]
@@ -361,12 +446,21 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
         "code_map_search",
         json!({"pattern":"symbol_*","kind":"function"}),
     );
+    let generation = initial["nodes"]["generation"].as_str().unwrap();
+    assert_eq!(generation.len(), 64);
     assert_eq!(initial["nodes"]["limit"], 30);
     assert_eq!(initial["nodes"]["items"].as_array().unwrap().len(), 30);
     assert_eq!(initial["nodes"]["total"], 125);
     let next = client.payload("code_map_search", json!({"pattern":"symbol_*","kind":"function","limit":100,"offset":30,"generation":initial["nodes"]["generation"]}));
     assert_eq!(next["nodes"]["items"].as_array().unwrap().len(), 95);
     assert_eq!(next["nodes"]["has_more"], false);
+    let mut colliding_prefix = generation.to_owned();
+    colliding_prefix.replace_range(8..9, if &generation[8..9] == "0" { "1" } else { "0" });
+    let (_, stale_prefix) = client.call(
+        "code_map_search",
+        json!({"pattern":"symbol_*","limit":100,"offset":30,"generation":colliding_prefix}),
+    );
+    assert_eq!(stale_prefix["result"]["isError"], true);
     let (_, missing) = client.call("code_map_search", json!({"pattern":"symbol_*","offset":30}));
     assert_eq!(missing["result"]["isError"], true);
     workspace.write("service.py", &format!("{source}\ndef added(): return 0\n"));
@@ -685,4 +779,28 @@ fn serialization_counts_second_escaping_and_bounds_a_single_item() {
     let result = response::result(Ok(json!({"scalar":"\"\\Привіт".repeat(30_000)})), &policy);
     assert_eq!(result.is_error, Some(true));
     assert!(response::serialized_bytes(&result) <= MAX_OUTPUT_BYTES - 256);
+}
+
+#[test]
+fn stdio_symbol_search_matches_methods_and_functions_interchangeably() {
+    let workspace = Workspace::new();
+    std::fs::create_dir_all(workspace.0.join("src")).unwrap();
+    workspace.write(
+        "src/lib.rs",
+        "pub struct Server;\nimpl Server {\n    pub fn admit(&self) {}\n}\n",
+    );
+    let mut client = Client::new(&workspace);
+    let result = client.payload(
+        "code_map_search",
+        json!({"pattern":"admit*","kind":"method","path":"src/lib.rs"}),
+    );
+    assert_eq!(result["nodes"]["total"], 1);
+    assert_eq!(result["nodes"]["items"][0]["name"], "admit");
+
+    let result_fn = client.payload(
+        "code_map_search",
+        json!({"pattern":"admit*","kind":"function","path":"src/lib.rs"}),
+    );
+    assert_eq!(result_fn["nodes"]["total"], 1);
+    assert_eq!(result_fn["nodes"]["items"][0]["name"], "admit");
 }

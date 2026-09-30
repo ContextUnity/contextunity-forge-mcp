@@ -106,6 +106,12 @@ impl QueryOptions {
     }
 }
 
+/// Controls whether symbol queries include paged resolution coverage.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CoverageOptions {
+    pub include_coverage: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SourceOptions {
     pub enabled: bool,

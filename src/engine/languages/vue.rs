@@ -38,6 +38,7 @@ fn extract_template_bindings(
                         line,
                         alias: None,
                         module: None,
+                        receiver_hint: None,
                     });
                 }
             }
@@ -106,6 +107,7 @@ fn extract_event_handler(owner: &str, expr: &str, line: usize, facts: &mut Facts
             line,
             alias: None,
             module: None,
+            receiver_hint: None,
         });
     } else {
         extract_simple_expressions(owner, clean, line, facts);
@@ -125,6 +127,7 @@ fn extract_simple_expressions(owner: &str, expr: &str, line: usize, facts: &mut 
                 line,
                 alias: None,
                 module: None,
+                receiver_hint: None,
             });
         }
     }
@@ -256,6 +259,15 @@ pub static VUE: Vue = Vue;
 impl LanguageProfile for Vue {
     fn id(&self) -> &'static str {
         "vue"
+    }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        typescript::TYPESCRIPT.manifest_filenames()
+    }
+    fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
+        typescript::TYPESCRIPT.extract_manifest_dependencies(filename, content)
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        typescript::TYPESCRIPT.is_stdlib(module)
     }
     fn family(&self) -> LanguageFamily {
         LanguageFamily("javascript")

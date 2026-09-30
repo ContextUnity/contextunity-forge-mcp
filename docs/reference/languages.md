@@ -57,6 +57,24 @@ The index records declarations, imports, references, and relationships recoverab
 
 Use [configuration](configuration.md) to control admitted paths and [indexing architecture](../architecture/indexing.md) to understand the extraction and linker boundary.
 
+## Python type aliases
+
+Python indexes module-level PEP 695 aliases, `TypeAlias` and `TypeAliasType` annotations, and assignments calling `TypeVar`, `NewType`, or `TypeAliasType` as `type` symbols. These symbols have module-qualified names and participate in import and annotation resolution. Module-level declarations inside `TYPE_CHECKING` blocks are included. Function-local and class-local aliases are excluded.
+
+## Dependencies and typed receivers
+
+Forge collects declared dependencies from workspace manifests before linking: Python `pyproject.toml`, `requirements*.txt`, `setup.cfg`, and `Pipfile`; JavaScript/TypeScript `package.json`; Rust `Cargo.toml`; Go `go.mod`; and Java/Kotlin `pom.xml`, `build.gradle`, and `build.gradle.kts`. Linked workspaces use the admitted adapter configuration. Standard-library imports and declared dependencies have distinct evidence. An absolute import with no indexed provider is classified as external even when no manifest declares it; relative imports and missing symbols in indexed modules retain their local resolution evidence.
+
+The committed manifest digest covers manifests outside source roots as well as linked workspaces. A changed manifest triggers a full rebuild during delta admission or the next MCP inventory check, after the normal freshness TTL. Discovery excludes ignored directories and symlinks and reads manifests up to 4 MiB.
+
+JavaScript and TypeScript recognize CommonJS `require` bindings, including destructuring, as import aliases. A locally bound `require` is treated as an ordinary callable.
+
+Python functions retain explicit parameter annotations in `details.param_types`. Calls through an unmodified parameter can resolve to methods of an indexed receiver class with `inferred` confidence, or to external evidence when the receiver type comes from an external import. Inherited member lookup uses a cached Python C3 order and respects local overrides. Known unittest assertions, Django command output, and Django model manager operations receive external evidence only when their framework ancestry is established.
+
+Python records receiver hints for string literals, constructor calls, and zero-argument `super()`. Known string methods and verified class members can resolve without interpreting arbitrary expressions. Ambiguous types, reassigned parameters, unknown return values, and unsupported computed receivers retain uncertainty.
+
+Python import resolution follows explicit exports across ordinary modules and packages. Statically described PEP 562 exports are admitted only when a literal export name identifies an existing provider; dynamic export names and missing providers remain unverified. Incremental indexing hydrates the required import chain before linking. Linked workspaces retain both `src`-qualified and package-root module names.
+
 ## Python registrations
 
 For an indexed module that imports `FastMCP` from `fastmcp` or `mcp.server.fastmcp`, Forge records `@server.tool` and `@server.tool(...)` on module-level functions when `server` is assigned a `FastMCP(...)` instance. Each confirmed tool has a `tool_registration` node, a `contains` edge from its module, and a `handles` edge to its function. A literal `name=` sets the advertised name; a dynamic name is marked unknown. Import aliases and module-qualified constructors are supported. Reassignment of the constructor before instance creation, or the server before registration, prevents a confirmed link.

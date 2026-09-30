@@ -8,7 +8,10 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{
+    limits::Limit, params, params_from_iter, types::Value as SqlValue, Connection, OpenFlags,
+    OptionalExtension, ToSql,
+};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -18,6 +21,15 @@ use std::{
     time::Instant,
 };
 static NONCE: AtomicU64 = AtomicU64::new(0);
+// Bound source, parser-tree, and extracted-fact working memory per active file.
+const EXTRACTION_MEMORY_MULTIPLIER: u64 = 8;
+const MAX_EXTRACTION_BATCH_FILES: usize = 25_000;
+const MAX_MULTI_VALUE_BATCH_ROWS: usize = 250;
+
+fn sqlite_cache_size_kib(memory_budget: u64) -> u64 {
+    (memory_budget / 8 / 1024).clamp(4_096, 128_000)
+}
+
 #[derive(Debug)]
 pub struct SourceSnapshotMismatch(pub String);
 
@@ -74,6 +86,8 @@ fn policy(root: &Path, adapter: &scanner::Adapter) -> Value {
         "adapter_version": adapter.adapter_version,
         "digest": adapter.digest,
         "linked_workspaces": adapter.linked_workspaces,
+        "owners": adapter.owners,
+        "aliases": adapter.aliases,
     })
 }
 fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
@@ -114,6 +128,14 @@ fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
         .get("linked_workspaces")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
+    let owners: std::collections::BTreeMap<String, String> = value
+        .get("owners")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let aliases: std::collections::BTreeMap<String, String> = value
+        .get("aliases")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
     Ok(scanner::Adapter {
         adapter_path,
         response: Default::default(),
@@ -123,6 +145,9 @@ fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
         adapter_version,
         digest,
         linked_workspaces,
+        owners,
+        aliases,
+        debug: false,
     })
 }
 fn populate(
@@ -134,7 +159,7 @@ fn populate(
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
 ) -> Result<Value> {
     let budget = scanner::memory_budget_bytes();
-    let cache_kb = (budget / 8 / 1024).clamp(32_000, 128_000);
+    let cache_kb = sqlite_cache_size_kib(budget);
     conn.execute_batch(&format!(
         "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-{cache_kb}; PRAGMA cache_spill=OFF;"
     ))?;
@@ -144,7 +169,12 @@ fn populate(
         .context("schema indexes missing")?;
     conn.execute_batch(tables)?;
     let linking = Instant::now();
-    let graph = linker::link_with_root(facts, None, Some(root));
+    let dependencies =
+        crate::engine::languages::manifests::DependencyRegistry::collect_with_adapter(
+            root,
+            Some(adapter),
+        );
+    let graph = linker::link_with_registry(facts, None, Some(root), &dependencies);
     let link_ms = linking.elapsed().as_secs_f64() * 1000.;
     let writing = Instant::now();
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -193,6 +223,7 @@ fn populate(
             adapter.adapter_version.clone().unwrap_or_default(),
         ),
         ("adapter_digest", adapter.digest.clone()),
+        ("manifest_digest", dependencies.digest().to_owned()),
         (
             "adapter_linked_workspaces",
             serde_json::to_string(&adapter.linked_workspaces)?,
@@ -209,11 +240,14 @@ fn populate(
             params![k, v],
         )?;
     }
-    let mut node_paths: hashbrown::HashMap<String, Option<String>> =
+    let mut node_paths: hashbrown::HashMap<String, Option<CachedNodePath>> =
         hashbrown::HashMap::with_capacity(facts.values().map(|f| f.nodes.len()).sum());
     for f in facts.values() {
         for n in &f.nodes {
-            node_paths.insert(n.id.clone(), Some(n.path.clone()));
+            node_paths.insert(
+                n.id.clone(),
+                Some(CachedNodePath::new(&n.id, n.path.clone())),
+            );
         }
     }
     let mut path_cache = PathDictionaryCache::new();
@@ -227,7 +261,8 @@ fn populate(
     let bulk_paths_ms = t_bulk.elapsed().as_secs_f64() * 1000.;
 
     let t_files = Instant::now();
-    let (node_id, docs_count) = persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
+    let (node_id, docs_count) =
+        persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
     let persist_files_ms = t_files.elapsed().as_secs_f64() * 1000.;
 
     let t_fts = Instant::now();
@@ -237,8 +272,17 @@ fn populate(
     )?;
     let fts_insert_ms = t_fts.elapsed().as_secs_f64() * 1000.;
 
+    let t_doc_fts = Instant::now();
+    if docs_count > 0 {
+        tx.execute(
+            "INSERT INTO doc_search(rowid,section_title,content,invariants) SELECT rowid,section_title,content,invariants FROM doc_sections",
+            [],
+        )?;
+    }
+    let doc_fts_insert_ms = t_doc_fts.elapsed().as_secs_f64() * 1000.;
+
     let t_graph = Instant::now();
-    persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, true)?;
+    let graph_timings = persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, true)?;
     let persist_graph_ms = t_graph.elapsed().as_secs_f64() * 1000.;
 
     let t_fcomm = Instant::now();
@@ -255,9 +299,9 @@ fn populate(
     let seal_ms = sealing.elapsed().as_secs_f64() * 1000.;
     tx.commit()?;
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-    Ok(
-        json!({"files":entries.len(),"nodes":node_id,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"persist_graph_ms":persist_graph_ms,"file_commitments_ms":file_commitments_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms}),
-    )
+    let mut report = json!({"files":entries.len(),"nodes":node_id,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"doc_fts_insert_ms":doc_fts_insert_ms,"persist_graph_ms":persist_graph_ms,"file_commitments_ms":file_commitments_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms});
+    report["graph_phases_ms"] = json!({"occurrences_and_dependencies":graph_timings.occurrences,"unique_edges":graph_timings.edges,"coverage_dictionaries":graph_timings.dictionaries,"coverage_and_unresolved":graph_timings.coverage});
+    Ok(report)
 }
 fn components(facts: &mut BTreeMap<String, Facts>) {
     let owners = component_owners(facts.iter().filter_map(|(path, f)| {
@@ -409,8 +453,7 @@ fn atomic_build(
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         conn.execute_batch("PRAGMA page_size=32768;")?;
-        let mut report =
-            populate(&mut conn, root, adapter, entries, facts, encoded_facts)?;
+        let mut report = populate(&mut conn, root, adapter, entries, facts, encoded_facts)?;
         let verifying = Instant::now();
         let integrity: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
         if integrity != "ok" {
@@ -449,7 +492,12 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
     let scan_ms = scanning.elapsed().as_secs_f64() * 1000.;
     let extracting = Instant::now();
     let budget = scanner::memory_budget_bytes();
-    let batch_size = ((budget / (200 * 1024)) as usize).clamp(1_000, 25_000);
+    let batch_size = scanner::bounded_batch_size(
+        budget,
+        adapter.limits.max_file_bytes,
+        EXTRACTION_MEMORY_MULTIPLIER,
+        MAX_EXTRACTION_BATCH_FILES,
+    );
     let mut facts: BTreeMap<_, _> = BTreeMap::new();
     for chunk in scan.entries.chunks(batch_size) {
         let chunk_facts: Vec<(String, Facts)> = chunk
@@ -459,11 +507,15 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
         facts.extend(chunk_facts);
     }
     let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
+    let preparing_components = Instant::now();
     components(&mut facts);
+    let components_ms = preparing_components.elapsed().as_secs_f64() * 1000.;
+    let encoding = Instant::now();
     let encoded_facts: hashbrown::HashMap<String, Vec<u8>> = facts
         .par_iter()
         .map(|(path, f)| Ok((path.clone(), encode_facts(f)?)))
         .collect::<Result<_>>()?;
+    let encode_facts_ms = encoding.elapsed().as_secs_f64() * 1000.;
     let mut report = atomic_build(
         &root,
         output,
@@ -474,6 +526,8 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
     )?;
     report["scan_ms"] = json!(scan_ms);
     report["extract_ms"] = json!(extract_ms);
+    report["components_ms"] = json!(components_ms);
+    report["encode_facts_ms"] = json!(encode_facts_ms);
     report["elapsed_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
     report["output"] = json!(output);
     Ok(report)
@@ -514,10 +568,37 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     )?;
     let adapter = read_policy(&root, &admitted)?;
     let current_adapter = scanner::load_adapter(&root, adapter.adapter_path.as_deref())?;
+    for path in modified {
+        scanner::checked_child(&root, path)?;
+    }
+    let manifests_changed = modified.iter().any(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(crate::engine::languages::manifests::is_manifest_filename)
+    });
     if current_adapter.digest != adapter.digest
         || current_adapter.linked_workspaces != adapter.linked_workspaces
+        || manifests_changed
     {
         drop(admitted);
+        drop(generation_lock);
+        return build(&root, db, adapter.adapter_path.as_deref());
+    }
+    let dependencies =
+        crate::engine::languages::manifests::DependencyRegistry::collect_with_adapter(
+            &root,
+            Some(&adapter),
+        );
+    let previous_manifest_digest = admitted
+        .query_row(
+            "SELECT value FROM metadata WHERE key='manifest_digest'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if previous_manifest_digest.as_deref() != Some(dependencies.digest()) {
+        drop(admitted);
+        drop(generation_lock);
         return build(&root, db, adapter.adapter_path.as_deref());
     }
     let previous = super::reader::inventory_snapshot(&admitted)?;
@@ -677,6 +758,40 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             affected.insert(owner?);
         }
     }
+    let mut import_frontier: BTreeSet<_> = changed_resolution
+        .iter()
+        .filter(|path| {
+            inventory
+                .get(path.as_str())
+                .or_else(|| previous.get(path.as_str()))
+                .is_some_and(|file| file.language == "python")
+        })
+        .cloned()
+        .collect();
+    let mut visited_imports = import_frontier.clone();
+    let mut importing_owners = admitted.prepare(
+        "SELECT DISTINCT p.path FROM dependencies_raw d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.kind='imports' AND d.target_hash IN(SELECT path_hash FROM files WHERE path IN(SELECT value FROM json_each(?1)))",
+    )?;
+    while !import_frontier.is_empty() {
+        let owners = importing_owners
+            .query_map([serde_json::to_string(&import_frontier)?], |row| {
+                row.get::<_, String>(0)
+            })?;
+        let mut next = BTreeSet::new();
+        for owner in owners {
+            let owner = owner?;
+            if inventory
+                .get(owner.as_str())
+                .is_some_and(|file| file.language == "python")
+                && visited_imports.insert(owner.clone())
+            {
+                affected.insert(owner.clone());
+                next.insert(owner);
+            }
+        }
+        import_frontier = next;
+    }
+    drop(importing_owners);
     let mut replace_files = modified.clone();
     let component_owners = delta_components(&admitted, &modified, &facts, &mut replace_files)?;
     affected.extend(replace_files.iter().cloned());
@@ -703,16 +818,24 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             .map(|entry| (entry.path.as_str(), entry.language.as_str()))
             .collect();
         let mut st = admitted.prepare("SELECT facts_blob FROM local_facts WHERE path=?1")?;
-        for path in linker::required_full_facts(&facts, &affected, &catalog) {
-            if facts.contains_key(&path) {
-                continue;
+        let mut attempted = BTreeSet::new();
+        loop {
+            let mut loaded = false;
+            for path in linker::required_full_facts(&facts, &affected, &catalog) {
+                if facts.contains_key(&path) || !attempted.insert(path.clone()) {
+                    continue;
+                }
+                if let Some(raw) = st
+                    .query_row([&path], |row| row.get::<_, Vec<u8>>(0))
+                    .optional()?
+                {
+                    facts.insert(path, decode_facts(&raw)?);
+                    loaded_fact_files += 1;
+                    loaded = true;
+                }
             }
-            if let Some(raw) = st
-                .query_row([&path], |row| row.get::<_, Vec<u8>>(0))
-                .optional()?
-            {
-                facts.insert(path, decode_facts(&raw)?);
-                loaded_fact_files += 1;
+            if !loaded {
+                break;
             }
         }
     }
@@ -720,7 +843,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let mut tokens = BTreeSet::new();
     let mut doc_symbols = BTreeSet::new();
     for f in facts.values() {
-        tokens.extend(reference_keys(f));
+        tokens.extend(reference_keys(f).into_iter().map(str::to_owned));
         doc_symbols.extend(
             f.docs
                 .iter()
@@ -817,7 +940,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     }
     let hydrate_ms = hydrating.elapsed().as_secs_f64() * 1000.;
     let linking = Instant::now();
-    let graph = linker::link_with_root(&facts, Some(&affected), Some(&root));
+    let graph = linker::link_with_registry(&facts, Some(&affected), Some(&root), &dependencies);
     let link_ms = linking.elapsed().as_secs_f64() * 1000.;
     let persisting = Instant::now();
     drop(admitted);
@@ -898,11 +1021,14 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         .filter(|f| replace_files.contains(&f.path))
         .cloned()
         .collect();
-    let mut node_paths: hashbrown::HashMap<String, Option<String>> =
+    let mut node_paths: hashbrown::HashMap<String, Option<CachedNodePath>> =
         hashbrown::HashMap::with_capacity(facts.values().map(|f| f.nodes.len()).sum());
     for f in facts.values() {
         for n in &f.nodes {
-            node_paths.insert(n.id.clone(), Some(n.path.clone()));
+            node_paths.insert(
+                n.id.clone(),
+                Some(CachedNodePath::new(&n.id, n.path.clone())),
+            );
         }
     }
     let files_writing = Instant::now();
@@ -962,6 +1088,11 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         &tx,
         "INSERT OR REPLACE INTO metadata VALUES('inventory_snapshot',?1)",
         [serde_json::to_string(&scan.entries)?],
+    )?;
+    cached(
+        &tx,
+        "INSERT OR REPLACE INTO metadata VALUES('manifest_digest',?1)",
+        [dependencies.digest()],
     )?;
     let persist_ms = persisting.elapsed().as_secs_f64() * 1000.;
     let sealing = Instant::now();
@@ -1114,7 +1245,9 @@ impl PathDictionaryCache {
 
     pub fn load_from_db(&mut self, conn: &Connection) -> Result<()> {
         let mut stmt = conn.prepare("SELECT path, path_id FROM path_dictionary")?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
         for r in rows {
             let (path, id) = r?;
             self.cache.insert(path, id);
@@ -1122,9 +1255,14 @@ impl PathDictionaryCache {
         Ok(())
     }
 
-    pub fn bulk_insert(&mut self, conn: &Connection, paths: impl IntoIterator<Item = impl AsRef<str>>) -> Result<()> {
+    pub fn bulk_insert(
+        &mut self,
+        conn: &Connection,
+        paths: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Result<()> {
         let mut seen = hashbrown::HashSet::new();
-        let mut stmt_insert = conn.prepare_cached("INSERT OR IGNORE INTO path_dictionary(path) VALUES(?1)")?;
+        let mut stmt_insert =
+            conn.prepare_cached("INSERT OR IGNORE INTO path_dictionary(path) VALUES(?1)")?;
         for p in paths {
             let path_ref = p.as_ref();
             if !self.cache.contains_key(path_ref) && seen.insert(path_ref.to_owned()) {
@@ -1158,6 +1296,7 @@ pub struct SharedKeyCache<'conn> {
     hash_to_key: hashbrown::HashMap<i64, String>,
     stmt_insert: rusqlite::Statement<'conn>,
     stmt_select: Option<rusqlite::Statement<'conn>>,
+    pending: Option<MultiValueBatch<'conn, 2>>,
 }
 
 impl<'conn> SharedKeyCache<'conn> {
@@ -1173,7 +1312,24 @@ impl<'conn> SharedKeyCache<'conn> {
             hash_to_key: hashbrown::HashMap::new(),
             stmt_insert,
             stmt_select,
+            pending: None,
         })
+    }
+
+    fn new_batched(conn: &'conn Connection) -> Result<Self> {
+        let mut cache = Self::new(conn, false)?;
+        cache.pending = Some(MultiValueBatch::new(
+            conn,
+            "INSERT INTO shared_keys(key_hash,key) VALUES",
+        )?);
+        Ok(cache)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if let Some(batch) = self.pending.as_mut() {
+            batch.flush()?;
+        }
+        Ok(())
     }
 
     pub fn get_or_insert(&mut self, key: &str) -> Result<i64> {
@@ -1187,9 +1343,8 @@ impl<'conn> SharedKeyCache<'conn> {
             }
         } else {
             if let Some(stmt) = self.stmt_select.as_mut() {
-                let existing: Option<String> = stmt
-                    .query_row([hash], |row| row.get(0))
-                    .optional()?;
+                let existing: Option<String> =
+                    stmt.query_row([hash], |row| row.get(0)).optional()?;
                 if let Some(existing) = existing {
                     if existing != key {
                         bail!("shared key hash collision detected");
@@ -1199,12 +1354,40 @@ impl<'conn> SharedKeyCache<'conn> {
                     return Ok(hash);
                 }
             }
-            self.stmt_insert.execute(params![hash, key])?;
+            if let Some(batch) = self.pending.as_mut() {
+                batch.push([SqlValue::Integer(hash), SqlValue::Text(key.to_owned())])?;
+            } else {
+                self.stmt_insert.execute(params![hash, key])?;
+            }
             self.hash_to_key.insert(hash, key.to_owned());
         }
         self.cache.insert(key.to_owned(), hash);
         Ok(hash)
     }
+}
+
+fn prefill_coverage_dictionary<'a>(
+    conn: &Connection,
+    prefix: &'static str,
+    values: impl Iterator<Item = &'a str>,
+) -> Result<hashbrown::HashMap<&'a str, i64>> {
+    let mut cache = hashbrown::HashMap::new();
+    let mut batch = MultiValueBatch::<2, BorrowedSqlValue<'_>>::new(conn, prefix)?;
+    let mut next_id = 1_i64;
+    for value in values {
+        if let hashbrown::hash_map::Entry::Vacant(entry) = cache.entry(value) {
+            entry.insert(next_id);
+            batch.push([
+                BorrowedSqlValue::Integer(next_id),
+                BorrowedSqlValue::Text(value),
+            ])?;
+            next_id = next_id
+                .checked_add(1)
+                .context("coverage dictionary ID overflow")?;
+        }
+    }
+    batch.flush()?;
+    Ok(cache)
 }
 
 pub struct CoverageExpressionCache<'conn> {
@@ -1277,6 +1460,76 @@ fn decode_facts(blob: &[u8]) -> Result<Facts> {
     Ok(serde_json::from_slice(&json)?)
 }
 
+fn multi_value_batch_rows<const COLUMNS: usize>(conn: &Connection) -> Result<usize> {
+    let variable_limit = usize::try_from(conn.limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER))
+        .context("SQLite variable limit must be non-negative")?;
+    let rows = (variable_limit / COLUMNS).min(MAX_MULTI_VALUE_BATCH_ROWS);
+    if rows == 0 {
+        bail!("SQLite variable limit cannot fit a {COLUMNS}-column insert");
+    }
+    Ok(rows)
+}
+
+enum BorrowedSqlValue<'a> {
+    Integer(i64),
+    Text(&'a str),
+    OwnedText(String),
+    Null,
+}
+
+impl ToSql for BorrowedSqlValue<'_> {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        use rusqlite::types::{ToSqlOutput, ValueRef};
+        Ok(ToSqlOutput::Borrowed(match self {
+            Self::Integer(value) => ValueRef::Integer(*value),
+            Self::Text(value) => ValueRef::Text(value.as_bytes()),
+            Self::OwnedText(value) => ValueRef::Text(value.as_bytes()),
+            Self::Null => ValueRef::Null,
+        }))
+    }
+}
+
+struct MultiValueBatch<'conn, const COLUMNS: usize, T: ToSql = SqlValue> {
+    conn: &'conn Connection,
+    prefix: &'static str,
+    rows: Vec<[T; COLUMNS]>,
+    max_rows: usize,
+    full_statement: rusqlite::Statement<'conn>,
+}
+
+impl<'conn, const COLUMNS: usize, T: ToSql> MultiValueBatch<'conn, COLUMNS, T> {
+    fn new(conn: &'conn Connection, prefix: &'static str) -> Result<Self> {
+        let max_rows = multi_value_batch_rows::<COLUMNS>(conn)?;
+        Ok(Self {
+            conn,
+            prefix,
+            rows: Vec::with_capacity(max_rows),
+            max_rows,
+            full_statement: conn.prepare(&multi_value_insert_sql::<COLUMNS>(prefix, max_rows))?,
+        })
+    }
+
+    fn push(&mut self, row: [T; COLUMNS]) -> Result<()> {
+        self.rows.push(row);
+        if self.rows.len() == self.max_rows {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if self.rows.len() == self.max_rows {
+            self.full_statement.execute(params_from_iter(
+                self.rows.iter().flat_map(|row| row.iter()),
+            ))?;
+        } else {
+            insert_multi_value_batch(self.conn, self.prefix, &self.rows)?;
+        }
+        self.rows.clear();
+        Ok(())
+    }
+}
+
 fn persist_files(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
@@ -1292,65 +1545,139 @@ fn persist_files(
 
     let mut stmt_source_inv =
         tx.prepare("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
-    let mut stmt_files = tx.prepare("INSERT INTO files VALUES(?1,'indexed',?2,?3,?4,?5,0,?6)")?;
+    let mut stmt_files = (!bulk_search)
+        .then(|| tx.prepare("INSERT INTO files VALUES(?1,'indexed',?2,?3,?4,?5,0,?6)"))
+        .transpose()?;
     let mut stmt_local_facts = tx.prepare("INSERT INTO local_facts VALUES(?1,?2,?3,?4,0,?5)")?;
-    let mut stmt_nodes =
-        tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")?;
+    let mut stmt_nodes = (!bulk_search)
+        .then(|| tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"))
+        .transpose()?;
     let mut stmt_owner_override = tx.prepare("INSERT INTO node_owner_overrides VALUES(?1,?2)")?;
-    let mut stmt_owned_search = tx.prepare("INSERT INTO owned_search_raw VALUES(?1,?2)")?;
+    let mut stmt_owned_search = (!bulk_search)
+        .then(|| tx.prepare("INSERT INTO owned_search_raw VALUES(?1,?2)"))
+        .transpose()?;
     let mut stmt_node_search = (!bulk_search)
         .then(|| tx.prepare("INSERT INTO node_search(rowid,search_text)VALUES(?1,?2)"))
         .transpose()?;
-    let mut stmt_shared_owner = tx.prepare(
-        "INSERT OR IGNORE INTO shared_owners_raw(kind_id,key_hash,owner_id,ordinal) VALUES(?1,?2,?3,?4)",
+    let mut shared_owner_batch = MultiValueBatch::<4>::new(
+        tx,
+        "INSERT OR IGNORE INTO shared_owners_raw(kind_id,key_hash,owner_id,ordinal) VALUES",
     )?;
-    let mut shared_key_cache = SharedKeyCache::new(tx, !bulk_search)?;
+    let mut shared_key_cache = if bulk_search {
+        SharedKeyCache::new_batched(tx)?
+    } else {
+        SharedKeyCache::new(tx, true)?
+    };
     let mut stmt_doc_sec =
         tx.prepare("INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")?;
-    let mut stmt_doc_search = tx.prepare("INSERT INTO doc_search(rowid,section_title,content,invariants)SELECT rowid,section_title,content,invariants FROM doc_sections WHERE path=?1")?;
+    let mut stmt_doc_search = (!bulk_search)
+        .then(|| {
+            tx.prepare(
+                "INSERT INTO doc_search(rowid,section_title,content,invariants)SELECT rowid,section_title,content,invariants FROM doc_sections WHERE path=?1",
+            )
+        })
+        .transpose()?;
     let mut stmt_errors = tx.prepare("INSERT INTO errors VALUES(?1,?2,?3)")?;
+
+    let mut file_batch = Vec::<[SqlValue; 8]>::new();
+    let mut node_batch = Vec::<[BorrowedSqlValue<'_>; 13]>::new();
+    let mut owned_search_batch = Vec::<[SqlValue; 2]>::new();
+    let (file_batch_rows, node_batch_rows, owned_search_batch_rows) = if bulk_search {
+        (
+            Some(multi_value_batch_rows::<8>(tx)?),
+            Some(multi_value_batch_rows::<13>(tx)?),
+            Some(multi_value_batch_rows::<2>(tx)?),
+        )
+    } else {
+        (None, None, None)
+    };
 
     for file in entries {
         let f = facts.get(&file.path).context("missing extracted facts")?;
         let owner_id = path_cache.get_or_insert(tx, &file.path)?;
         stmt_source_inv.execute(params![file.path, file.digest, file.bytes])?;
-        stmt_files.execute(params![
-            file.path,
-            file.digest,
-            file.bytes,
-            file.language,
-            is_test(&file.path),
-            stable_hash64(&file.path)
-        ])?;
+        if bulk_search {
+            file_batch.push([
+                SqlValue::Text(file.path.clone()),
+                SqlValue::Text("indexed".into()),
+                SqlValue::Text(file.digest.clone()),
+                SqlValue::Integer(i64::try_from(file.bytes)?),
+                SqlValue::Text(file.language.clone()),
+                SqlValue::Integer(i64::from(is_test(&file.path))),
+                SqlValue::Integer(0),
+                SqlValue::Integer(stable_hash64(&file.path)),
+            ]);
+            if file_batch.len() == file_batch_rows.context("missing cold file batch size")? {
+                insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
+                file_batch.clear();
+            }
+        } else {
+            stmt_files
+                .as_mut()
+                .context("missing incremental file insert")?
+                .execute(params![
+                    file.path,
+                    file.digest,
+                    file.bytes,
+                    file.language,
+                    is_test(&file.path),
+                    stable_hash64(&file.path)
+                ])?;
+        }
         let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)) {
-            Some(blob) => blob.clone(),
-            None => encode_facts(f)?,
+            Some(blob) => std::borrow::Cow::Borrowed(blob.as_slice()),
+            None => std::borrow::Cow::Owned(encode_facts(f)?),
         };
         stmt_local_facts.execute(params![
             file.path,
             file.digest,
             file.language,
             is_test(&file.path),
-            facts_blob
+            facts_blob.as_ref()
         ])?;
         for n in &f.nodes {
             node_id += 1;
             let details = n.details.to_string();
-            stmt_nodes.execute(params![
-                node_id,
-                n.id,
-                n.kind,
-                n.name,
-                n.qualname,
-                n.path,
-                n.line,
-                n.end_line,
-                n.is_test,
-                n.language,
-                n.generated,
-                details,
-                stable_hash64(&n.id)
-            ])?;
+            if bulk_search {
+                node_batch.push([
+                    BorrowedSqlValue::Integer(node_id),
+                    BorrowedSqlValue::Text(&n.id),
+                    BorrowedSqlValue::Text(&n.kind),
+                    BorrowedSqlValue::Text(&n.name),
+                    BorrowedSqlValue::Text(&n.qualname),
+                    BorrowedSqlValue::Text(&n.path),
+                    BorrowedSqlValue::Integer(i64::try_from(n.line)?),
+                    BorrowedSqlValue::Integer(i64::try_from(n.end_line)?),
+                    BorrowedSqlValue::Integer(i64::from(n.is_test)),
+                    BorrowedSqlValue::Text(&n.language),
+                    BorrowedSqlValue::Integer(i64::from(n.generated)),
+                    BorrowedSqlValue::OwnedText(details),
+                    BorrowedSqlValue::Integer(stable_hash64(&n.id)),
+                ]);
+                if node_batch.len() == node_batch_rows.context("missing cold node batch size")? {
+                    insert_multi_value_batch(tx, "INSERT INTO nodes VALUES", &node_batch)?;
+                    node_batch.clear();
+                }
+            } else {
+                stmt_nodes
+                    .as_mut()
+                    .context("missing incremental node insert")?
+                    .execute(params![
+                        node_id,
+                        n.id,
+                        n.kind,
+                        n.name,
+                        n.qualname,
+                        n.path,
+                        n.line,
+                        n.end_line,
+                        n.is_test,
+                        n.language,
+                        n.generated,
+                        details,
+                        stable_hash64(&n.id)
+                    ])?;
+            }
             if n.path != file.path {
                 stmt_owner_override.execute(params![n.id, file.path])?;
             }
@@ -1366,21 +1693,53 @@ fn persist_files(
                     search.push_str(&reference.expression);
                 }
             }
-            stmt_owned_search.execute(params![node_id, search])?;
-            if let Some(stmt_node_search) = stmt_node_search.as_mut() {
-                stmt_node_search.execute(params![node_id, search])?;
+            if bulk_search {
+                owned_search_batch.push([SqlValue::Integer(node_id), SqlValue::Text(search)]);
+                if owned_search_batch.len()
+                    == owned_search_batch_rows.context("missing cold search batch size")?
+                {
+                    insert_multi_value_batch(
+                        tx,
+                        "INSERT INTO owned_search_raw VALUES",
+                        &owned_search_batch,
+                    )?;
+                    owned_search_batch.clear();
+                }
+            } else {
+                stmt_owned_search
+                    .as_mut()
+                    .context("missing incremental search insert")?
+                    .execute(params![node_id, search])?;
+                if let Some(stmt_node_search) = stmt_node_search.as_mut() {
+                    stmt_node_search.execute(params![node_id, search])?;
+                }
             }
             let key_hash = shared_key_cache.get_or_insert(&n.qualname)?;
-            stmt_shared_owner.execute(params![0, key_hash, owner_id, node_id])?;
+            shared_owner_batch.push([
+                SqlValue::Integer(0),
+                SqlValue::Integer(key_hash),
+                SqlValue::Integer(owner_id),
+                SqlValue::Integer(node_id),
+            ])?;
         }
         for key in reference_keys(f) {
-            let key_hash = shared_key_cache.get_or_insert(&key)?;
-            stmt_shared_owner.execute(params![1, key_hash, owner_id, 0])?;
+            let key_hash = shared_key_cache.get_or_insert(key)?;
+            shared_owner_batch.push([
+                SqlValue::Integer(1),
+                SqlValue::Integer(key_hash),
+                SqlValue::Integer(owner_id),
+                SqlValue::Integer(0),
+            ])?;
         }
         for n in &f.nodes {
             if n.details["default_export"] == true {
                 let key_hash = shared_key_cache.get_or_insert(&n.id)?;
-                stmt_shared_owner.execute(params![2, key_hash, owner_id, 0])?;
+                shared_owner_batch.push([
+                    SqlValue::Integer(2),
+                    SqlValue::Integer(key_hash),
+                    SqlValue::Integer(owner_id),
+                    SqlValue::Integer(0),
+                ])?;
             }
         }
         for d in &f.docs {
@@ -1399,131 +1758,311 @@ fn persist_files(
             ])?;
         }
         if !f.docs.is_empty() {
-            stmt_doc_search.execute([&file.path])?;
+            if let Some(stmt) = stmt_doc_search.as_mut() {
+                stmt.execute([&file.path])?;
+            }
         }
         for e in &f.errors {
             stmt_errors.execute(params![e.path, e.line, e.message])?;
         }
     }
 
+    insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
+    insert_multi_value_batch(tx, "INSERT INTO nodes VALUES", &node_batch)?;
+    insert_multi_value_batch(
+        tx,
+        "INSERT INTO owned_search_raw VALUES",
+        &owned_search_batch,
+    )?;
+
+    shared_key_cache.flush()?;
+    shared_owner_batch.flush()?;
     Ok((node_id, docs_count))
 }
 
-#[allow(clippy::type_complexity)]
+fn multi_value_insert_sql<const COLUMNS: usize>(prefix: &str, rows: usize) -> String {
+    let mut row_template = String::with_capacity(COLUMNS * 2 + 1);
+    row_template.push('(');
+    for column in 0..COLUMNS {
+        if column > 0 {
+            row_template.push(',');
+        }
+        row_template.push('?');
+    }
+    row_template.push(')');
+    let mut sql = String::with_capacity(prefix.len() + rows * (row_template.len() + 1));
+    sql.push_str(prefix);
+    for row in 0..rows {
+        if row > 0 {
+            sql.push(',');
+        }
+        sql.push_str(&row_template);
+    }
+    sql
+}
+
+fn insert_multi_value_batch<const COLUMNS: usize>(
+    tx: &Connection,
+    prefix: &str,
+    batch: &[[impl ToSql; COLUMNS]],
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+
+    let max_rows = multi_value_batch_rows::<COLUMNS>(tx)?;
+    for rows in batch.chunks(max_rows) {
+        let sql = multi_value_insert_sql::<COLUMNS>(prefix, rows.len());
+        let values = rows.iter().flat_map(|row| row.iter());
+        tx.prepare_cached(&sql)?.execute(params_from_iter(values))?;
+    }
+    Ok(())
+}
+
+struct CachedNodePath {
+    path: String,
+    node_hash: i64,
+    path_hash: i64,
+}
+
+impl CachedNodePath {
+    fn new(id: &str, path: String) -> Self {
+        Self {
+            node_hash: stable_hash64(id),
+            path_hash: stable_hash64(&path),
+            path,
+        }
+    }
+}
+
+fn graph_endpoint_hashes(
+    node_paths: &mut hashbrown::HashMap<String, Option<CachedNodePath>>,
+    stmt_select_path: &mut rusqlite::Statement<'_>,
+    endpoint: &str,
+    owner: &str,
+    kind: &str,
+) -> Result<(i64, Option<i64>)> {
+    if let Some(node) = node_paths.get(endpoint) {
+        let node = node
+            .as_ref()
+            .with_context(|| format!("edge {kind} has missing endpoint {endpoint}"))?;
+        return Ok((
+            node.node_hash,
+            (node.path != owner).then_some(node.path_hash),
+        ));
+    }
+    let path: Option<String> = stmt_select_path
+        .query_row([endpoint], |row| row.get(0))
+        .optional()?;
+    let node = node_paths
+        .entry(endpoint.to_owned())
+        .or_insert_with(|| path.map(|path| CachedNodePath::new(endpoint, path)));
+    let node = node
+        .as_ref()
+        .with_context(|| format!("edge {kind} has missing endpoint {endpoint}"))?;
+    Ok((
+        node.node_hash,
+        (node.path != owner).then_some(node.path_hash),
+    ))
+}
+
+type EdgeKey<'a> = (i64, &'a str, i64);
+type EdgeRow<'a> = (i64, usize, &'a str, &'a str, i64);
+
+struct GraphPersistenceTimings {
+    occurrences: f64,
+    edges: f64,
+    dictionaries: f64,
+    coverage: f64,
+}
+
 fn persist_graph(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
     graph: &Graph,
-    node_paths: &mut hashbrown::HashMap<String, Option<String>>,
+    node_paths: &mut hashbrown::HashMap<String, Option<CachedNodePath>>,
     materialize_edges: bool,
-) -> Result<()> {
+) -> Result<GraphPersistenceTimings> {
+    let phase = Instant::now();
     let mut ordinals: hashbrown::HashMap<&str, usize> = hashbrown::HashMap::new();
-    let mut stmt_occ =
-        tx.prepare("INSERT INTO edge_occurrences_raw VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
-    let mut unique_edges: hashbrown::HashMap<(i64, &str, i64), (i64, usize, &str, &str, i64)> =
-        hashbrown::HashMap::with_capacity(if materialize_edges { graph.edges.len() } else { 0 });
-    let mut stmt_deps =
-        tx.prepare("INSERT INTO dependencies_raw VALUES(?1,?2,?3,?4,?5,'resolved')")?;
-    let mut stmt_select_path = tx.prepare_cached("SELECT path FROM nodes WHERE id=?1")?;
-    let mut stmt_cov = tx.prepare(
-        "INSERT OR IGNORE INTO resolution_coverage_data(path_id,line,expression_id,status,evidence_id) VALUES(?1,?2,?3,?4,?5)",
+    let mut occurrence_batch = MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(
+        tx,
+        "INSERT INTO edge_occurrences_raw VALUES",
     )?;
-    let mut stmt_unres =
-        tx.prepare("INSERT INTO dependencies_raw VALUES(?1,?2,NULL,'unresolved',?3,?4)")?;
-    let mut coverage_expression_cache = CoverageExpressionCache::new(tx)?;
-    let mut coverage_evidence_cache = CoverageEvidenceCache::new(tx)?;
+    let mut unique_edges: hashbrown::HashMap<EdgeKey<'_>, EdgeRow<'_>> =
+        hashbrown::HashMap::with_capacity(if materialize_edges {
+            graph.edges.len()
+        } else {
+            0
+        });
+    let mut dependency_batch =
+        MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO dependencies_raw VALUES")?;
+    let mut stmt_select_path = tx.prepare_cached("SELECT path FROM nodes WHERE id=?1")?;
+    let mut coverage_batch = MultiValueBatch::<5, BorrowedSqlValue<'_>>::new(tx,
+        "INSERT OR IGNORE INTO resolution_coverage_data(path_id,line,expression_id,status,evidence_id) VALUES",
+    )?;
+    let mut unresolved_batch =
+        MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO dependencies_raw VALUES")?;
     let mut dependency_ordinals = hashbrown::HashMap::<i64, i64>::new();
 
     for e in &graph.edges {
         let ordinal = ordinals.entry(&e.path).or_default();
         let owner_id = path_cache.get_or_insert(tx, &e.path)?;
-        let src_hash = stable_hash64(&e.src);
-        let dst_hash = stable_hash64(&e.dst);
-        stmt_occ.execute(params![
-            owner_id,
-            *ordinal,
-            src_hash,
-            dst_hash,
-            e.kind,
-            e.line,
-            e.evidence,
-            e.confidence
+        let (src_hash, src_target) =
+            graph_endpoint_hashes(node_paths, &mut stmt_select_path, &e.src, &e.path, &e.kind)?;
+        let (dst_hash, dst_target) =
+            graph_endpoint_hashes(node_paths, &mut stmt_select_path, &e.dst, &e.path, &e.kind)?;
+        occurrence_batch.push([
+            BorrowedSqlValue::Integer(owner_id),
+            BorrowedSqlValue::Integer(i64::try_from(*ordinal)?),
+            BorrowedSqlValue::Integer(src_hash),
+            BorrowedSqlValue::Integer(dst_hash),
+            BorrowedSqlValue::Text(e.kind.as_str()),
+            BorrowedSqlValue::Integer(i64::try_from(e.line)?),
+            BorrowedSqlValue::Text(e.evidence.as_str()),
+            BorrowedSqlValue::Text(e.confidence.as_str()),
         ])?;
-        *ordinal += 1;
+        *ordinal = ordinal
+            .checked_add(1)
+            .context("edge occurrence ordinal overflow")?;
+
         if materialize_edges {
             unique_edges
                 .entry((src_hash, e.kind.as_str(), dst_hash))
                 .and_modify(|entry| entry.4 += 1)
-                .or_insert((owner_id, e.line, e.evidence.as_str(), e.confidence.as_str(), 1));
+                .or_insert((
+                    owner_id,
+                    e.line,
+                    e.evidence.as_str(),
+                    e.confidence.as_str(),
+                    1,
+                ));
         }
         let mut target_hashes = [None, None];
         let mut targets_len = 0;
-        for endpoint in [&e.src, &e.dst] {
-            let target = match node_paths.get(endpoint.as_str()) {
-                Some(Some(target)) => target.as_str(),
-                Some(None) => bail!("edge {} has missing endpoint {endpoint}", e.kind),
-                None => {
-                    let p: Option<String> = stmt_select_path
-                        .query_row([endpoint], |r| r.get(0))
-                        .optional()?;
-                    let entry = node_paths.entry(endpoint.to_string()).or_insert(p);
-                    entry.as_deref().with_context(|| {
-                        format!("edge {} has missing endpoint {endpoint}", e.kind)
-                    })?
-                }
-            };
-            if target != e.path {
-                let target_hash = stable_hash64(target);
-                if !target_hashes[..targets_len].contains(&Some(target_hash)) {
-                    target_hashes[targets_len] = Some(target_hash);
-                    targets_len += 1;
-                }
+        for target_hash in [src_target, dst_target].into_iter().flatten() {
+            if !target_hashes[..targets_len].contains(&Some(target_hash)) {
+                target_hashes[targets_len] = Some(target_hash);
+                targets_len += 1;
             }
         }
         for target_hash in target_hashes[..targets_len].iter().flatten() {
             let ordinal = dependency_ordinals.entry(owner_id).or_default();
-            stmt_deps.execute(params![owner_id, *ordinal, target_hash, e.kind, e.evidence])?;
-            *ordinal += 1;
+            dependency_batch.push([
+                BorrowedSqlValue::Integer(owner_id),
+                BorrowedSqlValue::Integer(*ordinal),
+                BorrowedSqlValue::Integer(*target_hash),
+                BorrowedSqlValue::Text(e.kind.as_str()),
+                BorrowedSqlValue::Text(e.evidence.as_str()),
+                BorrowedSqlValue::Text("resolved"),
+            ])?;
+            *ordinal = ordinal
+                .checked_add(1)
+                .context("dependency ordinal overflow")?;
         }
     }
+    occurrence_batch.flush()?;
+    dependency_batch.flush()?;
+    let occurrences = phase.elapsed().as_secs_f64() * 1000.;
+    let phase = Instant::now();
     if materialize_edges {
-        let mut stmt_insert_edge = tx.prepare(
-            "INSERT INTO edges_raw(src_hash,kind,dst_hash,path_id,line,evidence,confidence,occurrence_count) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-        )?;
+        let mut edge_batch = MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO edges_raw(src_hash,kind,dst_hash,path_id,line,evidence,confidence,occurrence_count) VALUES")?;
+        // Storage-key order improves B-tree locality; payloads retain their first occurrence.
+        let mut unique_rows: Vec<_> = unique_edges.into_iter().collect();
+        if unique_rows.len() >= 8192 {
+            unique_rows.par_sort_unstable_by_key(|(key, _)| *key);
+        } else {
+            unique_rows.sort_unstable_by_key(|(key, _)| *key);
+        }
         for ((src_hash, kind, dst_hash), (path_id, line, evidence, confidence, count)) in
-            unique_edges
+            unique_rows
         {
-            stmt_insert_edge.execute(params![
-                src_hash,
-                kind,
-                dst_hash,
-                path_id,
-                line,
-                evidence,
-                confidence,
-                count
+            edge_batch.push([
+                BorrowedSqlValue::Integer(src_hash),
+                BorrowedSqlValue::Text(kind),
+                BorrowedSqlValue::Integer(dst_hash),
+                BorrowedSqlValue::Integer(path_id),
+                BorrowedSqlValue::Integer(i64::try_from(line)?),
+                BorrowedSqlValue::Text(evidence),
+                BorrowedSqlValue::Text(confidence),
+                BorrowedSqlValue::Integer(count),
             ])?;
         }
+        edge_batch.flush()?;
     }
+    let edges = phase.elapsed().as_secs_f64() * 1000.;
+    let phase = Instant::now();
+    let mut coverage_expression_cache = CoverageExpressionCache::new(tx)?;
+    let mut coverage_evidence_cache = CoverageEvidenceCache::new(tx)?;
+    let expression_ids = if materialize_edges {
+        Some(prefill_coverage_dictionary(
+            tx,
+            "INSERT INTO coverage_expressions(expression_id,expression) VALUES",
+            graph
+                .coverage
+                .iter()
+                .map(|coverage| coverage.expression.as_str()),
+        )?)
+    } else {
+        None
+    };
+    let evidence_ids = if materialize_edges {
+        Some(prefill_coverage_dictionary(
+            tx,
+            "INSERT INTO coverage_evidence(evidence_id,evidence) VALUES",
+            graph
+                .coverage
+                .iter()
+                .map(|coverage| coverage.evidence.as_str()),
+        )?)
+    } else {
+        None
+    };
+    let dictionaries = phase.elapsed().as_secs_f64() * 1000.;
+    let phase = Instant::now();
     for c in &graph.coverage {
         let owner_id = path_cache.get_or_insert(tx, &c.path)?;
-        let expression_id = coverage_expression_cache.get_or_insert(&c.expression)?;
-        let evidence_id = coverage_evidence_cache.get_or_insert(&c.evidence)?;
-        stmt_cov.execute(params![
-            owner_id,
-            c.line,
-            expression_id,
-            c.status,
-            evidence_id
+        let expression_id = match expression_ids.as_ref() {
+            Some(ids) => *ids
+                .get(c.expression.as_str())
+                .context("missing cold coverage expression")?,
+            None => coverage_expression_cache.get_or_insert(&c.expression)?,
+        };
+        let evidence_id = match evidence_ids.as_ref() {
+            Some(ids) => *ids
+                .get(c.evidence.as_str())
+                .context("missing cold coverage evidence")?,
+            None => coverage_evidence_cache.get_or_insert(&c.evidence)?,
+        };
+        coverage_batch.push([
+            BorrowedSqlValue::Integer(owner_id),
+            BorrowedSqlValue::Integer(i64::try_from(c.line)?),
+            BorrowedSqlValue::Integer(expression_id),
+            BorrowedSqlValue::Text(c.status.as_str()),
+            BorrowedSqlValue::Integer(evidence_id),
         ])?;
         if c.status != "resolved" {
             let ordinal = dependency_ordinals.entry(owner_id).or_default();
-            stmt_unres.execute(params![owner_id, *ordinal, c.expression, c.status])?;
+            unresolved_batch.push([
+                BorrowedSqlValue::Integer(owner_id),
+                BorrowedSqlValue::Integer(*ordinal),
+                BorrowedSqlValue::Null,
+                BorrowedSqlValue::Text("unresolved"),
+                BorrowedSqlValue::Text(c.expression.as_str()),
+                BorrowedSqlValue::Text(c.status.as_str()),
+            ])?;
             *ordinal += 1;
         }
     }
 
-    Ok(())
+    coverage_batch.flush()?;
+    unresolved_batch.flush()?;
+    Ok(GraphPersistenceTimings {
+        occurrences,
+        edges,
+        dictionaries,
+        coverage: phase.elapsed().as_secs_f64() * 1000.,
+    })
 }
 
 fn persist_file_commitments(
@@ -1574,16 +2113,16 @@ fn persist_file_commitments(
         })
         .collect();
 
-    let mut stmt = tx.prepare("INSERT INTO file_commitments VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
+    let mut batch = MultiValueBatch::<8>::new(tx, "INSERT INTO file_commitments VALUES")?;
     for row in rows {
-        let [p, d, inv, fh, n, e, s, dep] = row?;
-        stmt.execute(params![p, d, inv, fh, n, e, s, dep])?;
+        batch.push(row?.map(SqlValue::Text))?;
     }
+    batch.flush()?;
 
     Ok(())
 }
 
-fn reference_keys(facts: &Facts) -> BTreeSet<String> {
+fn reference_keys(facts: &Facts) -> BTreeSet<&str> {
     let mut keys = BTreeSet::new();
     for expression in facts
         .references
@@ -1604,12 +2143,538 @@ fn reference_keys(facts: &Facts) -> BTreeSet<String> {
                 .flat_map(|d| d.referenced_symbols.iter().map(String::as_str)),
         )
     {
-        keys.insert(expression.into());
+        keys.insert(expression);
         for token in expression.split(['.', ':', '/']) {
             if !token.is_empty() && token.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                keys.insert(token.into());
+                keys.insert(token);
             }
         }
     }
     keys
+}
+
+#[cfg(test)]
+mod memory_budget_tests {
+    use super::{populate, sqlite_cache_size_kib};
+    use crate::engine::scanner;
+    use rusqlite::Connection;
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    struct TemporaryRoot(PathBuf);
+
+    impl TemporaryRoot {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "forge_writer_cache_test_{}_{}",
+                std::process::id(),
+                nonce
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TemporaryRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn sqlite_cache_size_is_clamped_in_kibibytes() {
+        assert_eq!(sqlite_cache_size_kib(0), 4_096);
+        assert_eq!(sqlite_cache_size_kib(64 * 1024 * 1024), 8_192);
+        assert_eq!(sqlite_cache_size_kib(u64::MAX), 128_000);
+
+        let root = TemporaryRoot::new();
+        let adapter = scanner::load_adapter(&root.0, None).unwrap();
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection.pragma_update(None, "cache_size", 1).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA cache_size", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+
+        populate(
+            &mut connection,
+            &root.0,
+            &adapter,
+            &[],
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+
+        let cache_size = connection
+            .query_row("PRAGMA cache_size", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+        assert!(cache_size < 0, "cache_size must use negative KiB units");
+        let cache_size_kib = cache_size
+            .checked_neg()
+            .and_then(|value| u64::try_from(value).ok())
+            .expect("negative cache size must fit KiB range");
+        assert!((4_096..=128_000).contains(&cache_size_kib));
+    }
+}
+
+#[cfg(test)]
+mod multi_value_batch_tests {
+    use super::{
+        insert_multi_value_batch, multi_value_batch_rows, persist_file_commitments, persist_files,
+        persist_graph, prefill_coverage_dictionary, CoverageEvidenceCache, CoverageExpressionCache,
+        PathDictionaryCache, SharedKeyCache,
+    };
+    use crate::{
+        core::{
+            models::{Coverage, Edge, Facts, Graph, Node, Reference},
+            schema::SCHEMA_DDL,
+        },
+        engine::scanner::FileEntry,
+    };
+    use rusqlite::{limits::Limit, types::Value as SqlValue, Connection};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn entries_and_facts(count: usize) -> (Vec<FileEntry>, BTreeMap<String, Facts>) {
+        let mut entries = Vec::with_capacity(count);
+        let mut facts = BTreeMap::new();
+        for index in 0..count {
+            let path = format!("src/file-{index:03}.rs");
+            entries.push(FileEntry {
+                path: path.clone(),
+                digest: format!("digest-{index}"),
+                bytes: 1,
+                mtime_ns: 0,
+                identity: [0; 3],
+                language: "rust".into(),
+                is_doc: false,
+            });
+            facts.insert(
+                path.clone(),
+                Facts {
+                    nodes: vec![Node {
+                        id: format!("function:{path}"),
+                        kind: "function".into(),
+                        name: format!("function_{index}"),
+                        qualname: format!("function_{index}"),
+                        path,
+                        line: 1,
+                        end_line: 1,
+                        is_test: false,
+                        language: "rust".into(),
+                        generated: false,
+                        details: json!({}),
+                    }],
+                    ..Facts::default()
+                },
+            );
+        }
+        (entries, facts)
+    }
+
+    fn constrain_variable_limit(conn: &Connection) -> i32 {
+        let limit = conn.limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER);
+        assert!(limit >= 13, "test needs enough variables for one node row");
+        let constrained = limit.min(52);
+        conn.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, constrained);
+        assert_eq!(conn.limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER), constrained);
+        constrained
+    }
+
+    fn row_count(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn endpoint_hash_cache_preserves_targets_and_missing_endpoint_errors() {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE nodes(id TEXT PRIMARY KEY,path TEXT); INSERT INTO nodes VALUES('node:λ','src/λ.rs');").unwrap();
+        let mut statement = conn.prepare("SELECT path FROM nodes WHERE id=?1").unwrap();
+        let mut cache = hashbrown::HashMap::new();
+        assert_eq!(
+            super::graph_endpoint_hashes(&mut cache, &mut statement, "node:λ", "other.rs", "calls")
+                .unwrap(),
+            (
+                crate::core::models::stable_hash64("node:λ"),
+                Some(crate::core::models::stable_hash64("src/λ.rs"))
+            )
+        );
+        let missing = super::graph_endpoint_hashes(
+            &mut cache,
+            &mut statement,
+            "missing",
+            "other.rs",
+            "calls",
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(missing, "edge calls has missing endpoint missing");
+        conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Read {
+                table_name: "nodes",
+                ..
+            } => Authorization::Deny,
+            _ => Authorization::Allow,
+        }));
+        assert_eq!(
+            super::graph_endpoint_hashes(&mut cache, &mut statement, "node:λ", "src/λ.rs", "calls")
+                .unwrap(),
+            (crate::core::models::stable_hash64("node:λ"), None)
+        );
+        assert_eq!(
+            super::graph_endpoint_hashes(
+                &mut cache,
+                &mut statement,
+                "missing",
+                "other.rs",
+                "calls"
+            )
+            .unwrap_err()
+            .to_string(),
+            missing
+        );
+    }
+
+    #[test]
+    fn cold_dictionary_batches_match_first_seen_ids_and_delta_keeps_existing_ids() {
+        let values = (0..251)
+            .flat_map(|index| [format!("callee_{index}_λ'"), "duplicate".into()])
+            .collect::<Vec<_>>();
+        let old = Connection::open_in_memory().unwrap();
+        old.execute_batch(SCHEMA_DDL).unwrap();
+        let cold = Connection::open_in_memory().unwrap();
+        cold.execute_batch(SCHEMA_DDL).unwrap();
+        constrain_variable_limit(&cold);
+        let mut expressions = CoverageExpressionCache::new(&old).unwrap();
+        let mut evidence = CoverageEvidenceCache::new(&old).unwrap();
+        for value in &values {
+            expressions.get_or_insert(value).unwrap();
+            evidence.get_or_insert(value).unwrap();
+        }
+        let cold_expressions = prefill_coverage_dictionary(
+            &cold,
+            "INSERT INTO coverage_expressions(expression_id,expression) VALUES",
+            values.iter().map(String::as_str),
+        )
+        .unwrap();
+        let cold_evidence = prefill_coverage_dictionary(
+            &cold,
+            "INSERT INTO coverage_evidence(evidence_id,evidence) VALUES",
+            values.iter().map(String::as_str),
+        )
+        .unwrap();
+        assert_eq!(
+            cold_expressions,
+            expressions
+                .cache
+                .iter()
+                .map(|(value, id)| (value.as_str(), *id))
+                .collect()
+        );
+        assert_eq!(
+            cold_evidence,
+            evidence
+                .cache
+                .iter()
+                .map(|(value, id)| (value.as_str(), *id))
+                .collect()
+        );
+        for table in ["coverage_expressions", "coverage_evidence"] {
+            let sql = format!("SELECT * FROM {table} ORDER BY 1");
+            assert_eq!(
+                crate::db::reader::rows(&old, &sql, &[], 1_000).unwrap(),
+                crate::db::reader::rows(&cold, &sql, &[], 1_000).unwrap()
+            );
+        }
+        cold.execute(
+            "INSERT INTO coverage_expressions VALUES(999,'existing expression')",
+            [],
+        )
+        .unwrap();
+        cold.execute(
+            "INSERT INTO coverage_evidence VALUES(999,'existing evidence')",
+            [],
+        )
+        .unwrap();
+        let mut expressions = CoverageExpressionCache::new(&cold).unwrap();
+        let mut evidence = CoverageEvidenceCache::new(&cold).unwrap();
+        assert_eq!(
+            expressions.get_or_insert("existing expression").unwrap(),
+            999
+        );
+        assert_eq!(evidence.get_or_insert("existing evidence").unwrap(), 999);
+        assert_eq!(expressions.get_or_insert("new expression").unwrap(), 1_000);
+        assert_eq!(evidence.get_or_insert("new evidence").unwrap(), 1_000);
+    }
+
+    #[test]
+    fn cold_shared_key_batches_preserve_keys_collisions_and_delta_lookup() {
+        let old = Connection::open_in_memory().unwrap();
+        old.execute_batch(SCHEMA_DDL).unwrap();
+        let cold = Connection::open_in_memory().unwrap();
+        cold.execute_batch(SCHEMA_DDL).unwrap();
+        constrain_variable_limit(&cold);
+        let mut original = SharedKeyCache::new(&old, false).unwrap();
+        let mut batched = SharedKeyCache::new_batched(&cold).unwrap();
+        for index in 0..251 {
+            let key = format!("symbol_{index}_λ'");
+            assert_eq!(
+                original.get_or_insert(&key).unwrap(),
+                batched.get_or_insert(&key).unwrap()
+            );
+            assert_eq!(
+                batched.get_or_insert(&key).unwrap(),
+                crate::core::models::stable_hash64(&key)
+            );
+        }
+        batched.flush().unwrap();
+        let sql = "SELECT * FROM shared_keys ORDER BY key_hash";
+        assert_eq!(
+            crate::db::reader::rows(&old, sql, &[], 1_000).unwrap(),
+            crate::db::reader::rows(&cold, sql, &[], 1_000).unwrap()
+        );
+        let key = "collision probe";
+        batched.hash_to_key.insert(
+            crate::core::models::stable_hash64(key),
+            "different key".into(),
+        );
+        assert!(batched
+            .get_or_insert(key)
+            .unwrap_err()
+            .to_string()
+            .contains("collision"));
+        drop(batched);
+        let mut delta = SharedKeyCache::new(&cold, true).unwrap();
+        assert_eq!(
+            delta.get_or_insert("symbol_0_λ'").unwrap(),
+            crate::core::models::stable_hash64("symbol_0_λ'")
+        );
+        assert_eq!(row_count(&cold, "shared_keys"), 251);
+    }
+
+    #[test]
+    fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
+        let (entries, mut facts) = entries_and_facts(251);
+        let mut graph = Graph::default();
+        for (index, file) in entries.iter().enumerate() {
+            let f = facts.get_mut(&file.path).unwrap();
+            f.nodes[0].details = json!({"default_export":true});
+            f.references.push(Reference {
+                source: f.nodes[0].id.clone(),
+                expression: "remote.call".into(),
+                kind: "calls".into(),
+                line: 2,
+                alias: None,
+                module: None,
+                dynamic: false,
+                receiver_hint: None,
+            });
+            graph.edges.push(Edge {
+                src: f.nodes[0].id.clone(),
+                dst: format!("function:{}", entries[(index + 1) % entries.len()].path),
+                kind: "calls".into(),
+                path: file.path.clone(),
+                line: 2,
+                evidence: "cross-file call λ'\0".into(),
+                confidence: "exact".into(),
+            });
+            for status in [
+                "resolved",
+                "unresolved",
+                "ambiguous",
+                "external",
+                "external",
+            ] {
+                graph.coverage.push(Coverage {
+                    path: file.path.clone(),
+                    line: 3,
+                    expression: format!("call_{status}_λ'\0"),
+                    status: status.into(),
+                    evidence: format!("evidence {status}"),
+                });
+            }
+        }
+        let snapshot = |constrained| {
+            let mut conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(SCHEMA_DDL).unwrap();
+            if constrained {
+                constrain_variable_limit(&conn);
+            }
+            let tx = conn.transaction().unwrap();
+            let mut path_cache = PathDictionaryCache::new();
+            persist_files(&tx, &mut path_cache, &entries, &facts, None, true).unwrap();
+            let mut node_paths = facts
+                .values()
+                .flat_map(|f| f.nodes.iter())
+                .map(|n| {
+                    (
+                        n.id.clone(),
+                        Some(super::CachedNodePath::new(&n.id, n.path.clone())),
+                    )
+                })
+                .collect();
+            persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, true).unwrap();
+            persist_file_commitments(&tx, &entries, &facts, &graph).unwrap();
+            tx.commit().unwrap();
+            assert_eq!(row_count(&conn, "resolution_coverage_data"), 251 * 4);
+            assert_eq!(row_count(&conn, "dependencies_raw"), 251 * 5);
+            assert_eq!(row_count(&conn, "shared_owners_raw"), 251 * 5);
+            assert_eq!(row_count(&conn, "file_commitments"), 251);
+            assert_eq!(row_count(&conn, "edge_occurrences_raw"), 251);
+            assert_eq!(row_count(&conn, "edges_raw"), 251);
+            let dependencies = crate::db::reader::rows(&conn,
+                "SELECT ordinal,target_hash,kind,symbol,resolution FROM dependencies_raw WHERE owner_id=(SELECT path_id FROM path_dictionary WHERE path='src/file-000.rs') ORDER BY ordinal", &[], 10).unwrap();
+            assert_eq!(dependencies[0]["ordinal"], 0);
+            assert_eq!(dependencies[0]["resolution"], "resolved");
+            for (ordinal, status) in [
+                (1, "unresolved"),
+                (2, "ambiguous"),
+                (3, "external"),
+                (4, "external"),
+            ] {
+                assert_eq!(dependencies[ordinal]["ordinal"], ordinal);
+                assert!(dependencies[ordinal]["target_hash"].is_null());
+                assert_eq!(dependencies[ordinal]["kind"], "unresolved");
+                assert_eq!(dependencies[ordinal]["resolution"], status);
+                assert_eq!(
+                    dependencies[ordinal]["symbol"],
+                    format!("call_{status}_λ'\0")
+                );
+            }
+            [
+                "edge_occurrences_raw",
+                "edges_raw",
+                "shared_owners_raw",
+                "resolution_coverage_data",
+                "dependencies_raw",
+                "file_commitments",
+            ]
+            .map(|table| {
+                crate::db::reader::rows(
+                    &conn,
+                    &format!("SELECT * FROM {table} ORDER BY 1,2,3,4"),
+                    &[],
+                    10_000,
+                )
+                .unwrap()
+            })
+        };
+        assert_eq!(snapshot(false), snapshot(true));
+    }
+
+    #[test]
+    fn multi_value_helper_splits_at_the_live_sqlite_variable_limit() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE pairs(left_value INTEGER,right_value INTEGER);")
+            .unwrap();
+        conn.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 6);
+        assert_eq!(conn.limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER), 6);
+        assert_eq!(multi_value_batch_rows::<2>(&conn).unwrap(), 3);
+
+        let batch = (0..8)
+            .map(|value| [SqlValue::Integer(value), SqlValue::Integer(value * 10)])
+            .collect::<Vec<_>>();
+        insert_multi_value_batch(&conn, "INSERT INTO pairs VALUES", &batch).unwrap();
+        assert_eq!(row_count(&conn, "pairs"), 8);
+        assert_eq!(
+            conn.query_row("SELECT sum(right_value) FROM pairs", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            280
+        );
+    }
+
+    #[test]
+    fn cold_file_node_and_search_inserts_respect_live_batch_boundaries() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_DDL).unwrap();
+        let variable_limit = constrain_variable_limit(&conn) as usize;
+        let rows_by_columns = [8, 13, 2]
+            .map(|columns| (variable_limit / columns).min(super::MAX_MULTI_VALUE_BATCH_ROWS));
+        assert!(rows_by_columns.iter().all(|rows| (1..=250).contains(rows)));
+        assert_eq!(
+            multi_value_batch_rows::<8>(&conn).unwrap(),
+            rows_by_columns[0]
+        );
+        assert_eq!(
+            multi_value_batch_rows::<13>(&conn).unwrap(),
+            rows_by_columns[1]
+        );
+        assert_eq!(
+            multi_value_batch_rows::<2>(&conn).unwrap(),
+            rows_by_columns[2]
+        );
+
+        let (entries, facts) = entries_and_facts(251);
+        let tx = conn.transaction().unwrap();
+        let mut path_cache = PathDictionaryCache::new();
+        persist_files(&tx, &mut path_cache, &entries, &facts, None, true).unwrap();
+        tx.commit().unwrap();
+
+        for table in [
+            "source_inventory",
+            "files",
+            "local_facts",
+            "nodes",
+            "owned_search_raw",
+        ] {
+            assert_eq!(row_count(&conn, table), 251, "{table}");
+        }
+    }
+
+    #[test]
+    fn cold_batch_failure_rolls_back_previously_flushed_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_DDL).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_selected_shared_owner
+             BEFORE INSERT ON shared_owners_raw
+             WHEN (SELECT path FROM path_dictionary WHERE path_id=NEW.owner_id)='src/file-250.rs'
+             BEGIN SELECT RAISE(ABORT,'forced cold-batch failure'); END;",
+        )
+        .unwrap();
+        constrain_variable_limit(&conn);
+        let (entries, facts) = entries_and_facts(251);
+
+        let error = {
+            let tx = conn.transaction().unwrap();
+            let mut path_cache = PathDictionaryCache::new();
+            let error = persist_files(&tx, &mut path_cache, &entries, &facts, None, true)
+                .expect_err("the injected late failure must abort persistence");
+            drop(tx);
+            error
+        };
+        assert!(
+            error.to_string().contains("forced cold-batch failure"),
+            "{error:#}"
+        );
+
+        for table in [
+            "source_inventory",
+            "files",
+            "path_dictionary",
+            "local_facts",
+            "nodes",
+            "owned_search_raw",
+            "shared_keys",
+            "shared_owners_raw",
+        ] {
+            assert_eq!(row_count(&conn, table), 0, "{table} must roll back");
+        }
+    }
 }

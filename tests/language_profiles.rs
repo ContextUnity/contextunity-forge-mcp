@@ -137,8 +137,8 @@ fn persisted_imports_require_complete_language_and_workspace_identity() {
         )
         .unwrap();
     assert_eq!(
-        unresolved, 6,
-        "two unbound imports and four calls remain unresolved"
+        unresolved, 0,
+        "unmatched absolute imports and calls are retained as unverified external dependencies"
     );
     let external: i64 = conn
         .query_row(
@@ -148,9 +148,17 @@ fn persisted_imports_require_complete_language_and_workspace_identity() {
         )
         .unwrap();
     assert_eq!(
-        external, 2,
-        "two stdlib imports (time, typing) are recognized as external"
+        external, 8,
+        "four unmatched absolute imports and their calls are classified as external"
     );
+    let unverified_external: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM resolution_coverage WHERE path='main.py' AND status='external' AND expression IN ('value','Path') AND evidence LIKE '%no indexed provider%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unverified_external, 2);
 }
 
 #[cfg(any(

@@ -99,6 +99,7 @@ pub trait LanguageLinker: Send + Sync {
         _member: &str,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
         _by_qual: &HashMap<&'a str, Vec<&'a Node>>,
+        _exports: &PackageExports<'a>,
         _lookup_key: &mut String,
     ) -> Vec<&'a Node> {
         Vec::new()

@@ -68,7 +68,10 @@ pub(crate) fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
             | "closure_expression"
             | "func_literal"
     );
-    let is_module = matches!(node.kind(), "module" | "program" | "source_file");
+    let is_module = matches!(
+        node.kind(),
+        "module" | "program" | "source_file" | "class_definition"
+    );
     if !is_callable && !is_module {
         return ScopeBindings {
             all: Vec::new(),
@@ -278,6 +281,10 @@ impl Extraction<'_> {
         );
         if node.parent().is_none() {
             if let Some(module) = facts.nodes.iter_mut().find(|n| n.id == owner) {
+                if !self.file.lazy_exports.is_empty() {
+                    module.details["lazy_exports"] = json!(self.file.lazy_exports);
+                }
+                let scope_bindings = self.profile.bindings(node, source);
                 let bindings = module.details["bindings"]
                     .as_array()
                     .cloned()
@@ -285,9 +292,17 @@ impl Extraction<'_> {
                 let bindings: std::collections::BTreeSet<String> = bindings
                     .iter()
                     .filter_map(|v| v.as_str().map(str::to_owned))
-                    .chain(self.profile.bindings(node, source).all)
+                    .chain(scope_bindings.all)
                     .collect();
                 module.details["bindings"] = json!(bindings);
+                let rebindings: std::collections::BTreeSet<String> = module.details["rebindings"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .chain(scope_bindings.rebindings)
+                    .collect();
+                module.details["rebindings"] = json!(rebindings);
             }
         }
         if node.is_error() || node.is_missing() {
@@ -313,7 +328,7 @@ impl Extraction<'_> {
         }
         let mut child_owner = owner.to_owned();
         let mut pushed = false;
-        if let Some(kind) = self.profile.symbol(node) {
+        if let Some(kind) = self.profile.symbol_with_source(node, source) {
             let name = self
                 .profile
                 .symbol_name(node, source)
@@ -335,7 +350,25 @@ impl Extraction<'_> {
             self.symbols.insert(node.id(), id.clone());
             let metadata = self.profile.metadata(node, source, &name, &self.file);
             let bindings = self.profile.bindings(node, source);
-            let details = json!({"receiver_name":metadata.receiver_name,"bindings":bindings.all,"rebindings":bindings.rebindings,"default_export":metadata.default_export,"doc":self.profile.doc_comment(node,source),"decorators":metadata.decorators,"bases":metadata.bases,"receiver":metadata.receiver,"signature":declaration_signature(node,source),"async":metadata.is_async});
+            let mut details = json!({"receiver_name":metadata.receiver_name,"bindings":bindings.all,"rebindings":bindings.rebindings,"default_export":metadata.default_export,"doc":self.profile.doc_comment(node,source),"decorators":metadata.decorators,"bases":metadata.bases,"receiver":metadata.receiver,"signature":declaration_signature(node,source),"async":metadata.is_async});
+            if let Some(receiver_type) = metadata.receiver_type {
+                details["receiver_type"] = json!(receiver_type);
+            }
+            if let Some(is_method) = metadata.is_method {
+                details["is_method"] = json!(is_method);
+            }
+            if let Some(is_static) = metadata.is_static {
+                details["is_static"] = json!(is_static);
+            }
+            if !metadata.param_types.is_empty() {
+                details["param_types"] = json!(metadata.param_types);
+            }
+            if metadata.is_overload {
+                details["is_overload"] = json!(true);
+            }
+            if metadata.is_stub {
+                details["is_stub"] = json!(true);
+            }
             facts.nodes.push(Node {
                 id: id.clone(),
                 kind: kind.into(),
@@ -358,12 +391,14 @@ impl Extraction<'_> {
                 evidence: node.kind().into(),
                 confidence: "exact".into(),
             });
+            let shadowed_require_scopes = std::sync::Arc::clone(&self.file.shadowed_require_scopes);
             self.profile.extract_relations(
                 &SyntaxContext {
                     node,
                     source,
                     owner: &id,
                     offset,
+                    shadowed_require_scopes: &shadowed_require_scopes,
                 },
                 facts,
             );
@@ -371,11 +406,13 @@ impl Extraction<'_> {
             scopes.push(name);
             pushed = true;
         }
+        let shadowed_require_scopes = std::sync::Arc::clone(&self.file.shadowed_require_scopes);
         let ctx = SyntaxContext {
             node,
             source,
             owner: &child_owner,
             offset,
+            shadowed_require_scopes: &shadowed_require_scopes,
         };
         self.profile.extract_imports(&ctx, facts);
         self.profile.extract_calls(&ctx, facts);
