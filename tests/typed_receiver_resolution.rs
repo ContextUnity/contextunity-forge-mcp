@@ -10,6 +10,10 @@ use contextunity_forge_mcp::{
 };
 use std::collections::BTreeMap;
 
+#[cfg(any(feature = "lang-python", feature = "lang-typescript"))]
+#[path = "receivers/persistence.rs"]
+mod persistence;
+
 fn linked(files: &[(&str, &str, &str)]) -> (BTreeMap<String, Facts>, Graph) {
     let facts: BTreeMap<_, _> = files
         .iter()
@@ -150,27 +154,7 @@ fn local_annotation_bindings_override_external_imports() {
 
 #[cfg(feature = "lang-python")]
 #[test]
-fn rebound_annotation_import_does_not_prove_external_receiver() {
-    let (_, graph) = linked(&[("consumer.py", "python", "from unknown_vendor import Worker\nWorker = callback\ndef run(client: Worker): return client.get()\n")]);
-    assert_eq!(call(&graph, "client.get").status, "unresolved");
-    assert!(!call(&graph, "client.get")
-        .evidence
-        .contains("external import"));
-}
-
-#[cfg(feature = "lang-python")]
-#[test]
-fn typing_any_does_not_prove_an_external_receiver_origin() {
-    for source in [
-        "from typing import Any\ndef run(client: Any): return client.get()\n",
-        "from typing import Any as Dynamic\ndef run(client: Dynamic): return client.get()\n",
-        "import typing as t\ndef run(client: t.Any): return client.get()\n",
-        "from typing_extensions import Any as Dynamic\ndef run(client: Dynamic): return client.get()\n",
-    ] {
-        let (_, graph) = linked(&[("consumer.py", "python", source)]);
-        assert_eq!(call(&graph, "client.get").status, "unresolved", "{source}");
-        assert!(!call(&graph, "client.get").evidence.contains("external import"));
-    }
+fn non_typing_vendor_any_name_retains_external_provenance() {
     let (_, graph) = linked(&[(
         "consumer.py",
         "python",
@@ -178,3 +162,11 @@ fn typing_any_does_not_prove_an_external_receiver_origin() {
     )]);
     assert_eq!(call(&graph, "client.get").status, "external");
 }
+
+#[cfg(feature = "lang-python")]
+#[path = "receivers/python_value_flow.rs"]
+mod python_value_flow;
+
+#[cfg(feature = "lang-rust")]
+#[path = "receivers/rust_value_flow.rs"]
+mod rust_value_flow;

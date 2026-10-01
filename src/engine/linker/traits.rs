@@ -116,10 +116,29 @@ pub trait LanguageLinker: Send + Sync {
         HashMap::new()
     }
 
+    fn package_exports_borrowed<'a>(
+        &self,
+        _all: &'a BTreeMap<String, &'a Facts>,
+        _modules_by_namespace: &ModulesByNamespace<'a>,
+        _by_module: &HashMap<&'a str, Vec<&'a Node>>,
+        _root: Option<&Path>,
+    ) -> PackageExports<'a> {
+        HashMap::new()
+    }
+
     /// Returns files whose full facts are required to relink affected owners.
     fn required_full_facts(
         &self,
         _facts: &BTreeMap<String, Facts>,
+        _affected: &BTreeSet<String>,
+        _catalog: &[(&str, &str)],
+    ) -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
+    fn required_full_facts_borrowed(
+        &self,
+        _facts: &BTreeMap<String, &Facts>,
         _affected: &BTreeSet<String>,
         _catalog: &[(&str, &str)],
     ) -> BTreeSet<String> {

@@ -1,6 +1,14 @@
 use super::*;
+use crate::core::models::ReceiverHint;
 use crate::engine::ast::{relations, routes};
 use std::path::PathBuf;
+#[path = "typescript/linker.rs"]
+pub(crate) mod linker;
+#[path = "typescript/commonjs.rs"]
+mod commonjs;
+pub(crate) use commonjs::commonjs_bindings;
+#[path = "typescript/value_flow.rs"]
+mod value_flow;
 pub fn language(path: &str, language: &str) -> tree_sitter::Language {
     if language == "javascript"
         || path.ends_with(".js")
@@ -597,6 +605,25 @@ impl LanguageProfile for TypeScript {
                     add(name, alias, module.clone());
                 }
             }
+        } else if node.kind() == "export_statement" {
+            if let Some(module) = field(node, source, "source")
+                .map(|module| module.trim_matches(['\'', '"']).to_owned())
+            {
+                add(module.clone(), None, Some(module));
+            }
+        } else if node.kind() == "assignment_expression" && !require_is_shadowed(ctx) {
+            if let Some(module) = node
+                .child_by_field_name("right")
+                .and_then(|right| required_module(right, source))
+            {
+                if field(node, source, "left").is_some_and(|left| {
+                    left == "module.exports"
+                        || left.starts_with("exports.")
+                        || left.starts_with("module.exports.")
+                }) {
+                    add(module.clone(), None, Some(module));
+                }
+            }
         } else if node.kind() == "variable_declarator" {
             let Some(value) = node.child_by_field_name("value") else {
                 return;
@@ -611,6 +638,7 @@ impl LanguageProfile for TypeScript {
                 add(module.clone(), None, Some(module));
                 return;
             };
+
             let mut imports = Vec::new();
             collect_require_bindings(pattern, source, &mut imports);
             if imports.is_empty() {
@@ -636,14 +664,137 @@ impl LanguageProfile for TypeScript {
                 }
             } else {
                 call(ctx, facts, true);
+                if let Some(function) = ctx
+                    .node
+                    .child_by_field_name("function")
+                    .filter(|function| function.kind() == "member_expression")
+                {
+                    if let (Some(mut receiver), Some(member)) = (
+                        function.child_by_field_name("object"),
+                        function
+                            .child_by_field_name("property")
+                            .filter(|member| member.kind() == "property_identifier"),
+                    ) {
+                        for _ in 0..8 {
+                            if receiver.kind() != "parenthesized_expression" {
+                                break;
+                            }
+                            let Some(inner) = receiver.named_child(0) else {
+                                break;
+                            };
+                            receiver = inner;
+                        }
+                        let hint =
+                            match receiver.kind() {
+                                "call_expression" => {
+                                    receiver.child_by_field_name("function").map(|callee| {
+                                        ReceiverHint::CallResult {
+                                            callee: text(callee, ctx.source).to_owned(),
+                                            member: text(member, ctx.source).to_owned(),
+                                        }
+                                    })
+                                }
+                                "new_expression" => receiver
+                                    .child_by_field_name("constructor")
+                                    .map(|callee| ReceiverHint::ConstructorResult {
+                                        callee: text(callee, ctx.source).to_owned(),
+                                        member: text(member, ctx.source).to_owned(),
+                                    }),
+                                "string" => Some(ReceiverHint::StringLiteral {
+                                    member: text(member, ctx.source).to_owned(),
+                                }),
+                                _ => None,
+                            };
+                        if let Some(reference) = facts.references.last_mut() {
+                            reference.receiver_hint = hint;
+                        }
+                    }
+                }
             }
         }
     }
     fn builtin(&self, symbol: &str) -> bool {
+        if matches!(
+            symbol,
+            "Object.assign"
+                | "Object.defineProperty"
+                | "Object.defineProperties"
+                | "Object.keys"
+                | "Object.values"
+                | "Object.entries"
+                | "Object.fromEntries"
+                | "Object.create"
+                | "Object.freeze"
+                | "Object.seal"
+                | "Object.getPrototypeOf"
+                | "Object.getOwnPropertyDescriptor"
+                | "Object.getOwnPropertyDescriptors"
+                | "Object.getOwnPropertyNames"
+                | "Object.getOwnPropertySymbols"
+                | "Object.is"
+                | "JSON.parse"
+                | "JSON.stringify"
+                | "Math.abs"
+                | "Math.ceil"
+                | "Math.floor"
+                | "Math.round"
+                | "Math.max"
+                | "Math.min"
+                | "Math.pow"
+                | "Math.sqrt"
+                | "Math.trunc"
+                | "Math.random"
+                | "Math.sign"
+                | "console.log"
+                | "console.error"
+                | "console.warn"
+                | "console.info"
+                | "console.debug"
+                | "console.trace"
+                | "console.table"
+                | "document.querySelector"
+                | "document.querySelectorAll"
+                | "document.getElementById"
+                | "document.getElementsByClassName"
+                | "document.getElementsByTagName"
+                | "document.createElement"
+                | "document.createTextNode"
+                | "document.addEventListener"
+                | "document.removeEventListener"
+                | "window.addEventListener"
+                | "window.removeEventListener"
+                | "window.dispatchEvent"
+                | "window.setTimeout"
+                | "window.clearTimeout"
+                | "window.setInterval"
+                | "window.clearInterval"
+                | "window.requestAnimationFrame"
+                | "window.cancelAnimationFrame"
+                | "localStorage.getItem"
+                | "localStorage.setItem"
+                | "localStorage.removeItem"
+                | "localStorage.clear"
+                | "sessionStorage.getItem"
+                | "sessionStorage.setItem"
+                | "sessionStorage.removeItem"
+                | "sessionStorage.clear"
+                | "Array.isArray"
+                | "Array.from"
+                | "Array.of"
+        ) {
+            return true;
+        }
         matches!(
             symbol,
             "parseInt"
                 | "parseFloat"
+                | "fetch"
+                | "alert"
+                | "confirm"
+                | "prompt"
+                | "String"
+                | "Number"
+                | "Boolean"
                 | "setTimeout"
                 | "clearTimeout"
                 | "setInterval"
@@ -690,6 +841,130 @@ impl LanguageProfile for TypeScript {
                 | "setImmediate"
         )
     }
+    fn builtin_type(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "string"
+                | "number"
+                | "boolean"
+                | "String"
+                | "Number"
+                | "Boolean"
+                | "Array"
+                | "Map"
+                | "Set"
+                | "Object"
+                | "Element"
+                | "HTMLElement"
+                | "HTMLDivElement"
+                | "HTMLInputElement"
+                | "HTMLButtonElement"
+                | "HTMLAnchorElement"
+                | "Document"
+                | "Window"
+                | "Event"
+                | "CustomEvent"
+                | "MouseEvent"
+                | "KeyboardEvent"
+                | "Response"
+                | "Request"
+                | "Headers"
+                | "URL"
+                | "URLSearchParams"
+                | "FormData"
+                | "Blob"
+                | "File"
+        )
+    }
+
+    fn builtin_generic(&self, receiver: &str) -> bool {
+        matches!(receiver, "Array" | "Map" | "Set")
+    }
+    fn builtin_member(&self, receiver: &str, member: &str) -> bool {
+        match receiver {
+            "string" | "String" => matches!(
+                member,
+                "charAt"
+                    | "charCodeAt"
+                    | "codePointAt"
+                    | "concat"
+                    | "endsWith"
+                    | "includes"
+                    | "indexOf"
+                    | "lastIndexOf"
+                    | "match"
+                    | "matchAll"
+                    | "normalize"
+                    | "padEnd"
+                    | "padStart"
+                    | "repeat"
+                    | "replace"
+                    | "replaceAll"
+                    | "search"
+                    | "slice"
+                    | "split"
+                    | "startsWith"
+                    | "substring"
+                    | "toLowerCase"
+                    | "toUpperCase"
+                    | "trim"
+                    | "trimEnd"
+                    | "trimStart"
+                    | "at"
+            ),
+            "Array" => matches!(
+                member,
+                "at" | "concat"
+                    | "copyWithin"
+                    | "entries"
+                    | "every"
+                    | "fill"
+                    | "filter"
+                    | "find"
+                    | "findIndex"
+                    | "findLast"
+                    | "findLastIndex"
+                    | "flat"
+                    | "flatMap"
+                    | "forEach"
+                    | "includes"
+                    | "indexOf"
+                    | "join"
+                    | "keys"
+                    | "lastIndexOf"
+                    | "map"
+                    | "pop"
+                    | "push"
+                    | "reduce"
+                    | "reduceRight"
+                    | "reverse"
+                    | "shift"
+                    | "slice"
+                    | "some"
+                    | "sort"
+                    | "splice"
+                    | "unshift"
+                    | "values"
+            ),
+            "Map" => matches!(
+                member,
+                "clear"
+                    | "delete"
+                    | "entries"
+                    | "forEach"
+                    | "get"
+                    | "has"
+                    | "keys"
+                    | "set"
+                    | "values"
+            ),
+            "Set" => matches!(
+                member,
+                "add" | "clear" | "delete" | "entries" | "forEach" | "has" | "keys" | "values"
+            ),
+            _ => false,
+        }
+    }
 
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
         self.normalize_import_with_root(None, owner, module)
@@ -724,7 +999,10 @@ impl LanguageProfile for TypeScript {
         self.is_stdlib(module).then_some("Node.js standard library")
     }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
-        let mut file = FileContext::default();
+        let mut file = FileContext {
+            exports: value_flow::exports(root, source),
+            ..Default::default()
+        };
         collect_shadowed_require_scopes(root, source, &mut file);
         let mut c = root.walk();
         for node in root
@@ -760,6 +1038,10 @@ impl LanguageProfile for TypeScript {
         file
     }
 
+    fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
+        value_flow::extract(node, source)
+    }
+
     fn metadata(
         &self,
         mut node: Syntax<'_>,
@@ -768,12 +1050,14 @@ impl LanguageProfile for TypeScript {
         file: &FileContext,
     ) -> SymbolMetadata {
         let mut param_types = BTreeMap::new();
+        let documented = value_flow::jsdoc(node, source).0;
         if let Some(parameters) = node.child_by_field_name("parameters") {
             let mut cursor = parameters.walk();
             for parameter in parameters.named_children(&mut cursor) {
                 let name = parameter
                     .child_by_field_name("pattern")
                     .or_else(|| parameter.child_by_field_name("name"))
+                    .or_else(|| (parameter.kind() == "identifier").then_some(parameter))
                     .filter(|node| node.kind() == "identifier")
                     .map(|node| text(node, source).trim().to_owned());
                 let ty = parameter.child_by_field_name("type").map(|node| {
@@ -783,6 +1067,8 @@ impl LanguageProfile for TypeScript {
                         .trim()
                         .to_owned()
                 });
+                let ty =
+                    ty.or_else(|| name.as_ref().and_then(|name| documented.get(name).cloned()));
                 if let (Some(name), Some(ty)) = (name, ty) {
                     if !name.is_empty() && !ty.is_empty() {
                         param_types.insert(name, ty);

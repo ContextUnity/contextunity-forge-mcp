@@ -3,6 +3,8 @@ use contextunity_forge_mcp::{
     db::writer,
 };
 use rusqlite::{config::DbConfig, params, Connection};
+#[path = "commitment_integrity/coverage.rs"]
+mod coverage;
 use std::{
     fs,
     path::PathBuf,
@@ -424,6 +426,213 @@ fn unchanged_input_cold_builds_have_the_same_root_after_reindex_and_vacuum() {
     commitments::verify(&Connection::open(&second_db).unwrap()).unwrap();
 }
 
+#[cfg(any(
+    feature = "lang-python",
+    feature = "lang-rust",
+    feature = "lang-typescript",
+    feature = "lang-html",
+    feature = "lang-vue"
+))]
+#[test]
+fn built_file_commitments_match_json_encoding_of_durable_facts_and_linked_graph() {
+    use contextunity_forge_mcp::{
+        core::models::{Facts, Node},
+        db::writer,
+        engine::{languages, linker, scanner},
+    };
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    let workspace = TemporaryWorkspace::new();
+    let source = workspace.0.join("source");
+    fs::create_dir_all(source.join("src")).unwrap();
+    fs::write(
+        source.join("src/lib.rs"),
+        r#"/// Quotes "double", slash \\, and Unicode λ.
+pub fn produce(input: &str) -> &str { input }
+pub fn consume() { produce("escaped\\\"\n\tλ"); }
+"#,
+    )
+    .unwrap();
+    #[cfg(feature = "lang-python")]
+    fs::write(
+        source.join("src/flow.py"),
+        "class Worker:\n    def work(self):\n        return 1\n\ndef make_worker() -> Worker:\n    return Worker()\n\ndef use_worker():\n    return make_worker().work()\n\nWorkerAlias = Worker\n\nclass Service:\n    def __init__(self):\n        self.worker = Worker()\n    def run(self):\n        return self.worker.work()\n",
+    )
+    .unwrap();
+    #[cfg(feature = "lang-typescript")]
+    fs::write(
+        source.join("src/flow.ts"),
+        "class Worker { work(): number { return 1; } }\ntype WorkerAlias = Worker;\nfunction makeWorker(): WorkerAlias { return new Worker(); }\nexport function useWorker() { const worker = makeWorker(); return worker.work(); }\n",
+    )
+    .unwrap();
+    #[cfg(all(feature = "lang-html", feature = "lang-typescript"))]
+    fs::write(
+        source.join("src/classic.html"),
+        "<script>class HtmlWorker { work() { return 1; } }</script><script>function makeHtmlWorker() { return new HtmlWorker(); } makeHtmlWorker().work();</script>",
+    )
+    .unwrap();
+    #[cfg(feature = "lang-vue")]
+    fs::write(
+        source.join("src/flow.vue"),
+        "<script setup lang=\"ts\">class VueWorker { work(): number { return 1; } }\ntype VueAlias = VueWorker;\nfunction makeVueWorker(): VueAlias { return new VueWorker(); }\nconst worker = makeVueWorker();\nworker.work();\n</script>\n<template>{{ worker.work() }}</template>\n",
+    )
+    .unwrap();
+    fs::write(source.join("src/empty.rs"), "").unwrap();
+    fs::write(
+        source.join("README.md"),
+        "# Unicode λ and quotes \"\\\"\n\nA documented source contract.\n",
+    )
+    .unwrap();
+    let adapter = scanner::load_adapter(&source, None).unwrap();
+    let scan = scanner::scan_with_adapter(&source, &adapter).unwrap();
+    let public_facts: BTreeMap<String, Facts> = scan
+        .entries
+        .iter()
+        .map(|file| {
+            (
+                file.path.clone(),
+                writer::extract(&source, file, &adapter).unwrap(),
+            )
+        })
+        .collect();
+    for file in &scan.entries {
+        let Some(profile) = languages::by_id(&file.language) else {
+            continue;
+        };
+        let file_source = fs::read_to_string(source.join(&file.path)).unwrap();
+        let module = profile.module_name_for_source(&file.path, &file_source);
+        let mut legacy_facts = Facts {
+            nodes: vec![Node {
+                id: format!("module:{}", file.path),
+                kind: "module".into(),
+                name: file.path.rsplit('/').next().unwrap_or(&file.path).into(),
+                qualname: module.clone(),
+                path: file.path.clone(),
+                line: 1,
+                end_line: file_source.lines().count().max(1),
+                is_test: false,
+                language: file.language.clone(),
+                generated: false,
+                details: json!({}),
+            }],
+            ..Facts::default()
+        };
+        profile
+            .extract_file(&file.path, &file_source, &module, &mut legacy_facts)
+            .unwrap();
+        profile.finish(&mut legacy_facts);
+        assert_eq!(
+            serde_json::to_vec(&legacy_facts).unwrap(),
+            serde_json::to_vec(&public_facts[&file.path]).unwrap(),
+            "typed AST extraction must match direct legacy profile bytes for {}",
+            file.path
+        );
+    }
+    let database = workspace.0.join("encoding.sqlite");
+    writer::build(&source, &database, None).unwrap();
+    let conn = Connection::open(&database).unwrap();
+    let mut statement = conn
+        .prepare("SELECT path,facts_blob FROM local_facts ORDER BY path")
+        .unwrap();
+    let durable_facts: BTreeMap<String, (Vec<u8>, Facts)> = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .unwrap()
+        .map(|row| {
+            let (path, blob) = row.unwrap();
+            let bytes = zstd::stream::decode_all(blob.as_slice()).unwrap();
+            let facts = serde_json::from_slice(&bytes).unwrap();
+            (path, (bytes, facts))
+        })
+        .collect();
+    assert_eq!(durable_facts.len(), public_facts.len());
+    for (path, (bytes, facts)) in &durable_facts {
+        assert_eq!(
+            serde_json::to_vec(facts).unwrap(),
+            *bytes,
+            "durable JSON Fact bytes must retain their decode order for {path}"
+        );
+    }
+    let facts: BTreeMap<String, Facts> = durable_facts
+        .into_iter()
+        .map(|(path, (_, facts))| (path, facts))
+        .collect();
+    #[cfg(any(
+        feature = "lang-python",
+        feature = "lang-typescript",
+        feature = "lang-vue",
+        all(feature = "lang-html", feature = "lang-typescript")
+    ))]
+    let has_generated_flow = |path: &str| {
+        public_facts.get(path).is_some_and(|fact| {
+            fact.nodes.iter().any(|node| {
+                node.details
+                    .get("value_flow")
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(|flow| !flow.is_empty())
+            })
+        })
+    };
+    #[cfg(feature = "lang-python")]
+    assert!(has_generated_flow("src/flow.py"));
+    #[cfg(feature = "lang-typescript")]
+    assert!(has_generated_flow("src/flow.ts"));
+    #[cfg(all(feature = "lang-html", feature = "lang-typescript"))]
+    assert!(has_generated_flow("src/classic.html"));
+    #[cfg(feature = "lang-vue")]
+    assert!(has_generated_flow("src/flow.vue"));
+    let graph = linker::link_with_root(&facts, None, Some(&source));
+    assert!(!graph.edges.is_empty());
+    assert!(!graph.coverage.is_empty());
+    let json_hash = |value: serde_json::Value| commitments::hash(value.to_string().as_bytes());
+    for (path, fact) in &facts {
+        let (digest, bytes): (String, u64) = conn
+            .query_row(
+                "SELECT digest,size FROM files WHERE path=?1",
+                [path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let edges: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|edge| &edge.path == path)
+            .collect();
+        let coverage: Vec<_> = graph
+            .coverage
+            .iter()
+            .filter(|item| &item.path == path)
+            .collect();
+        let search: Vec<_> = fact
+            .nodes
+            .iter()
+            .map(|node| {
+                format!(
+                    "{} {} {} {}",
+                    node.name, node.qualname, node.path, node.details
+                )
+            })
+            .collect();
+        let expected = [
+            json_hash(json!([path, digest, bytes])),
+            commitments::hash(&serde_json::to_vec(fact).unwrap()),
+            json_hash(json!(fact.nodes)),
+            json_hash(json!(edges)),
+            json_hash(json!(search)),
+            json_hash(json!(coverage)),
+        ];
+        let actual: [String; 6] = conn.query_row(
+            "SELECT inventory_hash,facts_hash,nodes_hash,edges_hash,search_hash,deps_hash FROM file_commitments WHERE path=?1",
+            [path],
+            |row| Ok([row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?]),
+        ).unwrap();
+        assert_eq!(actual, expected, "file commitment encoding for {path}");
+    }
+    commitments::verify(&conn).unwrap();
+}
+
 fn serial_leaf(conn: &Connection, table: &str, owner: &str, order: &str) -> String {
     use rusqlite::types::ValueRef;
     use sha2::{Digest, Sha256};
@@ -432,7 +641,7 @@ fn serial_leaf(conn: &Connection, table: &str, owner: &str, order: &str) -> Stri
     hasher.update(table);
     hasher.update((owner.len() as u64).to_le_bytes());
     hasher.update(owner.as_bytes());
-    let ownership = if matches!(table, "nodes" | "edges") {
+    let ownership = if matches!(table, "nodes" | "edges" | "resolution_coverage") {
         "path"
     } else {
         "owner"
@@ -511,6 +720,7 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
             .unwrap();
         }
     }
+    coverage::seed_canonical(&conn);
     let single = rayon::ThreadPoolBuilder::new()
         .num_threads(1)
         .build()
@@ -528,6 +738,7 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
         ("edges", "src_public_id,dst_public_id,kind"),
         ("edge_occurrences", "ordinal"),
         ("dependencies", "target,kind,symbol,resolution"),
+        ("resolution_coverage", "line,expression,status,evidence"),
     ] {
         for owner in &owners {
             let key = format!("leaf:{}", serde_json::json!([table, owner]));

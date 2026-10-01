@@ -5,3 +5,5 @@ pub mod fs;
 pub mod models;
 pub mod response;
 pub mod schema;
+pub mod semantic;
+pub(crate) mod typed_facts;

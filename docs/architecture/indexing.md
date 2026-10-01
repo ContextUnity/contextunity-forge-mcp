@@ -45,3 +45,21 @@ Selectors must identify one target. For example, `package/settings.py:load_confi
 ## Extending a language profile
 
 Language extraction belongs to its profile and the shared AST layer. Add a profile through the language registry and compile-time feature configuration, then add a `LanguageLinker` only when that language needs import, receiver, or incremental-linking behavior beyond the generic implementation. Python package initializers, paired declaration files, re-exports, and external import aliases live in the Python linker. Verify facts against parser fixtures and linker tests. A profile does not change the selector or database contracts. Keep unresolved references visible instead of guessing a target from a name alone.
+
+## Static value flow
+
+Language profiles produce typed value-flow facts through `LanguageProfile::value_flow`. The shared schema in `src/core/semantic.rs` records source positions, assignments, annotations, fields, aliases, and return contracts. The internal `TypedFacts` envelope stores these facts separately from dynamic node details. The linker borrows them directly. Serialization views preserve the public `details.value_flow` representation, property order, compressed local facts, and commitment bytes. Legacy hydration retains malformed metadata and original encoding. Embedded JavaScript uses the same typed AST extraction contract with source offsets and explicit owners.
+
+`src/engine/linker/value_flow.rs` reduces facts against canonical import and symbol admission in `semantic_context.rs`. It builds receiver and computed-call caches before parallel reference linking. Language member indexes supply Python inheritance, Rust inherent and visible trait implementations, and TypeScript class/interface inheritance. Inferred edges always point to actual indexed declarations; external evidence retains its import provenance.
+
+Assignments take effect after their right-hand expression completes. Unknown writes and ambiguous declarations block stale proofs. Explicit return annotations take precedence over bounded summaries of complete straight-line returns. Inference records dependencies on return, binding, and field summaries and reevaluates expressions when those summaries change, preserving owner order and the bounded iteration count. Alias cycles, unsupported dynamic values, and exhausted inference limits retain uncertainty. Reference linking uses cached receivers; it does not parse JSON or consult disk or SQL for each method call.
+
+The internal graph uses static tags for known edge kinds, confidence values, and coverage statuses, with owned strings for arbitrary values. Public graph adapters retain the existing string fields. SQLite persistence uses bounded multi-value batches, shared key ownership, and reusable search buffers; serialization and graph ordering use the same string values across both representations.
+
+Canonical HTML classic scopes preserve their empty `bindings` and `fields` JSON slots as null and decode those slots as empty sections on both public and cached paths. Other scopes retain strict value-flow decoding. Coverage commitment leaves preload dictionaries and stream borrowed canonical rows; noncanonical SQLite storage retains the generic encoding path. Partial sealing loads dictionaries for the selected owners.
+
+Incremental dependency keys include value-flow types, constructors, aliases, return expressions, computed-call hints, and export facts. A changed provider expands the consumer frontier before the language linker hydrates required facts. Full and incremental indexing share the same reducer and symbol admission rules.
+
+Body edits refresh the changed owner's facts, call edges, coverage, and commitments. Consumer invalidation compares semantic return and field contracts, signatures, exports, and import identities rather than body-local positions. Changes to inferred factory types, scoped imports, or inference validity limits expand the consumer frontier; equivalent internal call changes retain the existing consumer links.
+
+`FORGE_PROFILE_LINKER=1` writes phase timings to stderr for namespace/export indexing, inheritance, semantic admission, value flow, reference linking, and graph sorting. It leaves graph facts and commitments unchanged.

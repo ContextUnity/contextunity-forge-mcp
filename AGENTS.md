@@ -1,13 +1,66 @@
 # ContextUnity Forge MCP — Agent Router
 
-Planning and portfolio-state requests load global `planner`, then
-[`.agents/skills/planner/ADDON.md`](.agents/skills/planner/ADDON.md).
+Read [documentation instructions](docs/AGENTS.md) before documentation changes.
+Read [repository plans](docs/plans/README.md) for proposed and ongoing work.
+Read [roadmap](docs/roadmap.md) for strategic context and
+[milestones](docs/milestones/README.md) for admitted commitments.
 
 ## Routes
 
 - Runtime behavior and setup: [README.md](README.md) and [`docs/`](docs/).
-- Architecture and reference: [`docs/reference/`](docs/reference/).
+- Architecture: [indexing](docs/architecture/indexing.md).
+- Reference: [configuration and tools](docs/reference/README.md).
+- Operations: [runbooks](docs/runbooks/README.md).
+- Verification: [testing](docs/testing/README.md).
 - Forge code-graph workflow: [`contextunity-forge`](.agents/skills/contextunity-forge/SKILL.md).
+- Test suite rules and boundaries: [`tests/AGENTS.md`](tests/AGENTS.md).
+
+## Codebase Architecture
+
+```text
+src/
+├── cli/       # CLI commands: build, scan, delta, query, docs, ast, guide, checkpoint
+├── mcp/       # MCP JSON-RPC protocol server, tool router (tools.rs), and response limits
+├── core/      # Models (models.rs), SQLite schema (schema.rs), Merkle tree (commitments.rs),
+│              # response policy (response.rs), debug logger (debug_log.rs)
+├── db/        # Storage engine:
+│              #   writer.rs   -> Cold build & incremental delta indexing pipeline
+│              #   reader.rs   -> Selectors, disambiguation, traversal, diagnostics
+│              #   symbols.rs  -> Direct indexed exact queries and FTS5 search
+│              #   traversal.rs-> Graph reachability, impact, slices, cycle analysis
+└── engine/    # Analysis pipeline:
+               #   scanner.rs  -> File walk, gitignore filtering, forge-mcp.yaml adapter
+               #   ast/        -> AST extraction, relations.rs (calls, imports, mutates)
+               #   languages/  -> Language profiles (Rust, Python, TS, Go, Java, etc.),
+               #                  builtins, manifests (manifests.rs, build_manifest.rs)
+               #   linker.rs   -> Cross-file symbol resolution, receiver inference,
+               #                  external status classification, edge creation
+```
+
+## Benchmarks & Performance Profiling
+
+All performance measurements, tool comparisons, and quality benchmarks live in `benchmarks/`:
+
+- **Runner**: `python3 benchmarks/run_benchmarks.py --profile benchmarks/profiles/commerce-release-update.json`
+- **MCP Quality Benchmark**: `python3 benchmarks/mcp_tool_quality_benchmark.py` (assesses answer completeness and agent usability against Codebase Memory)
+- **MCP Latency & Cold Build Benchmark**: `python3 benchmarks/mcp_tool_comparison_benchmark.py`
+- **Reference Workspace**: `/home/oleksii/ContextUnity/worktrees/commerce-release-update`
+- **Policy**: Never commit manual profiling harnesses or `#[ignore]` benchmark tests into `tests/`. Use `benchmarks/` scripts.
+
+## Test Rules & Boundaries
+
+Read [`tests/AGENTS.md`](tests/AGENTS.md) before authoring, moving, or editing tests:
+
+1. **No Absence / Negative Bug Probes**:
+   - Do NOT write tests that merely assert the absence of an agent's historical hallucination or bug.
+   - Tests must prove observable positive contracts, formal specifications, valid boundaries, or real fail-closed error states.
+2. **No Micro-Spike Test Binaries**:
+   - Every file directly in `tests/*.rs` is compiled and linked by Cargo as an independent executable.
+   - Do NOT create a new `tests/*.rs` file for a single task, PR, or review round.
+   - Group tests into existing domain test suites (`tests/languages/`, `tests/manifests.rs`, `tests/core_basics.rs`, `tests/python_semantics.rs`, `tests/typescript_semantics.rs`).
+   - Keep test files <= 800 lines.
+3. **Public Seams**:
+   - Drive tests through public interfaces (CLI, MCP tool router, reader, or linker pipeline); do not construct tests around unexported private internals.
 
 ## Performance & Optimization Invariants
 

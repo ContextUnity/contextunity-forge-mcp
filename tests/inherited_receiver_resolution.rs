@@ -198,8 +198,21 @@ fn a_later_external_factory_alias_does_not_reuse_path_constructor_proof() {
 #[test]
 fn a_later_import_shadows_a_local_base_annotation_and_constructor() {
     let (_, graph) = linked(&[("shadow.py", "class Base:\n    def work(self): pass\nfrom vendor import Other as Base\nclass Child(Base):\n    def run(self): self.work()\ndef typed(client: Base): client.work()\ndef constructor(): Base().work()\n")]);
-    for expression in ["self.work", "client.work", "Base().work"] {
+    for expression in ["self.work", "Base().work"] {
         assert_eq!(status(&graph, expression), "unresolved", "{graph:#?}");
+    }
+    assert!(
+        graph
+            .coverage
+            .iter()
+            .any(|coverage| coverage.expression == "client.work"
+                && coverage.status == "external"
+                && coverage
+                    .evidence
+                    .contains("external import vendor at line 3")),
+        "{graph:#?}"
+    );
+    for expression in ["self.work", "client.work", "Base().work"] {
         assert!(!graph
             .edges
             .iter()

@@ -572,7 +572,7 @@ impl ServerHandler for Server {
             .as_ref()
             .map(|a| a.response.clone())
             .unwrap_or_default();
-        let final_response = match result {
+        let final_response: Result<rmcp::model::CallToolResponse, rmcp::ErrorData> = match result {
             Ok(rmcp::model::CallToolResponse::Complete(result)) => {
                 Ok(response::enforce(result, &policy).into())
             }
@@ -582,16 +582,26 @@ impl ServerHandler for Server {
             }
         };
         if adapter.as_ref().is_some_and(|a| a.debug) {
-            let output_str = match &final_response {
-                Ok(resp) => format!("{resp:#?}"),
-                Err(err) => format!("ERROR: {err:?}"),
+            let output_val = match &final_response {
+                Ok(rmcp::model::CallToolResponse::Complete(res)) => {
+                    let mut text_val = None;
+                    for item in &res.content {
+                        if let Some(t) = item.as_text() {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&t.text) {
+                                text_val = Some(val);
+                                break;
+                            }
+                        }
+                    }
+                    text_val.unwrap_or_else(|| {
+                        serde_json::to_value(res)
+                            .unwrap_or(serde_json::json!({"status": "complete"}))
+                    })
+                }
+                Ok(resp) => serde_json::json!({ "raw": format!("{resp:?}") }),
+                Err(err) => serde_json::json!({ "error": err.to_string() }),
             };
-            crate::core::debug_log::log_command(
-                &self.root,
-                &tool_name,
-                Some(&tool_args),
-                &output_str,
-            );
+            crate::core::debug_log::log_mcp(&self.root, &tool_name, &tool_args, &output_val);
         }
         final_response
     }

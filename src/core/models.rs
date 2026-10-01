@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub(crate) mod compact_graph;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: String,
@@ -29,6 +30,7 @@ pub struct Edge {
 pub enum ReceiverHint {
     StringLiteral { member: String },
     CallResult { callee: String, member: String },
+    ConstructorResult { callee: String, member: String },
     Super { member: String },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +39,8 @@ pub struct Reference {
     pub expression: String,
     pub kind: String,
     pub line: usize,
+    #[serde(default)]
+    pub column: usize,
     pub alias: Option<String>,
     pub module: Option<String>,
     #[serde(default)]
@@ -70,6 +74,11 @@ pub struct Facts {
     pub references: Vec<Reference>,
     pub docs: Vec<DocSection>,
     pub errors: Vec<Diagnostic>,
+}
+impl AsRef<Facts> for Facts {
+    fn as_ref(&self) -> &Facts {
+        self
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Coverage {

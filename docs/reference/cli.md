@@ -43,7 +43,7 @@ contextunity-forge-mcp query run slice 'src/module.py:parse' --depth 1 --limit 3
 
 `query tests` also accepts `--direction outbound` for dependencies of a test. `query run` accepts `overview`, `inspect`, `explain`, `impact`, `slice`, and `unwired`. `query analyze` accepts an indexed path, an empty target for the workspace, or one read-only `SELECT`/`WITH` statement. Its diagnostic form computes cycles; the MCP form requires `include_cycles: true`.
 
-The CLI `query inspect --show-source` returns the indexed symbol's full source range after checking the file digest. MCP source previews are bounded; see [limits and freshness](../operations/limits-and-freshness.md).
+The CLI `query inspect --show-source` returns the indexed symbol's full source range after checking the file digest. MCP source previews are bounded; see [limits and freshness](../runbooks/limits-and-freshness.md).
 
 ## Documentation and syntax search
 

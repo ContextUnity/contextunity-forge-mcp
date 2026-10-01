@@ -16,11 +16,30 @@ fn literal<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
     Some(&value[1..value.len() - 1])
 }
 
-fn methods(call: Syntax<'_>, source: &str) -> Vec<String> {
+fn django_path(call: Syntax<'_>, source: &str) -> bool {
+    if call.kind() != "call" {
+        return false;
+    }
+    let Some(function) = call.child_by_field_name("function") else {
+        return false;
+    };
+    matches!(text(function, source), "path" | "re_path" | "urls.path" | "urls.re_path" | "django.urls.path" | "django.urls.re_path")
+}
+
+fn methods(call: Syntax<'_>, source: &str, decorated: bool) -> Vec<String> {
+    if django_path(call, source) {
+        return vec!["ANY".into()];
+    }
     let Some(fun) = call.child_by_field_name("function") else {
         return Vec::new();
     };
     let callee = text(fun, source);
+    let receiver = callee.rsplit_once('.').map(|(receiver, _)| receiver.rsplit('.').next().unwrap_or(receiver));
+    let registration_receiver = receiver.is_some_and(|receiver| matches!(receiver, "app" | "router" | "server" | "api" | "bp" | "blueprint" | "route"));
+    let framework_decorator = decorated && fun.kind() == "identifier" && matches!(callee, "Get" | "Post" | "Put" | "Patch" | "Delete" | "Head" | "Options" | "All" | "Route");
+    if !registration_receiver && !framework_decorator {
+        return Vec::new();
+    }
     let method = callee
         .rsplit('.')
         .next()
@@ -29,7 +48,7 @@ fn methods(call: Syntax<'_>, source: &str) -> Vec<String> {
     if matches!(
         method.as_str(),
         "get" | "post" | "put" | "patch" | "delete" | "head" | "options" | "all" | "route"
-    ) && (callee.contains('.') || fun.kind() == "identifier")
+    )
     {
         if method == "route" {
             if let Some(args) = call.child_by_field_name("arguments") {
@@ -57,12 +76,6 @@ fn methods(call: Syntax<'_>, source: &str) -> Vec<String> {
         } else {
             method.to_ascii_uppercase()
         }];
-    }
-    if matches!(callee, "path" | "re_path")
-        || callee.ends_with(".path")
-        || callee.ends_with(".re_path")
-    {
-        return vec!["ANY".into()];
     }
     Vec::new()
 }
@@ -151,7 +164,10 @@ pub(crate) fn declaration(
         else {
             continue;
         };
-        for method in methods(call, source) {
+        if !path.starts_with(['/', '^']) && !django_path(call, source) {
+            continue;
+        }
+        for method in methods(call, source, true) {
             add(
                 Route {
                     syntax: decorator,
@@ -186,15 +202,25 @@ pub(crate) fn registration(
         let Some(path) = args.named_child(0).and_then(|n| literal(n, source)) else {
             return;
         };
+        if !path.starts_with(['/', '^']) && !django_path(node, source) {
+            return;
+        }
+        let methods = methods(node, source, false);
+        if methods.is_empty() {
+            return;
+        }
         let mut cursor = args.walk();
         let handlers: Vec<_> = args
             .named_children(&mut cursor)
             .skip(1)
             .filter(|n| !matches!(n.kind(), "keyword_argument" | "comment"))
             .collect();
-        for method in methods(node, source) {
+        for method in methods {
             for handler in &handlers {
                 let handler = unwrapped(*handler);
+                if literal_handler(handler) {
+                    continue;
+                }
                 let direct = symbols.get(&handler.id());
                 add(
                     Route {
@@ -230,6 +256,9 @@ pub(crate) fn registration(
             }
         }
         if let (Some(path), Some(handler)) = (path, handler) {
+            if literal_handler(handler) {
+                return;
+            }
             add(
                 Route {
                     syntax: node,
@@ -247,6 +276,12 @@ pub(crate) fn registration(
             );
         }
     }
+}
+
+fn literal_handler(node: Syntax<'_>) -> bool {
+    matches!(node.kind(), "string" | "string_literal" | "concatenated_string" | "template_string" | "integer" | "float" | "number" | "true" | "false" | "none" | "null" | "array" | "list" | "tuple" | "set" | "dictionary" | "object")
+        || (matches!(node.kind(), "unary_operator" | "unary_expression")
+            && node.named_child(0).is_some_and(|child| literal_handler(unwrapped(child))))
 }
 
 fn unwrapped(mut node: Syntax<'_>) -> Syntax<'_> {

@@ -196,7 +196,6 @@ impl Cli {
         let root = command_root(self.root.as_deref(), None)?;
         let db = self.db.clone().unwrap_or_else(|| default_db(&root));
         let command = self.command.unwrap_or(Command::Serve);
-        let cmd_desc = format!("{command:?}");
         let result: Value = match command {
             Command::Serve => {
                 crate::mcp::server::serve(root, db).await?;
@@ -326,7 +325,15 @@ impl Cli {
         let formatted = serde_json::to_string_pretty(&result)?;
         if let Ok(adapter) = crate::engine::scanner::load_adapter(&root, None) {
             if adapter.debug {
-                crate::core::debug_log::log_command(&root, &cmd_desc, None, &formatted);
+                let cli_cmd = {
+                    let args: Vec<String> = std::env::args().skip(1).collect();
+                    if args.is_empty() {
+                        "serve".to_string()
+                    } else {
+                        args.join(" ")
+                    }
+                };
+                crate::core::debug_log::log_cli(&root, &cli_cmd, None, &result);
             }
         }
         if let Err(e) = writeln!(io::stdout(), "{formatted}") {

@@ -5,7 +5,8 @@ title: Documentation
 
 # Documentation
 
-Use the [repository README](../README.md) to build the binary and run a first query. The pages below describe the current implementation for readers and coding agents.
+Use the [repository README](../README.md) for installation and a first query.
+Read [documentation instructions](AGENTS.md) before editing these pages.
 
 ## Reference
 
@@ -18,9 +19,22 @@ Use the [repository README](../README.md) to build the binary and run a first qu
 ## Architecture
 
 - [Indexing and resolution](architecture/indexing.md): source inventory, language profiles, linking, persistence, and query boundaries.
+- [Architectural decisions](adr/README.md): accepted decision ownership.
 
-## Operations
+## Operations and verification
 
-- [Limits and freshness](operations/limits-and-freshness.md): budgets, recovery steps, source verification, and failure behavior.
+- [Limits and freshness](runbooks/limits-and-freshness.md): budgets, recovery steps, source verification, and failure behavior.
+- [Testing](testing/README.md): test authority and verification commands.
+
+## Direction and work
+
+- [Roadmap](roadmap.md): strategic context.
+- [Plans](plans/README.md): ongoing designs, research, and proposals.
+- [Milestones](milestones/README.md): admitted commitment ownership.
+- [Historical archive](archive/README.md): retained historical material.
+
+Current contracts and milestones are indexed through explicit doc_roots in
+forge-mcp.yaml. Plans and general historical archives are read as files;
+completed milestone receipts remain within the indexed milestone root.
 
 For a code change, start with the workspace overview, select an exact symbol, inspect direct relationships, and verify the relevant source. Missing edges are bounded by the indexed languages, roots, and unresolved-reference coverage.

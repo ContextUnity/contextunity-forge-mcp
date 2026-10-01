@@ -35,13 +35,13 @@ pub(super) struct PythonReceivers<'a> {
 }
 
 impl<'a> PythonReceivers<'a> {
-    pub(super) fn build(
-        all: &'a BTreeMap<String, Facts>,
+    pub(super) fn build<F: AsRef<Facts>>(
+        all: &'a BTreeMap<String, F>,
         mut resolve: impl FnMut(&'a Node, &'a Reference) -> Base<'a>,
     ) -> Self {
         let classes: HashMap<&str, &Node> = all
             .values()
-            .flat_map(|facts| &facts.nodes)
+            .flat_map(|facts| &facts.as_ref().nodes)
             .filter(|node| node.language == "python" && node.kind == "class")
             .map(|node| (node.id.as_str(), node))
             .collect();
@@ -53,6 +53,7 @@ impl<'a> PythonReceivers<'a> {
             .collect();
         let mut owner_classes = HashMap::new();
         for facts in all.values() {
+            let facts = facts.as_ref();
             let assigned_fields: HashSet<&str> = facts
                 .edges
                 .iter()
@@ -72,10 +73,26 @@ impl<'a> PythonReceivers<'a> {
                                 members.insert(node.name.as_str(), Member::Local(node));
                             }
                             Some(Member::Local(existing)) => {
-                                let existing_is_stub = existing.details.get("is_stub").and_then(|v| v.as_bool()).unwrap_or(false)
-                                    || existing.details.get("is_overload").and_then(|v| v.as_bool()).unwrap_or(false);
-                                let node_is_stub = node.details.get("is_stub").and_then(|v| v.as_bool()).unwrap_or(false)
-                                    || node.details.get("is_overload").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let existing_is_stub = existing
+                                    .details
+                                    .get("is_stub")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false)
+                                    || existing
+                                        .details
+                                        .get("is_overload")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
+                                let node_is_stub = node
+                                    .details
+                                    .get("is_stub")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false)
+                                    || node
+                                        .details
+                                        .get("is_overload")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
                                 if existing_is_stub && !node_is_stub {
                                     members.insert(node.name.as_str(), Member::Local(node));
                                 } else if !existing_is_stub && node_is_stub {
@@ -87,8 +104,16 @@ impl<'a> PythonReceivers<'a> {
                                 }
                             }
                             Some(Member::Unknown) => {
-                                let node_is_stub = node.details.get("is_stub").and_then(|v| v.as_bool()).unwrap_or(false)
-                                    || node.details.get("is_overload").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let node_is_stub = node
+                                    .details
+                                    .get("is_stub")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false)
+                                    || node
+                                        .details
+                                        .get("is_overload")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
                                 if !node_is_stub {
                                     members.insert(node.name.as_str(), Member::Local(node));
                                 }

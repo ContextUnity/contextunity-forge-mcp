@@ -1,8 +1,10 @@
 pub(crate) mod relations;
 pub(crate) mod routes;
 use crate::core::models::*;
+use crate::core::typed_facts::{FlowStore, TypedFacts};
 use crate::engine::languages::{self, FileContext, LanguageProfile, SyntaxContext};
 use anyhow::{bail, Context, Result};
+use serde::Deserialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node as Syntax, Parser, Tree};
@@ -80,6 +82,12 @@ pub(crate) fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
     }
     fn names<'a>(node: Syntax<'_>, source: &'a str, out: &mut HashSet<&'a str>) {
         match node.kind() {
+            #[cfg(feature = "lang-rust")]
+            "tuple_struct_pattern" | "struct_pattern" | "ref_pattern" | "captured_pattern" => {
+                languages::rust::patterns::bindings(node, |binding| {
+                    out.insert(text(binding, source));
+                });
+            }
             "identifier" | "shorthand_property_identifier_pattern" => {
                 out.insert(text(node, source));
             }
@@ -128,7 +136,6 @@ pub(crate) fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
             | "rest_pattern"
             | "list_splat_pattern"
             | "dictionary_splat_pattern"
-            | "tuple_struct_pattern"
             | "slice_pattern"
             | "reference_pattern"
             | "mut_pattern" => {
@@ -263,6 +270,7 @@ struct Extraction<'a> {
     offset: usize,
     symbols: HashMap<usize, String>,
     ids: HashSet<String>,
+    flows: Option<&'a mut FlowStore>,
 }
 impl Extraction<'_> {
     fn visit(
@@ -281,8 +289,55 @@ impl Extraction<'_> {
         );
         if node.parent().is_none() {
             if let Some(module) = facts.nodes.iter_mut().find(|n| n.id == owner) {
+                #[cfg(feature = "lang-python")]
+                if language == "python" {
+                    let factories =
+                        crate::engine::languages::python::logging_factories(node, source, offset);
+                    if factories
+                        .as_array()
+                        .is_some_and(|entries| !entries.is_empty())
+                    {
+                        module.details["python_logging_factories"] = factories;
+                    }
+                }
+                #[cfg(feature = "lang-typescript")]
+                if matches!(language, "javascript" | "typescript" | "vue") {
+                    module.details["commonjs_bindings"] =
+                        json!(crate::engine::languages::typescript::commonjs_bindings(
+                            node,
+                            source,
+                            offset,
+                            &self.file.shadowed_require_scopes,
+                        ));
+                }
                 if !self.file.lazy_exports.is_empty() {
                     module.details["lazy_exports"] = json!(self.file.lazy_exports);
+                }
+                if !self.file.exports.is_empty() {
+                    module.details["exports"] = json!(self.file.exports);
+                }
+                let mut value_flow = self.profile.value_flow(node, source);
+                value_flow.offset_lines(offset);
+                if !value_flow.is_empty() {
+                    if let Some(flows) = &mut self.flows {
+                        if let Some(previous) = flows.take(&module.id) {
+                            value_flow.bindings.extend(previous.bindings);
+                            value_flow.fields.extend(previous.fields);
+                        }
+                    } else if let Ok(previous) = crate::core::semantic::ValueFlowFacts::deserialize(
+                        &module.details["value_flow"],
+                    ) {
+                        value_flow.bindings.extend(previous.bindings);
+                        value_flow.fields.extend(previous.fields);
+                    }
+                    value_flow.bindings.sort_by_key(|binding| binding.position);
+                    value_flow.fields.sort_by_key(|field| field.position);
+                    if let Some(flows) = &mut self.flows {
+                        module.details["value_flow"] = serde_json::Value::Null;
+                        flows.insert(module.id.clone(), value_flow);
+                    } else {
+                        module.details["value_flow"] = json!(value_flow);
+                    }
                 }
                 let scope_bindings = self.profile.bindings(node, source);
                 let bindings = module.details["bindings"]
@@ -351,6 +406,7 @@ impl Extraction<'_> {
             let metadata = self.profile.metadata(node, source, &name, &self.file);
             let bindings = self.profile.bindings(node, source);
             let mut details = json!({"receiver_name":metadata.receiver_name,"bindings":bindings.all,"rebindings":bindings.rebindings,"default_export":metadata.default_export,"doc":self.profile.doc_comment(node,source),"decorators":metadata.decorators,"bases":metadata.bases,"receiver":metadata.receiver,"signature":declaration_signature(node,source),"async":metadata.is_async});
+            details["column"] = json!(node.start_position().column);
             if let Some(receiver_type) = metadata.receiver_type {
                 details["receiver_type"] = json!(receiver_type);
             }
@@ -362,6 +418,19 @@ impl Extraction<'_> {
             }
             if !metadata.param_types.is_empty() {
                 details["param_types"] = json!(metadata.param_types);
+            }
+            let mut value_flow = self.profile.value_flow(node, source);
+            if value_flow.return_type.is_none() {
+                value_flow.return_type = metadata.return_type;
+            }
+            value_flow.offset_lines(offset);
+            if !value_flow.is_empty() {
+                if let Some(flows) = &mut self.flows {
+                    details["value_flow"] = serde_json::Value::Null;
+                    flows.insert(id.clone(), value_flow);
+                } else {
+                    details["value_flow"] = json!(value_flow);
+                }
             }
             if metadata.is_overload {
                 details["is_overload"] = json!(true);
@@ -428,6 +497,10 @@ impl Extraction<'_> {
     }
 }
 pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
+    Ok(extract_typed(path, language, source)?.into_public())
+}
+
+pub(crate) fn extract_typed(path: &str, language: &str, source: &str) -> Result<TypedFacts> {
     let profile = languages::require(language)?;
     let module = profile.module_name_for_source(path, source);
     let mut facts = Facts::default();
@@ -445,9 +518,28 @@ pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
         details: json!({}),
     });
 
-    profile.extract_file(path, source, &module, &mut facts)?;
-    profile.finish(&mut facts);
-    Ok(facts)
+    let mut typed = TypedFacts {
+        facts,
+        flows: FlowStore::default(),
+    };
+    match language {
+        "python" | "rust" | "typescript" | "javascript" => {
+            languages::parse_file_typed(profile, path, source, &module, &mut typed)?;
+            profile.finish(&mut typed.facts);
+        }
+        #[cfg(feature = "lang-html")]
+        "html" => languages::html::extract_typed(path, source, &module, &mut typed)?,
+        #[cfg(feature = "lang-vue")]
+        "vue" => languages::vue::extract_typed(path, source, &module, &mut typed)?,
+        _ => {
+            profile.extract_file(path, source, &module, &mut typed.facts)?;
+            profile.finish(&mut typed.facts);
+            for node in &mut typed.facts.nodes {
+                typed.flows.ingest(node);
+            }
+        }
+    }
+    Ok(typed)
 }
 
 pub(crate) fn extract_tree(
@@ -458,6 +550,62 @@ pub(crate) fn extract_tree(
     module: &str,
     facts: &mut Facts,
 ) {
+    extract_tree_owned(
+        profile,
+        root,
+        path,
+        source,
+        module,
+        &format!("module:{path}"),
+        facts,
+    );
+}
+
+pub(crate) fn parse_island(
+    parser: &mut tree_sitter::Parser,
+    input: &str,
+    offset: usize,
+    position: tree_sitter::Point,
+) -> Option<tree_sitter::Tree> {
+    let mut padded = String::with_capacity(input.len() + 1);
+    padded.push('\n');
+    padded.push_str(input);
+    let mut tree = parser.parse(&padded, None)?;
+    // A virtual prefix keeps parent traversal in the same coordinate system.
+    tree.edit(&tree_sitter::InputEdit {
+        start_byte: 0,
+        old_end_byte: 1,
+        new_end_byte: offset,
+        start_position: tree_sitter::Point::new(0, 0),
+        old_end_position: tree_sitter::Point::new(1, 0),
+        new_end_position: position,
+    });
+    Some(tree)
+}
+
+pub(crate) fn extract_tree_owned(
+    profile: &dyn LanguageProfile,
+    root: Syntax<'_>,
+    path: &str,
+    source: &str,
+    module: &str,
+    owner: &str,
+    facts: &mut Facts,
+) {
+    extract_tree_with_flows(profile, root, path, source, module, owner, facts, None);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn extract_tree_with_flows(
+    profile: &dyn LanguageProfile,
+    root: Syntax<'_>,
+    path: &str,
+    source: &str,
+    module: &str,
+    owner: &str,
+    facts: &mut Facts,
+    flows: Option<&mut FlowStore>,
+) {
     Extraction {
         source,
         path,
@@ -467,8 +615,9 @@ pub(crate) fn extract_tree(
         offset: 0,
         symbols: HashMap::new(),
         ids: facts.nodes.iter().map(|n| n.id.clone()).collect(),
+        flows,
     }
-    .visit(root, &mut Vec::new(), &format!("module:{path}"), facts);
+    .visit(root, &mut Vec::new(), owner, facts);
 }
 
 pub const SEARCH_MATCH_HORIZON: usize = 10_000;

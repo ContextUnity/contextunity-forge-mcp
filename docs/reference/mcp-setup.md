@@ -78,4 +78,4 @@ For a first exploration, use `code_map_search` with `{"pattern":"parse*"}`, insp
 - **Indexing error:** inspect the MCP client's server log and validate `forge-mcp.yaml` with `contextunity-forge-mcp guide validate` from the repository.
 - **CLI results are stale:** CLI readers use the index on disk. Run `contextunity-forge-mcp build .` or `delta` after source changes; MCP reads refresh automatically.
 
-The [adapter reference](configuration.md) covers admission rules and linked workspaces; [limits and freshness](../operations/limits-and-freshness.md) covers scan and response budgets.
+The [adapter reference](configuration.md) covers admission rules and linked workspaces; [limits and freshness](../runbooks/limits-and-freshness.md) covers scan and response budgets.

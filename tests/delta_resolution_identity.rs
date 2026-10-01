@@ -104,6 +104,14 @@ fn body_edits_refresh_owner_without_relinking_consumers_and_line_moves_relink() 
     w.assert_cold_equivalent();
     w.write(
         "provider.py",
+        "def left(): return 1\ndef right(): unused = 0; return 2\ndef value(): return right()\n\n",
+    );
+    let local_edit = w.delta("provider.py");
+    assert_eq!(local_edit["affected_owners"], 1, "{local_edit}");
+    assert_eq!(local_edit["loaded_fact_files"], 0, "{local_edit}");
+    w.assert_cold_equivalent();
+    w.write(
+        "provider.py",
         "\ndef left(): return 1\ndef right(): return 2\ndef value(): return right()\n",
     );
     let moved = w.delta("provider.py");

@@ -1,5 +1,11 @@
 use super::*;
 use crate::engine::ast::relations;
+#[path = "rust/linker.rs"]
+pub(crate) mod linker;
+#[path = "rust/patterns.rs"]
+pub(crate) mod patterns;
+#[path = "rust/value_flow.rs"]
+mod value_flow;
 pub fn language() -> tree_sitter::Language {
     tree_sitter_rust::language()
 }
@@ -10,6 +16,7 @@ pub fn kind(kind: &str) -> Option<&'static str> {
         "struct_item" => Some("struct"),
         "enum_item" => Some("enum"),
         "trait_item" => Some("trait"),
+        "type_item" => Some("type"),
         "impl_item" => Some("impl"),
         "mod_item" => Some("module_declaration"),
         "macro_definition" => Some("macro"),
@@ -54,9 +61,7 @@ impl LanguageProfile for Rust {
             let dependency_name = match parts.as_slice() {
                 [section, name, ..] if is_dependency_section(section) => Some(*name),
                 ["workspace", "dependencies", name, ..] => Some(*name),
-                ["target", _, section, name, ..] if is_dependency_section(section) => {
-                    Some(*name)
-                }
+                ["target", _, section, name, ..] if is_dependency_section(section) => Some(*name),
                 _ => None,
             };
             if let Some(name) = dependency_name {
@@ -98,7 +103,9 @@ impl LanguageProfile for Rust {
         }
     }
     fn node_prefix(&self, kind: &str) -> &'static str {
-        if kind == "macro" {
+        if kind == "type" {
+            "type"
+        } else if kind == "macro" {
             "macro"
         } else {
             "rs"
@@ -115,6 +122,9 @@ impl LanguageProfile for Rust {
         facts: &mut Facts,
     ) -> Result<()> {
         parse_file(self, path, source, module, facts)
+    }
+    fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
+        value_flow::extract(node, source)
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "use_declaration" {
@@ -134,7 +144,27 @@ impl LanguageProfile for Rust {
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        if matches!(ctx.node.kind(), "call_expression" | "macro_invocation") {
+        if ctx.node.kind() == "call_expression" {
+            if let Some(callee) = ctx
+                .node
+                .child_by_field_name("function")
+                .and_then(|function| value_flow::callee_name(function, ctx.source))
+            {
+                facts.references.push(Reference {
+                    source: ctx.owner.into(),
+                    expression: callee.into_owned(),
+                    kind: "calls".into(),
+                    line: ctx.line(),
+                    column: ctx.node.start_position().column,
+                    alias: None,
+                    module: None,
+                    dynamic: false,
+                    receiver_hint: None,
+                });
+            } else {
+                call(ctx, facts, false);
+            }
+        } else if ctx.node.kind() == "macro_invocation" {
             call(ctx, facts, false);
         } else if ctx.node.kind() == "struct_expression" {
             if let Some(name) = ctx.node.child_by_field_name("name") {
@@ -145,9 +175,15 @@ impl LanguageProfile for Rust {
         }
     }
     fn builtin(&self, symbol: &str) -> bool {
+        if let Some((rec, mem)) = symbol.split_once('.') {
+            return self.builtin_member(rec, mem)
+                || (self.builtin(rec) && matches!(mem, "new" | "default" | "from" | "with_capacity" | "clone" | "as_ref" | "as_mut"));
+        }
         matches!(
             symbol,
-            "Ok" | "Err" | "Some" | "None"
+            "Ok" | "Err"
+                | "Some"
+                | "None"
                 | "vec"
                 | "println"
                 | "eprintln"
@@ -164,6 +200,7 @@ impl LanguageProfile for Rust {
                 | "todo"
                 | "unimplemented"
                 | "unreachable"
+                | "drop"
                 | "str"
                 | "bool"
                 | "char"
@@ -194,8 +231,129 @@ impl LanguageProfile for Rust {
                 | "HashSet"
                 | "BTreeMap"
                 | "BTreeSet"
+                | "Drop"
+                | "Clone"
+                | "Default"
                 | "Self"
         )
+    }
+    fn builtin_type(&self, name: &str) -> bool {
+        matches!(name, "str" | "String" | "Vec" | "Option" | "Result" | "Box" | "Rc" | "Arc" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet")
+    }
+
+    fn builtin_member(&self, receiver: &str, member: &str) -> bool {
+        match receiver {
+            "str" => matches!(
+                member,
+                "len"
+                    | "is_empty"
+                    | "as_bytes"
+                    | "chars"
+                    | "char_indices"
+                    | "bytes"
+                    | "trim"
+                    | "trim_start"
+                    | "trim_end"
+                    | "split"
+                    | "split_once"
+                    | "rsplit_once"
+                    | "split_whitespace"
+                    | "contains"
+                    | "starts_with"
+                    | "ends_with"
+                    | "is_ascii"
+                    | "eq_ignore_ascii_case"
+            ),
+            "String" => matches!(
+                member,
+                "new"
+                    | "from"
+                    | "default"
+                    | "len"
+                    | "is_empty"
+                    | "capacity"
+                    | "clear"
+                    | "push"
+                    | "push_str"
+                    | "as_str"
+                    | "as_bytes"
+                    | "chars"
+                    | "bytes"
+                    | "trim"
+                    | "split"
+                    | "contains"
+                    | "starts_with"
+                    | "ends_with"
+            ),
+            "Vec" => matches!(
+                member,
+                "new"
+                    | "with_capacity"
+                    | "default"
+                    | "len"
+                    | "is_empty"
+                    | "capacity"
+                    | "clear"
+                    | "push"
+                    | "pop"
+                    | "get"
+                    | "first"
+                    | "last"
+                    | "iter"
+                    | "iter_mut"
+                    | "contains"
+                    | "sort"
+                    | "sort_unstable"
+                    | "retain"
+                    | "truncate"
+            ),
+            "Path" | "PathBuf" => matches!(
+                member,
+                "new" | "from" | "join" | "parent" | "file_name" | "extension" | "exists" | "is_file" | "is_dir" | "to_str" | "to_string_lossy" | "display"
+            ),
+            "Box" | "Rc" | "Arc" => matches!(
+                member,
+                "new" | "clone" | "default" | "as_ref"
+            ),
+            "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet" => matches!(
+                member,
+                "new" | "with_capacity" | "default" | "insert" | "get" | "contains_key" | "contains" | "remove" | "iter" | "len" | "is_empty" | "clear" | "entry"
+            ),
+            "Option" => matches!(
+                member,
+                "default"
+                    | "is_some"
+                    | "is_none"
+                    | "unwrap"
+                    | "expect"
+                    | "map"
+                    | "and_then"
+                    | "as_ref"
+                    | "as_mut"
+                    | "take"
+                    | "replace"
+            ),
+            "Result" => matches!(
+                member,
+                "default"
+                    | "is_ok"
+                    | "is_err"
+                    | "unwrap"
+                    | "expect"
+                    | "unwrap_err"
+                    | "expect_err"
+                    | "map"
+                    | "map_err"
+                    | "ok"
+                    | "err"
+                    | "as_ref"
+                    | "as_mut"
+            ),
+            _ => false,
+        }
+    }
+    fn builtin_generic(&self, receiver: &str) -> bool {
+        matches!(receiver, "Vec" | "Option" | "Result" | "Box" | "Rc" | "Arc" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet")
     }
 
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
@@ -206,7 +364,10 @@ impl LanguageProfile for Rust {
             } else if local.starts_with("src/") {
                 "src".to_string()
             } else {
-                local.split_once('/').map_or("src", |(first, _)| first).replace('/', ".")
+                local
+                    .split_once('/')
+                    .map_or("src", |(first, _)| first)
+                    .replace('/', ".")
             };
             (format!("{crate_prefix}.{}", tail.replace("::", ".")), true)
         } else if let Some(tail) = module.strip_prefix("self::") {
@@ -237,7 +398,10 @@ impl LanguageProfile for Rust {
                     std::path::PathBuf::from(prefix).join(first).join("src")
                 };
                 if candidate.exists() {
-                    let mod_prefix = candidate.to_string_lossy().replace('\\', "/").replace('/', ".");
+                    let mod_prefix = candidate
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .replace('/', ".");
                     resolved_crate = Some(mod_prefix);
                     break;
                 }
@@ -261,6 +425,16 @@ impl LanguageProfile for Rust {
     }
     fn extract_relations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "impl_item" {
+            if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+                owner.details["generic_impl"] =
+                    serde_json::json!(ctx.node.child_by_field_name("type_parameters").is_some());
+                if let Some(trait_name) = field(ctx.node, ctx.source, "trait") {
+                    owner.details["impl_trait"] = serde_json::json!(trait_name);
+                }
+                if let Some(receiver) = field(ctx.node, ctx.source, "type") {
+                    owner.details["receiver_type"] = serde_json::json!(receiver);
+                }
+            }
             if let Some(tr) = ctx.node.child_by_field_name("trait") {
                 relations::reference(
                     facts,
@@ -275,12 +449,16 @@ impl LanguageProfile for Rust {
                 let mut c = parameters.walk();
                 for param in parameters.named_children(&mut c) {
                     if let Some(ty) = param.child_by_field_name("type") {
-                        relations::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
+                        value_flow::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
                     }
                 }
             }
             if let Some(ret) = ctx.node.child_by_field_name("return_type") {
-                relations::type_references(facts, ctx.owner, ret, ctx.source, ctx.line());
+                value_flow::type_references(facts, ctx.owner, ret, ctx.source, ctx.line());
+            }
+        } else if ctx.node.kind() == "type_item" {
+            if let Some(ty) = ctx.node.child_by_field_name("type") {
+                value_flow::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
             }
         }
     }
@@ -308,7 +486,10 @@ impl LanguageProfile for Rust {
                         .or_else(|| pattern_text.strip_prefix("ref "))
                         .unwrap_or(pattern_text)
                         .trim();
-                    if name
+                    if !matches!(
+                        value_flow::type_expr(ty, source),
+                        crate::core::semantic::TypeExpr::Unknown
+                    ) && name
                         .chars()
                         .all(|character| character.is_alphanumeric() || character == '_')
                         && !name.is_empty()
@@ -321,6 +502,7 @@ impl LanguageProfile for Rust {
         let Some(owner) = method_owner(node) else {
             return SymbolMetadata {
                 param_types,
+                is_async: value_flow::is_async(node, source),
                 ..Default::default()
             };
         };
@@ -342,6 +524,7 @@ impl LanguageProfile for Rust {
             });
         SymbolMetadata {
             param_types,
+            is_async: value_flow::is_async(node, source),
             receiver_name: has_receiver.then(|| "self".into()),
             receiver_type,
             is_method: Some(true),
@@ -420,11 +603,17 @@ fn collect_use(node: Syntax<'_>, source: &str, prefix: &str, out: &mut Vec<(Stri
             out.push((format!("{name}::*"), "*".into()));
         }
         "self" if !prefix.is_empty() => {
-            out.push((prefix.to_owned(), prefix.rsplit("::").next().unwrap_or(prefix).into()));
+            out.push((
+                prefix.to_owned(),
+                prefix.rsplit("::").next().unwrap_or(prefix).into(),
+            ));
         }
         "identifier" | "scoped_identifier" | "crate" | "super" | "self" => {
             let name = joined(prefix, text(node, source));
-            out.push((name.clone(), name.rsplit("::").next().unwrap_or(&name).into()));
+            out.push((
+                name.clone(),
+                name.rsplit("::").next().unwrap_or(&name).into(),
+            ));
         }
         _ => {}
     }

@@ -5,6 +5,7 @@ use std::{collections::HashMap, collections::HashSet, path::Path};
 #[derive(Default)]
 pub struct DependencyRegistry {
     packages: HashMap<LanguageFamily, HashSet<String>>,
+    scoped_packages: HashMap<LanguageFamily, HashMap<String, HashSet<String>>>,
     digest: String,
 }
 
@@ -24,17 +25,19 @@ impl DependencyRegistry {
         let mut registry = Self::default();
         let mut roots = vec![(
             root.to_path_buf(),
+            String::new(),
             adapter
                 .map(|adapter| adapter.ignored_names.clone())
                 .unwrap_or_default(),
         )];
         if let Some(adapter) = adapter {
-            roots.extend(
-                adapter
-                    .linked_workspaces
-                    .iter()
-                    .map(|workspace| (workspace.path.clone(), workspace.ignored_names.clone())),
-            );
+            roots.extend(adapter.linked_workspaces.iter().map(|workspace| {
+                (
+                    workspace.path.clone(),
+                    format!("[{}]/", workspace.name),
+                    workspace.ignored_names.clone(),
+                )
+            }));
         }
         let profiles: Vec<_> = profiles()
             .filter(|profile| !profile.manifest_filenames().is_empty())
@@ -42,10 +45,10 @@ impl DependencyRegistry {
         let mut visited = HashSet::new();
         let mut snapshots = std::collections::BTreeMap::new();
         let mut parsed_families = Vec::with_capacity(profiles.len());
-        for (root, ignored_names) in roots {
+        for (root, prefix, ignored_names) in roots {
             let ignored_names: HashSet<std::ffi::OsString> =
                 ignored_names.into_iter().map(Into::into).collect();
-            let mut walk = ignore::WalkBuilder::new(root);
+            let mut walk = ignore::WalkBuilder::new(&root);
             walk.hidden(false)
                 .follow_links(false)
                 .git_ignore(true)
@@ -101,11 +104,28 @@ impl DependencyRegistry {
                         continue;
                     }
                     parsed_families.push(family);
+                    let dependencies = profile.extract_manifest_dependencies(filename, &content);
+                    if let Some(directory) = entry
+                        .path()
+                        .parent()
+                        .and_then(|parent| parent.strip_prefix(&root).ok())
+                    {
+                        let mut scope = prefix.clone();
+                        scope.push_str(&directory.to_string_lossy().replace('\\', "/"));
+                        let scope = scope.trim_end_matches('/').to_owned();
+                        registry
+                            .scoped_packages
+                            .entry(family)
+                            .or_default()
+                            .entry(scope)
+                            .or_default()
+                            .extend(dependencies.iter().cloned());
+                    }
                     registry
                         .packages
                         .entry(family)
                         .or_default()
-                        .extend(profile.extract_manifest_dependencies(filename, &content));
+                        .extend(dependencies);
                 }
             }
         }
@@ -122,6 +142,28 @@ impl DependencyRegistry {
 
     pub fn digest(&self) -> &str {
         &self.digest
+    }
+
+    pub(crate) fn declares_for_path(
+        &self,
+        family: LanguageFamily,
+        path: &str,
+        package: &str,
+    ) -> bool {
+        let Some(scopes) = self.scoped_packages.get(&family) else {
+            return false;
+        };
+        let workspace = super::workspace_path(path).0;
+        let mut directory = path.rsplit_once('/').map_or("", |(directory, _)| directory);
+        loop {
+            if let Some(packages) = scopes.get(directory) {
+                return packages.contains(package);
+            }
+            if directory.is_empty() || (!workspace.is_empty() && directory == workspace) {
+                return false;
+            }
+            directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
+        }
     }
 
     pub fn classification(

@@ -3,7 +3,7 @@ use crate::core::models::{Edge, Facts, Node, Reference};
 use serde_json::json;
 
 pub(crate) fn reference(facts: &mut Facts, owner: &str, expression: &str, kind: &str, line: usize) {
-    if expression.is_empty() {
+    if expression.is_empty() || expression == "_" {
         return;
     }
     facts.references.push(Reference {
@@ -11,6 +11,7 @@ pub(crate) fn reference(facts: &mut Facts, owner: &str, expression: &str, kind: 
         expression: expression.into(),
         kind: kind.into(),
         line,
+        column: 0,
         alias: None,
         module: None,
         dynamic: !expression
@@ -51,10 +52,12 @@ pub(crate) fn type_references(
             }
             "type_identifier" | "identifier" => {
                 let name = text(n, source);
-                if !matches!(
-                    name,
-                    "self" | "cls" | "this" | "true" | "false" | "None" | "nil" | "null"
-                ) {
+                if !name.starts_with('\'')
+                    && !matches!(
+                        name,
+                        "_" | "self" | "cls" | "this" | "true" | "false" | "None" | "nil" | "null"
+                    )
+                {
                     reference(facts, owner, name, "references", line);
                 }
             }
@@ -130,11 +133,10 @@ fn add_field(
     end_line: usize,
 ) -> String {
     let qualname = format!("{}.{name}", owner.qualname);
-    if let Some(n) = facts
-        .nodes
-        .iter()
-        .find(|n| (n.kind == "field" || matches!(n.kind.as_str(), "method" | "function")) && n.qualname == qualname)
-    {
+    if let Some(n) = facts.nodes.iter().find(|n| {
+        (n.kind == "field" || matches!(n.kind.as_str(), "method" | "function"))
+            && n.qualname == qualname
+    }) {
         return n.id.clone();
     }
     let id = format!("field:{}:{line}:{qualname}", owner.path);
@@ -268,8 +270,16 @@ pub(crate) fn member_access(
             return;
         }
     }
+    if let Some(field) = node.child_by_field_name("field") {
+        if field.kind() == "integer_literal" {
+            return;
+        }
+    }
     let expr = text(node, ctx.source);
     if expr.starts_with("self.") || expr.starts_with("this.") || expr.starts_with("cls.") {
+        if expr.split('.').any(|s| s.chars().all(|c| c.is_ascii_digit())) {
+            return;
+        }
         let line = node.start_position().row + ctx.offset + 1;
         reference(facts, ctx.owner, expr, "references", line);
     }

@@ -141,5 +141,5 @@ MCP pages default to 30 items and are bounded to 64 KiB. Continue a page with it
 
 - [MCP setup](docs/reference/mcp-setup.md): client configuration, working directory, first run, and troubleshooting.
 - [CLI reference](docs/reference/cli.md) and [adapter configuration](docs/reference/configuration.md).
-- [Language support](docs/reference/languages.md), [indexing architecture](docs/architecture/indexing.md), and [limits and freshness](docs/operations/limits-and-freshness.md).
+- [Language support](docs/reference/languages.md), [indexing architecture](docs/architecture/indexing.md), and [limits and freshness](docs/runbooks/limits-and-freshness.md).
 - [Documentation index](docs/README.md): all pages grouped for readers and coding agents.

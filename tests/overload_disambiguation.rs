@@ -129,7 +129,11 @@ class TsService {
 }
 "#;
     let ts_facts = ast::extract("service.ts", "typescript", ts).unwrap();
-    let computes: Vec<_> = ts_facts.nodes.iter().filter(|n| n.name == "compute").collect();
+    let computes: Vec<_> = ts_facts
+        .nodes
+        .iter()
+        .filter(|n| n.name == "compute")
+        .collect();
     assert_eq!(computes.len(), 3);
 
     // Signatures without body have is_overload: true and is_stub: true
@@ -239,12 +243,17 @@ def caller(c: Category):
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
 
     // Selecting "Category.move" must resolve directly to the runtime method without error
-    let node = reader::select(&conn, "Category.move").expect("Category.move must resolve without ambiguous error");
+    let node = reader::select(&conn, "Category.move")
+        .expect("Category.move must resolve without ambiguous error");
     assert_eq!(node["name"], "move");
     assert_eq!(node["kind"], "method");
-    assert_eq!(node["line"], 8, "Must resolve to runtime implementation on line 8");
+    assert_eq!(
+        node["line"], 8,
+        "Must resolve to runtime implementation on line 8"
+    );
 
     // Also inspect must succeed
-    let inspected = reader::inspect(&conn, "Category.move", false).expect("inspect Category.move must succeed");
+    let inspected =
+        reader::inspect(&conn, "Category.move", false).expect("inspect Category.move must succeed");
     assert_eq!(inspected["node"]["id"], node["id"]);
 }

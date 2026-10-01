@@ -525,3 +525,262 @@ fn html_template_file_still_reports_syntax_error_in_plain_script() {
         facts.errors
     );
 }
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn embedded_javascript_scopes_preserve_symbols_positions_and_receiver_edges() {
+    let source = "<script type='module'>class Client { work() {} }\nconst client = new Client(); client.work();\n</script>\n<script type='module'>client.work();</script>\n<button onclick=\"function launch() {} launch();\">Run</button>";
+    let facts = ast::extract("islands.html", "html", source).unwrap();
+    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+    let class = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "Client" && node.kind == "class")
+        .unwrap();
+    assert_eq!(class.line, 1);
+    assert_eq!(
+        class.details["column"],
+        source.find("class Client").unwrap()
+    );
+    let work = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "work" && node.kind == "method")
+        .unwrap();
+    let launch = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "launch")
+        .unwrap();
+    assert_eq!(launch.line, 5);
+    assert_eq!(
+        launch.details["column"],
+        source
+            .lines()
+            .nth(4)
+            .unwrap()
+            .find("function launch")
+            .unwrap()
+    );
+    let all = std::collections::BTreeMap::from([("islands.html".to_owned(), facts.clone())]);
+    let graph = contextunity_forge_mcp::engine::linker::link(&all);
+    assert!(
+        graph.edges.iter().any(|edge| edge.kind == "calls"
+            && edge.evidence == "client.work"
+            && edge.dst == work.id),
+        "{graph:#?}"
+    );
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|edge| edge.kind == "calls" && edge.evidence == "launch" && edge.dst == launch.id),
+        "{graph:#?}"
+    );
+    assert!(
+        graph.coverage.iter().any(|coverage| coverage.line == 4
+            && coverage.expression == "client.work"
+            && coverage.status == "unresolved"),
+        "{graph:#?}"
+    );
+    assert_eq!(
+        facts
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "template_scope")
+            .count(),
+        4
+    );
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn html_javascript_import_scope_and_boolean_handlers_survive_delta() {
+    let workspace = Workspace::new();
+    workspace.write("provider.js", "export function answer() { return 42; }");
+    workspace.write("page.html", "<script type='module'>import { answer } from './provider.js'; answer();</script>\n<script type='module'>answer();</script>\n<button onclick=\"function check() {} if (true && true) check();\">Run</button>");
+    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let imports: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.src_public_id='module:page.html' AND e.kind='imports' AND n.path='provider.js'", [], |row| row.get(0)).unwrap();
+    assert!(imports > 0);
+    let resolved: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage WHERE path='page.html' AND line=1 AND expression='answer' AND status='resolved'", [], |row| row.get(0)).unwrap();
+    let unresolved: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage WHERE path='page.html' AND line=2 AND expression='answer' AND status='unresolved'", [], |row| row.get(0)).unwrap();
+    assert_eq!(resolved, 2);
+    assert_eq!(unresolved, 1);
+    drop(conn);
+    workspace.write("page.html", "<script>function changed() {} changed();</script><button onclick='function click() {} click();'>Run</button>");
+    writer::delta(&workspace.0, &workspace.db(), &[PathBuf::from("page.html")]).unwrap();
+    let cold = workspace.0.join("cold.sqlite");
+    writer::build(&workspace.0, &cold, None).unwrap();
+    let rows = |db: &std::path::Path| {
+        let conn = reader::open(db, &workspace.0).unwrap();
+        let mut statement = conn
+            .prepare("SELECT id,details FROM nodes ORDER BY id")
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(rows(&workspace.db()), rows(&cold));
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn same_line_javascript_islands_have_distinct_linked_symbol_identities() {
+    let source = "<script type='module'>function same() {} same();</script><script type='module'>function same() {} same();</script><button onclick='function same() {} same();'>Run</button>";
+    let facts = ast::extract("same-line.html", "html", source).unwrap();
+    let functions: std::collections::BTreeSet<_> = facts
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "function" && node.name == "same")
+        .map(|node| node.id.clone())
+        .collect();
+    assert_eq!(functions.len(), 3);
+    let graph =
+        contextunity_forge_mcp::engine::linker::link(&std::collections::BTreeMap::from([(
+            "same-line.html".to_owned(),
+            facts,
+        )]));
+    let targets: std::collections::BTreeSet<_> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == "calls" && edge.evidence == "same")
+        .map(|edge| edge.dst.clone())
+        .collect();
+    assert_eq!(targets, functions, "{graph:#?}");
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn classic_javascript_globals_are_shared_by_scripts_and_inline_handlers() {
+    let source = "<script>class Worker { run() {} } const worker = new Worker(); function launch() {}</script>\n<script>worker.run(); launch();</script>\n<button onclick='launch(); worker.run();'>Run</button>\n<script type='module'>const privateWorker = new Worker(); privateWorker.run();</script>\n<script type='module'>privateWorker.run();</script>";
+    let facts = ast::extract("classic.html", "html", source).unwrap();
+    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+    let work = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == "method" && node.name == "run")
+        .unwrap();
+    let launch = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "launch")
+        .unwrap();
+    let graph =
+        contextunity_forge_mcp::engine::linker::link(&std::collections::BTreeMap::from([(
+            "classic.html".to_owned(),
+            facts.clone(),
+        )]));
+    for line in [2, 3] {
+        assert!(
+            graph.edges.iter().any(|edge| edge.kind == "calls"
+                && edge.line == line
+                && edge.evidence == "launch"
+                && edge.dst == launch.id),
+            "{graph:#?}"
+        );
+    }
+    assert!(
+        graph.coverage.iter().any(|coverage| coverage.line == 3
+            && coverage.expression == "worker.run"
+            && coverage.status == "unresolved"),
+        "{graph:#?}"
+    );
+    assert!(
+        graph.edges.iter().any(|edge| edge.kind == "calls"
+            && edge.line == 4
+            && edge.evidence == "privateWorker.run"
+            && edge.dst == work.id),
+        "{graph:#?}"
+    );
+    assert!(
+        graph.coverage.iter().any(|coverage| coverage.line == 5
+            && coverage.expression == "privateWorker.run"
+            && coverage.status == "unresolved"),
+        "{graph:#?}"
+    );
+    assert_eq!(
+        facts
+            .nodes
+            .iter()
+            .filter(|node| node.details["classic_global"] == true)
+            .count(),
+        1
+    );
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn classic_require_rebindings_do_not_change_independent_module_imports() {
+    for declaration in ["const require = customLoader;", "function require() {}"] {
+        let source = format!("<script>{declaration}</script>\n<script>const fs = require('node:fs'); fs.readFile();</script>\n<script type='module'>import fs from 'node:fs'; fs.readFile();</script>");
+        let facts = ast::extract("loaders.html", "html", &source).unwrap();
+        let loader = facts
+            .nodes
+            .iter()
+            .find(|node| node.kind == "function" && node.name == "require")
+            .map(|node| node.id.clone());
+        let imports: Vec<_> = facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == "imports")
+            .map(|reference| {
+                (
+                    reference.line,
+                    reference.expression.as_str(),
+                    reference.alias.as_deref(),
+                    reference.module.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            imports,
+            vec![(3, "default", Some("fs"), Some("node:fs"))],
+            "{facts:#?}"
+        );
+        let graph = contextunity_forge_mcp::engine::linker::link(
+            &std::collections::BTreeMap::from([("loaders.html".to_owned(), facts)]),
+        );
+        if declaration.starts_with("function") {
+            let loader = loader.expect("classic loader function");
+            assert!(
+                graph.edges.iter().any(|edge| edge.kind == "calls"
+                    && edge.line == 2
+                    && edge.evidence == "require"
+                    && edge.dst == loader),
+                "{graph:#?}"
+            );
+        } else {
+            assert!(
+                graph.coverage.iter().any(|coverage| coverage.line == 2
+                    && coverage.expression == "require"
+                    && coverage.status == "unresolved"),
+                "{graph:#?}"
+            );
+        }
+        assert!(
+            graph.coverage.iter().any(|coverage| coverage.line == 2
+                && coverage.expression == "fs.readFile"
+                && coverage.status == "unresolved"),
+            "{graph:#?}"
+        );
+        assert!(
+            graph.coverage.iter().any(|coverage| coverage.line == 3
+                && coverage.expression == "fs.readFile"
+                && coverage.status == "external"),
+            "{graph:#?}"
+        );
+    }
+}
+
+#[cfg(feature = "lang-typescript")]
+#[path = "html_profile/classic_wire.rs"]
+mod classic_wire;
+
+#[cfg(feature = "lang-python")]
+#[path = "html_profile/template_origins.rs"]
+mod template_origins;

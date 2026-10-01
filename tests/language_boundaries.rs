@@ -293,6 +293,7 @@ const buttonText = "Click me";
 function onSubmit() {
     return 42;
 }
+
 const user = { name: "Antigravity" };
 </script>
 "#,
@@ -330,6 +331,149 @@ const user = { name: "Antigravity" };
         "missing template interpolation user: {:?}",
         expressions
     );
+}
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn vue_compiler_macros_are_setup_scoped_and_lexically_shadowable() {
+    let w = Workspace::new();
+    w.write(
+        "Macro.vue",
+        r#"<script>defineProps();</script><script data-note="a setup b">defineEmits();</script><script setup>defineEmits(); function defineModel() {} defineModel();</script>"#,
+    );
+    let conn = w.build();
+
+    let count = |expression: &str, status: &str| -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM resolution_coverage WHERE path='Macro.vue' AND expression=?1 AND status=?2",
+            rusqlite::params![expression, status],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(count("defineProps", "unresolved"), 1);
+    assert_eq!(count("defineEmits", "unresolved"), 1);
+    assert_eq!(count("defineEmits", "resolved"), 1);
+    assert_eq!(count("defineModel", "resolved"), 1);
+    let local_call: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.path='Macro.vue' AND e.kind='calls' AND n.name='defineModel'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(local_call, 1);
+}
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn vue_template_receiver_calls_use_setup_types_and_component_exports() {
+    let w = Workspace::new();
+    w.write(
+        "MyButton.vue",
+        "<template><button /></template><script setup>const label = 'ok';</script>",
+    );
+    w.write(
+        "App.vue",
+        r#"<template>
+  <my-button @click="worker.run" />
+  <button @click="worker.run()" />
+</template>
+<script setup lang="ts">
+import MyButton from './MyButton.vue';
+class Worker { run() { return 1; } }
+const worker = new Worker();
+</script>
+"#,
+    );
+    let facts = ast::extract(
+        "App.vue",
+        "vue",
+        &fs::read_to_string(w.0.join("App.vue")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == "calls" && reference.expression == "worker.run")
+            .count(),
+        2,
+        "{facts:#?}"
+    );
+    let conn = w.build();
+    let calls: i64 = conn.query_row(
+        "SELECT COALESCE(sum(e.occurrence_count),0) FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.path='App.vue' AND e.kind='calls' AND n.name='run'",
+        [], |row| row.get(0),
+    ).unwrap();
+    let mut statement = conn.prepare("SELECT src,dst,line,evidence FROM edge_occurrences WHERE owner='App.vue' AND kind='calls'").unwrap();
+    let occurrences: Vec<(String, String, usize, String)> = statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(calls, 2, "{occurrences:#?}");
+    let components: i64 = conn.query_row(
+        "SELECT count(*) FROM resolution_coverage WHERE path='App.vue' AND expression='MyButton' AND status='resolved'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(components, 1);
+}
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn vue_iteration_and_slot_scopes_keep_all_bindings_and_source_coordinates() {
+    let source = r#"<template>
+  <div v-for="(item, index) in items" :title="item.name">{{ index }}</div>
+  <Panel v-slot="{ entry, count }">{{ entry.title }} {{ count }}</Panel>
+</template>
+<script setup>const items = [];</script>"#;
+    let facts = ast::extract("Scoped.vue", "vue", source).unwrap();
+    let iteration = facts
+        .nodes
+        .iter()
+        .find(|node| {
+            node.kind == "template_scope"
+                && node.details["bindings"]
+                    .as_array()
+                    .is_some_and(|names| names.iter().any(|name| name == "item"))
+        })
+        .unwrap();
+    assert!(iteration.details["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|name| name == "index"));
+    let index = facts
+        .references
+        .iter()
+        .find(|reference| reference.expression == "index")
+        .unwrap();
+    assert_eq!(index.source, iteration.id);
+    assert_eq!(index.line, 2);
+    let line = source.lines().nth(index.line - 1).unwrap();
+    assert!(line[index.column..].starts_with("index"));
+    let slot = facts
+        .nodes
+        .iter()
+        .find(|node| {
+            node.kind == "template_scope"
+                && node.details["bindings"]
+                    .as_array()
+                    .is_some_and(|names| names.iter().any(|name| name == "entry"))
+        })
+        .unwrap();
+    assert!(slot.details["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|name| name == "count"));
+    assert!(facts
+        .references
+        .iter()
+        .any(|reference| reference.source == slot.id && reference.expression == "entry.title"));
 }
 
 #[cfg(feature = "lang-vue")]
@@ -382,8 +526,8 @@ const user = { name: "User" };
         "must contain user: {expressions:?}"
     );
     assert!(
-        expressions.contains(&"name"),
-        "must contain name: {expressions:?}"
+        expressions.contains(&"user.name"),
+        "must contain the qualified receiver member user.name: {expressions:?}"
     );
 
     // CSS class string tokens MUST NOT be extracted as references
@@ -445,8 +589,8 @@ const target = { title: "World" };
         "must contain user: {expressions:?}"
     );
     assert!(
-        expressions.contains(&"name"),
-        "must contain name: {expressions:?}"
+        expressions.contains(&"user.name"),
+        "must contain the qualified receiver member user.name: {expressions:?}"
     );
     assert!(
         expressions.contains(&"role"),
@@ -461,8 +605,8 @@ const target = { title: "World" };
         "must contain target: {expressions:?}"
     );
     assert!(
-        expressions.contains(&"title"),
-        "must contain title: {expressions:?}"
+        expressions.contains(&"target.title"),
+        "must contain the qualified receiver member target.title: {expressions:?}"
     );
 
     // Literal string parts must NOT be extracted

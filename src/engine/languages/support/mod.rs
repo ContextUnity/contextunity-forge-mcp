@@ -41,6 +41,7 @@ pub(super) fn call_reference(
         expression: ast::bounded_expression(expression),
         kind: "calls".into(),
         line: ctx.line(),
+        column: ctx.node.start_position().column,
         alias: None,
         module: None,
         dynamic: dynamic

@@ -1,4 +1,4 @@
-#![cfg(any(feature = "lang-python", feature = "lang-rust"))]
+#![cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-vue"))]
 
 use contextunity_forge_mcp::{
     core::commitments,
@@ -372,4 +372,24 @@ fn shared_aggregate_rename_reseals_prior_and_resulting_owners() {
         assert_aggregate(&w, owner, 2);
         w.assert_cold_equivalent();
     }
+}
+
+#[test]
+#[cfg(feature = "lang-vue")]
+fn vue_setup_body_edits_refresh_calls_and_preserve_consumer_contracts() {
+    let w = Workspace::new();
+    w.write("Provider.vue", "<script setup>\nexport function run() { defineProps(); return 1; }\n</script>\n");
+    w.write("consumer.ts", "import { run } from './Provider.vue';\nrun();\n");
+    w.build();
+    let consumer_hashes = |conn: &Connection| strings(conn,
+        "SELECT facts_hash||'|'||nodes_hash||'|'||edges_hash||'|'||search_hash||'|'||deps_hash FROM file_commitments WHERE path='consumer.ts'");
+    let before = consumer_hashes(&w.open());
+    assert_eq!(strings(&w.open(), "SELECT status FROM resolution_coverage WHERE path='consumer.ts' AND expression='run'"), ["resolved"]);
+    w.write("Provider.vue", "<script setup>\nexport function run() {\n  defineOptions();\n  return 1;\n}\n</script>\n");
+    let report = w.delta(&["Provider.vue"]);
+    assert_eq!(report["affected_owners"], 1, "{report}");
+    assert_eq!(report["reparsed_files"], 1, "{report}");
+    assert_eq!(consumer_hashes(&w.open()), before);
+    assert_eq!(strings(&w.open(), "SELECT status FROM resolution_coverage WHERE path='Provider.vue' AND expression='defineOptions'"), ["resolved"]);
+    w.assert_cold_equivalent();
 }

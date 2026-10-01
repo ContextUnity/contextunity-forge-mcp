@@ -48,6 +48,7 @@ impl ImportPath {
 
 #[derive(Default)]
 pub struct FileContext {
+    pub exports: Vec<crate::core::semantic::ExportBinding>,
     pub lazy_exports: Vec<LazyExport>,
     pub default_exports: HashSet<String>,
     pub package: Option<String>,
@@ -62,6 +63,7 @@ pub struct LazyExport {
 }
 #[derive(Default)]
 pub struct SymbolMetadata {
+    pub return_type: Option<crate::core::semantic::TypeExpr>,
     pub param_types: BTreeMap<String, String>,
     pub receiver_name: Option<String>,
     pub decorators: Vec<String>,
@@ -100,6 +102,7 @@ impl SyntaxContext<'_, '_> {
             expression,
             kind: "imports".into(),
             line: self.line(),
+            column: self.node.start_position().column,
             alias,
             module,
             receiver_hint: None,
@@ -160,6 +163,15 @@ pub trait LanguageProfile: Send + Sync {
     fn builtin(&self, _name: &str) -> bool {
         false
     }
+    fn builtin_type(&self, _name: &str) -> bool {
+        false
+    }
+    fn builtin_member(&self, _receiver: &str, _member: &str) -> bool {
+        false
+    }
+    fn builtin_generic(&self, _receiver: &str) -> bool {
+        false
+    }
     fn doc_comment(&self, node: Syntax<'_>, source: &str) -> String {
         ast::doc_comment(node, source)
     }
@@ -186,6 +198,13 @@ pub trait LanguageProfile: Send + Sync {
     }
     fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
         ast::scope_bindings(node, source)
+    }
+    fn value_flow(
+        &self,
+        _node: Syntax<'_>,
+        _source: &str,
+    ) -> crate::core::semantic::ValueFlowFacts {
+        crate::core::semantic::ValueFlowFacts::default()
     }
     fn value_binding_applies(&self, _reference: &Reference) -> bool {
         true
@@ -262,6 +281,14 @@ pub fn by_id(id: &str) -> Option<&'static dyn LanguageProfile> {
     profiles().find(|p| p.id() == id)
 }
 pub fn linker_for(id: &str) -> &'static dyn LanguageLinker {
+    #[cfg(feature = "lang-rust")]
+    if id == "rust" {
+        return &rust::linker::RUST_LINKER;
+    }
+    #[cfg(feature = "lang-typescript")]
+    if matches!(id, "typescript" | "javascript" | "vue") {
+        return &typescript::linker::TYPESCRIPT_LINKER;
+    }
     #[cfg(feature = "lang-python")]
     if id == "python" {
         return &python::linker::PYTHON_LINKER;
@@ -334,6 +361,29 @@ pub fn parse_file(
     ast::extract_tree(profile, tree.root_node(), path, source, module, facts);
     Ok(())
 }
+pub(crate) fn parse_file_typed(
+    profile: &dyn LanguageProfile,
+    path: &str,
+    source: &str,
+    module: &str,
+    typed: &mut crate::core::typed_facts::TypedFacts,
+) -> Result<()> {
+    let tree = profile
+        .create_parser(path)?
+        .parse(source, None)
+        .context("Tree-sitter parse cancelled")?;
+    ast::extract_tree_with_flows(
+        profile,
+        tree.root_node(),
+        path,
+        source,
+        module,
+        &format!("module:{path}"),
+        &mut typed.facts,
+        Some(&mut typed.flows),
+    );
+    Ok(())
+}
 pub fn call(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, dynamic_imports: bool) {
     let Some(callee) =
         field(ctx.node, ctx.source, "function").or_else(|| field(ctx.node, ctx.source, "macro"))
@@ -360,6 +410,7 @@ pub fn call(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, dynamic_imports: boo
             .unwrap_or_else(|| ast::bounded_expression(callee)),
         kind: if dynamic { "imports" } else { "calls" }.into(),
         line: ctx.line(),
+        column: ctx.node.start_position().column,
         alias: None,
         module: import_path,
         receiver_hint: None,

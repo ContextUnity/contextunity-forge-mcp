@@ -60,8 +60,15 @@ fn generate_profiles() {
         std::path::PathBuf::from("Cargo.lock"),
         std::path::PathBuf::from("Cargo.toml"),
         std::path::PathBuf::from("build.rs"),
+        std::path::PathBuf::from("src/core/models.rs"),
+        std::path::PathBuf::from("src/core/models/compact_graph.rs"),
+        std::path::PathBuf::from("src/core/semantic.rs"),
+        std::path::PathBuf::from("src/core/typed_facts.rs"),
+        std::path::PathBuf::from("src/core/schema.rs"),
+        std::path::PathBuf::from("src/core/commitments.rs"),
+        std::path::PathBuf::from("src/db/writer.rs"),
     ];
-    let mut pending = vec![directory.to_path_buf()];
+    let mut pending = vec![std::path::PathBuf::from("src/engine")];
     while let Some(path) = pending.pop() {
         for entry in std::fs::read_dir(path).expect("read profile fingerprint directory") {
             let entry = entry.expect("read profile fingerprint entry");

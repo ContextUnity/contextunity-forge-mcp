@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 use rusqlite::{params, types::ValueRef, Connection};
 use sha2::{Digest, Sha256};
@@ -506,8 +506,188 @@ fn leaves(
         "edges" => return leaves_edges(conn, owners),
         "shared_owners" => return leaves_shared_owners(conn, owners),
         "dependencies" => return leaves_dependencies(conn, owners),
+        "resolution_coverage" => {
+            if let Some(leaves) = canonical_coverage_leaves(conn, owners)? {
+                return Ok(leaves);
+            }
+        }
         _ => {}
     }
+    leaves_generic(conn, table, owners)
+}
+
+fn coverage_dictionary(
+    conn: &Connection,
+    sql: &str,
+    encoded: Option<&str>,
+) -> Result<Option<HashMap<i64, String>>> {
+    let mut statement = conn.prepare_cached(sql)?;
+    let mut rows = if let Some(encoded) = encoded {
+        statement.query([encoded])?
+    } else {
+        statement.query([])?
+    };
+    let mut dictionary = HashMap::new();
+    while let Some(row) = rows.next()? {
+        let (ValueRef::Integer(id), ValueRef::Text(text)) = (row.get_ref(0)?, row.get_ref(1)?)
+        else {
+            return Ok(None);
+        };
+        let Ok(text) = std::str::from_utf8(text) else {
+            return Ok(None);
+        };
+        dictionary.insert(id, text.to_owned());
+    }
+    Ok(Some(dictionary))
+}
+
+fn canonical_coverage_leaves(
+    conn: &Connection,
+    owners: Option<&BTreeSet<String>>,
+) -> Result<Option<BTreeMap<String, String>>> {
+    let encoded = owners.map(serde_json::to_string).transpose()?;
+    let encoded = encoded.as_deref();
+    let filter = if owners.is_some() {
+        "WHERE path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
+    } else {
+        ""
+    };
+    let path_sql = if owners.is_some() {
+        "SELECT path_id,path FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1))"
+    } else {
+        "SELECT path_id,path FROM path_dictionary"
+    };
+    let expression_sql = if owners.is_some() {
+        format!("SELECT expression_id,expression FROM coverage_expressions WHERE expression_id IN(SELECT expression_id FROM resolution_coverage_data {filter})")
+    } else {
+        "SELECT expression_id,expression FROM coverage_expressions".to_owned()
+    };
+    let evidence_sql = if owners.is_some() {
+        format!("SELECT evidence_id,evidence FROM coverage_evidence WHERE evidence_id IN(SELECT evidence_id FROM resolution_coverage_data {filter})")
+    } else {
+        "SELECT evidence_id,evidence FROM coverage_evidence".to_owned()
+    };
+    let Some(paths) = coverage_dictionary(conn, path_sql, encoded)? else {
+        return Ok(None);
+    };
+    let Some(expressions) = coverage_dictionary(conn, &expression_sql, encoded)? else {
+        return Ok(None);
+    };
+    let Some(evidence) = coverage_dictionary(conn, &evidence_sql, encoded)? else {
+        return Ok(None);
+    };
+    let mut statuses = HashSet::new();
+    {
+        let mut statement = conn.prepare_cached(&format!(
+            "SELECT DISTINCT status FROM resolution_coverage_data {filter}"
+        ))?;
+        let mut rows = if let Some(encoded) = encoded {
+            statement.query([encoded])?
+        } else {
+            statement.query([])?
+        };
+        while let Some(row) = rows.next()? {
+            let ValueRef::Text(status) = row.get_ref(0)? else {
+                return Ok(None);
+            };
+            let Ok(status) = std::str::from_utf8(status) else {
+                return Ok(None);
+            };
+            statuses.insert(status.to_owned());
+        }
+    }
+    let mut statement = conn.prepare(&format!(
+        "SELECT path_id,line,expression_id,status,evidence_id FROM resolution_coverage_data {filter}"
+    ))?;
+    let mut rows = if let Some(encoded) = encoded {
+        statement.query([encoded])?
+    } else {
+        statement.query([])?
+    };
+    struct CoverageRow<'a> {
+        line: i64,
+        expression: &'a str,
+        status: &'a str,
+        evidence: &'a str,
+    }
+    let mut by_owner: HashMap<&str, Vec<CoverageRow<'_>>> = HashMap::new();
+    let mut accepted = 0;
+    while let Some(row) = rows.next()? {
+        let (
+            ValueRef::Integer(path),
+            ValueRef::Integer(line),
+            ValueRef::Integer(expression),
+            ValueRef::Text(status),
+            ValueRef::Integer(proof),
+        ) = (
+            row.get_ref(0)?,
+            row.get_ref(1)?,
+            row.get_ref(2)?,
+            row.get_ref(3)?,
+            row.get_ref(4)?,
+        )
+        else {
+            return Ok(None);
+        };
+        let (Some(owner), Some(expression), Some(proof)) = (
+            paths.get(&path),
+            expressions.get(&expression),
+            evidence.get(&proof),
+        ) else {
+            continue;
+        };
+        let Ok(status) = std::str::from_utf8(status) else {
+            return Ok(None);
+        };
+        let Some(status) = statuses.get(status) else {
+            return Ok(None);
+        };
+        by_owner
+            .entry(owner.as_str())
+            .or_default()
+            .push(CoverageRow {
+                line,
+                expression: expression.as_str(),
+                status: status.as_str(),
+                evidence: proof.as_str(),
+            });
+        accepted += 1;
+    }
+    let hash_owner = |(owner, mut rows): (&str, Vec<CoverageRow<'_>>)| {
+        rows.sort_unstable_by(|left, right| {
+            left.line
+                .cmp(&right.line)
+                .then_with(|| left.expression.as_bytes().cmp(right.expression.as_bytes()))
+                .then_with(|| left.status.as_bytes().cmp(right.status.as_bytes()))
+                .then_with(|| left.evidence.as_bytes().cmp(right.evidence.as_bytes()))
+        });
+        let mut hasher = new_leaf_hasher("resolution_coverage", owner);
+        for row in rows {
+            hasher.update([0xff]);
+            encode_text(&mut hasher, owner);
+            encode_int(&mut hasher, row.line);
+            encode_text(&mut hasher, row.expression);
+            encode_text(&mut hasher, row.status);
+            encode_text(&mut hasher, row.evidence);
+        }
+        (
+            key("resolution_coverage", owner),
+            hex::encode(hasher.finalize()),
+        )
+    };
+    let leaves = if accepted >= 8192 {
+        by_owner.into_par_iter().map(hash_owner).collect()
+    } else {
+        by_owner.into_iter().map(hash_owner).collect()
+    };
+    Ok(Some(leaves))
+}
+
+fn leaves_generic(
+    conn: &Connection,
+    table: &str,
+    owners: Option<&BTreeSet<String>>,
+) -> Result<BTreeMap<String, String>> {
     let (ownership, join, order) = shape(table);
     let filter = if owners.is_some() {
         format!("WHERE {ownership} IN(SELECT value FROM json_each(?1))")

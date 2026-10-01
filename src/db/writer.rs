@@ -1,3 +1,7 @@
+use crate::core::models::compact_graph::{
+    Coverage as CompactCoverage, Edge as CompactEdge, Graph as CompactGraph,
+};
+use crate::core::typed_facts::TypedFacts;
 use crate::engine::languages::module_name;
 use crate::{
     core::{commitments, models::*, schema::SCHEMA_DDL},
@@ -15,9 +19,11 @@ use rusqlite::{
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    sync::Arc,
     time::Instant,
 };
 static NONCE: AtomicU64 = AtomicU64::new(0);
@@ -42,6 +48,10 @@ impl std::fmt::Display for SourceSnapshotMismatch {
 impl std::error::Error for SourceSnapshotMismatch {}
 
 pub fn extract(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> Result<Facts> {
+    Ok(extract_typed(root, file, adapter)?.into_public())
+}
+
+fn extract_typed(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> Result<TypedFacts> {
     let path = scanner::resolve_file_path(root, adapter, &file.path)?;
     let source = fs::read_to_string(&path)?;
     if commitments::hash(source.as_bytes()) != file.digest {
@@ -69,13 +79,13 @@ pub fn extract(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> Res
                 details: json!({"doc_type":d.doc_type,"is_invariant":d.is_invariant}),
             })
             .collect();
-        Ok(Facts {
+        Ok(TypedFacts::from_public(Facts {
             docs: sections,
             nodes,
             ..Facts::default()
-        })
+        }))
     } else {
-        ast::extract(&file.path, &file.language, &source)
+        ast::extract_typed(&file.path, &file.language, &source)
     }
 }
 fn policy(root: &Path, adapter: &scanner::Adapter) -> Value {
@@ -155,7 +165,7 @@ fn populate(
     root: &Path,
     adapter: &scanner::Adapter,
     entries: &[FileEntry],
-    facts: &BTreeMap<String, Facts>,
+    facts: &BTreeMap<String, TypedFacts>,
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
 ) -> Result<Value> {
     let budget = scanner::memory_budget_bytes();
@@ -174,7 +184,7 @@ fn populate(
             root,
             Some(adapter),
         );
-    let graph = linker::link_with_registry(facts, None, Some(root), &dependencies);
+    let graph = linker::link_compact_with_typed_registry(facts, None, Some(root), &dependencies);
     let link_ms = linking.elapsed().as_secs_f64() * 1000.;
     let writing = Instant::now();
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -303,7 +313,7 @@ fn populate(
     report["graph_phases_ms"] = json!({"occurrences_and_dependencies":graph_timings.occurrences,"unique_edges":graph_timings.edges,"coverage_dictionaries":graph_timings.dictionaries,"coverage_and_unresolved":graph_timings.coverage});
     Ok(report)
 }
-fn components(facts: &mut BTreeMap<String, Facts>) {
+fn components(facts: &mut BTreeMap<String, TypedFacts>) {
     let owners = component_owners(facts.iter().filter_map(|(path, f)| {
         f.nodes
             .iter()
@@ -327,7 +337,7 @@ fn component_owners<'a>(paths: impl Iterator<Item = &'a str>) -> BTreeMap<String
     }
     owners
 }
-fn assign_components(facts: &mut BTreeMap<String, Facts>, owners: &BTreeMap<String, String>) {
+fn assign_components(facts: &mut BTreeMap<String, TypedFacts>, owners: &BTreeMap<String, String>) {
     for (path, f) in facts {
         f.nodes.retain(|n| n.kind != "component");
         f.edges.retain(|e| !e.src.starts_with("component:"));
@@ -365,7 +375,7 @@ fn assign_components(facts: &mut BTreeMap<String, Facts>, owners: &BTreeMap<Stri
 fn delta_components(
     conn: &Connection,
     modified: &BTreeSet<String>,
-    facts: &BTreeMap<String, Facts>,
+    facts: &BTreeMap<String, TypedFacts>,
     replace_files: &mut BTreeSet<String>,
 ) -> Result<BTreeMap<String, String>> {
     let mut st = conn.prepare("SELECT path,owner FROM owned_nodes WHERE kind='component'")?;
@@ -403,7 +413,7 @@ fn atomic_build(
     output: &Path,
     adapter: &scanner::Adapter,
     entries: &[FileEntry],
-    facts: &BTreeMap<String, Facts>,
+    facts: &BTreeMap<String, TypedFacts>,
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
 ) -> Result<Value> {
     let output = if output.is_absolute() {
@@ -500,9 +510,9 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
     );
     let mut facts: BTreeMap<_, _> = BTreeMap::new();
     for chunk in scan.entries.chunks(batch_size) {
-        let chunk_facts: Vec<(String, Facts)> = chunk
+        let chunk_facts: Vec<(String, TypedFacts)> = chunk
             .par_iter()
-            .map(|file| Ok((file.path.clone(), extract(&root, file, &adapter)?)))
+            .map(|file| Ok((file.path.clone(), extract_typed(&root, file, &adapter)?)))
             .collect::<Result<_>>()?;
         facts.extend(chunk_facts);
     }
@@ -639,7 +649,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let mut changed_resolution = BTreeSet::new();
     for path in &modified {
         if let Some(file) = inventory.get(path.as_str()) {
-            let extracted = extract(&root, file, &adapter)?;
+            let extracted = extract_typed(&root, file, &adapter)?;
             if !previous.contains_key(path.as_str())
                 || resolution_identity_changed(&admitted, path, &extracted)?
                 || (linker::needs_reference_identity(path, &extracted)
@@ -764,7 +774,12 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             inventory
                 .get(path.as_str())
                 .or_else(|| previous.get(path.as_str()))
-                .is_some_and(|file| file.language == "python")
+                .is_some_and(|file| {
+                    matches!(
+                        file.language.as_str(),
+                        "python" | "javascript" | "typescript" | "vue"
+                    )
+                })
         })
         .cloned()
         .collect();
@@ -780,10 +795,12 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         let mut next = BTreeSet::new();
         for owner in owners {
             let owner = owner?;
-            if inventory
-                .get(owner.as_str())
-                .is_some_and(|file| file.language == "python")
-                && visited_imports.insert(owner.clone())
+            if inventory.get(owner.as_str()).is_some_and(|file| {
+                matches!(
+                    file.language.as_str(),
+                    "python" | "javascript" | "typescript" | "vue"
+                )
+            }) && visited_imports.insert(owner.clone())
             {
                 affected.insert(owner.clone());
                 next.insert(owner);
@@ -821,7 +838,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         let mut attempted = BTreeSet::new();
         loop {
             let mut loaded = false;
-            for path in linker::required_full_facts(&facts, &affected, &catalog) {
+            for path in linker::required_full_typed_facts(&facts, &affected, &catalog) {
                 if facts.contains_key(&path) || !attempted.insert(path.clone()) {
                     continue;
                 }
@@ -908,7 +925,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let encoded = serde_json::to_string(&tokens)?;
     let suffix_ids = serde_json::to_string(&suffix_ids)?;
     {
-        let sql="SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line,n.end_line,n.is_test,n.language,n.generated,EXISTS(SELECT 1 FROM shared_owners_raw s JOIN shared_keys k ON k.key_hash=s.key_hash WHERE s.kind_id=2 AND s.key_hash=n.node_hash AND k.key=n.id) FROM nodes n WHERE n.id IN(SELECT id FROM nodes WHERE kind='module' UNION SELECT id FROM nodes WHERE name IN(SELECT value FROM json_each(?1)) UNION SELECT id FROM nodes WHERE qualname IN(SELECT value FROM json_each(?1)) UNION SELECT n2.id FROM shared_owners_raw s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN nodes n2 ON n2.node_hash=s.key_hash AND n2.id=k.key WHERE s.kind_id=2 UNION SELECT value FROM json_each(?2))";
+        let sql="SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line,n.end_line,n.is_test,n.language,n.generated,n.details,EXISTS(SELECT 1 FROM shared_owners_raw s JOIN shared_keys k ON k.key_hash=s.key_hash WHERE s.kind_id=2 AND s.key_hash=n.node_hash AND k.key=n.id) FROM nodes n WHERE n.id IN(SELECT id FROM nodes WHERE kind='module' UNION SELECT id FROM nodes WHERE name IN(SELECT value FROM json_each(?1)) UNION SELECT id FROM nodes WHERE qualname IN(SELECT value FROM json_each(?1)) UNION SELECT n2.id FROM shared_owners_raw s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN nodes n2 ON n2.node_hash=s.key_hash AND n2.id=k.key WHERE s.kind_id=2 UNION SELECT value FROM json_each(?2))";
         let mut st = admitted.prepare(sql)?;
         let nodes = st.query_map(params![encoded, suffix_ids], |r| {
             Ok(Node {
@@ -922,7 +939,13 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                 is_test: r.get(7)?,
                 language: r.get(8)?,
                 generated: r.get(9)?,
-                details: json!({"default_export":r.get::<_,bool>(10)?}),
+                details: serde_json::from_str(&r.get::<_, String>(10)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        10,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
             })
         })?;
         let complete: BTreeSet<_> = facts.keys().cloned().collect();
@@ -933,14 +956,18 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             }
             facts
                 .entry(node.path.clone())
-                .or_insert_with(Facts::default)
-                .nodes
-                .push(node);
+                .or_insert_with(TypedFacts::default)
+                .push_node(node);
         }
     }
     let hydrate_ms = hydrating.elapsed().as_secs_f64() * 1000.;
     let linking = Instant::now();
-    let graph = linker::link_with_registry(&facts, Some(&affected), Some(&root), &dependencies);
+    let graph = linker::link_compact_with_typed_registry(
+        &facts,
+        Some(&affected),
+        Some(&root),
+        &dependencies,
+    );
     let link_ms = linking.elapsed().as_secs_f64() * 1000.;
     let persisting = Instant::now();
     drop(admitted);
@@ -973,13 +1000,19 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         let owner_id = path_cache.get_or_insert(&tx, path)?;
         cached(&tx,"INSERT OR IGNORE INTO changed_edge_keys SELECT src_hash,dst_hash,kind FROM edge_occurrences_raw WHERE owner_id=?1",[owner_id])?;
     }
+    let mut changed_edge_batch = MultiValueBatch::<3, BorrowedSqlValue<'_>>::new(
+        &tx,
+        "INSERT OR IGNORE INTO changed_edge_keys VALUES",
+    )?;
     for e in &graph.edges {
-        cached(
-            &tx,
-            "INSERT OR IGNORE INTO changed_edge_keys VALUES(?1,?2,?3)",
-            params![stable_hash64(&e.src), stable_hash64(&e.dst), e.kind],
-        )?;
+        changed_edge_batch.push([
+            BorrowedSqlValue::Integer(stable_hash64(&e.src)),
+            BorrowedSqlValue::Integer(stable_hash64(&e.dst)),
+            BorrowedSqlValue::Text(e.kind.as_str()),
+        ])?;
     }
+    changed_edge_batch.flush()?;
+    drop(changed_edge_batch);
     let mut commitment_owners = affected.clone();
     commitment_owners.extend(
         tx.prepare_cached("SELECT DISTINCT p.path FROM edges_raw e JOIN path_dictionary p ON p.path_id=e.path_id WHERE (e.src_hash,e.dst_hash,e.kind)IN(SELECT src_hash,dst_hash,kind FROM changed_edge_keys)")?
@@ -1120,16 +1153,20 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     )
 }
 
-fn resolution_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> Result<bool> {
-    let identity = |node: &Node| -> Result<String> {
+fn resolution_identity_changed(conn: &Connection, path: &str, facts: &TypedFacts) -> Result<bool> {
+    fn identity<'a>(
+        node: &'a Node,
+        contracts: &crate::engine::linker::contracts::Contracts<'a>,
+    ) -> Result<String> {
         let mut value = serde_json::to_value(node)?;
         let object = value
             .as_object_mut()
             .context("node identity must be an object")?;
         object.remove("line");
         object.remove("end_line");
+        object.insert("details".into(), contracts.details(node));
         Ok(serde_json::to_string(&value)?)
-    };
+    }
     let mut statement = conn.prepare_cached(
         "SELECT public_id,kind,name,qualname,path,line,end_line,is_test,language,generated,details_json FROM owned_nodes WHERE owner=?1",
     )?;
@@ -1151,24 +1188,32 @@ fn resolution_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> 
             row.get::<_, String>(10)?,
         ))
     })?;
-    let mut old = BTreeSet::new();
+    let mut old_facts = Facts::default();
     for row in rows {
         let (mut node, details) = row?;
         if node.kind == "component" {
             continue;
         }
         node.details = serde_json::from_str(&details)?;
-        old.insert(identity(&node)?);
+        old_facts.nodes.push(node);
     }
+    let old_facts = TypedFacts::from_public(old_facts);
+    let old_contracts = crate::engine::linker::contracts::Contracts::new_typed(&old_facts);
+    let new_contracts = crate::engine::linker::contracts::Contracts::new_typed(facts);
+    let old = old_facts
+        .nodes
+        .iter()
+        .map(|node| identity(node, &old_contracts))
+        .collect::<Result<BTreeSet<_>>>()?;
     let new = facts
         .nodes
         .iter()
         .filter(|node| node.kind != "component")
-        .map(identity)
+        .map(|node| identity(node, &new_contracts))
         .collect::<Result<BTreeSet<_>>>()?;
     Ok(old != new)
 }
-fn reference_identity_changed(conn: &Connection, path: &str, facts: &Facts) -> Result<bool> {
+fn reference_identity_changed(conn: &Connection, path: &str, facts: &TypedFacts) -> Result<bool> {
     let old: Option<Vec<u8>> = conn
         .query_row(
             "SELECT facts_blob FROM local_facts WHERE path=?1",
@@ -1292,11 +1337,11 @@ impl PathDictionaryCache {
 }
 
 pub struct SharedKeyCache<'conn> {
-    cache: hashbrown::HashMap<String, i64>,
-    hash_to_key: hashbrown::HashMap<i64, String>,
+    cache: hashbrown::HashMap<Arc<str>, i64>,
+    hash_to_key: hashbrown::HashMap<i64, Arc<str>>,
     stmt_insert: rusqlite::Statement<'conn>,
     stmt_select: Option<rusqlite::Statement<'conn>>,
-    pending: Option<MultiValueBatch<'conn, 2>>,
+    pending: Option<MultiValueBatch<'conn, 2, BorrowedSqlValue<'static>>>,
 }
 
 impl<'conn> SharedKeyCache<'conn> {
@@ -1338,7 +1383,7 @@ impl<'conn> SharedKeyCache<'conn> {
         }
         let hash = stable_hash64(key);
         if let Some(existing) = self.hash_to_key.get(&hash) {
-            if existing != key {
+            if existing.as_ref() != key {
                 bail!("shared key hash collision detected");
             }
         } else {
@@ -1349,19 +1394,31 @@ impl<'conn> SharedKeyCache<'conn> {
                     if existing != key {
                         bail!("shared key hash collision detected");
                     }
-                    self.hash_to_key.insert(hash, existing);
-                    self.cache.insert(key.to_owned(), hash);
+                    let shared_key: Arc<str> = Arc::from(existing);
+                    self.hash_to_key.insert(hash, Arc::clone(&shared_key));
+                    self.cache.insert(shared_key, hash);
                     return Ok(hash);
                 }
             }
+            let shared_key: Arc<str> = Arc::from(key);
             if let Some(batch) = self.pending.as_mut() {
-                batch.push([SqlValue::Integer(hash), SqlValue::Text(key.to_owned())])?;
+                batch.push([
+                    BorrowedSqlValue::Integer(hash),
+                    BorrowedSqlValue::SharedText(Arc::clone(&shared_key)),
+                ])?;
             } else {
                 self.stmt_insert.execute(params![hash, key])?;
             }
-            self.hash_to_key.insert(hash, key.to_owned());
+            self.cache.insert(Arc::clone(&shared_key), hash);
+            self.hash_to_key.insert(hash, shared_key);
+            return Ok(hash);
         }
-        self.cache.insert(key.to_owned(), hash);
+        let shared_key = Arc::clone(
+            self.hash_to_key
+                .get(&hash)
+                .expect("shared key is present after lookup or insertion"),
+        );
+        self.cache.insert(shared_key, hash);
         Ok(hash)
     }
 }
@@ -1450,12 +1507,12 @@ impl<'conn> CoverageEvidenceCache<'conn> {
     }
 }
 
-fn encode_facts(facts: &Facts) -> Result<Vec<u8>> {
+fn encode_facts(facts: &TypedFacts) -> Result<Vec<u8>> {
     let json = serde_json::to_vec(facts)?;
     Ok(zstd::stream::encode_all(json.as_slice(), 1)?)
 }
 
-fn decode_facts(blob: &[u8]) -> Result<Facts> {
+fn decode_facts(blob: &[u8]) -> Result<TypedFacts> {
     let json = zstd::stream::decode_all(blob)?;
     Ok(serde_json::from_slice(&json)?)
 }
@@ -1472,8 +1529,13 @@ fn multi_value_batch_rows<const COLUMNS: usize>(conn: &Connection) -> Result<usi
 
 enum BorrowedSqlValue<'a> {
     Integer(i64),
+    Real(f64),
     Text(&'a str),
     OwnedText(String),
+    OwnedJsonText(Vec<u8>),
+    SharedText(Arc<str>),
+    Blob(&'a [u8]),
+    OwnedBlob(Vec<u8>),
     Null,
 }
 
@@ -1482,8 +1544,13 @@ impl ToSql for BorrowedSqlValue<'_> {
         use rusqlite::types::{ToSqlOutput, ValueRef};
         Ok(ToSqlOutput::Borrowed(match self {
             Self::Integer(value) => ValueRef::Integer(*value),
+            Self::Real(value) => ValueRef::Real(*value),
             Self::Text(value) => ValueRef::Text(value.as_bytes()),
             Self::OwnedText(value) => ValueRef::Text(value.as_bytes()),
+            Self::OwnedJsonText(value) => ValueRef::Text(value),
+            Self::SharedText(value) => ValueRef::Text(value.as_bytes()),
+            Self::Blob(value) => ValueRef::Blob(value),
+            Self::OwnedBlob(value) => ValueRef::Blob(value),
             Self::Null => ValueRef::Null,
         }))
     }
@@ -1534,7 +1601,7 @@ fn persist_files(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
     entries: &[FileEntry],
-    facts: &BTreeMap<String, Facts>,
+    facts: &BTreeMap<String, TypedFacts>,
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
     bulk_search: bool,
 ) -> Result<(i64, usize)> {
@@ -1543,12 +1610,15 @@ fn persist_files(
     })?;
     let mut docs_count = 0;
 
-    let mut stmt_source_inv =
-        tx.prepare("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
+    let mut stmt_source_inv = (!bulk_search)
+        .then(|| tx.prepare("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)"))
+        .transpose()?;
     let mut stmt_files = (!bulk_search)
         .then(|| tx.prepare("INSERT INTO files VALUES(?1,'indexed',?2,?3,?4,?5,0,?6)"))
         .transpose()?;
-    let mut stmt_local_facts = tx.prepare("INSERT INTO local_facts VALUES(?1,?2,?3,?4,0,?5)")?;
+    let mut stmt_local_facts = (!bulk_search)
+        .then(|| tx.prepare("INSERT INTO local_facts VALUES(?1,?2,?3,?4,0,?5)"))
+        .transpose()?;
     let mut stmt_nodes = (!bulk_search)
         .then(|| tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"))
         .transpose()?;
@@ -1568,8 +1638,9 @@ fn persist_files(
     } else {
         SharedKeyCache::new(tx, true)?
     };
-    let mut stmt_doc_sec =
-        tx.prepare("INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")?;
+    let mut stmt_doc_sec = (!bulk_search)
+        .then(|| tx.prepare("INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"))
+        .transpose()?;
     let mut stmt_doc_search = (!bulk_search)
         .then(|| {
             tx.prepare(
@@ -1579,9 +1650,30 @@ fn persist_files(
         .transpose()?;
     let mut stmt_errors = tx.prepare("INSERT INTO errors VALUES(?1,?2,?3)")?;
 
+    let mut source_inventory_batch = bulk_search
+        .then(|| {
+            MultiValueBatch::<4, BorrowedSqlValue<'_>>::new(
+                tx,
+                "INSERT INTO source_inventory VALUES",
+            )
+        })
+        .transpose()?;
+    let mut local_facts_batch = bulk_search
+        .then(|| {
+            MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO local_facts VALUES")
+        })
+        .transpose()?;
+    let mut doc_sections_batch = bulk_search
+        .then(|| {
+            MultiValueBatch::<10, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO doc_sections VALUES")
+        })
+        .transpose()?;
     let mut file_batch = Vec::<[SqlValue; 8]>::new();
     let mut node_batch = Vec::<[BorrowedSqlValue<'_>; 13]>::new();
+    let mut reusable_detail_buffers = Vec::<Vec<u8>>::new();
     let mut owned_search_batch = Vec::<[SqlValue; 2]>::new();
+    let mut reusable_search_buffers = Vec::<String>::new();
+    let mut incremental_search_buffer = String::new();
     let (file_batch_rows, node_batch_rows, owned_search_batch_rows) = if bulk_search {
         (
             Some(multi_value_batch_rows::<8>(tx)?),
@@ -1595,7 +1687,19 @@ fn persist_files(
     for file in entries {
         let f = facts.get(&file.path).context("missing extracted facts")?;
         let owner_id = path_cache.get_or_insert(tx, &file.path)?;
-        stmt_source_inv.execute(params![file.path, file.digest, file.bytes])?;
+        if let Some(batch) = source_inventory_batch.as_mut() {
+            batch.push([
+                BorrowedSqlValue::Text(&file.path),
+                BorrowedSqlValue::Text("indexed"),
+                BorrowedSqlValue::Text(&file.digest),
+                BorrowedSqlValue::Integer(i64::try_from(file.bytes)?),
+            ])?;
+        } else {
+            stmt_source_inv
+                .as_mut()
+                .context("missing incremental source inventory insert")?
+                .execute(params![file.path, file.digest, file.bytes])?;
+        }
         if bulk_search {
             file_batch.push([
                 SqlValue::Text(file.path.clone()),
@@ -1624,21 +1728,41 @@ fn persist_files(
                     stable_hash64(&file.path)
                 ])?;
         }
-        let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)) {
-            Some(blob) => std::borrow::Cow::Borrowed(blob.as_slice()),
-            None => std::borrow::Cow::Owned(encode_facts(f)?),
-        };
-        stmt_local_facts.execute(params![
-            file.path,
-            file.digest,
-            file.language,
-            is_test(&file.path),
-            facts_blob.as_ref()
-        ])?;
+        if let Some(batch) = local_facts_batch.as_mut() {
+            let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)) {
+                Some(blob) => BorrowedSqlValue::Blob(blob),
+                None => BorrowedSqlValue::OwnedBlob(encode_facts(f)?),
+            };
+            batch.push([
+                BorrowedSqlValue::Text(&file.path),
+                BorrowedSqlValue::Text(&file.digest),
+                BorrowedSqlValue::Text(&file.language),
+                BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
+                BorrowedSqlValue::Integer(0),
+                facts_blob,
+            ])?;
+        } else {
+            let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)) {
+                Some(blob) => std::borrow::Cow::Borrowed(blob.as_slice()),
+                None => std::borrow::Cow::Owned(encode_facts(f)?),
+            };
+            stmt_local_facts
+                .as_mut()
+                .context("missing incremental local facts insert")?
+                .execute(params![
+                    file.path,
+                    file.digest,
+                    file.language,
+                    is_test(&file.path),
+                    facts_blob.as_ref()
+                ])?;
+        }
         for n in &f.nodes {
             node_id += 1;
-            let details = n.details.to_string();
             if bulk_search {
+                let mut details = reusable_detail_buffers.pop().unwrap_or_default();
+                details.clear();
+                serde_json::to_writer(&mut details, &f.flows.details(n))?;
                 node_batch.push([
                     BorrowedSqlValue::Integer(node_id),
                     BorrowedSqlValue::Text(&n.id),
@@ -1651,14 +1775,14 @@ fn persist_files(
                     BorrowedSqlValue::Integer(i64::from(n.is_test)),
                     BorrowedSqlValue::Text(&n.language),
                     BorrowedSqlValue::Integer(i64::from(n.generated)),
-                    BorrowedSqlValue::OwnedText(details),
+                    BorrowedSqlValue::OwnedJsonText(details),
                     BorrowedSqlValue::Integer(stable_hash64(&n.id)),
                 ]);
                 if node_batch.len() == node_batch_rows.context("missing cold node batch size")? {
-                    insert_multi_value_batch(tx, "INSERT INTO nodes VALUES", &node_batch)?;
-                    node_batch.clear();
+                    flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
                 }
             } else {
+                let details = serde_json::to_string(&f.flows.details(n))?;
                 stmt_nodes
                     .as_mut()
                     .context("missing incremental node insert")?
@@ -1681,38 +1805,29 @@ fn persist_files(
             if n.path != file.path {
                 stmt_owner_override.execute(params![n.id, file.path])?;
             }
-            let doc = n.details.get("doc").and_then(|d| d.as_str()).unwrap_or("");
-            let mut search = if doc.is_empty() {
-                format!("{} {} {}", n.name, n.qualname, n.path)
-            } else {
-                format!("{} {} {} {}", n.name, n.qualname, n.path, doc)
-            };
-            if n.kind == "module" {
-                for reference in &f.references {
-                    search.push(' ');
-                    search.push_str(&reference.expression);
-                }
-            }
             if bulk_search {
+                let mut search = reusable_search_buffers.pop().unwrap_or_default();
+                write_node_search_text(&mut search, n, f);
                 owned_search_batch.push([SqlValue::Integer(node_id), SqlValue::Text(search)]);
                 if owned_search_batch.len()
                     == owned_search_batch_rows.context("missing cold search batch size")?
                 {
-                    insert_multi_value_batch(
+                    flush_owned_search_batch(
                         tx,
-                        "INSERT INTO owned_search_raw VALUES",
-                        &owned_search_batch,
+                        &mut owned_search_batch,
+                        &mut reusable_search_buffers,
                     )?;
-                    owned_search_batch.clear();
                 }
             } else {
+                write_node_search_text(&mut incremental_search_buffer, n, f);
                 stmt_owned_search
                     .as_mut()
                     .context("missing incremental search insert")?
-                    .execute(params![node_id, search])?;
+                    .execute(params![node_id, &incremental_search_buffer])?;
                 if let Some(stmt_node_search) = stmt_node_search.as_mut() {
-                    stmt_node_search.execute(params![node_id, search])?;
+                    stmt_node_search.execute(params![node_id, &incremental_search_buffer])?;
                 }
+                incremental_search_buffer.clear();
             }
             let key_hash = shared_key_cache.get_or_insert(&n.qualname)?;
             shared_owner_batch.push([
@@ -1744,18 +1859,36 @@ fn persist_files(
         }
         for d in &f.docs {
             docs_count += 1;
-            stmt_doc_sec.execute(params![
-                d.doc_id,
-                d.path,
-                d.section_title,
-                d.doc_type,
-                d.content,
-                serde_json::to_string(&d.invariants)?,
-                serde_json::to_string(&d.referenced_symbols)?,
-                d.mtime,
-                d.size,
-                d.is_invariant
-            ])?;
+            if let Some(batch) = doc_sections_batch.as_mut() {
+                batch.push([
+                    BorrowedSqlValue::Text(&d.doc_id),
+                    BorrowedSqlValue::Text(&d.path),
+                    BorrowedSqlValue::Text(&d.section_title),
+                    BorrowedSqlValue::Text(&d.doc_type),
+                    BorrowedSqlValue::Text(&d.content),
+                    BorrowedSqlValue::OwnedText(serde_json::to_string(&d.invariants)?),
+                    BorrowedSqlValue::OwnedText(serde_json::to_string(&d.referenced_symbols)?),
+                    BorrowedSqlValue::Real(d.mtime),
+                    BorrowedSqlValue::Integer(i64::try_from(d.size)?),
+                    BorrowedSqlValue::Integer(i64::from(d.is_invariant)),
+                ])?;
+            } else {
+                stmt_doc_sec
+                    .as_mut()
+                    .context("missing incremental document section insert")?
+                    .execute(params![
+                        d.doc_id,
+                        d.path,
+                        d.section_title,
+                        d.doc_type,
+                        d.content,
+                        serde_json::to_string(&d.invariants)?,
+                        serde_json::to_string(&d.referenced_symbols)?,
+                        d.mtime,
+                        d.size,
+                        d.is_invariant
+                    ])?;
+            }
         }
         if !f.docs.is_empty() {
             if let Some(stmt) = stmt_doc_search.as_mut() {
@@ -1768,16 +1901,75 @@ fn persist_files(
     }
 
     insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
-    insert_multi_value_batch(tx, "INSERT INTO nodes VALUES", &node_batch)?;
-    insert_multi_value_batch(
-        tx,
-        "INSERT INTO owned_search_raw VALUES",
-        &owned_search_batch,
-    )?;
+    flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
+    flush_owned_search_batch(tx, &mut owned_search_batch, &mut reusable_search_buffers)?;
+    if let Some(batch) = source_inventory_batch.as_mut() {
+        batch.flush()?;
+    }
+    if let Some(batch) = local_facts_batch.as_mut() {
+        batch.flush()?;
+    }
+    if let Some(batch) = doc_sections_batch.as_mut() {
+        batch.flush()?;
+    }
 
     shared_key_cache.flush()?;
     shared_owner_batch.flush()?;
     Ok((node_id, docs_count))
+}
+
+fn flush_node_batch(
+    tx: &Connection,
+    batch: &mut Vec<[BorrowedSqlValue<'_>; 13]>,
+    reusable_buffers: &mut Vec<Vec<u8>>,
+) -> Result<()> {
+    insert_multi_value_batch(tx, "INSERT INTO nodes VALUES", batch)?;
+    for row in batch.drain(..) {
+        for value in row {
+            if let BorrowedSqlValue::OwnedJsonText(buffer) = value {
+                reusable_buffers.push(buffer);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_node_search_text(search: &mut String, node: &Node, facts: &Facts) {
+    search.clear();
+    let doc = node
+        .details
+        .get("doc")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if doc.is_empty() {
+        let _ = write!(search, "{} {} {}", node.name, node.qualname, node.path);
+    } else {
+        let _ = write!(
+            search,
+            "{} {} {} {}",
+            node.name, node.qualname, node.path, doc
+        );
+    }
+    if node.kind == "module" {
+        for reference in &facts.references {
+            search.push(' ');
+            search.push_str(&reference.expression);
+        }
+    }
+}
+
+fn flush_owned_search_batch(
+    tx: &Connection,
+    batch: &mut Vec<[SqlValue; 2]>,
+    reusable_buffers: &mut Vec<String>,
+) -> Result<()> {
+    insert_multi_value_batch(tx, "INSERT INTO owned_search_raw VALUES", batch)?;
+    for [_, value] in batch.drain(..) {
+        if let SqlValue::Text(buffer) = value {
+            reusable_buffers.push(buffer);
+        }
+    }
+    Ok(())
 }
 
 fn multi_value_insert_sql<const COLUMNS: usize>(prefix: &str, rows: usize) -> String {
@@ -1879,7 +2071,7 @@ struct GraphPersistenceTimings {
 fn persist_graph(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
-    graph: &Graph,
+    graph: &CompactGraph,
     node_paths: &mut hashbrown::HashMap<String, Option<CachedNodePath>>,
     materialize_edges: bool,
 ) -> Result<GraphPersistenceTimings> {
@@ -1908,10 +2100,20 @@ fn persist_graph(
     for e in &graph.edges {
         let ordinal = ordinals.entry(&e.path).or_default();
         let owner_id = path_cache.get_or_insert(tx, &e.path)?;
-        let (src_hash, src_target) =
-            graph_endpoint_hashes(node_paths, &mut stmt_select_path, &e.src, &e.path, &e.kind)?;
-        let (dst_hash, dst_target) =
-            graph_endpoint_hashes(node_paths, &mut stmt_select_path, &e.dst, &e.path, &e.kind)?;
+        let (src_hash, src_target) = graph_endpoint_hashes(
+            node_paths,
+            &mut stmt_select_path,
+            &e.src,
+            &e.path,
+            e.kind.as_str(),
+        )?;
+        let (dst_hash, dst_target) = graph_endpoint_hashes(
+            node_paths,
+            &mut stmt_select_path,
+            &e.dst,
+            &e.path,
+            e.kind.as_str(),
+        )?;
         occurrence_batch.push([
             BorrowedSqlValue::Integer(owner_id),
             BorrowedSqlValue::Integer(i64::try_from(*ordinal)?),
@@ -2065,17 +2267,70 @@ fn persist_graph(
     })
 }
 
+struct CommitmentJsonWriter(sha2::Sha256);
+
+impl std::io::Write for CommitmentJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        sha2::Digest::update(&mut self.0, bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn hash_commitment_json<T: serde::Serialize + ?Sized>(value: &T) -> Result<String> {
+    use sha2::Digest;
+    let mut writer = CommitmentJsonWriter(sha2::Sha256::new());
+    serde_json::to_writer(&mut writer, value)?;
+    Ok(hex::encode(writer.0.finalize()))
+}
+
+struct CommitmentSearch<'a>(&'a TypedFacts);
+
+impl serde::Serialize for CommitmentSearch<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        struct Entry<'a>(&'a Node, &'a crate::core::typed_facts::FlowStore);
+        impl serde::Serialize for Entry<'_> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                let node = self.0;
+                serializer.collect_str(&format_args!(
+                    "{} {} {} {}",
+                    node.name,
+                    node.qualname,
+                    node.path,
+                    self.1.details(node)
+                ))
+            }
+        }
+        let mut sequence = serializer.serialize_seq(Some(self.0.nodes.len()))?;
+        for node in &self.0.nodes {
+            sequence.serialize_element(&Entry(node, &self.0.flows))?;
+        }
+        sequence.end()
+    }
+}
+
 fn persist_file_commitments(
     tx: &Connection,
     entries: &[FileEntry],
-    facts: &BTreeMap<String, Facts>,
-    graph: &Graph,
+    facts: &BTreeMap<String, TypedFacts>,
+    graph: &CompactGraph,
 ) -> Result<()> {
-    let mut owned_edges: hashbrown::HashMap<&str, Vec<&Edge>> = hashbrown::HashMap::new();
+    let mut owned_edges: hashbrown::HashMap<&str, Vec<&CompactEdge>> = hashbrown::HashMap::new();
     for e in &graph.edges {
         owned_edges.entry(&e.path).or_default().push(e);
     }
-    let mut owned_coverage: hashbrown::HashMap<&str, Vec<&Coverage>> = hashbrown::HashMap::new();
+    let mut owned_coverage: hashbrown::HashMap<&str, Vec<&CompactCoverage>> =
+        hashbrown::HashMap::new();
     for c in &graph.coverage {
         owned_coverage.entry(&c.path).or_default().push(c);
     }
@@ -2083,23 +2338,22 @@ fn persist_file_commitments(
         .par_iter()
         .map(|file| {
             let f = &facts[&file.path];
-            let h = |v: &Value| commitments::hash(v.to_string().as_bytes());
-            let inventory = h(&json!([file.path, file.digest, file.bytes]));
-            let facts_hash = commitments::hash(&serde_json::to_vec(f)?);
-            let nodes = h(&json!(f.nodes));
-            let edges = h(&json!(owned_edges
-                .get(file.path.as_str())
-                .cloned()
-                .unwrap_or_default()));
-            let search = h(&json!(f
-                .nodes
-                .iter()
-                .map(|n| format!("{} {} {} {}", n.name, n.qualname, n.path, n.details))
-                .collect::<Vec<_>>()));
-            let deps = h(&json!(owned_coverage
-                .get(file.path.as_str())
-                .cloned()
-                .unwrap_or_default()));
+            let inventory = hash_commitment_json(&(&file.path, &file.digest, file.bytes))?;
+            let facts_hash = hash_commitment_json(f)?;
+            let nodes = hash_commitment_json(&f.nodes_view())?;
+            let edges = hash_commitment_json(
+                owned_edges
+                    .get(file.path.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            )?;
+            let search = hash_commitment_json(&CommitmentSearch(f))?;
+            let deps = hash_commitment_json(
+                owned_coverage
+                    .get(file.path.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            )?;
             Ok([
                 file.path.clone(),
                 file.digest.clone(),
@@ -2122,8 +2376,16 @@ fn persist_file_commitments(
     Ok(())
 }
 
-fn reference_keys(facts: &Facts) -> BTreeSet<&str> {
+fn reference_keys<'a>(facts: &'a TypedFacts) -> BTreeSet<&'a str> {
     let mut keys = BTreeSet::new();
+    let mut insert = |expression: &'a str| {
+        keys.insert(expression);
+        for token in expression.split(['.', ':', '/']) {
+            if !token.is_empty() && token.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                keys.insert(token);
+            }
+        }
+    };
     for expression in facts
         .references
         .iter()
@@ -2143,10 +2405,40 @@ fn reference_keys(facts: &Facts) -> BTreeSet<&str> {
                 .flat_map(|d| d.referenced_symbols.iter().map(String::as_str)),
         )
     {
-        keys.insert(expression);
-        for token in expression.split(['.', ':', '/']) {
-            if !token.is_empty() && token.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                keys.insert(token);
+        insert(expression);
+    }
+    for reference in &facts.references {
+        if let Some(
+            ReceiverHint::CallResult { callee, .. }
+            | ReceiverHint::ConstructorResult { callee, .. },
+        ) = &reference.receiver_hint
+        {
+            insert(callee);
+        }
+    }
+    for node in &facts.nodes {
+        if let Some(flow) = facts.flows.get(node) {
+            flow.reference_keys(&mut insert);
+        } else if let Some(raw) = facts.flows.raw(node) {
+            crate::core::semantic::ValueFlowFacts::reference_keys_from_value(raw, &mut insert);
+        } else {
+            crate::core::semantic::ValueFlowFacts::reference_keys_from_details(
+                &node.details,
+                &mut insert,
+            );
+        }
+        if let Some(exports) = node.details.get("exports").and_then(Value::as_array) {
+            for export in exports {
+                for key in ["local", "module"] {
+                    if let Some(name) = export.get(key).and_then(Value::as_str) {
+                        insert(name);
+                    }
+                }
+            }
+        }
+        if let Some(types) = node.details.get("param_types").and_then(Value::as_object) {
+            for ty in types.values().filter_map(Value::as_str) {
+                insert(ty);
             }
         }
     }
@@ -2237,8 +2529,10 @@ mod multi_value_batch_tests {
     };
     use crate::{
         core::{
-            models::{Coverage, Edge, Facts, Graph, Node, Reference},
+            models::compact_graph::{Coverage, Edge, Graph},
+            models::{Facts, Node, Reference},
             schema::SCHEMA_DDL,
+            typed_facts::TypedFacts,
         },
         engine::scanner::FileEntry,
     };
@@ -2246,7 +2540,7 @@ mod multi_value_batch_tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
-    fn entries_and_facts(count: usize) -> (Vec<FileEntry>, BTreeMap<String, Facts>) {
+    fn entries_and_facts(count: usize) -> (Vec<FileEntry>, BTreeMap<String, TypedFacts>) {
         let mut entries = Vec::with_capacity(count);
         let mut facts = BTreeMap::new();
         for index in 0..count {
@@ -2262,7 +2556,7 @@ mod multi_value_batch_tests {
             });
             facts.insert(
                 path.clone(),
-                Facts {
+                TypedFacts::from_public(Facts {
                     nodes: vec![Node {
                         id: format!("function:{path}"),
                         kind: "function".into(),
@@ -2277,7 +2571,7 @@ mod multi_value_batch_tests {
                         details: json!({}),
                     }],
                     ..Facts::default()
-                },
+                }),
             );
         }
         (entries, facts)
@@ -2468,17 +2762,60 @@ mod multi_value_batch_tests {
     }
 
     #[test]
+    fn semantic_dependencies_include_dynamic_receivers_without_scanning_dynamic_text() {
+        let (_, mut files) = entries_and_facts(1);
+        let facts = files.values_mut().next().unwrap();
+        facts.nodes[0].details = json!({
+            "value_flow":{"return_type":{"kind":"named","name":"pkg.Worker"}},
+            "exports":[{"local":"factory", "module":"./provider"}],
+            "param_types":{"client":"ParamType"}
+        });
+        facts.flows.ingest(&mut facts.facts.nodes[0]);
+        let source = facts.nodes[0].id.clone();
+        facts.references.push(Reference {
+            source,
+            expression: "untrusted.dynamic.text".into(),
+            kind: "calls".into(),
+            line: 2,
+            column: 0,
+            alias: None,
+            module: None,
+            dynamic: true,
+            receiver_hint: Some(crate::core::models::ReceiverHint::ConstructorResult {
+                callee: "pkg.Factory".into(),
+                member: "run".into(),
+            }),
+        });
+        let keys = super::reference_keys(facts);
+        for key in [
+            "pkg.Worker",
+            "Worker",
+            "pkg.Factory",
+            "Factory",
+            "factory",
+            "./provider",
+            "provider",
+            "ParamType",
+        ] {
+            assert!(keys.contains(key), "{key}");
+        }
+        assert!(!keys.contains("untrusted.dynamic.text"));
+    }
+
+    #[test]
     fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
         let (entries, mut facts) = entries_and_facts(251);
         let mut graph = Graph::default();
         for (index, file) in entries.iter().enumerate() {
             let f = facts.get_mut(&file.path).unwrap();
             f.nodes[0].details = json!({"default_export":true});
+            let source = f.nodes[0].id.clone();
             f.references.push(Reference {
-                source: f.nodes[0].id.clone(),
+                source,
                 expression: "remote.call".into(),
                 kind: "calls".into(),
                 line: 2,
+                column: 0,
                 alias: None,
                 module: None,
                 dynamic: false,

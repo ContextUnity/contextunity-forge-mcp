@@ -33,6 +33,15 @@ The default basename exclusions cover `.git`, `.forge`, `target`, `node_modules`
 
 The index records linked paths under their configured workspace names. Changing source scope or linked-workspace settings causes the MCP server to rebuild or update its owned index on the next database read. CLI readers use the index already on disk, so run `build` or `delta` after source changes when using only the CLI.
 
+## Repository documentation admission
+
+This repository lists current documentation files and directories explicitly in
+doc_roots: governance, navigation, roadmap, ADRs, architecture, reference,
+runbooks, testing, and milestones. The milestone root includes its archive.
+Repository plans and the general historical archive remain outside these roots.
+This uses the scanner's existing literal path admission; inspect scan output
+after changing the adapter to verify the selected corpus.
+
 ## Source-only linked libraries
 
 Set `ignore` inside each linked entry to exclude that library's vendor directories and build outputs. A linked entry does not inherit the target library's `forge-mcp.yaml` settings. Keep the same roots and exclusions in the library's own adapter and its consumers.
@@ -65,4 +74,4 @@ response:
 
 The root `forge-mcp.yaml` and the file selected with CLI `--adapter` are configuration rather than indexed sources. Nested files with that name and linked-workspace adapters remain ordinary YAML sources when admitted by their configured roots. A linked workspace's own adapter does not control the parent index.
 
-See [MCP tools](mcp-tools.md) for continuation arguments and [limits and freshness](../operations/limits-and-freshness.md) for computation budgets.
+See [MCP tools](mcp-tools.md) for continuation arguments and [limits and freshness](../runbooks/limits-and-freshness.md) for computation budgets.

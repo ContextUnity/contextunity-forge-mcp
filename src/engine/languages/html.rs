@@ -1,5 +1,6 @@
 use super::*;
-use crate::core::models::Diagnostic;
+#[path = "html/javascript.rs"]
+mod javascript;
 use serde_json::{json, Map, Value};
 
 const HTMX_ATTRIBUTES: &[&str] = &[
@@ -16,6 +17,17 @@ impl LanguageProfile for Html {
     }
     fn family(&self) -> LanguageFamily {
         LanguageFamily("javascript")
+    }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        by_id("javascript").map_or(&[], |profile| profile.manifest_filenames())
+    }
+    fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
+        by_id("javascript").map_or_else(Vec::new, |profile| {
+            profile.extract_manifest_dependencies(filename, content)
+        })
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        by_id("javascript").is_some_and(|profile| profile.is_stdlib(module))
     }
     fn extensions(&self) -> &'static [&'static str] {
         &["html", "htm"]
@@ -60,7 +72,9 @@ impl LanguageProfile for Html {
             return;
         }
         if !matches!(
-            Path::new(value).extension().and_then(|extension| extension.to_str()),
+            Path::new(value)
+                .extension()
+                .and_then(|extension| extension.to_str()),
             Some("js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts")
         ) {
             return;
@@ -97,6 +111,9 @@ impl LanguageProfile for Html {
             by_id("javascript").and_then(|profile| profile.external_import(module))
         }
     }
+    fn builtin(&self, name: &str) -> bool {
+        by_id("javascript").is_some_and(|profile| profile.builtin(name))
+    }
     fn extract_file(
         &self,
         path: &str,
@@ -104,112 +121,11 @@ impl LanguageProfile for Html {
         module: &str,
         facts: &mut Facts,
     ) -> Result<()> {
-        let (parsed_source, _has_template_tags) = preprocess_template(source, path, facts);
-        let parse_input = parsed_source.as_deref().unwrap_or(source);
-        let is_script_fragment = (path.contains("_script") || path.contains("script"))
-            && !parse_input.contains("<html")
-            && !parse_input.contains("<div")
-            && !parse_input.contains("<body")
-            && !parse_input.contains("<template")
-            && !parse_input.contains("<script");
-        if is_script_fragment {
-            if let Some(javascript) = by_id("javascript") {
-                let mut wrapped = String::with_capacity(parse_input.len() + 8);
-                wrapped.push_str("({\n");
-                wrapped.push_str(parse_input);
-                wrapped.push_str("\n})");
-                if let Ok(mut parser) = javascript.create_parser(path) {
-                    if let Some(tree) = parser.parse(&wrapped, None) {
-                        let owner = format!("module:{path}");
-                        let file = javascript.prepare(tree.root_node(), &wrapped);
-                        let mut nodes = vec![tree.root_node()];
-                        while let Some(node) = nodes.pop() {
-                            javascript.extract_imports(
-                                &SyntaxContext {
-                                    node,
-                                    source: &wrapped,
-                                    owner: &owner,
-                                    offset: 0,
-                                    shadowed_require_scopes: &file.shadowed_require_scopes,
-                                },
-                                facts,
-                            );
-                            let mut cursor = node.walk();
-                            nodes.extend(node.named_children(&mut cursor));
-                        }
-                        return Ok(());
-                    }
-                }
-            }
-        }
-        let tree = self
-            .create_parser(path)?
-            .parse(parse_input, None)
-            .context("HTML parse cancelled")?;
-        let err_count = facts.errors.len();
-        ast::extract_tree(self, tree.root_node(), path, source, module, facts);
-        if _has_template_tags {
-            facts.errors.truncate(err_count);
-        }
-        let javascript = by_id("javascript");
-        let mut parser = javascript
-            .map(|profile| profile.create_parser(path))
-            .transpose()?;
-        let owner = format!("module:{path}");
-        let mut pending = vec![tree.root_node()];
-        while let Some(node) = pending.pop() {
-            if matches!(node.kind(), "start_tag" | "self_closing_tag") {
-                extract_htmx(node, source, path, module, facts);
-            }
-            if node.kind() == "script_element" {
-                if let (Some(javascript), Some(parser)) = (javascript, parser.as_mut()) {
-                    if executable_script(node, source) {
-                        let mut cursor = node.walk();
-                        for body in node
-                            .named_children(&mut cursor)
-                            .filter(|n| n.kind() == "raw_text")
-                        {
-                            let script = text(body, source);
-                            let has_script_templates = script.contains("{%")
-                                || script.contains("{{");
-                            let parsed = parser
-                                .parse(script, None)
-                                .context("embedded JavaScript parse cancelled")?;
-                            let offset = body.start_position().row;
-                            let file = javascript.prepare(parsed.root_node(), script);
-                            let mut script_nodes = vec![parsed.root_node()];
-                            while let Some(script_node) = script_nodes.pop() {
-                                if (script_node.is_error() || script_node.is_missing())
-                                    && !has_script_templates
-                                {
-                                    facts.errors.push(Diagnostic {
-                                        path: path.into(),
-                                        line: offset + script_node.start_position().row + 1,
-                                        message: "syntax error in embedded JavaScript".into(),
-                                    });
-                                }
-                                javascript.extract_imports(
-                                    &SyntaxContext {
-                                        node: script_node,
-                                        source: script,
-                                        owner: &owner,
-                                        offset,
-                                        shadowed_require_scopes: &file.shadowed_require_scopes,
-                                    },
-                                    facts,
-                                );
-                                let mut cursor = script_node.walk();
-                                script_nodes.extend(script_node.named_children(&mut cursor));
-                            }
-                        }
-                    }
-                }
-                continue;
-            }
-            let mut cursor = node.walk();
-            pending.extend(node.named_children(&mut cursor));
-        }
-        Ok(())
+        extract_file_impl(path, source, module, facts, None)
+    }
+
+    fn finish(&self, facts: &mut Facts) {
+        javascript::finish(facts);
     }
 }
 
@@ -237,11 +153,7 @@ fn is_html_entity(slice: &str) -> bool {
     }
 }
 
-fn preprocess_template(
-    source: &str,
-    path: &str,
-    facts: &mut Facts,
-) -> (Option<String>, bool) {
+fn preprocess_template(source: &str, path: &str, facts: &mut Facts) -> (Option<String>, bool) {
     let has_templates = source.contains("{%") || source.contains("{{") || source.contains("{#");
     let has_amp = source.contains('&');
     if !has_templates && !has_amp {
@@ -330,19 +242,25 @@ fn extract_template_target(input: &str) -> Option<&str> {
     }
 }
 
-fn emit_template_reference(
-    path: &str,
-    target: &str,
-    kind: &str,
-    line: usize,
-    facts: &mut Facts,
-) {
+pub(crate) fn framework_template_origin(target: &str) -> Option<&'static str> {
+    matches!(
+        target,
+        "admin/change_form.html"
+            | "admin/base_site.html"
+            | "django/forms/widgets/input.html"
+            | "django/forms/widgets/textarea.html"
+    )
+    .then_some("django")
+}
+
+fn emit_template_reference(path: &str, target: &str, kind: &str, line: usize, facts: &mut Facts) {
     facts.references.push(Reference {
         source: format!("module:{path}"),
         dynamic: false,
         expression: target.to_string(),
         kind: kind.into(),
         line,
+        column: 0,
         alias: None,
         module: Some(target.to_string()),
         receiver_hint: None,
@@ -478,11 +396,16 @@ fn extract_htmx(tag: Syntax<'_>, source: &str, path: &str, module: &str, facts: 
 fn htmx_url_status(value: &str) -> &'static str {
     if value.is_empty() || value.starts_with('#') {
         "current_page"
-    } else if value.starts_with("//") || value.starts_with("http://") || value.starts_with("https://") {
+    } else if value.starts_with("//")
+        || value.starts_with("http://")
+        || value.starts_with("https://")
+    {
         "remote"
     } else if value.contains(':')
         || value.contains('\\')
-        || value.chars().any(|c| c.is_whitespace() || "{}<>$".contains(c))
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || "{}<>$".contains(c))
     {
         "dynamic_or_nonlocal"
     } else {
@@ -552,4 +475,140 @@ fn javascript_type(value: &str) -> bool {
     ]
     .iter()
     .any(|mime| value.eq_ignore_ascii_case(mime))
+}
+
+fn extract_file_impl(
+    path: &str,
+    source: &str,
+    module: &str,
+    facts: &mut Facts,
+    mut flows: Option<&mut crate::core::typed_facts::FlowStore>,
+) -> Result<()> {
+    let (parsed_source, _has_template_tags) = preprocess_template(source, path, facts);
+    let parse_input = parsed_source.as_deref().unwrap_or(source);
+    let is_script_fragment = (path.contains("_script") || path.contains("script"))
+        && !parse_input.contains("<html")
+        && !parse_input.contains("<div")
+        && !parse_input.contains("<body")
+        && !parse_input.contains("<template")
+        && !parse_input.contains("<script");
+    if is_script_fragment {
+        if let Some(javascript) = by_id("javascript") {
+            let mut wrapped = String::with_capacity(parse_input.len() + 8);
+            wrapped.push_str("({\n");
+            wrapped.push_str(parse_input);
+            wrapped.push_str("\n})");
+            if let Ok(mut parser) = javascript.create_parser(path) {
+                if let Some(tree) = parser.parse(&wrapped, None) {
+                    let owner = format!("module:{path}");
+                    let file = javascript.prepare(tree.root_node(), &wrapped);
+                    let mut nodes = vec![tree.root_node()];
+                    while let Some(node) = nodes.pop() {
+                        javascript.extract_imports(
+                            &SyntaxContext {
+                                node,
+                                source: &wrapped,
+                                owner: &owner,
+                                offset: 0,
+                                shadowed_require_scopes: &file.shadowed_require_scopes,
+                            },
+                            facts,
+                        );
+                        let mut cursor = node.walk();
+                        nodes.extend(node.named_children(&mut cursor));
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+    let tree = HTML
+        .create_parser(path)?
+        .parse(parse_input, None)
+        .context("HTML parse cancelled")?;
+    let err_count = facts.errors.len();
+    ast::extract_tree_with_flows(
+        &HTML,
+        tree.root_node(),
+        path,
+        source,
+        module,
+        &format!("module:{path}"),
+        facts,
+        flows.as_deref_mut(),
+    );
+    if _has_template_tags {
+        facts.errors.truncate(err_count);
+    }
+    let javascript_profile = by_id("javascript");
+    let mut parser = javascript_profile
+        .map(|profile| profile.create_parser(path))
+        .transpose()?;
+    let mut global_scope = None;
+    let mut pending = vec![tree.root_node()];
+    while let Some(node) = pending.pop() {
+        if matches!(node.kind(), "start_tag" | "self_closing_tag") {
+            extract_htmx(node, source, path, module, facts);
+            if let (Some(profile), Some(parser)) = (javascript_profile, parser.as_mut()) {
+                javascript::extract_handlers(
+                    node,
+                    profile,
+                    parser,
+                    path,
+                    source,
+                    module,
+                    &mut global_scope,
+                    facts,
+                    flows.as_deref_mut(),
+                )?;
+            }
+        }
+        if node.kind() == "script_element" {
+            if let (Some(profile), Some(parser)) = (javascript_profile, parser.as_mut()) {
+                if executable_script(node, source) {
+                    let mut cursor = node.walk();
+                    for body in node
+                        .named_children(&mut cursor)
+                        .filter(|n| n.kind() == "raw_text")
+                    {
+                        javascript::extract_island(
+                            profile,
+                            parser,
+                            path,
+                            source,
+                            module,
+                            body.start_byte(),
+                            body.end_byte(),
+                            body.start_position(),
+                            javascript::script_kind(node, source),
+                            &mut global_scope,
+                            facts,
+                            flows.as_deref_mut(),
+                        )?;
+                    }
+                }
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.named_children(&mut cursor));
+    }
+    Ok(())
+}
+
+pub(crate) fn extract_typed(
+    path: &str,
+    source: &str,
+    module: &str,
+    typed: &mut crate::core::typed_facts::TypedFacts,
+) -> Result<()> {
+    extract_file_impl(
+        path,
+        source,
+        module,
+        &mut typed.facts,
+        Some(&mut typed.flows),
+    )?;
+    javascript::finish_typed(&mut typed.facts, &mut typed.flows);
+    Ok(())
 }

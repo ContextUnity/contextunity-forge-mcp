@@ -1,10 +1,19 @@
+DEBUG: true
 roots:
   - src
   - tests
   - build.rs
 doc_roots:
   - README.md
-  - docs
+  - docs/AGENTS.md
+  - docs/README.md
+  - docs/roadmap.md
+  - docs/adr
+  - docs/architecture
+  - docs/reference
+  - docs/runbooks
+  - docs/testing
+  - docs/milestones
 ignore:
   - target
   - vendor

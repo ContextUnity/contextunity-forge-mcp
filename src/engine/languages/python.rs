@@ -1,15 +1,23 @@
 use super::*;
 use crate::engine::ast::{relations, routes};
+#[path = "python/computed_receivers.rs"]
+mod computed_receivers;
 #[path = "python/fastmcp.rs"]
 mod fastmcp;
+#[path = "python/lazy_exports.rs"]
+mod lazy_exports;
+#[path = "python/logging_factories.rs"]
+mod logging_factories;
+
+pub(crate) fn logging_factories(root: Syntax<'_>, source: &str, offset: usize) -> serde_json::Value {
+    logging_factories::collect(root, source, offset)
+}
 #[path = "python/linker.rs"]
 pub(crate) mod linker;
 #[path = "python/manifest.rs"]
 mod manifest;
-#[path = "python/computed_receivers.rs"]
-mod computed_receivers;
-#[path = "python/lazy_exports.rs"]
-mod lazy_exports;
+#[path = "python/value_flow.rs"]
+mod value_flow;
 pub fn language() -> tree_sitter::Language {
     tree_sitter_python::language()
 }
@@ -63,7 +71,8 @@ fn module_scope(node: Syntax<'_>) -> bool {
 }
 
 fn typing_name(value: &str) -> &str {
-    value.strip_prefix("typing.")
+    value
+        .strip_prefix("typing.")
         .or_else(|| value.strip_prefix("typing_extensions."))
         .unwrap_or(value)
 }
@@ -75,16 +84,23 @@ fn type_alias(node: Syntax<'_>, source: &str) -> bool {
     if node.kind() == "type_alias_statement" {
         return module_scope(node);
     }
-    if !node.child_by_field_name("left").is_some_and(|left| left.kind() == "identifier") {
+    if !node
+        .child_by_field_name("left")
+        .is_some_and(|left| left.kind() == "identifier")
+    {
         return false;
     }
-    if field(node, source, "type").is_some_and(|annotation| matches!(typing_name(annotation), "TypeAlias" | "TypeAliasType")) {
+    if field(node, source, "type")
+        .is_some_and(|annotation| matches!(typing_name(annotation), "TypeAlias" | "TypeAliasType"))
+    {
         return module_scope(node);
     }
     node.child_by_field_name("right")
         .filter(|right| right.kind() == "call")
         .and_then(|call| field(call, source, "function"))
-        .is_some_and(|callee| matches!(typing_name(callee), "TypeVar" | "NewType" | "TypeAliasType"))
+        .is_some_and(|callee| {
+            matches!(typing_name(callee), "TypeVar" | "NewType" | "TypeAliasType")
+        })
         && module_scope(node)
 }
 
@@ -152,6 +168,20 @@ fn is_python_stub_body(node: Syntax<'_>, source: &str) -> bool {
 pub struct Python;
 pub static PYTHON: Python = Python;
 impl LanguageProfile for Python {
+    fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
+        let mut bindings = ast::scope_bindings(node, source);
+        if node.kind() == "module" {
+            let aliases = value_flow::unique_module_aliases(node, source);
+            bindings.rebindings.retain(|name| !aliases.contains(name));
+        }
+        bindings
+    }
+    fn builtin_member(&self, receiver: &str, member: &str) -> bool {
+        builtin_member(receiver, member)
+    }
+    fn builtin_generic(&self, receiver: &str) -> bool {
+        matches!(receiver, "dict" | "list" | "set" | "tuple")
+    }
     fn id(&self) -> &'static str {
         "python"
     }
@@ -216,7 +246,10 @@ impl LanguageProfile for Python {
         parse_file(self, path, source, module, facts)
     }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
-        FileContext { lazy_exports: lazy_exports::extract(root, source), ..FileContext::default() }
+        FileContext {
+            lazy_exports: lazy_exports::extract(root, source),
+            ..FileContext::default()
+        }
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
@@ -280,7 +313,12 @@ impl LanguageProfile for Python {
         }
     }
     fn manifest_filenames(&self) -> &'static [&'static str] {
-        &["pyproject.toml", "requirements*.txt", "setup.cfg", "Pipfile"]
+        &[
+            "pyproject.toml",
+            "requirements*.txt",
+            "setup.cfg",
+            "Pipfile",
+        ]
     }
     fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
         manifest::dependencies(filename, content)
@@ -440,6 +478,12 @@ impl LanguageProfile for Python {
                 | "Protocol"
         )
     }
+    fn builtin_type(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "str" | "int" | "float" | "bool" | "bytes" | "dict" | "list" | "set" | "tuple"
+        )
+    }
 
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
         if module.starts_with('.') {
@@ -473,6 +517,9 @@ impl LanguageProfile for Python {
     }
     fn receiver(&self, name: &str, owner: &Node) -> bool {
         matches!(name, "self" | "cls") && owner.details["receiver_name"] == name
+    }
+    fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
+        value_flow::extract(node, source)
     }
     fn metadata(
         &self,
@@ -523,15 +570,33 @@ impl LanguageProfile for Python {
         if let Some(parameters) = node.child_by_field_name("parameters") {
             let mut cursor = parameters.walk();
             for parameter in parameters.named_children(&mut cursor) {
-                if !matches!(parameter.kind(), "typed_parameter" | "typed_default_parameter") {
+                if !matches!(
+                    parameter.kind(),
+                    "typed_parameter" | "typed_default_parameter"
+                ) {
                     continue;
                 }
-                let Some(annotation) = field(parameter, source, "type") else { continue; };
-                let Some(name) = parameter.child_by_field_name("name").or_else(|| parameter.named_child(0)) else { continue; };
-                if name.kind() != "identifier" { continue; }
+                let Some(annotation) = field(parameter, source, "type") else {
+                    continue;
+                };
+                let Some(name) = parameter
+                    .child_by_field_name("name")
+                    .or_else(|| parameter.named_child(0))
+                else {
+                    continue;
+                };
+                if name.kind() != "identifier" {
+                    continue;
+                }
                 let annotation = annotation.trim();
-                let annotation = annotation.strip_prefix('\'').and_then(|value| value.strip_suffix('\''))
-                    .or_else(|| annotation.strip_prefix('"').and_then(|value| value.strip_suffix('"')))
+                let annotation = annotation
+                    .strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+                    .or_else(|| {
+                        annotation
+                            .strip_prefix('"')
+                            .and_then(|value| value.strip_suffix('"'))
+                    })
                     .unwrap_or(annotation);
                 param_types.insert(text(name, source).to_owned(), annotation.to_owned());
             }
@@ -625,6 +690,135 @@ impl LanguageProfile for Python {
             pattern.push_str("\n    __FORGE_META_BODY\n");
         }
         partial
+    }
+}
+
+pub(crate) fn builtin_member(receiver: &str, member: &str) -> bool {
+    match receiver {
+        "str" => matches!(
+            member,
+            "capitalize"
+                | "casefold"
+                | "center"
+                | "count"
+                | "encode"
+                | "endswith"
+                | "expandtabs"
+                | "find"
+                | "format"
+                | "format_map"
+                | "index"
+                | "isalnum"
+                | "isalpha"
+                | "isascii"
+                | "isdecimal"
+                | "isdigit"
+                | "isidentifier"
+                | "islower"
+                | "isnumeric"
+                | "isprintable"
+                | "isspace"
+                | "istitle"
+                | "isupper"
+                | "join"
+                | "ljust"
+                | "lower"
+                | "lstrip"
+                | "maketrans"
+                | "partition"
+                | "removeprefix"
+                | "removesuffix"
+                | "replace"
+                | "rfind"
+                | "rindex"
+                | "rjust"
+                | "rpartition"
+                | "rsplit"
+                | "rstrip"
+                | "split"
+                | "splitlines"
+                | "startswith"
+                | "strip"
+                | "swapcase"
+                | "title"
+                | "translate"
+                | "upper"
+                | "zfill"
+        ),
+        "list" => matches!(
+            member,
+            "append"
+                | "clear"
+                | "copy"
+                | "count"
+                | "extend"
+                | "index"
+                | "insert"
+                | "pop"
+                | "remove"
+                | "reverse"
+                | "sort"
+        ),
+        "dict" => matches!(
+            member,
+            "clear"
+                | "copy"
+                | "fromkeys"
+                | "get"
+                | "items"
+                | "keys"
+                | "pop"
+                | "popitem"
+                | "setdefault"
+                | "update"
+                | "values"
+        ),
+        "set" => matches!(
+            member,
+            "add"
+                | "clear"
+                | "copy"
+                | "difference"
+                | "difference_update"
+                | "discard"
+                | "intersection"
+                | "intersection_update"
+                | "isdisjoint"
+                | "issubset"
+                | "issuperset"
+                | "pop"
+                | "remove"
+                | "symmetric_difference"
+                | "symmetric_difference_update"
+                | "union"
+                | "update"
+        ),
+        "frozenset" => matches!(
+            member,
+            "copy"
+                | "difference"
+                | "intersection"
+                | "isdisjoint"
+                | "issubset"
+                | "issuperset"
+                | "symmetric_difference"
+                | "union"
+        ),
+        "tuple" => matches!(member, "count" | "index"),
+        "int" => matches!(
+            member,
+            "as_integer_ratio"
+                | "bit_count"
+                | "bit_length"
+                | "conjugate"
+                | "from_bytes"
+                | "to_bytes"
+        ),
+        "float" => matches!(
+            member,
+            "as_integer_ratio" | "conjugate" | "fromhex" | "hex" | "is_integer"
+        ),
+        _ => false,
     }
 }
 
@@ -847,6 +1041,5 @@ fn is_python_stdlib(pkg: &str) -> bool {
             | "_thread"
     )
 }
-
 
 pub static PROFILES: &[&dyn LanguageProfile] = &[&PYTHON];
