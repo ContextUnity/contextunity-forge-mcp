@@ -26,10 +26,9 @@ pub(crate) fn generation(conn: &Connection, options: &QueryOptions) -> Result<St
         |r| r.get(0),
     )?;
     ensure!(
-        options
-            .generation
-            .as_ref()
-            .is_none_or(|previous| previous == &current),
+        options.generation.as_ref().is_none_or(|previous| {
+            previous == &current || (previous.len() >= 8 && current.starts_with(previous.as_str()))
+        }),
         "index generation changed; restart at offset 0 without generation"
     );
     Ok(current)

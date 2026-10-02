@@ -118,7 +118,11 @@ fn trim_page_tail(value: &mut Value) -> bool {
     let Some(object) = value.as_object_mut() else {
         return false;
     };
-    if object.contains_key("total") && object.contains_key("next_offset") {
+    if object.contains_key("total")
+        && (object.contains_key("next_offset")
+            || object.contains_key("offset")
+            || object.contains_key("has_more"))
+    {
         if let Some(items) = object.get_mut("items").and_then(Value::as_array_mut) {
             if items.len() > 1 {
                 items.pop();
