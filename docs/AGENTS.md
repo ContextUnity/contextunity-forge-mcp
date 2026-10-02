@@ -87,7 +87,7 @@ Obtain explicit approval for commits and publication under the root instructions
 
 When merging a development worktree or branch into `main` after completing feature slices:
 1. **Inspect milestone authority**: Run `contextunity-forge-mcp milestone list` and `contextunity-forge-mcp milestone show <id-or-prefix> --full` to select the governing contract.
-2. **Close completed tasks**: Record each accepted task receipt in its YAML block and submit the task handoff gate. Confirm completion with `contextunity-forge-mcp task list --status all`.
+2. **Close completed tasks**: Submit each task's `deliver/v1` gate and confirm its generated receipt in the milestone YAML block. Confirm completion with `contextunity-forge-mcp task list --status all`.
 3. **Verify milestone delivery**: Run `cargo test --all-targets`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --test commitment_integrity`; record the command and test counts for the milestone receipt.
 4. **Archive the milestone**: Run `contextunity-forge-mcp milestone handoff <id-or-prefix> --verification-command <command> --tests-passed <count> --tests-failed 0`. The CLI validates SQLite completion, writes the handoff receipt, updates task references, and moves the document into `docs/milestones/archive/`.
 5. **Reconcile before pruning**: Commit the milestone and task documentation with the verified implementation, then remove the completed worktree with `git worktree remove`.

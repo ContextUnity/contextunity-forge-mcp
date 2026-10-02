@@ -2,7 +2,7 @@
 id: m-task-blackboard-and-context-retention
 title: Task blackboard, in-store artifacts, and milestone context retention
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-milestone-lifecycle-and-automation:completed
 owners:
@@ -22,6 +22,15 @@ invariants:
 - 'INV-CONFIGURABLE-WORKFLOW-GUIDANCE: Task claim and inspect responses dynamically provide actionable workflow guidance derived from the configured instructions file in forge-mcp.yaml (defaulting to AGENTS.md or docs/reference/acdd.md), enabling custom repositories to plug in their own instructions.'
 - 'INV-PEER-REVIEWED-CONTRACT: A task contract must be verified and approved by an independent reviewer agent on the blackboard before implementation code may be claimed or authored.'
 started_at: 2026-10-02T11:25:41+00:00
+handoff:
+  completed_at: 2026-10-02T14:02:40.292964894+00:00
+  duration: 2h 36m
+  commit: a31e7cecba6420177bc154a0b550e83b73d18011
+  verification:
+    command: cargo test --all-targets
+    status: passed
+    tests_passed: 439
+    tests_failed: 0
 ---
 
 # Task blackboard, in-store artifacts, and milestone context retention
