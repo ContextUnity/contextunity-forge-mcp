@@ -13,5 +13,4 @@ doc_type: guide
 - [Languages](languages.md): compiled profiles and extraction coverage.
 
 Verify interface changes against the owning Rust implementation before updating
-these contracts. The [task lifecycle milestone](../milestones/010-repository-task-lifecycle.md)
-owns target task APIs and their activation requirements.
+these contracts.

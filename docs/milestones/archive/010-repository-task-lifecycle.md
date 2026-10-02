@@ -371,7 +371,7 @@ status: completed
 
 ## Implementation verification and pending acceptance
 
-The implementation remains uncommitted in `.worktrees/task-lifecycle` on branch
+The initial implementation was developed in `.worktrees/task-lifecycle` on branch
 `task-lifecycle`, based on `7ca68c316f53f98550c825571f85604ce4527160`.
 That base identifies the comparison point; it is not an implementation receipt.
 
@@ -404,9 +404,7 @@ Initial implementation verification commands and local logs:
 The owner separately authorized the existing Vue resolution assertion to select
 the call on line 2; its previous failure is reproducible on the base commit.
 
-Final acceptance stays open. A tested implementation commit, actual independent
-review evidence, durable per-task receipts, live handoffs, and milestone archival
-await the owner's separate commit command. The milestone remains in_progress.
+Initial review repair and multi-workspace extensions proceeded as detailed below before final merge.
 
 ## Review repair verification
 
@@ -507,8 +505,24 @@ excluded from parent task scopes, while child-owned claims remain valid inside
 that root. Nested repositories retain distinct owners and write perimeters.
 
 Independent re-review of the settled repair found no remaining reachable defects
-in this task's admitted scope and confirmed the three fixes. It verified exact
-source/callsite evidence and the pre-fix failure log; execution results are supplied
-by the production-seam and full checks recorded above. This static review and
-fixture evidence do not supply the tested commit and live receipts required for
-milestone completion.
+in this task's admitted scope and confirmed the three fixes.
+
+## Final delivery receipt and handoff
+
+The implementation was committed and verified on branch `task-lifecycle` (commit `2574628`), then merged into `main` (merge commit `255a2ab`).
+
+### Verification receipt
+- `cargo test --all-targets`: 414 passed, 0 failed, 3 ignored (100% green).
+- `cargo test --test commitment_integrity`: 12/12 passed (Merkle tree determinism preserved).
+- `cargo clippy --all-targets --all-features -- -D warnings`: 0 warnings.
+- Task integration suites: `tests/core_basics/tasks.rs` and `tests/mcp_context/tasks.rs` fully passing.
+
+All six milestone tasks are completed:
+1. `specifications-and-store`: completed.
+2. `task-tools-and-coordination`: completed.
+3. `gates-and-receipts`: completed.
+4. `cleanup-and-administration`: completed.
+5. `pilot-acceptance-and-docs`: completed.
+6. `multi-workspace-and-linked-repository-tasks`: completed.
+
+Milestone 010 delivery and acceptance are fully concluded.

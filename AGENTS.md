@@ -27,8 +27,7 @@ This repository directly owns its execution queue and task commitments:
   1. Inspect `docs/milestones/0*.md` in ascending lexicographical order by numeric prefix.
   2. Parse the YAML frontmatter: skip milestones marked `status: completed` or `status: deferred`.
   3. The first milestone with `status: active` is the current execution target. If no milestone is marked `active`, the lowest-numbered milestone with `status: planned` is the candidate for activation.
-  4. Once native MCP task lifecycle tools are available, query `task_list` (defaults strictly to `status: "ready"`).
-- **Ephemeral task state**: `.forge/tasks/` (local and gitignored until native MCP task tools are implemented).
+- **Operational task lifecycle**: Tasks are stored in `.forge/tasks.sqlite` (configured via `forge-mcp.yaml`). Query executable tasks using the `task_list` MCP tool or CLI `contextunity-forge-mcp task list` (defaults strictly to `status: "ready"`). Claim, submit, and inspect tasks using native task tools.
 
 ## Development Worktrees
 

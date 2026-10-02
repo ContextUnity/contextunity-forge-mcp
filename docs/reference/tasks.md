@@ -182,6 +182,3 @@ receipts. Cleanup does not run during import/reconciliation. After retention,
 completed task blocks return their durable descriptor without reopening execution.
 Without a reference, migration selects numbered Markdown milestones under
 `docs/milestones/`, including the archive, in filename order.
-
-The [milestone](../milestones/010-repository-task-lifecycle.md) owns final
-acceptance; its final receipt waits for the owner's commit command.
