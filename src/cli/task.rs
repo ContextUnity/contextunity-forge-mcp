@@ -7,8 +7,44 @@ use serde_json::Value;
 use std::path::Path;
 
 #[derive(Debug, Subcommand)]
+/// Operations on task-scoped SQLite blackboard messages.
+pub enum BlackboardCommand {
+    /// Post a message to one task.
+    Post {
+        /// Task receiving the message.
+        task_id: String,
+        #[arg(long)]
+        /// Message category.
+        topic: String,
+        #[arg(long)]
+        /// Message text or serialized JSON.
+        payload: String,
+        #[arg(long)]
+        /// Posting agent identifier.
+        author: Option<String>,
+    },
+    /// Read messages from one task in chronological order.
+    Read {
+        /// Task whose messages are read.
+        task_id: String,
+        #[arg(long)]
+        /// Restrict results to this category.
+        topic: Option<String>,
+        #[arg(long)]
+        /// Maximum number of messages to return.
+        limit: Option<usize>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 /// Enumerates the supported task command values.
 pub enum TaskCommand {
+    /// Exchange task-scoped collaboration messages.
+    Blackboard {
+        #[command(subcommand)]
+        /// Selected blackboard operation.
+        command: BlackboardCommand,
+    },
     /// Represents the list case.
     List {
         #[arg(long)]
@@ -121,6 +157,38 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
         force: false,
     };
     match command {
+        TaskCommand::Blackboard { command } => {
+            return match command {
+                BlackboardCommand::Post {
+                    task_id,
+                    topic,
+                    payload,
+                    author,
+                } => {
+                    let store = tasks::store_for_task(root, &task_id)?;
+                    let author = match author {
+                        Some(author) => author,
+                        None => store
+                            .inspect(&task_id)?
+                            .worker_id
+                            .unwrap_or_else(|| "cli".into()),
+                    };
+                    Ok(serde_json::json!({
+                        "id": store.blackboard_post(&task_id, &author, &topic, &payload)?
+                    }))
+                }
+                BlackboardCommand::Read {
+                    task_id,
+                    topic,
+                    limit,
+                } => {
+                    let store = tasks::store_for_task(root, &task_id)?;
+                    Ok(serde_json::json!({
+                        "messages": store.blackboard_read(&task_id, topic.as_deref(), limit)?
+                    }))
+                }
+            };
+        }
         TaskCommand::List {
             repository,
             milestone,

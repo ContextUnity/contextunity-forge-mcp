@@ -159,10 +159,18 @@ impl TasksStore {
         if author.trim().is_empty() || topic.trim().is_empty() {
             bail!("TASK_BLACKBOARD_INVALID: author and topic are required");
         }
-        self.connection.execute(
-            "INSERT INTO task_blackboard(task_id,author,topic,payload,created_at) VALUES(?1,?2,?3,?4,?5)",
+        let inserted = self.connection.execute(
+            "INSERT INTO task_blackboard(task_id,author,topic,payload,created_at) \
+             SELECT task_id,?2,?3,?4,?5 FROM tasks \
+             WHERE task_id=?1 AND json_extract(descriptor,'$.status')!='completed'",
             params![task_id, author, topic, payload, now()],
         )?;
+        if inserted == 0 {
+            if self.inspect(task_id)?.status == "completed" {
+                bail!("TASK_TERMINAL");
+            }
+            bail!("TASK_BLACKBOARD_INVALID: task cannot accept messages");
+        }
         Ok(u64::try_from(self.connection.last_insert_rowid())?)
     }
     /// Read messages in insertion order with an optional topic and result limit.

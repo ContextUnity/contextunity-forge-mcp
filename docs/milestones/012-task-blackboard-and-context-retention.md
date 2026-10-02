@@ -305,27 +305,80 @@ receipt:
 
 ```yaml
 task_ref: blackboard-tooling-and-agent-routing
-target: "Expose blackboard operations via MCP tools, author reference and runbook documentation, and update Forge skills"
+target: Expose blackboard operations via MCP tools, author reference and runbook documentation, and update Forge skills
 agent_type: worker
 proof_policy: seam-test-first
 contract_revision: 1
 scope:
-  - src/mcp/tools.rs
-  - src/cli/task.rs
-  - README.md
-  - docs/reference/acdd.md
-  - docs/runbooks/acdd.md
-  - docs/reference/tasks.md
-  - docs/reference/mcp-tools.md
-  - docs/reference/cli.md
-  - docs/reference/configuration.md
-  - docs/reference/README.md
-  - docs/README.md
-  - AGENTS.md
-  - .agents/skills/contextunity-forge/SKILL.md
-  - tests/core_basics/tasks.rs
-  - tests/mcp_context/tasks.rs
-status: planned
+- src/mcp/tools.rs
+- src/cli/task.rs
+- src/db/tasks_store.rs
+- src/engine/tasks/workspaces.rs
+- README.md
+- docs/reference/acdd.md
+- docs/runbooks/acdd.md
+- docs/reference/tasks.md
+- docs/reference/mcp-tools.md
+- docs/reference/mcp-setup.md
+- docs/reference/cli.md
+- docs/reference/configuration.md
+- docs/reference/README.md
+- docs/README.md
+- AGENTS.md
+- .agents/skills/contextunity-forge/SKILL.md
+- tests/core_basics/tasks.rs
+- tests/mcp_context/tasks.rs
+status: completed
+receipt:
+  commit: 6efc4c1bfdf73cc33675e213e0797501fac207a7
+  contract_revision: 1
+  passed_at: 2026-10-02T13:51:42.782798928+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test core_basics && cargo test --test mcp_context && cargo clippy --all-targets --all-features -- -D warnings
+      exit_code: 0
+      tests_passed: 61
+      tests_failed: 0
+      log: core_basics 35 passed; mcp_context 26 passed; clippy zero warnings; real MCP stdio and CLI share SQLite blackboard
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Diff matches admitted task5 scope: MCP/CLI/store/guidance, real integration tests, ACDD references, indexes, agent routing.'
+        claims:
+          applicable: true
+          evidence: MCP stdio and CLI post/read share SQLite; completed task rejects late post; typed JSON-only proof and automatic rollup documented.
+        concurrency:
+          applicable: true
+          evidence: Atomic store insert predicate serializes blackboard posts with task delivery; independent code and docs reviewers passed.
+        project_isolation:
+          applicable: true
+          evidence: Store and tools bind task ID to namespace, topic filtering and task-scoped reads; sibling task messages remain isolated.
+        administration:
+          applicable: true
+          evidence: Core 35 and MCP 26 tests pass, clippy zero warnings, docs links and 20-tool catalog verified.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-TASK-BLACKBOARD: Subagents communicate task context and delivery state asynchronously through an in-memory/SQLite task blackboard rather than workspace-littering files or conversational context bloat.'
+    - 'INV-EPHEMERAL-SCRATCHPAD: Scratchpad blackboard messages are strictly task-scoped and pruned upon task completion, preventing context contamination across tasks.'
+    - 'INV-IN-STORE-ARTIFACTS: Task specifications, red test proofs, review contours, and receipts are stored directly inside SQLite tables (task_gates, task_blackboard, task_submissions) rather than arbitrary disk YAML/MD files.'
+    - 'INV-TASK-MILESTONE-ROLLUP: Completing a task automatically rolls up its verified commit SHA, invariant proofs, and durable architectural outcomes into the milestone descriptor and Markdown receipt, preserving vital context while discarding transient scratchpad noise.'
+    - 'INV-TASK-AGENT-METADATA: Tasks declare an optional agent_type metadata field, allowing milestone authors to prescribe the required agent specialization (e.g. worker, reviewer, pro, flash) for execution.'
+    - 'INV-CONFIGURABLE-WORKFLOW-GUIDANCE: Task claim and inspect responses dynamically provide actionable workflow guidance derived from the configured instructions file in forge-mcp.yaml (defaulting to AGENTS.md or docs/reference/acdd.md), enabling custom repositories to plug in their own instructions.'
+    - 'INV-PEER-REVIEWED-CONTRACT: A task contract must be verified and approved by an independent reviewer agent on the blackboard before implementation code may be claimed or authored.'
+    architectural_notes:
+    - MCP and CLI task_blackboard share the task SQLite store; an atomic completed-state predicate prevents late ephemeral posts. ACDD reference and routing docs reflect the generated receipt lifecycle.
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 1. **Dual-Layer Documentation**:

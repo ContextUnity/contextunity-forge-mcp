@@ -5,7 +5,7 @@ title: MCP tool reference
 
 # MCP tool reference
 
-The server exposes 19 tools over standard input and output. Start with `code_map_overview` to identify the indexed workspace. Search for a symbol, inspect its exact identifier, then use graph tools at a narrow scope. Check the reported path and line in source before acting on a structural inference.
+The server exposes 20 tools over standard input and output. Start with `code_map_overview` to identify the indexed workspace. Search for a symbol, inspect its exact identifier, then use graph tools at a narrow scope. Check the reported path and line in source before acting on a structural inference.
 
 ## Tools
 
@@ -28,10 +28,11 @@ The server exposes 19 tools over standard input and output. Start with `code_map
 | `forge_guide` | Return the built-in usage guide. |
 | `task_list` | List ready tasks in the primary repository by default; select repository/all, status, milestone, or stage explicitly. |
 | `task_claim` | Atomically claim the current task gate for a worker and worktree. |
-| `task_submit` | Submit revision-bound proof; synchronously validate the disk receipt at handoff. |
+| `task_submit` | Submit a revision-bound JSON `evidence` object. Passing `deliver/v1` writes the validated task receipt and context rollup. |
 | `task_manage` | Create, sync, inspect, delete, or extend task scope; workspace selects linked specification sync. |
+| `task_blackboard` | Post or read task-scoped SQLite messages. `post` requires `task_id`, `topic`, and `payload`, accepts optional `author`, and returns `{id}`; `read` accepts optional `topic` and `limit`, and returns `{messages}`. |
 
-See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI parity.
+See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI parity, and [ACDD](acdd.md) for the task lifecycle.
 
 ## Selectors and graph queries
 

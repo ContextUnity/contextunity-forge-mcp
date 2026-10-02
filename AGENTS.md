@@ -9,7 +9,7 @@ Read [roadmap](docs/roadmap.md) for strategic context and
 
 - Runtime behavior and setup: [README.md](README.md) and [`docs/`](docs/).
 - Architecture: [indexing](docs/architecture/indexing.md).
-- Reference: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), and [CLI commands](docs/reference/cli.md).
+- Reference: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), [ACDD](docs/reference/acdd.md), and [CLI commands](docs/reference/cli.md).
 - Operations: [runbooks](docs/runbooks/README.md) and [ACDD execution runbook](docs/runbooks/acdd.md).
 - Verification: [testing](docs/testing/README.md).
 - Planning and execution queue: [roadmap](docs/roadmap.md), [milestones](docs/milestones/README.md), and [plans](docs/plans/README.md).
@@ -26,7 +26,7 @@ This repository directly owns its execution queue and task commitments:
 - **Milestone discovery**: Run `contextunity-forge-mcp milestone list` to inspect active and planned milestones and task completion ratios. Run `contextunity-forge-mcp milestone show <id-or-prefix> --full` to read the selected contract and task descriptions.
 - **Milestone creation**: Run `contextunity-forge-mcp milestone init --plan <path>` to scaffold the next numbered contract. Use `--active` to start its active development clock at creation.
 - **Milestone closure**: Run `contextunity-forge-mcp milestone handoff <id-or-prefix> --verification-command <command> --tests-passed <count> --tests-failed 0` after every SQLite task reaches `completed`. The command records a structured receipt and moves the milestone into `docs/milestones/archive/`.
-- **Operational task lifecycle**: Tasks are stored in `.forge/tasks.sqlite` (configured via `forge-mcp.yaml`). Query executable tasks using the `task_list` MCP tool or CLI `contextunity-forge-mcp task list` (defaults strictly to `status: "ready"`). Claim, submit, and inspect tasks using native task tools. Read [docs/reference/tasks.md](docs/reference/tasks.md) for gates, evidence, and administration.
+- **Operational task lifecycle**: Tasks are stored in `.forge/tasks.sqlite` (configured via `forge-mcp.yaml`). Query executable tasks using `task_list` or `task list` (defaults to `ready`). Claim and submit with direct JSON proof, and exchange temporary context with `task_blackboard` or `task blackboard`. Passing `deliver/v1` writes the durable task receipt into the milestone and clears task messages. Read [task operations](docs/reference/tasks.md) for gate and API details.
 
 ## Development Worktrees
 

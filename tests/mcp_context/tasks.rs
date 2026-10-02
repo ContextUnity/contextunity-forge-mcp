@@ -243,7 +243,7 @@ fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
     let mut client = Client::new(&workspace);
     let (_, response) = client.request("tools/list", json!({}));
     let tools = response["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 19);
+    assert_eq!(tools.len(), 20);
     for tool in tools {
         for (name, schema) in tool["inputSchema"]["properties"].as_object().unwrap() {
             assert!(schema.is_object(), "{}.{name}: {schema}", tool["name"]);
@@ -254,8 +254,8 @@ fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
         .filter_map(|t| t["name"].as_str())
         .filter(|n| n.starts_with("task_"))
         .collect();
-    assert_eq!(names.len(), 4);
-    for name in ["task_list", "task_claim", "task_submit", "task_manage"] {
+    assert_eq!(names.len(), 5);
+    for name in ["task_list", "task_claim", "task_submit", "task_manage", "task_blackboard"] {
         assert!(names.contains(&name));
         let schema = &tools.iter().find(|t| t["name"] == name).unwrap()["inputSchema"];
         assert_eq!(schema["additionalProperties"], false);
@@ -346,4 +346,93 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
         let (_, response) = client.call(name, args);
         assert!(response["result"]["isError"] == true || response.get("error").is_some());
     }
+}
+
+#[test]
+fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
+    use contextunity_forge_mcp::db::tasks_store::TasksStore;
+
+    let workspace = Workspace::new();
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: []\ndoc_roots: []\ntasks_db: tasks.sqlite\n",
+    );
+    workspace.write(
+        "010-blackboard.md",
+        "---\nid: m-blackboard\ntitle: Blackboard\ndoc_type: contract\n---\n```yaml\ntask_ref: first\ntarget: Coordinate agents\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
+    );
+    let mut client = Client::new(&workspace);
+    let synced = client.payload(
+        "task_manage",
+        json!({"action":"sync","milestone_ref":"010-blackboard.md"}),
+    );
+    let task_id = synced["tasks"][0]["task_id"].as_str().unwrap();
+
+    let (_, mcp_post) = client.call(
+        "task_blackboard",
+        json!({"action":"post","task_id":task_id,"topic":"contract_draft","payload":"{\"red\":true}"}),
+    );
+    let cli_post = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "blackboard",
+            "post",
+            task_id,
+            "--topic",
+            "build_proof",
+            "--payload",
+            "cargo test --all-targets passed",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        mcp_post.get("error").is_none()
+            && mcp_post["result"]["isError"] != true
+            && cli_post.status.success(),
+        "MCP: {mcp_post}; CLI: {}",
+        String::from_utf8_lossy(&cli_post.stderr)
+    );
+    let mcp_post: Value =
+        serde_json::from_str(mcp_post["result"]["content"][0]["text"].as_str().unwrap())
+            .unwrap();
+    let cli_post: Value = serde_json::from_slice(&cli_post.stdout).unwrap();
+    let mcp_read = client.payload(
+        "task_blackboard",
+        json!({"action":"read","task_id":task_id,"limit":2}),
+    );
+    assert_eq!(mcp_read["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(mcp_read["messages"][0]["id"], mcp_post["id"]);
+    assert_eq!(mcp_read["messages"][1]["id"], cli_post["id"]);
+
+    let cli_read = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "blackboard",
+            "read",
+            task_id,
+            "--topic",
+            "contract_draft",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_read.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_read.stderr)
+    );
+    let cli_read: Value = serde_json::from_slice(&cli_read.stdout).unwrap();
+    assert_eq!(cli_read["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(cli_read["messages"][0]["id"], mcp_post["id"]);
+
+    let store = TasksStore::open(&workspace.0.join("tasks.sqlite")).unwrap();
+    let stored = store.blackboard_read(task_id, None, None).unwrap();
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[0].payload, "{\"red\":true}");
+    assert_eq!(stored[1].payload, "cargo test --all-targets passed");
+    assert_eq!(stored[0].author, "mcp");
+    assert_eq!(stored[1].author, "cli");
 }

@@ -68,8 +68,13 @@ qualified task namespace. See [repository tasks](tasks.md) for identity,
 concurrency, receipts, and administration. Code indexing works without task
 storage configuration.
 
+Set root `agents_guidance` to a path inside the root repository. It defaults to
+`AGENTS.md`. Claim and inspect include that path and stage-specific
+`workflow_guidance`. If the file is missing, they include inline steps, a
+`TASK_GUIDANCE_MISSING` warning, and the [canonical ACDD reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/acdd.md).
+
 Linked entries opt into the primary task store with `tasks.enabled: true`.
-`tasks.milestones_dir` defaults to `docs/milestones`, and `tasks.agents_md`
+`tasks.milestones_dir` defaults to `docs/milestones`, and `tasks.agents_guidance`
 defaults to `AGENTS.md`, both relative to the linked repository root.
 Omitted or disabled task entries are excluded. See [linked repository tasks](tasks.md#linked-repository-tasks)
 for synchronization, namespace selection, and scope confinement.

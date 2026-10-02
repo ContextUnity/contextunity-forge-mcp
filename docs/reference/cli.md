@@ -58,9 +58,27 @@ contextunity-forge-mcp ast grep 'print($VALUE)' --lang python --path src
 ## Repository tasks
 
 Use [repository tasks](tasks.md) for `task list`, `create`, `sync`, `inspect`,
-`claim`, `submit`, `extend-scope`, `delete`, `reset`, `cleanup`, and the
+`claim`, `submit`, `blackboard`, `extend-scope`, `delete`, `reset`, `cleanup`, and the
 `migrate preview/apply/verify` administration commands. These operations use
 `tasks_db` from `forge-mcp.yaml`; global `--db` selects only the code index.
+`task submit --evidence` accepts a JSON object with claim-bound identity and
+typed proof. The [ACDD workflow](acdd.md) completes a task with:
+
+```sh
+contextunity-forge-mcp task claim TASK_ID --stage deliver --worker REVIEWER --worktree PATH
+contextunity-forge-mcp task submit TASK_ID --stage deliver --action pass --evidence '<JSON_OBJECT>'
+```
+
+These commands deliver one task. `milestone handoff` below closes the whole
+milestone. Exchange temporary task context with:
+
+```sh
+contextunity-forge-mcp task blackboard post TASK_ID --topic architectural_notes --payload "Decision and reason" [--author WORKER]
+contextunity-forge-mcp task blackboard read TASK_ID [--topic TOPIC] [--limit N]
+```
+
+Post returns a message ID. Read returns chronological messages. An omitted
+author uses the current claim worker or `cli` if the task is unclaimed.
 
 ## Repository milestones
 
@@ -92,7 +110,7 @@ commit, and language-neutral verification fields. It moves the file into
 `docs/milestones/archive/` and updates SQLite task references. An omitted
 `--commit` uses the current Git `HEAD`. See [repository tasks](tasks.md) for
 task claims, receipts, and activation timing. Milestone commands are CLI-only;
-the MCP task interface contains four flat tools.
+the MCP task interface contains five flat tools.
 
 ## Server, guide, and checkpoints
 

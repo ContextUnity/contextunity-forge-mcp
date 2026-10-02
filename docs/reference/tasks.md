@@ -8,8 +8,8 @@ doc_type: api
 Git milestone frontmatter and fenced YAML task blocks own specifications.
 `src/engine/tasks.rs` serves CLI and MCP through the independent SQLite store
 in `src/db/tasks_store.rs`. Code-index rebuilds preserve operational task state.
-For agent execution runbooks, gate transitions, and the four autonomous roles,
-follow the [ACDD Execution Runbook](../runbooks/acdd.md).
+For the lifecycle rationale, see [ACDD](acdd.md); for the delivery sequence,
+follow the [execution runbook](../runbooks/acdd.md).
 
 ## Configuration and identity
 
@@ -34,6 +34,7 @@ Revision counters survive operational deletion.
 tasks_db: .forge/tasks.sqlite
 task_repository: forge-mcp
 task_project: forge-mcp
+agents_guidance: AGENTS.md
 ```
 
 ## Linked repository tasks
@@ -47,7 +48,7 @@ linked_workspaces:
     tasks:
       enabled: true
       milestones_dir: docs/milestones
-      agents_md: AGENTS.md
+      agents_guidance: AGENTS.md
 ```
 
 Omitted `tasks`, `tasks.enabled: false`, or workspace `enabled: false` excludes
@@ -67,8 +68,12 @@ Synchronize linked specifications explicitly before querying their queue.
 enabled namespaces, or a configured workspace name to select one. Status still
 defaults to `ready`. Existing task IDs route claim, submit, inspect, reset, delete,
 and scope extension to their owning namespace. Inspect and claim include absolute
-`workspace_root`, absolute `agents_guidance`, and the milestone's local invariants.
-Guidance is a file reference; its contents remain repository-owned.
+`workspace_root`, absolute `agents_guidance`, the milestone's local invariants,
+and stage-specific `workflow_guidance`. The latter gives `active_stage`,
+`agent_type`, `subagent_role`, `steps`, and the instruction path. At review and
+delivery it also gives the independence rule and accepted builder identity.
+If the instruction file is missing, the response includes `TASK_GUIDANCE_MISSING`,
+inline steps, and the [canonical ACDD reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/acdd.md).
 
 Scope paths are checked in both their owner's root and the task's claimed isolated
 worktree. Traversal and symlinks into another repository are rejected. Nested
@@ -77,18 +82,19 @@ the child root, and the child can claim work inside its own root. The most speci
 configured root determines ownership. A worktree inside another repository's
 perimeter cannot claim a foreign task.
 
-## Four flat MCP tools
+## Five flat MCP tools
 
 | Tool | Arguments and behavior |
 | --- | --- |
-| `task_list` | Optional `repository`, `milestone_ref`, `status`, and `stage`. Status defaults strictly to `ready`; explicit values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Stage is `build`, `review`, or null. |
+| `task_list` | Optional `repository`, `milestone_ref`, `status`, and `stage`. Status defaults strictly to `ready`; explicit values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Stage is `build`, `review`, `deliver`, or null. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`. Claims the current gate atomically. Collisions return typed `TASK_ALREADY_CLAIMED`. |
-| `task_submit` | Required `task_id`, `stage`, `evidence_ref`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
+| `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, and `force` (default false). Selectors follow the table below. |
+| `task_blackboard` | Required `action` (`post` or `read`) and `task_id`. Post requires `topic` and `payload`, accepts optional `author`, and returns an ID. Read accepts optional `topic` and `limit`, and returns chronological messages. |
 
 Unknown fields are rejected. Ready tasks are unclaimed and nonterminal, with
 satisfied local prerequisites. Missing or amended authority blocks open work.
-Null stage includes design, contract, and handoff.
+Null stage includes design and contract.
 
 | Manage action | Required fields | Other constraints |
 | --- | --- | --- |
@@ -115,42 +121,70 @@ retain an empty `started_at` while they wait in the queue.
 
 ## Gates and evidence
 
-Gates are `design/v1`, `contract/v1`, `build/v1`, `review/v1`, and `handoff/v1`.
+Gates are `design/v1`, `contract/v1`, `build/v1`, `review/v1`, and `deliver/v1`.
+The final task gate performs task delivery; `milestone handoff` is the separate
+command that closes and archives the whole milestone.
 Claim/submit arguments also accept unversioned gate names. Each accepted
 submission releases ownership. Review requires a worker different from the
-accepted builder and the same candidate commit. Review/handoff rejection records
+accepted builder and the same candidate commit. Review/delivery rejection records
 findings and returns the task to build remediation.
 
-`evidence_ref` is a worktree-relative YAML or JSON file:
+`evidence` is a direct JSON object bound to the active claim. For example, a
+passing build submission contains:
 
-```yaml
-task_id: forge-mcp/forge-mcp/m-example:implementation
-stage: build/v1
-claim_revision: 7
-contract_revision: 1
-worker_id: builder
-worktree: /absolute/claimed/worktree
-commit: 0123456789abcdef0123456789abcdef01234567
-proof:
-  command: cargo test --all-targets
-  result: passed
-  artifacts: []
+```json
+{
+  "task_id": "forge-mcp/forge-mcp/m-example:implementation",
+  "stage": "build/v1",
+  "claim_revision": 7,
+  "contract_revision": 1,
+  "worker_id": "builder",
+  "worktree": "/absolute/claimed/worktree",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "proof": {
+    "test_proof": {
+      "command": "cargo test --test core_basics",
+      "exit_code": 0,
+      "tests_passed": 1,
+      "tests_failed": 0
+    }
+  }
+}
 ```
 
-Build proof requires a command, passing result, and artifacts list. Review proof
-requires `decision: pass`, nonempty `evidence_ref`, and exactly five `contours`:
-`paths`, `claims`, `concurrency`, `project_isolation`, and `administration`.
-Each contour records boolean `applicable` and nonempty `evidence`, including the
-rationale when inapplicable. Other gates carry non-null proof. Identical accepted
-retries return the stored result; changed or revoked evidence fails closed.
+Contract proof has the form `{"contract_proof":{"seam_test_ref":"tests/...::test_name","red_exit_code":101}}`.
+Build proof is wrapped in `test_proof`; on pass it requires a nonempty command,
+exit code 0, at least one passing test, and zero failures. An optional `log` is
+limited to 64 KiB. Review proof is wrapped in `review_proof` and requires a
+`decision` matching the action plus exactly five `contours`: `paths`, `claims`,
+`concurrency`, `project_isolation`, and `administration`. Each contour has a
+boolean `applicable` and nonempty `evidence`, including a rationale when
+inapplicable. Other gates carry non-null proof. Identical accepted retries return
+the stored result; changed or revoked evidence fails closed. The validated JSON
+is retained in `task_gates.evidence` without reading an evidence file.
 
-After review, write `status: completed` and `receipt` inside the task YAML block.
-Receipt fields are `commit`, `contract_revision`, RFC3339 `passed_at`, `evidence`
-equal to accepted build proof, `review` equal to accepted review proof, and
-`decision: pass`. Handoff synchronously reads the claimed worktree milestone with
-`std::fs::read_to_string` at the path formed from the active
-`task_claims.worktree` and relative `milestone_ref`. Matching specification and proof are required before
-SQLite completion and its retention clock begin.
+At passing task delivery (`deliver/v1`), Forge validates the current task
+specification and accepted build and review proof, then writes
+`status: completed` and a receipt into the
+milestone task block. The receipt carries the accepted commit, contract revision,
+RFC3339 `passed_at`, build proof, review proof, and decision. Its rollup retains
+verified invariants, review summary, and task blackboard `architectural_notes`.
+The task becomes completed in SQLite and its blackboard messages are cleared.
+The milestone document is the durable context after task delivery. The
+receipt records the reviewed candidate SHA; amend the task commit with it so
+the final history contains one commit for the task. The amended commit has a
+different SHA because a commit cannot contain its own hash.
+
+## Task blackboard
+
+`task_blackboard` stores messages with `id`, `task_id`, `author`, `topic`, `payload`,
+and `created_at` in the task SQLite store. Post requires a topic and payload.
+Read returns messages in chronological order, optionally filtered by topic or
+bounded by `limit`; no limit reads all matching messages. An omitted author is
+the current claim worker, or `mcp`/`cli` when no claim is active. Post rejects a
+read-only `limit`; read rejects `author` and `payload`. The store confines access
+to the task's configured project. Use `architectural_notes` for decisions that
+must survive task delivery; other topics are temporary collaboration context.
 
 ## Milestone CLI lifecycle
 
@@ -186,12 +220,14 @@ the document to `docs/milestones/archive/`, and updates the stored
 ## CLI and administration
 
 ```sh
-contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage build|review]
+contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage build|review|deliver]
 contextunity-forge-mcp task create MILESTONE_REF TASK_REF [--workspace NAME]
 contextunity-forge-mcp task sync [MILESTONE_REF] [--workspace NAME]
 contextunity-forge-mcp task inspect TASK_ID
 contextunity-forge-mcp task claim TASK_ID --stage STAGE --worker WORKER --worktree PATH
-contextunity-forge-mcp task submit TASK_ID --stage STAGE --action pass|reject --evidence REF [--findings JSON]
+contextunity-forge-mcp task submit TASK_ID --stage STAGE --action pass|reject --evidence '<JSON_OBJECT>' [--findings JSON]
+contextunity-forge-mcp task blackboard post TASK_ID --topic architectural_notes --payload "Decision and reason" [--author WORKER]
+contextunity-forge-mcp task blackboard read TASK_ID [--topic TOPIC] [--limit N]
 contextunity-forge-mcp task extend-scope TASK_ID PATH...
 contextunity-forge-mcp task delete TASK_ID [--force]
 contextunity-forge-mcp task delete --milestone REF [--workspace NAME] [--force]

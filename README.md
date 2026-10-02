@@ -5,13 +5,14 @@ doc_type: guide
 
 # ContextUnity Forge MCP
 
-ContextUnity Forge MCP is a local code graph, documentation, and task coordination server for AI coding agents. It indexes supported source files and Markdown into a repository-local SQLite database and exposes **19 MCP tools** for code navigation, documentation, and repository-owned tasks. Task operations use a separate configured SQLite store. The graph records static evidence; dynamic calls and files outside the indexed roots can remain unresolved.
+ContextUnity Forge MCP is a local code graph, documentation, and task coordination server for AI coding agents. It indexes supported source files and Markdown into a repository-local SQLite database and exposes **20 MCP tools** for code navigation, documentation, and repository-owned tasks. Task operations use a separate configured SQLite store. The graph records static evidence; dynamic calls and files outside the indexed roots can remain unresolved.
 
 ## What it provides
 
 - **Code discovery:** search symbols, inspect definitions, read bounded source previews, and match syntax patterns.
 - **Dependency analysis:** inspect direct links, trace incoming impact, find related tests, and assess removal using indexed evidence.
 - **Documentation search:** index Markdown and MDX headings alongside code and retrieve exact sections.
+- **Task coordination:** claim and review milestone tasks, submit direct JSON proof, and exchange temporary blackboard messages before durable receipt rollup.
 - **Local operation:** a Rust executable serves MCP over standard input and output; no separate database service or shared coordination daemon is required.
 - **Bounded responses:** pages default to 30 items, MCP output is capped at 64 KiB, and graph and SQL operations have protective limits.
 
@@ -139,6 +140,11 @@ Use an exact symbol ID returned by `code_map_search` when available. The resolve
 | Query | `code_map_analyze` | Shows diagnostics, stored syntax errors with `lint:true`, optional cycles, or bounded read-only SQL. |
 | Session | `session_checkpoint` | Saves, lists, reads, or deletes local JSON checkpoints in `.forge/checkpoints.json`. |
 | Help | `forge_guide` | Returns built-in guidance on queries, the adapter, and budget recovery. |
+| Tasks | `task_list` | Lists ready tasks by default, with repository, milestone, status, and stage filters. |
+| Tasks | `task_claim` | Claims the current gate and returns stage-specific workflow guidance. |
+| Tasks | `task_submit` | Stores claim-bound JSON proof and writes a durable receipt at task delivery (`deliver/v1`). |
+| Tasks | `task_manage` | Creates, syncs, inspects, deletes, or extends task scope. |
+| Tasks | `task_blackboard` | Posts or reads task-scoped SQLite messages. |
 
 MCP pages default to 30 items and are bounded to 64 KiB. Continue a page with its returned offset and generation. Source previews are off by default; `get_code_snippet` requests a bounded preview explicitly. The [MCP tool reference](docs/reference/mcp-tools.md) lists exact request fields, direction rules, and limits.
 
@@ -146,5 +152,6 @@ MCP pages default to 30 items and are bounded to 64 KiB. Continue a page with it
 
 - [MCP setup](docs/reference/mcp-setup.md): client configuration, working directory, first run, and troubleshooting.
 - [CLI reference](docs/reference/cli.md) and [adapter configuration](docs/reference/configuration.md).
+- [Repository tasks](docs/reference/tasks.md), [ACDD](docs/reference/acdd.md), and its [execution runbook](docs/runbooks/acdd.md).
 - [Language support](docs/reference/languages.md), [indexing architecture](docs/architecture/indexing.md), and [limits and freshness](docs/runbooks/limits-and-freshness.md).
 - [Documentation index](docs/README.md): all pages grouped for readers and coding agents.

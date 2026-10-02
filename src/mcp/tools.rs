@@ -367,6 +367,25 @@ pub struct Checkpoint {
     /// Optional content value.
     pub content: Option<Value>,
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum BlackboardAction {
+    Post,
+    Read,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Blackboard {
+    action: BlackboardAction,
+    task_id: String,
+    author: Option<String>,
+    topic: Option<String>,
+    payload: Option<String>,
+    limit: Option<usize>,
+}
+
 impl Server {
     fn responding(
         &self,
@@ -404,7 +423,7 @@ impl Server {
         self.responding(|_| super::tasks::claim(&self.root, p))
     }
     #[tool(
-        description = "Submit revision-bound evidence as a JSON object. Handoff synchronously validates the Git milestone receipt."
+        description = "Submit revision-bound JSON evidence. Task delivery writes the receipt in the milestone document from accepted proofs."
     )]
     fn task_submit(&self, Parameters(p): Parameters<super::tasks::Submit>) -> CallToolResult {
         self.responding(|_| super::tasks::submit(&self.root, p))
@@ -414,6 +433,47 @@ impl Server {
     )]
     fn task_manage(&self, Parameters(p): Parameters<super::tasks::Manage>) -> CallToolResult {
         self.responding(|_| super::tasks::manage(&self.root, p))
+    }
+    #[tool(
+        description = "Post or read task-scoped SQLite blackboard messages. Post requires topic and payload; author defaults to the active worker or 'mcp'. Read accepts optional topic and limit."
+    )]
+    fn task_blackboard(&self, Parameters(p): Parameters<Blackboard>) -> CallToolResult {
+        self.responding(|_| {
+            let store = crate::engine::tasks::store_for_task(&self.root, &p.task_id)?;
+            match p.action {
+                BlackboardAction::Post => {
+                    if p.limit.is_some() {
+                        anyhow::bail!("TASK_BLACKBOARD_INVALID: limit is only valid for read");
+                    }
+                    let topic = p.topic.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("TASK_BLACKBOARD_INVALID: post requires topic")
+                    })?;
+                    let payload = p.payload.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("TASK_BLACKBOARD_INVALID: post requires payload")
+                    })?;
+                    let author = match p.author {
+                        Some(author) => author,
+                        None => store
+                            .inspect(&p.task_id)?
+                            .worker_id
+                            .unwrap_or_else(|| "mcp".into()),
+                    };
+                    Ok(serde_json::json!({
+                        "id": store.blackboard_post(&p.task_id, &author, topic, payload)?
+                    }))
+                }
+                BlackboardAction::Read => {
+                    if p.author.is_some() || p.payload.is_some() {
+                        anyhow::bail!(
+                            "TASK_BLACKBOARD_INVALID: author and payload are only valid for post"
+                        );
+                    }
+                    Ok(serde_json::json!({
+                        "messages": store.blackboard_read(&p.task_id, p.topic.as_deref(), p.limit)?
+                    }))
+                }
+            }
+        })
     }
     #[tool(
         description = "Workspace overview: components, modules, counts, and coverage. Optional aspects: 'counts', 'components', 'languages', 'cycles', 'compiled_profiles', 'metadata'. Start here to verify workspace_root matches active worktree and check coverage before making absence claims. Collections independently paginated."
@@ -727,7 +787,7 @@ impl Server {
 #[tool_handler(
     name = "contextunity-forge-mcp",
     version = "0.2.0",
-    instructions = "Native workspace code graph (15 tools). Max 64 KiB responses, 2s SQLite budget. Workflow: code_map_overview -> code_map_search (prefix*) -> code_map_inspect -> code_map_explain -> code_map_impact (depth=1) -> code_map_tests -> get_code_snippet -> ctx_read. Paged results include offset and generation; pass both for next page. Use compact detail. Inspect coverage before absence claims."
+    instructions = "Native workspace code graph and task coordination (20 tools). Max 64 KiB responses, 2s SQLite budget. Workflow: code_map_overview -> code_map_search (prefix*) -> code_map_inspect -> code_map_explain -> code_map_impact (depth=1) -> code_map_tests -> get_code_snippet -> ctx_read. Paged results include offset and generation; pass both for next page. Use compact detail. Inspect coverage before absence claims."
 )]
 impl ServerHandler for Server {
     async fn call_tool(

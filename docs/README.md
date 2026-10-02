@@ -12,8 +12,10 @@ Read [documentation instructions](AGENTS.md) before editing these pages.
 
 - [MCP setup](reference/mcp-setup.md): install, connect a client, select the workspace, and verify the first index.
 - [CLI](reference/cli.md): commands, arguments, and examples.
-- [MCP tools](reference/mcp-tools.md): all 15 tools, selectors, paging, and a discovery workflow.
+- [MCP tools](reference/mcp-tools.md): all 20 tools, selectors, paging, and a discovery workflow.
 - [Configuration](reference/configuration.md): indexing roots, linked workspaces, and response settings.
+- [Repository tasks](reference/tasks.md): claims, direct JSON evidence, blackboard messages, and receipts.
+- [ACDD](reference/acdd.md): admitted task gates, independent review, and context retention.
 - [Languages](reference/languages.md): compiled profiles, extensions, and static-analysis limits.
 
 ## Architecture
@@ -28,6 +30,7 @@ Read [documentation instructions](AGENTS.md) before editing these pages.
 ## Operations and verification
 
 - [Limits and freshness](runbooks/limits-and-freshness.md): budgets, recovery steps, source verification, and failure behavior.
+- [ACDD execution runbook](runbooks/acdd.md): the task and milestone delivery sequence.
 - [Testing](testing/README.md): test authority and verification commands.
 
 ## Direction and work

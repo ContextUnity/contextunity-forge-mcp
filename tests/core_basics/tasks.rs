@@ -1351,6 +1351,12 @@ fn terminal_task_handoff_rolls_up_durable_context_and_prunes_blackboard() {
     assert_eq!(serde_json::to_value(persisted.receipt.as_ref().unwrap()).unwrap(), receipt);
     assert!(store.blackboard_read(&first, None, None).unwrap().is_empty());
     assert_eq!(store.blackboard_read(&second, None, None).unwrap().len(), 1);
+    let reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    let closed = reopened
+        .blackboard_post(&first, "late-worker", "debug", "after delivery")
+        .unwrap_err();
+    assert_eq!(closed.to_string(), "TASK_TERMINAL");
+    assert!(reopened.blackboard_read(&first, None, None).unwrap().is_empty());
 
     let mut accepted_build = json!(null);
     let mut accepted_review = json!(null);

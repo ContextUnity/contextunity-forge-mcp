@@ -1,6 +1,6 @@
 ---
 name: contextunity-forge
-description: Comprehensive guide for ContextUnity Forge MCP code-graph navigation, symbol discovery, impact analysis, task operations, and architectural verification across 19 tools.
+description: Guide for ContextUnity Forge MCP code discovery, impact analysis, task operations, and architectural verification across 20 tools.
 ---
 
 # ContextUnity Forge MCP
@@ -57,13 +57,16 @@ flowchart TD
 
 ---
 
-## Tool Reference (19 Tools)
+## Tool Reference (20 Tools)
 
 ### Operational Task Lifecycle
-- `task_list(status?, milestone?, owner?, limit?)`: Query executable tasks in SQLite store (defaults strictly to `status: "ready"`).
+- `task_list(repository?, milestone_ref?, status?, stage?)`: Query executable tasks in SQLite (defaults to `status: "ready"`).
 - `task_claim(task_id, stage, worker_id, worktree)`: Claim an operational task gate in the assigned worktree.
-- `task_submit(task_id, stage, action, evidence_ref?, findings?)`: Submit validation evidence or review findings to pass/reject the active gate.
-- `task_manage(action, task_id?, reason?)`: Task state administration (`inspect`, `cancel`, `release_worker`, `archive`).
+- `task_submit(task_id, stage, action, evidence, findings?)`: Submit direct, claim-bound JSON proof or review findings to pass/reject the active gate.
+- `task_manage(action, workspace?, task_id?, milestone_ref?, task_ref?, paths?, force?)`: Create, sync, inspect, delete, or extend task scope.
+- `task_blackboard(action, task_id, topic?, payload?, author?, limit?)`: Post a topic and payload, or read chronological task messages with optional topic and limit. Omitted author uses the current claim worker or `mcp`.
+
+Read [task operations](../../../docs/reference/tasks.md) for proof schemas and [ACDD](../../../docs/reference/acdd.md) for the lifecycle. Use a reviewer `worker_id` distinct from the accepted builder for review and delivery. Passing `deliver/v1` writes the task receipt into the milestone with accepted proof and `architectural_notes`, then clears the task blackboard.
 
 
 ### Discovery & Search
