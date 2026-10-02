@@ -10,7 +10,7 @@ Read [roadmap](docs/roadmap.md) for strategic context and
 - Runtime behavior and setup: [README.md](README.md) and [`docs/`](docs/).
 - Architecture: [indexing](docs/architecture/indexing.md).
 - Reference: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), and [CLI commands](docs/reference/cli.md).
-- Operations: [runbooks](docs/runbooks/README.md).
+- Operations: [runbooks](docs/runbooks/README.md) and [ACDD execution runbook](docs/runbooks/acdd.md).
 - Verification: [testing](docs/testing/README.md).
 - Planning and execution queue: [roadmap](docs/roadmap.md), [milestones](docs/milestones/README.md), and [plans](docs/plans/README.md).
 - Architecture & Decisions: [architecture](docs/architecture/README.md) and [decisions](docs/adr/README.md).
@@ -81,18 +81,17 @@ All performance measurements, tool comparisons, and quality benchmarks live in `
 - **Reference Workspace**: `/home/oleksii/ContextUnity/worktrees/commerce-release-update`
 - **Policy**: Never commit manual profiling harnesses or `#[ignore]` benchmark tests into `tests/`. Use `benchmarks/` scripts.
 
-### Benchmarking & Performance Gate Invariants
-1. **Thermal & I/O Isolation**:
-   - Benchmarks (cold build, throughput, tool latency) must NEVER be run concurrently with or immediately following heavy compilation workloads (`cargo build --release`, `cargo test`, `cargo doc`).
-   - Settle host load before measuring: ensure background compiler and test processes have terminated and CPU/disk activity has returned to idle baseline.
-2. **Single Controlled Run over Ad-hoc Stress Loops**:
-   - For milestone receipts, execute a single clean run (or use `benchmarks/run_benchmarks.py`).
-   - Prohibit authoring ad-hoc scripts that run 4+ consecutive full cold builds in tight loops, which saturate host caches and trigger thermal throttling.
-3. **Differential Anomaly Sanity Check**:
-   - If measured latency shows >15% degradation but the baseline run exhibits the same degradation under identical conditions, this is host resource contention, not algorithmic code regression.
-   - Do not record host contention artifacts as regression without verifying under an idle host state.
-4. **Staged Gate Pipeline**:
-   - Verification sequence: 1) Build release -> 2) Stabilize host & measure performance on clean reference workspace -> 3) Run full test suite (`cargo test --all-targets`). Do not interleave heavy test compilation with profiling.
+### Benchmarking & Performance Gate Lifecycle
+1. **Staged Gate Order**:
+   Execute verification strictly in this order:
+   1) Compile release binary (`cargo build --release`).
+   2) Allow host to settle to idle baseline (verify background compilation has terminated).
+   3) Measure performance via a single controlled run on the reference workspace (`benchmarks/run_benchmarks.py`).
+   4) Run the full test suite (`cargo test --all-targets`).
+2. **Controlled Isolation**:
+   Profile on a quiet system to obtain accurate, repeatable throughput and latency receipts.
+3. **Contention Validation**:
+   When measured latency spikes unexpectedly, check the baseline under identical conditions to confirm whether host contention caused the difference.
 
 ## Test Rules & Boundaries
 
@@ -105,7 +104,7 @@ Read [`tests/AGENTS.md`](tests/AGENTS.md) before authoring, moving, or editing t
    - Every file directly in `tests/*.rs` is compiled and linked by Cargo as an independent executable.
    - Do NOT create a new `tests/*.rs` file for a single task, PR, or review round.
    - Group tests into existing domain test suites (`tests/languages/`, `tests/manifests.rs`, `tests/core_basics.rs`, `tests/python_semantics.rs`, `tests/typescript_semantics.rs`).
-   - Keep test files <= 800 lines.
+   - Table-driven tests & shared harnesses: use parameterized data tables instead of copy-pasting functions; extract reusable fixtures into shared helpers; do NOT artificially split domain test files into part1/part2.
 3. **Public Seams**:
    - Drive tests through public interfaces (CLI, MCP tool router, reader, or linker pipeline); do not construct tests around unexported private internals.
 4. **No Self-Justifying Synthetic Feature Tests**:

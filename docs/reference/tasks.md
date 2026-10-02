@@ -8,6 +8,8 @@ doc_type: api
 Git milestone frontmatter and fenced YAML task blocks own specifications.
 `src/engine/tasks.rs` serves CLI and MCP through the independent SQLite store
 in `src/db/tasks_store.rs`. Code-index rebuilds preserve operational task state.
+For agent execution runbooks, gate transitions, and the four autonomous roles,
+follow the [ACDD Execution Runbook](../runbooks/acdd.md).
 
 ## Configuration and identity
 
