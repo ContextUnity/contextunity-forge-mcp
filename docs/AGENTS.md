@@ -86,8 +86,8 @@ Obtain explicit approval for commits and publication under the root instructions
 ## Worktree merge and milestone reconciliation
 
 When merging a development worktree or branch into `main` after completing feature slices:
-1. **Inspect milestone authority**: Locate and inspect the governing contract in `docs/milestones/`.
-2. **Close completed tasks**: Update completed task specifications within the milestone document to `status: completed` and reconcile them in the operational task store (`task list`, `task submit`).
-3. **Update milestone status and receipts**: When all constituent tasks, quality gates, and acceptance criteria pass, update the milestone YAML frontmatter to `status: completed` and record measured verification receipts. If work remains, set `status: in_progress` and adjust task dependencies.
-4. **Reconcile before pruning**: Ensure milestone documentation updates, task closures, and full test suite verification (`cargo test --all-targets`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --test commitment_integrity`) are committed before removing the worktree (`git worktree remove`).
-
+1. **Inspect milestone authority**: Run `contextunity-forge-mcp milestone list` and `contextunity-forge-mcp milestone show <id-or-prefix> --full` to select the governing contract.
+2. **Close completed tasks**: Record each accepted task receipt in its YAML block and submit the task handoff gate. Confirm completion with `contextunity-forge-mcp task list --status all`.
+3. **Verify milestone delivery**: Run `cargo test --all-targets`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --test commitment_integrity`; record the command and test counts for the milestone receipt.
+4. **Archive the milestone**: Run `contextunity-forge-mcp milestone handoff <id-or-prefix> --verification-command <command> --tests-passed <count> --tests-failed 0`. The CLI validates SQLite completion, writes the handoff receipt, updates task references, and moves the document into `docs/milestones/archive/`.
+5. **Reconcile before pruning**: Commit the milestone and task documentation with the verified implementation, then remove the completed worktree with `git worktree remove`.

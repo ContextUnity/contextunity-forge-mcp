@@ -345,6 +345,53 @@ impl TasksStore {
         }
         Ok(result)
     }
+    /// Returns the first accepted claim time for one milestone.
+    pub fn earliest_claim(&self, milestone_prefix: &str) -> Result<Option<i64>> {
+        Ok(self.connection.query_row(
+            "SELECT MIN(c.claimed_at) FROM task_claims c JOIN tasks t ON t.task_id=c.task_id WHERE substr(t.task_id,1,length(?1))=?1 AND substr(t.task_id,1,length(?2))=?2",
+            params![milestone_prefix, self.namespace], |row| row.get(0))?)
+    }
+    /// Moves a completed milestone's task references after verifying its exact task set.
+    pub fn relocate_milestone(&mut self, milestone_prefix: &str, old_ref: &str, new_ref: &str, expected_ids: &[String]) -> Result<()> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut stmt = tx.prepare("SELECT descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 AND substr(task_id,1,length(?2))=?2")?;
+        let tasks: Vec<String> = stmt.query_map(params![milestone_prefix, self.namespace], |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(stmt);
+        let mut found_ids = Vec::new();
+        for descriptor in tasks {
+            let mut task: Task = serde_json::from_str(&descriptor)?;
+            if task.milestone_ref != old_ref || task.status != "completed" { bail!("milestone task state changed during handoff"); }
+            found_ids.push(task.task_id.clone());
+            task.milestone_ref = new_ref.into();
+            save(&tx, &task)?;
+        }
+        found_ids.sort();
+        let mut expected = expected_ids.to_vec();
+        expected.sort();
+        if found_ids != expected { bail!("milestone task set changed during handoff"); }
+        tx.commit()?;
+        Ok(())
+    }
+    /// Releases only the claim revision whose document activation failed.
+    pub fn release_failed_claim(&mut self, id: &str, revision: u64) -> Result<()> {
+        self.assert_id(id)?;
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        if task.status != "in_progress" || task.claim_revision != revision {
+            bail!("TASK_STALE_CLAIM");
+        }
+        if tx.execute("DELETE FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0", params![id, revision])? != 1 {
+            bail!("TASK_STALE_CLAIM");
+        }
+        task.claim_revision = next_revision(&tx, id)?;
+        task.worker_id = None;
+        task.worktree = None;
+        task.status = "ready".into();
+        save(&tx, &task)?;
+        tx.commit()?;
+        Ok(())
+    }
     /// Performs claim.
     pub fn claim(&mut self, id: &str, stage: &str, worker: &str, worktree: &str) -> Result<Task> {
         self.assert_id(id)?;

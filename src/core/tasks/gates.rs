@@ -170,10 +170,10 @@ impl TasksStore {
         if task.gate == 4 && action == "pass" {
             let build = accepted(&tx, id, "build/v1")?;
             let review = accepted(&tx, id, "review/v1")?;
-            let path = super::confined_path(
-                Path::new(task.worktree.as_deref().context("missing worktree")?),
-                &task.milestone_ref,
-            )?;
+            let claim_worktree: String = tx.query_row(
+                "SELECT worktree FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0",
+                params![id, task.claim_revision], |row| row.get(0))?;
+            let path = super::confined_path(Path::new(&claim_worktree), &task.milestone_ref)?;
             let text = std::fs::read_to_string(path)?;
             let mut identity = id.split('/');
             let repository = identity.next().context("invalid task identity")?;

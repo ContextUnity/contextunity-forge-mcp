@@ -8,7 +8,6 @@ use contextunity_forge_mcp::{
     engine::tasks,
 };
 use serde_json::json;
-
 fn passing_review_proof() -> serde_json::Value {
     let contours: serde_json::Map<String, serde_json::Value> =
         contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
@@ -22,7 +21,6 @@ fn passing_review_proof() -> serde_json::Value {
             .collect();
     json!({"decision":"pass","evidence_ref":"review.json","contours":contours})
 }
-
 fn evidence(task: &contextunity_forge_mcp::db::tasks_store::Task) -> Evidence {
     Evidence {
         task_id: task.task_id.clone(),
@@ -35,9 +33,7 @@ fn evidence(task: &contextunity_forge_mcp::db::tasks_store::Task) -> Evidence {
         proof: json!({"command":"cargo test","result":"passed","artifacts":[]}),
     }
 }
-
 const SPEC: &str = "---\nid: m-test\ntitle: Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Deliver second\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first]\n```\n";
-
 fn fixture() -> (ScopedWorkspace, TasksStore, Milestone) {
     let root = ScopedWorkspace::new("forge_tasks");
     root.write("src/lib.rs", "pub fn example() {}\n");
@@ -51,7 +47,6 @@ fn fixture() -> (ScopedWorkspace, TasksStore, Milestone) {
     store.sync(&milestone, "docs/010-test.md", &root.0).unwrap();
     (root, store, milestone)
 }
-
 #[test]
 fn linked_task_workspaces_share_storage_and_confine_local_scope() {
     let (root, _, _) = fixture();
@@ -152,7 +147,6 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
         .unwrap();
     assert_eq!(namespaces, 4);
 }
-
 #[test]
 fn linked_scope_extension_validates_owner_and_claimed_worktree() {
     let (root, _, _) = fixture();
@@ -202,7 +196,6 @@ fn linked_scope_extension_validates_owner_and_claimed_worktree() {
     assert!(extend("src/foreign/new.rs").is_err());
     assert!(extend("src/local.rs").is_ok());
 }
-
 #[test]
 fn nested_repository_tasks_preserve_distinct_write_perimeters() {
     let main = ScopedWorkspace::new("forge_nested_repositories");
@@ -263,7 +256,6 @@ fn nested_repository_tasks_preserve_distinct_write_perimeters() {
     )
     .is_err());
 }
-
 #[test]
 fn task_specification_and_store_survive_code_index_rebuild() {
     let (root, mut store, milestone) = fixture();
@@ -295,7 +287,6 @@ fn task_specification_and_store_survive_code_index_rebuild() {
         .unwrap();
     assert_eq!(timeout, 5000);
 }
-
 #[test]
 fn task_configuration_defaults_and_crlf_preserve_operational_identity() {
     let (root, _, milestone) = fixture();
@@ -330,7 +321,6 @@ fn task_configuration_defaults_and_crlf_preserve_operational_identity() {
     assert_eq!(task.status, "ready");
     assert!(task.worker_id.is_none());
 }
-
 #[test]
 fn tasks_coordinate_claims_dependencies_reset_and_scope() {
     let (root, mut store, milestone) = fixture();
@@ -390,17 +380,14 @@ fn tasks_coordinate_claims_dependencies_reset_and_scope() {
         .extend_scope(&id, &["src/module_escape/file.rs".into()], &root.0)
         .is_err());
 }
-
 #[test]
 fn gates_validate_disk_receipts_and_retention_outcomes() {
-    let (root, mut store, milestone) = fixture();
-    let id = milestone.task_id(&milestone.tasks[0]);
-    let mut build_proof = json!(null);
-    let mut review_proof = json!(null);
+    let (root, mut store, milestone) = fixture(); let claimed_worktree = ScopedWorkspace::new("forge_claim_receipt"); claimed_worktree.write("src/lib.rs", "pub fn example() {}\n");
+    let id = milestone.task_id(&milestone.tasks[0]); let mut build_proof = json!(null); let mut review_proof = json!(null);
     for (gate, stage) in GATES.iter().enumerate() {
-        let worker = if gate == 3 { "reviewer" } else { "builder" };
+        let worker = if gate == 3 { "reviewer" } else { "builder" }; let worktree = if gate == 4 { &claimed_worktree } else { &root };
         let task = store
-            .claim(&id, stage, worker, root.0.to_str().unwrap())
+            .claim(&id, stage, worker, worktree.0.to_str().unwrap())
             .unwrap();
         let evidence = Evidence {
             task_id: id.clone(),
@@ -408,7 +395,7 @@ fn gates_validate_disk_receipts_and_retention_outcomes() {
             claim_revision: task.claim_revision,
             contract_revision: task.contract_revision,
             worker_id: worker.into(),
-            worktree: root.0.to_str().unwrap().into(),
+            worktree: worktree.0.to_str().unwrap().into(),
             commit: "0123456789abcdef0123456789abcdef01234567".into(),
             proof: if gate == 3 {
                 passing_review_proof()
@@ -416,12 +403,7 @@ fn gates_validate_disk_receipts_and_retention_outcomes() {
                 json!({"command":"cargo test","result":"passed","artifacts":[]})
             },
         };
-        if gate == 2 {
-            build_proof = evidence.proof.clone();
-        }
-        if gate == 3 {
-            review_proof = evidence.proof.clone();
-        }
+        if gate == 2 { build_proof = evidence.proof.clone(); } else if gate == 3 { review_proof = evidence.proof.clone(); }
         if gate == 4 {
             assert!(store.submit(&id, stage, &evidence, "pass", None).is_err());
             let mut completed = milestone.clone();
@@ -435,7 +417,7 @@ fn gates_validate_disk_receipts_and_retention_outcomes() {
                 decision: "pass".into(),
             });
             let text=format!("---\nid: m-test\ntitle: Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n```yaml\n{}```\n```yaml\n{}```\n",serde_yaml::to_string(&completed.tasks[0]).unwrap(),serde_yaml::to_string(&completed.tasks[1]).unwrap());
-            root.write("docs/010-test.md", &text);
+            claimed_worktree.write("docs/010-test.md", &text);
             let mut mismatched = completed.clone();
             mismatched.tasks[0].receipt.as_mut().unwrap().commit =
                 "ffffffffffffffffffffffffffffffffffffffff".into();
@@ -443,10 +425,10 @@ fn gates_validate_disk_receipts_and_retention_outcomes() {
                 &serde_yaml::to_string(&completed.tasks[0]).unwrap(),
                 &serde_yaml::to_string(&mismatched.tasks[0]).unwrap(),
             );
-            root.write("docs/010-test.md", &wrong);
+            claimed_worktree.write("docs/010-test.md", &wrong);
             assert!(store.submit(&id, stage, &evidence, "pass", None).is_err());
             assert_eq!(store.inspect(&id).unwrap().status, "in_progress");
-            root.write("docs/010-test.md", &text);
+            claimed_worktree.write("docs/010-test.md", &text);
         }
         let result = store.submit(&id, stage, &evidence, "pass", None).unwrap();
         let retry = store.submit(&id, stage, &evidence, "pass", None).unwrap();
@@ -466,7 +448,6 @@ fn gates_validate_disk_receipts_and_retention_outcomes() {
         .unwrap();
     assert_eq!(rows, 0);
 }
-
 #[test]
 fn specifications_validate_unique_identities_and_governing_digests() {
     let parsed = Milestone::parse(SPEC, "forge-mcp").unwrap();
@@ -495,7 +476,6 @@ fn specifications_validate_unique_identities_and_governing_digests() {
         assert!(Milestone::parse(&malformed, "forge-mcp").is_err());
     }
 }
-
 #[test]
 fn contract_readmission_and_reset_fence_old_evidence() {
     let (root, mut store, mut milestone) = fixture();
@@ -525,7 +505,6 @@ fn contract_readmission_and_reset_fence_old_evidence() {
         .submit(&id, "design", &evidence(&second), "pass", None)
         .is_err());
 }
-
 #[test]
 fn review_rejection_retains_findings_and_requires_a_new_build() {
     let (root, mut store, milestone) = fixture();
@@ -575,7 +554,6 @@ fn review_rejection_retains_findings_and_requires_a_new_build() {
         .unwrap();
     assert_eq!(store.inspect(&id).unwrap().gate, 3);
 }
-
 #[test]
 fn force_deletion_preserves_project_boundaries_and_revision_fencing() {
     let (root, mut store, milestone) = fixture();
@@ -604,7 +582,6 @@ fn force_deletion_preserves_project_boundaries_and_revision_fencing() {
     assert!(other.list(None, "all", None).unwrap().is_empty());
     assert!(other.inspect(&id).is_err());
 }
-
 #[test]
 fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
     let root = ScopedWorkspace::new("forge_task_schema");
@@ -635,7 +612,6 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
         .unwrap();
     assert_eq!(tables, 1);
 }
-
 #[test]
 fn cli_migration_reconciles_manifests_and_creation_selects_one_task() {
     let (root, mut store, milestone) = fixture();
@@ -700,4 +676,125 @@ fn cli_migration_reconciles_manifests_and_creation_selects_one_task() {
         let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(result["manifests"].as_array().unwrap().len(), 1);
     }
+}
+fn milestone_cli(root: &ScopedWorkspace, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args(["--root", root.0.to_str().unwrap(), "milestone"]).args(args).output().unwrap()
+}
+#[test]
+fn milestone_init_scaffolds_numbered_planned_and_active_documents() {
+    use std::io::Write;
+    let root = ScopedWorkspace::new("forge_milestone_init");
+    root.write("docs/milestones/010-first.md", "---\nid: m-first\n---\n");
+    root.write("docs/milestones/archive/1050-prior.md", "---\nid: m-prior\n---\n");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root", root.0.to_str().unwrap(), "milestone", "init", "--slug", "next-work",
+            "--title", "Next work",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"A concrete outcome.\n\n### task: first\n\n```yaml\ntask_ref: first\ntarget: First task\nproof_policy: seam-test-first\nscope: [src/]\n```\n\nTask notes: preserve this detail.\n\n### task: second\n\n```yaml\ntask_ref: second\ntarget: Second task\nproof_policy: seam-test-first\nscope: [src/]\n```\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let path = root.0.join("docs/milestones/1060-next-work.md");
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.contains("status: planned"));
+    assert!(!text.contains("started_at:"));
+    assert!(text.contains("A concrete outcome."));
+    let note = text.find("Task notes: preserve this detail.").unwrap();
+    assert!(text.find("task_ref: first").unwrap() < note);
+    assert!(note < text.find("task_ref: second").unwrap());
+    let output = milestone_cli(&root, &["init", "--num", "011", "--slug", "active-work", "--title", "Active work", "--active"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let text = std::fs::read_to_string(root.0.join("docs/milestones/011-active-work.md")).unwrap();
+    assert!(text.contains("status: active"));
+    let started = text.lines().find_map(|line| line.strip_prefix("started_at: ")).unwrap();
+    let parsed = chrono::DateTime::parse_from_rfc3339(started).unwrap();
+    assert!((chrono::Utc::now() - parsed.with_timezone(&chrono::Utc)).num_minutes().abs() < 2);
+    let output = milestone_cli(&root, &["init", "--num", "012", "--slug", "described", "--title", "Described", "--desc", "Explicit description", "--depends-on", "m-first"]);
+    assert!(output.status.success());
+    let text = std::fs::read_to_string(root.0.join("docs/milestones/012-described.md")).unwrap();
+    assert!(text.contains("Explicit description"));
+    assert!(text.contains("m-first"));
+}
+#[test]
+fn milestone_init_imports_plan_metadata_and_rejects_duplicate_number() {
+    let root = ScopedWorkspace::new("forge_milestone_plan");
+    root.write("docs/plans/proposal.md", "---\ntitle: Planned title\ndoc_type: plan\ndepends_on: [m-prior]\n---\n# Planned title\n\nA scoped purpose.\n\n## Delivery notes\n\nA separate implementation note.\n");
+    let invoke = || milestone_cli(&root, &["init", "--num", "025", "--slug", "planned-title", "--plan", "docs/plans/proposal.md"]);
+    let output = invoke();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(response["sync"].as_str().unwrap().contains("task sync"));
+    assert!(response["claim"].as_str().unwrap().contains("task claim"));
+    let text = std::fs::read_to_string(root.0.join("docs/milestones/025-planned-title.md")).unwrap();
+    assert!(text.contains("title: Planned title"));
+    assert!(text.contains("m-prior"));
+    assert!(text.contains("A scoped purpose."));
+    assert!(text.contains("## Source plan notes"));
+    assert!(text.find("## Source plan notes").unwrap() > text.find("A scoped purpose.").unwrap());
+    assert!(text.contains("A separate implementation note."));
+    assert!(!invoke().status.success());
+    let same_id = milestone_cli(&root, &["init", "--num", "035", "--slug", "planned-title", "--title", "Another title"]);
+    assert!(!same_id.status.success());
+    root.write("docs/milestones/archive/18446744073709551616-legacy.md", "---\nid: m-legacy\n---\n");
+    let overflow = milestone_cli(&root, &["init", "--slug", "later", "--title", "Later"]);
+    assert!(!overflow.status.success());
+}
+#[test]
+fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
+    let root = ScopedWorkspace::new("forge_milestone_inspection");
+    root.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n");
+    let queued = "---\nid: m-queued\ntitle: Queued work\ndoc_type: contract\nstatus: planned\n---\n# Queued work\n### task: draft\n```yaml\ntask_ref: draft\ntarget: Draft work\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    let active = "---\nid: m-live\ntitle: Live work\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\ndepends_on: [m-queued]\ninvariants: [Keep receipts]\n---\n# Live work\n## Outcome and purpose\nDeliver visible progress.\n### task: first\n```yaml\ntask_ref: first\ntarget: First result\nproof_policy: seam-test-first\nscope: [src/]\n```\nImplementation steps for first.\n### task: second\n```yaml\ntask_ref: second\ntarget: Second result\nproof_policy: seam-test-first\nscope: [src/]\n```\nDelivery notes for second.\n";
+    let archived = "---\nid: m-prior\ntitle: Prior work\ndoc_type: contract\nstatus: completed\nstarted_at: 2026-09-01T10:00:00Z\n---\n# Prior work\n### task: shipped\n```yaml\ntask_ref: shipped\ntarget: Shipped result\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    for (path, source) in [("docs/milestones/010-queued.md", queued), ("docs/milestones/011-live.md", active), ("docs/milestones/archive/020-prior.md", archived)] { root.write(path, source); } root.write("docs/milestones/README.md", "---\ntitle: Milestone guide\ndoc_type: guide\n---\n# Milestone guide\n"); root.write("docs/milestones/archive/README.md", "---\ntitle: Archive guide\ndoc_type: guide\n---\n# Archive guide\n");
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    for (path, source) in [("docs/milestones/010-queued.md", queued), ("docs/milestones/011-live.md", active), ("docs/milestones/archive/020-prior.md", archived)] {
+        store.sync(&Milestone::parse(source, "forge-mcp").unwrap(), path, &root.0).unwrap();
+    } root.write("docs/milestones/010-queued.md", &format!("{queued}### task: file-only\n```yaml\ntask_ref: file-only\ntarget: File-declared completion\nproof_policy: seam-test-first\nscope: [src/]\nstatus: completed\n```\n")); root.write("docs/milestones/archive/020-prior.md", &archived.replace("scope: [src/]", "scope: [src/]\nstatus: completed\nreceipt:\n  commit: abcdef0123456789\n  tested_commit: abcdef0123456789\n  contract_revision: 1\n  passed_at: 2026-09-01T12:00:00Z\n  evidence: {command: cargo test, result: passed, artifacts: []}\n  review: {decision: pass}\n  decision: pass"));
+    for task_ref in ["first", "shipped"] {
+        let mut task = store.list(None, "all", None).unwrap().into_iter().find(|t| t.task_id.ends_with(&format!(":{task_ref}"))).unwrap();
+        task.status = "completed".into();
+        store.connection.execute("UPDATE tasks SET descriptor=?1 WHERE task_id=?2", rusqlite::params![serde_json::to_string(&task).unwrap(), task.task_id]).unwrap();
+    }
+    let run = |args: &[&str]| { let output = milestone_cli(&root, args); assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr)); serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap() };
+    let listed = run(&["list"]);
+    let rows = listed["milestones"].as_array().unwrap(); assert_eq!(rows.len(), 2);
+    for heading in ["ID", "title", "status", "started_at", "completion"] { assert!(listed["table"].as_str().unwrap().to_ascii_lowercase().contains(&heading.to_ascii_lowercase())); } let queued_row = rows.iter().find(|row| row["id"] == "m-queued").unwrap();
+    assert_eq!((queued_row["title"].as_str(), queued_row["status"].as_str(), queued_row["started_at"].as_str(), queued_row["completion"].as_str()), (Some("Queued work"), Some("planned"), Some("-"), Some("0/2"))); assert!(queued_row["tasks"].as_array().unwrap().iter().any(|task| task["task_ref"] == "file-only" && task["status"] == "unsynced"));
+    let live = rows.iter().find(|row| row["id"] == "m-live").unwrap(); assert!(listed["table"].as_str().unwrap().lines().any(|line| line.contains("m-live") && line.contains("1/2")));
+    assert_eq!((live["status"].as_str(), live["completion"].as_str()), (Some("active"), Some("1/2"))); assert_eq!(live["tasks"].as_array().unwrap().len(), 2); assert!(live["tasks"].as_array().unwrap().iter().any(|task| task["task_ref"] == "first" && task["status"] == "completed")); assert!(live["tasks"].as_array().unwrap().iter().any(|task| task["task_ref"] == "second" && task["status"] == "ready"));
+    for args in [&["list", "--archive"][..], &["list", "--status", "all"][..]] { assert_eq!(run(args)["milestones"].as_array().unwrap().len(), 3); }
+    let completed = run(&["list", "--status", "completed"]); assert_eq!(completed["milestones"][0]["id"], "m-prior"); assert_eq!(completed["milestones"][0]["completion"], "1/1");
+    let shown = run(&["show", "m-live"]); assert!(shown.get("full_document").is_none());
+    assert_eq!((shown["id"].as_str(), shown["title"].as_str(), shown["status"].as_str()), (Some("m-live"), Some("Live work"), Some("active"))); assert_eq!(shown["frontmatter"]["id"], "m-live"); assert_eq!(shown["depends_on"][0], "m-queued"); assert_eq!(shown["invariants"][0], "Keep receipts"); assert!(shown["outcome"].as_str().unwrap().contains("Deliver visible progress.")); assert_eq!(shown["tasks"].as_array().unwrap().len(), 2); assert!(shown["tasks"].as_array().unwrap().iter().any(|task| task["task_ref"] == "first" && task["target"] == "First result"));
+    let by_prefix = run(&["show", "011", "--full"]); assert!(by_prefix.get("full_document").is_some()); assert_eq!(by_prefix["id"], shown["id"]); assert!(by_prefix["full_document"].as_str().unwrap().contains("Implementation steps for first.")); assert!(by_prefix["full_document"].as_str().unwrap().contains("Delivery notes for second.")); assert_eq!(run(&["show", "020"])["status"], "completed");
+    let override_source = "---\nid: m-override\ntitle: Override work\ndoc_type: contract\nstatus: active\nrepository: alternate\nproject: special\n---\n# Override work\n### task: delivered\n```yaml\ntask_ref: delivered\ntarget: Delivered override\nproof_policy: seam-test-first\nscope: [src/]\n```\n"; root.write("docs/milestones/025-override.md", override_source); let mut alternate = TasksStore::open_project(&root.0.join(".forge/tasks.sqlite"), "alternate", "special").unwrap();
+    alternate.sync(&Milestone::parse_with_identity(override_source, "alternate", "special").unwrap(), "docs/milestones/025-override.md", &root.0).unwrap(); let mut delivered = alternate.list(None, "all", None).unwrap().pop().unwrap(); delivered.status = "completed".into(); alternate.connection.execute("UPDATE tasks SET descriptor=?1 WHERE task_id=?2", rusqlite::params![serde_json::to_string(&delivered).unwrap(), delivered.task_id]).unwrap();
+    let overridden = run(&["list"]); let override_row = overridden["milestones"].as_array().unwrap().iter().find(|row| row["id"] == "m-override").unwrap(); assert_eq!(override_row["completion"], "1/1"); assert_eq!(override_row["tasks"][0]["status"], "completed");
+    root.write("docs/milestones/archive/030-broken.md", "---\nid: m-broken\ntitle: Broken archive\ndoc_type: contract\nstatus: completed\n---\n# Broken archive\n```yaml\ntask_ref: [invalid\n```\n"); assert_eq!(run(&["list"])["milestones"].as_array().unwrap().len(), 3); assert_eq!(run(&["show", "011"])["id"], "m-live");
+}
+#[test]
+fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
+    let root = ScopedWorkspace::new("forge_milestone_handoff"); root.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n");
+    let source = "---\nid: m-close\ntitle: Close work\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Close work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish work\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    root.write("docs/milestones/010-close.md", source); let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap(); store.sync(&Milestone::parse(source, "forge-mcp").unwrap(), "docs/milestones/010-close.md", &root.0).unwrap();
+    let args = ["handoff", "m-close", "--commit", "0123456789abcdef0123456789abcdef01234567", "--verification-command", "cargo test --all-targets", "--tests-passed", "7", "--tests-failed", "0"]; let rejected = milestone_cli(&root, &args); assert!(!rejected.status.success()); assert!(String::from_utf8_lossy(&rejected.stderr).contains("finish")); assert!(root.0.join("docs/milestones/010-close.md").exists()); let mut task = store.list(None, "all", None).unwrap().pop().unwrap(); task.status = "completed".into(); store.connection.execute("UPDATE tasks SET descriptor=?1 WHERE task_id=?2", rusqlite::params![serde_json::to_string(&task).unwrap(), task.task_id]).unwrap();
+    let completed = milestone_cli(&root, &args); assert!(completed.status.success(), "{}", String::from_utf8_lossy(&completed.stderr)); assert!(!root.0.join("docs/milestones/010-close.md").exists()); let reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap(); assert_eq!(reopened.list(None, "all", None).unwrap()[0].milestone_ref, "docs/milestones/archive/010-close.md");
+    let archived = std::fs::read_to_string(root.0.join("docs/milestones/archive/010-close.md")).unwrap(); let header = archived.strip_prefix("---\n").unwrap().split_once("\n---\n").unwrap().0; let meta: serde_yaml::Value = serde_yaml::from_str(header).unwrap(); assert_eq!(meta["status"].as_str(), Some("completed")); assert_eq!(meta["handoff"]["commit"].as_str(), Some("0123456789abcdef0123456789abcdef01234567"));
+    let started = chrono::DateTime::parse_from_rfc3339(meta["started_at"].as_str().unwrap()).unwrap(); let ended = chrono::DateTime::parse_from_rfc3339(meta["handoff"]["completed_at"].as_str().unwrap()).unwrap(); let minutes = (ended - started).num_minutes(); assert_eq!(meta["handoff"]["duration"].as_str().unwrap(), format!("{}h {}m", minutes / 60, minutes % 60)); let verification = &meta["handoff"]["verification"]; assert_eq!(verification["command"].as_str(), Some("cargo test --all-targets")); assert_eq!(verification["status"].as_str(), Some("passed")); assert_eq!(verification["tests_passed"].as_i64(), Some(7)); assert_eq!(verification["tests_failed"].as_i64(), Some(0));
+    let fallback = ScopedWorkspace::new("forge_handoff_claim_fallback"); fallback.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n"); fallback.write("src/lib.rs", "pub fn fallback() {}\n"); let source = "---\nid: m-fallback\ntitle: Fallback work\ndoc_type: contract\nstatus: active\n---\n# Fallback work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish fallback\nproof_policy: seam-test-first\nscope: [src/]\n```\n"; fallback.write("docs/milestones/020-fallback.md", source);
+    let milestone = Milestone::parse(source, "forge-mcp").unwrap(); let mut fallback_store = TasksStore::open(&fallback.0.join(".forge/tasks.sqlite")).unwrap(); fallback_store.sync(&milestone, "docs/milestones/020-fallback.md", &fallback.0).unwrap(); let id = milestone.task_id(&milestone.tasks[0]); let mut claimed = fallback_store.claim(&id, "design", "worker", fallback.0.to_str().unwrap()).unwrap(); let claim_time = fallback_store.earliest_claim("forge-mcp/forge-mcp/m-fallback:").unwrap().unwrap();
+    claimed.status = "completed".into(); fallback_store.connection.execute("UPDATE tasks SET descriptor=?1 WHERE task_id=?2", rusqlite::params![serde_json::to_string(&claimed).unwrap(), id]).unwrap(); let result = milestone_cli(&fallback, &["handoff", "m-fallback", "--commit", "0123456789abcdef0123456789abcdef01234567", "--verification-command", "cargo test", "--tests-passed", "1", "--tests-failed", "0"]); assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let text = std::fs::read_to_string(fallback.0.join("docs/milestones/archive/020-fallback.md")).unwrap(); let header = text.strip_prefix("---\n").unwrap().split_once("\n---\n").unwrap().0; let meta: serde_yaml::Value = serde_yaml::from_str(header).unwrap(); let started = chrono::DateTime::parse_from_rfc3339(meta["started_at"].as_str().unwrap()).unwrap(); let ended = chrono::DateTime::parse_from_rfc3339(meta["handoff"]["completed_at"].as_str().unwrap()).unwrap(); let minutes = (ended - started).num_minutes(); assert_eq!(started.timestamp(), claim_time); assert_eq!(meta["handoff"]["duration"].as_str().unwrap(), format!("{}h {}m", minutes / 60, minutes % 60));
+}
+#[test]
+fn first_cli_task_claim_activates_planned_milestone_with_started_at() {
+    let root = ScopedWorkspace::new("forge_milestone_claim_start"); root.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n"); root.write("src/lib.rs", "pub fn task() {}\n"); let source = "---\nid: m-start\ntitle: Start work\ndoc_type: contract\nstatus: planned\n---\n# Start work\n### task: begin\n```yaml\ntask_ref: begin\ntarget: Begin work\nproof_policy: seam-test-first\nscope: [src/]\n```\n"; root.write("docs/milestones/010-start.md", source);
+    let milestone = Milestone::parse(source, "forge-mcp").unwrap(); let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap(); store.sync(&milestone, "docs/milestones/010-start.md", &root.0).unwrap(); let id = milestone.task_id(&milestone.tasks[0]); let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp")).args(["--root", root.0.to_str().unwrap(), "task", "claim", &id, "--stage", "design", "--worker", "first", "--worktree", root.0.to_str().unwrap()]).output().unwrap(); assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let text = std::fs::read_to_string(root.0.join("docs/milestones/010-start.md")).unwrap(); let header = text.strip_prefix("---\n").unwrap().split_once("\n---\n").unwrap().0; let meta: serde_yaml::Value = serde_yaml::from_str(header).unwrap(); assert_eq!(meta["status"].as_str(), Some("active")); let started = chrono::DateTime::parse_from_rfc3339(meta["started_at"].as_str().unwrap()).unwrap(); assert!((chrono::Utc::now() - started.with_timezone(&chrono::Utc)).num_minutes().abs() < 2);
 }

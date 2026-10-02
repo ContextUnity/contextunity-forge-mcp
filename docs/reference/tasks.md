@@ -107,6 +107,9 @@ directories freeze themselves. Traversal and symlinks leaving the repository
 or the frozen module root fail before any extension is added.
 Claim requires an existing directory; an unavailable worktree reports
 `WORKTREE_NOT_FOUND` before ownership is recorded.
+The first accepted claim for a planned milestone activates its worktree document
+and records `started_at` from the first claim timestamp. Planned milestones
+retain an empty `started_at` while they wait in the queue.
 
 ## Gates and evidence
 
@@ -143,8 +146,40 @@ After review, write `status: completed` and `receipt` inside the task YAML block
 Receipt fields are `commit`, `contract_revision`, RFC3339 `passed_at`, `evidence`
 equal to accepted build proof, `review` equal to accepted review proof, and
 `decision: pass`. Handoff synchronously reads the claimed worktree milestone with
-`std::fs::read_to_string`. Matching specification and proof are required before
+`std::fs::read_to_string` at the path formed from the active
+`task_claims.worktree` and relative `milestone_ref`. Matching specification and proof are required before
 SQLite completion and its retention clock begin.
+
+## Milestone CLI lifecycle
+
+Use the CLI milestone commands to create, inspect, and close repository
+contracts:
+
+```sh
+contextunity-forge-mcp milestone init --plan docs/plans/proposal.md [--num 011] [--slug short-name] [--title "Title"] [--active]
+contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|all]
+contextunity-forge-mcp milestone show <id-or-number> [--full]
+contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --verification-command "cargo test --all-targets" --tests-passed <count> --tests-failed 0
+```
+
+`milestone init` chooses the highest current or archived milestone number plus ten when
+`--num` is absent, accepts a piped description and task blocks, and returns task
+sync guidance. `--active` records the creation time as `started_at`; planned
+documents gain that timestamp on the first accepted task claim.
+
+`milestone list` reports the frontmatter state and SQLite completion ratio for
+each current milestone. Archive and status options include archived contracts.
+`milestone show` returns frontmatter, expected outcomes, and task metadata;
+`--full` includes the complete task descriptions.
+
+`milestone handoff` validates completion of every task belonging to the selected
+milestone in SQLite. It records the full commit SHA and a YAML `handoff` block
+with `completed_at`, `duration` as `Xh Ym`, and `verification` containing
+`command`, `status: passed`, `tests_passed`, and `tests_failed`. Duration starts
+at frontmatter `started_at`, or the earliest SQLite claim timestamp for an
+older active document. The command sets frontmatter `status: completed`, moves
+the document to `docs/milestones/archive/`, and updates the stored
+`milestone_ref` of its tasks. The [CLI reference](cli.md) lists every flag.
 
 ## CLI and administration
 

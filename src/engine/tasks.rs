@@ -281,7 +281,17 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
     let task = store.inspect(&p.task_id)?;
     validate_authority(&task, &worktree)?;
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
-    store.claim(&p.task_id, &p.stage, &p.worker_id, &p.worktree)?;
+    let claimed = store.claim(&p.task_id, &p.stage, &p.worker_id, &p.worktree)?;
+    let activation = (|| {
+        let milestone_prefix = p.task_id.split_once(':').context("invalid task identity")?.0.to_string() + ":";
+        let claimed_at = store.earliest_claim(&milestone_prefix)?.context("task claim timestamp missing")?;
+        crate::engine::milestones::activate_on_claim(&worktree, &claimed.milestone_ref, claimed_at)
+    })();
+    if let Err(error) = activation {
+        store.release_failed_claim(&p.task_id, claimed.claim_revision)
+            .context("failed to release claim after milestone activation error")?;
+        return Err(error);
+    }
     workspace.envelope(store.inspect_details(&p.task_id)?)
 }
 /// Performs store for task.

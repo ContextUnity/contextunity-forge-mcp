@@ -4,6 +4,8 @@ pub mod ast;
 pub mod guide;
 /// Implements migrate support.
 pub mod migrate;
+/// Implements milestone commands.
+pub mod milestone;
 /// Implements task support.
 pub mod task;
 use crate::{
@@ -47,6 +49,12 @@ pub enum Command {
         #[command(subcommand)]
         /// The command value.
         command: task::TaskCommand,
+    },
+    /// Runs milestone lifecycle commands.
+    Milestone {
+        #[command(subcommand)]
+        /// The selected milestone operation.
+        command: milestone::MilestoneCommand,
     },
     /// Represents the serve case.
     Serve,
@@ -301,6 +309,7 @@ impl Cli {
         let result: Value = match command {
             Command::Migrate { command } => migrate::run(&root, command)?,
             Command::Task { command } => task::run(&root, command)?,
+            Command::Milestone { command } => milestone::run(&root, command)?,
             Command::Serve => {
                 crate::mcp::server::serve(root, db).await?;
                 return Ok(());

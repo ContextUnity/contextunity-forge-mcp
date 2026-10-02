@@ -62,6 +62,38 @@ Use [repository tasks](tasks.md) for `task list`, `create`, `sync`, `inspect`,
 `migrate preview/apply/verify` administration commands. These operations use
 `tasks_db` from `forge-mcp.yaml`; global `--db` selects only the code index.
 
+## Repository milestones
+
+```sh
+contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|all]
+contextunity-forge-mcp milestone show <id-or-number> [--full]
+contextunity-forge-mcp milestone init [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--desc "Purpose"] [--depends-on m-prior] [--active]
+contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --verification-command "cargo test --all-targets" --tests-passed <count> --tests-failed 0
+```
+
+`milestone list` returns a table and structured rows containing ID, title,
+status, `started_at`, task states, and the SQLite completion ratio. The default
+list reads current milestone files; `--archive` and `--status all|completed`
+include archived files. `milestone show` resolves a full ID or numeric file
+prefix and returns frontmatter, outcomes, and task metadata. `--full` includes
+the complete Markdown document.
+
+`milestone init` creates a numbered file under `docs/milestones/`. An omitted
+`--num` selects the largest current or archived milestone number plus ten, padded
+to at least three digits. `--plan` imports plan metadata and notes. Piped stdin
+supplies a description and task blocks. Planned milestones omit `started_at`;
+`--active` records the current time. The command returns the file path and
+task sync and claim guidance.
+
+`milestone handoff` requires every milestone task in SQLite to be completed and
+the verification command to have zero failed tests. It writes `status:
+completed` and a `handoff` receipt with `completed_at`, `duration`, full Git
+commit, and language-neutral verification fields. It moves the file into
+`docs/milestones/archive/` and updates SQLite task references. An omitted
+`--commit` uses the current Git `HEAD`. See [repository tasks](tasks.md) for
+task claims, receipts, and activation timing. Milestone commands are CLI-only;
+the MCP task interface contains four flat tools.
+
 ## Server, guide, and checkpoints
 
 ```sh

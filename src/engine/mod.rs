@@ -6,6 +6,8 @@ pub mod docs;
 pub mod languages;
 /// Implements linker support.
 pub mod linker;
+/// Implements milestone lifecycle support.
+pub mod milestones;
 /// Implements scanner support.
 pub mod scanner;
 /// Implements tasks support.

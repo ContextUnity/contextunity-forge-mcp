@@ -23,20 +23,10 @@ This repository directly owns its execution queue and task commitments:
 - **Macro direction**: [docs/roadmap.md](docs/roadmap.md).
 - **Execution queue & milestones**: [`docs/milestones/`](docs/milestones/) ordered by numeric prefix (`010-*.md`, `020-*.md`).
 - **Research & proposal drafts**: [`docs/plans/`](docs/plans/README.md).
-- **Active milestone discovery algorithm**:
-  1. Inspect `docs/milestones/0*.md` in ascending lexicographical order by numeric prefix.
-  2. Parse the YAML frontmatter: skip milestones marked `status: completed` or `status: deferred`.
-  3. The first milestone with `status: active` is the current execution target. If no milestone is marked `active`, the lowest-numbered milestone with `status: planned` is the candidate for activation.
-- **Operational task lifecycle**: Tasks are stored in `.forge/tasks.sqlite` (configured via `forge-mcp.yaml`). Query executable tasks using the `task_list` MCP tool or CLI `contextunity-forge-mcp task list` (defaults strictly to `status: "ready"`). Claim, submit, and inspect tasks using native task tools. Reference guide: [docs/reference/tasks.md](docs/reference/tasks.md).
-  - `task_list`: inspect executable tasks whose dependencies are satisfied.
-  - `task_claim(task_id, stage, worker_id, worktree)`: claim current gate stage (`design/v1`, `contract/v1`, `build/v1`, `review/v1`, `handoff/v1`).
-  - `task_submit(task_id, stage, action="pass", evidence_ref=..., findings=...)`: submit verification evidence to advance gate.
-  - `task_manage(action="inspect"|"cancel", task_id=...)`: manage claims or inspect gate status.
-- **Milestone lifecycle operations**: Milestone scaffolding, inspection, and completion are driven exclusively via CLI:
-  - `contextunity-forge-mcp milestone list` / `show <id>`
-  - `contextunity-forge-mcp milestone init --plan <path>`
-  - `contextunity-forge-mcp milestone handoff <id> --evidence <cmd>`
-
+- **Milestone discovery**: Run `contextunity-forge-mcp milestone list` to inspect active and planned milestones and task completion ratios. Run `contextunity-forge-mcp milestone show <id-or-prefix> --full` to read the selected contract and task descriptions.
+- **Milestone creation**: Run `contextunity-forge-mcp milestone init --plan <path>` to scaffold the next numbered contract. Use `--active` to start its active development clock at creation.
+- **Milestone closure**: Run `contextunity-forge-mcp milestone handoff <id-or-prefix> --verification-command <command> --tests-passed <count> --tests-failed 0` after every SQLite task reaches `completed`. The command records a structured receipt and moves the milestone into `docs/milestones/archive/`.
+- **Operational task lifecycle**: Tasks are stored in `.forge/tasks.sqlite` (configured via `forge-mcp.yaml`). Query executable tasks using the `task_list` MCP tool or CLI `contextunity-forge-mcp task list` (defaults strictly to `status: "ready"`). Claim, submit, and inspect tasks using native task tools. Read [docs/reference/tasks.md](docs/reference/tasks.md) for gates, evidence, and administration.
 
 ## Development Worktrees
 
@@ -44,7 +34,7 @@ For isolated subagent work, parallel branches, or spikes:
 - Create worktrees under `.worktrees/<branch-name>`:
   `git worktree add .worktrees/<branch-name> <branch-name>`
 - `.worktrees/` is gitignored at repository root to keep untracked workspaces clean.
-- On merge, inspect the governing milestone in `docs/milestones/`, update deliverables, mark completed tasks `status: completed`, record receipts, and reconcile before pruning per [docs/AGENTS.md](docs/AGENTS.md).
+- On merge, inspect the governing milestone with `milestone show`, reconcile task receipts, and run `milestone handoff` after all tasks complete per [docs/AGENTS.md](docs/AGENTS.md).
 - Prune worktrees when finished: `git worktree remove .worktrees/<branch-name>`.
 
 ## Codebase Architecture
