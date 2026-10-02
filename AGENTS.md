@@ -9,7 +9,7 @@ Read [roadmap](docs/roadmap.md) for strategic context and
 
 - Runtime behavior and setup: [README.md](README.md) and [`docs/`](docs/).
 - Architecture: [indexing](docs/architecture/indexing.md).
-- Reference: [configuration and tools](docs/reference/README.md).
+- Reference: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), and [CLI commands](docs/reference/cli.md).
 - Operations: [runbooks](docs/runbooks/README.md).
 - Verification: [testing](docs/testing/README.md).
 - Planning and execution queue: [roadmap](docs/roadmap.md), [milestones](docs/milestones/README.md), and [plans](docs/plans/README.md).
@@ -27,7 +27,16 @@ This repository directly owns its execution queue and task commitments:
   1. Inspect `docs/milestones/0*.md` in ascending lexicographical order by numeric prefix.
   2. Parse the YAML frontmatter: skip milestones marked `status: completed` or `status: deferred`.
   3. The first milestone with `status: active` is the current execution target. If no milestone is marked `active`, the lowest-numbered milestone with `status: planned` is the candidate for activation.
-- **Operational task lifecycle**: Tasks are stored in `.forge/tasks.sqlite` (configured via `forge-mcp.yaml`). Query executable tasks using the `task_list` MCP tool or CLI `contextunity-forge-mcp task list` (defaults strictly to `status: "ready"`). Claim, submit, and inspect tasks using native task tools.
+- **Operational task lifecycle**: Tasks are stored in `.forge/tasks.sqlite` (configured via `forge-mcp.yaml`). Query executable tasks using the `task_list` MCP tool or CLI `contextunity-forge-mcp task list` (defaults strictly to `status: "ready"`). Claim, submit, and inspect tasks using native task tools. Reference guide: [docs/reference/tasks.md](docs/reference/tasks.md).
+  - `task_list`: inspect executable tasks whose dependencies are satisfied.
+  - `task_claim(task_id, stage, worker_id, worktree)`: claim current gate stage (`design/v1`, `contract/v1`, `build/v1`, `review/v1`, `handoff/v1`).
+  - `task_submit(task_id, stage, action="pass", evidence_ref=..., findings=...)`: submit verification evidence to advance gate.
+  - `task_manage(action="inspect"|"cancel", task_id=...)`: manage claims or inspect gate status.
+- **Milestone lifecycle operations**: Milestone scaffolding, inspection, and completion are driven exclusively via CLI:
+  - `contextunity-forge-mcp milestone list` / `show <id>`
+  - `contextunity-forge-mcp milestone init --plan <path>`
+  - `contextunity-forge-mcp milestone handoff <id> --evidence <cmd>`
+
 
 ## Development Worktrees
 
@@ -81,6 +90,19 @@ All performance measurements, tool comparisons, and quality benchmarks live in `
 - **MCP Latency & Cold Build Benchmark**: `python3 benchmarks/mcp_tool_comparison_benchmark.py`
 - **Reference Workspace**: `/home/oleksii/ContextUnity/worktrees/commerce-release-update`
 - **Policy**: Never commit manual profiling harnesses or `#[ignore]` benchmark tests into `tests/`. Use `benchmarks/` scripts.
+
+### Benchmarking & Performance Gate Invariants
+1. **Thermal & I/O Isolation**:
+   - Benchmarks (cold build, throughput, tool latency) must NEVER be run concurrently with or immediately following heavy compilation workloads (`cargo build --release`, `cargo test`, `cargo doc`).
+   - Settle host load before measuring: ensure background compiler and test processes have terminated and CPU/disk activity has returned to idle baseline.
+2. **Single Controlled Run over Ad-hoc Stress Loops**:
+   - For milestone receipts, execute a single clean run (or use `benchmarks/run_benchmarks.py`).
+   - Prohibit authoring ad-hoc scripts that run 4+ consecutive full cold builds in tight loops, which saturate host caches and trigger thermal throttling.
+3. **Differential Anomaly Sanity Check**:
+   - If measured latency shows >15% degradation but the baseline run exhibits the same degradation under identical conditions, this is host resource contention, not algorithmic code regression.
+   - Do not record host contention artifacts as regression without verifying under an idle host state.
+4. **Staged Gate Pipeline**:
+   - Verification sequence: 1) Build release -> 2) Stabilize host & measure performance on clean reference workspace -> 3) Run full test suite (`cargo test --all-targets`). Do not interleave heavy test compilation with profiling.
 
 ## Test Rules & Boundaries
 

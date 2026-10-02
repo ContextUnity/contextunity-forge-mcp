@@ -1,6 +1,6 @@
 ---
 name: contextunity-forge
-description: Comprehensive guide for ContextUnity Forge MCP code-graph navigation, symbol discovery, impact analysis, and architectural verification across 15 tools.
+description: Comprehensive guide for ContextUnity Forge MCP code-graph navigation, symbol discovery, impact analysis, task operations, and architectural verification across 19 tools.
 ---
 
 # ContextUnity Forge MCP
@@ -20,7 +20,7 @@ description: Comprehensive guide for ContextUnity Forge MCP code-graph navigatio
 
 ## Canonical Discovery Workflow
 
-Follow this sequence to orient and navigate:
+Follow this sequence to orient, navigate, and execute tasks:
 
 ```mermaid
 flowchart TD
@@ -31,6 +31,7 @@ flowchart TD
     E --> F["6. code_map_tests(selector='...')"]
     F --> G["7. get_code_snippet(selector='...')"]
     G --> H["8. ctx_read('path', 'lines:N-M') for exact edit"]
+    H --> I["9. task_claim() -> TDD -> task_submit()"]
 ```
 
 1. **Orient**: `code_map_overview()`
@@ -52,10 +53,18 @@ flowchart TD
 7. **AST Preview**: `get_code_snippet(selector="...")`
    - Reads a bounded window (5 leading + 35 body lines) directly from the AST.
 8. **Verify Source**: Use `ctx_read` for exact source ranges before editing.
+9. **Task Lifecycle**: Claim, execute, and submit tasks via the operational task tools.
 
 ---
 
-## Tool Reference (15 Tools)
+## Tool Reference (19 Tools)
+
+### Operational Task Lifecycle
+- `task_list(status?, milestone?, owner?, limit?)`: Query executable tasks in SQLite store (defaults strictly to `status: "ready"`).
+- `task_claim(task_id, stage, worker_id, worktree)`: Claim an operational task gate in the assigned worktree.
+- `task_submit(task_id, stage, action, evidence_ref?, findings?)`: Submit validation evidence or review findings to pass/reject the active gate.
+- `task_manage(action, task_id?, reason?)`: Task state administration (`inspect`, `cancel`, `release_worker`, `archive`).
+
 
 ### Discovery & Search
 - `code_map_overview()`: Workspace component list, module hierarchy, indexing stats, and unresolved edges.
