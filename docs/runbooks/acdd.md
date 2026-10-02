@@ -30,14 +30,18 @@ messages. A code-index rebuild does not reset task state.
 
 ## Prepare the queue
 
-1. Read the milestone contract and relevant [architecture](../architecture/README.md)
+1. Create and enter a dedicated worktree for the milestone:
+   `git worktree add .worktrees/<milestone-prefix>-<slug> -b <branch-name>`
+   Run all subsequent ACDD operations, task claims, and tests inside this worktree.
+2. Read the milestone contract and relevant [architecture](../architecture/README.md)
    and [decisions](../adr/README.md). Check scope and dependencies before
    assigning agents.
-2. Run `contextunity-forge-mcp task sync docs/milestones/<number>-<slug>.md`.
-3. Run `contextunity-forge-mcp task list --status ready` and select a task whose prerequisites are complete.
-4. Keep work on the current branch, with one atomic commit per task containing
-   source, tests, and its generated receipt. Keep the history linear.
-5. Use distinct `worker_id` values for the builder and the review and delivery
+3. Bring any legacy task receipts in the milestone document into alignment with the
+   current typed receipt schema before syncing, preserving engine parsers in `src/` intact.
+4. Run `contextunity-forge-mcp task sync docs/milestones/<number>-<slug>.md`.
+5. Run `contextunity-forge-mcp task list --status ready` and select a task whose prerequisites are complete.
+6. Record exactly one atomic commit per task containing source, tests, and its generated receipt. Keep the history strictly linear.
+7. Use distinct `worker_id` values for the builder and the review and delivery
    workers. Read `workflow_guidance`, `agent_type`, and the configured
    instruction path before claiming a stage.
 
@@ -181,7 +185,8 @@ contextunity-forge-mcp milestone handoff <number> --verification-command "cargo 
 
 The handoff command records verification, duration, and commit, marks the
 milestone completed, moves it under `docs/milestones/archive/`, and updates
-task references. Inspect the result, then commit the archived document.
+task references. Inspect the result, commit the archived document, and merge the branch into `main`.
+After merge, install the updated release binary with `cargo install --path . --root ~/.local --force`.
 
 ## Guidance configuration
 

@@ -24,18 +24,22 @@ This repository directly owns its execution queue and task commitments:
 - **Execution queue & milestones**: [`docs/milestones/`](docs/milestones/) ordered by numeric prefix (`010-*.md`, `020-*.md`).
 - **Research & proposal drafts**: [`docs/plans/`](docs/plans/README.md).
 - **Milestone discovery**: Run `contextunity-forge-mcp milestone list` to inspect active and planned milestones and task completion ratios. Run `contextunity-forge-mcp milestone show <id-or-prefix> --full` to read the selected contract and task descriptions.
+- **Milestone worktree mandate**: Every milestone must be developed in its own dedicated worktree. Always create and enter `.worktrees/<milestone-prefix>-<slug>` before editing files or claiming tasks. Keep the root checkout on `main` untouched.
+- **Milestone format integrity**: Resolve any legacy or mismatched receipt formats directly in the milestone markdown document inside the worktree to match the current typed receipt contract. Preserve engine and parser source in `src/` unchanged when importing milestone specifications.
 - **Milestone creation**: Run `contextunity-forge-mcp milestone init --plan <path>` to scaffold the next numbered contract. Use `--active` to start its active development clock at creation.
 - **Milestone closure**: Run `contextunity-forge-mcp milestone handoff <id-or-prefix> --verification-command <command> --tests-passed <count> --tests-failed 0` after every SQLite task reaches `completed`. The command records a structured receipt and moves the milestone into `docs/milestones/archive/`.
+- **Post-merge binary install**: After merging a completed milestone into `main`, install the updated release binary with `cargo install --path . --root ~/.local --force`.
+- **Milestone-free fixes & fast-forward branches**: Minor, self-contained fixes or maintenance improvements that do not belong to an active milestone may be committed directly to `main` or developed in a dedicated worktree branch and merged via fast-forward (`git merge --ff-only`), strictly upon explicit user instruction. All changes must satisfy clippy and test suites.
 - **Operational task lifecycle**: Tasks are stored in `.forge/tasks.sqlite` (configured via `forge-mcp.yaml`). Query executable tasks using `task_list` or `task list` (defaults to `ready`). Claim and submit with direct JSON proof, and exchange temporary context with `task_blackboard` or `task blackboard`. Passing `deliver/v1` writes the durable task receipt into the milestone and clears task messages. Read [task operations](docs/reference/tasks.md) for gate and API details.
 
 ## Development Worktrees
 
-For isolated subagent work, parallel branches, or spikes:
+Every milestone, isolated subagent task, or parallel spike operates within a dedicated worktree:
 - Create worktrees under `.worktrees/<branch-name>`:
-  `git worktree add .worktrees/<branch-name> <branch-name>`
+  `git worktree add .worktrees/<branch-name> -b <branch-name>`
+- Switch into that directory for all development, task operations, and verification.
 - `.worktrees/` is gitignored at repository root to keep untracked workspaces clean.
-- On merge, inspect the governing milestone with `milestone show`, reconcile task receipts, and run `milestone handoff` after all tasks complete per [docs/AGENTS.md](docs/AGENTS.md).
-- Prune worktrees when finished: `git worktree remove .worktrees/<branch-name>`.
+- On merge into `main`, verify the milestone state, prune the worktree with `git worktree remove .worktrees/<branch-name>`, and delete the merged feature branch.
 
 ## Codebase Architecture
 
