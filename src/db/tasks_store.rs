@@ -52,6 +52,23 @@ pub struct Task {
     pub applicable_invariants: Vec<String>,
 }
 
+/// A task-scoped collaboration message persisted in the task store.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BlackboardMessage {
+    /// Monotonic message identifier.
+    pub id: u64,
+    /// Owning task identifier.
+    pub task_id: String,
+    /// Posting worker identifier.
+    pub author: String,
+    /// Message category.
+    pub topic: String,
+    /// Text or serialized JSON payload.
+    pub payload: String,
+    /// Unix creation time.
+    pub created_at: i64,
+}
+
 /// Represents tasks store data.
 pub struct TasksStore {
     /// The connection value.
@@ -112,6 +129,8 @@ impl TasksStore {
             CREATE TABLE IF NOT EXISTS task_scope_paths(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,path TEXT NOT NULL,base_root TEXT NOT NULL,frozen INTEGER NOT NULL,PRIMARY KEY(task_id,path));
             CREATE TABLE IF NOT EXISTS task_dependencies(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,dependency_id TEXT NOT NULL,satisfied INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(task_id,dependency_id));
             CREATE TABLE IF NOT EXISTS task_submissions(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,result TEXT NOT NULL,PRIMARY KEY(task_id,revision));
+            CREATE TABLE IF NOT EXISTS task_blackboard(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,author TEXT NOT NULL,topic TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_task_blackboard_task_created ON task_blackboard(task_id, created_at);
             CREATE TRIGGER IF NOT EXISTS task_insert_generation AFTER INSERT ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
             CREATE TRIGGER IF NOT EXISTS task_update_generation AFTER UPDATE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
             CREATE TRIGGER IF NOT EXISTS task_delete_generation AFTER DELETE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;")?;
@@ -133,6 +152,43 @@ impl TasksStore {
             bail!("TASK_PROJECT_MISMATCH");
         }
         Ok(())
+    }
+    /// Persist a message for one task and return its SQLite identifier.
+    pub fn blackboard_post(&self, task_id: &str, author: &str, topic: &str, payload: &str) -> Result<u64> {
+        self.assert_id(task_id)?;
+        if author.trim().is_empty() || topic.trim().is_empty() {
+            bail!("TASK_BLACKBOARD_INVALID: author and topic are required");
+        }
+        self.connection.execute(
+            "INSERT INTO task_blackboard(task_id,author,topic,payload,created_at) VALUES(?1,?2,?3,?4,?5)",
+            params![task_id, author, topic, payload, now()],
+        )?;
+        Ok(u64::try_from(self.connection.last_insert_rowid())?)
+    }
+    /// Read messages in insertion order with an optional topic and result limit.
+    pub fn blackboard_read(&self, task_id: &str, topic: Option<&str>, limit: Option<usize>) -> Result<Vec<BlackboardMessage>> {
+        self.assert_id(task_id)?;
+        let limit = limit.map(i64::try_from).transpose()?.unwrap_or(i64::MAX);
+        let mut statement = self.connection.prepare(
+            "SELECT id,task_id,author,topic,payload,created_at FROM task_blackboard \
+             WHERE task_id=?1 AND (?2 IS NULL OR topic=?2) ORDER BY created_at,id LIMIT ?3",
+        )?;
+        let messages = statement.query_map(params![task_id, topic, limit], |row| {
+            Ok(BlackboardMessage {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                author: row.get(2)?,
+                topic: row.get(3)?,
+                payload: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(messages)
+    }
+    /// Delete all transient messages for one task.
+    pub fn blackboard_clear(&self, task_id: &str) -> Result<usize> {
+        self.assert_id(task_id)?;
+        Ok(self.connection.execute("DELETE FROM task_blackboard WHERE task_id=?1", [task_id])?)
     }
     /// Performs inspect.
     pub fn inspect(&self, id: &str) -> Result<Task> {

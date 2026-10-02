@@ -43,6 +43,9 @@ pub struct TaskSpec {
     pub task_ref: String,
     /// The target value.
     pub target: String,
+    /// Optional agent specialization requested by the task contract.
+    #[serde(default)]
+    pub agent_type: Option<String>,
     /// The proof policy value.
     pub proof_policy: String,
     /// The scope value.

@@ -47,6 +47,75 @@ fn fixture() -> (ScopedWorkspace, TasksStore, Milestone) {
     store.sync(&milestone, "docs/010-test.md", &root.0).unwrap();
     (root, store, milestone)
 }
+
+#[test]
+fn blackboard_persists_task_scoped_messages_in_chronological_order() {
+    let (root, store, milestone) = fixture();
+    let first = milestone.task_id(&milestone.tasks[0]);
+    let second = milestone.task_id(&milestone.tasks[1]);
+    let first_id = store
+        .blackboard_post(&first, "author-a", "contract_draft", "red test")
+        .unwrap();
+    let second_id = store
+        .blackboard_post(&first, "author-b", "architectural_notes", "use WAL")
+        .unwrap();
+    store
+        .blackboard_post(&second, "author-c", "contract_draft", "other task")
+        .unwrap();
+    assert!(second_id > first_id);
+    let all = store.blackboard_read(&first, None, None).unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].id, first_id);
+    assert_eq!(all[0].author, "author-a");
+    assert_eq!(all[1].id, second_id);
+    assert!(all[0].created_at <= all[1].created_at);
+    assert_eq!(
+        store
+            .blackboard_read(&first, Some("architectural_notes"), Some(1))
+            .unwrap()[0]
+            .payload,
+        "use WAL"
+    );
+    assert_eq!(store.blackboard_clear(&first).unwrap(), 2);
+    assert!(store.blackboard_read(&first, None, None).unwrap().is_empty());
+    assert_eq!(store.blackboard_read(&second, None, None).unwrap().len(), 1);
+    let index: String = store.connection.query_row(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='task_blackboard' AND sql LIKE '%task_id, created_at%'",
+        [],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(index, "idx_task_blackboard_task_created");
+    drop(root);
+}
+
+#[test]
+fn blackboard_concurrent_connections_persist_and_cascade() {
+    let (root, store, milestone) = fixture();
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    let database = root.0.join(".forge/tasks.sqlite");
+    let workers: Vec<_> = (0..2)
+        .map(|worker| {
+            let database = database.clone();
+            let task_id = task_id.clone();
+            std::thread::spawn(move || {
+                let connection = TasksStore::open(&database).unwrap();
+                for index in 0..20 {
+                    connection
+                        .blackboard_post(&task_id, &format!("worker-{worker}"), "build_proof", &index.to_string())
+                        .unwrap();
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    drop(store);
+    let reopened = TasksStore::open(&database).unwrap();
+    assert_eq!(reopened.blackboard_read(&task_id, None, None).unwrap().len(), 40);
+    reopened.connection.execute("DELETE FROM tasks WHERE task_id=?1", [&task_id]).unwrap();
+    assert!(reopened.blackboard_read(&task_id, None, None).unwrap().is_empty());
+}
 #[test]
 fn linked_task_workspaces_share_storage_and_confine_local_scope() {
     let (root, _, _) = fixture();

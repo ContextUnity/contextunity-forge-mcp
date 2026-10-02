@@ -1,26 +1,27 @@
 ---
 id: m-task-blackboard-and-context-retention
-title: "Task blackboard, in-store artifacts, and milestone context retention"
+title: Task blackboard, in-store artifacts, and milestone context retention
 doc_type: contract
-status: planned
+status: active
 depends_on:
-  - m-milestone-lifecycle-and-automation:completed
+- m-milestone-lifecycle-and-automation:completed
 owners:
-  - src/core/tasks/
-  - src/db/tasks_store.rs
-  - src/engine/
-  - src/mcp/
-  - src/cli/
-  - docs/
-  - tests/
+- src/core/tasks/
+- src/db/tasks_store.rs
+- src/engine/
+- src/mcp/
+- src/cli/
+- docs/
+- tests/
 invariants:
-  - "INV-TASK-BLACKBOARD: Subagents communicate task context and delivery state asynchronously through an in-memory/SQLite task blackboard rather than workspace-littering files or conversational context bloat."
-  - "INV-EPHEMERAL-SCRATCHPAD: Scratchpad blackboard messages are strictly task-scoped and pruned upon task completion, preventing context contamination across tasks."
-  - "INV-IN-STORE-ARTIFACTS: Task specifications, red test proofs, review contours, and receipts are stored directly inside SQLite tables (task_gates, task_blackboard, task_submissions) rather than arbitrary disk YAML/MD files."
-  - "INV-TASK-MILESTONE-ROLLUP: Completing a task automatically rolls up its verified commit SHA, invariant proofs, and durable architectural outcomes into the milestone descriptor and Markdown receipt, preserving vital context while discarding transient scratchpad noise."
-  - "INV-TASK-AGENT-METADATA: Tasks declare an optional agent_type metadata field, allowing milestone authors to prescribe the required agent specialization (e.g. worker, reviewer, pro, flash) for execution."
-  - "INV-CONFIGURABLE-WORKFLOW-GUIDANCE: Task claim and inspect responses dynamically provide actionable workflow guidance derived from the configured instructions file in forge-mcp.yaml (defaulting to AGENTS.md or docs/reference/acdd.md), enabling custom repositories to plug in their own instructions."
-  - "INV-PEER-REVIEWED-CONTRACT: A task contract must be verified and approved by an independent reviewer agent on the blackboard before implementation code may be claimed or authored."
+- 'INV-TASK-BLACKBOARD: Subagents communicate task context and delivery state asynchronously through an in-memory/SQLite task blackboard rather than workspace-littering files or conversational context bloat.'
+- 'INV-EPHEMERAL-SCRATCHPAD: Scratchpad blackboard messages are strictly task-scoped and pruned upon task completion, preventing context contamination across tasks.'
+- 'INV-IN-STORE-ARTIFACTS: Task specifications, red test proofs, review contours, and receipts are stored directly inside SQLite tables (task_gates, task_blackboard, task_submissions) rather than arbitrary disk YAML/MD files.'
+- 'INV-TASK-MILESTONE-ROLLUP: Completing a task automatically rolls up its verified commit SHA, invariant proofs, and durable architectural outcomes into the milestone descriptor and Markdown receipt, preserving vital context while discarding transient scratchpad noise.'
+- 'INV-TASK-AGENT-METADATA: Tasks declare an optional agent_type metadata field, allowing milestone authors to prescribe the required agent specialization (e.g. worker, reviewer, pro, flash) for execution.'
+- 'INV-CONFIGURABLE-WORKFLOW-GUIDANCE: Task claim and inspect responses dynamically provide actionable workflow guidance derived from the configured instructions file in forge-mcp.yaml (defaulting to AGENTS.md or docs/reference/acdd.md), enabling custom repositories to plug in their own instructions.'
+- 'INV-PEER-REVIEWED-CONTRACT: A task contract must be verified and approved by an independent reviewer agent on the blackboard before implementation code may be claimed or authored.'
+started_at: 2026-10-02T11:25:41+00:00
 ---
 
 # Task blackboard, in-store artifacts, and milestone context retention
@@ -45,7 +46,35 @@ scope:
   - src/core/tasks/
   - src/db/tasks_store.rs
   - tests/core_basics/tasks.rs
-status: planned
+status: completed
+receipt:
+  commit: 634d9e87767c9f6282b7c23ffe5f8f6760384ceb
+  contract_revision: 1
+  passed_at: "2026-10-02T11:41:50Z"
+  evidence:
+    command: cargo test --test core_basics blackboard_ && cargo clippy --all-targets --all-features -- -D warnings
+    result: passed
+    artifacts: []
+  review:
+    decision: pass
+    evidence_ref: in-store:task1-review
+    contours:
+      paths:
+        applicable: true
+        evidence: Staged diff limited to task blackboard store, core parser bootstrap, and domain tests.
+      claims:
+        applicable: true
+        evidence: Real SQLite schema, CRUD, topic filters, isolation, concurrency, reopen, cascade tested.
+      concurrency:
+        applicable: true
+        evidence: Two independent WAL connections posted 40 messages with busy timeout.
+      project_isolation:
+        applicable: true
+        evidence: Namespace check and task foreign key bind messages to one project task.
+      administration:
+        applicable: true
+        evidence: Index and FK verified, no task files created.
+  decision: pass
 ```
 
 1. **SQLite Schema**:
@@ -186,4 +215,3 @@ status: planned
 4. **Skill Synchronization**:
    - Update `.agents/skills/contextunity-forge/SKILL.md` (and global skill) to document the complete blackboard and subagent dispatch protocol.
    - Ensure Forge FTS indexes both `docs/reference/acdd.md` and `docs/runbooks/acdd.md` for fast retrieval via `get_doc` or `search_docs`.
-
