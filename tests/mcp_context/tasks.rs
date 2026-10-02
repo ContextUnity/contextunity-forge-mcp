@@ -86,7 +86,8 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     let synced = client.payload("task_manage", json!({"action":"sync","workspace":"traverse","milestone_ref":"docs/milestones/010-linked.md"}));
     assert_eq!(synced["tasks"][0]["status"], "in_progress");
     let commit = "0123456789abcdef0123456789abcdef01234567";
-    let build_proof = json!({"command":"cargo test","result":"passed","artifacts":[]});
+    let build_proof = json!({"test_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
+    let contract_proof = json!({"contract_proof":{"seam_test_ref":"tests/mcp_context/tasks.rs","red_exit_code":101}});
     let contours: serde_json::Map<String, Value> =
         contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
             .iter()
@@ -97,7 +98,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
                 )
             })
             .collect();
-    let review_proof = json!({"decision":"pass","evidence_ref":"review.json","contours":contours});
+    let review_proof = json!({"review_proof":{"decision":"pass","contours":contours}});
     for (gate, stage) in contextunity_forge_mcp::core::tasks::GATES
         .iter()
         .enumerate()
@@ -113,10 +114,12 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         };
         let proof = if gate == 3 {
             &review_proof
+        } else if gate == 1 {
+            &contract_proof
         } else {
             &build_proof
         };
-        linked.write("evidence.json", &serde_json::to_string(&json!({"task_id":id,"stage":stage,"claim_revision":claim["claim_revision"],"contract_revision":1,"worker_id":worker,"worktree":linked.0,"commit":commit,"proof":proof})).unwrap());
+        let evidence = json!({"task_id":id,"stage":stage,"claim_revision":claim["claim_revision"],"contract_revision":1,"worker_id":worker,"worktree":linked.0,"commit":commit,"proof":proof});
         if gate == 4 {
             use contextunity_forge_mcp::core::tasks::{Milestone, Receipt};
             let mut specification = Milestone::parse(manifest, "traverse").unwrap();
@@ -133,7 +136,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         }
         let result = client.payload(
             "task_submit",
-            json!({"task_id":id,"stage":stage,"evidence_ref":"evidence.json","action":"pass"}),
+            json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"}),
         );
         assert_eq!(
             result["status"],
@@ -152,7 +155,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
 }
 
 #[test]
-fn task_stdio_lifecycle_reads_evidence_in_independent_worktrees() {
+fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
     use contextunity_forge_mcp::core::tasks::{gates::REVIEW_CONTOURS, Milestone, Receipt, GATES};
     let builder = Workspace::new();
     let reviewer = Workspace::new();
@@ -189,7 +192,8 @@ fn task_stdio_lifecycle_reads_evidence_in_independent_worktrees() {
         );
     }
     let commit = "0123456789abcdef0123456789abcdef01234567";
-    let build_proof = json!({"command":"cargo test","result":"passed","artifacts":[]});
+    let build_proof = json!({"test_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
+    let contract_proof = json!({"contract_proof":{"seam_test_ref":"tests/mcp_context/tasks.rs","red_exit_code":101}});
     let contours: serde_json::Map<String, Value> = REVIEW_CONTOURS
         .iter()
         .map(|name| {
@@ -199,7 +203,7 @@ fn task_stdio_lifecycle_reads_evidence_in_independent_worktrees() {
             )
         })
         .collect();
-    let review_proof = json!({"decision":"pass","evidence_ref":"review.json","contours":contours});
+    let review_proof = json!({"review_proof":{"decision":"pass","contours":contours}});
     for (gate, stage) in GATES.iter().enumerate() {
         let workspace = if gate == 3 { &reviewer } else { &builder };
         let worker = if gate == 3 { "reviewer" } else { "builder" };
@@ -209,13 +213,24 @@ fn task_stdio_lifecycle_reads_evidence_in_independent_worktrees() {
         );
         let proof = if gate == 3 {
             &review_proof
+        } else if gate == 1 {
+            &contract_proof
         } else {
             &build_proof
         };
         let evidence = json!({"task_id":id,"stage":stage,"claim_revision":claim["claim_revision"],"contract_revision":1,"worker_id":worker,"worktree":workspace.0,"commit":commit,"proof":proof});
-        workspace.write("evidence.json", &serde_json::to_string(&evidence).unwrap());
-        let args =
-            json!({"task_id":id,"stage":stage,"evidence_ref":"evidence.json","action":"pass"});
+        if gate == 0 {
+            for invalid in [
+                json!({"task_id":id,"stage":stage,"action":"pass","evidence_ref":"proof.yaml"}),
+                json!({"task_id":id,"stage":stage,"action":"pass","evidence":42}),
+            ] {
+                let (_, rejected) = client.call("task_submit", invalid);
+                assert!(
+                    rejected.get("error").is_some() || rejected["result"]["isError"] == true
+                );
+            }
+        }
+        let args = json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"});
         if gate == 4 {
             let (_, missing) = client.call("task_submit", args.clone());
             assert_eq!(missing["result"]["isError"], true);

@@ -108,8 +108,9 @@ pub struct Submit {
     pub task_id: String,
     /// The stage value.
     pub stage: String,
-    /// The evidence ref value.
-    pub evidence_ref: String,
+    /// Structured evidence supplied directly by the caller.
+    #[schemars(schema_with = "evidence_schema")]
+    pub evidence: Value,
     /// The action value.
     pub action: Action,
     #[schemars(schema_with = "findings_schema")]
@@ -118,6 +119,9 @@ pub struct Submit {
 }
 fn findings_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     serde_json::Map::new().into()
+}
+fn evidence_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    serde_json::Map::from_iter([("type".into(), Value::String("object".into()))]).into()
 }
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -305,19 +309,11 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     let workspace = registry.owner(&p.task_id)?;
     let mut store = workspace.open(&registry.database)?;
     let task = store.inspect(&p.task_id)?;
-    let previous: String = store
-        .connection
-        .query_row(
-            "SELECT worktree FROM task_claims WHERE task_id=?1 ORDER BY revision DESC LIMIT 1",
-            [&p.task_id],
-            |r| r.get(0),
-        )
-        .context("TASK_STALE_SUBMISSION")?;
-    let path = confined_path(
-        Path::new(task.worktree.as_deref().unwrap_or(&previous)),
-        &p.evidence_ref,
-    )?;
-    let evidence: Evidence = serde_yaml::from_str(&std::fs::read_to_string(path)?)?;
+    if !p.evidence.is_object() {
+        bail!("TASK_EVIDENCE_INVALID: evidence must be a JSON object");
+    }
+    let evidence: Evidence = serde_json::from_value(p.evidence)
+        .context("TASK_EVIDENCE_INVALID: expected a structured JSON evidence object")?;
     registry.check_worktree(workspace, Path::new(&evidence.worktree))?;
     if task.status != "completed" {
         validate_authority(&task, Path::new(&evidence.worktree))?;

@@ -404,7 +404,7 @@ impl Server {
         self.responding(|_| super::tasks::claim(&self.root, p))
     }
     #[tool(
-        description = "Submit revision-bound evidence. Handoff synchronously validates the Git milestone receipt."
+        description = "Submit revision-bound evidence as a JSON object. Handoff synchronously validates the Git milestone receipt."
     )]
     fn task_submit(&self, Parameters(p): Parameters<super::tasks::Submit>) -> CallToolResult {
         self.responding(|_| super::tasks::submit(&self.root, p))

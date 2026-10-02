@@ -52,28 +52,30 @@ receipt:
   contract_revision: 1
   passed_at: "2026-10-02T11:41:50Z"
   evidence:
-    command: cargo test --test core_basics blackboard_ && cargo clippy --all-targets --all-features -- -D warnings
-    result: passed
-    artifacts: []
+    test_proof:
+      command: cargo test --test core_basics blackboard_ && cargo clippy --all-targets --all-features -- -D warnings
+      exit_code: 0
+      tests_passed: 2
+      tests_failed: 0
   review:
-    decision: pass
-    evidence_ref: in-store:task1-review
-    contours:
-      paths:
-        applicable: true
-        evidence: Staged diff limited to task blackboard store, core parser bootstrap, and domain tests.
-      claims:
-        applicable: true
-        evidence: Real SQLite schema, CRUD, topic filters, isolation, concurrency, reopen, cascade tested.
-      concurrency:
-        applicable: true
-        evidence: Two independent WAL connections posted 40 messages with busy timeout.
-      project_isolation:
-        applicable: true
-        evidence: Namespace check and task foreign key bind messages to one project task.
-      administration:
-        applicable: true
-        evidence: Index and FK verified, no task files created.
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Staged diff limited to task blackboard store, core parser bootstrap, and domain tests.
+        claims:
+          applicable: true
+          evidence: Real SQLite schema, CRUD, topic filters, isolation, concurrency, reopen, cascade tested.
+        concurrency:
+          applicable: true
+          evidence: Two independent WAL connections posted 40 messages with busy timeout.
+        project_isolation:
+          applicable: true
+          evidence: Namespace check and task foreign key bind messages to one project task.
+        administration:
+          applicable: true
+          evidence: Index and FK verified, no task files created.
   decision: pass
 ```
 
@@ -94,24 +96,57 @@ receipt:
 
 ```yaml
 task_ref: in-store-task-artifacts-and-evidence
-target: "Eliminate disk YAML/MD file littering by accepting structured JSON evidence directly in task_submit and storing proofs in SQLite"
+target: "Accept structured JSON evidence directly in MCP and CLI task_submit, and require the typed task proof standard without evidence files"
 agent_type: worker
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 3
 scope:
   - src/core/tasks/gates.rs
   - src/db/tasks_store.rs
   - src/engine/tasks.rs
   - src/mcp/tools.rs
+  - src/cli/task.rs
   - tests/core_basics/tasks.rs
-status: planned
+  - tests/mcp_context/tasks.rs
+status: completed
+receipt:
+  commit: 980f555fcf4d9c1136eb1e7d5889d4e53e1f9f1a
+  contract_revision: 3
+  passed_at: "2026-10-02T12:43:35Z"
+  evidence:
+    test_proof:
+      command: cargo test --test core_basics && cargo test --test mcp_context && cargo clippy --all-targets --all-features -- -D warnings
+      exit_code: 0
+      tests_passed: 58
+      tests_failed: 0
+      log: core_basics 33 passed; mcp_context 25 passed; clippy zero warnings; cargo test --all-targets passed before final review contour repair
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: "Diff matches task 2 scope: typed gate validators, direct JSON CLI/MCP seams, and domain tests."
+        claims:
+          applicable: true
+          evidence: "Real SQLite tests verify typed contract, test, and review proofs; bare forms and field aliases are rejected."
+        concurrency:
+          applicable: true
+          evidence: "Independent reviewer inspected final strict-proof diff and ran the real SQLite reject-path test."
+        project_isolation:
+          applicable: true
+          evidence: "Evidence binds task identity, claim revision, worker and worktree to the task row."
+        administration:
+          applicable: true
+          evidence: "CLI and MCP accept inline JSON; no evidence files are read or written; clippy passed with zero warnings."
+  decision: pass
 ```
 
 1. **Direct In-Memory Evidence Submissions**:
-   - Update `task_submit` tool and engine to accept raw JSON structured `evidence` in addition to legacy `evidence_ref`.
-   - Validate and store the proof payload directly in `task_gates.evidence` without requiring a physical `.forge/011-*.yaml` file on disk.
+   - Accept a raw JSON object as `evidence` in MCP and CLI `task_submit`; reject file-based evidence references.
+   - Validate and store the proof payload directly in `task_gates.evidence` without reading an evidence file from disk.
 2. **Standardized Proof Schemas**:
-   - Support typed proof payloads: `test_proof` (command, exit code, test count, failures), `review_proof` (5 contours with inline evidence), and `contract_proof` (seam test reference, red exit code).
+   - Require typed proof payloads: `test_proof` (command, exit code, test count, failures, optional bounded inline log), `review_proof` (5 contours with inline evidence), and `contract_proof` (seam test reference, red exit code). Reject older unwrapped proof forms.
 3. **In-Store Proof Storage**:
    - Store all gate proofs, test logs, review contours, and commit metadata directly inside SQLite tables (`task_gates`, `task_blackboard`, `task_submissions`).
 

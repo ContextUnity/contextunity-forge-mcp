@@ -72,7 +72,7 @@ pub enum TaskCommand {
         /// The action value.
         action: Action,
         #[arg(long)]
-        /// The evidence value.
+        /// JSON evidence object.
         evidence: String,
         #[arg(long)]
         /// Optional findings value.
@@ -166,7 +166,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                     task_id,
                     stage,
                     action,
-                    evidence_ref: evidence,
+                    evidence: serde_json::from_str(&evidence)?,
                     findings: findings.map(|s| serde_json::from_str(&s)).transpose()?,
                 },
             )

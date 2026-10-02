@@ -31,15 +31,23 @@ pub struct Evidence {
 #[serde(deny_unknown_fields)]
 struct TestProof {
     command: String,
-    result: String,
-    artifacts: Vec<String>,
+    exit_code: i32,
+    tests_passed: u64,
+    tests_failed: u64,
+    log: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContractProof {
+    seam_test_ref: String,
+    red_exit_code: i32,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewProof {
     decision: String,
-    evidence_ref: String,
     contours: std::collections::BTreeMap<String, ContourProof>,
 }
 
@@ -59,31 +67,67 @@ pub const REVIEW_CONTOURS: [&str; 5] = [
     "administration",
 ];
 
-fn validate_tests(value: &serde_json::Value) -> Result<()> {
-    let proof: TestProof = serde_json::from_value(value.clone())
-        .context("TASK_EVIDENCE_INVALID: typed test proof required")?;
-    if proof.command.trim().is_empty()
-        || proof.result != "passed"
-        || proof.artifacts.iter().any(|a| a.trim().is_empty())
-    {
-        bail!("TASK_EVIDENCE_INVALID: passing test command and artifacts required");
+fn proof_payload<'a>(
+    value: &'a serde_json::Value,
+    expected: &str,
+) -> Result<&'a serde_json::Value> {
+    let object = value
+        .as_object()
+        .context("TASK_EVIDENCE_INVALID: typed proof object required")?;
+    if object.len() != 1 {
+        bail!("TASK_EVIDENCE_INVALID: expected {expected}");
+    }
+    object
+        .get(expected)
+        .with_context(|| format!("TASK_EVIDENCE_INVALID: expected {expected}"))
+}
+
+fn validate_contract(value: &serde_json::Value, passed: bool) -> Result<()> {
+    let proof: ContractProof = serde_json::from_value(proof_payload(value, "contract_proof")?.clone())
+        .context("TASK_EVIDENCE_INVALID: typed contract proof required")?;
+    if passed && (proof.seam_test_ref.trim().is_empty() || proof.red_exit_code <= 0) {
+        bail!("TASK_EVIDENCE_INVALID: red seam test and nonzero exit code required");
     }
     Ok(())
 }
 
-fn validate_review(value: &serde_json::Value) -> Result<()> {
-    let proof: ReviewProof = serde_json::from_value(value.clone())
+fn validate_tests(value: &serde_json::Value, passed: bool) -> Result<()> {
+    let proof: TestProof = serde_json::from_value(proof_payload(value, "test_proof")?.clone())
+        .context("TASK_EVIDENCE_INVALID: typed test proof required")?;
+    if passed && (proof.command.trim().is_empty()
+        || proof.exit_code != 0
+        || proof.tests_passed == 0
+        || proof.tests_failed != 0)
+    {
+        bail!("TASK_EVIDENCE_INVALID: passing test command and counts required");
+    }
+    if proof.log.as_ref().is_some_and(|log| log.len() > 64 * 1024) {
+        bail!("TASK_EVIDENCE_INVALID: test log exceeds 64 KiB");
+    }
+    Ok(())
+}
+
+fn validate_review(value: &serde_json::Value, passed: bool) -> Result<()> {
+    let proof: ReviewProof = serde_json::from_value(proof_payload(value, "review_proof")?.clone())
         .context("TASK_EVIDENCE_INVALID: typed review proof required")?;
-    if proof.decision != "pass"
-        || proof.evidence_ref.trim().is_empty()
-        || proof.contours.len() != REVIEW_CONTOURS.len()
+    let expected_decision = if passed { "pass" } else { "reject" };
+    if proof.decision != expected_decision {
+        bail!("TASK_EVIDENCE_INVALID: review decision must match action");
+    }
+    validate_review_contours(&proof.contours)
+}
+
+fn validate_review_contours(
+    contours: &std::collections::BTreeMap<String, ContourProof>,
+) -> Result<()> {
+    if contours.len() != REVIEW_CONTOURS.len()
         || REVIEW_CONTOURS
             .iter()
-            .any(|name| !proof.contours.contains_key(*name))
+            .any(|name| !contours.contains_key(*name))
     {
         bail!("TASK_EVIDENCE_INVALID: five admitted review contours required");
     }
-    for contour in proof.contours.values() {
+    for contour in contours.values() {
         if contour.evidence.trim().is_empty() {
             bail!(
                 "TASK_EVIDENCE_INVALID: missing {}",
@@ -151,11 +195,11 @@ impl TasksStore {
         if evidence.commit.trim().is_empty() || evidence.proof.is_null() {
             bail!("TASK_EVIDENCE_INVALID");
         }
-        if action == "pass" && task.gate == 2 {
-            validate_tests(&evidence.proof)?;
-        }
-        if action == "pass" && task.gate == 3 {
-            validate_review(&evidence.proof)?;
+        match task.gate {
+            1 => validate_contract(&evidence.proof, action == "pass")?,
+            2 => validate_tests(&evidence.proof, action == "pass")?,
+            3 => validate_review(&evidence.proof, action == "pass")?,
+            _ => {}
         }
         if task.gate >= 3 {
             let builder: String = tx.query_row("SELECT json_extract(evidence,'$.worker_id') FROM task_gates WHERE task_id=?1 AND gate='build/v1' AND state='passed' ORDER BY revision DESC LIMIT 1",[id],|r|r.get(0))?;
@@ -281,8 +325,8 @@ fn validate_receipt(
 
 /// Performs validate durable receipt.
 pub fn validate_durable_receipt(receipt: &Receipt, revision: u64) -> Result<()> {
-    validate_tests(&receipt.evidence)?;
-    validate_review(&receipt.review)?;
+    validate_tests(&receipt.evidence, true)?;
+    validate_review(&receipt.review, true)?;
     if !matches!(receipt.commit.len(), 40 | 64)
         || !receipt.commit.bytes().all(|c| c.is_ascii_hexdigit())
         || receipt.contract_revision != revision

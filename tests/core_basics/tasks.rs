@@ -8,7 +8,7 @@ use contextunity_forge_mcp::{
     engine::tasks,
 };
 use serde_json::json;
-fn passing_review_proof() -> serde_json::Value {
+fn review_proof(decision: &str) -> serde_json::Value {
     let contours: serde_json::Map<String, serde_json::Value> =
         contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
             .iter()
@@ -19,7 +19,10 @@ fn passing_review_proof() -> serde_json::Value {
                 )
             })
             .collect();
-    json!({"decision":"pass","evidence_ref":"review.json","contours":contours})
+    json!({"review_proof":{"decision":decision,"contours":contours}})
+}
+fn passing_review_proof() -> serde_json::Value {
+    review_proof("pass")
 }
 fn evidence(task: &contextunity_forge_mcp::db::tasks_store::Task) -> Evidence {
     Evidence {
@@ -30,7 +33,12 @@ fn evidence(task: &contextunity_forge_mcp::db::tasks_store::Task) -> Evidence {
         worker_id: task.worker_id.clone().unwrap(),
         worktree: task.worktree.clone().unwrap(),
         commit: "0123456789abcdef0123456789abcdef01234567".into(),
-        proof: json!({"command":"cargo test","result":"passed","artifacts":[]}),
+        proof: match task.gate {
+            1 => json!({"contract_proof":{"seam_test_ref":"tests/core_basics/tasks.rs","red_exit_code":101}}),
+            2 => json!({"test_proof":{"command":"cargo test --test core_basics","exit_code":0,"tests_passed":1,"tests_failed":0}}),
+            3 => passing_review_proof(),
+            _ => json!({"stage":GATES[task.gate]}),
+        },
     }
 }
 const SPEC: &str = "---\nid: m-test\ntitle: Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Deliver second\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first]\n```\n";
@@ -46,6 +54,302 @@ fn fixture() -> (ScopedWorkspace, TasksStore, Milestone) {
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     store.sync(&milestone, "docs/010-test.md", &root.0).unwrap();
     (root, store, milestone)
+}
+
+#[test]
+fn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {
+    let schema = serde_json::to_value(schemars::schema_for!(tasks::Submit)).unwrap();
+    assert_eq!(schema["properties"]["evidence"]["type"], "object");
+    let (root, mut store, milestone) = fixture();
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    let worktree = root.0.to_str().unwrap();
+    let design = store.claim(&task_id, "design", "contract-author", worktree).unwrap();
+    store
+        .submit(&task_id, "design", &evidence(&design), "pass", None)
+        .unwrap();
+    let contract = store
+        .claim(&task_id, "contract", "independent-reviewer", worktree)
+        .unwrap();
+    let proof = evidence(&contract);
+    let raw_evidence = serde_json::to_value(&proof).unwrap();
+    for invalid in [
+        json!({"task_id":task_id,"stage":"contract/v1","action":"pass"}),
+        json!({"task_id":task_id,"stage":"contract/v1","action":"pass","evidence_ref":"proof.yaml"}),
+        json!({"task_id":task_id,"stage":"contract/v1","action":"pass","evidence":raw_evidence,"evidence_ref":"proof.yaml"}),
+    ] {
+        assert!(serde_json::from_value::<tasks::Submit>(invalid).is_err());
+        assert_eq!(store.inspect(&task_id).unwrap().status, "in_progress");
+    }
+    let nonobject: tasks::Submit = serde_json::from_value(json!({
+        "task_id": task_id,
+        "stage": "contract/v1",
+        "action": "pass",
+        "evidence": 42
+    }))
+    .unwrap();
+    assert!(tasks::submit(&root.0, nonobject).is_err());
+    assert_eq!(store.inspect(&task_id).unwrap().status, "in_progress");
+    let request: tasks::Submit = serde_json::from_value(json!({
+        "task_id": task_id,
+        "stage": "contract/v1",
+        "action": "pass",
+        "evidence": raw_evidence
+    }))
+    .unwrap();
+
+    let submitted = tasks::submit(&root.0, request).unwrap();
+    assert_eq!(submitted["status"], "ready");
+    let stored: String = store
+        .connection
+        .query_row(
+            "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='contract/v1' AND state='passed'",
+            [&task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&stored).unwrap(), raw_evidence);
+    let submission: String = store
+        .connection
+        .query_row(
+            "SELECT result FROM task_submissions WHERE task_id=?1 AND revision=?2",
+            rusqlite::params![task_id, proof.claim_revision],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&submission).unwrap()["evidence"],
+        raw_evidence
+    );
+
+}
+
+#[test]
+fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
+    let (root, mut store, milestone) = fixture();
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    let claimed = store
+        .claim(&task_id, "design", "cli-worker", root.0.to_str().unwrap())
+        .unwrap();
+    let proof = evidence(&claimed);
+    let raw = serde_json::to_string(&proof).unwrap();
+    for invalid in ["proof.yaml", "42"] {
+        let rejected = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args([
+                "--root",
+                root.0.to_str().unwrap(),
+                "task",
+                "submit",
+                &task_id,
+                "--stage",
+                "design/v1",
+                "--action",
+                "pass",
+                "--evidence",
+                invalid,
+            ])
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert_eq!(store.inspect(&task_id).unwrap().status, "in_progress");
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            root.0.to_str().unwrap(),
+            "task",
+            "submit",
+            &task_id,
+            "--stage",
+            "design/v1",
+            "--action",
+            "pass",
+            "--evidence",
+            &raw,
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "ready");
+    let stored: String = store
+        .connection
+        .query_row(
+            "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='design/v1' AND state='passed'",
+            [&task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&stored).unwrap(), serde_json::to_value(proof).unwrap());
+}
+
+#[test]
+fn typed_task_proofs_pass_through_engine_and_real_store() {
+    let (root, mut store, milestone) = fixture();
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    let worktree = root.0.to_str().unwrap();
+    let contours: serde_json::Map<String, serde_json::Value> =
+        contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
+            .iter()
+            .map(|name| {
+                (
+                    (*name).into(),
+                    json!({"applicable": true, "evidence": "verified at the public seam"}),
+                )
+            })
+            .collect();
+    let cases = [
+        ("design", "author", json!({"design":"approved"}), vec![]),
+        (
+            "contract",
+            "contract-reviewer",
+            json!({"contract_proof":{"seam_test_ref":"tests/core_basics/tasks.rs::task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite","red_exit_code":101}}),
+            vec![
+                json!({"contract_proof":{"seam_test_ref":"tests/core_basics/tasks.rs::task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite","red_exit_code":0}}),
+                json!({"seam_test_ref":"tests/core_basics/tasks.rs::task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite","red_exit_code":101}),
+                json!({"contract_proof":{"seam_test":"tests/core_basics/tasks.rs","red_exit_code":101}}),
+            ],
+        ),
+        (
+            "build",
+            "builder",
+            json!({"test_proof":{"command":"cargo test --test core_basics","exit_code":0,"tests_passed":2,"tests_failed":0,"log":"running 2 tests\ntest result: ok. 2 passed ✓"}}),
+            vec![
+                json!({"test_proof":{"command":"cargo test --test core_basics","exit_code":1,"tests_passed":1,"tests_failed":1}}),
+                json!({"test_proof":{"command":"cargo test --test core_basics","exit_code":0,"tests_passed":2,"tests_failed":0,"log":"x".repeat(65_537)}}),
+                json!({"command":"cargo test --test core_basics","result":"passed","artifacts":[]}),
+                json!({"test_proof":{"command":"cargo test --test core_basics","exit_code":0,"tests_passed":2,"tests_failed":0,"output":"passed"}}),
+            ],
+        ),
+        (
+            "review",
+            "independent-reviewer",
+            json!({"review_proof":{"decision":"pass","contours":contours.clone()}}),
+            vec![
+                json!({"review_proof":{"decision":"pass","contours":{}}}),
+                json!({"decision":"pass","contours":contours}),
+            ],
+        ),
+    ];
+    for (stage, worker, proof, invalid_cases) in cases {
+        let claimed = store.claim(&task_id, stage, worker, worktree).unwrap();
+        let mut evidence = evidence(&claimed);
+        for invalid in invalid_cases {
+            evidence.proof = invalid;
+            let request: tasks::Submit = serde_json::from_value(json!({
+                "task_id": task_id,
+                "stage": stage,
+                "action": "pass",
+                "evidence": evidence,
+            }))
+            .unwrap();
+            assert!(tasks::submit(&root.0, request).is_err());
+            assert_eq!(store.inspect(&task_id).unwrap().status, "in_progress");
+        }
+        evidence.proof = proof.clone();
+        let request: tasks::Submit = serde_json::from_value(json!({
+            "task_id": task_id,
+            "stage": stage,
+            "action": "pass",
+            "evidence": evidence,
+        }))
+        .unwrap();
+        let result = tasks::submit(&root.0, request).unwrap();
+        assert_eq!(result["status"], "ready");
+        let stored: String = store
+            .connection
+            .query_row(
+                "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed'",
+                rusqlite::params![task_id, GATES[claimed.gate]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&stored).unwrap()["proof"], proof);
+        let submission: String = store
+            .connection
+            .query_row(
+                "SELECT result FROM task_submissions WHERE task_id=?1 AND revision=?2",
+                rusqlite::params![task_id, claimed.claim_revision],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&submission).unwrap()["evidence"]["proof"],
+            proof
+        );
+    }
+}
+
+#[test]
+fn rejected_task_gates_require_typed_proof_and_persist_failing_evidence() {
+    for gate in [1_usize, 2, 3] {
+        let (root, mut store, milestone) = fixture();
+        let task_id = milestone.task_id(&milestone.tasks[0]);
+        let worktree = root.0.to_str().unwrap();
+        for stage in GATES.iter().take(gate) {
+            let claimed = store.claim(&task_id, stage, "builder", worktree).unwrap();
+            store
+                .submit(&task_id, stage, &evidence(&claimed), "pass", None)
+                .unwrap();
+        }
+        let worker = if gate == 3 { "reviewer" } else { "builder" };
+        let claimed = store.claim(&task_id, GATES[gate], worker, worktree).unwrap();
+        let (bare, typed) = match gate {
+            1 => (
+                json!({"seam_test_ref":"tests/core_basics/tasks.rs","red_exit_code":0}),
+                json!({"contract_proof":{"seam_test_ref":"tests/core_basics/tasks.rs","red_exit_code":0}}),
+            ),
+            2 => (
+                json!({"command":"cargo test","result":"failed","artifacts":[]}),
+                json!({"test_proof":{"command":"cargo test","exit_code":101,"tests_passed":0,"tests_failed":1,"log":"one test failed"}}),
+            ),
+            _ => (
+                json!({"decision":"reject","contours":{}}),
+                review_proof("reject"),
+            ),
+        };
+        let findings = json!({"decision":"remediate"});
+        let mut proof = evidence(&claimed);
+        proof.proof = bare;
+        assert!(store
+            .submit(&task_id, GATES[gate], &proof, "reject", Some(&findings))
+            .is_err());
+        assert_eq!(store.inspect(&task_id).unwrap().status, "in_progress");
+        if gate == 3 {
+            for invalid in [
+                json!({"review_proof":{"decision":"reject","contours":{}}}),
+                passing_review_proof(),
+            ] {
+                proof.proof = invalid;
+                assert!(store
+                    .submit(&task_id, GATES[gate], &proof, "reject", Some(&findings))
+                    .is_err());
+                assert_eq!(store.inspect(&task_id).unwrap().status, "in_progress");
+            }
+        }
+        proof.proof = typed.clone();
+        let submitted = store
+            .submit(&task_id, GATES[gate], &proof, "reject", Some(&findings))
+            .unwrap();
+        assert_eq!(submitted.status, "ready");
+        let stored: String = store
+            .connection
+            .query_row(
+                "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='rejected'",
+                rusqlite::params![task_id, GATES[gate]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&stored).unwrap()["proof"], typed);
+        let submission: String = store
+            .connection
+            .query_row(
+                "SELECT result FROM task_submissions WHERE task_id=?1 AND revision=?2",
+                rusqlite::params![task_id, claimed.claim_revision],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&submission).unwrap()["evidence"]["proof"], typed);
+    }
 }
 
 #[test]
@@ -466,10 +770,11 @@ fn gates_validate_disk_receipts_and_retention_outcomes() {
             worker_id: worker.into(),
             worktree: worktree.0.to_str().unwrap().into(),
             commit: "0123456789abcdef0123456789abcdef01234567".into(),
-            proof: if gate == 3 {
-                passing_review_proof()
-            } else {
-                json!({"command":"cargo test","result":"passed","artifacts":[]})
+            proof: match gate {
+                1 => json!({"contract_proof":{"seam_test_ref":"tests/core_basics/tasks.rs","red_exit_code":101}}),
+                2 => json!({"test_proof":{"command":"cargo test --test core_basics","exit_code":0,"tests_passed":1,"tests_failed":0}}),
+                3 => passing_review_proof(),
+                _ => json!({"stage":stage}),
             },
         };
         if gate == 2 { build_proof = evidence.proof.clone(); } else if gate == 3 { review_proof = evidence.proof.clone(); }
@@ -597,11 +902,13 @@ fn review_rejection_retains_findings_and_requires_a_new_build() {
         .claim(&id, "review", "reviewer", root.0.to_str().unwrap())
         .unwrap();
     let findings = json!({"paths":["src/lib.rs"],"decision":"remediate"});
+    let mut review = evidence(&claimed);
+    review.proof = review_proof("reject");
     let rejected = store
         .submit(
             &id,
             "review",
-            &evidence(&claimed),
+            &review,
             "reject",
             Some(&findings),
         )
@@ -824,7 +1131,7 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     for (path, source) in [("docs/milestones/010-queued.md", queued), ("docs/milestones/011-live.md", active), ("docs/milestones/archive/020-prior.md", archived)] {
         store.sync(&Milestone::parse(source, "forge-mcp").unwrap(), path, &root.0).unwrap();
-    } root.write("docs/milestones/010-queued.md", &format!("{queued}### task: file-only\n```yaml\ntask_ref: file-only\ntarget: File-declared completion\nproof_policy: seam-test-first\nscope: [src/]\nstatus: completed\n```\n")); root.write("docs/milestones/archive/020-prior.md", &archived.replace("scope: [src/]", "scope: [src/]\nstatus: completed\nreceipt:\n  commit: abcdef0123456789\n  tested_commit: abcdef0123456789\n  contract_revision: 1\n  passed_at: 2026-09-01T12:00:00Z\n  evidence: {command: cargo test, result: passed, artifacts: []}\n  review: {decision: pass}\n  decision: pass"));
+    } root.write("docs/milestones/010-queued.md", &format!("{queued}### task: file-only\n```yaml\ntask_ref: file-only\ntarget: File-declared completion\nproof_policy: seam-test-first\nscope: [src/]\nstatus: completed\n```\n")); root.write("docs/milestones/archive/020-prior.md", &archived.replace("scope: [src/]", "scope: [src/]\nstatus: completed"));
     for task_ref in ["first", "shipped"] {
         let mut task = store.list(None, "all", None).unwrap().into_iter().find(|t| t.task_id.ends_with(&format!(":{task_ref}"))).unwrap();
         task.status = "completed".into();
