@@ -83,3 +83,12 @@ escalate direct decision conflicts and irreversible database or data-loss choice
 Preserve source-plan requirements until reconciliation proves their destination.
 Validate metadata, relative links, scan admission, and documentation retrieval.
 Obtain explicit approval for commits and publication under the root instructions.
+
+## Worktree merge and milestone reconciliation
+
+When merging a development worktree or branch into `main` after completing feature slices:
+1. **Inspect milestone authority**: Locate and inspect the governing contract in `docs/milestones/`.
+2. **Close completed tasks**: Update completed task specifications within the milestone document to `status: completed` and reconcile them in the operational task store (`task list`, `task submit`).
+3. **Update milestone status and receipts**: When all constituent tasks, quality gates, and acceptance criteria pass, update the milestone YAML frontmatter to `status: completed` and record measured verification receipts. If work remains, set `status: in_progress` and adjust task dependencies.
+4. **Reconcile before pruning**: Ensure milestone documentation updates, task closures, and full test suite verification (`cargo test --all-targets`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --test commitment_integrity`) are committed before removing the worktree (`git worktree remove`).
+

@@ -32,7 +32,7 @@ Decouple monolithic linker logic in `src/engine/linker.rs` into modular per-lang
 
 ```yaml
 task_ref: sql-schema-purification-and-compatibility-shim-removal
-target: "Усунути шар зворотної сумісності SQL (9 VIEW та десятки INSTEAD OF тригерів), включити овнерів у nodes і зробити компактні таблиці основними"
+target: "Eliminate SQL backward-compatibility shim (9 VIEWs and dozens of INSTEAD OF triggers), inline ownership into nodes, and promote compact tables to canonical primary entities"
 proof_policy: seam-test-first
 scope:
   - src/core/schema.rs
@@ -66,7 +66,7 @@ status: planned
 
 ```yaml
 task_ref: reader-api-unification-and-view-join-elimination
-target: "Уніфікувати пагіновані та непагіновані функції reader.rs, symbols.rs, traversal.rs і перевести запити на прямі індекси за хешами замість з'єднання віртуальних в'юх"
+target: "Unify paged and unpaged reader.rs, symbols.rs, traversal.rs functions and migrate queries to direct hash indexes instead of virtual view joins"
 proof_policy: seam-test-first
 scope:
   - src/db/reader.rs
@@ -98,7 +98,7 @@ depends_on:
 
 ```yaml
 task_ref: writer-decomposition-and-dictionary-modularization
-target: "Декомпозувати монолітний writer.rs (3 190 рядків), винести кеші словників у dictionary.rs та дельта-індексацію у delta.rs"
+target: "Decompose monolithic writer.rs (3,190 lines), extract dictionary caches to dictionary.rs and delta indexing to delta.rs"
 proof_policy: seam-test-first
 scope:
   - src/db/writer.rs
@@ -124,7 +124,7 @@ depends_on:
 
 ```yaml
 task_ref: typed-selector-diagnostics-and-mcp-pipeline-compaction
-target: "Впровадити типізовані діагностики селекторів замість парсингу рядків та оптимізувати конвеєр MCP у єдиний прохід"
+target: "Introduce typed selector diagnostics instead of string parsing and streamline MCP pipeline into a single pass"
 proof_policy: seam-test-first
 scope:
   - src/db/reader.rs
@@ -154,7 +154,7 @@ depends_on:
 
 ```yaml
 task_ref: language-linker-traits-decoupling
-target: "Винести специфічну логіку лінкування з linker.rs у модульні профілі за трейтом LanguageLinker, перенести receivers/commonjs та дедуплікувати value_flow"
+target: "Extract language-specific linking logic from linker.rs into modular LanguageLinker profiles, relocate receivers/commonjs, and deduplicate value_flow"
 proof_policy: seam-test-first
 scope:
   - src/engine/linker/traits.rs
@@ -185,7 +185,7 @@ status: planned
 
 ```yaml
 task_ref: template-preprocessor-generalization
-target: "Уніфікувати препроцесори шаблонів Django/Jinja, Vue та HTML зі збереженням точних байтових зміщень"
+target: "Unify Django/Jinja, Vue, and HTML template preprocessors while preserving exact byte offsets"
 proof_policy: seam-test-first
 scope:
   - src/engine/languages/html.rs
@@ -206,7 +206,7 @@ status: planned
 
 ```yaml
 task_ref: public-rustdoc-completeness
-target: "Покрити всі публічні трейти, структури та методи вичерпною документацією Rustdoc"
+target: "Document all public traits, structs, and methods with comprehensive Rustdoc"
 proof_policy: seam-test-first
 scope:
   - src/core/

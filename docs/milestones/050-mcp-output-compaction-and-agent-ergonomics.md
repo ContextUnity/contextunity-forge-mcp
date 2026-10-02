@@ -47,13 +47,13 @@ Milestone implementation and verification complete.
 
 ```yaml
 task_ref: zero-value-and-default-field-omission
-target: "Усунути дефолтні та null-поля (is_test: 0, generated: 0, redundant qualname, null continuation) з виводу пошуку та пагінації"
+target: "Omit default and null fields (is_test: 0, generated: 0, redundant qualname, null continuation) from search and paging outputs"
 proof_policy: seam-test-first
 scope:
   - src/db/paging.rs
   - src/mcp/metadata.rs
   - tests/mcp_context.rs
-status: planned
+status: completed
 ```
 
 1. **Paging envelope pruning**:
@@ -70,14 +70,14 @@ status: planned
 
 ```yaml
 task_ref: lean-freshness-and-metadata-compaction
-target: "Компактизувати envelope freshness для синхронізованих станів та усунути діагностичний шум"
+target: "Compact freshness envelope for synchronized states and eliminate diagnostic noise"
 proof_policy: seam-test-first
 scope:
   - src/mcp/metadata.rs
   - src/mcp/server.rs
   - src/mcp/response.rs
   - tests/
-status: planned
+status: completed
 ```
 
 1. **Minimalist synchronized freshness**:
@@ -95,12 +95,12 @@ status: planned
 
 ```yaml
 task_ref: sparse-relations-and-empty-aspect-pruning
-target: "Прибирати порожні масиви зв'язків у code_map_explain та порожні секції документів у code_map_inspect"
+target: "Prune empty relation arrays in code_map_explain and empty document sections in code_map_inspect"
 proof_policy: seam-test-first
 scope:
   - src/mcp/tools.rs
   - tests/mcp_context.rs
-status: planned
+status: completed
 ```
 
 1. **Sparse explain output**:
@@ -117,12 +117,12 @@ status: planned
 
 ```yaml
 task_ref: actionable-agent-navigation-and-entrypoints
-target: "Додати готові селектори переходів у пошук та повідомлення неоднозначності"
+target: "Add actionable transition selectors to search results and ambiguity messages"
 proof_policy: seam-test-first
 scope:
   - src/mcp/tools.rs
   - tests/mcp_context.rs
-status: planned
+status: completed
 ```
 
 1. **Canonical selector hints**:
@@ -138,12 +138,12 @@ status: planned
 
 ```yaml
 task_ref: snippet-enclosing-context-and-source-ergonomics
-target: "Збагатити get_code_snippet заголовком контексту охоплюючого символу та 1-індексованими координатами"
+target: "Enrich get_code_snippet with enclosing symbol context headers and 1-indexed coordinates"
 proof_policy: seam-test-first
 scope:
   - src/mcp/tools.rs
   - tests/mcp_context.rs
-status: planned
+status: completed
 ```
 
 1. **Scope breadcrumb header**:

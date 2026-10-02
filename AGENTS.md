@@ -36,6 +36,7 @@ For isolated subagent work, parallel branches, or spikes:
 - Create worktrees under `.worktrees/<branch-name>`:
   `git worktree add .worktrees/<branch-name> <branch-name>`
 - `.worktrees/` is gitignored at repository root to keep untracked workspaces clean.
+- On merge, inspect the governing milestone in `docs/milestones/`, update deliverables, mark completed tasks `status: completed`, record receipts, and reconcile before pruning per [docs/AGENTS.md](docs/AGENTS.md).
 - Prune worktrees when finished: `git worktree remove .worktrees/<branch-name>`.
 
 ## Codebase Architecture

@@ -30,7 +30,7 @@ Improve resolution coverage across supported languages (Rust, Python, TypeScript
 
 ```yaml
 task_ref: rust-semantics-and-noise-filtering
-target: "Усунути AST-шум (_, lifetimes, tuple index) та розширити семантику стандартної бібліотеки й конструкторів Rust"
+target: "Eliminate AST noise (_, lifetimes, tuple index) and expand standard library semantics and Rust constructors"
 proof_policy: seam-test-first
 scope:
   - src/engine/ast/relations.rs
@@ -57,7 +57,7 @@ Eliminated AST noise from wildcard expressions (`_`), type lifetimes (`'a`), and
 
 ```yaml
 task_ref: ast-route-registration-precision
-target: "Усунути фейкові HTTP-роути від dict.get() та Map.get() викликів у routes.rs"
+target: "Eliminate spurious HTTP routes from dict.get() and Map.get() invocations in routes.rs"
 proof_policy: seam-test-first
 scope:
   - src/engine/ast/routes.rs
@@ -78,7 +78,7 @@ Restricted route registration in `routes.rs` so that only calls starting with `/
 
 ```yaml
 task_ref: typescript-dom-and-testing-builtins
-target: "Розширити TypeScript/JavaScript профіль веб-стандартами DOM, Fetch, Playwright та методами масивів"
+target: "Expand TypeScript/JavaScript profile with DOM, Fetch, Playwright web standards, and array methods"
 proof_policy: seam-test-first
 scope:
   - src/engine/languages/typescript.rs
@@ -97,7 +97,7 @@ Provides browser globals (`document.querySelector`, `document.getElementById`, `
 
 ```yaml
 task_ref: vue-compiler-macros-and-script-setup
-target: "Підтримати специфічні компіляторні макроси Vue 3 (<script setup>, defineProps, defineEmits, ref, computed)"
+target: "Support Vue 3 compiler macros (<script setup>, defineProps, defineEmits, ref, computed)"
 proof_policy: seam-test-first
 scope:
   - src/engine/languages/vue.rs
@@ -117,7 +117,7 @@ Recognizes Vue 3 `<script setup>` compiler macros (`defineProps`, `defineEmits`,
 
 ```yaml
 task_ref: python-mapping-and-logger-builtins
-target: "Підтримати стандартні методи словників (dict) та логерів (logging) для локальних змінних у Python"
+target: "Support standard dictionary (dict) and logger (logging) methods on local Python variables"
 proof_policy: seam-test-first
 scope:
   - src/engine/languages/python.rs
@@ -139,7 +139,7 @@ Recognizes standard dictionary methods (`row.get`, `data.items`, `keys`, `values
 
 ```yaml
 task_ref: package-reexports-and-monorepo-hubs
-target: "Розширити резолюцію ланцюжків реекспортів для внутрішніх пакетів монорепозиторію"
+target: "Expand re-export chain resolution for monorepo internal packages"
 proof_policy: seam-test-first
 scope:
   - src/engine/languages/python.rs
@@ -168,7 +168,7 @@ Resolve internal package re-export hubs (`contextunity.core.types`, `contextunit
 
 ```yaml
 task_ref: typescript-npm-lockfile-and-workspace-externals
-target: "Витягувати зовнішні npm-залежності з package-lock.json, pnpm-lock.yaml та yarn.lock для TS/JS"
+target: "Extract external npm dependencies from package-lock.json, pnpm-lock.yaml, and yarn.lock for TS/JS"
 proof_policy: seam-test-first
 scope:
   - src/engine/languages/typescript.rs
@@ -184,7 +184,7 @@ Parse `package-lock.json` (sections `packages` and `dependencies`), `pnpm-lock.y
 
 ```yaml
 task_ref: javascript-node-globals-and-commonjs-resolution
-target: "Розширити вбудовані символи Node.js/Web API та підтримати CommonJS require/module.exports"
+target: "Expand Node.js/Web API builtins and support CommonJS require and module.exports"
 proof_policy: seam-test-first
 scope:
   - src/engine/languages/typescript.rs
@@ -199,7 +199,7 @@ Add standard Node.js runtime globals (`process.env`, `Buffer`, `path`, `fs`, `co
 
 ```yaml
 task_ref: vue-sfc-script-setup-template-bridge
-target: "Зв'язати локальний скоуп <script setup> зі змінними та компонентами у <template> для .vue файлів"
+target: "Link local <script setup> scope with variables and components in <template> for .vue files"
 proof_policy: seam-test-first
 scope:
   - src/engine/languages/vue.rs
@@ -214,7 +214,7 @@ Bridge identifiers and component imports declared in `<script setup>` into the `
 
 ```yaml
 task_ref: html-django-template-tags-and-filter-builtins
-target: "Додати словник стандартних тегів та фільтрів Django/Jinja в HTML-парсер"
+target: "Add standard Django/Jinja tags and filters dictionary to HTML parser"
 proof_policy: seam-test-first
 scope:
   - src/engine/languages/html.rs

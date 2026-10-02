@@ -32,7 +32,7 @@ Deliver sub-30ms MCP tool query response times, localize `code_map_prove_removal
 
 ```yaml
 task_ref: prove-removal-target-scoping
-target: "Локалізувати перевірку code_map_prove_removal до залежностей цільового символу"
+target: "Localize code_map_prove_removal checks strictly to target symbol dependencies"
 proof_policy: seam-test-first
 scope:
   - src/db/traversal.rs
@@ -56,7 +56,7 @@ Replace global workspace queries (`SELECT count(*) FROM resolution_coverage`, `S
 
 ```yaml
 task_ref: fts5-bm25-hybrid-ranking
-target: "Реалізувати гібридне ранжування з нативним SQLite FTS5 BM25 у code_map_search"
+target: "Implement hybrid ranking with native SQLite FTS5 BM25 in code_map_search"
 proof_policy: seam-test-first
 scope:
   - src/core/schema.rs
@@ -91,7 +91,7 @@ Enable SQLite native C-level `bm25(node_search)` scoring by configuring `node_se
 
 ```yaml
 task_ref: test-discovery-and-ast-grep-acceleration
-target: "Прискорити code_map_tests (обмежена глибина max_depth=4) та ast_grep_search (попередній FTS-фільтр файлів)"
+target: "Accelerate code_map_tests (bounded max_depth=4) and ast_grep_search (FTS file pre-filtering)"
 proof_policy: seam-test-first
 scope:
   - src/db/symbols.rs
@@ -114,7 +114,7 @@ In `src/db/symbols.rs` (`tests`), add recursion depth control (`max_depth = 4`) 
 
 ```yaml
 task_ref: mcp-inventory-scan-debouncing
-target: "Усунути 30-50 мс оверхед сканування файлової системи перед кожним MCP інструментом"
+target: "Eliminate 30-50ms filesystem scan overhead prior to each MCP tool invocation"
 proof_policy: seam-test-first
 scope:
   - src/mcp/tools.rs
@@ -138,7 +138,7 @@ Debounce and cache filesystem inventory scans between MCP invocations. Verify fi
 
 ```yaml
 task_ref: sqlite-storage-compaction-zstd
-target: "Забезпечити щільність збереження бази даних <= 45 KiB на файл (< 3.0 KiB на вузол) через Zstandard компресію facts_blob"
+target: "Ensure database storage density <= 45 KiB per file (< 3.0 KiB per node) via Zstandard compression of facts_blob"
 proof_policy: seam-test-first
 scope:
   - src/core/schema.rs
@@ -176,7 +176,7 @@ receipt:
 
 ```yaml
 task_ref: cold-build-latency-and-serialization-optimization
-target: "Забезпечити швидкість холодного білду >= 400 файлів/сек (час білду < 10.0с на 4k файлів) через паралельний Merkle seal, тюнінг індексів та серіалізації"
+target: "Ensure cold build throughput >= 400 files/sec (build time < 10.0s per 4k files) via parallel Merkle seal, index tuning, and optimized serialization"
 proof_policy: seam-test-first
 scope:
   - src/core/commitments.rs

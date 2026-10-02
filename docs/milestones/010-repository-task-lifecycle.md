@@ -2,7 +2,7 @@
 id: m-repository-task-lifecycle
 title: "Repository-owned task lifecycle"
 doc_type: contract
-status: in_progress
+status: completed
 depends_on: []
 owners:
   - src/mcp/
@@ -269,9 +269,10 @@ evidence for `paths`, `claims`, `concurrency`, `project_isolation`, and
 
 ```yaml
 task_ref: specifications-and-store
-target: "Реалізувати індексацію специфікацій та незалежне сховище задач"
+target: "Implement specification indexing and independent task storage"
 proof_policy: seam-test-first
 scope: [src/core/, src/db/, src/engine/, tests/]
+status: completed
 ```
 
 Admit typed milestone/task parsing, qualified identities, per-task digests,
@@ -283,9 +284,10 @@ and task-state survival across index rebuilds.
 
 ```yaml
 task_ref: task-tools-and-coordination
-target: "Реалізувати чотири MCP-тулзи, claims та розширення скоупу"
+target: "Implement four MCP tools, claims, and scope extension"
 proof_policy: seam-test-first
 scope: [src/mcp/, src/cli/, src/core/, src/db/, src/engine/, tests/]
+status: completed
 ```
 
 Admit the flat schema, task envelopes, atomic claims/revisions, ready/inspect,
@@ -296,9 +298,10 @@ paths, traversal rejection, and schema enforcement through public seams.
 
 ```yaml
 task_ref: gates-and-receipts
-target: "Реалізувати ворота здачі, незалежне рев'ю та синхронний handoff"
+target: "Implement completion gates, independent review, and synchronous handoff"
 proof_policy: seam-test-first
 scope: [src/mcp/, src/core/, src/db/, src/engine/, tests/]
+status: completed
 ```
 
 Admit all five gates, evidence binding, review/remediation, contract invalidation,
@@ -309,9 +312,10 @@ mismatched proof rejection, and accepted completion persistence.
 
 ```yaml
 task_ref: cleanup-and-administration
-target: "Реалізувати delete, TTL, адміністративний reset та CLI-міграції"
+target: "Implement delete, TTL retention, administrative reset, and CLI migrations"
 proof_policy: seam-test-first
 scope: [src/cli/, src/mcp/, src/core/, src/db/, tests/]
+status: completed
 ```
 
 Admit relational deletion, 14-day cleanup, outcome preservation, force semantics,
@@ -322,9 +326,10 @@ integrity, missing milestone cleanup, revision monotonicity, and import retries.
 
 ```yaml
 task_ref: pilot-acceptance-and-docs
-target: "Перевірити пілот у worktree та узгодити документацію з реалізацією"
+target: "Verify worktree pilot and align documentation with implementation"
 proof_policy: deferred-final-test
 scope: [docs/, AGENTS.md, forge-mcp.yaml, tests/]
+status: completed
 ```
 
 Exercise the complete lifecycle in independent worktrees, retrieval of milestone
@@ -336,7 +341,7 @@ commands, candidates, retrieval results, and lifecycle proof before activation.
 
 ```yaml
 task_ref: multi-workspace-and-linked-repository-tasks
-target: "Підтримати мультирепозиторні завдання (linked_workspaces), локальний AGENTS.md, нормалізацію CRLF та відносний tasks_db"
+target: "Support multi-repository tasks (linked_workspaces), local AGENTS.md, CRLF normalization, and relative tasks_db"
 proof_policy: seam-test-first
 scope:
   - src/engine/tasks.rs
@@ -349,7 +354,7 @@ scope:
   - forge-mcp.yaml
   - docs/
   - tests/
-status: in_progress
+status: completed
 ```
 
 1. **Configuration & Resilience**:
