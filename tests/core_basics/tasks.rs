@@ -1277,7 +1277,7 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
 }
 
 #[test]
-fn terminal_task_handoff_rolls_up_durable_context_and_prunes_blackboard() {
+fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     let root = ScopedWorkspace::new("forge_task_context_rollup");
     root.write("src/lib.rs", "pub fn example() {}\n");
     root.write(
@@ -1420,4 +1420,163 @@ fn first_cli_task_claim_activates_planned_milestone_with_started_at() {
     let root = ScopedWorkspace::new("forge_milestone_claim_start"); root.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n"); root.write("src/lib.rs", "pub fn task() {}\n"); let source = "---\nid: m-start\ntitle: Start work\ndoc_type: contract\nstatus: planned\n---\n# Start work\n### task: begin\n```yaml\ntask_ref: begin\ntarget: Begin work\nproof_policy: seam-test-first\nscope: [src/]\n```\n"; root.write("docs/milestones/010-start.md", source);
     let milestone = Milestone::parse(source, "forge-mcp").unwrap(); let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap(); store.sync(&milestone, "docs/milestones/010-start.md", &root.0).unwrap(); let id = milestone.task_id(&milestone.tasks[0]); let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp")).args(["--root", root.0.to_str().unwrap(), "task", "claim", &id, "--stage", "design", "--worker", "first", "--worktree", root.0.to_str().unwrap()]).output().unwrap(); assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let text = std::fs::read_to_string(root.0.join("docs/milestones/010-start.md")).unwrap(); let header = text.strip_prefix("---\n").unwrap().split_once("\n---\n").unwrap().0; let meta: serde_yaml::Value = serde_yaml::from_str(header).unwrap(); assert_eq!(meta["status"].as_str(), Some("active")); let started = chrono::DateTime::parse_from_rfc3339(meta["started_at"].as_str().unwrap()).unwrap(); assert!((chrono::Utc::now() - started.with_timezone(&chrono::Utc)).num_minutes().abs() < 2);
+}
+
+#[test]
+fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
+    let root = ScopedWorkspace::new("forge_milestone_012_e2e");
+    let milestone_ref = "docs/milestones/012-context.md";
+    let source = "---\nid: m-context\ntitle: Context retention\ndoc_type: contract\nstatus: planned\ninvariants: [durable-context]\n---\n# Context retention\n### task: implement\n```yaml\ntask_ref: implement\ntarget: Deliver context retention\nagent_type: gpt-6-sol\nproof_policy: seam-test-first\nscope: [src/]\ninvariants: [reviewed]\n```\n";
+    root.write("src/lib.rs", "pub fn context() {}\n");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write(milestone_ref, source);
+    let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({"action":"sync","milestone_ref":milestone_ref})).unwrap(),
+    )
+    .unwrap();
+
+    let blackboard = |args: &[&str]| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args(["--root", root.0.to_str().unwrap(), "task", "blackboard"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    let inspect = || {
+        tasks::manage(
+            &root.0,
+            serde_json::from_value(json!({"action":"inspect","task_id":task_id})).unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(inspect()["spec"]["agent_type"], "gpt-6-sol");
+    let stages = ["design/v1", "contract/v1", "build/v1", "review/v1", "deliver/v1"];
+
+    for (index, stage) in stages.iter().enumerate() {
+        let before = inspect();
+        assert_eq!(before["workflow_guidance"]["active_stage"], *stage);
+        assert_eq!(before["workflow_guidance"]["agent_type"], "gpt-6-sol");
+        assert!(before["workflow_guidance"]["steps"]
+            .as_array()
+            .is_some_and(|steps| !steps.is_empty()));
+        let worker = if index >= 3 {
+            "independent-reviewer"
+        } else {
+            "builder"
+        };
+        if index == stages.len() - 1 {
+            let previous_name = tasks::claim(
+                &root.0,
+                tasks::Claim {
+                    task_id: task_id.clone(),
+                    stage: "handoff/v1".into(),
+                    worker_id: worker.into(),
+                    worktree: root.0.to_string_lossy().into_owned(),
+                },
+            )
+            .unwrap_err();
+            assert!(previous_name.to_string().contains("TASK_STAGE_INVALID"));
+            assert_eq!(inspect()["status"], "ready");
+        }
+        let claimed = tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: task_id.clone(),
+                stage: (*stage).into(),
+                worker_id: worker.into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(claimed["workflow_guidance"], before["workflow_guidance"]);
+        if index == 2 {
+            blackboard(&[
+                "post",
+                &task_id,
+                "--author",
+                "architect",
+                "--topic",
+                "architectural_notes",
+                "--payload",
+                "Keep task context in the milestone receipt.",
+            ]);
+            blackboard(&[
+                "post",
+                &task_id,
+                "--author",
+                "builder",
+                "--topic",
+                "build_notes",
+                "--payload",
+                "The direct JSON proof passed SQLite verification.",
+            ]);
+            let messages = blackboard(&["read", &task_id]);
+            assert_eq!(messages["messages"].as_array().unwrap().len(), 2);
+            assert_eq!(messages["messages"][0]["author"], "architect");
+            assert_eq!(messages["messages"][1]["author"], "builder");
+        }
+        let stored = tasks::store(&root.0).unwrap().inspect(&task_id).unwrap();
+        if index == stages.len() - 1 {
+            let mut previous_proof = evidence(&stored);
+            previous_proof.stage = "handoff/v1".into();
+            let previous_submit: tasks::Submit = serde_json::from_value(json!({
+                "task_id": task_id,
+                "stage": "handoff/v1",
+                "action": "pass",
+                "evidence": serde_json::to_value(previous_proof).unwrap()
+            }))
+            .unwrap();
+            let rejected = tasks::submit(&root.0, previous_submit).unwrap_err();
+            assert!(rejected.to_string().contains("TASK_STAGE_INVALID"));
+            assert_eq!(inspect()["status"], "in_progress");
+        }
+        let submitted = tasks::submit(
+            &root.0,
+            serde_json::from_value(json!({
+                "task_id":task_id,
+                "stage":stage,
+                "action":"pass",
+                "evidence":serde_json::to_value(evidence(&stored)).unwrap()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        if index == stages.len() - 1 {
+            assert_eq!(submitted["status"], "completed");
+        }
+    }
+
+    let written = std::fs::read_to_string(root.0.join(milestone_ref)).unwrap();
+    let parsed = Milestone::parse(&written, "forge-mcp").unwrap();
+    let completed = &parsed.tasks[0];
+    assert_eq!(completed.status.as_deref(), Some("completed"));
+    assert_eq!(completed.agent_type.as_deref(), Some("gpt-6-sol"));
+    let receipt = completed.receipt.as_ref().unwrap();
+    assert_eq!(receipt.commit, "0123456789abcdef0123456789abcdef01234567");
+    assert!(receipt.evidence.get("test_proof").is_some());
+    assert!(receipt.review.get("review_proof").is_some());
+    let rollup = receipt.rollup.as_ref().unwrap();
+    assert_eq!(rollup.verified_invariants, ["durable-context", "reviewed"]);
+    assert_eq!(
+        rollup.architectural_notes,
+        ["Keep task context in the milestone receipt."]
+    );
+    assert_eq!(rollup.review_summary.decision, "pass");
+    assert!(blackboard(&["read", &task_id])["messages"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(tasks::store(&root.0).unwrap().inspect(&task_id).unwrap().status, "completed");
 }
