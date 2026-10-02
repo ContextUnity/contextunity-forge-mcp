@@ -398,6 +398,39 @@ pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
     let service = Server::new(root, db)
         .serve(super::response::stdio())
         .await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+        let waiting = service.waiting();
+        tokio::pin!(waiting);
+        loop {
+            tokio::select! {
+                result = &mut waiting => {
+                    result?;
+                    break;
+                }
+                Some(()) = hangup.recv() => {
+                    let result = (|| -> std::io::Result<()> {
+                        let mut exe = std::env::current_exe()?;
+                        #[cfg(target_os = "linux")]
+                        {
+                            use std::os::unix::ffi::{OsStrExt, OsStringExt};
+                            if let Some(path) = exe.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+                                exe = std::ffi::OsString::from_vec(path.to_vec()).into();
+                            }
+                        }
+                        let args: Vec<_> = std::env::args_os().skip(1).collect();
+                        Err(std::process::Command::new(exe).args(args).exec())
+                    })();
+                    if let Err(error) = result {
+                        eprintln!("SIGHUP reload failed: {error}");
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
     service.waiting().await?;
     Ok(())
 }

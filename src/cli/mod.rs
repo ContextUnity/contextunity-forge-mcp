@@ -6,6 +6,8 @@ pub mod guide;
 pub mod migrate;
 /// Implements milestone commands.
 pub mod milestone;
+/// Sends a reload signal to running MCP servers.
+pub mod reload;
 /// Implements task support.
 pub mod task;
 use crate::{
@@ -58,6 +60,8 @@ pub enum Command {
     },
     /// Represents the serve case.
     Serve,
+    /// Reloads running MCP servers owned by this user.
+    Reload,
     /// Represents the build case.
     Build {
         /// Optional workspace root value.
@@ -314,6 +318,7 @@ impl Cli {
                 crate::mcp::server::serve(root, db).await?;
                 return Ok(());
             }
+            Command::Reload => reload::run()?,
             Command::Build {
                 workspace_root,
                 output,

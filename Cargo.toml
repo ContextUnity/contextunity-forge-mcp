@@ -47,7 +47,7 @@ tree-sitter-c = { version = "=0.21.4", optional = true }
 tree-sitter-cpp = { version = "=0.22.3", optional = true }
 pulldown-cmark = { version = "0.10", default-features = false }
 rayon = "1.10"
-tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "io-std", "sync", "fs"] }
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "io-std", "sync", "fs", "signal"] }
 ignore = "0.4"
 walkdir = "2.5"
 serde = { version = "1.0", features = ["derive"] }

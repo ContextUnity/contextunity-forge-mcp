@@ -1,5 +1,53 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn sighup_reloads_replaced_binary_in_same_pid_with_stdio_connected() {
+    use std::os::unix::fs::MetadataExt;
+
+    let ws = Workspace::new();
+    let binary = ws.0.join(".forge/server");
+    let replacement = ws.0.join(".forge/server-next");
+    fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_contextunity-forge-mcp"), &binary).unwrap();
+    let mut client = StdioClient::with_binary(&ws, &binary);
+    let pid = client.child.id();
+    fs::copy(&binary, &replacement).unwrap();
+    fs::rename(&replacement, &binary).unwrap();
+    let new_inode = fs::metadata(&binary).unwrap().ino();
+
+    let reload = Command::new(&binary).arg("reload").output().unwrap();
+    assert!(
+        reload.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reload.stderr)
+    );
+    let response: Value = serde_json::from_slice(&reload.stdout).unwrap();
+    assert_eq!(response["signaled_pids"], json!([pid]));
+
+    let proc_exe = PathBuf::from(format!("/proc/{pid}/exe"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while fs::metadata(&proc_exe).unwrap().ino() != new_inode {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "server did not exec the replacement"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let init = client.request("initialize", json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"reload-test","version":"1"}}));
+    assert!(init.get("error").is_none(), "{init}");
+    writeln!(
+        client.input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .unwrap();
+    client.input.flush().unwrap();
+    let response = client.request("ping", json!({}));
+    assert!(response.get("error").is_none(), "{response}");
+    assert_eq!(client.child.id(), pid);
+}
+
 #[test]
 fn mcp_document_retrieval_and_explain_output_controls() {
     let ws = Workspace::new();

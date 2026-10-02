@@ -61,7 +61,10 @@ struct StdioClient {
 
 impl StdioClient {
     fn new(ws: &Workspace) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        Self::with_binary(ws, env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    }
+    fn with_binary(ws: &Workspace, binary: impl AsRef<std::ffi::OsStr>) -> Self {
+        let mut child = Command::new(binary)
             .args(["--root", ws.0.to_str().unwrap(), "serve"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
