@@ -47,9 +47,9 @@ execution commitments into milestones/ and link plans and milestones both ways.
 Plan 1-5 coherent feature-slice tasks initially. Add related discoveries to the
 same active milestone while its goal, ownership, and invariants apply.
 
-The [task lifecycle milestone](milestones/010-repository-task-lifecycle.md)
-owns the target workflow and its activation evidence. Use registered tools
-from the [current MCP reference](reference/mcp-tools.md) for current work.
+Read the [task reference](reference/tasks.md) for registered task operations.
+Read the [task lifecycle milestone](milestones/010-repository-task-lifecycle.md)
+for implementation authority and final acceptance evidence.
 
 Include stale architecture/runbook pages in the authorized write scope and
 align them with verified source. Apply clear accepted rules autonomously;

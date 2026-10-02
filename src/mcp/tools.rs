@@ -298,6 +298,28 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
+        description = "List ready, unclaimed tasks with satisfied dependencies in the primary repository by default. Select repository=all or an enabled linked workspace name to include linked tasks."
+    )]
+    fn task_list(&self, Parameters(p): Parameters<super::tasks::List>) -> CallToolResult {
+        self.responding(|_| super::tasks::list(&self.root, p))
+    }
+    #[tool(description = "Atomically claim the current lifecycle gate in an isolated worktree.")]
+    fn task_claim(&self, Parameters(p): Parameters<super::tasks::Claim>) -> CallToolResult {
+        self.responding(|_| super::tasks::claim(&self.root, p))
+    }
+    #[tool(
+        description = "Submit revision-bound evidence. Handoff synchronously validates the Git milestone receipt."
+    )]
+    fn task_submit(&self, Parameters(p): Parameters<super::tasks::Submit>) -> CallToolResult {
+        self.responding(|_| super::tasks::submit(&self.root, p))
+    }
+    #[tool(
+        description = "Create, sync, inspect, delete or extend task scope. Select workspace for creation, synchronization or milestone deletion; sync with only workspace imports its milestone directory."
+    )]
+    fn task_manage(&self, Parameters(p): Parameters<super::tasks::Manage>) -> CallToolResult {
+        self.responding(|_| super::tasks::manage(&self.root, p))
+    }
+    #[tool(
         description = "Workspace overview: components, modules, counts, and coverage. Optional aspects: 'counts', 'components', 'languages', 'cycles', 'compiled_profiles', 'metadata'. Start here to verify workspace_root matches active worktree and check coverage before making absence claims. Collections independently paginated."
     )]
     fn code_map_overview(&self, Parameters(p): Parameters<OverviewInput>) -> CallToolResult {

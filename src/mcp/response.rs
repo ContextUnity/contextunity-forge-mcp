@@ -30,6 +30,9 @@ pub fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallTool
             }
         }
         Err(error) => {
+            if error.is::<crate::db::tasks_store::TaskAlreadyClaimed>() {
+                return CallToolResult::error(vec![ContentBlock::text(serde_json::json!({"error":{"code":"TASK_ALREADY_CLAIMED","message":"Task already has an active claim"}}).to_string())]);
+            }
             let interrupted = error.chain().any(|cause| {
                 matches!(
                     cause.downcast_ref::<rusqlite::Error>(),

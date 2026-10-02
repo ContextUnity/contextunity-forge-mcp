@@ -7,8 +7,9 @@ doc_type: guide
 
 ## Admitted target contracts
 
-- [Repository task lifecycle](010-repository-task-lifecycle.md): deferred Rust
-  implementation of repository-owned task operations and durable receipts.
+- [Repository task lifecycle](010-repository-task-lifecycle.md): in-progress Rust
+  implementation of repository-owned task operations and durable receipts;
+  final acceptance waits for the owner's commit command.
 
 ## Commitment ownership
 

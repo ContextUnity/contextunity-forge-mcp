@@ -6,4 +6,5 @@ pub mod models;
 pub mod response;
 pub mod schema;
 pub mod semantic;
+pub mod tasks;
 pub(crate) mod typed_facts;
