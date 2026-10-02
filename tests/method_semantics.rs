@@ -1,6 +1,7 @@
 #![cfg(all(feature = "lang-python", feature = "lang-rust"))]
 
 use contextunity_forge_mcp::{
+    core::response::{QueryOptions, ResponsePolicy},
     db::{reader, symbols, writer},
     engine::ast,
 };
@@ -154,14 +155,31 @@ function module_ts(): void {}
     }
 
     for pattern in ["persist_record*", "persist_python*", "persist_ts*"] {
-        let found = symbols::search(&conn, pattern, Some("method"), 10).unwrap();
+        let page =
+            QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
+        let found = symbols::search_with_options(
+            &conn,
+            pattern,
+            &symbols::SearchOptions {
+                kind: Some("method"),
+                path: None,
+                include_docs: false,
+                exact: false,
+                page: &page,
+            },
+        )
+        .unwrap();
         assert!(
-            found["nodes"].as_array().unwrap().iter().any(|node| {
-                node["kind"] == "method"
-                    && node["name"]
-                        .as_str()
-                        .is_some_and(|name| name == pattern.trim_end_matches('*'))
-            }),
+            found["nodes"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| {
+                    node["kind"] == "method"
+                        && node["name"]
+                            .as_str()
+                            .is_some_and(|name| name == pattern.trim_end_matches('*'))
+                }),
             "method search missed {pattern}: {found}"
         );
     }

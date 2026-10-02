@@ -253,7 +253,15 @@ def caller(c: Category):
     );
 
     // Also inspect must succeed
-    let inspected =
-        reader::inspect(&conn, "Category.move", false).expect("inspect Category.move must succeed");
+    let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
+        &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
+        Some(100),
+        0,
+        None,
+        None,
+    )
+    .unwrap();
+    let inspected = reader::inspect_paged(&conn, "Category.move", false, &page)
+        .expect("inspect Category.move must succeed");
     assert_eq!(inspected["node"]["id"], node["id"]);
 }

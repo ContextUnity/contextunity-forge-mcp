@@ -13,7 +13,7 @@ struct Binding {
 }
 
 #[derive(Default)]
-pub(super) struct CommonJsBindings<'a> {
+pub(crate) struct CommonJsBindings<'a> {
     bindings: HashMap<(&'a str, &'a str), Option<Binding>>,
 }
 
@@ -29,7 +29,7 @@ fn position(value: &Value) -> Option<SourcePosition> {
 }
 
 impl<'a> CommonJsBindings<'a> {
-    pub(super) fn build<F: AsRef<Facts>>(all: &'a BTreeMap<String, F>) -> Self {
+    pub(crate) fn build<F: AsRef<Facts>>(all: &'a BTreeMap<String, F>) -> Self {
         let mut result = Self::default();
         for facts in all.values().map(AsRef::as_ref) {
             for owner in facts.nodes.iter().filter(|node| {
@@ -96,7 +96,7 @@ impl<'a> CommonJsBindings<'a> {
         result
     }
 
-    pub(super) fn admits(
+    pub(crate) fn admits(
         &self,
         scope: &Node,
         alias: &str,

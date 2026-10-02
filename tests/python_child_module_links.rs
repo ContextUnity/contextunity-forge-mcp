@@ -52,8 +52,8 @@ impl Workspace {
         let cold = reader::open(&cold_path, &self.0).unwrap();
         commitments::verify(&cold).unwrap();
         for sql in [
-            "SELECT src_public_id||'|'||dst_public_id||'|'||kind||'|'||path||'|'||line FROM edges ORDER BY src_public_id,dst_public_id,kind,path,line",
-            "SELECT path||'|'||line||'|'||expression||'|'||status||'|'||evidence FROM resolution_coverage ORDER BY path,line,expression,status,evidence",
+            "SELECT (SELECT id FROM nodes WHERE node_hash=src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=dst_hash)||'|'||kind||'|'||(SELECT path FROM path_dictionary WHERE path_id=edges.path_id)||'|'||line FROM edges ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind,(SELECT path FROM path_dictionary WHERE path_id=edges.path_id),line",
+            "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
         ] {
             assert_eq!(rows(&incremental, sql), rows(&cold, sql), "{sql}");
         }
@@ -77,26 +77,26 @@ fn rows(conn: &Connection, sql: &str) -> Vec<String> {
 
 fn status(conn: &Connection, expression: &str) -> String {
     conn.query_row(
-        "SELECT status FROM resolution_coverage WHERE path='consumer.py' AND expression=?1 AND line=1",
+        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1 AND line=1",
         [expression],
         |row| row.get(0),
     ).unwrap()
 }
 
 fn call_targets(conn: &Connection) -> Vec<String> {
-    rows(conn, "SELECT dst.qualname FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.qualname='consumer.consume' AND e.kind='calls' ORDER BY dst.qualname")
+    rows(conn, "SELECT dst.qualname FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer.consume' AND e.kind='calls' ORDER BY dst.qualname")
 }
 
 fn call_target_paths(conn: &Connection) -> Vec<String> {
-    rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.qualname='consumer.consume' AND e.kind='calls' ORDER BY dst.path")
+    rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer.consume' AND e.kind='calls' ORDER BY dst.path")
 }
 
 fn import_targets(conn: &Connection) -> Vec<String> {
-    rows(conn, "SELECT dst.qualname FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.qualname='consumer' AND e.kind='imports' ORDER BY dst.qualname")
+    rows(conn, "SELECT dst.qualname FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer' AND e.kind='imports' ORDER BY dst.qualname")
 }
 
 fn import_target_paths(conn: &Connection) -> Vec<String> {
-    rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.qualname='consumer' AND e.kind='imports' ORDER BY dst.path")
+    rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer' AND e.kind='imports' ORDER BY dst.path")
 }
 
 #[test]
@@ -221,7 +221,7 @@ fn src_layout_linked_reexports_preserve_owner_workspace_priority() {
     );
     w.build();
     let targets = |conn: &Connection| {
-        rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.path='src/consumer.py' AND e.kind='calls' ORDER BY dst.path")
+        rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.path='src/consumer.py' AND e.kind='calls' ORDER BY dst.path")
     };
     assert_eq!(targets(&w.open()), ["[catalogue]/src/catalogue/models.py"]);
     w.write("src/catalogue/__init__.py", "from .api import Config\n");
@@ -400,7 +400,7 @@ fn paired_stub_supplies_declaration_missing_from_generated_runtime() {
         ["pkg/child.py", "pkg/child.pyi"]
     );
     assert_eq!(call_target_paths(&conn), ["pkg/child.pyi"]);
-    let evidence: String = conn.query_row("SELECT evidence FROM resolution_coverage WHERE path='consumer.py' AND line=1 AND expression='ContextUnit'", [], |row| row.get(0)).unwrap();
+    let evidence: String = conn.query_row("SELECT (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND line=1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='ContextUnit'", [], |row| row.get(0)).unwrap();
     assert!(evidence.contains("type stub"), "{evidence}");
     drop(conn);
     w.write("pkg/child.py", "def __getattr__(name): return name\n");

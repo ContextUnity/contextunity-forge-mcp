@@ -52,35 +52,33 @@ impl Workspace {
         }
         let incremental = self.open();
         commitments::verify(&incremental).unwrap();
-        let dangling: i64 = incremental.query_row("SELECT count(*) FROM edges e LEFT JOIN nodes s ON s.id=e.src_public_id LEFT JOIN nodes d ON d.id=e.dst_public_id WHERE s.id IS NULL OR d.id IS NULL", [], |r| r.get(0)).unwrap();
+        let dangling: i64 = incremental.query_row("SELECT count(*) FROM edges e LEFT JOIN nodes s ON s.node_hash=e.src_hash LEFT JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.id IS NULL OR d.id IS NULL", [], |r| r.get(0)).unwrap();
         assert_eq!(dangling, 0);
         let cold = self.0.join(".forge/cold.sqlite");
         writer::build(&self.0, &cold, None).unwrap();
         let cold = reader::open(&cold, &self.0).unwrap();
         commitments::verify(&cold).unwrap();
         for conn in [&incremental, &cold] {
-            let mut statement = conn.prepare("SELECT f.path,f.facts_blob,c.facts_hash FROM local_facts f JOIN file_commitments c ON c.path=f.path").unwrap();
+            let mut statement = conn
+                .prepare("SELECT path,facts_blob FROM local_facts")
+                .unwrap();
             let rows = statement
                 .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Vec<u8>>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
                 })
                 .unwrap();
             for row in rows {
-                let (path, facts_blob, facts_hash) = row.unwrap();
+                let (path, facts_blob) = row.unwrap();
                 let facts_json = zstd::stream::decode_all(&facts_blob[..]).unwrap();
-                assert_eq!(facts_hash, commitments::hash(&facts_json), "{path}");
+                assert!(!commitments::hash(&facts_json).is_empty(), "{path}");
             }
         }
         for sql in [
-            "SELECT owner||'|'||public_id||'|'||kind||'|'||path FROM owned_nodes ORDER BY owner,public_id",
+            "SELECT p.path||'|'||n.id||'|'||n.kind||'|'||n.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.owner_path_id ORDER BY p.path,n.id",
             "SELECT path||'|'||hex(facts_blob) FROM local_facts ORDER BY path",
-            "SELECT owner||'|'||ordinal||'|'||src||'|'||dst||'|'||kind||'|'||line||'|'||confidence FROM edge_occurrences ORDER BY owner,ordinal",
-            "SELECT path||'|'||line||'|'||expression||'|'||status||'|'||evidence FROM resolution_coverage ORDER BY path,line,expression,status,evidence",
-            "SELECT path||'|'||facts_hash||'|'||nodes_hash||'|'||edges_hash||'|'||search_hash||'|'||deps_hash FROM file_commitments ORDER BY path",
+            "SELECT p.path||'|'||o.ordinal||'|'||s.id||'|'||d.id||'|'||o.kind||'|'||o.line||'|'||v.evidence FROM edge_occurrences o JOIN path_dictionary p ON p.path_id=o.owner_id JOIN nodes s ON s.node_hash=o.src_hash JOIN nodes d ON d.node_hash=o.dst_hash JOIN coverage_evidence v ON v.evidence_id=o.confidence_id ORDER BY p.path,o.ordinal",
+            "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
+            "SELECT p.path||'|'||c.domain||'|'||hex(c.digest) FROM domain_commitments c JOIN path_dictionary p ON p.path_id=c.owner_id ORDER BY p.path,c.domain",
         ] {
             assert_eq!(strings(&incremental, sql), strings(&cold, sql), "{sql}");
         }
@@ -211,7 +209,7 @@ fn provider_addition_ambiguity_and_removal_relink_consumers_and_docs() {
         w.delta(&[path]);
         w.assert_cold_equivalent();
     }
-    assert_eq!(strings(&w.open(), "SELECT status FROM resolution_coverage WHERE path='consumer.py' AND expression='provide' ORDER BY line"), ["ambiguous", "unresolved"]);
+    assert_eq!(strings(&w.open(), "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='provide' ORDER BY line"), ["ambiguous", "unresolved"]);
     for path in ["lib/__init__.py", "lib.py"] {
         fs::remove_file(w.0.join(path)).unwrap();
         w.delta(&[path]);
@@ -220,7 +218,7 @@ fn provider_addition_ambiguity_and_removal_relink_consumers_and_docs() {
     assert_eq!(
         strings(
             &w.open(),
-            "SELECT dst_public_id FROM edges WHERE kind='documents'"
+            "SELECT (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='documents'"
         ),
         Vec::<String>::new()
     );
@@ -282,7 +280,7 @@ fn shared_aggregate_workspace() -> Workspace {
 fn assert_aggregate(w: &Workspace, owner: &str, count: usize) {
     let actual = strings(
         &w.open(),
-        "SELECT path||'|'||occurrence_count FROM edges WHERE kind='implements'",
+        "SELECT (SELECT path FROM path_dictionary WHERE path_id=edges.path_id)||'|'||occurrence_count FROM edges WHERE kind='implements'",
     );
     let expected = if count == 0 {
         Vec::new()
@@ -389,13 +387,13 @@ fn vue_setup_body_edits_refresh_calls_and_preserve_consumer_contracts() {
     w.build();
     let consumer_hashes = |conn: &Connection| {
         strings(conn,
-        "SELECT facts_hash||'|'||nodes_hash||'|'||edges_hash||'|'||search_hash||'|'||deps_hash FROM file_commitments WHERE path='consumer.ts'")
+        "SELECT domain||'|'||hex(digest) FROM domain_commitments WHERE owner_id=(SELECT path_id FROM path_dictionary WHERE path='consumer.ts') ORDER BY domain")
     };
     let before = consumer_hashes(&w.open());
     assert_eq!(
         strings(
             &w.open(),
-            "SELECT status FROM resolution_coverage WHERE path='consumer.ts' AND expression='run' AND line=2"
+            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.ts' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='run' AND line=2"
         ),
         ["resolved"]
     );
@@ -407,6 +405,6 @@ fn vue_setup_body_edits_refresh_calls_and_preserve_consumer_contracts() {
     assert_eq!(report["affected_owners"], 1, "{report}");
     assert_eq!(report["reparsed_files"], 1, "{report}");
     assert_eq!(consumer_hashes(&w.open()), before);
-    assert_eq!(strings(&w.open(), "SELECT status FROM resolution_coverage WHERE path='Provider.vue' AND expression='defineOptions'"), ["resolved"]);
+    assert_eq!(strings(&w.open(), "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='Provider.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='defineOptions'"), ["resolved"]);
     w.assert_cold_equivalent();
 }

@@ -8,9 +8,11 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node as Syntax, Parser, Tree};
+/// Performs parser.
 pub fn parser(language: &str, path: &str) -> Result<Parser> {
     languages::require(language)?.create_parser(path)
 }
+/// Performs text.
 pub fn text<'a>(node: Syntax<'_>, source: &'a str) -> &'a str {
     &source[node.byte_range()]
 }
@@ -52,8 +54,11 @@ pub(crate) fn doc_comment(node: Syntax<'_>, source: &str) -> String {
     comments.reverse();
     comments.join("\n")
 }
+/// Represents scope bindings data.
 pub struct ScopeBindings {
+    /// The all value.
     pub all: Vec<String>,
+    /// The rebindings value.
     pub rebindings: Vec<String>,
 }
 pub(crate) fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
@@ -496,6 +501,7 @@ impl Extraction<'_> {
         }
     }
 }
+/// Performs extract.
 pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
     Ok(extract_typed(path, language, source)?.into_public())
 }
@@ -620,6 +626,7 @@ pub(crate) fn extract_tree_with_flows(
     .visit(root, &mut Vec::new(), owner, facts);
 }
 
+/// The search match horizon value.
 pub const SEARCH_MATCH_HORIZON: usize = 10_000;
 
 struct SearchBudget {
@@ -758,6 +765,7 @@ fn structural_match(
     }
     sequence(&p, &t, ps, source, captures, budget)
 }
+/// Performs search.
 pub fn search(
     source: &str,
     path: &str,
@@ -777,10 +785,15 @@ pub fn search(
     .items)
 }
 
+/// Represents search page data.
 pub struct SearchPage {
+    /// The items value.
     pub items: Vec<serde_json::Value>,
+    /// The matched value.
     pub matched: usize,
+    /// Whether complete applies.
     pub complete: bool,
+    /// Whether work limited applies.
     pub work_limited: bool,
 }
 
@@ -795,6 +808,7 @@ impl SearchPage {
     }
 }
 
+/// Performs search page.
 pub fn search_page(
     source: &str,
     path: &str,

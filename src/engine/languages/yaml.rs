@@ -1,7 +1,10 @@
 use super::*;
 
+/// Represents yaml data.
 pub struct Yaml;
+/// Shared yaml language profile.
 pub static YAML: Yaml = Yaml;
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&YAML];
 
 impl LanguageProfile for Yaml {

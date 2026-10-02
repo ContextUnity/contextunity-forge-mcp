@@ -4,6 +4,7 @@ use anyhow::{ensure, Result};
 use rusqlite::{Connection, ToSql};
 use serde_json::{json, Value};
 
+/// Performs syntax paged.
 pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
     let normalized = target.trim();

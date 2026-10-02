@@ -1,5 +1,7 @@
 use super::*;
+/// Language profile for ruby source files.
 pub struct Ruby;
+/// Shared ruby language profile.
 pub static RUBY: Ruby = Ruby;
 impl LanguageProfile for Ruby {
     fn id(&self) -> &'static str {
@@ -161,4 +163,5 @@ fn bare_value_expression(mut node: Syntax<'_>) -> bool {
     true
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&RUBY];

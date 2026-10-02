@@ -7,6 +7,7 @@ use std::{
 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Represents file identity data.
 pub struct FileIdentity {
     device: u64,
     inode: u64,
@@ -18,6 +19,7 @@ pub struct FileIdentity {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Represents identity data.
 pub struct Identity {
     main: FileIdentity,
     wal: Option<FileIdentity>,
@@ -119,6 +121,7 @@ pub(crate) fn exclusive_lock(path: &Path) -> Result<File> {
     generation_lock(path, true)
 }
 
+/// Performs identity.
 pub fn identity(path: &Path) -> Result<Identity> {
     let main = file_identity(path)?;
     let wal_path = suffix(path, "-wal");
@@ -130,6 +133,7 @@ pub fn identity(path: &Path) -> Result<Identity> {
     };
     Ok(Identity { main, wal })
 }
+/// Performs matches.
 pub fn matches(path: &Path, root: &Path, seal: &str, identity: &Identity) -> bool {
     fn read(path: &Path, root: &Path, seal: &str, identity: &Identity) -> Result<bool> {
         let receipt_path = suffix(path, ".verified.json");
@@ -157,10 +161,12 @@ pub fn matches(path: &Path, root: &Path, seal: &str, identity: &Identity) -> boo
     }
     read(path, root, seal, identity).unwrap_or(false)
 }
+/// Performs publish verified.
 pub fn publish_verified(path: &Path, root: &Path, seal: &str) -> Result<bool> {
     let before = identity(path)?;
     publish_verified_identity(path, root, seal, &before)
 }
+/// Performs publish verified identity.
 pub fn publish_verified_identity(
     path: &Path,
     root: &Path,
@@ -194,6 +200,7 @@ pub fn publish_verified_identity(
     }
     Ok(true)
 }
+/// Performs invalidate.
 pub fn invalidate(path: &Path) {
     let _ = fs::remove_file(suffix(path, ".verified.json"));
 }

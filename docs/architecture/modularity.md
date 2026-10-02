@@ -11,20 +11,20 @@ ContextUnity Forge MCP separates code parsing, AST fact extraction, cross-file s
 
 ```text
 src/engine/
-├── parser/
-│   ├── traits.rs           # LanguageParser & TemplatePreprocessor traits
-│   ├── sanitize.rs         # Byte-offset-preserving template tag sanitizer ({% %}, {{ }})
-│   └── tree.rs             # Safe Tree-sitter traversal, error collection
+├── ast/                    # Tree-sitter extraction and relation facts
 ├── languages/
-│   ├── profile.rs          # LanguageProfile trait (extensions, keywords, builtins)
-│   ├── python/             # Python facts extractor, AST visitor, re-exports
-│   ├── web/                # HTML, Vue, Django template resolution
-│   ├── rust/               # Rust facts extractor, module hierarchy
-│   └── typescript/         # TS/JS facts extractor, path aliases
+│   ├── mod.rs              # LanguageProfile contract and linker registry
+│   ├── support/template.rs # Byte-preserving TemplateMasker
+│   ├── html.rs, vue.rs      # HTML islands and Vue template extraction
+│   ├── python/             # Python linker and C3 receivers
+│   ├── rust/               # Rust linker and value-flow facts
+│   ├── typescript/         # TS/JS linker and CommonJS bindings
+│   └── toml_manifest.rs    # TOML AST traversal shared by manifests
+├── linker.rs               # Shared graph construction and dispatch
 └── linker/
-    ├── traits.rs           # LanguageLinker trait (resolve_import, resolve_receiver)
-    ├── engine.rs           # Universal graph resolution engine
-    └── profiles/           # Language-specific linker profiles (python.rs, etc.)
+    ├── traits.rs           # LanguageLinker contract
+    ├── semantic_context.rs # Shared bounded symbol admission
+    └── value_flow.rs       # Bounded static receiver reduction
 ```
 
 ## Extensibility Contracts
@@ -36,11 +36,12 @@ Encapsulates language-specific discovery and AST extraction:
 - Grammar definitions and Tree-sitter query conventions.
 - Extraction of declarations (functions, methods, classes, types, interfaces).
 
-### 2. `TemplatePreprocessor`
-Preprocesses mixed template syntaxes (e.g. Django/Jinja tags inside HTML or Vue templates) before Tree-sitter parsing:
-- Replaces template delimiters (`{% ... %}`, `{{ ... }}`, `{# ... #}`) with space characters matching exact byte lengths.
-- Preserves exact byte offsets and line numbering, preventing Tree-sitter syntax errors while retaining faithful spans for code navigation.
-- Directly extracts template references (`include`, `extends`, `component`) into structural fact relationships.
+### 2. `TemplateMasker`
+Preprocesses mixed template syntax before the HTML or embedded JavaScript parser runs:
+- Replaces `{% ... %}`, `{{ ... }}`, and `{# ... #}` bytes with spaces while retaining newline bytes and exact offsets.
+- Reports original tag content and line to HTML extraction so `include` and `extends` remain structural references.
+- Lets Vue extract interpolation references from original source spans between DOM nodes, including spans that the masked HTML parser omits as whitespace.
+- Returns the borrowed source without a byte scan when no template marker is present.
 
 ### 3. `LanguageLinker`
 Decouples language-specific import and receiver resolutions from the core SQLite graph builder:

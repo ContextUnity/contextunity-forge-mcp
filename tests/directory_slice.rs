@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-python")]
 
 use contextunity_forge_mcp::{
-    core::response::{QueryOptions, ResponsePolicy},
+    core::response::{CoverageOptions, QueryOptions, ResponsePolicy},
     db::{reader, traversal, writer},
 };
 use rusqlite::Connection;
@@ -64,12 +64,16 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         "def edit(): pass\n",
     );
     let conn = ws.build();
-    let result = traversal::query_paged(
+    let result = traversal::query_with_options(
         &conn,
         "slice",
         Some("contextunity/commerce/ingestion"),
-        1,
-        &options(20),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
     )
     .unwrap();
     assert_eq!(result["scope"], "directory_members");
@@ -94,12 +98,33 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
             "extensions/commerce/src/contextunity/commerce/pim/views/products/editor",
         ),
     ] {
-        let scoped =
-            traversal::query_paged(&conn, "slice", Some(selector), 1, &options(20)).unwrap();
+        let scoped = traversal::query_with_options(
+            &conn,
+            "slice",
+            Some(selector),
+            &traversal::GraphQueryOptions {
+                depth: 1,
+                direction: None,
+                coverage: CoverageOptions::default(),
+                page: &options(20),
+            },
+        )
+        .unwrap();
         assert_eq!(scoped["selector"]["path"], expected);
         assert_eq!(scoped["nodes"]["total"], 2);
     }
-    let exact = traversal::query_paged(&conn, "slice", Some(file), 1, &options(20)).unwrap();
+    let exact = traversal::query_with_options(
+        &conn,
+        "slice",
+        Some(file),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
+    )
+    .unwrap();
     assert_eq!(exact["depth"], 1);
     assert!(exact.get("scope").is_none());
 }
@@ -116,16 +141,20 @@ fn duplicate_directory_suffix_requires_full_path_and_unknown_path_suggests_index
         "def b(): pass\n",
     );
     let conn = ws.build();
-    let error = traversal::query_paged(
+    let error = traversal::query_with_options(
         &conn,
         "slice",
         Some("contextunity/commerce/ingestion"),
-        1,
-        &options(20),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
     )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("ambiguous directory selector"), "{error}");
+    assert!(error.contains("ambiguous selector"), "{error}");
     assert!(
         error.contains("extensions/commerce/src/contextunity/commerce/ingestion"),
         "{error}"
@@ -134,21 +163,29 @@ fn duplicate_directory_suffix_requires_full_path_and_unknown_path_suggests_index
         error.contains("services/api/src/contextunity/commerce/ingestion"),
         "{error}"
     );
-    let exact = traversal::query_paged(
+    let exact = traversal::query_with_options(
         &conn,
         "slice",
         Some("extensions/commerce/src/contextunity/commerce/ingestion"),
-        1,
-        &options(20),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
     )
     .unwrap();
     assert_eq!(exact["nodes"]["total"], 2);
-    let unknown = traversal::query_paged(
+    let unknown = traversal::query_with_options(
         &conn,
         "slice",
         Some("contextunity/commerce/ingest"),
-        1,
-        &options(20),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
     )
     .unwrap_err()
     .to_string();
@@ -166,7 +203,18 @@ fn large_directory_is_paged_without_graph_expansion() {
     ws.write("pkg/large/items.py", &code);
     let conn = ws.build();
     let started = Instant::now();
-    let first = traversal::query_paged(&conn, "slice", Some("pkg/large"), 16, &options(1)).unwrap();
+    let first = traversal::query_with_options(
+        &conn,
+        "slice",
+        Some("pkg/large"),
+        &traversal::GraphQueryOptions {
+            depth: 16,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(1),
+        },
+    )
+    .unwrap();
     assert_eq!(first["nodes"]["total"], 1101);
     assert_eq!(first["nodes"]["items"].as_array().unwrap().len(), 1);
     assert_eq!(first["nodes"]["has_more"], true);

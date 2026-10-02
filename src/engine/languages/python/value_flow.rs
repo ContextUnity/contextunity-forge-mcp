@@ -91,11 +91,7 @@ pub(super) fn unique_module_aliases(node: Node<'_>, source: &str) -> HashSet<Str
 }
 
 fn position(node: Node<'_>) -> SourcePosition {
-    let end = node.end_position();
-    SourcePosition {
-        line: end.row + 1,
-        column: end.column,
-    }
+    crate::engine::languages::source_end(node)
 }
 
 fn static_name(node: Node<'_>) -> bool {
@@ -109,7 +105,7 @@ fn static_name(node: Node<'_>) -> bool {
 
 fn annotation(node: Node<'_>, source: &str) -> TypeExpr {
     fn parse(node: Node<'_>, source: &str, depth: usize, remaining: &mut usize) -> TypeExpr {
-        if depth >= 8 || *remaining == 0 {
+        if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH || *remaining == 0 {
             return TypeExpr::Unknown;
         }
         *remaining -= 1;

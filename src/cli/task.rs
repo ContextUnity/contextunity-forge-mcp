@@ -7,71 +7,109 @@ use serde_json::Value;
 use std::path::Path;
 
 #[derive(Debug, Subcommand)]
+/// Enumerates the supported task command values.
 pub enum TaskCommand {
+    /// Represents the list case.
     List {
         #[arg(long)]
+        /// Optional repository value.
         repository: Option<String>,
         #[arg(long)]
+        /// Optional milestone value.
         milestone: Option<String>,
         #[arg(long, value_enum)]
+        /// Optional status value.
         status: Option<Status>,
         #[arg(long, value_enum)]
+        /// Optional stage value.
         stage: Option<Stage>,
     },
+    /// Represents the inspect case.
     Inspect {
+        /// The task id value.
         task_id: String,
     },
+    /// Represents the create case.
     Create {
+        /// The milestone ref value.
         milestone_ref: String,
+        /// The task ref value.
         task_ref: String,
         #[arg(long)]
+        /// Optional workspace value.
         workspace: Option<String>,
     },
+    /// Represents the sync case.
     Sync {
+        /// Optional milestone ref value.
         milestone_ref: Option<String>,
         #[arg(long)]
+        /// Optional workspace value.
         workspace: Option<String>,
     },
+    /// Represents the claim case.
     Claim {
+        /// The task id value.
         task_id: String,
         #[arg(long)]
+        /// The stage value.
         stage: String,
         #[arg(long)]
+        /// The worker value.
         worker: String,
         #[arg(long)]
+        /// The worktree value.
         worktree: String,
     },
+    /// Represents the submit case.
     Submit {
+        /// The task id value.
         task_id: String,
         #[arg(long)]
+        /// The stage value.
         stage: String,
         #[arg(long, value_enum)]
+        /// The action value.
         action: Action,
         #[arg(long)]
+        /// The evidence value.
         evidence: String,
         #[arg(long)]
+        /// Optional findings value.
         findings: Option<String>,
     },
+    /// Represents the extend scope case.
     ExtendScope {
+        /// The task id value.
         task_id: String,
         #[arg(required = true)]
+        /// The paths value.
         paths: Vec<String>,
     },
+    /// Represents the delete case.
     Delete {
+        /// Optional task id value.
         task_id: Option<String>,
         #[arg(long, conflicts_with = "task_id")]
+        /// Optional milestone value.
         milestone: Option<String>,
         #[arg(long)]
+        /// Whether force applies.
         force: bool,
         #[arg(long, requires = "milestone")]
+        /// Optional workspace value.
         workspace: Option<String>,
     },
+    /// Represents the reset case.
     Reset {
+        /// The task id value.
         task_id: String,
     },
+    /// Represents the cleanup case.
     Cleanup,
 }
 
+/// Performs run.
 pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
     let mut manage = Manage {
         workspace: None,

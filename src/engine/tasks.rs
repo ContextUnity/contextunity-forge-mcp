@@ -13,14 +13,21 @@ use workspaces::Registry;
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 #[value(rename_all = "snake_case")]
+/// Enumerates the supported status values.
 pub enum Status {
+    /// Represents the ready case.
     Ready,
+    /// Represents the in progress case.
     InProgress,
+    /// Represents the blocked case.
     Blocked,
+    /// Represents the completed case.
     Completed,
+    /// Represents the all case.
     All,
 }
 impl Status {
+    /// Performs name.
     pub fn name(self) -> &'static str {
         match self {
             Self::Ready => "ready",
@@ -33,11 +40,15 @@ impl Status {
 }
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates the supported stage values.
 pub enum Stage {
+    /// Represents the build case.
     Build,
+    /// Represents the review case.
     Review,
 }
 impl Stage {
+    /// Performs name.
     pub fn name(self) -> &'static str {
         match self {
             Self::Build => "build",
@@ -47,11 +58,15 @@ impl Stage {
 }
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates the supported action values.
 pub enum Action {
+    /// Represents the pass case.
     Pass,
+    /// Represents the reject case.
     Reject,
 }
 impl Action {
+    /// Performs name.
     pub fn name(self) -> &'static str {
         match self {
             Self::Pass => "pass",
@@ -61,28 +76,44 @@ impl Action {
 }
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+/// Represents list data.
 pub struct List {
+    /// Optional repository value.
     pub repository: Option<String>,
+    /// Optional milestone ref value.
     pub milestone_ref: Option<String>,
+    /// Optional status value.
     pub status: Option<Status>,
+    /// Optional stage value.
     pub stage: Option<Stage>,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+/// Represents claim data.
 pub struct Claim {
+    /// The task id value.
     pub task_id: String,
+    /// The stage value.
     pub stage: String,
+    /// The worker id value.
     pub worker_id: String,
+    /// The worktree value.
     pub worktree: String,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+/// Represents submit data.
 pub struct Submit {
+    /// The task id value.
     pub task_id: String,
+    /// The stage value.
     pub stage: String,
+    /// The evidence ref value.
     pub evidence_ref: String,
+    /// The action value.
     pub action: Action,
     #[schemars(schema_with = "findings_schema")]
+    /// Optional findings value.
     pub findings: Option<Value>,
 }
 fn findings_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -90,23 +121,37 @@ fn findings_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 }
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates the supported manage action values.
 pub enum ManageAction {
+    /// Represents the create case.
     Create,
+    /// Represents the sync case.
     Sync,
+    /// Represents the inspect case.
     Inspect,
+    /// Represents the delete case.
     Delete,
+    /// Represents the extend scope case.
     ExtendScope,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+/// Represents manage data.
 pub struct Manage {
+    /// Optional workspace value.
     pub workspace: Option<String>,
+    /// The action value.
     pub action: ManageAction,
+    /// Optional task id value.
     pub task_id: Option<String>,
+    /// Optional milestone ref value.
     pub milestone_ref: Option<String>,
+    /// Optional task ref value.
     pub task_ref: Option<String>,
+    /// Optional paths value.
     pub paths: Option<Vec<String>>,
     #[serde(default)]
+    /// Whether force applies.
     pub force: bool,
 }
 
@@ -150,9 +195,11 @@ impl TaskSettings {
         Ok(path)
     }
 }
+/// Performs database path.
 pub fn database_path(root: &Path) -> Result<std::path::PathBuf> {
     TaskSettings::load(root)?.path(root)
 }
+/// Performs project identity.
 pub fn project_identity(root: &Path) -> Result<(String, String)> {
     let settings = TaskSettings::load(root)?;
     Ok((
@@ -160,6 +207,7 @@ pub fn project_identity(root: &Path) -> Result<(String, String)> {
         settings.task_project.unwrap_or(settings.task_repository),
     ))
 }
+/// Performs store.
 pub fn store(root: &Path) -> Result<TasksStore> {
     let settings = TaskSettings::load(root)?;
     TasksStore::open_project(
@@ -171,6 +219,7 @@ pub fn store(root: &Path) -> Result<TasksStore> {
             .unwrap_or(&settings.task_repository),
     )
 }
+/// Performs list.
 pub fn list(root: &Path, p: List) -> Result<Value> {
     let registry = Registry::load(root)?;
     let status = p.status.unwrap_or(Status::Ready).name();
@@ -222,6 +271,7 @@ fn validate_authority(task: &crate::db::tasks_store::Task, root: &Path) -> Resul
     }
     Ok(())
 }
+/// Performs claim.
 pub fn claim(root: &Path, p: Claim) -> Result<Value> {
     let worktree = crate::core::tasks::claim_worktree(&p.worktree)?;
     let registry = Registry::load(root)?;
@@ -234,10 +284,12 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
     store.claim(&p.task_id, &p.stage, &p.worker_id, &p.worktree)?;
     workspace.envelope(store.inspect_details(&p.task_id)?)
 }
+/// Performs store for task.
 pub fn store_for_task(root: &Path, id: &str) -> Result<TasksStore> {
     let registry = Registry::load(root)?;
     registry.owner(id)?.open(&registry.database)
 }
+/// Performs submit.
 pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     let registry = Registry::load(root)?;
     let workspace = registry.owner(&p.task_id)?;
@@ -273,6 +325,7 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
         p.findings.as_ref(),
     )?)?)
 }
+/// Performs manage.
 pub fn manage(root: &Path, p: Manage) -> Result<Value> {
     let id = p.task_id.as_deref();
     let milestone = p.milestone_ref.as_deref();

@@ -1,7 +1,10 @@
 use super::*;
 
+/// Represents toml data.
 pub struct Toml;
+/// Shared toml language profile.
 pub static TOML: Toml = Toml;
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&TOML];
 
 impl LanguageProfile for Toml {

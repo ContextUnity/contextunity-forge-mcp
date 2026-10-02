@@ -1,5 +1,7 @@
 use super::*;
+/// Language profile for java source files.
 pub struct Java;
+/// Shared java language profile.
 pub static JAVA: Java = Java;
 impl LanguageProfile for Java {
     fn id(&self) -> &'static str {
@@ -161,4 +163,5 @@ impl LanguageProfile for Java {
     }
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&JAVA];

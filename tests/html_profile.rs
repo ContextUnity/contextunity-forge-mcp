@@ -163,9 +163,9 @@ fn inline_javascript_imports_resolve_without_html_namespace_collision() {
         .any(|reference| reference.module.as_deref() == Some("ignored")));
     writer::build(&workspace.0, &workspace.db(), None).unwrap();
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let resolved: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.src_public_id='module:app.html' AND e.kind='imports' AND n.path='app.js'", [], |row| row.get(0)).unwrap();
+    let resolved: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE e.src_hash=(SELECT node_hash FROM nodes WHERE id='module:app.html') AND e.kind='imports' AND n.path='app.js'", [], |row| row.get(0)).unwrap();
     assert!(resolved > 0);
-    let self_imports: i64 = conn.query_row("SELECT count(*) FROM edges WHERE src_public_id='module:app.html' AND dst_public_id='module:app.html' AND kind='imports'", [], |row| row.get(0)).unwrap();
+    let self_imports: i64 = conn.query_row("SELECT count(*) FROM edges WHERE (SELECT id FROM nodes WHERE node_hash=src_hash)='module:app.html' AND (SELECT id FROM nodes WHERE node_hash=dst_hash)='module:app.html' AND kind='imports'", [], |row| row.get(0)).unwrap();
     assert_eq!(self_imports, 0);
 }
 
@@ -189,7 +189,7 @@ fn html_local_script_and_link_assets_resolve_and_remote_assets_stay_out() {
     writer::build(&workspace.0, &workspace.db(), None).unwrap();
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
     let occurrences: i64 = conn.query_row(
-        "SELECT occurrence_count FROM edges WHERE src_public_id='module:app.html' AND dst_public_id='module:app.js' AND kind='imports'",
+        "SELECT occurrence_count FROM edges WHERE (SELECT id FROM nodes WHERE node_hash=src_hash)='module:app.html' AND (SELECT id FROM nodes WHERE node_hash=dst_hash)='module:app.js' AND kind='imports'",
         [],
         |row| row.get(0),
     ).unwrap();
@@ -214,7 +214,7 @@ fn root_relative_browser_assets_do_not_resolve_into_another_workspace() {
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
     let imports: i64 = conn
         .query_row(
-            "SELECT count(*) FROM edges WHERE src_public_id='module:index.html' AND kind='imports'",
+            "SELECT count(*) FROM edges WHERE (SELECT id FROM nodes WHERE node_hash=src_hash)='module:index.html' AND kind='imports'",
             [],
             |row| row.get(0),
         )
@@ -222,7 +222,7 @@ fn root_relative_browser_assets_do_not_resolve_into_another_workspace() {
     assert_eq!(imports, 0);
     let unresolved: i64 = conn
         .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE path='index.html' AND status='unresolved'",
+            "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='index.html' AND status='unresolved'",
             [],
             |row| row.get(0),
         )
@@ -297,12 +297,23 @@ fn htmx_declarations_are_searchable_without_inventing_handler_edges() {
     let inspect_bytes = serde_json::to_vec(&inspected).unwrap().len();
     assert!(inspect_bytes < 8192, "{inspect_bytes} bytes");
     println!("HTMX request full inspect={inspect_bytes} bytes");
-    let searched = symbols::search_paged(&conn, "orders", Some("htmx_request"), &options).unwrap();
+    let searched = symbols::search_with_options(
+        &conn,
+        "orders",
+        &symbols::SearchOptions {
+            kind: Some("htmx_request"),
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &options,
+        },
+    )
+    .unwrap();
     assert_eq!(searched["nodes"]["total"], 3);
     assert_eq!(searched["nodes"]["items"][0]["path"], "page.html");
     let edges: i64 = conn
         .query_row(
-            "SELECT count(*) FROM edges WHERE src_public_id='module:page.html' AND kind='imports'",
+            "SELECT count(*) FROM edges WHERE (SELECT id FROM nodes WHERE node_hash=src_hash)='module:page.html' AND kind='imports'",
             [],
             |row| row.get(0),
         )
@@ -361,7 +372,18 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
         None,
     )
     .unwrap();
-    let first = symbols::search_paged(&delta, "route", Some("htmx_request"), &options).unwrap();
+    let first = symbols::search_with_options(
+        &delta,
+        "route",
+        &symbols::SearchOptions {
+            kind: Some("htmx_request"),
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &options,
+        },
+    )
+    .unwrap();
     assert_eq!(first["nodes"]["total"], 70);
     assert_eq!(first["nodes"]["items"].as_array().unwrap().len(), 10);
     assert_eq!(first["nodes"]["next_offset"], 10);
@@ -374,8 +396,18 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
         Some(generation),
     )
     .unwrap();
-    let second =
-        symbols::search_paged(&delta, "route", Some("htmx_request"), &second_options).unwrap();
+    let second = symbols::search_with_options(
+        &delta,
+        "route",
+        &symbols::SearchOptions {
+            kind: Some("htmx_request"),
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &second_options,
+        },
+    )
+    .unwrap();
     assert_eq!(second["nodes"]["total"], 70);
     assert_eq!(second["nodes"]["items"].as_array().unwrap().len(), 10);
     assert_ne!(
@@ -444,86 +476,6 @@ fn htmx_same_line_requests_have_distinct_stable_ids() {
     assert!(requests.iter().any(|node| node.name == "GET /right"));
     assert!(requests.iter().any(|node| node.name == "POST /save"));
     assert!(!requests.iter().any(|node| node.name == "GET /old"));
-}
-
-#[test]
-fn html_django_template_preprocessor_avoids_syntax_errors_and_extracts_links() {
-    let source = r#"
-{% extends "base.html" %}
-{% load static %}
-{% block content %}
-<div id="container-{{ item.id }}" class="card">
-    <h1>{{ item.title }}</h1>
-    {% if item.is_active %}
-        <p>Active</p>
-    {% endif %}
-    {% include "partials/sidebar.html" with extra="val" %}
-</div>
-<script>
-    let currentId = {{ item.id }};
-    {% if item.is_active %}
-    console.log("active: " + currentId);
-    {% endif %}
-</script>
-{% endblock %}
-"#;
-    let facts = ast::extract("templates/item.html", "html", source).unwrap();
-    assert_eq!(
-        facts.errors.len(),
-        0,
-        "Django template must not produce syntax errors: {:?}",
-        facts.errors
-    );
-    let includes: Vec<_> = facts
-        .references
-        .iter()
-        .filter(|r| r.kind == "includes")
-        .collect();
-    assert_eq!(includes.len(), 1);
-    assert_eq!(includes[0].expression, "partials/sidebar.html");
-
-    let extends: Vec<_> = facts
-        .references
-        .iter()
-        .filter(|r| r.kind == "extends")
-        .collect();
-    assert_eq!(extends.len(), 1);
-    assert_eq!(extends[0].expression, "base.html");
-}
-
-#[test]
-fn html_truncated_template_tags_do_not_panic() {
-    for snippet in [
-        "{%",
-        "{% ",
-        "{% include",
-        "{#",
-        "{# unclosed comment",
-        "{{",
-        "{{ unclosed var",
-    ] {
-        let facts = ast::extract("truncated.html", "html", snippet);
-        assert!(facts.is_ok(), "must not panic on: {snippet}");
-    }
-}
-
-#[test]
-fn html_template_file_still_reports_syntax_error_in_plain_script() {
-    let source = r#"
-<div>{{ item.title }}</div>
-<script>
-    function broken( {
-</script>
-"#;
-    let facts = ast::extract("template_with_broken_js.html", "html", source).unwrap();
-    assert!(
-        facts
-            .errors
-            .iter()
-            .any(|e| e.message.contains("embedded JavaScript")),
-        "plain script in template file must still report real JS syntax errors: {:?}",
-        facts.errors
-    );
 }
 
 #[cfg(feature = "lang-typescript")]
@@ -601,10 +553,10 @@ fn html_javascript_import_scope_and_boolean_handlers_survive_delta() {
     workspace.write("page.html", "<script type='module'>import { answer } from './provider.js'; answer();</script>\n<script type='module'>answer();</script>\n<button onclick=\"function check() {} if (true && true) check();\">Run</button>");
     writer::build(&workspace.0, &workspace.db(), None).unwrap();
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let imports: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.src_public_id='module:page.html' AND e.kind='imports' AND n.path='provider.js'", [], |row| row.get(0)).unwrap();
+    let imports: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE e.src_hash=(SELECT node_hash FROM nodes WHERE id='module:page.html') AND e.kind='imports' AND n.path='provider.js'", [], |row| row.get(0)).unwrap();
     assert!(imports > 0);
-    let resolved: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage WHERE path='page.html' AND line=1 AND expression='answer' AND status='resolved'", [], |row| row.get(0)).unwrap();
-    let unresolved: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage WHERE path='page.html' AND line=2 AND expression='answer' AND status='unresolved'", [], |row| row.get(0)).unwrap();
+    let resolved: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='page.html' AND line=1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='answer' AND status='resolved'", [], |row| row.get(0)).unwrap();
+    let unresolved: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='page.html' AND line=2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='answer' AND status='unresolved'", [], |row| row.get(0)).unwrap();
     assert_eq!(resolved, 2);
     assert_eq!(unresolved, 1);
     drop(conn);
@@ -784,3 +736,6 @@ mod classic_wire;
 #[cfg(feature = "lang-python")]
 #[path = "html_profile/template_origins.rs"]
 mod template_origins;
+
+#[path = "html_profile/template_masking.rs"]
+mod template_masking;

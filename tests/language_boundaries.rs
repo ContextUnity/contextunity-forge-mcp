@@ -116,7 +116,7 @@ func Main() int {
     println!("NODES: {:?}", nodes);
     let cov: Vec<(String, String, String)> = {
         let mut stmt = conn
-            .prepare("SELECT expression, status, evidence FROM resolution_coverage")
+            .prepare("SELECT (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id), status, (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage")
             .unwrap();
         let rows = stmt
             .query_map([], |r| {
@@ -129,7 +129,7 @@ func Main() int {
 
     let calls: Vec<(String, String)> = {
         let mut stmt = conn
-            .prepare("SELECT src_public_id, dst_public_id FROM edges WHERE kind='calls'")
+            .prepare("SELECT (SELECT id FROM nodes WHERE node_hash=src_hash), (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='calls'")
             .unwrap();
         let rows = stmt
             .query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
@@ -147,7 +147,7 @@ func Main() int {
 
     let resolved: i64 = conn
         .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE status='resolved' AND expression='Helper'",
+            "SELECT count(*) FROM resolution_coverage WHERE status='resolved' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='Helper'",
             [],
             |r| r.get(0),
         )
@@ -211,7 +211,7 @@ export function run() {
     println!("MODULES: {:?}", modules);
     let cov: Vec<(String, String, String)> = {
         let mut stmt = conn
-            .prepare("SELECT expression, status, evidence FROM resolution_coverage")
+            .prepare("SELECT (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id), status, (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage")
             .unwrap();
         let rows = stmt
             .query_map([], |r| {
@@ -244,7 +244,7 @@ export function run() {
     // Verify import edges resolved via package.json exports
     let import_edges: Vec<(String, String)> = {
         let mut stmt = conn
-            .prepare("SELECT src_public_id, dst_public_id FROM edges WHERE kind='imports'")
+            .prepare("SELECT (SELECT id FROM nodes WHERE node_hash=src_hash), (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='imports'")
             .unwrap();
         let rows = stmt
             .query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
@@ -338,7 +338,7 @@ nextTick(); inject(); provide(); useSlots(); useAttrs(); useI18n(); t();
     for name in "ref computed reactive shallowRef shallowReactive toRef toRefs unref isRef watch watchEffect onMounted onUnmounted onUpdated onBeforeMount onBeforeUnmount nextTick inject provide useSlots useAttrs useI18n t".split_ascii_whitespace() {
         let status: String = conn
             .query_row(
-                "SELECT status FROM resolution_coverage WHERE path='App.vue' AND expression=?1",
+                "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1",
                 [name],
                 |row| row.get(0),
             )
@@ -359,7 +359,7 @@ fn vue_compiler_macros_are_setup_scoped_and_lexically_shadowable() {
 
     let count = |expression: &str, status: &str| -> i64 {
         conn.query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE path='Macro.vue' AND expression=?1 AND status=?2",
+            "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='Macro.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1 AND status=?2",
             rusqlite::params![expression, status],
             |row| row.get(0),
         )
@@ -371,7 +371,7 @@ fn vue_compiler_macros_are_setup_scoped_and_lexically_shadowable() {
     assert_eq!(count("defineModel", "resolved"), 1);
     let local_call: i64 = conn
         .query_row(
-            "SELECT count(*) FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.path='Macro.vue' AND e.kind='calls' AND n.name='defineModel'",
+            "SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.path_id)='Macro.vue' AND e.kind='calls' AND n.name='defineModel'",
             [],
             |row| row.get(0),
         )
@@ -417,10 +417,10 @@ const worker = new Worker();
     );
     let conn = w.build();
     let calls: i64 = conn.query_row(
-        "SELECT COALESCE(sum(e.occurrence_count),0) FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.path='App.vue' AND e.kind='calls' AND n.name='run'",
+        "SELECT COALESCE(sum(e.occurrence_count),0) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.path_id)='App.vue' AND e.kind='calls' AND n.name='run'",
         [], |row| row.get(0),
     ).unwrap();
-    let mut statement = conn.prepare("SELECT src,dst,line,evidence FROM edge_occurrences WHERE owner='App.vue' AND kind='calls'").unwrap();
+    let mut statement = conn.prepare("SELECT (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash),line,(SELECT evidence FROM coverage_evidence WHERE evidence_id=edge_occurrences.evidence_id) FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)='App.vue' AND kind='calls'").unwrap();
     let occurrences: Vec<(String, String, usize, String)> = statement
         .query_map([], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -430,7 +430,7 @@ const worker = new Worker();
         .collect();
     assert_eq!(calls, 2, "{occurrences:#?}");
     let components: i64 = conn.query_row(
-        "SELECT count(*) FROM resolution_coverage WHERE path='App.vue' AND expression='MyButton' AND status='resolved'",
+        "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='MyButton' AND status='resolved'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(components, 1);
@@ -687,7 +687,7 @@ pub fn execute() {
     // Verify builtin println is resolved
     let println_resolved: i64 = conn
         .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE expression='println' AND status='resolved'",
+            "SELECT count(*) FROM resolution_coverage WHERE (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='println' AND status='resolved'",
             [],
             |r| r.get(0),
         )
@@ -700,7 +700,7 @@ pub fn execute() {
     // Verify crate:: import resolved to crates.core.src prefix
     let import_resolved: i64 = conn
         .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE expression LIKE '%log_info%' AND status='resolved'",
+            "SELECT count(*) FROM resolution_coverage WHERE (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id) LIKE '%log_info%' AND status='resolved'",
             [],
             |r| r.get(0),
         )
@@ -764,7 +764,7 @@ service AuthService {
     let conn = w.build();
     let ref_edges: Vec<(String, String)> = {
         let mut stmt = conn
-            .prepare("SELECT src_public_id, dst_public_id FROM edges WHERE kind='references'")
+            .prepare("SELECT (SELECT id FROM nodes WHERE node_hash=src_hash), (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='references'")
             .unwrap();
         let rows = stmt
             .query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))

@@ -64,7 +64,17 @@ fn diagnostics_classify_recorded_evidence_and_count_affected_files() {
     ];
     for (path, line, expression, status, evidence) in cases {
         conn.execute(
-            "INSERT INTO resolution_coverage(path,line,expression,status,evidence) VALUES(?1,?2,?3,?4,?5)",
+            "INSERT OR IGNORE INTO coverage_expressions(expression) VALUES(?1)",
+            [expression],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES(?1)",
+            [evidence],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO resolution_coverage(path_id,line,expression_id,status,evidence_id) VALUES((SELECT path_id FROM path_dictionary WHERE path=?1),?2,(SELECT expression_id FROM coverage_expressions WHERE expression=?3),?4,(SELECT evidence_id FROM coverage_evidence WHERE evidence=?5))",
             params![path, line, expression, status, evidence],
         )
         .unwrap();

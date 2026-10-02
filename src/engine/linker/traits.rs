@@ -116,6 +116,9 @@ pub trait LanguageLinker: Send + Sync {
         HashMap::new()
     }
 
+    /// Builds package re-export indexes from borrowed per-file facts.
+    ///
+    /// The borrowed form avoids cloning facts during incremental relinking.
     fn package_exports_borrowed<'a>(
         &self,
         _all: &'a BTreeMap<String, &'a Facts>,
@@ -136,6 +139,9 @@ pub trait LanguageLinker: Send + Sync {
         BTreeSet::new()
     }
 
+    /// Returns files whose borrowed full facts are needed to relink affected owners.
+    ///
+    /// Implementations keep the returned set scoped to the affected import graph.
     fn required_full_facts_borrowed(
         &self,
         _facts: &BTreeMap<String, &Facts>,

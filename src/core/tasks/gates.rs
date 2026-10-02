@@ -7,14 +7,23 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+/// Represents evidence data.
 pub struct Evidence {
+    /// The task id value.
     pub task_id: String,
+    /// The stage value.
     pub stage: String,
+    /// The claim revision value.
     pub claim_revision: u64,
+    /// The contract revision value.
     pub contract_revision: u64,
+    /// The worker id value.
     pub worker_id: String,
+    /// The worktree value.
     pub worktree: String,
+    /// The commit value.
     pub commit: String,
+    /// The proof value.
     pub proof: serde_json::Value,
 }
 
@@ -41,6 +50,7 @@ struct ContourProof {
     evidence: String,
 }
 
+/// The review contours value.
 pub const REVIEW_CONTOURS: [&str; 5] = [
     "paths",
     "claims",
@@ -89,6 +99,7 @@ fn validate_review(value: &serde_json::Value) -> Result<()> {
 }
 
 impl TasksStore {
+    /// Performs submit.
     pub fn submit(
         &mut self,
         id: &str,
@@ -268,6 +279,7 @@ fn validate_receipt(
     Ok(())
 }
 
+/// Performs validate durable receipt.
 pub fn validate_durable_receipt(receipt: &Receipt, revision: u64) -> Result<()> {
     validate_tests(&receipt.evidence)?;
     validate_review(&receipt.review)?;

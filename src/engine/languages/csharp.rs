@@ -1,5 +1,7 @@
 use super::*;
+/// Represents csharp data.
 pub struct CSharp;
+/// Shared csharp language profile.
 pub static CSHARP: CSharp = CSharp;
 impl LanguageProfile for CSharp {
     fn id(&self) -> &'static str {
@@ -93,4 +95,5 @@ impl LanguageProfile for CSharp {
     }
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&CSHARP];

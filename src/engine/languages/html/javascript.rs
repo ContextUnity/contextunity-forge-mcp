@@ -1,4 +1,5 @@
 use super::*;
+use crate::engine::languages::template::TemplateMasker;
 use crate::core::models::{Diagnostic, Edge};
 
 #[allow(clippy::too_many_arguments)]
@@ -17,7 +18,7 @@ pub(super) fn extract_island(
     mut flows: Option<&mut crate::core::typed_facts::FlowStore>,
 ) -> Result<()> {
     let original = &source[start..end];
-    let script = mask_templates(original);
+    let script = TemplateMasker::mask(original, |_| {}, None);
     if script.trim().is_empty() {
         return Ok(());
     }
@@ -456,36 +457,4 @@ pub(super) fn script_kind(node: Syntax<'_>, source: &str) -> &'static str {
     } else {
         "classic"
     }
-}
-
-fn mask_templates(script: &str) -> std::borrow::Cow<'_, str> {
-    if !["{%", "{{", "{#"]
-        .iter()
-        .any(|marker| script.contains(marker))
-    {
-        return std::borrow::Cow::Borrowed(script);
-    }
-    let mut bytes = script.as_bytes().to_vec();
-    let mut offset = 0;
-    while offset + 1 < bytes.len() {
-        let close = match &bytes[offset..offset + 2] {
-            b"{%" => "%}",
-            b"{{" => "}}",
-            b"{#" => "#}",
-            _ => {
-                offset += 1;
-                continue;
-            }
-        };
-        let end = script[offset + 2..]
-            .find(close)
-            .map_or(bytes.len(), |length| offset + 2 + length + 2);
-        for byte in &mut bytes[offset..end] {
-            if *byte != b'\n' {
-                *byte = b' ';
-            }
-        }
-        offset = end;
-    }
-    std::borrow::Cow::Owned(String::from_utf8(bytes).expect("template masking preserves UTF-8"))
 }

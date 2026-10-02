@@ -43,7 +43,7 @@ impl Drop for Workspace {
 fn doc_edges(db: &Path) -> Vec<(String, String, String)> {
     let conn = Connection::open(db).unwrap();
     let mut statement = conn
-        .prepare("SELECT src_public_id,dst_public_id,kind FROM edges WHERE kind IN ('documents','references_doc') ORDER BY src_public_id,dst_public_id,kind")
+        .prepare("SELECT (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind FROM edges WHERE kind IN ('documents','references_doc') ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind")
         .unwrap();
     statement
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))

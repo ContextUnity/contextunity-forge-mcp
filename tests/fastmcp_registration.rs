@@ -39,7 +39,7 @@ impl Workspace {
         writer::delta(&self.0, &self.db(), &[PathBuf::from("server.py")]).unwrap();
     }
     fn graph(&self, conn: &Connection) -> Vec<String> {
-        conn.prepare("SELECT src||'|'||dst||'|'||kind FROM edge_occurrences WHERE owner='server.py' ORDER BY src,dst,kind")
+        conn.prepare("SELECT (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash)||'|'||kind FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)='server.py' ORDER BY (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash),kind")
             .unwrap().query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
     }
     fn assert_cold_equivalent(&self) {
@@ -100,7 +100,7 @@ def after_rebind(): return 5
         .1
         .contains("\"advertised_name\":\"public_name\""));
     assert!(registrations[2].1.contains("\"name_status\":\"dynamic\""));
-    let handlers: Vec<String> = conn.prepare("SELECT dst.name FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.kind='tool_registration' AND e.kind='handles' ORDER BY src.line")
+    let handlers: Vec<String> = conn.prepare("SELECT dst.name FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.kind='tool_registration' AND e.kind='handles' ORDER BY src.line")
         .unwrap().query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(handlers, ["plain", "internal", "dynamic"]);
     drop(stmt);

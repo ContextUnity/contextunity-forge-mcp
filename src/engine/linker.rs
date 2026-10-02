@@ -12,12 +12,14 @@ use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
-mod commonjs;
 pub(crate) mod contracts;
-mod receivers;
 mod semantic_context;
 pub mod traits;
+/// Implements value flow support.
 pub mod value_flow;
+use languages::python_receivers as receivers;
+use languages::typescript_bindings as commonjs;
+/// Performs needs reference identity.
 pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
     let language = facts
         .nodes
@@ -26,6 +28,7 @@ pub fn needs_reference_identity(path: &str, facts: &Facts) -> bool {
         .map_or("", |node| node.language.as_str());
     languages::linker_for(language).needs_reference_identity(path, facts)
 }
+/// Performs reference identity changed.
 pub fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool {
     let language = new
         .nodes
@@ -34,6 +37,7 @@ pub fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -> bool 
         .map_or("", |node| node.language.as_str());
     languages::linker_for(language).reference_identity_changed(path, old, new)
 }
+/// Performs required full facts.
 pub fn required_full_facts(
     facts: &BTreeMap<String, Facts>,
     affected: &std::collections::BTreeSet<String>,
@@ -72,15 +76,18 @@ pub(crate) fn required_full_typed_facts(
     }
     required
 }
+/// Performs link.
 pub fn link(all: &BTreeMap<String, Facts>) -> PublicGraph {
     link_with_root(all, None, None)
 }
+/// Performs link owners.
 pub fn link_owners(
     all: &BTreeMap<String, Facts>,
     owners: Option<&std::collections::BTreeSet<String>>,
 ) -> PublicGraph {
     link_with_root(all, owners, None)
 }
+/// Performs link with root.
 pub fn link_with_root(
     all: &BTreeMap<String, Facts>,
     owners: Option<&std::collections::BTreeSet<String>>,
@@ -90,6 +97,7 @@ pub fn link_with_root(
     link_with_registry(all, owners, root, &dependency_registry)
 }
 
+/// Performs link with registry.
 pub fn link_with_registry(
     all: &BTreeMap<String, Facts>,
     owners: Option<&std::collections::BTreeSet<String>>,

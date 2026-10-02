@@ -29,7 +29,7 @@ fn components(conn: &Connection, filter_path: Option<&str>) -> Result<Vec<Vec<i6
 
     // Internal graph data uses integer keys. The response byte budget applies only to output.
     let mut statement = conn.prepare(
-        "SELECT src_hash,dst_hash FROM edges_raw WHERE kind IN('calls','imports') LIMIT 500001",
+        "SELECT src_hash,dst_hash FROM edges WHERE kind IN('calls','imports') LIMIT 500001",
     )?;
     let edges = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
     let mut graph = DiGraphMap::<i64, ()>::new();
@@ -61,6 +61,7 @@ fn components(conn: &Connection, filter_path: Option<&str>) -> Result<Vec<Vec<i6
     Ok(output)
 }
 
+/// Performs cycles.
 pub fn cycles(conn: &Connection, filter_path: Option<&str>) -> Result<Value> {
     let components = components(conn, filter_path)?;
     let budget = QueryBudget::new(conn);

@@ -1,5 +1,8 @@
 use contextunity_forge_mcp::{
-    core::models::{Edge, Facts},
+    core::{
+        models::{Edge, Facts},
+        response::{QueryOptions, ResponsePolicy},
+    },
     db::{reader, writer},
     engine::{docs, linker, scanner},
     mcp::server::Server,
@@ -157,11 +160,29 @@ All handlers must be asynchronous and tested.
     assert!(report["files"].as_i64().unwrap_or(0) >= 2);
 
     let conn = reader::open(&db_path, &ws.0).expect("reader open failed");
-    let overview = reader::overview(&conn).expect("overview failed");
-    assert!(overview["counts"][0]["files"].as_i64().unwrap_or(0) >= 2);
+    let page = QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
+    let overview = reader::overview_with_options(
+        &conn,
+        &reader::OverviewOptions {
+            aspects: None,
+            page: &page,
+        },
+    )
+    .expect("overview failed");
+    assert!(overview["counts"]["files"].as_i64().unwrap_or(0) >= 2);
 
-    let docs = reader::search_docs(&conn, "Standards", None, None, 10).expect("search docs failed");
-    assert!(!docs["sections"].as_array().unwrap().is_empty());
+    let docs = reader::search_docs_with_options(
+        &conn,
+        "Standards",
+        &reader::DocSearchOptions {
+            doc_type: None,
+            component: None,
+            include_excerpt: false,
+            page: &page,
+        },
+    )
+    .expect("search docs failed");
+    assert!(!docs["sections"]["items"].as_array().unwrap().is_empty());
 }
 
 #[cfg(feature = "lang-rust")]
@@ -327,7 +348,7 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() {
     }
 
     let shared_keys: Vec<(i64, String)> = conn
-        .prepare("SELECT key_hash,key FROM shared_keys ORDER BY key_hash")
+        .prepare("SELECT k.key_hash,CASE WHEN typeof(k.key)='integer' THEN n.qualname ELSE k.key END FROM shared_keys k LEFT JOIN nodes n ON n.node_id=k.key AND typeof(k.key)='integer' ORDER BY k.key_hash")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
@@ -397,7 +418,7 @@ fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
     ws.write("service.py", "class Service:\n    def execute(self):\n        \"\"\"Execute the updated request.\"\"\"\n        return 43\n");
     writer::delta(&ws.0, &db_path, &[PathBuf::from("service.py")]).unwrap();
     let conn = reader::open(&db_path, &ws.0).unwrap();
-    let calls: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.id=e.src_public_id JOIN nodes d ON d.id=e.dst_public_id WHERE s.name='run' AND d.name='execute' AND e.kind='calls'", [], |row| row.get(0)).unwrap();
+    let calls: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='run' AND d.name='execute' AND e.kind='calls'", [], |row| row.get(0)).unwrap();
     assert_eq!(
         calls, 1,
         "cached complete local analysis supports receiver resolution during delta"
@@ -435,7 +456,7 @@ fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
         )
         .unwrap();
     assert_eq!(retained_root, root);
-    let retained_calls: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.id=e.src_public_id JOIN nodes d ON d.id=e.dst_public_id WHERE s.name='run' AND d.name='execute' AND e.kind='calls'", [], |row| row.get(0)).unwrap();
+    let retained_calls: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='run' AND d.name='execute' AND e.kind='calls'", [], |row| row.get(0)).unwrap();
     assert_eq!(retained_calls, calls);
 }
 
@@ -529,7 +550,18 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         None,
     )
     .unwrap();
-    let result = symbols::search_paged(&conn, "process", Some("function"), &options).unwrap();
+    let result = symbols::search_with_options(
+        &conn,
+        "process",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &options,
+        },
+    )
+    .unwrap();
     let nodes = result["nodes"]["items"].as_array().unwrap();
     assert_eq!(result["nodes"]["total"], 4);
     assert_eq!(
@@ -543,7 +575,18 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     assert_eq!(nodes[2]["path"], "z.py");
     assert_eq!(nodes[3]["name"], "process_work");
     assert_eq!(nodes[3]["path"], "a.py");
-    let prefix = symbols::search_paged(&conn, "process_*", Some("function"), &options).unwrap();
+    let prefix = symbols::search_with_options(
+        &conn,
+        "process_*",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &options,
+        },
+    )
+    .unwrap();
     let nodes = prefix["nodes"]["items"].as_array().unwrap();
     assert_eq!(prefix["nodes"]["total"], 2);
     assert_eq!(nodes[0]["path"], "z.py", "connected prefix matches receive the same graph ranking regardless of identifier punctuation");
@@ -569,8 +612,18 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     .unwrap();
     let mut all = Vec::new();
     loop {
-        let result =
-            symbols::search_paged(&conn, "rankterm", Some("function"), &page_options).unwrap();
+        let result = symbols::search_with_options(
+            &conn,
+            "rankterm",
+            &symbols::SearchOptions {
+                kind: Some("function"),
+                path: None,
+                include_docs: false,
+                exact: false,
+                page: &page_options,
+            },
+        )
+        .unwrap();
         let page = &result["nodes"];
         assert_eq!(page["total"], 503);
         all.extend(page["items"].as_array().unwrap().iter().cloned());
@@ -591,7 +644,18 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     assert!(all[2]["name"].as_str().unwrap().starts_with("rankterm_"));
     page_options.offset = 501;
     page_options.limit = 2;
-    let tail = symbols::search_paged(&conn, "rankterm", Some("function"), &page_options).unwrap();
+    let tail = symbols::search_with_options(
+        &conn,
+        "rankterm",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &page_options,
+        },
+    )
+    .unwrap();
     assert_eq!(tail["nodes"]["items"], serde_json::json!(&all[501..]));
     assert_eq!(tail["nodes"]["total"], 503);
     assert_eq!(tail["nodes"]["has_more"], false);

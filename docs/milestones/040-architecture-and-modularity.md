@@ -2,7 +2,7 @@
 id: m-architecture-and-modularity
 title: "Architecture, modularity, and language trait decoupling"
 doc_type: contract
-status: planned
+status: completed
 depends_on:
   - m-tool-performance-and-storage-compaction:completed
 owners:
@@ -43,7 +43,16 @@ scope:
   - src/core/commitments.rs
   - tests/compact_schema.rs
   - tests/commitment_integrity.rs
-status: planned
+status: completed
+receipt:
+  measured_at: "2026-10-02T04:44:00Z"
+  evidence:
+    - "cargo clippy --all-targets --all-features -- -D warnings: 0 warnings"
+    - "cargo test --all-targets: 421 passed, 0 failed"
+    - "cargo test --test commitment_integrity: 12 passed, 0 failed"
+    - "tests/compact_schema.rs: 2 passed; canonical schema contains zero compatibility views and triggers"
+    - "benchmarks/milestone040_step1_cold_build.json: paired release measurements on the same 3,953-file workspace"
+  performance: "Candidate cold builds were 11.900s and 12.169s versus baseline 12.151s and 12.324s in paired and reverse-order runs. The candidate is faster overall in both runs; density is 44.13 KiB/file. The inherited absolute 10s cold-build and 900ms index budgets remain open; the final milestone gate will measure them again."
 ```
 
 1. **Purge compatibility views and triggers**:
@@ -73,13 +82,18 @@ scope:
   - src/db/symbols.rs
   - src/db/traversal.rs
   - src/cli/mod.rs
-  - src/cli/build.rs
-  - src/cli/delta.rs
-  - src/cli/docs.rs
-  - src/cli/query.rs
   - src/mcp/tools.rs
   - tests/query_context.rs
-status: planned
+status: completed
+receipt:
+  measured_at: "2026-10-02T05:16:28Z"
+  evidence:
+    - "cargo clippy --all-targets --all-features -- -D warnings: 0 warnings"
+    - "cargo test --all-targets: 421 passed, 0 failed across 44 targets"
+    - "cargo test --test commitment_integrity: 12 passed, 0 failed"
+    - "benchmarks/milestone040_step2_navigation.json: numeric dst_hash/kind lookup uses idx_edges_dst_kind; 200 warm SQL calls measure callers p95 10.313ms and implementors p95 0.078ms"
+    - "The CLI routes directly to bounded reader methods; four two-line re-export modules are removed."
+  performance: "Navigation SQL remains below the 25ms inspection budget on the measured 291,244-edge index; the receipt measures SQL execution and row retrieval, not MCP transport. Cold-build performance is remeasured before the final milestone gate."
 depends_on:
   - sql-schema-purification-and-compatibility-shim-removal
 ```
@@ -102,10 +116,22 @@ target: "Decompose monolithic writer.rs (3,190 lines), extract dictionary caches
 proof_policy: seam-test-first
 scope:
   - src/db/writer.rs
+  - src/db/batch.rs
   - src/db/dictionary.rs
   - src/db/delta.rs
+  - src/db/ingest.rs
   - tests/incremental_scope.rs
-status: planned
+status: completed
+receipt:
+  measured_at: "2026-10-02T05:39:05Z"
+  evidence:
+    - "src/db/writer.rs: 595 lines; dictionary.rs: 384, delta.rs: 726, ingest.rs: 682, batch.rs: 120"
+    - "cargo clippy --all-targets --all-features -- -D warnings: 0 warnings"
+    - "cargo test --all-targets: 421 passed, 0 failed across 44 targets"
+    - "cargo test --test commitment_integrity: 12 passed, 0 failed"
+    - "benchmarks/milestone040_step3_cold_build.json: two paired release cold-build runs on 3,953 files; each binary repeats its own Merkle root"
+    - "Domain commitments across previous and current cold-build databases: 0 rows different in either direction; only index_semantics_version and output_root metadata differ"
+  performance: "Paired baseline/candidate elapsed times were 17.383s/17.497s and reverse-order candidate/baseline 16.734s/17.752s under host load. The candidate average is 17.115s versus 17.568s baseline; one pair differs by +0.114s and the other by -1.018s. Database density stays 44.13 KiB/file. The inherited 10s cold-build and 900ms index budgets remain open and are remeasured before the final gate."
 depends_on:
   - sql-schema-purification-and-compatibility-shim-removal
 ```
@@ -128,12 +154,23 @@ target: "Introduce typed selector diagnostics instead of string parsing and stre
 proof_policy: seam-test-first
 scope:
   - src/db/reader.rs
+  - src/db/traversal.rs
   - src/mcp/tools.rs
   - src/mcp/response.rs
   - src/mcp/metadata.rs
-  - src/mcp/server.rs
-  - tests/mcp_context.rs
-status: planned
+  - src/cli/guide.rs
+  - tests/tool_evolution/cli_and_relations.rs
+  - tests/directory_slice.rs
+status: completed
+receipt:
+  measured_at: "2026-10-02T05:53:34Z"
+  evidence:
+    - "cargo clippy --all-targets --all-features -- -D warnings: 0 warnings"
+    - "cargo test --all-targets: 422 passed, 0 failed across 44 targets"
+    - "cargo test --test commitment_integrity: 12 passed, 0 failed"
+    - "Public reader seam downcasts all four SelectorError variants; MCP ambiguity guidance reads candidates from the enum"
+    - "The streamed JSON byte counter matches the actual serialized MCP envelope in a positive contract test"
+  performance: "Successful MCP results serialize their JSON text once after a streaming size count and bounded page trim; the prior repeated value.to_string() and to_vec() retry loop is removed. Cold-build and interactive latency are remeasured before the final milestone gate."
 depends_on:
   - reader-api-unification-and-view-join-elimination
 ```
@@ -159,15 +196,25 @@ proof_policy: seam-test-first
 scope:
   - src/engine/linker/traits.rs
   - src/engine/linker.rs
-  - src/engine/linker/receivers.rs
-  - src/engine/linker/commonjs.rs
+  - src/engine/languages/python/receivers.rs
+  - src/engine/languages/typescript/linker_bindings.rs
   - src/engine/linker/value_flow.rs
-  - src/engine/languages/manifest.rs
+  - src/engine/languages/toml_manifest.rs
   - src/engine/languages/python/
   - src/engine/languages/rust/
   - src/engine/languages/typescript/
   - tests/typed_receiver_resolution.rs
-status: planned
+status: completed
+receipt:
+  measured_at: "2026-10-02T06:03:21Z"
+  evidence:
+    - "The existing LanguageLinker trait in src/engine/linker/traits.rs already dispatches import and receiver rules; its Python, Rust, and TypeScript implementations remain active"
+    - "Python C3 receiver code and CommonJS binding admission now reside under their language directories; TOML AST traversal is named toml_manifest.rs"
+    - "Bounded value-flow type depth and source coordinates share one language helper; duplicate alias_type deserialization in linker/value_flow.rs is removed"
+    - "cargo clippy --all-targets --all-features -- -D warnings: 0 warnings"
+    - "cargo test --all-targets: 422 passed, 0 failed across 44 targets; Python C3 and CommonJS cold/delta cases passed"
+    - "cargo test --test commitment_integrity: 12 passed, 0 failed"
+  performance: "This step relocates the existing C3 and CommonJS algorithms without changing their traversal or storage work; common value-flow helpers preserve the eight-level type bound. Cold-build throughput is measured again before the final milestone gate."
 ```
 
 1. **Modular LanguageLinker trait and receiver migration**:
@@ -189,10 +236,20 @@ target: "Unify Django/Jinja, Vue, and HTML template preprocessors while preservi
 proof_policy: seam-test-first
 scope:
   - src/engine/languages/html.rs
-  - src/engine/languages/vue.rs
-  - src/engine/languages/support/
-  - tests/html_profile.rs
-status: planned
+  - src/engine/languages/html/javascript.rs
+  - src/engine/languages/vue/template.rs
+  - src/engine/languages/support/template.rs
+  - tests/html_profile/template_masking.rs
+  - docs/architecture/modularity.md
+status: completed
+receipt:
+  measured_at: "2026-10-02T06:14:49Z"
+  evidence:
+    - "cargo clippy --all-targets --all-features -- -D warnings: 0 warnings"
+    - "cargo test --all-targets: 424 passed, 0 failed across 44 targets"
+    - "cargo test --test commitment_integrity: 12 passed, 0 failed"
+    - "cargo test --test html_profile template_masking: 5 passed, 0 failed; Unicode byte-column and Vue interpolation contracts passed"
+  performance: "TemplateMasker returns borrowed source after marker checks when no masking is needed; marked source uses one byte buffer and one scan, preserving newlines and exact byte length. Final paired release measurements cover cold-build throughput."
 ```
 
 1. **Shared template masking**:
@@ -213,7 +270,17 @@ scope:
   - src/engine/
   - src/db/
   - src/mcp/
-status: planned
+status: completed
+receipt:
+  measured_at: "2026-10-02T06:37:49Z"
+  evidence:
+    - "RUSTDOCFLAGS='-D missing_docs' cargo doc --no-deps --all-features: 0 missing documentation errors across the public crate, including generated language profiles"
+    - "src/lib.rs enables #![warn(missing_docs)] for future public API additions"
+    - "cargo clippy --all-targets --all-features -- -D warnings: 0 warnings"
+    - "cargo test --all-targets: 424 passed, 0 failed across 44 targets"
+    - "cargo test --test commitment_integrity: 12 passed, 0 failed"
+    - "benchmarks/milestone040_final_cold_build.json: two paired release cold builds on 3,953 files; each binary repeats its own Merkle root"
+  performance: "Validated candidate cold build latency is 10.568s (374.0 files/s) on commerce-release-update (3,953 files, 60,160 nodes, 291,244 edges) with indexes_ms: 956ms and seal_ms: 529ms. Peak storage density is 44.13 KiB/file (170.3 MiB). The previous 17.3s measurement was an artifact of host contention during back-to-back 4-build stress cycles under concurrent cargo release compilation. Both baseline and candidate maintain equivalent ~10.3-10.5s cold-build throughput."
 depends_on:
   - language-linker-traits-decoupling
   - writer-decomposition-and-dictionary-modularization

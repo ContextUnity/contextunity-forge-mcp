@@ -1,5 +1,7 @@
 use super::*;
+/// Language profile for php source files.
 pub struct Php;
+/// Shared php language profile.
 pub static PHP: Php = Php;
 impl LanguageProfile for Php {
     fn id(&self) -> &'static str {
@@ -178,4 +180,5 @@ impl LanguageProfile for Php {
     }
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&PHP];

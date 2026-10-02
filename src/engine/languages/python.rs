@@ -18,9 +18,11 @@ pub(crate) mod linker;
 mod manifest;
 #[path = "python/value_flow.rs"]
 mod value_flow;
+/// Performs language.
 pub fn language() -> tree_sitter::Language {
     tree_sitter_python::language()
 }
+/// Performs kind.
 pub fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_definition" | "lambda" => Some("function"),
@@ -229,7 +231,9 @@ fn is_python_stub_body(node: Syntax<'_>, source: &str) -> bool {
     })
 }
 
+/// Represents python data.
 pub struct Python;
+/// Shared python language profile.
 pub static PYTHON: Python = Python;
 impl LanguageProfile for Python {
     fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
@@ -1134,4 +1138,5 @@ fn is_python_stdlib(pkg: &str) -> bool {
     )
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&PYTHON];

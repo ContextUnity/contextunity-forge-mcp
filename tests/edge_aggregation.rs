@@ -54,7 +54,7 @@ fn rows(conn: &Connection, sql: &str) -> Vec<String> {
         .collect()
 }
 fn edges(conn: &Connection) -> Vec<String> {
-    rows(conn, "SELECT json_array(src_public_id,dst_public_id,kind,path,line,evidence,confidence,occurrence_count) FROM edges ORDER BY src_public_id,dst_public_id,kind")
+    rows(conn, "SELECT json_array((SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind,(SELECT path FROM path_dictionary WHERE path_id=edges.path_id),line,(SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id),(SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.confidence_id),occurrence_count) FROM edges ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind")
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn cold_duplicate_edges_preserve_first_evidence_and_every_occurrence() {
     let conn = w.open();
     commitments::verify(&conn).unwrap();
     let target: (i64, i64, String, String) = conn.query_row(
-        "SELECT e.occurrence_count,e.line,e.evidence,e.confidence FROM edges e JOIN nodes s ON s.id=e.src_public_id JOIN nodes d ON d.id=e.dst_public_id WHERE e.kind='calls' AND s.qualname='consumer.run' AND d.qualname='provider.target'",
+        "SELECT e.occurrence_count,e.line,(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id),(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.confidence_id) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE e.kind='calls' AND s.qualname='consumer.run' AND d.qualname='provider.target'",
         [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     ).unwrap();
     assert_eq!(target, (4, 3, "z".into(), "exact".into()));
@@ -78,7 +78,7 @@ fn cold_duplicate_edges_preserve_first_evidence_and_every_occurrence() {
         )
         .unwrap();
     assert_eq!(calls, 5);
-    let count_mismatches: i64 = conn.query_row("SELECT count(*) FROM edges e WHERE occurrence_count != (SELECT count(*) FROM edge_occurrences o WHERE o.src=e.src_public_id AND o.dst=e.dst_public_id AND o.kind=e.kind)", [], |row| row.get(0)).unwrap();
+    let count_mismatches: i64 = conn.query_row("SELECT count(*) FROM edges e WHERE occurrence_count != (SELECT count(*) FROM edge_occurrences o WHERE o.src_hash=e.src_hash AND o.dst_hash=e.dst_hash AND o.kind=e.kind)", [], |row| row.get(0)).unwrap();
     assert_eq!(count_mismatches, 0);
     let before = edges(&conn);
     drop(conn);
