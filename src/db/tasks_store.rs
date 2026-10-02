@@ -1,0 +1,518 @@
+use crate::core::tasks::{Milestone, Receipt, TaskSpec, GATES};
+use anyhow::{bail, Context, Result};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+pub const RETENTION_SECONDS: i64 = 14 * 24 * 60 * 60;
+
+#[derive(Debug, Serialize)]
+pub struct DeleteReport {
+    pub deleted_ids: Vec<String>,
+    pub count: usize,
+    pub revoked_claims: usize,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Task {
+    pub task_id: String,
+    pub milestone_ref: String,
+    pub spec: TaskSpec,
+    pub digest: String,
+    pub contract_revision: u64,
+    pub claim_revision: u64,
+    pub status: String,
+    pub gate: usize,
+    pub worker_id: Option<String>,
+    pub worktree: Option<String>,
+    pub completed_at: Option<i64>,
+    pub receipt: Option<Receipt>,
+    #[serde(default)]
+    pub applicable_invariants: Vec<String>,
+}
+
+pub struct TasksStore {
+    pub connection: Connection,
+    namespace: String,
+}
+
+#[derive(Debug)]
+pub struct TaskAlreadyClaimed;
+impl std::fmt::Display for TaskAlreadyClaimed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TASK_ALREADY_CLAIMED")
+    }
+}
+impl std::error::Error for TaskAlreadyClaimed {}
+
+impl TasksStore {
+    pub fn open(path: &Path) -> Result<Self> {
+        Self::open_project(path, "forge-mcp", "forge-mcp")
+    }
+    pub fn open_project(path: &Path, repository: &str, project: &str) -> Result<Self> {
+        crate::core::tasks::valid_identity(repository)?;
+        crate::core::tasks::valid_identity(project)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let connection = Connection::open(path)?;
+        connection.execute_batch("PRAGMA busy_timeout=5000")?;
+        let known:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='task_store_metadata')",[],|r|r.get(0))?;
+        if known {
+            let version: String = connection.query_row(
+                "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )?;
+            if version != "1" {
+                bail!("unsupported tasks schema; use recovery tooling");
+            }
+        } else {
+            let populated:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%')",[],|r|r.get(0))?;
+            if populated {
+                bail!("tasks_db must be a dedicated task store");
+            }
+        }
+        connection.execute_batch("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA mmap_size=268435456; PRAGMA foreign_keys=ON;
+            CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
+            INSERT OR IGNORE INTO meta VALUES('generation',0);
+            CREATE TABLE IF NOT EXISTS task_store_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+            INSERT OR IGNORE INTO task_store_metadata VALUES('schema_version','1');
+            CREATE TABLE IF NOT EXISTS task_revisions(task_id TEXT PRIMARY KEY,revision INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,milestone_ref TEXT NOT NULL,descriptor TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS task_claims(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,worker_id TEXT NOT NULL,worktree TEXT NOT NULL,claimed_at INTEGER NOT NULL,ended INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(task_id,revision));
+            CREATE TABLE IF NOT EXISTS task_gates(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,gate TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,evidence TEXT,PRIMARY KEY(task_id,gate,revision));
+            CREATE TABLE IF NOT EXISTS task_findings(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,findings TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS task_scope_paths(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,path TEXT NOT NULL,base_root TEXT NOT NULL,frozen INTEGER NOT NULL,PRIMARY KEY(task_id,path));
+            CREATE TABLE IF NOT EXISTS task_dependencies(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,dependency_id TEXT NOT NULL,satisfied INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(task_id,dependency_id));
+            CREATE TABLE IF NOT EXISTS task_submissions(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,result TEXT NOT NULL,PRIMARY KEY(task_id,revision));
+            CREATE TRIGGER IF NOT EXISTS task_insert_generation AFTER INSERT ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
+            CREATE TRIGGER IF NOT EXISTS task_update_generation AFTER UPDATE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
+            CREATE TRIGGER IF NOT EXISTS task_delete_generation AFTER DELETE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;")?;
+        let version: String = connection.query_row(
+            "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+            [],
+            |r| r.get(0),
+        )?;
+        if version != "1" {
+            bail!("unsupported tasks schema; use recovery tooling");
+        }
+        Ok(Self {
+            connection,
+            namespace: format!("{repository}/{project}/"),
+        })
+    }
+    pub(crate) fn assert_id(&self, id: &str) -> Result<()> {
+        if !id.starts_with(&self.namespace) {
+            bail!("TASK_PROJECT_MISMATCH");
+        }
+        Ok(())
+    }
+    pub fn inspect(&self, id: &str) -> Result<Task> {
+        self.assert_id(id)?;
+        load(&self.connection, id)?.context("TASK_NOT_FOUND")
+    }
+    pub fn inspect_details(&self, id: &str) -> Result<serde_json::Value> {
+        let _snapshot = self.connection.unchecked_transaction()?;
+        let task = self.inspect(id)?;
+        let attempts:Vec<serde_json::Value>=self.connection.prepare("SELECT revision,worker_id,worktree,claimed_at,ended FROM task_claims WHERE task_id=?1 ORDER BY revision")?.query_map([id],|r|Ok(serde_json::json!({"claim_revision":r.get::<_,u64>(0)?,"worker_id":r.get::<_,String>(1)?,"worktree":r.get::<_,String>(2)?,"claimed_at":r.get::<_,i64>(3)?,"ended":r.get::<_,bool>(4)?})))?.collect::<std::result::Result<_,_>>()?;
+        let gates:Vec<serde_json::Value>=self.connection.prepare("SELECT gate,revision,state,evidence FROM task_gates WHERE task_id=?1 ORDER BY revision,gate")?.query_map([id],|r|Ok(serde_json::json!({"stage":r.get::<_,String>(0)?,"claim_revision":r.get::<_,u64>(1)?,"state":r.get::<_,String>(2)?,"evidence":r.get::<_,Option<String>>(3)?})))?.collect::<std::result::Result<_,_>>()?;
+        let findings:Vec<serde_json::Value>=self.connection.prepare("SELECT revision,findings FROM task_findings WHERE task_id=?1 ORDER BY revision")?.query_map([id],|r|Ok(serde_json::json!({"claim_revision":r.get::<_,u64>(0)?,"findings":r.get::<_,String>(1)?})))?.collect::<std::result::Result<_,_>>()?;
+        let mut value = serde_json::to_value(&task)?;
+        let object = value
+            .as_object_mut()
+            .context("task envelope must be an object")?;
+        object.insert("goal".into(), serde_json::json!(task.spec.target));
+        object.insert(
+            "allowed_write_scope".into(),
+            serde_json::json!(task.spec.scope),
+        );
+        object.insert(
+            "proof_policy".into(),
+            serde_json::json!(task.spec.proof_policy),
+        );
+        object.insert("stage".into(), serde_json::json!(GATES[task.gate]));
+        object.insert("attempts".into(), serde_json::json!(attempts));
+        object.insert("gates".into(), serde_json::json!(gates));
+        object.insert("findings".into(), serde_json::json!(findings));
+        object.insert("gate_states".into(),serde_json::json!(GATES.iter().enumerate().map(|(i,name)|serde_json::json!({"stage":name,"state":if i<task.gate || task.status=="completed" {"passed"} else if i==task.gate && task.status=="in_progress" {"in_progress"} else {"pending"}})).collect::<Vec<_>>()));
+        Ok(value)
+    }
+    pub fn sync(
+        &mut self,
+        milestone: &Milestone,
+        reference: &str,
+        root: &Path,
+    ) -> Result<Vec<Task>> {
+        self.sync_selected(milestone, reference, root, None)
+    }
+    pub fn create(
+        &mut self,
+        milestone: &Milestone,
+        reference: &str,
+        root: &Path,
+        task_ref: &str,
+    ) -> Result<Vec<Task>> {
+        self.sync_selected(milestone, reference, root, Some(task_ref))
+    }
+    fn sync_selected(
+        &mut self,
+        milestone: &Milestone,
+        reference: &str,
+        root: &Path,
+        task_ref: Option<&str>,
+    ) -> Result<Vec<Task>> {
+        if format!("{}/{}/", milestone.repository, milestone.project) != self.namespace {
+            bail!("TASK_PROJECT_MISMATCH");
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut result = Vec::new();
+        for spec in &milestone.tasks {
+            if task_ref.is_some_and(|r| spec.task_ref != r) {
+                continue;
+            }
+            let id = milestone.task_id(spec);
+            let digest = milestone.digest(spec)?;
+            if let Some(mut existing) = load(&tx, &id)? {
+                if existing.digest == digest {
+                    if spec.status.as_deref() == Some("completed")
+                        && (existing.status != "completed" || existing.receipt != spec.receipt)
+                    {
+                        bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
+                    }
+                    if existing.status == "completed" {
+                        existing.milestone_ref = reference.into();
+                        save(&tx, &existing)?;
+                    }
+                    result.push(existing);
+                    continue;
+                }
+                if existing.status == "completed"
+                    || spec.status.as_deref() == Some("completed")
+                    || spec.contract_revision <= existing.contract_revision
+                {
+                    bail!("AUTHORITY_GAP: changed specification requires contract re-admission");
+                }
+                end_claim(&tx, &id)?;
+                tx.execute("DELETE FROM task_scope_paths WHERE task_id=?1", [&id])?;
+                tx.execute("DELETE FROM task_dependencies WHERE task_id=?1", [&id])?;
+            }
+            let completed = spec.status.as_deref() == Some("completed");
+            if completed {
+                crate::core::tasks::gates::validate_durable_receipt(
+                    spec.receipt
+                        .as_ref()
+                        .context("TASK_RECEIPT_INVALID: missing receipt")?,
+                    spec.contract_revision,
+                )?;
+            }
+            let archived: Option<u64> = tx
+                .query_row(
+                    "SELECT revision FROM task_revisions WHERE task_id=?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if completed && archived.is_some() {
+                result.push(Task {
+                    task_id: id,
+                    milestone_ref: reference.into(),
+                    spec: spec.clone(),
+                    digest,
+                    contract_revision: spec.contract_revision,
+                    claim_revision: archived.unwrap_or(0),
+                    status: "completed".into(),
+                    gate: 4,
+                    worker_id: None,
+                    worktree: None,
+                    completed_at: None,
+                    receipt: spec.receipt.clone(),
+                    applicable_invariants: milestone
+                        .invariants
+                        .iter()
+                        .chain(&spec.invariants)
+                        .cloned()
+                        .collect(),
+                });
+                continue;
+            }
+            let revision = next_revision(&tx, &id)?;
+            let task = Task {
+                task_id: id.clone(),
+                milestone_ref: reference.into(),
+                spec: spec.clone(),
+                digest,
+                contract_revision: spec.contract_revision,
+                claim_revision: revision,
+                status: if completed { "completed" } else { "ready" }.into(),
+                gate: if completed { 4 } else { 0 },
+                worker_id: None,
+                worktree: None,
+                completed_at: completed.then(now),
+                receipt: spec.receipt.clone(),
+                applicable_invariants: milestone
+                    .invariants
+                    .iter()
+                    .chain(&spec.invariants)
+                    .cloned()
+                    .collect(),
+            };
+            save(&tx, &task)?;
+            for scope in &spec.scope {
+                let path = crate::core::tasks::relative_path(scope)?;
+                crate::core::tasks::confined_path(root, scope)?;
+                let base = if scope.ends_with('/') || root.join(&path).is_dir() {
+                    path.clone()
+                } else {
+                    path.parent().context("scope needs parent")?.to_path_buf()
+                };
+                tx.execute(
+                    "INSERT OR IGNORE INTO task_scope_paths VALUES(?1,?2,?3,1)",
+                    params![id, path.to_string_lossy(), base.to_string_lossy()],
+                )?;
+            }
+            for dep in &spec.depends_on {
+                let dependency_id = format!(
+                    "{}/{}/{}:{}",
+                    milestone.repository, milestone.project, milestone.id, dep
+                );
+                tx.execute(
+                    "INSERT INTO task_dependencies VALUES(?1,?2,?3)",
+                    params![id, dependency_id,milestone.tasks.iter().any(|t|t.task_ref == *dep && t.status.as_deref()==Some("completed"))],
+                )?;
+            }
+            result.push(task);
+        }
+        tx.commit()?;
+        Ok(result)
+    }
+    pub fn list(
+        &self,
+        milestone: Option<&str>,
+        status: &str,
+        stage: Option<&str>,
+    ) -> Result<Vec<Task>> {
+        let _snapshot = self.connection.unchecked_transaction()?;
+        let mut stmt = self.connection.prepare("SELECT descriptor FROM tasks WHERE (?1 IS NULL OR milestone_ref=?1) AND substr(task_id,1,length(?2))=?2 ORDER BY milestone_ref,task_id")?;
+        let mut result = Vec::new();
+        for item in stmt.query_map(params![milestone, self.namespace], |r| {
+            r.get::<_, String>(0)
+        })? {
+            let mut task: Task = serde_json::from_str(&item?)?;
+            if task.status == "ready" && !dependencies_ready(&self.connection, &task.task_id)? {
+                task.status = "blocked".into();
+            }
+            if status != "all" && task.status != status {
+                continue;
+            }
+            if stage.is_some_and(|s| GATES[task.gate].split('/').next() != Some(s)) {
+                continue;
+            }
+            result.push(task);
+        }
+        Ok(result)
+    }
+    pub fn claim(&mut self, id: &str, stage: &str, worker: &str, worktree: &str) -> Result<Task> {
+        self.assert_id(id)?;
+        if worker.trim().is_empty() {
+            bail!("worker_id must be nonempty");
+        }
+        let worktree = crate::core::tasks::claim_worktree(worktree)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        if task.worker_id.is_some() {
+            return Err(TaskAlreadyClaimed.into());
+        }
+        if task.status != "ready" || !dependencies_ready(&tx, id)? {
+            bail!("TASK_NOT_READY");
+        }
+        check_stage(&task, stage)?;
+        task.claim_revision = next_revision(&tx, id)?;
+        task.worker_id = Some(worker.into());
+        task.worktree = Some(worktree.to_string_lossy().into_owned());
+        task.status = "in_progress".into();
+        tx.execute("INSERT INTO task_claims(task_id,revision,worker_id,worktree,claimed_at) VALUES(?1,?2,?3,?4,?5)",params![id,task.claim_revision,worker,task.worktree,now()])?;
+        save(&tx, &task)?;
+        tx.commit()?;
+        Ok(task)
+    }
+    pub fn reset(&mut self, id: &str) -> Result<Task> {
+        self.assert_id(id)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        if task.status == "completed" {
+            bail!("TASK_TERMINAL");
+        }
+        end_claim(&tx, id)?;
+        task.claim_revision = next_revision(&tx, id)?;
+        task.worker_id = None;
+        task.worktree = None;
+        task.status = "ready".into();
+        tx.execute(
+            "INSERT INTO task_gates VALUES(?1,?2,?3,'pending',NULL)",
+            params![id, GATES[task.gate], task.claim_revision],
+        )?;
+        save(&tx, &task)?;
+        tx.commit()?;
+        Ok(task)
+    }
+    pub fn extend_scope(&mut self, id: &str, paths: &[String], root: &Path) -> Result<Task> {
+        self.assert_id(id)?;
+        if paths.is_empty() {
+            bail!("paths must be nonempty");
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        if task.status == "completed" {
+            bail!("TASK_TERMINAL");
+        }
+        let worktree = task.worktree.as_deref().map(Path::new).unwrap_or(root);
+        let bases: Vec<String> = tx
+            .prepare(
+                "SELECT DISTINCT base_root FROM task_scope_paths WHERE task_id=?1 AND frozen=1",
+            )?
+            .query_map([id], |r| r.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        for value in paths {
+            let path = crate::core::tasks::relative_path(value)?;
+            let base = bases
+                .iter()
+                .find(|base| path.starts_with(Path::new(base)))
+                .context("TASK_SCOPE_INVALID: outside frozen roots")?;
+            for root in [root, worktree] {
+                let resolved = crate::core::tasks::confined_path(root, value)?;
+                let resolved_base = if base.is_empty() {
+                    root.canonicalize()?
+                } else {
+                    crate::core::tasks::confined_path(root, base)?
+                };
+                if !resolved.starts_with(&resolved_base) {
+                    bail!("TASK_SCOPE_INVALID: symlink leaves frozen module root");
+                }
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO task_scope_paths VALUES(?1,?2,?3,0)",
+                params![id, path.to_string_lossy(), base],
+            )?;
+            let normalized = path.to_string_lossy().into_owned();
+            if !task.spec.scope.contains(&normalized) {
+                task.spec.scope.push(normalized);
+            }
+        }
+        save(&tx, &task)?;
+        tx.commit()?;
+        Ok(task)
+    }
+    pub fn delete(
+        &mut self,
+        id: Option<&str>,
+        milestone: Option<&str>,
+        force: bool,
+        at: i64,
+    ) -> Result<DeleteReport> {
+        if id.is_some() == milestone.is_some() {
+            bail!("delete requires exactly one selector");
+        }
+        if let Some(id) = id {
+            self.assert_id(id)?;
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let targets: Vec<String> = tx.prepare("SELECT task_id FROM tasks WHERE ((?1 IS NOT NULL AND task_id=?1) OR (?2 IS NOT NULL AND milestone_ref=?2)) AND substr(task_id,1,length(?3))=?3")?.query_map(params![id,milestone,self.namespace],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?;
+        let mut revoked_claims = 0;
+        for id in &targets {
+            let task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+            if !force
+                && (task.status != "completed"
+                    || task.worker_id.is_some()
+                    || task
+                        .completed_at
+                        .is_none_or(|time| at - time <= RETENTION_SECONDS))
+            {
+                bail!("TASK_DELETE_INELIGIBLE");
+            }
+            revoked_claims += usize::from(task.worker_id.is_some());
+        }
+        for id in &targets {
+            let task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+            if task.status == "completed" {
+                tx.execute(
+                    "UPDATE task_dependencies SET satisfied=1 WHERE dependency_id=?1",
+                    [id],
+                )?;
+            }
+            next_revision(&tx, id)?;
+            tx.execute("DELETE FROM tasks WHERE task_id=?1", [id])?;
+        }
+        tx.commit()?;
+        Ok(DeleteReport {
+            count: targets.len(),
+            deleted_ids: targets,
+            revoked_claims,
+            mode: if force { "force" } else { "standard" }.into(),
+        })
+    }
+    pub fn cleanup(&mut self, at: i64) -> Result<Vec<String>> {
+        let ids: Vec<String> = self
+            .list(None, "completed", None)?
+            .into_iter()
+            .filter(|t| {
+                t.completed_at
+                    .is_some_and(|time| at - time > RETENTION_SECONDS)
+            })
+            .map(|t| t.task_id)
+            .collect();
+        let mut deleted = Vec::new();
+        for id in ids {
+            deleted.extend(self.delete(Some(&id), None, false, at)?.deleted_ids);
+        }
+        Ok(deleted)
+    }
+}
+
+pub(crate) fn load(conn: &Connection, id: &str) -> Result<Option<Task>> {
+    let value: Option<String> = conn
+        .query_row("SELECT descriptor FROM tasks WHERE task_id=?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    value
+        .map(|v| serde_json::from_str(&v).map_err(Into::into))
+        .transpose()
+}
+pub(crate) fn save(conn: &Connection, task: &Task) -> Result<()> {
+    conn.execute("INSERT INTO tasks VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET milestone_ref=excluded.milestone_ref,descriptor=excluded.descriptor",params![task.task_id,task.milestone_ref,serde_json::to_string(task)?])?;
+    Ok(())
+}
+pub(crate) fn next_revision(conn: &Connection, id: &str) -> Result<u64> {
+    Ok(conn.query_row("INSERT INTO task_revisions VALUES(?1,1) ON CONFLICT(task_id) DO UPDATE SET revision=revision+1 RETURNING revision",[id],|r|r.get(0))?)
+}
+pub(crate) fn end_claim(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE task_claims SET ended=1 WHERE task_id=?1 AND ended=0",
+        [id],
+    )?;
+    Ok(())
+}
+pub(crate) fn check_stage(task: &Task, stage: &str) -> Result<()> {
+    if GATES[task.gate] != stage && GATES[task.gate].split('/').next() != Some(stage) {
+        bail!("TASK_STAGE_INVALID");
+    }
+    Ok(())
+}
+fn dependencies_ready(conn: &Connection, id: &str) -> Result<bool> {
+    Ok(conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM task_dependencies d LEFT JOIN tasks t ON t.task_id=d.dependency_id WHERE d.task_id=?1 AND d.satisfied=0 AND (t.task_id IS NULL OR json_extract(t.descriptor,'$.status')!='completed'))",[id],|r|r.get(0))?)
+}
+pub fn now() -> i64 {
+    chrono::Utc::now().timestamp()
+}

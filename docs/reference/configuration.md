@@ -57,6 +57,23 @@ linked_workspaces:
 
 Ignore names are literal basenames, not glob patterns. Add a directory such as `static` only when the library builds all of its contents from sources retained elsewhere. Keep authored host assets and source-level type contracts. Excluded bundles neither enter the index nor trigger source refresh when rebuilt.
 
+## Task storage
+
+Task operations read `forge-mcp.yaml`; an omitted `tasks_db` defaults to
+`.forge/tasks.sqlite`. Relative paths resolve from the configuration directory.
+For cross-worktree coordination, configure the same shared path locally;
+tracked configuration uses a portable relative path.
+`task_repository` and `task_project` select the
+qualified task namespace. See [repository tasks](tasks.md) for identity,
+concurrency, receipts, and administration. Code indexing works without task
+storage configuration.
+
+Linked entries opt into the primary task store with `tasks.enabled: true`.
+`tasks.milestones_dir` defaults to `docs/milestones`, and `tasks.agents_md`
+defaults to `AGENTS.md`, both relative to the linked repository root.
+Omitted or disabled task entries are excluded. See [linked repository tasks](tasks.md#linked-repository-tasks)
+for synchronization, namespace selection, and scope confinement.
+
 ## MCP response policy
 
 ```yaml

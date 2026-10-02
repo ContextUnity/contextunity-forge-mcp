@@ -75,7 +75,7 @@ task_claim(task_id, stage, worker_id, worktree)
 task_submit(task_id, stage, evidence_ref, action: "pass" | "reject", findings?)
 task_manage(action: "create" | "sync" | "inspect" | "delete" | "extend_scope",
             task_id?: string, milestone_ref?: string, task_ref?: string,
-            paths?: list[string], force: bool = false)
+            paths?: list[string], force: bool = false, workspace?: string)
 ```
 
 > [!IMPORTANT]
@@ -86,11 +86,11 @@ Reject unknown fields and incompatible selector combinations:
 
 | Action | Required fields | Additional constraints |
 |---|---|---|
-| create | Indexed milestone_ref and task_ref | Omit task_id/paths; force=false. |
-| sync | milestone_ref | Omit task_id/task_ref/paths; force=false. |
-| inspect | task_id | Omit milestone/task refs/paths; force=false. |
-| delete | task_id or milestone_ref | Exactly one selector; omit task_ref/paths. |
-| extend_scope | task_id and nonempty paths | Omit milestone/task refs; force=false. |
+| create | milestone_ref and task_ref | Optional workspace; omit task_id/paths; force=false. |
+| sync | milestone_ref or workspace | Omit task_id/task_ref/paths; force=false. |
+| inspect | task_id | Omit workspace/milestone/task refs/paths; force=false. |
+| delete | task_id or milestone_ref | Exactly one selector; workspace only with milestone_ref; omit task_ref/paths. |
+| extend_scope | task_id and nonempty paths | Omit workspace/milestone/task refs; force=false. |
 
 Create synchronously reads the Git task block, mapping target to goal and scope to
 allowed_write_scope. Stable identity is repository/project/milestone_id:task_ref.
@@ -340,13 +340,16 @@ target: "Підтримати мультирепозиторні завданн�
 proof_policy: seam-test-first
 scope:
   - src/engine/tasks.rs
+  - src/engine/tasks/
+  - src/cli/
+  - src/mcp/tools.rs
   - src/db/tasks_store.rs
   - src/mcp/tasks.rs
   - src/core/tasks/
   - forge-mcp.yaml
   - docs/
   - tests/
-status: ready
+status: in_progress
 ```
 
 1. **Configuration & Resilience**:
@@ -375,7 +378,7 @@ deletion, project isolation, reset, and idempotent CLI migration. The stdio
 lifecycle test uses separate builder and reviewer worktrees and completes all
 five gates with fixture evidence. Fixture commit values are test inputs.
 
-The live worktree pilot synchronized all five admitted tasks and exercised
+The initial live worktree pilot synchronized the first five admitted tasks and exercised
 `task list`, `task claim`, `task inspect`, and `task reset`. Reset cleared the
 pilot owner and returned the claimed task to ready with a higher revision.
 Forge MCP retrieved this milestone's implementation specification and the task
@@ -383,7 +386,7 @@ reference's gates/evidence section from the correct worktree; graph metadata
 reported zero stored parse errors. Changed documentation has valid frontmatter
 keys and resolvable relative file links.
 
-Verification commands and local logs:
+Initial implementation verification commands and local logs:
 
 - `cargo test --all-targets`: 409 passed, 0 failed, 3 ignored;
   `/tmp/forge-task-lifecycle-final-tests.log`.
@@ -399,3 +402,108 @@ the call on line 2; its previous failure is reproducible on the base commit.
 Final acceptance stays open. A tested implementation commit, actual independent
 review evidence, durable per-task receipts, live handoffs, and milestone archival
 await the owner's separate commit command. The milestone remains in_progress.
+
+## Review repair verification
+
+The owner-reported configuration, identity, CRLF, and worktree diagnostics
+findings are reproducible conditions in the initial implementation. The tracked
+configuration uses `.forge/tasks.sqlite`, and `TaskSettings` supplies that path
+when the key is omitted. Configured identity governs create/sync and migration;
+persisted qualified identity governs authority and handoff across worktrees.
+`Milestone::parse` normalizes CRLF before reading frontmatter and task blocks.
+Service and store claims validate an existing directory and report
+`WORKTREE_NOT_FOUND` before recording ownership.
+
+Public-seam tests demonstrate the default path, LF/CRLF digest equality, a failed
+missing-worktree claim preserving ready/unclaimed state, and all five MCP gates
+with omitted repository frontmatter, the `contextunity` namespace, independent
+builder/reviewer worktrees, CLI migration, and a CRLF completion receipt.
+The added regression failed on the initial implementation with missing tasks_db.
+
+Current settled source/test checks:
+
+- `cargo test --all-targets`: 410 passed, 0 failed, 3 ignored;
+  `/tmp/forge-task-review-all-targets.log`.
+- `cargo test --test commitment_integrity`: 12 passed;
+  `/tmp/forge-task-review-commitment.log`.
+- `cargo clippy --all-targets --all-features -- -D warnings`: passed without warnings;
+  `/tmp/forge-task-review-clippy.log`.
+- Task integration modules: 13 passed; `/tmp/forge-task-review-focused.log`.
+
+The added multi-workspace invariant changes the governing digests of the five
+previously synchronized tasks. Their live listing remains blocked pending contract
+readmission. The sixth task is registered by the linked-workspace pilot below.
+The repair preserves the amendments and existing revisions of the first five tasks.
+
+Independent read-only review found no residual defect within these four repairs.
+Its coverage combines source inspection of all production parsing and claim
+entrypoints with the recorded public-seam tests. The missing-worktree test
+exercises the service; direct-store and non-directory handling were inspected
+in source. The reviewer worktree fixture has no local configuration. This review
+does not accept the sixth task or supply the milestone's final delivery review.
+
+## Linked repository task verification
+
+The owner request admits `multi-workspace-and-linked-repository-tasks`, including
+CLI parity and the shared workspace registry in `src/engine/tasks/workspaces.rs`.
+The task remains in_progress pending a tested implementation commit and final
+receipt acceptance. The [task reference](../reference/tasks.md#linked-repository-tasks)
+defines its registered configuration and selectors.
+
+Linked task configuration is opt-in. Synchronization selects a workspace by name,
+reads one file or its numbered milestone directory, and writes only that task
+namespace in the primary store. Missing/empty directories return zero tasks.
+List retains primary-ready defaults and adds explicit repository/all selection.
+Inspect and claim carry owner root, local guidance, and milestone invariants.
+ID-based operations route to the owning namespace; scope validation checks its root
+and the task's claimed isolated worktree. Scope traversal, symlink escape, and
+claiming from another configured repository fail closed.
+
+The core integration proof covers shared storage, opt-in filtering, missing and
+empty directories, default/custom task identity, custom guidance, scope extension,
+and cross-repository boundaries. The MCP/CLI proof covers workspace directory and
+file sync, repository selection parity, guidance, all five linked-task gates,
+CRLF receipt acceptance, and completion surviving a server restart.
+
+Settled source/test checks:
+
+- `cargo test --test core_basics -- tasks`: 13 passed;
+  `/tmp/forge-linked-core.log`.
+- `cargo test --test mcp_context -- tasks`: 4 passed;
+  `/tmp/forge-linked-mcp.log`.
+- `cargo test --test commitment_integrity`: 12 passed;
+  `/tmp/forge-linked-commitment.log`.
+- `cargo clippy --all-targets --all-features -- -D warnings`: passed without warnings;
+  `/tmp/forge-linked-clippy.log`.
+- `cargo test --all-targets`: 414 passed, 0 failed, 3 ignored;
+  `/tmp/forge-linked-all-targets.log`.
+
+The live worktree pilot created this task, claimed design, inspected its local
+root/guidance, and reset ownership with a higher revision. The task is registered
+and operationally ready after the pilot. The first five tasks still require
+readmission for the added governing invariant; their revisions remain unchanged.
+The commerce-release-update configuration was inspected read-only: traverse and
+gridviewspec have no task opt-in yet. Their configuration and stores were not
+modified. Code scanner, linker, writer, and commitment owners remain unchanged.
+
+Independent review identified owner-root validation during claimed extension,
+nested repository perimeters, and omitted-project defaults as remaining gaps.
+All three reproduced in public-seam tests before remediation:
+`/tmp/forge-linked-review-red.log`. The final implementation validates scope in
+both owner and claimed roots, checks configured repository boundaries during
+admission/list/claim/submit/extension, and carries repository/project defaults
+through sync, authority, handoff, and migration.
+
+The closure matrix covers owner-only and worktree-only symlink escapes with valid
+local extensions; foreign nested extension and broad parent directory rejection
+with successful child-owned claims; custom local project identity with default
+project counterparts, CLI migration, and all lifecycle gates. The child root is
+excluded from parent task scopes, while child-owned claims remain valid inside
+that root. Nested repositories retain distinct owners and write perimeters.
+
+Independent re-review of the settled repair found no remaining reachable defects
+in this task's admitted scope and confirmed the three fixes. It verified exact
+source/callsite evidence and the pre-fix failure log; execution results are supplied
+by the production-seam and full checks recorded above. This static review and
+fixture evidence do not supply the tested commit and live receipts required for
+milestone completion.

@@ -1,4 +1,5 @@
 DEBUG: true
+tasks_db: .forge/tasks.sqlite
 roots:
   - src
   - tests

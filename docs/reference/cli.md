@@ -55,6 +55,13 @@ contextunity-forge-mcp ast grep 'print($VALUE)' --lang python --path src
 
 `docs` reads the index. `ast grep` reads admitted file paths from the index, narrows them with FTS terms, and parses matching source after checking its indexed digest. It requires a built index and a compiled language profile. `docs search` accepts `--component` and `--limit`; `ast grep` accepts `--limit`.
 
+## Repository tasks
+
+Use [repository tasks](tasks.md) for `task list`, `create`, `sync`, `inspect`,
+`claim`, `submit`, `extend-scope`, `delete`, `reset`, `cleanup`, and the
+`migrate preview/apply/verify` administration commands. These operations use
+`tasks_db` from `forge-mcp.yaml`; global `--db` selects only the code index.
+
 ## Server, guide, and checkpoints
 
 ```sh

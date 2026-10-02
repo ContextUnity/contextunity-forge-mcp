@@ -1,6 +1,11 @@
+---
+title: "ContextUnity Forge MCP"
+doc_type: guide
+---
+
 # ContextUnity Forge MCP
 
-ContextUnity Forge MCP is a local code graph and documentation server for AI coding agents. It indexes supported source files and Markdown into a repository-local SQLite database and exposes **15 MCP tools** for finding symbols, tracing dependencies, reading source, and searching docs. The graph records static evidence; dynamic calls and files outside the indexed roots can remain unresolved.
+ContextUnity Forge MCP is a local code graph, documentation, and task coordination server for AI coding agents. It indexes supported source files and Markdown into a repository-local SQLite database and exposes **19 MCP tools** for code navigation, documentation, and repository-owned tasks. Task operations use a separate configured SQLite store. The graph records static evidence; dynamic calls and files outside the indexed roots can remain unresolved.
 
 ## What it provides
 

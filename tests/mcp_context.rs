@@ -124,43 +124,8 @@ fn wait_for_source_inventory_ttl() {
     std::thread::sleep(Duration::from_millis(5100));
 }
 
-#[test]
-fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
-    let workspace = Workspace::new();
-    let mut client = Client::new(&workspace);
-    let (_, response) = client.request("tools/list", json!({}));
-    let tools = response["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 15);
-    for tool in tools {
-        for (name, schema) in tool["inputSchema"]["properties"].as_object().unwrap() {
-            assert!(schema.is_object(), "{}.{name}: {schema}", tool["name"]);
-        }
-    }
-    let content = &tools
-        .iter()
-        .find(|tool| tool["name"] == "session_checkpoint")
-        .unwrap()["inputSchema"]["properties"]["content"];
-    assert!(content.is_object());
-    for value in [
-        json!(true),
-        json!(42),
-        json!("text"),
-        json!([1]),
-        json!({"key":1}),
-    ] {
-        client.payload(
-            "session_checkpoint",
-            json!({"action":"save","name":"sample","content":value}),
-        );
-        assert_eq!(
-            client.payload(
-                "session_checkpoint",
-                json!({"action":"get","name":"sample"})
-            ),
-            value
-        );
-    }
-}
+#[path = "mcp_context/tasks.rs"]
+mod tasks;
 
 #[cfg(feature = "lang-rust")]
 #[test]

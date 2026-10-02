@@ -13,6 +13,8 @@ use std::{
 };
 
 struct ScopedWorkspace(PathBuf);
+#[path = "core_basics/tasks.rs"]
+mod tasks;
 impl ScopedWorkspace {
     fn new(prefix: &str) -> Self {
         let nonce = SystemTime::now()

@@ -3,7 +3,9 @@ pub mod build;
 pub mod delta;
 pub mod docs;
 pub mod guide;
+pub mod migrate;
 pub mod query;
+pub mod task;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -25,6 +27,14 @@ pub struct Cli {
 }
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    Migrate {
+        #[command(subcommand)]
+        command: migrate::MigrateCommand,
+    },
+    Task {
+        #[command(subcommand)]
+        command: task::TaskCommand,
+    },
     Serve,
     Build {
         workspace_root: Option<PathBuf>,
@@ -197,6 +207,8 @@ impl Cli {
         let db = self.db.clone().unwrap_or_else(|| default_db(&root));
         let command = self.command.unwrap_or(Command::Serve);
         let result: Value = match command {
+            Command::Migrate { command } => migrate::run(&root, command)?,
+            Command::Task { command } => task::run(&root, command)?,
             Command::Serve => {
                 crate::mcp::server::serve(root, db).await?;
                 return Ok(());
