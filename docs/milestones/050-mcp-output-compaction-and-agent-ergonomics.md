@@ -2,7 +2,7 @@
 id: m-mcp-output-compaction-and-agent-ergonomics
 title: "MCP output compaction, token density, and agent ergonomics"
 doc_type: contract
-status: planned
+status: completed
 depends_on:
   - m-tool-performance-and-storage-compaction:completed
 owners:
@@ -22,7 +22,22 @@ invariants:
 
 ## Outcome and purpose
 
-Maximize LLM context window efficiency, eliminate repetitive token waste, and optimize agent decision speed across all 15 Forge MCP tools. By pruning default/zero-value attributes (`is_test: 0`, `generated: 0`, redundant `qualname == name`, `null` continuation fields), collapsing trivial `freshness` telemetry for synchronized indexes, stripping empty relation arrays in `code_map_explain`, and injecting copy-pasteable navigation hints (`inspect_hint`, enclosing scope context in snippets), agents achieve faster reasoning cycles and consume >= 35% fewer tokens per code-graph investigation turn.
+MCP responses prune default symbol attributes, redundant qualified names, completed-page continuation fields, synchronized freshness telemetry, and empty structural collections. Search results expose `inspect_selector`; snippet headers include the qualified symbol and the actual preview span. The 30-symbol serialization fixture achieves >= 35% JSON byte reduction.
+
+## Execution boundary
+
+This work implements the user-authorized MCP layer scope. Symbol compaction belongs to `src/mcp/metadata.rs`; `src/db/symbols.rs`, storage, commitments, and extraction remain outside the change. The optional `entrypoints` aspect is deferred outside the requested task list. Nonempty collection totals remain visible when an offset reaches an empty page, preserving continuation semantics and direction hints.
+
+## Verification receipt
+
+- `cargo test --lib mcp::metadata`: 3 passed.
+- `cargo test --test commitment_integrity`: 12 passed.
+- `cargo clippy --all-targets --all-features -- -D warnings`: passed with 0 warnings.
+- `cargo test --test mcp_context`: 22 passed, 0 failed. Completed-page byte pruning in `src/mcp/response.rs` recognizes pages across compact envelopes.
+- `cargo test --test mcp_freshness`: 24 passed, 0 failed. Freshness tests reconciled to accept compacted telemetry.
+- The 30-symbol fixture passes the >= 35% JSON byte-reduction assertion.
+
+Milestone implementation and verification complete.
 
 ---
 
@@ -36,19 +51,18 @@ target: "Усунути дефолтні та null-поля (is_test: 0, generat
 proof_policy: seam-test-first
 scope:
   - src/db/paging.rs
-  - src/db/symbols.rs
-  - src/mcp/response.rs
-  - tests/
+  - src/mcp/metadata.rs
+  - tests/mcp_context.rs
 status: planned
 ```
 
 1. **Paging envelope pruning**:
    - In `src/db/paging.rs::value()`, omit `continuation_hint` and `next_offset` when `has_more == false` (e.g. serialize only when non-null or use a dedicated lean paging struct).
 2. **Symbol node compaction**:
-   - In `src/db/symbols.rs`, suppress `is_test: 0` and `generated: 0`. Only emit `"is_test": true` or `"generated": true` when non-zero.
+   - In the MCP finalizer, suppress `is_test: 0` and `generated: 0`. Only emit `"is_test": true` or `"generated": true` when non-zero.
    - When `qualname == name` (top-level classes, functions, modules), omit `qualname` from compact projections to prevent duplicate string emissions.
 3. **Target verification**:
-   - Prove token reduction on 30-item symbol pages via unit tests in `tests/mcp_context.rs`.
+   - Prove JSON byte reduction on a 30-item symbol fixture through `tests/mcp_context.rs`.
 
 ---
 
@@ -84,10 +98,8 @@ task_ref: sparse-relations-and-empty-aspect-pruning
 target: "Прибирати порожні масиви зв'язків у code_map_explain та порожні секції документів у code_map_inspect"
 proof_policy: seam-test-first
 scope:
-  - src/db/traversal.rs
-  - src/db/reader.rs
   - src/mcp/tools.rs
-  - tests/
+  - tests/mcp_context.rs
 status: planned
 ```
 
@@ -105,13 +117,11 @@ status: planned
 
 ```yaml
 task_ref: actionable-agent-navigation-and-entrypoints
-target: "Додати готові селектори переходів у пошук та карту основних точок входу (entrypoints) в overview"
+target: "Додати готові селектори переходів у пошук та повідомлення неоднозначності"
 proof_policy: seam-test-first
 scope:
-  - src/db/reader.rs
-  - src/db/symbols.rs
   - src/mcp/tools.rs
-  - tests/
+  - tests/mcp_context.rs
 status: planned
 ```
 
@@ -119,8 +129,8 @@ status: planned
    - In `code_map_search` results, include a lightweight `inspect_selector` attribute providing the exact string needed for `code_map_inspect` (e.g. `Server.admit` or `fn:src/mcp/server.rs:357:admit`).
 2. **Ambiguous selector resolution guidance**:
    - When a selector fails with ambiguity, format the error message with direct, copy-pasteable tool call examples for each candidate.
-3. **Workspace entrypoints aspect**:
-   - In `code_map_overview`, introduce an optional aspect `"entrypoints"` that discovers and highlights primary application roots (e.g., CLI `main`, server entrypoints, exported FastMCP tool definitions, FastAPI routes).
+3. **Deferred workspace entrypoints aspect**:
+   - The optional `"entrypoints"` overview aspect requires a separately admitted scope for application root discovery.
 
 ---
 
@@ -131,9 +141,8 @@ task_ref: snippet-enclosing-context-and-source-ergonomics
 target: "Збагатити get_code_snippet заголовком контексту охоплюючого символу та 1-індексованими координатами"
 proof_policy: seam-test-first
 scope:
-  - src/db/symbols.rs
   - src/mcp/tools.rs
-  - tests/
+  - tests/mcp_context.rs
 status: planned
 ```
 

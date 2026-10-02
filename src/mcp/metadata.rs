@@ -125,11 +125,35 @@ pub fn finalize_mcp_metadata(value: &mut Value) {
     shorten_hashes_in_value(value);
 
     if let Value::Object(map) = value {
+        for (key, child) in map.iter_mut() {
+            if key != "rows" {
+                compact_graph_value(child);
+            }
+        }
+        let paged_generation = !map.contains_key("counts")
+            && map.values().any(|child| {
+                child.as_object().is_some_and(|page| {
+                    is_paging_envelope(page) && page.get("generation") == map.get("generation")
+                })
+            });
+        if paged_generation {
+            map.remove("generation");
+        }
         // Strip verbose freshness timestamps
         if let Some(Value::Object(fmap)) = map.get_mut("freshness") {
             if is_freshness_envelope(fmap) {
                 fmap.remove("checked_at_unix_ms");
                 fmap.remove("inventory_scan_ms");
+                if matches!(
+                    fmap["status"].as_str(),
+                    Some("matched" | "source_inventory_matched")
+                ) && fmap["refresh"] == "none"
+                {
+                    let generation = fmap["output_root"].clone();
+                    fmap.clear();
+                    fmap.insert("status".into(), Value::String("matched".into()));
+                    fmap.insert("generation".into(), generation);
+                }
             }
         }
 
@@ -148,6 +172,56 @@ pub fn finalize_mcp_metadata(value: &mut Value) {
         if let Some(fresh) = freshness {
             map.insert("freshness".into(), fresh);
         }
+    }
+}
+
+fn compact_graph_value(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                compact_graph_value(item);
+            }
+        }
+        Value::Object(object) => {
+            if ["id", "kind", "name", "path"]
+                .iter()
+                .all(|key| object.get(*key).is_some_and(Value::is_string))
+            {
+                for flag in ["is_test", "generated"] {
+                    if let Some(value) = object.get_mut(flag) {
+                        if value == false || value == 0 {
+                            object.remove(flag);
+                        } else if value == true || value.as_i64().is_some_and(|n| n != 0) {
+                            *value = Value::Bool(true);
+                        }
+                    }
+                }
+                if object.get("qualname") == object.get("name") {
+                    object.remove("qualname");
+                }
+            }
+            if is_paging_envelope(object) {
+                shorten_fields(object, &["generation"]);
+                if object.get("has_more") == Some(&Value::Bool(false)) {
+                    object.remove("next_offset");
+                    object.remove("continuation_hint");
+                }
+            }
+            for key in ["items", "nodes", "matches", "grouped_by_file"] {
+                if let Some(child) = object.get_mut(key) {
+                    if key == "grouped_by_file" {
+                        if let Some(groups) = child.as_object_mut() {
+                            for group in groups.values_mut() {
+                                compact_graph_value(group);
+                            }
+                        }
+                    } else {
+                        compact_graph_value(child);
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -193,8 +267,10 @@ mod tests {
         );
 
         assert_eq!(response["generation"], "abcdef01");
-        assert_eq!(response["freshness"]["output_root"], "11223344");
-        assert_eq!(response["freshness"]["corpus_hash"], "aabbccdd");
+        assert_eq!(
+            response["freshness"],
+            json!({"status":"matched","generation":"11223344"})
+        );
         assert!(response["freshness"].get("checked_at_unix_ms").is_none());
         assert!(response["freshness"].get("inventory_scan_ms").is_none());
     }
@@ -266,8 +342,10 @@ mod tests {
             response["payload"]["metadata"]["corpus_hash"],
             "nested-meta-12345"
         );
-        assert_eq!(response["freshness"]["output_root"], "01234567");
-        assert_eq!(response["freshness"]["corpus_hash"], "abcdef01");
+        assert_eq!(
+            response["freshness"],
+            json!({"status":"matched","generation":"01234567"})
+        );
         assert!(response["freshness"].get("checked_at_unix_ms").is_none());
         assert!(response["freshness"].get("inventory_scan_ms").is_none());
 

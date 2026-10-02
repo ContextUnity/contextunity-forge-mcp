@@ -28,6 +28,66 @@ fn checkpoint_content_schema(_: &mut schemars::SchemaGenerator) -> schemars::Sch
     serde_json::Map::new().into()
 }
 
+fn navigation_error(error: anyhow::Error) -> anyhow::Error {
+    let message = error.to_string();
+    if message.starts_with("ambiguous selector ") {
+        if let Some((_, candidates)) = message.rsplit_once("; candidates: ") {
+            if let Ok(ids) = serde_json::from_str::<Vec<String>>(candidates) {
+                let calls = ids
+                    .iter()
+                    .map(|id| format!("code_map_inspect({})", serde_json::json!({"selector":id})))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return anyhow::anyhow!("{message}\n{calls}");
+            }
+        }
+    }
+    error
+}
+
+fn empty_collection(value: &Value) -> bool {
+    value.as_array().is_some_and(Vec::is_empty)
+        || value.get("total").is_some_and(|total| total == 0)
+        || (value.get("total").is_none()
+            && value
+                .get("items")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty))
+        || value.as_object().is_some_and(serde_json::Map::is_empty)
+}
+
+fn sparse_symbol(mut value: Value, explain: bool) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        for key in ["documents", "coverage"] {
+            if object.get(key).is_some_and(empty_collection) {
+                object.remove(key);
+            }
+        }
+        if explain {
+            let mut relations = Vec::new();
+            for key in [
+                "calls",
+                "callers",
+                "implements",
+                "implementors",
+                "overrides",
+                "dependencies",
+                "unwired",
+                "incoming",
+                "outgoing",
+            ] {
+                if object.get(key).is_some_and(empty_collection) {
+                    object.remove(key);
+                } else if object.contains_key(key) {
+                    relations.push(key);
+                }
+            }
+            object.insert("relations".into(), serde_json::json!(relations));
+        }
+    }
+    value
+}
+
 #[derive(Default, Deserialize, JsonSchema)]
 pub struct PageInput {
     /// Items per collection, 1..=100; defaults to adapter response.page_size (30).
@@ -289,7 +349,10 @@ impl Server {
         run: impl FnOnce(&ResponsePolicy) -> anyhow::Result<Value>,
     ) -> CallToolResult {
         match scanner::load_adapter(&self.root, None) {
-            Ok(adapter) => response::result(run(&adapter.response), &adapter.response),
+            Ok(adapter) => response::result(
+                run(&adapter.response).map_err(navigation_error),
+                &adapter.response,
+            ),
             Err(error) => response::result(Err(error.into()), &ResponsePolicy::default()),
         }
     }
@@ -348,6 +411,7 @@ impl Server {
                     &page,
                     coverage,
                 )
+                .map(|value| sparse_symbol(value, false))
             })
         })
     }
@@ -358,7 +422,29 @@ impl Server {
         self.responding(|policy| {
             let page = p.page.resolve(policy)?;
             let source = p.source(policy)?;
-            self.read(|c| symbols::snippet_paged(c, &self.root, &p.selector, &source, &page))
+            self.read(|c| {
+                let mut value = symbols::snippet_paged(c, &self.root, &p.selector, &source, &page)?;
+                let context = reader::rows(
+                    c,
+                    "SELECT qualname FROM nodes WHERE id=?1",
+                    &[&value["node"]["id"].as_str().unwrap_or("")],
+                    1,
+                )?;
+                if let (Some(path), Some(start), Some(end)) = (
+                    value["node"]["path"].as_str(),
+                    value["source_preview"]["start_line"].as_u64(),
+                    value["source_preview"]["end_line"].as_u64(),
+                ) {
+                    value["header"] = serde_json::json!(format!(
+                        "{} {} in {path}:{start}-{end}",
+                        value["node"]["kind"].as_str().unwrap_or("symbol"),
+                        context.first().and_then(|node| node["qualname"].as_str())
+                            .or_else(|| value["node"]["name"].as_str())
+                            .unwrap_or(&p.selector)
+                    ));
+                }
+                Ok(value)
+            })
         })
     }
     #[tool(
@@ -376,6 +462,13 @@ impl Server {
                     p.exact,
                     &p.page.resolve(policy)?,
                 )?;
+                if let Some(items) = res["nodes"]["items"].as_array_mut() {
+                    for item in items {
+                        if let Some(id) = item["id"].as_str().map(str::to_owned) {
+                            item["inspect_selector"] = Value::String(id);
+                        }
+                    }
+                }
                 if p.group_by_file {
                     if let Some(items) = res
                         .get_mut("nodes")
@@ -449,6 +542,7 @@ impl Server {
                     &page,
                     coverage,
                 )
+                .map(|value| sparse_symbol(value, true))
             })
         })
     }

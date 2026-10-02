@@ -12,7 +12,6 @@ use std::{
     sync::mpsc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-
 struct Workspace(PathBuf);
 impl Workspace {
     fn new() -> Self {
@@ -34,7 +33,6 @@ impl Drop for Workspace {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-
 struct Client {
     child: Child,
     input: ChildStdin,
@@ -119,14 +117,87 @@ impl Drop for Client {
         let _ = self.child.wait();
     }
 }
-
 fn wait_for_source_inventory_ttl() {
     std::thread::sleep(Duration::from_millis(5100));
 }
-
 #[path = "mcp_context/tasks.rs"]
 mod tasks;
 
+#[test]
+fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "service.py",
+        "def entry():\n    return target()\ndef target():\n    return 1\n",
+    );
+    workspace.write("other.py", "def target():\n    return 2\n");
+    let mut client = Client::new(&workspace);
+    let first = client.payload(
+        "code_map_search",
+        json!({"pattern":"target","exact":true,"limit":1,"detail":"full"}),
+    );
+    let page = &first["nodes"];
+    assert_eq!(page["has_more"], true);
+    let selector = page["items"][0]["inspect_selector"].as_str().unwrap();
+    assert_eq!(page["items"][0]["id"], selector);
+    assert!(page["items"][0].get("is_test").is_none());
+    assert!(page["items"][0].get("generated").is_none());
+    let second = client.payload("code_map_search", json!({"pattern":"target","exact":true,"limit":1,"offset":page["next_offset"],"generation":page["generation"]}));
+    assert_eq!(second["nodes"]["has_more"], false);
+    assert!(second["nodes"].get("next_offset").is_none());
+    assert!(second["nodes"].get("continuation_hint").is_none());
+    assert_eq!(
+        second["freshness"],
+        json!({"status":"matched","generation":page["generation"]})
+    );
+    let inspected = client.payload("code_map_inspect", json!({"selector":selector}));
+    assert_eq!(inspected["node"]["id"], selector);
+    assert!(inspected.get("documents").is_none());
+    let snippet = client.payload("get_code_snippet", json!({"selector":selector}));
+    assert!(snippet["header"].as_str().unwrap().contains(&format!(
+        "{}:{}-{}",
+        snippet["node"]["path"].as_str().unwrap(),
+        snippet["source_preview"]["start_line"],
+        snippet["source_preview"]["end_line"]
+    )));
+    let explained = client.payload("code_map_explain", json!({"selector":"service.py:entry"}));
+    assert!(explained["relations"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("outgoing")));
+    let isolated = client.payload("code_map_explain", json!({"selector":"other.py:target"}));
+    assert!(isolated.get("outgoing").is_none());
+    let (_, ambiguous) = client.call("code_map_inspect", json!({"selector":"target"}));
+    assert_eq!(ambiguous["result"]["isError"], true);
+    assert!(ambiguous["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("code_map_inspect({\"selector\":"));
+}
+#[test]
+fn compact_symbol_page_has_stable_lean_serialization() {
+    let items: Vec<Value> = (0..30)
+        .map(|i| {
+            let name = format!("public_application_entrypoint_{i}");
+            json!({"id":format!("function:{i}"),"kind":"function","name":name,"qualname":name,"path":"a.py","is_test":0,"generated":false})
+        })
+        .collect();
+    let mut payload = json!({"generation":"a".repeat(64),"nodes":{"items":items,"total":30,"offset":0,"limit":30,"has_more":false,"generation":"a".repeat(64),"next_offset":null,"continuation_hint":null}});
+    let original_bytes = payload.to_string().len();
+    response::compact_mcp_metadata(&mut payload);
+    assert!(payload.to_string().len() * 100 <= original_bytes * 65);
+    assert_eq!(payload["nodes"]["items"].as_array().unwrap().len(), 30);
+    assert_eq!(payload["nodes"]["generation"], "aaaaaaaa");
+    assert!(payload.get("generation").is_none());
+    let stable = payload.clone();
+    response::compact_mcp_metadata(&mut payload);
+    assert_eq!(payload, stable);
+    let mut flagged = json!({"nodes":{"items":[{"id":"test:1","kind":"function","name":"test","qualname":"suite.test","path":"test.py","is_test":1,"generated":true}]}});
+    response::compact_mcp_metadata(&mut flagged);
+    assert_eq!(flagged["nodes"]["items"][0]["is_test"], true);
+    assert_eq!(flagged["nodes"]["items"][0]["generated"], true);
+    assert_eq!(flagged["nodes"]["items"][0]["qualname"], "suite.test");
+}
 #[cfg(feature = "lang-rust")]
 #[test]
 fn stdio_distinguishes_known_external_imports_from_missing_sources() {
@@ -152,7 +223,6 @@ fn stdio_distinguishes_known_external_imports_from_missing_sources() {
         .unwrap()
         .is_empty());
 }
-
 #[test]
 fn stdio_budget_and_query_errors_explain_how_to_retry() {
     let workspace = Workspace::new();
@@ -186,7 +256,6 @@ fn stdio_budget_and_query_errors_explain_how_to_retry() {
         assert!(message.contains(expected), "{name}: {message}");
     }
 }
-
 #[test]
 fn stdio_analyze_preserves_sql_columns_named_like_metadata() {
     let workspace = Workspace::new();
@@ -205,7 +274,6 @@ fn stdio_analyze_preserves_sql_columns_named_like_metadata() {
         "code_map_analyze",
         json!({"target":format!("SELECT '1234567é' AS generation, '0123456789' AS output_root, 'abcdef0123456789' AS corpus_hash, '{details}' AS details")}),
     );
-
     assert_eq!(result["rows"]["items"][0]["generation"], "1234567é");
     assert_eq!(result["rows"]["items"][0]["output_root"], "0123456789");
     assert_eq!(
@@ -233,7 +301,6 @@ fn stdio_analyze_preserves_sql_columns_named_like_metadata() {
         "nested-meta-1234"
     );
 }
-
 #[test]
 fn stdio_analyze_rejects_oversized_intermediate_sql_values() {
     let workspace = Workspace::new();
@@ -248,10 +315,8 @@ fn stdio_analyze_rejects_oversized_intermediate_sql_values() {
         "code_map_analyze",
         json!({"target":"SELECT length(randomblob(8388609)) AS payload"}),
     );
-
     assert_eq!(response["result"]["isError"], true, "{response}");
 }
-
 #[test]
 fn cold_build_populates_document_fts_search() {
     let workspace = Workspace::new();
@@ -264,10 +329,8 @@ fn cold_build_populates_document_fts_search() {
         "code_map_analyze",
         json!({"target":"SELECT count(*) AS matches FROM doc_search WHERE doc_search MATCH 'quasarneedle'"}),
     );
-
     assert_eq!(result["rows"]["items"][0]["matches"], 1);
 }
-
 #[test]
 fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
     let workspace = Workspace::new();
@@ -316,7 +379,6 @@ fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
     let (_, response) = client.call("get_doc", json!({"path_or_id":"README.md","limit":101}));
     assert_eq!(response["result"]["isError"], true);
 }
-
 #[test]
 fn stdio_byte_pruning_continues_after_exactly_the_emitted_rows() {
     let workspace = Workspace::new();
@@ -348,7 +410,6 @@ fn stdio_byte_pruning_continues_after_exactly_the_emitted_rows() {
     }
     assert_eq!(seen, (0..17).collect::<Vec<_>>());
 }
-
 #[test]
 fn adapter_policy_applies_without_changing_fact_identity_and_rejects_invalid_bounds() {
     let workspace = Workspace::new();
@@ -397,7 +458,6 @@ fn adapter_policy_applies_without_changing_fact_identity_and_rejects_invalid_bou
         );
     }
 }
-
 #[cfg(feature = "lang-python")]
 #[test]
 fn stdio_default_pages_and_stale_continuation_are_explicit() {
@@ -436,7 +496,6 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
     );
     assert_eq!(stale["result"]["isError"], true);
 }
-
 #[cfg(feature = "lang-python")]
 #[test]
 fn stdio_symbol_search_groups_the_current_page_by_file() {
@@ -460,7 +519,6 @@ fn stdio_symbol_search_groups_the_current_page_by_file() {
         2
     );
 }
-
 #[cfg(feature = "lang-python")]
 #[test]
 fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
@@ -482,7 +540,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .unwrap()
         .contains("def selected"));
     assert!(explanation.get("incoming").is_some());
-    assert!(explanation.get("outgoing").is_some());
+    assert_eq!(explanation["relations"], json!(["incoming"]));
     let first = client.payload("get_code_snippet", json!({"selector":"selected"}));
     let text = first["source"].as_str().unwrap();
     assert!(text.contains("Привіт\r\n") || text.contains("Привіт'\r\n"));
@@ -505,11 +563,9 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .unwrap()
         .contains("huge.py"));
 }
-
 #[cfg(feature = "lang-python")]
 #[path = "mcp_context/ast_search.rs"]
 mod ast_search;
-
 #[cfg(feature = "lang-python")]
 #[test]
 fn repair_ast_horizon_has_no_unusable_cursor() {
@@ -525,7 +581,7 @@ fn repair_ast_horizon_has_no_unusable_cursor() {
         "ast_grep_search",
         json!({"pattern":"print($VALUE)","language":"python","limit":100}),
     );
-    let last = client.payload("ast_grep_search", json!({"pattern":"print($VALUE)","language":"python","offset":9900,"limit":100,"generation":first["generation"]}));
+    let last = client.payload("ast_grep_search", json!({"pattern":"print($VALUE)","language":"python","offset":9900,"limit":100,"generation":first["matches"]["generation"]}));
     let page = &last["matches"];
     assert_eq!(page["items"].as_array().unwrap().len(), 100);
     assert_eq!(page["has_more"], true);
@@ -541,7 +597,6 @@ fn repair_ast_horizon_has_no_unusable_cursor() {
         .unwrap()
         .contains("narrow"));
 }
-
 #[cfg(feature = "lang-python")]
 #[test]
 fn repair_ast_byte_pruning_keeps_earlier_horizon_continuation_usable() {
@@ -561,7 +616,7 @@ fn repair_ast_byte_pruning_keeps_earlier_horizon_continuation_usable() {
     let mut offset = 9900;
     let mut lines = Vec::new();
     loop {
-        let payload = client.payload("ast_grep_search", json!({"pattern":"print($VALUE)","language":"python","offset":offset,"limit":100,"generation":first["generation"]}));
+        let payload = client.payload("ast_grep_search", json!({"pattern":"print($VALUE)","language":"python","offset":offset,"limit":100,"generation":first["matches"]["generation"]}));
         let page = &payload["matches"];
         let items = page["items"].as_array().unwrap();
         assert!(!items.is_empty());
@@ -578,7 +633,6 @@ fn repair_ast_byte_pruning_keeps_earlier_horizon_continuation_usable() {
     }
     assert_eq!(lines, (9901..=10_000).collect::<Vec<_>>());
 }
-
 #[cfg(feature = "lang-python")]
 #[test]
 fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
@@ -602,7 +656,6 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
     assert_eq!(payload["matches"]["computation_truncated"], true);
     assert!(payload["matches"]["total"].is_null());
     assert!(payload["matches"]["next_offset"].is_null());
-
     let source = "f(1, 2, missing)\nf(1, 1)\nf(1, 2)\n";
     workspace.write("service.py", source);
     wait_for_source_inventory_ttl();
@@ -637,7 +690,6 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
     assert_eq!(legacy.len(), 1);
     assert_eq!(legacy[0]["line"], 25_001);
 }
-
 #[test]
 fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
     let workspace = Workspace::new();
@@ -681,7 +733,6 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
         small
     );
 }
-
 #[tokio::test]
 async fn transport_accepts_exact_bound_and_replaces_oversized_frames() {
     use tokio::io::AsyncWriteExt;
@@ -704,7 +755,6 @@ async fn transport_accepts_exact_bound_and_replaces_oversized_frames() {
     let error: Value = serde_json::from_slice(&output).unwrap();
     assert!(error.get("error").is_some());
 }
-
 #[test]
 fn serialization_counts_second_escaping_and_bounds_a_single_item() {
     let policy = ResponsePolicy::default();
@@ -725,7 +775,6 @@ fn serialization_counts_second_escaping_and_bounds_a_single_item() {
     assert_eq!(result.is_error, Some(true));
     assert!(response::serialized_bytes(&result) <= MAX_OUTPUT_BYTES - 256);
 }
-
 #[test]
 fn stdio_symbol_search_matches_methods_and_functions_interchangeably() {
     let workspace = Workspace::new();
@@ -741,7 +790,6 @@ fn stdio_symbol_search_matches_methods_and_functions_interchangeably() {
     );
     assert_eq!(result["nodes"]["total"], 1);
     assert_eq!(result["nodes"]["items"][0]["name"], "admit");
-
     let result_fn = client.payload(
         "code_map_search",
         json!({"pattern":"admit*","kind":"function","path":"src/lib.rs"}),
