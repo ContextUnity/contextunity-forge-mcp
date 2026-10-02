@@ -57,6 +57,133 @@ fn fixture() -> (ScopedWorkspace, TasksStore, Milestone) {
 }
 
 #[test]
+fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
+    let specification = |agent_type: &str| format!(
+        "---\nid: m-guided\ntitle: Guided tasks\ndoc_type: contract\n---\n# Guided tasks\n```yaml\ntask_ref: guided\ntarget: Deliver guidance\nagent_type: {agent_type}\nproof_policy: seam-test-first\nscope: [src/]\n```\n"
+    );
+    let root = ScopedWorkspace::new("forge_guidance_root");
+    let linked = ScopedWorkspace::new("forge_guidance_linked");
+    let missing = ScopedWorkspace::new("forge_guidance_missing");
+    let missing_configured = ScopedWorkspace::new("forge_guidance_missing_configured");
+    for (workspace, agent_type) in [
+        (&root, "gpt-6-sol"),
+        (&linked, "reviewer"),
+        (&missing, "flash"),
+        (&missing_configured, "worker"),
+    ] {
+        workspace.write("src/lib.rs", "pub fn guided() {}\n");
+        workspace.write("docs/010-guided.md", &specification(agent_type));
+    }
+    root.write("docs/team-guidance.md", "# Root task guidance\n");
+    linked.write("docs/linked-guidance.md", "# Linked task guidance\n");
+    root.write(
+        "forge-mcp.yaml",
+        &format!(
+            "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/team-guidance.md\nlinked_workspaces:\n  - name: linked\n    path: {}\n    tasks:\n      enabled: true\n      agents_guidance: docs/linked-guidance.md\n",
+            linked.0.display()
+        ),
+    );
+    linked.write("forge-mcp.yaml", "task_repository: linked\ntask_project: linked\n");
+    missing.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
+    missing_configured.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/unavailable.md\n");
+
+    for (server, workspace, selector, repository, agent_type, expected_path, absent) in [
+        (&root.0, &root.0, None, "forge-mcp", "gpt-6-sol", root.0.join("docs/team-guidance.md"), false),
+        (&root.0, &linked.0, Some("linked"), "linked", "reviewer", linked.0.join("docs/linked-guidance.md"), false),
+        (&missing.0, &missing.0, None, "forge-mcp", "flash", missing.0.join("AGENTS.md"), true),
+        (&missing_configured.0, &missing_configured.0, None, "forge-mcp", "worker", missing_configured.0.join("docs/unavailable.md"), true),
+    ] {
+        let id = format!("{repository}/{repository}/m-guided:guided");
+        tasks::manage(
+            server,
+            serde_json::from_value(json!({
+                "action": "sync",
+                "workspace": selector,
+                "milestone_ref": "docs/010-guided.md"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let inspect = || {
+            tasks::manage(
+                server,
+                serde_json::from_value(json!({"action": "inspect", "task_id": id})).unwrap(),
+            )
+            .unwrap()
+        };
+        let before = inspect();
+        assert_eq!(before["spec"]["agent_type"], agent_type);
+        assert_eq!(before["agents_guidance"], expected_path.to_str().unwrap());
+        let guidance = &before["workflow_guidance"];
+        assert_eq!(guidance["active_stage"], "design/v1");
+        assert_eq!(guidance["agent_type"], agent_type);
+        assert!(guidance["subagent_role"].as_str().is_some_and(|role| !role.is_empty()));
+        assert!(guidance["steps"].as_array().is_some_and(|steps| !steps.is_empty()));
+        if absent {
+            assert_eq!(guidance["warning"]["code"], "TASK_GUIDANCE_MISSING");
+            assert!(guidance.to_string().contains("https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/acdd.md"));
+        } else {
+            assert!(guidance["warning"].is_null());
+        }
+        let claimed = tasks::claim(
+            server,
+            tasks::Claim {
+                task_id: id.clone(),
+                stage: "design/v1".into(),
+                worker_id: "guidance-author".into(),
+                worktree: workspace.to_string_lossy().into_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(claimed["workflow_guidance"], *guidance);
+        if repository == "forge-mcp" && !absent {
+            let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+            let task = store.inspect(&id).unwrap();
+            store.submit(&id, "design/v1", &evidence(&task), "pass", None).unwrap();
+            let next = inspect();
+            assert_eq!(next["workflow_guidance"]["active_stage"], "contract/v1");
+            assert_eq!(next["workflow_guidance"]["subagent_role"], "contract_author");
+            assert_ne!(next["workflow_guidance"]["steps"], guidance["steps"]);
+            let contract = tasks::claim(
+                server,
+                tasks::Claim {
+                    task_id: id.clone(),
+                    stage: "contract/v1".into(),
+                    worker_id: "guidance-contract-author".into(),
+                    worktree: workspace.to_string_lossy().into_owned(),
+                },
+            )
+            .unwrap();
+            assert_eq!(contract["workflow_guidance"]["active_stage"], "contract/v1");
+            let task = store.inspect(&id).unwrap();
+            store.submit(&id, "contract/v1", &evidence(&task), "pass", None).unwrap();
+            let build = inspect();
+            assert_eq!(build["workflow_guidance"]["active_stage"], "build/v1");
+            assert_eq!(build["workflow_guidance"]["subagent_role"], "builder");
+            assert!(build["workflow_guidance"]["steps"].as_array().is_some_and(|steps| steps.len() >= 2));
+            let claimed_build = tasks::claim(
+                server,
+                tasks::Claim {
+                    task_id: id.clone(),
+                    stage: "build/v1".into(),
+                    worker_id: "guidance-builder".into(),
+                    worktree: workspace.to_string_lossy().into_owned(),
+                },
+            )
+            .unwrap();
+            assert_eq!(claimed_build["workflow_guidance"]["subagent_role"], "builder");
+            let task = store.inspect(&id).unwrap();
+            store.submit(&id, "build/v1", &evidence(&task), "pass", None).unwrap();
+            let review = inspect();
+            assert_eq!(review["workflow_guidance"]["active_stage"], "review/v1");
+            assert_eq!(review["workflow_guidance"]["subagent_role"], "independent_reviewer");
+            assert_eq!(review["workflow_guidance"]["independent_from_worker_id"], "guidance-builder");
+            assert!(review["workflow_guidance"]["independence_rule"].as_str().is_some_and(|rule| rule.contains("different")));
+        }
+    }
+}
+
+#[test]
 fn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {
     let schema = serde_json::to_value(schemars::schema_for!(tasks::Submit)).unwrap();
     assert_eq!(schema["properties"]["evidence"]["type"], "object");
@@ -439,7 +566,7 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
             .replace("id: m-test", "id: m-linked")
             .replace("isolated", "linked-rules"),
     );
-    root.write("forge-mcp.yaml", &format!("roots: [src]\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks:\n      enabled: true\n      milestones_dir: contracts\n      agents_md: docs/AGENTS.md\n  - name: missing\n    path: {}\n    tasks: {{enabled: true}}\n  - name: empty\n    path: {}\n    tasks: {{enabled: true}}\n  - name: disabled\n    path: {}\n    tasks: {{enabled: false}}\n  - name: index-only\n    path: {}\n",linked.0.display(),missing.0.display(),empty.0.display(),linked.0.display(),linked.0.display()));
+    root.write("forge-mcp.yaml", &format!("roots: [src]\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks:\n      enabled: true\n      milestones_dir: contracts\n      agents_guidance: docs/AGENTS.md\n  - name: missing\n    path: {}\n    tasks: {{enabled: true}}\n  - name: empty\n    path: {}\n    tasks: {{enabled: true}}\n  - name: disabled\n    path: {}\n    tasks: {{enabled: false}}\n  - name: index-only\n    path: {}\n",linked.0.display(),missing.0.display(),empty.0.display(),linked.0.display(),linked.0.display()));
     let sync = |workspace: &str| {
         tasks::manage(
             &root.0,

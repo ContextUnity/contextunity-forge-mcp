@@ -166,7 +166,38 @@ scope:
   - src/engine/tasks.rs
   - src/db/tasks_store.rs
   - tests/core_basics/tasks.rs
-status: planned
+status: completed
+receipt:
+  commit: ec913ac22f1ab69ec9784f87b1c5041f65ae2f06
+  contract_revision: 2
+  passed_at: "2026-10-02T12:58:45Z"
+  evidence:
+    test_proof:
+      command: cargo test --test core_basics && cargo test --test mcp_context && cargo clippy --all-targets --all-features -- -D warnings
+      exit_code: 0
+      tests_passed: 59
+      tests_failed: 0
+      log: core_basics 34 passed; mcp_context 25 passed; clippy zero warnings; focused guidance test passed after final fallback tweak
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Change is limited to task guidance engine/workspace logic and one domain seam test.
+        claims:
+          applicable: true
+          evidence: Real engine and SQLite test verifies agent_type, root and linked guidance paths, stage-specific claim and inspect guidance, and missing-file fallback.
+        concurrency:
+          applicable: true
+          evidence: Guidance names the accepted builder worker ID and requires a distinct independent review identity.
+        project_isolation:
+          applicable: true
+          evidence: Configured guidance paths are confined to each workspace root and linked workspace identity.
+        administration:
+          applicable: true
+          evidence: No old agents_md alias; canonical agents_guidance only. Core, MCP, and clippy checks passed.
+  decision: pass
 ```
 
 1. **Flexible `agent_type` Metadata**:

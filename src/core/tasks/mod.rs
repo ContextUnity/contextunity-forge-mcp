@@ -14,7 +14,7 @@ pub const GATES: [&str; 5] = [
     "contract/v1",
     "build/v1",
     "review/v1",
-    "handoff/v1",
+    "deliver/v1",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -46,6 +46,8 @@ pub enum Stage {
     Build,
     /// Represents the review case.
     Review,
+    /// Represents the deliver case.
+    Deliver,
 }
 impl Stage {
     /// Performs name.
@@ -53,6 +55,7 @@ impl Stage {
         match self {
             Self::Build => "build",
             Self::Review => "review",
+            Self::Deliver => "deliver",
         }
     }
 }
@@ -166,6 +169,7 @@ struct TaskSettings {
     #[serde(default = "default_repository")]
     task_repository: String,
     task_project: Option<String>,
+    agents_guidance: Option<String>,
     #[serde(default)]
     linked_workspaces: Vec<workspaces::LinkedConfig>,
 }
@@ -296,7 +300,7 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
             .context("failed to release claim after milestone activation error")?;
         return Err(error);
     }
-    workspace.envelope(store.inspect_details(&p.task_id)?)
+    workspace.guidance_envelope(store.inspect_details(&p.task_id)?)
 }
 /// Performs store for task.
 pub fn store_for_task(root: &Path, id: &str) -> Result<TasksStore> {
@@ -417,7 +421,7 @@ pub fn manage(root: &Path, p: Manage) -> Result<Value> {
             Ok(json!({"tasks":result}))
         }
         ManageAction::Inspect => {
-            workspace.envelope(store.inspect_details(id.context("task_id required")?)?)
+            workspace.guidance_envelope(store.inspect_details(id.context("task_id required")?)?)
         }
         ManageAction::Delete => Ok(serde_json::to_value(store.delete(
             id,
