@@ -33,6 +33,31 @@ pub struct Receipt {
     pub review: serde_json::Value,
     /// The decision value.
     pub decision: String,
+    /// Durable task context retained after the blackboard is pruned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollup: Option<ReceiptRollup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+/// Durable outcomes copied from the task store at delivery.
+pub struct ReceiptRollup {
+    /// Invariants admitted for the delivered task.
+    pub verified_invariants: Vec<String>,
+    /// Architectural notes authored on the task blackboard.
+    pub architectural_notes: Vec<String>,
+    /// Compact decision across the five review contours.
+    pub review_summary: ReviewSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+/// Accepted review decision and contour dispositions.
+pub struct ReviewSummary {
+    /// Overall independent review decision.
+    pub decision: String,
+    /// Each contour is accepted or not applicable.
+    pub contours: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

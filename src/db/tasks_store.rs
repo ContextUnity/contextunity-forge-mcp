@@ -188,7 +188,7 @@ impl TasksStore {
     /// Delete all transient messages for one task.
     pub fn blackboard_clear(&self, task_id: &str) -> Result<usize> {
         self.assert_id(task_id)?;
-        Ok(self.connection.execute("DELETE FROM task_blackboard WHERE task_id=?1", [task_id])?)
+        clear_blackboard(&self.connection, task_id)
     }
     /// Performs inspect.
     pub fn inspect(&self, id: &str) -> Result<Task> {
@@ -616,6 +616,9 @@ impl TasksStore {
         }
         Ok(deleted)
     }
+}
+pub(crate) fn clear_blackboard(connection: &Connection, task_id: &str) -> Result<usize> {
+    Ok(connection.execute("DELETE FROM task_blackboard WHERE task_id=?1", [task_id])?)
 }
 
 pub(crate) fn load(conn: &Connection, id: &str) -> Result<Option<Task>> {

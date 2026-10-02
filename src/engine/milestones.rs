@@ -3,7 +3,7 @@ use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
 use std::{fs::{self, OpenOptions}, io::Write, path::{Path, PathBuf}};
 use std::sync::atomic::{AtomicU64, Ordering};
-use crate::{db::tasks_store::{Task, TasksStore}, engine::tasks};
+use crate::{core::tasks::Receipt, db::tasks_store::{Task, TasksStore}, engine::tasks};
 
 /// Inputs for creating a milestone document.
 pub struct Init {
@@ -283,7 +283,31 @@ pub fn activate_on_claim(worktree: &Path, reference: &str, claimed_at: i64) -> R
     Ok(())
 }
 
-fn atomic_replace(path: &Path, contents: &[u8]) -> Result<()> {
+/// Replaces the YAML block for one task while preserving the surrounding milestone text.
+pub(crate) fn render_task_receipt(text: &str, task_ref: &str, receipt: &Receipt) -> Result<String> {
+    let mut block_start = None;
+    let mut cursor = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim() == "```yaml" {
+            block_start = Some(cursor + line.len());
+        } else if line.trim() == "```" {
+            if let Some(start) = block_start.take() {
+                let mut block: serde_yaml::Value = serde_yaml::from_str(&text[start..cursor])?;
+                if block["task_ref"].as_str() == Some(task_ref) {
+                    let map = block.as_mapping_mut().context("task block must be a mapping")?;
+                    map.insert("status".into(), "completed".into());
+                    map.insert("receipt".into(), serde_yaml::to_value(receipt)?);
+                    let yaml = serde_yaml::to_string(&block)?;
+                    return Ok(format!("{}{}{}", &text[..start], yaml, &text[cursor..]));
+                }
+            }
+        }
+        cursor += line.len();
+    }
+    bail!("TASK_RECEIPT_INVALID: task block not found")
+}
+
+pub(crate) fn atomic_replace(path: &Path, contents: &[u8]) -> Result<()> {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let name = path.file_name().context("milestone filename missing")?.to_string_lossy();
     let temp = path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), NEXT_TEMP.fetch_add(1, Ordering::Relaxed)));

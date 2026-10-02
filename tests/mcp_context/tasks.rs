@@ -103,7 +103,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         .iter()
         .enumerate()
     {
-        let worker = if gate == 3 { "reviewer" } else { "builder" };
+        let worker = match gate { 3 => "reviewer", 4 => "delivery-reviewer", _ => "builder" };
         let claim = if gate == 0 {
             claimed.clone()
         } else {
@@ -120,20 +120,6 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             &build_proof
         };
         let evidence = json!({"task_id":id,"stage":stage,"claim_revision":claim["claim_revision"],"contract_revision":1,"worker_id":worker,"worktree":linked.0,"commit":commit,"proof":proof});
-        if gate == 4 {
-            use contextunity_forge_mcp::core::tasks::{Milestone, Receipt};
-            let mut specification = Milestone::parse(manifest, "traverse").unwrap();
-            specification.tasks[0].status = Some("completed".into());
-            specification.tasks[0].receipt = Some(Receipt {
-                commit: commit.into(),
-                contract_revision: 1,
-                passed_at: "2026-10-02T00:00:00Z".into(),
-                evidence: build_proof.clone(),
-                review: review_proof.clone(),
-                decision: "pass".into(),
-            });
-            linked.write("docs/milestones/010-linked.md", &format!("---\nid: m-linked\ntitle: Linked\ndoc_type: contract\ninvariants: [local-rules]\n---\n```yaml\n{}```\n",serde_yaml::to_string(&specification.tasks[0]).unwrap()).replace('\n',"\r\n"));
-        }
         let result = client.payload(
             "task_submit",
             json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"}),
@@ -156,7 +142,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
 
 #[test]
 fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
-    use contextunity_forge_mcp::core::tasks::{gates::REVIEW_CONTOURS, Milestone, Receipt, GATES};
+    use contextunity_forge_mcp::core::tasks::{gates::REVIEW_CONTOURS, GATES};
     let builder = Workspace::new();
     let reviewer = Workspace::new();
     let source = "---\nid: m-handoff\ntitle: Handoff\ndoc_type: contract\n---\n```yaml\ntask_ref: delivery\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
@@ -206,7 +192,7 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
     let review_proof = json!({"review_proof":{"decision":"pass","contours":contours}});
     for (gate, stage) in GATES.iter().enumerate() {
         let workspace = if gate == 3 { &reviewer } else { &builder };
-        let worker = if gate == 3 { "reviewer" } else { "builder" };
+        let worker = match gate { 3 => "reviewer", 4 => "delivery-reviewer", _ => "builder" };
         let claim = client.payload(
             "task_claim",
             json!({"task_id":id,"stage":stage,"worker_id":worker,"worktree":workspace.0}),
@@ -232,27 +218,10 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
         }
         let args = json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"});
         if gate == 4 {
-            let (_, missing) = client.call("task_submit", args.clone());
-            assert_eq!(missing["result"]["isError"], true);
-            let mut milestone = Milestone::parse(source, "contextunity").unwrap();
-            milestone.project = "tooling".into();
-            milestone.tasks[0].status = Some("completed".into());
-            milestone.tasks[0].receipt = Some(Receipt {
-                commit: commit.into(),
-                contract_revision: 1,
-                passed_at: "2026-10-02T00:00:00Z".into(),
-                evidence: build_proof.clone(),
-                review: review_proof.clone(),
-                decision: "pass".into(),
-            });
-            builder.write(
-                "010-tasks.md",
-                &format!(
-                    "---\nid: m-handoff\ntitle: Handoff\ndoc_type: contract\n---\n```yaml\n{}```\n",
-                    serde_yaml::to_string(&milestone.tasks[0]).unwrap()
-                )
-                .replace('\n', "\r\n"),
-            );
+            builder.write("010-tasks.md", &source.replace("target: Deliver", "target: Unadmitted change").replace('\n', "\r\n"));
+            let (_, unadmitted) = client.call("task_submit", args.clone());
+            assert_eq!(unadmitted["result"]["isError"], true);
+            builder.write("010-tasks.md", &source.replace('\n', "\r\n"));
         }
         let submitted = client.payload("task_submit", args.clone());
         assert_eq!(

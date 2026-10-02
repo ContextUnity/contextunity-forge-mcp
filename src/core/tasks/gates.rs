@@ -1,5 +1,5 @@
-use super::{Milestone, Receipt, GATES};
-use crate::db::tasks_store::{check_stage, end_claim, load, now, save, Task, TasksStore};
+use super::{Milestone, Receipt, ReceiptRollup, ReviewSummary, GATES};
+use crate::db::tasks_store::{check_stage, clear_blackboard, end_claim, load, now, save, Task, TasksStore};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -142,6 +142,15 @@ fn validate_review_contours(
     Ok(())
 }
 
+fn review_summary(proof: &ReviewProof) -> ReviewSummary {
+    ReviewSummary {
+        decision: proof.decision.clone(),
+        contours: proof.contours.iter().map(|(name, contour)| {
+            (name.clone(), if contour.applicable { "accepted" } else { "not_applicable" }.into())
+        }).collect(),
+    }
+}
+
 impl TasksStore {
     /// Performs submit.
     pub fn submit(
@@ -163,6 +172,7 @@ impl TasksStore {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        let mut document_update = None;
         let retry: Option<String> = tx
             .query_row(
                 "SELECT result FROM task_submissions WHERE task_id=?1 AND revision=?2",
@@ -203,7 +213,7 @@ impl TasksStore {
         }
         if task.gate >= 3 {
             let builder: String = tx.query_row("SELECT json_extract(evidence,'$.worker_id') FROM task_gates WHERE task_id=?1 AND gate='build/v1' AND state='passed' ORDER BY revision DESC LIMIT 1",[id],|r|r.get(0))?;
-            if task.gate == 3 && builder == evidence.worker_id {
+            if builder == evidence.worker_id {
                 bail!("TASK_REVIEW_NOT_INDEPENDENT");
             }
             let build = accepted(&tx, id, "build/v1")?;
@@ -218,7 +228,7 @@ impl TasksStore {
                 "SELECT worktree FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0",
                 params![id, task.claim_revision], |row| row.get(0))?;
             let path = super::confined_path(Path::new(&claim_worktree), &task.milestone_ref)?;
-            let text = std::fs::read_to_string(path)?;
+            let text = std::fs::read_to_string(&path)?;
             let mut identity = id.split('/');
             let repository = identity.next().context("invalid task identity")?;
             let project = identity.next().context("invalid task identity")?;
@@ -228,16 +238,50 @@ impl TasksStore {
                 .iter()
                 .find(|s| milestone.task_id(s) == id)
                 .context("TASK_RECEIPT_INVALID: task not found")?;
-            if milestone.digest(spec)? != task.digest || spec.status.as_deref() != Some("completed")
-            {
+            if milestone.digest(spec)? != task.digest {
                 bail!("TASK_RECEIPT_INVALID: specification mismatch");
             }
-            let receipt = spec
-                .receipt
-                .as_ref()
-                .context("TASK_RECEIPT_INVALID: missing receipt")?;
-            validate_receipt(receipt, &task, &build, &review)?;
-            task.receipt = Some(receipt.clone());
+            let review_proof: ReviewProof = serde_json::from_value(
+                proof_payload(&review.proof, "review_proof")?.clone(),
+            )?;
+            let notes = tx.prepare(
+                "SELECT payload FROM task_blackboard WHERE task_id=?1 AND topic='architectural_notes' ORDER BY created_at,id",
+            )?.query_map([id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rollup = ReceiptRollup {
+                verified_invariants: task.applicable_invariants.clone(),
+                architectural_notes: notes,
+                review_summary: review_summary(&review_proof),
+            };
+            let generated = Receipt {
+                commit: build.commit.clone(),
+                contract_revision: task.contract_revision,
+                passed_at: chrono::Utc::now().to_rfc3339(),
+                evidence: build.proof.clone(),
+                review: review.proof.clone(),
+                decision: "pass".into(),
+                rollup: Some(rollup),
+            };
+            let receipt = match (spec.status.as_deref(), spec.receipt.as_ref()) {
+                (Some("completed"), Some(existing)) => {
+                    // The document may have been replaced immediately before a process crash.
+                    // Reuse only the exact accepted outcome, retaining its original timestamp.
+                    validate_receipt(existing, &task, &build, &review)?;
+                    if existing.rollup != generated.rollup {
+                        bail!("TASK_RECEIPT_INVALID: rollup differs from accepted task context");
+                    }
+                    existing.clone()
+                }
+                (Some("completed"), None) | (_, Some(_)) => {
+                    bail!("TASK_RECEIPT_INVALID: incomplete terminal receipt")
+                }
+                _ => generated,
+            };
+            validate_receipt(&receipt, &task, &build, &review)?;
+            let (_, task_ref) = id.rsplit_once(':').context("invalid task identity")?;
+            let written = crate::engine::milestones::render_task_receipt(&text, task_ref, &receipt)?;
+            document_update = Some((path, text, written));
+            task.receipt = Some(receipt);
             task.completed_at = Some(now());
             task.status = "completed".into();
         } else if action == "pass" {
@@ -284,7 +328,19 @@ impl TasksStore {
                 serde_json::to_string(&submission)?
             ],
         )?;
-        tx.commit()?;
+        if task.status == "completed" {
+            clear_blackboard(&tx, id)?;
+        }
+        if let Some((path, _, written)) = &document_update {
+            crate::engine::milestones::atomic_replace(path, written.as_bytes())?;
+        }
+        if let Err(error) = tx.commit() {
+            if let Some((path, original, _)) = &document_update {
+                crate::engine::milestones::atomic_replace(path, original.as_bytes())
+                    .context("failed to restore milestone document after SQLite commit error")?;
+            }
+            return Err(error.into());
+        }
         Ok(task)
     }
 }
@@ -317,6 +373,7 @@ fn validate_receipt(
         || receipt.review != review.proof
         || receipt.decision != "pass"
         || chrono::DateTime::parse_from_rfc3339(&receipt.passed_at).is_err()
+        || receipt.rollup.as_ref().is_some_and(|rollup| rollup.verified_invariants != task.applicable_invariants)
     {
         bail!("TASK_RECEIPT_INVALID: accepted proof mismatch");
     }
@@ -327,6 +384,16 @@ fn validate_receipt(
 pub fn validate_durable_receipt(receipt: &Receipt, revision: u64) -> Result<()> {
     validate_tests(&receipt.evidence, true)?;
     validate_review(&receipt.review, true)?;
+    if let Some(rollup) = &receipt.rollup {
+        let proof: ReviewProof = serde_json::from_value(
+            proof_payload(&receipt.review, "review_proof")?.clone(),
+        )?;
+        if rollup.review_summary != review_summary(&proof)
+            || rollup.verified_invariants.iter().any(|invariant| invariant.trim().is_empty())
+        {
+            bail!("TASK_RECEIPT_INVALID: malformed durable rollup");
+        }
+    }
     if !matches!(receipt.commit.len(), 40 | 64)
         || !receipt.commit.bytes().all(|c| c.is_ascii_hexdigit())
         || receipt.contract_revision != revision

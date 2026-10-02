@@ -99,7 +99,7 @@ task_ref: in-store-task-artifacts-and-evidence
 target: "Accept structured JSON evidence directly in MCP and CLI task_submit, and require the typed task proof standard without evidence files"
 agent_type: worker
 proof_policy: seam-test-first
-contract_revision: 3
+contract_revision: 1
 scope:
   - src/core/tasks/gates.rs
   - src/db/tasks_store.rs
@@ -111,7 +111,7 @@ scope:
 status: completed
 receipt:
   commit: 980f555fcf4d9c1136eb1e7d5889d4e53e1f9f1a
-  contract_revision: 3
+  contract_revision: 1
   passed_at: "2026-10-02T12:43:35Z"
   evidence:
     test_proof:
@@ -159,7 +159,7 @@ task_ref: task-agent-metadata-and-workflow-guidance
 target: "Add agent_type metadata to task specs, configurable guidance path in forge-mcp.yaml with missing file fallback, and dynamic workflow_guidance in claim and inspect responses"
 agent_type: worker
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 1
 scope:
   - src/core/tasks/mod.rs
   - src/engine/tasks/workspaces.rs
@@ -169,7 +169,7 @@ scope:
 status: completed
 receipt:
   commit: ec913ac22f1ab69ec9784f87b1c5041f65ae2f06
-  contract_revision: 2
+  contract_revision: 1
   passed_at: "2026-10-02T12:58:45Z"
   evidence:
     test_proof:
@@ -225,16 +225,68 @@ receipt:
 
 ```yaml
 task_ref: task-to-milestone-context-rollup
-target: "Automatically rollup durable task outcomes into milestone receipts and task descriptors upon completion"
+target: Automatically rollup durable task outcomes into milestone receipts and task descriptors upon completion
 agent_type: worker
 proof_policy: seam-test-first
 contract_revision: 1
 scope:
-  - src/engine/milestones.rs
-  - src/core/tasks/gates.rs
-  - src/db/tasks_store.rs
-  - tests/core_basics/tasks.rs
-status: planned
+- src/engine/milestones.rs
+- src/core/tasks/mod.rs
+- src/core/tasks/gates.rs
+- src/db/tasks_store.rs
+- tests/core_basics/tasks.rs
+- tests/mcp_context/tasks.rs
+status: completed
+receipt:
+  commit: 5694b2b881bca64409f0f49c272e6942d6c072da
+  contract_revision: 1
+  passed_at: 2026-10-02T13:25:49.598446728+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test core_basics && cargo test --test mcp_context && cargo clippy --all-targets --all-features -- -D warnings
+      exit_code: 0
+      tests_passed: 60
+      tests_failed: 0
+      log: core_basics 35 passed; mcp_context 25 passed; clippy zero warnings; terminal rollup and crash-retry seams passed
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Change matches admitted task4 scope: task receipt model, terminal gate, milestone YAML writer, store, and integration tests.'
+        claims:
+          applicable: true
+          evidence: Real SQLite and Markdown seam proves generated typed receipt with accepted commit, invariants, five-contour summary, and architectural notes.
+        concurrency:
+          applicable: true
+          evidence: Crash-retry path accepts only exact persisted receipt and keeps claim and blackboard on mismatch.
+        project_isolation:
+          applicable: true
+          evidence: Blackboard pruning deletes only completed task messages; sibling task messages remain.
+        administration:
+          applicable: true
+          evidence: Core 35 and MCP 25 tests passed; clippy zero warnings; no manual prewritten receipt required.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-TASK-BLACKBOARD: Subagents communicate task context and delivery state asynchronously through an in-memory/SQLite task blackboard rather than workspace-littering files or conversational context bloat.'
+    - 'INV-EPHEMERAL-SCRATCHPAD: Scratchpad blackboard messages are strictly task-scoped and pruned upon task completion, preventing context contamination across tasks.'
+    - 'INV-IN-STORE-ARTIFACTS: Task specifications, red test proofs, review contours, and receipts are stored directly inside SQLite tables (task_gates, task_blackboard, task_submissions) rather than arbitrary disk YAML/MD files.'
+    - 'INV-TASK-MILESTONE-ROLLUP: Completing a task automatically rolls up its verified commit SHA, invariant proofs, and durable architectural outcomes into the milestone descriptor and Markdown receipt, preserving vital context while discarding transient scratchpad noise.'
+    - 'INV-TASK-AGENT-METADATA: Tasks declare an optional agent_type metadata field, allowing milestone authors to prescribe the required agent specialization (e.g. worker, reviewer, pro, flash) for execution.'
+    - 'INV-CONFIGURABLE-WORKFLOW-GUIDANCE: Task claim and inspect responses dynamically provide actionable workflow guidance derived from the configured instructions file in forge-mcp.yaml (defaulting to AGENTS.md or docs/reference/acdd.md), enabling custom repositories to plug in their own instructions.'
+    - 'INV-PEER-REVIEWED-CONTRACT: A task contract must be verified and approved by an independent reviewer agent on the blackboard before implementation code may be claimed or authored.'
+    architectural_notes:
+    - Task delivery derives a typed receipt from accepted SQLite proofs, writes milestone YAML, and clears only task-scoped blackboard messages. Exact receipt retry recovers an interrupted cross-store commit.
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 1. **Rollup Mechanics**:
@@ -256,16 +308,23 @@ task_ref: blackboard-tooling-and-agent-routing
 target: "Expose blackboard operations via MCP tools, author reference and runbook documentation, and update Forge skills"
 agent_type: worker
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 1
 scope:
   - src/mcp/tools.rs
   - src/cli/task.rs
+  - README.md
   - docs/reference/acdd.md
   - docs/runbooks/acdd.md
   - docs/reference/tasks.md
+  - docs/reference/mcp-tools.md
+  - docs/reference/cli.md
+  - docs/reference/configuration.md
+  - docs/reference/README.md
+  - docs/README.md
   - AGENTS.md
   - .agents/skills/contextunity-forge/SKILL.md
   - tests/core_basics/tasks.rs
+  - tests/mcp_context/tasks.rs
 status: planned
 ```
 
