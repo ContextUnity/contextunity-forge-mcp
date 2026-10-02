@@ -47,10 +47,51 @@ impl<'a> PythonReceivers<'a> {
             .collect();
         let mut bases: HashMap<&str, Vec<Base<'a>>> = HashMap::new();
         let mut own: HashMap<&str, HashMap<&str, Member<'a>>> = HashMap::new();
-        let class_names: HashMap<(&str, &str), &Node> = classes
-            .values()
-            .map(|class| ((class.path.as_str(), class.qualname.as_str()), *class))
-            .collect();
+        let mut class_names: HashMap<(&str, &str), Vec<&'a Node>> = HashMap::new();
+        for class in classes.values() {
+            class_names
+                .entry((class.path.as_str(), class.qualname.as_str()))
+                .or_default()
+                .push(*class);
+        }
+        let find_class = |path: &str, qualname: &str, child: &Node| -> Option<&'a Node> {
+            let candidates = class_names.get(&(path, qualname))?;
+            if candidates.len() == 1 {
+                return Some(candidates[0]);
+            }
+            if let Some(enclosing) = candidates
+                .iter()
+                .find(|class| class.line <= child.line && child.end_line <= class.end_line)
+            {
+                return Some(*enclosing);
+            }
+            let child_is_stub = child
+                .details
+                .get("is_stub")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || child
+                    .details
+                    .get("is_overload")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+            if let Some(matching) = candidates.iter().find(|class| {
+                let class_is_stub = class
+                    .details
+                    .get("is_stub")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                    || class
+                        .details
+                        .get("is_overload")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                class_is_stub == child_is_stub
+            }) {
+                return Some(*matching);
+            }
+            candidates.first().copied()
+        };
         let mut owner_classes = HashMap::new();
         for facts in all.values() {
             let facts = facts.as_ref();
@@ -66,7 +107,7 @@ impl<'a> PythonReceivers<'a> {
                     continue;
                 }
                 if let Some((parent, _)) = node.qualname.rsplit_once('.') {
-                    if let Some(class) = class_names.get(&(node.path.as_str(), parent)) {
+                    if let Some(class) = find_class(node.path.as_str(), parent, node) {
                         let members = own.entry(class.id.as_str()).or_default();
                         match members.get(node.name.as_str()) {
                             None => {
@@ -123,8 +164,8 @@ impl<'a> PythonReceivers<'a> {
                     }
                     let mut scope = parent;
                     while !scope.is_empty() {
-                        if let Some(class) = class_names.get(&(node.path.as_str(), scope)) {
-                            owner_classes.insert(node.id.as_str(), *class);
+                        if let Some(class) = find_class(node.path.as_str(), scope, node) {
+                            owner_classes.insert(node.id.as_str(), class);
                             break;
                         }
                         scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);

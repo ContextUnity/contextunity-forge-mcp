@@ -121,7 +121,7 @@ impl Drop for Client {
 }
 
 fn wait_for_source_inventory_ttl() {
-    std::thread::sleep(Duration::from_millis(2100));
+    std::thread::sleep(Duration::from_millis(5100));
 }
 
 #[test]
@@ -447,7 +447,7 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
         json!({"pattern":"symbol_*","kind":"function"}),
     );
     let generation = initial["nodes"]["generation"].as_str().unwrap();
-    assert_eq!(generation.len(), 64);
+    assert_eq!(generation.len(), 8);
     assert_eq!(initial["nodes"]["limit"], 30);
     assert_eq!(initial["nodes"]["items"].as_array().unwrap().len(), 30);
     assert_eq!(initial["nodes"]["total"], 125);
@@ -455,7 +455,7 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
     assert_eq!(next["nodes"]["items"].as_array().unwrap().len(), 95);
     assert_eq!(next["nodes"]["has_more"], false);
     let mut colliding_prefix = generation.to_owned();
-    colliding_prefix.replace_range(8..9, if &generation[8..9] == "0" { "1" } else { "0" });
+    colliding_prefix.replace_range(0..1, if &generation[0..1] == "0" { "1" } else { "0" });
     let (_, stale_prefix) = client.call(
         "code_map_search",
         json!({"pattern":"symbol_*","limit":100,"offset":30,"generation":colliding_prefix}),
@@ -542,31 +542,8 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
 }
 
 #[cfg(feature = "lang-python")]
-#[test]
-fn stdio_ast_pages_do_not_repeat_or_skip_matches() {
-    let workspace = Workspace::new();
-    workspace.write(
-        "service.py",
-        &(0..75).map(|i| format!("print({i})\n")).collect::<String>(),
-    );
-    let mut client = Client::new(&workspace);
-    let mut offset = 0;
-    let mut generation = Value::Null;
-    let mut lines = Vec::new();
-    loop {
-        let payload = client.payload("ast_grep_search", json!({"pattern":"print($VALUE)","language":"python","limit":30,"offset":offset,"generation":generation}));
-        let page = &payload["matches"];
-        let items = page["items"].as_array().unwrap();
-        lines.extend(items.iter().map(|item| item["line"].as_u64().unwrap()));
-        if page["has_more"] == false {
-            assert_eq!(page["total"], 75);
-            break;
-        }
-        offset = page["next_offset"].as_u64().unwrap();
-        generation = page["generation"].clone();
-    }
-    assert_eq!(lines, (1..=75).collect::<Vec<_>>());
-}
+#[path = "mcp_context/ast_search.rs"]
+mod ast_search;
 
 #[cfg(feature = "lang-python")]
 #[test]
@@ -641,7 +618,10 @@ fn repair_ast_byte_pruning_keeps_earlier_horizon_continuation_usable() {
 #[test]
 fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
     let workspace = Workspace::new();
-    workspace.write("service.py", &format!("f({})\n", vec!["0"; 400].join(",")));
+    workspace.write(
+        "service.py",
+        &format!("f({})\nmissing = 0\n", vec!["0"; 400].join(",")),
+    );
     let mut client = Client::new(&workspace);
     let started = std::time::Instant::now();
     let payload = client.payload(

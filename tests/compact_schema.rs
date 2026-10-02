@@ -7,6 +7,8 @@ use rusqlite::{params, Connection};
 
 #[test]
 fn compact_graph_tables_keep_text_views_and_hide_storage_hashes() -> Result<()> {
+    #[cfg(feature = "lang-rust")]
+    assert_built_shared_keys_survive_node_mutations()?;
     let conn = Connection::open_in_memory()?;
     conn.execute_batch(SCHEMA_DDL)?;
 
@@ -155,5 +157,84 @@ fn compact_graph_tables_keep_text_views_and_hide_storage_hashes() -> Result<()> 
         |row| row.get(0),
     )?;
     assert_eq!(removed_indexes, 0);
+    Ok(())
+}
+
+#[cfg(feature = "lang-rust")]
+fn assert_built_shared_keys_survive_node_mutations() -> Result<()> {
+    struct Workspace(std::path::PathBuf);
+    impl Drop for Workspace {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let workspace = Workspace(
+        std::env::temp_dir().join(format!("forge_shared_keys_{}_{nonce}", std::process::id())),
+    );
+    let source = workspace.0.join("source");
+    std::fs::create_dir_all(&source)?;
+    std::fs::write(source.join("provider.rs"), "pub fn exported() {}\n")?;
+    std::fs::write(
+        source.join("consumer.rs"),
+        "use crate::provider::exported;\npub fn consume() { exported(); }\n",
+    )?;
+    for mutation in ["qualname", "node_id", "delete"] {
+        let db = workspace.0.join(format!("{mutation}.sqlite"));
+        contextunity_forge_mcp::db::writer::build(&source, &db, None)?;
+        let conn = Connection::open(&db)?;
+        let (hash, node_id, original): (i64, i64, String) = conn.query_row(
+            "SELECT k.key_hash,n.node_id,n.qualname FROM shared_keys_raw k JOIN nodes n ON typeof(k.key)='integer' AND n.node_id=k.key ORDER BY n.node_id LIMIT 1",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        conn.execute("INSERT INTO shared_owners_raw VALUES(1,?1,(SELECT path_id FROM path_dictionary WHERE path='consumer.rs'),999)", [hash])?;
+        match mutation {
+            "qualname" => {
+                conn.execute(
+                    "UPDATE nodes SET qualname='changed' WHERE node_id=?1",
+                    [node_id],
+                )?;
+            }
+            "node_id" => {
+                conn.execute(
+                    "UPDATE nodes SET node_id=node_id+10000 WHERE node_id=?1",
+                    [node_id],
+                )?;
+            }
+            _ => {
+                conn.execute("DELETE FROM nodes WHERE node_id=?1", [node_id])?;
+            }
+        }
+        let retained: String = conn.query_row("SELECT key FROM shared_owners WHERE kind='reference' AND owner='consumer.rs' AND ordinal=999", [], |row| row.get(0))?;
+        assert_eq!(
+            retained, original,
+            "{mutation} preserves another owner's logical key"
+        );
+        for (literal, numeric) in [("42", 42_i64), ("007", 7_i64)] {
+            let hash = stable_hash64(literal);
+            conn.execute(
+                "INSERT INTO shared_keys(key_hash,key) VALUES(?1,?2)",
+                params![hash, literal],
+            )?;
+            let actual: String = conn.query_row(
+                "SELECT key FROM shared_keys WHERE key_hash=?1",
+                [hash],
+                |row| row.get(0),
+            )?;
+            assert_eq!(actual, literal);
+            conn.execute(
+                "UPDATE shared_keys SET key=?1 WHERE key_hash=?2",
+                params![numeric, hash],
+            )?;
+            let actual: String = conn.query_row(
+                "SELECT key FROM shared_keys WHERE key_hash=?1",
+                [hash],
+                |row| row.get(0),
+            )?;
+            assert_eq!(actual, numeric.to_string());
+        }
+    }
     Ok(())
 }

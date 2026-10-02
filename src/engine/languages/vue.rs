@@ -50,7 +50,7 @@ impl LanguageProfile for Vue {
         typescript::TYPESCRIPT.external_import(module)
     }
     fn builtin(&self, name: &str) -> bool {
-        typescript::TYPESCRIPT.builtin(name) || compiler_macro(name)
+        typescript::TYPESCRIPT.builtin(name) || compiler_macro(name) || runtime_builtin(name)
     }
     fn builtin_type(&self, name: &str) -> bool {
         typescript::TYPESCRIPT.builtin_type(name)
@@ -113,11 +113,13 @@ fn extract_file_impl(
         if is_setup_script_tag(tag) && script_setup_ranges.len() < 128 {
             let absolute_start = base + opening;
             let absolute_end = absolute_start + script.len();
+            let start = source_position(source, absolute_start);
+            let end = source_position(source, absolute_end);
             script_setup_ranges.push(serde_json::json!({
-                "start_line": source_position(source, absolute_start).line,
-                "start_column": source_position(source, absolute_start).column,
-                "end_line": source_position(source, absolute_end).line,
-                "end_column": source_position(source, absolute_end).column,
+                "start_line": start.line,
+                "start_column": start.column,
+                "end_line": end.line,
+                "end_column": end.column,
             }));
         } else if is_setup_script_tag(tag) {
             script_setup_ranges_overflowed = true;
@@ -169,11 +171,13 @@ fn extract_file_impl(
         .iter_mut()
         .find(|node| node.kind == "module" && node.path == path)
     {
-        module_node.details["vue_script_setup"] = serde_json::Value::Array(if script_setup_ranges_overflowed {
-            Vec::new()
-        } else {
-            script_setup_ranges
-        });
+        module_node.details["vue_script_setup"] = serde_json::Value::Array(
+            if script_setup_ranges_overflowed {
+                Vec::new()
+            } else {
+                script_setup_ranges
+            },
+        );
     }
 
     template::extract(path, source, module, facts)?;
@@ -204,7 +208,7 @@ fn is_setup_script_tag(tag: &str) -> bool {
     if !boundary.is_ascii_whitespace() && boundary != b'>' {
         return false;
     }
-    let Some(attributes) = bytes.get(prefix.len()..bytes.len().saturating_sub(1)) else {
+    let Some(attributes) = bytes.get(prefix.len()..bytes.len() - 1) else {
         return false;
     };
     if bytes.last() != Some(&b'>') {
@@ -215,7 +219,9 @@ fn is_setup_script_tag(tag: &str) -> bool {
     let mut source = false;
     let mut index = 0;
     while index < attributes.len() {
-        while index < attributes.len() && (attributes[index].is_ascii_whitespace() || attributes[index] == b'/') {
+        while index < attributes.len()
+            && (attributes[index].is_ascii_whitespace() || attributes[index] == b'/')
+        {
             index += 1;
         }
         let name_start = index;
@@ -243,14 +249,12 @@ fn is_setup_script_tag(tag: &str) -> bool {
             }
             if let Some(quote @ (b'\'' | b'"')) = attributes.get(index).copied() {
                 index += 1;
-                let value_start = index;
                 while index < attributes.len() && attributes[index] != quote {
                     index += 1;
                 }
                 if index == attributes.len() {
                     return false;
                 }
-                let _value = &attributes[value_start..index];
                 index += 1;
             } else {
                 while index < attributes.len() && !attributes[index].is_ascii_whitespace() {
@@ -275,6 +279,35 @@ pub(crate) fn compiler_macro(name: &str) -> bool {
     )
 }
 
+fn runtime_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "ref"
+            | "computed"
+            | "reactive"
+            | "shallowRef"
+            | "shallowReactive"
+            | "toRef"
+            | "toRefs"
+            | "unref"
+            | "isRef"
+            | "watch"
+            | "watchEffect"
+            | "onMounted"
+            | "onUnmounted"
+            | "onUpdated"
+            | "onBeforeMount"
+            | "onBeforeUnmount"
+            | "nextTick"
+            | "inject"
+            | "provide"
+            | "useSlots"
+            | "useAttrs"
+            | "useI18n"
+            | "t"
+    )
+}
+
 pub(crate) fn admits_macro(
     module: &crate::core::models::Node,
     at: crate::core::semantic::SourcePosition,
@@ -294,14 +327,17 @@ pub(crate) fn admits_macro(
         line: at.line,
         column: at.column,
     };
-    let parsed: Option<Vec<(Position, Position)>> = ranges.iter().map(|range| {
-        let object = range.as_object()?;
+    let mut admitted = false;
+    for range in ranges {
+        let Some(object) = range.as_object() else {
+            return false;
+        };
         if object.len() != 4
             || !["start_line", "start_column", "end_line", "end_column"]
                 .iter()
                 .all(|key| object.contains_key(*key))
         {
-            return None;
+            return false;
         }
         let coordinate = |key: &str| {
             object
@@ -315,7 +351,7 @@ pub(crate) fn admits_macro(
             coordinate("end_line"),
             coordinate("end_column"),
         ) else {
-            return None;
+            return false;
         };
         let start = Position {
             line: start_line,
@@ -325,9 +361,12 @@ pub(crate) fn admits_macro(
             line: end_line,
             column: end_column,
         };
-        (start < end).then_some((start, end))
-    }).collect();
-    parsed.is_some_and(|ranges| ranges.iter().any(|(start, end)| at >= *start && at < *end))
+        if start >= end {
+            return false;
+        }
+        admitted |= at >= start && at < end;
+    }
+    admitted
 }
 
 pub(crate) fn extract_typed(

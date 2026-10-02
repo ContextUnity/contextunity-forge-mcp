@@ -1007,9 +1007,16 @@ impl<'a> ValueFlowIndex<'a> {
                 } else if owner.language == "rust" {
                     let callee_clean = callee.replace("::", ".");
                     if let Some((receiver, member)) = callee_clean.rsplit_once('.') {
-                        if matches!(member, "new" | "default" | "open" | "create" | "build" | "from_str" | "parse") {
-                            let type_sym = resolver.resolve_symbol(owner, receiver, at, SymbolRole::Type);
-                            if let Symbol::Type(target @ (TypeTarget::Local(_) | TypeTarget::External { .. })) = type_sym {
+                        if matches!(
+                            member,
+                            "new" | "default" | "open" | "create" | "build" | "from_str" | "parse"
+                        ) {
+                            let type_sym =
+                                resolver.resolve_symbol(owner, receiver, at, SymbolRole::Type);
+                            if let Symbol::Type(
+                                target @ (TypeTarget::Local(_) | TypeTarget::External { .. }),
+                            ) = type_sym
+                            {
                                 return target;
                             }
                         }

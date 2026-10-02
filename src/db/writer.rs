@@ -1,7 +1,7 @@
 use crate::core::models::compact_graph::{
     Coverage as CompactCoverage, Edge as CompactEdge, Graph as CompactGraph,
 };
-use crate::core::typed_facts::TypedFacts;
+use crate::core::typed_facts::{decode_facts, encode_facts, TypedFacts};
 use crate::engine::languages::module_name;
 use crate::{
     core::{commitments, models::*, schema::SCHEMA_DDL},
@@ -199,8 +199,10 @@ fn populate(
         [],
     )
     .ok();
+    cached(&tx, "DELETE FROM shared_keys_raw", [])?;
     for table in commitments::DOMAINS {
         let storage_table = match *table {
+            "nodes" => "nodes_data",
             "resolution_coverage" => "resolution_coverage_data",
             "edges" => "edges_raw",
             "edge_occurrences" => "edge_occurrences_raw",
@@ -214,9 +216,8 @@ fn populate(
         cached(&tx, &format!("DELETE FROM {storage_table}"), [])?;
     }
     cached(&tx, "DELETE FROM node_owner_overrides", [])?;
-    cached(&tx, "DELETE FROM shared_keys", [])?;
     cached(&tx, "DELETE FROM path_dictionary", [])?;
-    cached(&tx, "DELETE FROM domain_commitments", [])?;
+    cached(&tx, "DELETE FROM domain_commitments_raw", [])?;
     cached(&tx, "DELETE FROM coverage_evidence", [])?;
     cached(&tx, "DELETE FROM coverage_expressions", [])?;
     for (k, v) in [
@@ -271,16 +272,9 @@ fn populate(
     let bulk_paths_ms = t_bulk.elapsed().as_secs_f64() * 1000.;
 
     let t_files = Instant::now();
-    let (node_id, docs_count) =
+    let (node_id, docs_count, fts_insert_ms) =
         persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
-    let persist_files_ms = t_files.elapsed().as_secs_f64() * 1000.;
-
-    let t_fts = Instant::now();
-    tx.execute(
-        "INSERT INTO node_search(rowid,search_text) SELECT node_id,search_text FROM owned_search_raw",
-        [],
-    )?;
-    let fts_insert_ms = t_fts.elapsed().as_secs_f64() * 1000.;
+    let persist_files_ms = t_files.elapsed().as_secs_f64() * 1000. - fts_insert_ms;
 
     let t_doc_fts = Instant::now();
     if docs_count > 0 {
@@ -300,17 +294,30 @@ fn populate(
     let file_commitments_ms = t_fcomm.elapsed().as_secs_f64() * 1000.;
 
     let rows_ms = writing.elapsed().as_secs_f64() * 1000.;
-    let indexing = Instant::now();
-    tx.execute_batch(&format!("CREATE INDEX{indexes}"))?;
-    let indexes_ms = indexing.elapsed().as_secs_f64() * 1000.;
-    let persist_ms = writing.elapsed().as_secs_f64() * 1000.;
-    let sealing = Instant::now();
-    let seal = commitments::seal(&tx)?;
-    let seal_ms = sealing.elapsed().as_secs_f64() * 1000.;
     tx.commit()?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+    let index_and_seal = Instant::now();
+    let index_sql = format!("CREATE INDEX{indexes}");
+    let index_candidate = |conn: &mut Connection| -> Result<f64> {
+        let started = Instant::now();
+        conn.execute_batch("PRAGMA cache_size=-262144; PRAGMA temp_store=MEMORY;")?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(&index_sql)?;
+        tx.commit()?;
+        conn.execute_batch(&format!("PRAGMA cache_size=-{cache_kb};"))?;
+        Ok(started.elapsed().as_secs_f64() * 1000.)
+    };
+    let indexes_ms = index_candidate(conn)?;
+    let started = Instant::now();
+    let seal = commitments::seal_snapshot(conn)?;
+    let seal_ms = started.elapsed().as_secs_f64() * 1000.;
+    let index_and_seal_ms = index_and_seal.elapsed().as_secs_f64() * 1000.;
+    let persist_ms = writing.elapsed().as_secs_f64() * 1000.;
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     let mut report = json!({"files":entries.len(),"nodes":node_id,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"doc_fts_insert_ms":doc_fts_insert_ms,"persist_graph_ms":persist_graph_ms,"file_commitments_ms":file_commitments_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms});
     report["graph_phases_ms"] = json!({"occurrences_and_dependencies":graph_timings.occurrences,"unique_edges":graph_timings.edges,"coverage_dictionaries":graph_timings.dictionaries,"coverage_and_unresolved":graph_timings.coverage});
+    report["index_and_seal_ms"] = json!(index_and_seal_ms);
     Ok(report)
 }
 fn components(facts: &mut BTreeMap<String, TypedFacts>) {
@@ -753,7 +760,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let mut affected = modified.clone();
     {
         let mut st = admitted.prepare(
-            "SELECT owner FROM dependencies WHERE target IN(SELECT value FROM json_each(?1))",
+            "SELECT p.path FROM dependencies_raw d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.target_hash IN(SELECT path_hash FROM files WHERE path IN(SELECT value FROM json_each(?1)))",
         )?;
         for owner in st.query_map([&encoded], |r| r.get::<_, String>(0))? {
             affected.insert(owner?);
@@ -1070,7 +1077,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let graph_writing = Instant::now();
     persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, false)?;
     tx.execute(
-        "DELETE FROM coverage_evidence WHERE evidence_id NOT IN(SELECT evidence_id FROM resolution_coverage_data)",
+        "DELETE FROM coverage_evidence WHERE evidence_id NOT IN(SELECT evidence_id FROM resolution_coverage_data UNION SELECT evidence FROM edges_raw WHERE typeof(evidence)='integer' UNION SELECT confidence FROM edges_raw WHERE typeof(confidence)='integer' UNION SELECT evidence FROM edge_occurrences_raw WHERE typeof(evidence)='integer' UNION SELECT confidence FROM edge_occurrences_raw WHERE typeof(confidence)='integer')",
         [],
     )?;
     let graph_ms = graph_writing.elapsed().as_secs_f64() * 1000.;
@@ -1167,42 +1174,23 @@ fn resolution_identity_changed(conn: &Connection, path: &str, facts: &TypedFacts
         object.insert("details".into(), contracts.details(node));
         Ok(serde_json::to_string(&value)?)
     }
-    let mut statement = conn.prepare_cached(
-        "SELECT public_id,kind,name,qualname,path,line,end_line,is_test,language,generated,details_json FROM owned_nodes WHERE owner=?1",
-    )?;
-    let rows = statement.query_map([path], |row| {
-        Ok((
-            Node {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                name: row.get(2)?,
-                qualname: row.get(3)?,
-                path: row.get(4)?,
-                line: row.get(5)?,
-                end_line: row.get(6)?,
-                is_test: row.get(7)?,
-                language: row.get(8)?,
-                generated: row.get(9)?,
-                details: Value::Null,
-            },
-            row.get::<_, String>(10)?,
-        ))
-    })?;
-    let mut old_facts = Facts::default();
-    for row in rows {
-        let (mut node, details) = row?;
-        if node.kind == "component" {
-            continue;
-        }
-        node.details = serde_json::from_str(&details)?;
-        old_facts.nodes.push(node);
-    }
-    let old_facts = TypedFacts::from_public(old_facts);
+    let old_blob: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT facts_blob FROM local_facts WHERE path=?1",
+            [path],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(old_blob) = old_blob else {
+        return Ok(true);
+    };
+    let old_facts = decode_facts(&old_blob)?;
     let old_contracts = crate::engine::linker::contracts::Contracts::new_typed(&old_facts);
     let new_contracts = crate::engine::linker::contracts::Contracts::new_typed(facts);
     let old = old_facts
         .nodes
         .iter()
+        .filter(|node| node.kind != "component")
         .map(|node| identity(node, &old_contracts))
         .collect::<Result<BTreeSet<_>>>()?;
     let new = facts
@@ -1230,7 +1218,7 @@ fn reference_identity_changed(conn: &Connection, path: &str, facts: &TypedFacts)
 fn delete_file(tx: &Connection, path_cache: &mut PathDictionaryCache, path: &str) -> Result<()> {
     let owner_id = path_cache.get_or_insert(tx, path)?;
     let mut stmt = tx.prepare_cached(
-        "SELECT n.node_id,s.search_text FROM nodes n JOIN owned_search_raw s ON s.node_id=n.node_id JOIN owned_nodes o ON o.public_id=n.id WHERE o.owner=?1"
+        "SELECT n.node_id,s.search_text FROM owned_search s JOIN nodes n ON n.id=s.public_id WHERE s.owner=?1"
     )?;
     let old: Vec<(i64, String)> = stmt
         .query_map([path], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -1246,7 +1234,12 @@ fn delete_file(tx: &Connection, path_cache: &mut PathDictionaryCache, path: &str
     cached(tx,"INSERT INTO doc_search(doc_search,rowid,section_title,content,invariants)SELECT 'delete',rowid,section_title,content,invariants FROM doc_sections WHERE path=?1",[path])?;
     cached(
         tx,
-        "DELETE FROM nodes WHERE id IN(SELECT public_id FROM owned_nodes WHERE owner=?1)",
+        "UPDATE shared_keys_raw SET key=(SELECT qualname FROM nodes_data WHERE node_id=shared_keys_raw.key) WHERE typeof(key)='integer' AND key IN(SELECT n.node_id FROM nodes n JOIN owned_nodes o ON o.public_id=n.id WHERE o.owner=?1)",
+        [path],
+    )?;
+    cached(
+        tx,
+        "DELETE FROM nodes_data WHERE id IN(SELECT public_id FROM owned_nodes WHERE owner=?1)",
         [path],
     )?;
     for (table, column) in [
@@ -1305,16 +1298,30 @@ impl PathDictionaryCache {
         conn: &Connection,
         paths: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Result<()> {
-        let mut seen = hashbrown::HashSet::new();
-        let mut stmt_insert =
-            conn.prepare_cached("INSERT OR IGNORE INTO path_dictionary(path) VALUES(?1)")?;
+        self.load_from_db(conn)?;
+        let mut next_id: i64 = conn.query_row(
+            "SELECT coalesce(max(path_id),0) FROM path_dictionary",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut batch = MultiValueBatch::<2, BorrowedSqlValue<'_>>::new(
+            conn,
+            "INSERT INTO path_dictionary(path_id,path) VALUES",
+        )?;
         for p in paths {
             let path_ref = p.as_ref();
-            if !self.cache.contains_key(path_ref) && seen.insert(path_ref.to_owned()) {
-                stmt_insert.execute([path_ref])?;
+            if !self.cache.contains_key(path_ref) {
+                next_id = next_id
+                    .checked_add(1)
+                    .context("path dictionary ID overflow")?;
+                self.cache.insert(path_ref.to_owned(), next_id);
+                batch.push([
+                    BorrowedSqlValue::Integer(next_id),
+                    BorrowedSqlValue::OwnedText(path_ref.to_owned()),
+                ])?;
             }
         }
-        self.load_from_db(conn)?;
+        batch.flush()?;
         Ok(())
     }
 
@@ -1346,7 +1353,8 @@ pub struct SharedKeyCache<'conn> {
 
 impl<'conn> SharedKeyCache<'conn> {
     pub fn new(conn: &'conn Connection, is_delta: bool) -> Result<Self> {
-        let stmt_insert = conn.prepare("INSERT INTO shared_keys(key_hash,key) VALUES(?1,?2)")?;
+        let stmt_insert =
+            conn.prepare("INSERT INTO shared_keys_raw(key_hash,key) VALUES(?1,?2)")?;
         let stmt_select = if is_delta {
             Some(conn.prepare("SELECT key FROM shared_keys WHERE key_hash=?1")?)
         } else {
@@ -1365,7 +1373,7 @@ impl<'conn> SharedKeyCache<'conn> {
         let mut cache = Self::new(conn, false)?;
         cache.pending = Some(MultiValueBatch::new(
             conn,
-            "INSERT INTO shared_keys(key_hash,key) VALUES",
+            "INSERT INTO shared_keys_raw(key_hash,key) VALUES",
         )?);
         Ok(cache)
     }
@@ -1378,6 +1386,14 @@ impl<'conn> SharedKeyCache<'conn> {
     }
 
     pub fn get_or_insert(&mut self, key: &str) -> Result<i64> {
+        self.get_or_insert_value(key, None)
+    }
+
+    fn get_or_insert_node(&mut self, key: &str, node_id: i64) -> Result<i64> {
+        self.get_or_insert_value(key, Some(node_id))
+    }
+
+    fn get_or_insert_value(&mut self, key: &str, node_id: Option<i64>) -> Result<i64> {
         if let Some(&hash) = self.cache.get(key) {
             return Ok(hash);
         }
@@ -1404,10 +1420,17 @@ impl<'conn> SharedKeyCache<'conn> {
             if let Some(batch) = self.pending.as_mut() {
                 batch.push([
                     BorrowedSqlValue::Integer(hash),
-                    BorrowedSqlValue::SharedText(Arc::clone(&shared_key)),
+                    node_id.map_or_else(
+                        || BorrowedSqlValue::SharedText(Arc::clone(&shared_key)),
+                        BorrowedSqlValue::Integer,
+                    ),
                 ])?;
             } else {
-                self.stmt_insert.execute(params![hash, key])?;
+                if let Some(node_id) = node_id {
+                    self.stmt_insert.execute(params![hash, node_id])?;
+                } else {
+                    self.stmt_insert.execute(params![hash, key])?;
+                }
             }
             self.cache.insert(Arc::clone(&shared_key), hash);
             self.hash_to_key.insert(hash, shared_key);
@@ -1425,14 +1448,30 @@ impl<'conn> SharedKeyCache<'conn> {
 
 fn prefill_coverage_dictionary<'a>(
     conn: &Connection,
+    table: &str,
+    column: &str,
     prefix: &'static str,
     values: impl Iterator<Item = &'a str>,
 ) -> Result<hashbrown::HashMap<&'a str, i64>> {
     let mut cache = hashbrown::HashMap::new();
     let mut batch = MultiValueBatch::<2, BorrowedSqlValue<'_>>::new(conn, prefix)?;
-    let mut next_id = 1_i64;
+    let stored: hashbrown::HashMap<String, i64> = conn
+        .prepare_cached(&format!("SELECT {column}_id,{column} FROM {table}"))?
+        .query_map([], |row| Ok((row.get(1)?, row.get(0)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut next_id = stored
+        .values()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .context("dictionary ID overflow")?;
     for value in values {
         if let hashbrown::hash_map::Entry::Vacant(entry) = cache.entry(value) {
+            if let Some(id) = stored.get(value) {
+                entry.insert(*id);
+                continue;
+            }
             entry.insert(next_id);
             batch.push([
                 BorrowedSqlValue::Integer(next_id),
@@ -1505,16 +1544,6 @@ impl<'conn> CoverageEvidenceCache<'conn> {
         self.cache.insert(evidence.to_owned(), id);
         Ok(id)
     }
-}
-
-fn encode_facts(facts: &TypedFacts) -> Result<Vec<u8>> {
-    let json = serde_json::to_vec(facts)?;
-    Ok(zstd::stream::encode_all(json.as_slice(), 1)?)
-}
-
-fn decode_facts(blob: &[u8]) -> Result<TypedFacts> {
-    let json = zstd::stream::decode_all(blob)?;
-    Ok(serde_json::from_slice(&json)?)
 }
 
 fn multi_value_batch_rows<const COLUMNS: usize>(conn: &Connection) -> Result<usize> {
@@ -1604,7 +1633,7 @@ fn persist_files(
     facts: &BTreeMap<String, TypedFacts>,
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
     bulk_search: bool,
-) -> Result<(i64, usize)> {
+) -> Result<(i64, usize, f64)> {
     let mut node_id: i64 = tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
         r.get(0)
     })?;
@@ -1620,7 +1649,9 @@ fn persist_files(
         .then(|| tx.prepare("INSERT INTO local_facts VALUES(?1,?2,?3,?4,0,?5)"))
         .transpose()?;
     let mut stmt_nodes = (!bulk_search)
-        .then(|| tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"))
+        .then(|| {
+            tx.prepare("INSERT INTO nodes_data VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")
+        })
         .transpose()?;
     let mut stmt_owner_override = tx.prepare("INSERT INTO node_owner_overrides VALUES(?1,?2)")?;
     let mut stmt_owned_search = (!bulk_search)
@@ -1671,9 +1702,11 @@ fn persist_files(
     let mut file_batch = Vec::<[SqlValue; 8]>::new();
     let mut node_batch = Vec::<[BorrowedSqlValue<'_>; 13]>::new();
     let mut reusable_detail_buffers = Vec::<Vec<u8>>::new();
-    let mut owned_search_batch = Vec::<[SqlValue; 2]>::new();
+    let mut owned_search_batch = Vec::<SearchRow>::new();
+    let mut fts_insert_ms = 0.0;
     let mut reusable_search_buffers = Vec::<String>::new();
     let mut incremental_search_buffer = String::new();
+    let mut shared_owner_rows = Vec::<[i64; 4]>::new();
     let (file_batch_rows, node_batch_rows, owned_search_batch_rows) = if bulk_search {
         (
             Some(multi_value_batch_rows::<8>(tx)?),
@@ -1759,17 +1792,22 @@ fn persist_files(
         }
         for n in &f.nodes {
             node_id += 1;
+            let node_path_id = if n.path == file.path {
+                owner_id
+            } else {
+                path_cache.get_or_insert(tx, &n.path)?
+            };
             if bulk_search {
                 let mut details = reusable_detail_buffers.pop().unwrap_or_default();
                 details.clear();
-                serde_json::to_writer(&mut details, &f.flows.details(n))?;
+                serde_json::to_writer(&mut details, &n.navigation_details())?;
                 node_batch.push([
                     BorrowedSqlValue::Integer(node_id),
                     BorrowedSqlValue::Text(&n.id),
                     BorrowedSqlValue::Text(&n.kind),
                     BorrowedSqlValue::Text(&n.name),
                     BorrowedSqlValue::Text(&n.qualname),
-                    BorrowedSqlValue::Text(&n.path),
+                    BorrowedSqlValue::Integer(node_path_id),
                     BorrowedSqlValue::Integer(i64::try_from(n.line)?),
                     BorrowedSqlValue::Integer(i64::try_from(n.end_line)?),
                     BorrowedSqlValue::Integer(i64::from(n.is_test)),
@@ -1782,7 +1820,7 @@ fn persist_files(
                     flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
                 }
             } else {
-                let details = serde_json::to_string(&f.flows.details(n))?;
+                let details = serde_json::to_string(&n.navigation_details())?;
                 stmt_nodes
                     .as_mut()
                     .context("missing incremental node insert")?
@@ -1792,7 +1830,7 @@ fn persist_files(
                         n.kind,
                         n.name,
                         n.qualname,
-                        n.path,
+                        node_path_id,
                         n.line,
                         n.end_line,
                         n.is_test,
@@ -1808,54 +1846,53 @@ fn persist_files(
             if bulk_search {
                 let mut search = reusable_search_buffers.pop().unwrap_or_default();
                 write_node_search_text(&mut search, n, f);
-                owned_search_batch.push([SqlValue::Integer(node_id), SqlValue::Text(search)]);
+                owned_search_batch.push(SearchRow {
+                    node_id,
+                    text: search,
+                    explicit: n.kind == "module",
+                });
                 if owned_search_batch.len()
                     == owned_search_batch_rows.context("missing cold search batch size")?
                 {
-                    flush_owned_search_batch(
+                    fts_insert_ms += flush_owned_search_batch(
                         tx,
                         &mut owned_search_batch,
                         &mut reusable_search_buffers,
                     )?;
                 }
-            } else {
+            } else if !bulk_search {
                 write_node_search_text(&mut incremental_search_buffer, n, f);
-                stmt_owned_search
-                    .as_mut()
-                    .context("missing incremental search insert")?
-                    .execute(params![node_id, &incremental_search_buffer])?;
+                if n.kind == "module" {
+                    stmt_owned_search
+                        .as_mut()
+                        .context("missing incremental search insert")?
+                        .execute(params![node_id, &incremental_search_buffer])?;
+                }
                 if let Some(stmt_node_search) = stmt_node_search.as_mut() {
                     stmt_node_search.execute(params![node_id, &incremental_search_buffer])?;
                 }
                 incremental_search_buffer.clear();
             }
-            let key_hash = shared_key_cache.get_or_insert(&n.qualname)?;
-            shared_owner_batch.push([
-                SqlValue::Integer(0),
-                SqlValue::Integer(key_hash),
-                SqlValue::Integer(owner_id),
-                SqlValue::Integer(node_id),
-            ])?;
+            let key_hash = shared_key_cache.get_or_insert_node(&n.qualname, node_id)?;
+            shared_owner_rows.push([0, key_hash, owner_id, node_id]);
         }
         for key in reference_keys(f) {
             let key_hash = shared_key_cache.get_or_insert(key)?;
-            shared_owner_batch.push([
-                SqlValue::Integer(1),
-                SqlValue::Integer(key_hash),
-                SqlValue::Integer(owner_id),
-                SqlValue::Integer(0),
-            ])?;
+            shared_owner_rows.push([1, key_hash, owner_id, 0]);
         }
         for n in &f.nodes {
             if n.details["default_export"] == true {
                 let key_hash = shared_key_cache.get_or_insert(&n.id)?;
-                shared_owner_batch.push([
-                    SqlValue::Integer(2),
-                    SqlValue::Integer(key_hash),
-                    SqlValue::Integer(owner_id),
-                    SqlValue::Integer(0),
-                ])?;
+                shared_owner_rows.push([2, key_hash, owner_id, 0]);
             }
+        }
+        if shared_owner_rows.len() >= 8192 {
+            shared_owner_rows.par_sort_unstable();
+        } else {
+            shared_owner_rows.sort_unstable();
+        }
+        for row in shared_owner_rows.drain(..) {
+            shared_owner_batch.push(row.map(SqlValue::Integer))?;
         }
         for d in &f.docs {
             docs_count += 1;
@@ -1902,7 +1939,8 @@ fn persist_files(
 
     insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
     flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
-    flush_owned_search_batch(tx, &mut owned_search_batch, &mut reusable_search_buffers)?;
+    fts_insert_ms +=
+        flush_owned_search_batch(tx, &mut owned_search_batch, &mut reusable_search_buffers)?;
     if let Some(batch) = source_inventory_batch.as_mut() {
         batch.flush()?;
     }
@@ -1915,7 +1953,7 @@ fn persist_files(
 
     shared_key_cache.flush()?;
     shared_owner_batch.flush()?;
-    Ok((node_id, docs_count))
+    Ok((node_id, docs_count, fts_insert_ms))
 }
 
 fn flush_node_batch(
@@ -1923,7 +1961,7 @@ fn flush_node_batch(
     batch: &mut Vec<[BorrowedSqlValue<'_>; 13]>,
     reusable_buffers: &mut Vec<Vec<u8>>,
 ) -> Result<()> {
-    insert_multi_value_batch(tx, "INSERT INTO nodes VALUES", batch)?;
+    insert_multi_value_batch(tx, "INSERT INTO nodes_data VALUES", batch)?;
     for row in batch.drain(..) {
         for value in row {
             if let BorrowedSqlValue::OwnedJsonText(buffer) = value {
@@ -1951,25 +1989,66 @@ fn write_node_search_text(search: &mut String, node: &Node, facts: &Facts) {
         );
     }
     if node.kind == "module" {
-        for reference in &facts.references {
+        let mut expressions: Vec<_> = facts
+            .references
+            .iter()
+            .map(|reference| reference.expression.as_str())
+            .collect();
+        if expressions.len() >= 8192 {
+            expressions.par_sort_unstable();
+        } else {
+            expressions.sort_unstable();
+        }
+        expressions.dedup();
+        for expression in expressions {
             search.push(' ');
-            search.push_str(&reference.expression);
+            search.push_str(expression);
         }
     }
 }
 
+struct SearchRow {
+    node_id: i64,
+    text: String,
+    explicit: bool,
+}
+
 fn flush_owned_search_batch(
     tx: &Connection,
-    batch: &mut Vec<[SqlValue; 2]>,
+    batch: &mut Vec<SearchRow>,
     reusable_buffers: &mut Vec<String>,
-) -> Result<()> {
-    insert_multi_value_batch(tx, "INSERT INTO owned_search_raw VALUES", batch)?;
-    for [_, value] in batch.drain(..) {
-        if let SqlValue::Text(buffer) = value {
-            reusable_buffers.push(buffer);
-        }
+) -> Result<f64> {
+    let rows: Vec<_> = batch
+        .iter()
+        .map(|row| {
+            [
+                BorrowedSqlValue::Integer(row.node_id),
+                BorrowedSqlValue::Text(&row.text),
+            ]
+        })
+        .collect();
+    let started = Instant::now();
+    insert_multi_value_batch(
+        tx,
+        "INSERT INTO node_search(rowid,search_text) VALUES",
+        &rows,
+    )?;
+    let fts_ms = started.elapsed().as_secs_f64() * 1000.;
+    let overrides: Vec<_> = batch
+        .iter()
+        .filter(|row| row.explicit)
+        .map(|row| {
+            [
+                BorrowedSqlValue::Integer(row.node_id),
+                BorrowedSqlValue::Text(&row.text),
+            ]
+        })
+        .collect();
+    insert_multi_value_batch(tx, "INSERT INTO owned_search_raw VALUES", &overrides)?;
+    for row in batch.drain(..) {
+        reusable_buffers.push(row.text);
     }
-    Ok(())
+    Ok(fts_ms)
 }
 
 fn multi_value_insert_sql<const COLUMNS: usize>(prefix: &str, rows: usize) -> String {
@@ -2058,8 +2137,26 @@ fn graph_endpoint_hashes(
     ))
 }
 
-type EdgeKey<'a> = (i64, &'a str, i64);
-type EdgeRow<'a> = (i64, usize, &'a str, &'a str, i64);
+struct StoredEdge<'a> {
+    src: i64,
+    dst: i64,
+    kind: &'a str,
+    path_id: i64,
+    line: usize,
+    evidence: i64,
+    confidence: i64,
+    count: i64,
+    first: usize,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct StoredDependency<'a> {
+    owner: i64,
+    target: Option<i64>,
+    kind: &'a str,
+    symbol: &'a str,
+    resolution: &'a str,
+}
 
 struct GraphPersistenceTimings {
     occurrences: f64,
@@ -2076,29 +2173,53 @@ fn persist_graph(
     materialize_edges: bool,
 ) -> Result<GraphPersistenceTimings> {
     let phase = Instant::now();
+    let evidence_ids = prefill_coverage_dictionary(
+        tx,
+        "coverage_evidence",
+        "evidence",
+        "INSERT INTO coverage_evidence(evidence_id,evidence) VALUES",
+        graph
+            .edges
+            .iter()
+            .map(|edge| edge.confidence.as_str())
+            .chain(graph.edges.iter().map(|edge| edge.evidence.as_str()))
+            .chain(
+                graph
+                    .coverage
+                    .iter()
+                    .map(|coverage| coverage.evidence.as_str()),
+            ),
+    )?;
+    let evidence_dictionary_ms = phase.elapsed().as_secs_f64() * 1000.;
+    let phase = Instant::now();
     let mut ordinals: hashbrown::HashMap<&str, usize> = hashbrown::HashMap::new();
     let mut occurrence_batch = MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(
         tx,
         "INSERT INTO edge_occurrences_raw VALUES",
     )?;
-    let mut unique_edges: hashbrown::HashMap<EdgeKey<'_>, EdgeRow<'_>> =
-        hashbrown::HashMap::with_capacity(if materialize_edges {
-            graph.edges.len()
-        } else {
-            0
-        });
+    let mut unique_edges = Vec::<StoredEdge<'_>>::with_capacity(if materialize_edges {
+        graph.edges.len()
+    } else {
+        0
+    });
     let mut dependency_batch =
         MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO dependencies_raw VALUES")?;
     let mut stmt_select_path = tx.prepare_cached("SELECT path FROM nodes WHERE id=?1")?;
     let mut coverage_batch = MultiValueBatch::<5, BorrowedSqlValue<'_>>::new(tx,
         "INSERT OR IGNORE INTO resolution_coverage_data(path_id,line,expression_id,status,evidence_id) VALUES",
     )?;
-    let mut unresolved_batch =
-        MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO dependencies_raw VALUES")?;
-    let mut dependency_ordinals = hashbrown::HashMap::<i64, i64>::new();
+    let mut dependencies = Vec::<StoredDependency<'_>>::with_capacity(
+        graph.edges.len().saturating_add(graph.coverage.len()),
+    );
 
-    for e in &graph.edges {
+    for (first, e) in graph.edges.iter().enumerate() {
         let ordinal = ordinals.entry(&e.path).or_default();
+        let evidence_id = *evidence_ids
+            .get(e.evidence.as_str())
+            .context("missing edge evidence")?;
+        let confidence_id = *evidence_ids
+            .get(e.confidence.as_str())
+            .context("missing edge confidence")?;
         let owner_id = path_cache.get_or_insert(tx, &e.path)?;
         let (src_hash, src_target) = graph_endpoint_hashes(
             node_paths,
@@ -2121,24 +2242,25 @@ fn persist_graph(
             BorrowedSqlValue::Integer(dst_hash),
             BorrowedSqlValue::Text(e.kind.as_str()),
             BorrowedSqlValue::Integer(i64::try_from(e.line)?),
-            BorrowedSqlValue::Text(e.evidence.as_str()),
-            BorrowedSqlValue::Text(e.confidence.as_str()),
+            BorrowedSqlValue::Integer(evidence_id),
+            BorrowedSqlValue::Integer(confidence_id),
         ])?;
         *ordinal = ordinal
             .checked_add(1)
             .context("edge occurrence ordinal overflow")?;
 
         if materialize_edges {
-            unique_edges
-                .entry((src_hash, e.kind.as_str(), dst_hash))
-                .and_modify(|entry| entry.4 += 1)
-                .or_insert((
-                    owner_id,
-                    e.line,
-                    e.evidence.as_str(),
-                    e.confidence.as_str(),
-                    1,
-                ));
+            unique_edges.push(StoredEdge {
+                src: src_hash,
+                dst: dst_hash,
+                kind: e.kind.as_str(),
+                path_id: owner_id,
+                line: e.line,
+                evidence: evidence_id,
+                confidence: confidence_id,
+                count: 1,
+                first,
+            });
         }
         let mut target_hashes = [None, None];
         let mut targets_len = 0;
@@ -2149,45 +2271,44 @@ fn persist_graph(
             }
         }
         for target_hash in target_hashes[..targets_len].iter().flatten() {
-            let ordinal = dependency_ordinals.entry(owner_id).or_default();
-            dependency_batch.push([
-                BorrowedSqlValue::Integer(owner_id),
-                BorrowedSqlValue::Integer(*ordinal),
-                BorrowedSqlValue::Integer(*target_hash),
-                BorrowedSqlValue::Text(e.kind.as_str()),
-                BorrowedSqlValue::Text(e.evidence.as_str()),
-                BorrowedSqlValue::Text("resolved"),
-            ])?;
-            *ordinal = ordinal
-                .checked_add(1)
-                .context("dependency ordinal overflow")?;
+            dependencies.push(StoredDependency {
+                owner: owner_id,
+                target: Some(*target_hash),
+                kind: e.kind.as_str(),
+                symbol: e.evidence.as_str(),
+                resolution: "resolved",
+            });
         }
     }
     occurrence_batch.flush()?;
-    dependency_batch.flush()?;
     let occurrences = phase.elapsed().as_secs_f64() * 1000.;
     let phase = Instant::now();
     if materialize_edges {
         let mut edge_batch = MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO edges_raw(src_hash,kind,dst_hash,path_id,line,evidence,confidence,occurrence_count) VALUES")?;
-        // Storage-key order improves B-tree locality; payloads retain their first occurrence.
-        let mut unique_rows: Vec<_> = unique_edges.into_iter().collect();
-        if unique_rows.len() >= 8192 {
-            unique_rows.par_sort_unstable_by_key(|(key, _)| *key);
+        if unique_edges.len() >= 8192 {
+            unique_edges
+                .par_sort_unstable_by_key(|edge| (edge.src, edge.kind, edge.dst, edge.first));
         } else {
-            unique_rows.sort_unstable_by_key(|(key, _)| *key);
+            unique_edges.sort_unstable_by_key(|edge| (edge.src, edge.kind, edge.dst, edge.first));
         }
-        for ((src_hash, kind, dst_hash), (path_id, line, evidence, confidence, count)) in
-            unique_rows
-        {
+        unique_edges.dedup_by(|later, first| {
+            if (later.src, later.kind, later.dst) == (first.src, first.kind, first.dst) {
+                first.count += later.count;
+                true
+            } else {
+                false
+            }
+        });
+        for edge in unique_edges {
             edge_batch.push([
-                BorrowedSqlValue::Integer(src_hash),
-                BorrowedSqlValue::Text(kind),
-                BorrowedSqlValue::Integer(dst_hash),
-                BorrowedSqlValue::Integer(path_id),
-                BorrowedSqlValue::Integer(i64::try_from(line)?),
-                BorrowedSqlValue::Text(evidence),
-                BorrowedSqlValue::Text(confidence),
-                BorrowedSqlValue::Integer(count),
+                BorrowedSqlValue::Integer(edge.src),
+                BorrowedSqlValue::Text(edge.kind),
+                BorrowedSqlValue::Integer(edge.dst),
+                BorrowedSqlValue::Integer(edge.path_id),
+                BorrowedSqlValue::Integer(i64::try_from(edge.line)?),
+                BorrowedSqlValue::Integer(edge.evidence),
+                BorrowedSqlValue::Integer(edge.confidence),
+                BorrowedSqlValue::Integer(edge.count),
             ])?;
         }
         edge_batch.flush()?;
@@ -2195,10 +2316,11 @@ fn persist_graph(
     let edges = phase.elapsed().as_secs_f64() * 1000.;
     let phase = Instant::now();
     let mut coverage_expression_cache = CoverageExpressionCache::new(tx)?;
-    let mut coverage_evidence_cache = CoverageEvidenceCache::new(tx)?;
     let expression_ids = if materialize_edges {
         Some(prefill_coverage_dictionary(
             tx,
+            "coverage_expressions",
+            "expression",
             "INSERT INTO coverage_expressions(expression_id,expression) VALUES",
             graph
                 .coverage
@@ -2208,19 +2330,7 @@ fn persist_graph(
     } else {
         None
     };
-    let evidence_ids = if materialize_edges {
-        Some(prefill_coverage_dictionary(
-            tx,
-            "INSERT INTO coverage_evidence(evidence_id,evidence) VALUES",
-            graph
-                .coverage
-                .iter()
-                .map(|coverage| coverage.evidence.as_str()),
-        )?)
-    } else {
-        None
-    };
-    let dictionaries = phase.elapsed().as_secs_f64() * 1000.;
+    let dictionaries = evidence_dictionary_ms + phase.elapsed().as_secs_f64() * 1000.;
     let phase = Instant::now();
     for c in &graph.coverage {
         let owner_id = path_cache.get_or_insert(tx, &c.path)?;
@@ -2230,12 +2340,9 @@ fn persist_graph(
                 .context("missing cold coverage expression")?,
             None => coverage_expression_cache.get_or_insert(&c.expression)?,
         };
-        let evidence_id = match evidence_ids.as_ref() {
-            Some(ids) => *ids
-                .get(c.evidence.as_str())
-                .context("missing cold coverage evidence")?,
-            None => coverage_evidence_cache.get_or_insert(&c.evidence)?,
-        };
+        let evidence_id = *evidence_ids
+            .get(c.evidence.as_str())
+            .context("missing coverage evidence")?;
         coverage_batch.push([
             BorrowedSqlValue::Integer(owner_id),
             BorrowedSqlValue::Integer(i64::try_from(c.line)?),
@@ -2244,21 +2351,45 @@ fn persist_graph(
             BorrowedSqlValue::Integer(evidence_id),
         ])?;
         if c.status != "resolved" {
-            let ordinal = dependency_ordinals.entry(owner_id).or_default();
-            unresolved_batch.push([
-                BorrowedSqlValue::Integer(owner_id),
-                BorrowedSqlValue::Integer(*ordinal),
-                BorrowedSqlValue::Null,
-                BorrowedSqlValue::Text("unresolved"),
-                BorrowedSqlValue::Text(c.expression.as_str()),
-                BorrowedSqlValue::Text(c.status.as_str()),
-            ])?;
-            *ordinal += 1;
+            dependencies.push(StoredDependency {
+                owner: owner_id,
+                target: None,
+                kind: "unresolved",
+                symbol: c.expression.as_str(),
+                resolution: c.status.as_str(),
+            });
         }
     }
 
     coverage_batch.flush()?;
-    unresolved_batch.flush()?;
+    if dependencies.len() >= 8192 {
+        dependencies.par_sort_unstable();
+    } else {
+        dependencies.sort_unstable();
+    }
+    dependencies.dedup();
+    let mut owner = None;
+    let mut ordinal = 0i64;
+    for dependency in dependencies {
+        if owner != Some(dependency.owner) {
+            owner = Some(dependency.owner);
+            ordinal = 0;
+        }
+        dependency_batch.push([
+            BorrowedSqlValue::Integer(dependency.owner),
+            BorrowedSqlValue::Integer(ordinal),
+            dependency
+                .target
+                .map_or(BorrowedSqlValue::Null, BorrowedSqlValue::Integer),
+            BorrowedSqlValue::Text(dependency.kind),
+            BorrowedSqlValue::Text(dependency.symbol),
+            BorrowedSqlValue::Text(dependency.resolution),
+        ])?;
+        ordinal = ordinal
+            .checked_add(1)
+            .context("dependency ordinal overflow")?;
+    }
+    dependency_batch.flush()?;
     Ok(GraphPersistenceTimings {
         occurrences,
         edges,
@@ -2267,24 +2398,53 @@ fn persist_graph(
     })
 }
 
-struct CommitmentJsonWriter(sha2::Sha256);
+struct CommitmentJsonWriter {
+    hasher: sha2::Sha256,
+    buffer: [u8; 4096],
+    buffered: usize,
+}
 
 impl std::io::Write for CommitmentJsonWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        sha2::Digest::update(&mut self.0, bytes);
-        Ok(bytes.len())
+        let len = bytes.len();
+        let mut remaining = bytes;
+        if self.buffered > 0 {
+            let copied = remaining.len().min(self.buffer.len() - self.buffered);
+            self.buffer[self.buffered..self.buffered + copied]
+                .copy_from_slice(&remaining[..copied]);
+            self.buffered += copied;
+            remaining = &remaining[copied..];
+            if self.buffered == self.buffer.len() {
+                sha2::Digest::update(&mut self.hasher, self.buffer.as_slice());
+                self.buffered = 0;
+            }
+        }
+        if remaining.len() >= self.buffer.len() {
+            sha2::Digest::update(&mut self.hasher, remaining);
+        } else if !remaining.is_empty() {
+            self.buffer[..remaining.len()].copy_from_slice(remaining);
+            self.buffered = remaining.len();
+        }
+        Ok(len)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
+        sha2::Digest::update(&mut self.hasher, &self.buffer[..self.buffered]);
+        self.buffered = 0;
         Ok(())
     }
 }
 
 fn hash_commitment_json<T: serde::Serialize + ?Sized>(value: &T) -> Result<String> {
     use sha2::Digest;
-    let mut writer = CommitmentJsonWriter(sha2::Sha256::new());
+    let mut writer = CommitmentJsonWriter {
+        hasher: sha2::Sha256::new(),
+        buffer: [0; 4096],
+        buffered: 0,
+    };
     serde_json::to_writer(&mut writer, value)?;
-    Ok(hex::encode(writer.0.finalize()))
+    std::io::Write::flush(&mut writer)?;
+    Ok(hex::encode(writer.hasher.finalize()))
 }
 
 struct CommitmentSearch<'a>(&'a TypedFacts);
@@ -2376,13 +2536,13 @@ fn persist_file_commitments(
     Ok(())
 }
 
-fn reference_keys<'a>(facts: &'a TypedFacts) -> BTreeSet<&'a str> {
-    let mut keys = BTreeSet::new();
+fn reference_keys<'a>(facts: &'a TypedFacts) -> Vec<&'a str> {
+    let mut keys = Vec::new();
     let mut insert = |expression: &'a str| {
-        keys.insert(expression);
+        keys.push(expression);
         for token in expression.split(['.', ':', '/']) {
             if !token.is_empty() && token.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                keys.insert(token);
+                keys.push(token);
             }
         }
     };
@@ -2442,6 +2602,12 @@ fn reference_keys<'a>(facts: &'a TypedFacts) -> BTreeSet<&'a str> {
             }
         }
     }
+    if keys.len() >= 8192 {
+        keys.par_sort_unstable();
+    } else {
+        keys.sort_unstable();
+    }
+    keys.dedup();
     keys
 }
 
@@ -2662,12 +2828,16 @@ mod multi_value_batch_tests {
         }
         let cold_expressions = prefill_coverage_dictionary(
             &cold,
+            "coverage_expressions",
+            "expression",
             "INSERT INTO coverage_expressions(expression_id,expression) VALUES",
             values.iter().map(String::as_str),
         )
         .unwrap();
         let cold_evidence = prefill_coverage_dictionary(
             &cold,
+            "coverage_evidence",
+            "evidence",
             "INSERT INTO coverage_evidence(evidence_id,evidence) VALUES",
             values.iter().map(String::as_str),
         )
@@ -2797,9 +2967,9 @@ mod multi_value_batch_tests {
             "provider",
             "ParamType",
         ] {
-            assert!(keys.contains(key), "{key}");
+            assert!(keys.contains(&key), "{key}");
         }
-        assert!(!keys.contains("untrusted.dynamic.text"));
+        assert!(!keys.contains(&"untrusted.dynamic.text"));
     }
 
     #[test]
@@ -2869,29 +3039,32 @@ mod multi_value_batch_tests {
             persist_file_commitments(&tx, &entries, &facts, &graph).unwrap();
             tx.commit().unwrap();
             assert_eq!(row_count(&conn, "resolution_coverage_data"), 251 * 4);
-            assert_eq!(row_count(&conn, "dependencies_raw"), 251 * 5);
+            assert_eq!(row_count(&conn, "dependencies_raw"), 251 * 4);
             assert_eq!(row_count(&conn, "shared_owners_raw"), 251 * 5);
             assert_eq!(row_count(&conn, "file_commitments"), 251);
             assert_eq!(row_count(&conn, "edge_occurrences_raw"), 251);
             assert_eq!(row_count(&conn, "edges_raw"), 251);
             let dependencies = crate::db::reader::rows(&conn,
                 "SELECT ordinal,target_hash,kind,symbol,resolution FROM dependencies_raw WHERE owner_id=(SELECT path_id FROM path_dictionary WHERE path='src/file-000.rs') ORDER BY ordinal", &[], 10).unwrap();
-            assert_eq!(dependencies[0]["ordinal"], 0);
-            assert_eq!(dependencies[0]["resolution"], "resolved");
-            for (ordinal, status) in [
-                (1, "unresolved"),
-                (2, "ambiguous"),
-                (3, "external"),
-                (4, "external"),
-            ] {
-                assert_eq!(dependencies[ordinal]["ordinal"], ordinal);
-                assert!(dependencies[ordinal]["target_hash"].is_null());
-                assert_eq!(dependencies[ordinal]["kind"], "unresolved");
-                assert_eq!(dependencies[ordinal]["resolution"], status);
-                assert_eq!(
-                    dependencies[ordinal]["symbol"],
-                    format!("call_{status}_λ'\0")
-                );
+            assert_eq!(dependencies.len(), 4);
+            for (ordinal, dependency) in dependencies.iter().enumerate() {
+                assert_eq!(dependency["ordinal"], ordinal);
+            }
+            let resolved = dependencies
+                .iter()
+                .find(|row| row["resolution"] == "resolved")
+                .unwrap();
+            assert!(resolved["target_hash"].as_i64().is_some());
+            assert_eq!(resolved["kind"], "calls");
+            assert_eq!(resolved["symbol"], "cross-file call λ'\0");
+            for status in ["unresolved", "ambiguous", "external"] {
+                let dependency = dependencies
+                    .iter()
+                    .find(|row| row["resolution"] == status)
+                    .unwrap();
+                assert!(dependency["target_hash"].is_null());
+                assert_eq!(dependency["kind"], "unresolved");
+                assert_eq!(dependency["symbol"], format!("call_{status}_λ'\0"));
             }
             [
                 "edge_occurrences_raw",
@@ -2968,7 +3141,7 @@ mod multi_value_batch_tests {
             "files",
             "local_facts",
             "nodes",
-            "owned_search_raw",
+            "owned_search",
         ] {
             assert_eq!(row_count(&conn, table), 251, "{table}");
         }

@@ -277,7 +277,10 @@ pub(crate) fn member_access(
     }
     let expr = text(node, ctx.source);
     if expr.starts_with("self.") || expr.starts_with("this.") || expr.starts_with("cls.") {
-        if expr.split('.').any(|s| s.chars().all(|c| c.is_ascii_digit())) {
+        if expr
+            .split('.')
+            .any(|s| s.chars().all(|c| c.is_ascii_digit()))
+        {
             return;
         }
         let line = node.start_position().row + ctx.offset + 1;

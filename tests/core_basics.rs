@@ -249,7 +249,7 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() {
         let fact: Facts = serde_json::from_slice(&durable_json).unwrap();
         let json = serde_json::to_vec(&fact).unwrap();
         assert_eq!(json, durable_json);
-        assert_eq!(blob, zstd::stream::encode_all(json.as_slice(), 1).unwrap());
+        assert!(blob.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]));
         durable_facts.push(fact);
     }
 
@@ -266,7 +266,15 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() {
             )
             .unwrap();
         assert_eq!(node_id, index as i64 + 1);
-        assert_eq!(details, serde_json::to_string(&node.details).unwrap());
+        let navigation: serde_json::Value = serde_json::from_str(&details).unwrap();
+        for key in ["signature", "doc", "receiver_name"] {
+            if node.details[key]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+            {
+                assert_eq!(navigation[key], node.details[key]);
+            }
+        }
     }
     let durable_nodes: BTreeMap<_, _> = durable_facts
         .iter()
@@ -340,6 +348,95 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() {
     commitments::verify(&conn).unwrap();
 }
 
+#[cfg(feature = "lang-python")]
+#[test]
+fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
+    let ws = ScopedWorkspace::new("forge_navigation_storage");
+    ws.write("service.py", "class Service:\n    def execute(self):\n        \"\"\"Execute the request.\"\"\"\n        return 42\n");
+    ws.write("caller.py", "from service import Service\n\ndef run():\n    service = Service()\n    return service.execute()\n");
+    let db_path = ws.0.join(".forge/code-map.sqlite");
+    writer::build(&ws.0, &db_path, None).unwrap();
+    let conn = reader::open(&db_path, &ws.0).unwrap();
+    let blob: Vec<u8> = conn
+        .query_row(
+            "SELECT facts_blob FROM local_facts WHERE path='caller.py'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let facts: Facts =
+        serde_json::from_slice(&zstd::stream::decode_all(blob.as_slice()).unwrap()).unwrap();
+    let caller = facts.nodes.iter().find(|node| node.name == "run").unwrap();
+    assert!(caller.details.get("value_flow").is_some());
+    let stored: String = conn
+        .query_row(
+            "SELECT details FROM nodes WHERE id=?1",
+            [&caller.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["signature"], caller.details["signature"]);
+    let method: String = conn
+        .query_row(
+            "SELECT details FROM nodes WHERE name='execute'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let method: serde_json::Value = serde_json::from_str(&method).unwrap();
+    assert!(method["signature"].as_str().unwrap().contains("execute"));
+    assert!(method["doc"]
+        .as_str()
+        .unwrap()
+        .contains("Execute the request"));
+    assert_eq!(method["receiver_name"], "self");
+    drop(conn);
+    ws.write("service.py", "class Service:\n    def execute(self):\n        \"\"\"Execute the updated request.\"\"\"\n        return 43\n");
+    writer::delta(&ws.0, &db_path, &[PathBuf::from("service.py")]).unwrap();
+    let conn = reader::open(&db_path, &ws.0).unwrap();
+    let calls: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.id=e.src_public_id JOIN nodes d ON d.id=e.dst_public_id WHERE s.name='run' AND d.name='execute' AND e.kind='calls'", [], |row| row.get(0)).unwrap();
+    assert_eq!(
+        calls, 1,
+        "cached complete local analysis supports receiver resolution during delta"
+    );
+    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    let root: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='output_root'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute(
+        "UPDATE local_facts SET facts_blob=?1 WHERE path='caller.py'",
+        [&blob[..blob.len() / 2]],
+    )
+    .unwrap();
+    drop(conn);
+    ws.write(
+        "service.py",
+        "class Service:\n    def execute(self):\n        return 44\n",
+    );
+    assert!(
+        writer::delta(&ws.0, &db_path, &[PathBuf::from("service.py")]).is_err(),
+        "truncated durable facts fail closed before graph publication"
+    );
+    let conn = Connection::open(&db_path).unwrap();
+    let retained_root: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='output_root'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained_root, root);
+    let retained_calls: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.id=e.src_public_id JOIN nodes d ON d.id=e.dst_public_id WHERE s.name='run' AND d.name='execute' AND e.kind='calls'", [], |row| row.get(0)).unwrap();
+    assert_eq!(retained_calls, calls);
+}
+
 #[test]
 fn rows_enforces_the_exact_serialized_json_limit() {
     const MAX_SERIALIZED_BYTES: usize = 8 * 1024 * 1024;
@@ -398,6 +495,104 @@ fn rows_enforces_the_exact_serialized_json_limit() {
             && escaped_over_rejected
             && duplicate_rows[0]["x"] == "ok"
     );
+}
+
+#[cfg(feature = "lang-python")]
+#[test]
+fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
+    use contextunity_forge_mcp::core::response::{Detail, QueryOptions, ResponsePolicy};
+    use contextunity_forge_mcp::db::symbols;
+
+    let ws = ScopedWorkspace::new("forge_connected_ranking");
+    ws.write(
+        "a.py",
+        "def process():\n    return 1\ndef process_work():\n    return 1\n",
+    );
+    ws.write(
+        "z.py",
+        "def process():\n    return 1\ndef process_work():\n    return 1\n",
+    );
+    ws.write(
+        "caller.py",
+        "from z import process, process_work\n\ndef run():\n    process_work()\n    return process()\n",
+    );
+    let db_path = ws.0.join(".forge/code-map.sqlite");
+    writer::build(&ws.0, &db_path, None).unwrap();
+    let conn = reader::open(&db_path, &ws.0).unwrap();
+    let options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        0,
+        Some(Detail::Full),
+        None,
+    )
+    .unwrap();
+    let result = symbols::search_paged(&conn, "process", Some("function"), &options).unwrap();
+    let nodes = result["nodes"]["items"].as_array().unwrap();
+    assert_eq!(result["nodes"]["total"], 4);
+    assert_eq!(
+        nodes[0]["path"], "z.py",
+        "inbound graph connectivity breaks equivalent exact-name scores"
+    );
+    assert_eq!(nodes[1]["path"], "a.py");
+    assert_eq!(nodes[0]["name"], "process");
+    assert_eq!(nodes[1]["name"], "process");
+    assert_eq!(nodes[2]["name"], "process_work");
+    assert_eq!(nodes[2]["path"], "z.py");
+    assert_eq!(nodes[3]["name"], "process_work");
+    assert_eq!(nodes[3]["path"], "a.py");
+    let prefix = symbols::search_paged(&conn, "process_*", Some("function"), &options).unwrap();
+    let nodes = prefix["nodes"]["items"].as_array().unwrap();
+    assert_eq!(prefix["nodes"]["total"], 2);
+    assert_eq!(nodes[0]["path"], "z.py", "connected prefix matches receive the same graph ranking regardless of identifier punctuation");
+    assert_eq!(nodes[1]["path"], "a.py");
+    drop(conn);
+
+    let catalog: String = (0..501)
+        .map(|index| format!("def rankterm_{index:03}():\n    return 1\n"))
+        .collect();
+    ws.write("catalog.py", &catalog);
+    ws.write("exact_a.py", "def rankterm():\n    return 1\n");
+    ws.write("exact_z.py", "def rankterm():\n    return 1\n");
+    ws.write("rank_caller.py", "from exact_z import rankterm\nfrom catalog import rankterm_500\ndef run_ranked():\n    rankterm_500()\n    return rankterm()\n");
+    writer::build(&ws.0, &db_path, None).unwrap();
+    let conn = reader::open(&db_path, &ws.0).unwrap();
+    let mut page_options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(100),
+        0,
+        Some(Detail::Full),
+        None,
+    )
+    .unwrap();
+    let mut all = Vec::new();
+    loop {
+        let result =
+            symbols::search_paged(&conn, "rankterm", Some("function"), &page_options).unwrap();
+        let page = &result["nodes"];
+        assert_eq!(page["total"], 503);
+        all.extend(page["items"].as_array().unwrap().iter().cloned());
+        if page["has_more"] == false {
+            break;
+        }
+        page_options.offset = page["next_offset"].as_u64().unwrap() as usize;
+        page_options.generation = Some(page["generation"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(all.len(), 503);
+    let ids: std::collections::BTreeSet<_> = all
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 503);
+    assert_eq!(all[0]["path"], "exact_z.py");
+    assert_eq!(all[1]["path"], "exact_a.py");
+    assert!(all[2]["name"].as_str().unwrap().starts_with("rankterm_"));
+    page_options.offset = 501;
+    page_options.limit = 2;
+    let tail = symbols::search_paged(&conn, "rankterm", Some("function"), &page_options).unwrap();
+    assert_eq!(tail["nodes"]["items"], serde_json::json!(&all[501..]));
+    assert_eq!(tail["nodes"]["total"], 503);
+    assert_eq!(tail["nodes"]["has_more"], false);
 }
 
 #[cfg(feature = "lang-rust")]

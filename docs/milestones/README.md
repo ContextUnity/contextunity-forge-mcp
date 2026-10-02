@@ -1,22 +1,16 @@
 ---
-title: "Milestone index"
+title: "Milestones"
 doc_type: guide
 ---
 
 # Milestones
 
-## Admitted target contracts
+Milestone commitment files in this directory (`0XX-*.md`) define the repository's execution queue and lifecycle commitments.
 
-- [Repository task lifecycle](010-repository-task-lifecycle.md): deferred Rust
-  implementation of repository-owned task operations and durable receipts.
+## Ownership and Truth
 
-## Commitment ownership
+- **Single Source of Truth:** Each milestone file (`docs/milestones/0XX-*.md`) owns its own status (`active`, `planned`, `deferred`, `completed`), invariants, task breakdown, and acceptance outcomes.
+- **Queue Order:** Numeric filename prefixes (`010-*.md`, `020-*.md`, ...) supply the queue execution order.
+- **Archive:** Completed milestones are moved to [archive/](archive/README.md) along with their proof receipts.
 
-Milestones are Git Markdown commitments with stable IDs, status, owners,
-dependencies, invariants, and acceptance outcomes. Ordered filename prefixes
-supply queue order; check lifecycle and dependencies before selecting work.
-Plans retain research and design rationale and link to admitted commitments.
-
-Completed commitments live in [archive/](archive/README.md). Preserve their
-IDs and proof receipts through moves. The task lifecycle milestone owns
-future task admission and completion rules.
+To find the next active commitment, discover the lowest-numbered file with `status: active` in this directory (or the earliest `status: planned` candidate).

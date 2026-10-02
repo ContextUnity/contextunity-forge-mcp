@@ -1,24 +1,15 @@
 ---
-title: "Repository plans"
+title: "Plans"
 doc_type: guide
 ---
 
-# Repository plans
+# Plans
 
-## Ongoing plans
+The `docs/plans/` directory holds active design documents, architectural proposals, research notes, and pre-implementation drafts.
 
-- [Tool performance and database optimization](tool-performance-and-db-optimization.md).
-- [Architecture and modularity](architecture-and-modularity.md).
+## Lifecycle and Ownership
 
-These plans retain their execution checklists and target designs. Read current
-source and evidence before treating a checkbox as implementation proof. Plan
-status and milestone admission are distinct; approved commitments are recorded
-in [milestones](../milestones/README.md).
-
-## Ownership and retrieval
-
-Plans belong to this repository and preserve research, proposals, dependencies,
-and design rationale. A plan may supply several admitted milestones or remain
-research material. Link each admitted milestone and its source plan both ways.
-Read these files directly; default doc_roots select current contracts and
-milestones. Close or archive a plan through owner reconciliation of its requirements.
+- **Proposals and Drafts**: New technical designs, comparative audits, and subsystem proposals originate here as plans.
+- **Admission to Milestones**: Once a plan reaches consensus and satisfies architectural review, its commitments and tasks are admitted into [`docs/milestones/`](../milestones/README.md).
+- **Durable Knowledge**: Architectural invariants and verified topologies migrate to [`docs/architecture/`](../architecture/README.md), while accepted structural choices are recorded in [`docs/adr/`](../adr/README.md).
+- **Index Scope**: Plans remain outside the default active MCP code index to preserve high signal-to-noise ratio in code search, while remaining accessible through direct file reads.

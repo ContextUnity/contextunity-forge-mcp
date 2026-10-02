@@ -15,6 +15,39 @@ pub struct Node {
     pub generated: bool,
     pub details: Value,
 }
+
+impl Node {
+    pub(crate) fn navigation_details(&self) -> NavigationDetails<'_> {
+        NavigationDetails(&self.details)
+    }
+}
+
+pub(crate) struct NavigationDetails<'a>(&'a Value);
+
+impl Serialize for NavigationDetails<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let Some(details) = self.0.as_object() else {
+            return self.0.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(None)?;
+        for (key, value) in details {
+            if matches!(
+                key.as_str(),
+                "value_flow" | "bindings" | "rebindings" | "param_types" | "column"
+            ) || value.is_null()
+                || value.as_str().is_some_and(str::is_empty)
+                || value.as_array().is_some_and(Vec::is_empty)
+                || (matches!(key.as_str(), "async" | "default_export")
+                    && value == &Value::Bool(false))
+            {
+                continue;
+            }
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub src: String,

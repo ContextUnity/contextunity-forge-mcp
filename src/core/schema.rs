@@ -32,13 +32,13 @@ AFTER INSERT ON files BEGIN
     INSERT OR IGNORE INTO path_dictionary(path) VALUES(NEW.path);
 END;
 
-CREATE TABLE IF NOT EXISTS nodes (
+CREATE TABLE IF NOT EXISTS nodes_data (
     node_id INTEGER PRIMARY KEY,
     id TEXT UNIQUE NOT NULL,
     kind TEXT NOT NULL,
     name TEXT NOT NULL,
     qualname TEXT NOT NULL,
-    path TEXT NOT NULL,
+    path_id INTEGER NOT NULL,
     line INTEGER NOT NULL,
     end_line INTEGER NOT NULL,
     is_test INTEGER NOT NULL,
@@ -48,25 +48,57 @@ CREATE TABLE IF NOT EXISTS nodes (
     node_hash INTEGER NOT NULL UNIQUE
 );
 
+CREATE VIEW IF NOT EXISTS nodes AS
+SELECT n.node_id,n.id,n.kind,n.name,n.qualname,p.path,n.line,n.end_line,
+       n.is_test,n.language,n.generated,n.details,n.node_hash
+FROM nodes_data n LEFT JOIN path_dictionary p ON p.path_id=n.path_id;
+
+CREATE TRIGGER IF NOT EXISTS nodes_insert
+INSTEAD OF INSERT ON nodes BEGIN
+    INSERT OR IGNORE INTO path_dictionary(path) VALUES(NEW.path);
+    INSERT INTO nodes_data VALUES(NEW.node_id,NEW.id,NEW.kind,NEW.name,NEW.qualname,
+        (SELECT path_id FROM path_dictionary WHERE path=NEW.path),NEW.line,NEW.end_line,
+        NEW.is_test,NEW.language,NEW.generated,NEW.details,NEW.node_hash);
+END;
+
+CREATE TRIGGER IF NOT EXISTS nodes_delete
+INSTEAD OF DELETE ON nodes BEGIN
+    DELETE FROM nodes_data WHERE node_id=OLD.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS nodes_update
+INSTEAD OF UPDATE ON nodes BEGIN
+    INSERT OR IGNORE INTO path_dictionary(path) VALUES(NEW.path);
+    UPDATE nodes_data SET node_id=NEW.node_id,id=NEW.id,kind=NEW.kind,name=NEW.name,
+        qualname=NEW.qualname,path_id=(SELECT path_id FROM path_dictionary WHERE path=NEW.path),
+        line=NEW.line,end_line=NEW.end_line,is_test=NEW.is_test,language=NEW.language,
+        generated=NEW.generated,details=NEW.details,node_hash=NEW.node_hash
+    WHERE node_id=OLD.node_id;
+END;
+
 CREATE TABLE IF NOT EXISTS edges_raw (
     src_hash INTEGER NOT NULL,
     kind TEXT NOT NULL,
     dst_hash INTEGER NOT NULL,
     path_id INTEGER NOT NULL,
     line INTEGER NOT NULL,
-    evidence TEXT NOT NULL,
-    confidence TEXT NOT NULL,
+    evidence NOT NULL,
+    confidence NOT NULL,
     occurrence_count INTEGER NOT NULL,
     PRIMARY KEY (src_hash, kind, dst_hash)
 ) WITHOUT ROWID;
 
 CREATE VIEW IF NOT EXISTS edges AS
 SELECT s.id AS src_public_id, d.id AS dst_public_id, e.kind, p.path, e.line,
-       e.evidence, e.confidence, e.occurrence_count
+       CASE WHEN typeof(e.evidence)='integer' THEN ev.evidence ELSE e.evidence END AS evidence,
+       CASE WHEN typeof(e.confidence)='integer' THEN cv.evidence ELSE e.confidence END AS confidence,
+       e.occurrence_count
 FROM edges_raw e
 JOIN path_dictionary p ON p.path_id=e.path_id
 JOIN nodes s ON s.node_hash=e.src_hash
-JOIN nodes d ON d.node_hash=e.dst_hash;
+JOIN nodes d ON d.node_hash=e.dst_hash
+LEFT JOIN coverage_evidence ev ON typeof(e.evidence)='integer' AND ev.evidence_id=e.evidence
+LEFT JOIN coverage_evidence cv ON typeof(e.confidence)='integer' AND cv.evidence_id=e.confidence;
 
 CREATE TRIGGER IF NOT EXISTS edges_insert
 INSTEAD OF INSERT ON edges BEGIN
@@ -81,7 +113,9 @@ INSTEAD OF INSERT ON edges BEGIN
         (SELECT node_hash FROM nodes WHERE id=NEW.src_public_id), NEW.kind,
         (SELECT node_hash FROM nodes WHERE id=NEW.dst_public_id),
         (SELECT path_id FROM path_dictionary WHERE path=NEW.path), NEW.line,
-        NEW.evidence, NEW.confidence, NEW.occurrence_count
+        CASE WHEN typeof(NEW.evidence) IN('integer','real') THEN CAST(NEW.evidence AS TEXT) ELSE NEW.evidence END,
+        CASE WHEN typeof(NEW.confidence) IN('integer','real') THEN CAST(NEW.confidence AS TEXT) ELSE NEW.confidence END,
+        NEW.occurrence_count
     )
     ON CONFLICT(src_hash,kind,dst_hash) DO UPDATE
     SET occurrence_count=edges_raw.occurrence_count+excluded.occurrence_count;
@@ -118,18 +152,22 @@ CREATE TABLE IF NOT EXISTS edge_occurrences_raw (
     dst_hash INTEGER NOT NULL,
     kind TEXT NOT NULL,
     line INTEGER NOT NULL,
-    evidence TEXT NOT NULL,
-    confidence TEXT NOT NULL,
+    evidence NOT NULL,
+    confidence NOT NULL,
     PRIMARY KEY (owner_id, ordinal)
 ) WITHOUT ROWID;
 
 CREATE VIEW IF NOT EXISTS edge_occurrences AS
 SELECT owner.path AS owner,e.ordinal,s.id AS src,d.id AS dst,e.kind,
-       owner.path AS path,e.line,e.evidence,e.confidence
+        owner.path AS path,e.line,
+        CASE WHEN typeof(e.evidence)='integer' THEN ev.evidence ELSE e.evidence END AS evidence,
+        CASE WHEN typeof(e.confidence)='integer' THEN cv.evidence ELSE e.confidence END AS confidence
 FROM edge_occurrences_raw e
 JOIN path_dictionary owner ON owner.path_id=e.owner_id
 JOIN nodes s ON s.node_hash=e.src_hash
-JOIN nodes d ON d.node_hash=e.dst_hash;
+JOIN nodes d ON d.node_hash=e.dst_hash
+LEFT JOIN coverage_evidence ev ON typeof(e.evidence)='integer' AND ev.evidence_id=e.evidence
+LEFT JOIN coverage_evidence cv ON typeof(e.confidence)='integer' AND cv.evidence_id=e.confidence;
 
 CREATE TABLE IF NOT EXISTS owned_search_raw (
     node_id INTEGER PRIMARY KEY,
@@ -137,10 +175,15 @@ CREATE TABLE IF NOT EXISTS owned_search_raw (
 );
 
 CREATE VIEW IF NOT EXISTS owned_search AS
-SELECT o.owner,o.public_id,0 AS ordinal,s.search_text
+SELECT o.owner,o.public_id,0 AS ordinal,
+       coalesce(s.search_text,n.name || ' ' || n.qualname || ' ' || n.path ||
+           CASE WHEN json_valid(n.details) THEN
+               CASE WHEN json_type(n.details,'$.doc')='text' AND json_extract(n.details,'$.doc')!=''
+               THEN ' ' || json_extract(n.details,'$.doc') ELSE '' END
+           ELSE '' END) AS search_text
 FROM owned_nodes o
 JOIN nodes n ON n.id=o.public_id
-JOIN owned_search_raw s ON s.node_id=n.node_id;
+LEFT JOIN owned_search_raw s ON s.node_id=n.node_id;
 
 CREATE TABLE IF NOT EXISTS dependencies_raw (
     owner_id INTEGER NOT NULL,
@@ -158,17 +201,50 @@ FROM dependencies_raw d
 JOIN path_dictionary owner ON owner.path_id=d.owner_id
 LEFT JOIN files f ON f.path_hash=d.target_hash;
 
-CREATE TABLE IF NOT EXISTS shared_keys (
+CREATE TABLE IF NOT EXISTS shared_keys_raw (
     key_hash INTEGER PRIMARY KEY,
-    key TEXT NOT NULL
+    key NOT NULL
 ) WITHOUT ROWID;
+
+CREATE VIEW IF NOT EXISTS shared_keys AS
+SELECT k.key_hash,CASE WHEN typeof(k.key)='integer' THEN n.qualname ELSE k.key END AS key
+FROM shared_keys_raw k LEFT JOIN nodes_data n ON typeof(k.key)='integer' AND n.node_id=k.key;
+
+CREATE TRIGGER IF NOT EXISTS shared_keys_insert
+INSTEAD OF INSERT ON shared_keys BEGIN
+    INSERT INTO shared_keys_raw VALUES(NEW.key_hash,
+        CASE WHEN typeof(NEW.key) IN('integer','real') THEN CAST(NEW.key AS TEXT) ELSE NEW.key END);
+END;
+
+CREATE TRIGGER IF NOT EXISTS shared_keys_delete
+INSTEAD OF DELETE ON shared_keys BEGIN
+    DELETE FROM shared_keys_raw WHERE key_hash=OLD.key_hash;
+END;
+
+CREATE TRIGGER IF NOT EXISTS shared_keys_update
+INSTEAD OF UPDATE ON shared_keys BEGIN
+    UPDATE shared_keys_raw SET key_hash=NEW.key_hash,
+        key=CASE WHEN typeof(NEW.key) IN('integer','real') THEN CAST(NEW.key AS TEXT) ELSE NEW.key END
+    WHERE key_hash=OLD.key_hash;
+END;
+
+CREATE TRIGGER IF NOT EXISTS nodes_materialize_keys_delete
+BEFORE DELETE ON nodes_data BEGIN
+    UPDATE shared_keys_raw SET key=OLD.qualname WHERE typeof(key)='integer' AND key=OLD.node_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS nodes_materialize_keys_update
+BEFORE UPDATE OF node_id,qualname ON nodes_data
+WHEN NEW.node_id!=OLD.node_id OR NEW.qualname!=OLD.qualname BEGIN
+    UPDATE shared_keys_raw SET key=OLD.qualname WHERE typeof(key)='integer' AND key=OLD.node_id;
+END;
 
 CREATE TABLE IF NOT EXISTS shared_owners_raw (
     kind_id INTEGER NOT NULL CHECK(kind_id BETWEEN 0 AND 2),
     key_hash INTEGER NOT NULL,
     owner_id INTEGER NOT NULL,
     ordinal INTEGER NOT NULL,
-    PRIMARY KEY (kind_id, key_hash, owner_id, ordinal)
+    PRIMARY KEY (owner_id, kind_id, key_hash, ordinal)
 ) WITHOUT ROWID;
 
 CREATE VIEW IF NOT EXISTS shared_owners AS
@@ -242,10 +318,44 @@ INSTEAD OF DELETE ON resolution_coverage BEGIN
       AND evidence_id=(SELECT evidence_id FROM coverage_evidence WHERE evidence=OLD.evidence);
 END;
 
-CREATE TABLE IF NOT EXISTS domain_commitments (
-    domain TEXT PRIMARY KEY,
-    digest TEXT NOT NULL
-);
+CREATE TABLE IF NOT EXISTS domain_commitments_raw (
+    domain TEXT NOT NULL,
+    owner_id INTEGER NOT NULL,
+    digest BLOB NOT NULL,
+    PRIMARY KEY(domain,owner_id)
+) WITHOUT ROWID;
+
+CREATE VIEW IF NOT EXISTS domain_commitments AS
+SELECT CASE WHEN d.owner_id=0 THEN d.domain ELSE 'leaf:' || json_array(d.domain,p.path) END AS domain,
+       CASE WHEN typeof(d.digest)='blob' THEN lower(hex(d.digest)) ELSE d.digest END AS digest
+FROM domain_commitments_raw d LEFT JOIN path_dictionary p ON p.path_id=d.owner_id;
+
+CREATE TRIGGER IF NOT EXISTS domain_commitments_insert
+INSTEAD OF INSERT ON domain_commitments BEGIN
+    INSERT OR IGNORE INTO path_dictionary(path)
+    SELECT json_extract(substr(NEW.domain,6),'$[1]') WHERE NEW.domain LIKE 'leaf:%';
+    INSERT OR REPLACE INTO domain_commitments_raw VALUES(
+        CASE WHEN NEW.domain LIKE 'leaf:%' THEN json_extract(substr(NEW.domain,6),'$[0]') ELSE NEW.domain END,
+        CASE WHEN NEW.domain LIKE 'leaf:%' THEN (SELECT path_id FROM path_dictionary
+            WHERE path=json_extract(substr(NEW.domain,6),'$[1]')) ELSE 0 END,
+        coalesce(unhex(NEW.digest),NEW.digest));
+END;
+
+CREATE TRIGGER IF NOT EXISTS domain_commitments_delete
+INSTEAD OF DELETE ON domain_commitments BEGIN
+    DELETE FROM domain_commitments_raw
+    WHERE domain=CASE WHEN OLD.domain LIKE 'leaf:%' THEN json_extract(substr(OLD.domain,6),'$[0]') ELSE OLD.domain END
+      AND owner_id=CASE WHEN OLD.domain LIKE 'leaf:%' THEN (SELECT path_id FROM path_dictionary
+          WHERE path=json_extract(substr(OLD.domain,6),'$[1]')) ELSE 0 END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS domain_commitments_update
+INSTEAD OF UPDATE OF digest ON domain_commitments BEGIN
+    UPDATE domain_commitments_raw SET digest=coalesce(unhex(NEW.digest),NEW.digest)
+    WHERE domain=CASE WHEN OLD.domain LIKE 'leaf:%' THEN json_extract(substr(OLD.domain,6),'$[0]') ELSE OLD.domain END
+      AND owner_id=CASE WHEN OLD.domain LIKE 'leaf:%' THEN (SELECT path_id FROM path_dictionary
+          WHERE path=json_extract(substr(OLD.domain,6),'$[1]')) ELSE 0 END;
+END;
 
 -- Documentation Sections & Architectural Invariants Table
 CREATE TABLE IF NOT EXISTS doc_sections (
@@ -280,20 +390,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS doc_search USING fts5(
 );
 
 -- Essential Performance Indexes
-CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
-CREATE INDEX IF NOT EXISTS idx_nodes_qualname ON nodes(qualname);
-CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
-CREATE INDEX IF NOT EXISTS idx_nodes_name_nocase ON nodes(name COLLATE NOCASE);
-CREATE INDEX IF NOT EXISTS idx_nodes_qualname_nocase ON nodes(qualname COLLATE NOCASE);
-CREATE INDEX IF NOT EXISTS idx_nodes_path ON nodes(path);
+CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes_data(kind);
+CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes_data(name);
+CREATE INDEX IF NOT EXISTS idx_nodes_qualname ON nodes_data(qualname);
+CREATE INDEX IF NOT EXISTS idx_nodes_path ON nodes_data(path_id);
 CREATE INDEX IF NOT EXISTS idx_node_owner_overrides_owner ON node_owner_overrides(owner);
 CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges_raw(dst_hash, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_raw_path ON edges_raw(path_id);
 CREATE INDEX IF NOT EXISTS idx_doc_sections_path ON doc_sections(path);
 CREATE INDEX IF NOT EXISTS idx_doc_sections_type ON doc_sections(doc_type);
-CREATE INDEX IF NOT EXISTS idx_occurrences_pair ON edge_occurrences_raw(src_hash,dst_hash,kind);
-CREATE INDEX IF NOT EXISTS idx_dependencies_target ON dependencies_raw(target_hash, kind);
-CREATE INDEX IF NOT EXISTS idx_coverage_status ON resolution_coverage_data(status);
+CREATE INDEX IF NOT EXISTS idx_occurrences_pair ON edge_occurrences_raw(src_hash,dst_hash);
+CREATE INDEX IF NOT EXISTS idx_dependencies_target ON dependencies_raw(target_hash, kind) WHERE target_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_coverage_status ON resolution_coverage_data(status) WHERE status IN('unresolved','ambiguous');
+CREATE INDEX IF NOT EXISTS idx_coverage_external ON resolution_coverage_data(path_id) WHERE status='external';
 CREATE INDEX IF NOT EXISTS idx_errors_owner ON errors(path);
-CREATE INDEX IF NOT EXISTS idx_shared_owners_owner ON shared_owners_raw(owner_id);
+CREATE INDEX IF NOT EXISTS idx_shared_owners_key ON shared_owners_raw(kind_id,key_hash) WHERE kind_id=1 OR kind_id=2;
+CREATE INDEX IF NOT EXISTS idx_shared_keys_node ON shared_keys_raw(key) WHERE typeof(key)='integer';
 "#;

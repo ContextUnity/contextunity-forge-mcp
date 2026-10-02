@@ -23,7 +23,15 @@ fn django_path(call: Syntax<'_>, source: &str) -> bool {
     let Some(function) = call.child_by_field_name("function") else {
         return false;
     };
-    matches!(text(function, source), "path" | "re_path" | "urls.path" | "urls.re_path" | "django.urls.path" | "django.urls.re_path")
+    matches!(
+        text(function, source),
+        "path"
+            | "re_path"
+            | "urls.path"
+            | "urls.re_path"
+            | "django.urls.path"
+            | "django.urls.re_path"
+    )
 }
 
 fn methods(call: Syntax<'_>, source: &str, decorated: bool) -> Vec<String> {
@@ -34,9 +42,21 @@ fn methods(call: Syntax<'_>, source: &str, decorated: bool) -> Vec<String> {
         return Vec::new();
     };
     let callee = text(fun, source);
-    let receiver = callee.rsplit_once('.').map(|(receiver, _)| receiver.rsplit('.').next().unwrap_or(receiver));
-    let registration_receiver = receiver.is_some_and(|receiver| matches!(receiver, "app" | "router" | "server" | "api" | "bp" | "blueprint" | "route"));
-    let framework_decorator = decorated && fun.kind() == "identifier" && matches!(callee, "Get" | "Post" | "Put" | "Patch" | "Delete" | "Head" | "Options" | "All" | "Route");
+    let receiver = callee
+        .rsplit_once('.')
+        .map(|(receiver, _)| receiver.rsplit('.').next().unwrap_or(receiver));
+    let registration_receiver = receiver.is_some_and(|receiver| {
+        matches!(
+            receiver,
+            "app" | "router" | "server" | "api" | "bp" | "blueprint" | "route"
+        )
+    });
+    let framework_decorator = decorated
+        && fun.kind() == "identifier"
+        && matches!(
+            callee,
+            "Get" | "Post" | "Put" | "Patch" | "Delete" | "Head" | "Options" | "All" | "Route"
+        );
     if !registration_receiver && !framework_decorator {
         return Vec::new();
     }
@@ -48,8 +68,7 @@ fn methods(call: Syntax<'_>, source: &str, decorated: bool) -> Vec<String> {
     if matches!(
         method.as_str(),
         "get" | "post" | "put" | "patch" | "delete" | "head" | "options" | "all" | "route"
-    )
-    {
+    ) {
         if method == "route" {
             if let Some(args) = call.child_by_field_name("arguments") {
                 let mut c = args.walk();
@@ -279,14 +298,47 @@ pub(crate) fn registration(
 }
 
 fn literal_handler(node: Syntax<'_>) -> bool {
-    matches!(node.kind(), "string" | "string_literal" | "concatenated_string" | "template_string" | "integer" | "float" | "number" | "true" | "false" | "none" | "null" | "array" | "list" | "tuple" | "set" | "dictionary" | "object")
-        || (matches!(node.kind(), "unary_operator" | "unary_expression")
-            && node.named_child(0).is_some_and(|child| literal_handler(unwrapped(child))))
+    matches!(
+        node.kind(),
+        "string"
+            | "string_literal"
+            | "concatenated_string"
+            | "template_string"
+            | "integer"
+            | "float"
+            | "number"
+            | "true"
+            | "false"
+            | "none"
+            | "null"
+            | "array"
+            | "list"
+            | "tuple"
+            | "set"
+            | "dictionary"
+            | "object"
+    ) || (matches!(node.kind(), "unary_operator" | "unary_expression")
+        && node
+            .named_child(0)
+            .is_some_and(|child| literal_handler(unwrapped(child))))
 }
 
 fn unwrapped(mut node: Syntax<'_>) -> Syntax<'_> {
-    while node.kind() == "parenthesized_expression" {
-        let Some(inner) = node.named_child(0) else {
+    while matches!(
+        node.kind(),
+        "parenthesized_expression" | "as_expression" | "type_assertion" | "non_null_expression"
+    ) {
+        let mut cursor = node.walk();
+        let inner = if node.kind() == "type_assertion" {
+            node.child_by_field_name("expression").or_else(|| {
+                node.named_children(&mut cursor)
+                    .find(|child| child.kind() != "type_arguments")
+            })
+        } else {
+            node.child_by_field_name("expression")
+                .or_else(|| node.named_child(0))
+        };
+        let Some(inner) = inner else {
             break;
         };
         node = inner;

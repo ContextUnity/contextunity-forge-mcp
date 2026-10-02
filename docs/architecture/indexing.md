@@ -23,6 +23,11 @@ CLI build / scan / delta             MCP request
 
 ## Ownership and data flow
 
+> [!IMPORTANT]
+> Invariant: Every capability exposed through the MCP JSON-RPC protocol maintains
+> equivalent CLI command coverage under `contextunity-forge-mcp`. Both surfaces
+> share the same underlying storage, analysis, and execution engines (see [ADR 0001](../adr/0001-dual-surface-parity.md)).
+
 - `src/cli/` owns command parsing, build commands, and command output.
 - `src/mcp/` owns the 15 tool schemas, request validation, freshness checks, and bounded responses.
 - `src/engine/scanner.rs` owns admitted file inventory, roots, ignores, linked workspaces, and scan limits.

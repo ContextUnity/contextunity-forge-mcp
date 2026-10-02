@@ -120,7 +120,7 @@ fn source_only_scope_removes_bundles_without_hiding_consumer_sources() {
         "library/frontend/src/grid.ts",
         "export function updated_grid() {}\n",
     );
-    std::thread::sleep(std::time::Duration::from_millis(2100));
+    std::thread::sleep(std::time::Duration::from_millis(5100));
     let changed = inventory(&server);
     assert_eq!(changed["freshness"]["refresh"], "delta");
     assert_ne!(

@@ -2,7 +2,7 @@
 id: m-repository-task-lifecycle
 title: "Repository-owned task lifecycle"
 doc_type: contract
-status: deferred
+status: in_progress
 depends_on: []
 owners:
   - src/mcp/
@@ -16,6 +16,7 @@ invariants:
   - "INV-TASK-AUTHORITY: Git milestone files own task specifications."
   - "INV-TASK-RECEIPT: Accepted handoff requires a matching synchronously read receipt."
   - "INV-TASK-RETENTION: Completed operational tasks have a 14-day grace period."
+  - "INV-TASK-MULTI-WORKSPACE: Linked workspaces with enabled tasks expose scoped task discovery, local AGENTS.md guidance, and repository-confined paths."
 related_plans:
   - docs/plans/architecture-and-modularity.md
   - docs/plans/tool-performance-and-db-optimization.md
@@ -27,14 +28,15 @@ related_plans:
 
 Implement lightweight task coordination connecting Git milestone specifications,
 isolated worktrees, verified delivery gates, and durable completion receipts.
-This is a deferred target contract. Current registered interfaces remain described
-in the [MCP reference](../reference/mcp-tools.md).
+The implementation is admitted by the October 2, 2026 owner request. Registered
+interfaces are described in the [MCP reference](../reference/mcp-tools.md).
 
-Activate after the owner accepts prerequisite tool readiness under the
+The owner request admits implementation and verification in the task-lifecycle
+worktree. Final receipts and completed status wait for the owner's separate
+commit command. This file owns the task workflow; the
 [architecture plan](../plans/architecture-and-modularity.md) and
-[performance plan](../plans/tool-performance-and-db-optimization.md), then admits
-the concrete Rust implementation contract and proof. Verify current source before
-choosing module boundaries. This file owns the planned task workflow.
+[performance plan](../plans/tool-performance-and-db-optimization.md) retain their
+independent commitments.
 
 ## Git specifications and evolving commitments
 
@@ -65,10 +67,13 @@ Example: “До майлстоуна оптимізації мов додаєт
 ## Four flat task tools
 
 ```text
-task_ready(stage: "build" | "review" | null)
+task_list(milestone_ref?: string,
+          status?: "ready" | "in_progress" | "blocked" | "completed" | "all",
+          stage?: "build" | "review" | null,
+          repository?: string)
 task_claim(task_id, stage, worker_id, worktree)
 task_submit(task_id, stage, evidence_ref, action: "pass" | "reject", findings?)
-task_manage(action: "create" | "inspect" | "delete" | "extend_scope",
+task_manage(action: "create" | "sync" | "inspect" | "delete" | "extend_scope",
             task_id?: string, milestone_ref?: string, task_ref?: string,
             paths?: list[string], force: bool = false)
 ```
@@ -82,11 +87,12 @@ Reject unknown fields and incompatible selector combinations:
 | Action | Required fields | Additional constraints |
 |---|---|---|
 | create | Indexed milestone_ref and task_ref | Omit task_id/paths; force=false. |
+| sync | milestone_ref | Omit task_id/task_ref/paths; force=false. |
 | inspect | task_id | Omit milestone/task refs/paths; force=false. |
 | delete | task_id or milestone_ref | Exactly one selector; omit task_ref/paths. |
 | extend_scope | task_id and nonempty paths | Omit milestone/task refs; force=false. |
 
-Create reads the indexed task block, mapping target to goal and scope to
+Create synchronously reads the Git task block, mapping target to goal and scope to
 allowed_write_scope. Stable identity is repository/project/milestone_id:task_ref.
 Repeated create returns the same descriptor and status. Changed admitted
 specifications require contract re-admission. After operational cleanup, completed
@@ -95,9 +101,10 @@ Inspect returns retained attempts, gates, findings, and audit history.
 
 ## Worktrees, claims, and configuration
 
-Configure the shared tasks.sqlite path explicitly in forge-mcp.yaml. Open absolute
-paths directly; normalize relative paths from the config directory. Every worktree
-instance points to the same absolute operational store. Keep this authoritative
+The tracked configuration uses `tasks_db: .forge/tasks.sqlite`; omission of the
+key has the same default. Open absolute paths directly and normalize relative
+paths from the config directory. Configure a shared path locally for agents
+coordinating across worktrees. Keep this authoritative
 store separate from rebuildable code indexes and define schema recovery.
 
 Task readiness returns unclaimed nonterminal tasks with satisfied prerequisites.
@@ -238,8 +245,25 @@ receipts have their own retention policies. Index rebuild preserves task state.
 
 ## Implementation task specifications
 
-These target specifications remain deferred with the milestone. Resolve concrete
-module boundaries and evidence in design/contract before claiming build.
+The owner admits these feature slices. The shared task service lives in
+`src/engine/tasks.rs`; MCP and CLI adapt its typed arguments. Specifications and
+receipt models live in `src/core/tasks/`, while `src/db/tasks_store.rs` owns the
+independent WAL database. Proof modules extend the existing `core_basics` and
+`mcp_context` integration suites.
+
+`task_list` defaults strictly to ready. Evidence references are worktree-relative
+YAML or JSON files binding task ID, versioned gate, claim/contract revisions,
+worker, canonical worktree, implementation commit, and proof. Accepted retries
+return the stored result. An amended task specifies a larger `contract_revision`
+before sync resets its gates and revokes ownership. Frozen scope roots remain
+unchanged by ordinary extensions. Use the [task reference](../reference/tasks.md)
+for wire fields, receipt shape, and administration.
+
+The implementation admits five independent-review security contours: path and
+scope confinement, claim fencing, transactional concurrency, project isolation,
+and administrative recovery/deletion. Review proof records applicability and
+evidence for `paths`, `claims`, `concurrency`, `project_isolation`, and
+`administration` before handoff.
 
 ### task: specifications-and-store
 
@@ -261,7 +285,7 @@ and task-state survival across index rebuilds.
 task_ref: task-tools-and-coordination
 target: "Реалізувати чотири MCP-тулзи, claims та розширення скоупу"
 proof_policy: seam-test-first
-scope: [src/mcp/, src/core/, src/db/, src/engine/, tests/]
+scope: [src/mcp/, src/cli/, src/core/, src/db/, src/engine/, tests/]
 ```
 
 Admit the flat schema, task envelopes, atomic claims/revisions, ready/inspect,
@@ -307,3 +331,71 @@ Exercise the complete lifecycle in independent worktrees, retrieval of milestone
 sections, archival after final handoff, index filtering, and recovery. Align
 current reference/agent guidance after capability admission. Record exact
 commands, candidates, retrieval results, and lifecycle proof before activation.
+
+### task: multi-workspace-and-linked-repository-tasks
+
+```yaml
+task_ref: multi-workspace-and-linked-repository-tasks
+target: "Підтримати мультирепозиторні завдання (linked_workspaces), локальний AGENTS.md, нормалізацію CRLF та відносний tasks_db"
+proof_policy: seam-test-first
+scope:
+  - src/engine/tasks.rs
+  - src/db/tasks_store.rs
+  - src/mcp/tasks.rs
+  - src/core/tasks/
+  - forge-mcp.yaml
+  - docs/
+  - tests/
+status: ready
+```
+
+1. **Configuration & Resilience**:
+   - Update `forge-mcp.yaml` to use relative `tasks_db: .forge/tasks.sqlite` and provide a fallback default in `TaskSettings`.
+   - Normalize CRLF line endings (`\r\n` -> `\n`) in `Milestone::parse` to prevent parsing failures on Windows / mixed checkouts.
+   - Resolve repository identity dynamically from configuration instead of hardcoding `"forge-mcp"`.
+2. **Linked Workspaces Task Discovery**:
+   - In `forge-mcp.yaml`, allow `linked_workspaces` entries to configure `tasks: { enabled: bool, milestones_dir?: string, agents_md?: string }`.
+   - By default, `task_list` returns only tasks for the primary repository. Supplying `repository: "<name>"` or `repository: "all"` queries linked workspaces.
+   - Graceful handling: linked workspaces without a `docs/milestones` directory or with `tasks.enabled: false` are safely ignored without errors.
+3. **Local Guidance & Scope Confinement**:
+   - `task inspect` and `task claim` return `workspace_root` and `agents_guidance` pointing to the task's repository-local `AGENTS.md` (e.g. `traverse/AGENTS.md`).
+   - Confine `allowed_write_scope` and `extend_scope` to the root of the task's owning repository.
+
+## Implementation verification and pending acceptance
+
+The implementation remains uncommitted in `.worktrees/task-lifecycle` on branch
+`task-lifecycle`, based on `7ca68c316f53f98550c825571f85604ce4527160`.
+That base identifies the comparison point; it is not an implementation receipt.
+
+The public integration suites exercise specification parsing, independent WAL
+storage surviving a code-index rebuild, default-ready filtering, concurrent
+claims, revision fencing, confined scope extension, independent review,
+remediation, synchronous receipt validation, retention boundaries, cascading
+deletion, project isolation, reset, and idempotent CLI migration. The stdio
+lifecycle test uses separate builder and reviewer worktrees and completes all
+five gates with fixture evidence. Fixture commit values are test inputs.
+
+The live worktree pilot synchronized all five admitted tasks and exercised
+`task list`, `task claim`, `task inspect`, and `task reset`. Reset cleared the
+pilot owner and returned the claimed task to ready with a higher revision.
+Forge MCP retrieved this milestone's implementation specification and the task
+reference's gates/evidence section from the correct worktree; graph metadata
+reported zero stored parse errors. Changed documentation has valid frontmatter
+keys and resolvable relative file links.
+
+Verification commands and local logs:
+
+- `cargo test --all-targets`: 409 passed, 0 failed, 3 ignored;
+  `/tmp/forge-task-lifecycle-final-tests.log`.
+- `cargo test --test commitment_integrity`: 12 passed;
+  `/tmp/forge-task-lifecycle-final-commitment.log`.
+- `cargo clippy --all-targets --all-features -- -D warnings`: passed without warnings;
+  `/tmp/forge-task-lifecycle-final-clippy.log`.
+- `git diff --check`: clean.
+
+The owner separately authorized the existing Vue resolution assertion to select
+the call on line 2; its previous failure is reproducible on the base commit.
+
+Final acceptance stays open. A tested implementation commit, actual independent
+review evidence, durable per-task receipts, live handoffs, and milestone archival
+await the owner's separate commit command. The milestone remains in_progress.

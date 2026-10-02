@@ -1571,6 +1571,9 @@ fn receiver_type_name(annotation: &str) -> Option<Cow<'_, str>> {
         }
         name = name.strip_prefix("mut ").unwrap_or(name).trim_start();
     }
+    if let Some((base, _)) = name.split_once('[') {
+        name = base.trim_end();
+    }
     if name.is_empty()
         || !name.chars().all(|character| {
             character.is_alphanumeric() || matches!(character, '_' | '.' | ':' | '$')

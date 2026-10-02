@@ -822,16 +822,7 @@ pub fn search_page(
     )
 }
 
-fn search_range(
-    source: &str,
-    path: &str,
-    language: &str,
-    pattern: &str,
-    offset: usize,
-    limit: usize,
-    mut budget: SearchBudget,
-) -> Result<SearchPage> {
-    let bounded = budget.deadline.is_some();
+fn normalize_search_pattern(pattern: &str) -> String {
     let mut normalized = String::new();
     let mut chars = pattern.chars().peekable();
     while let Some(c) = chars.next() {
@@ -850,6 +841,43 @@ fn search_range(
             normalized.push(c);
         }
     }
+    normalized
+}
+
+pub(crate) fn pattern_symbol_name(pattern: &str, language: &str) -> Result<Option<String>> {
+    let profile = languages::require(language)?;
+    let mut normalized = normalize_search_pattern(pattern);
+    profile.prepare_pattern(&mut normalized);
+    let mut parser = profile.create_parser("__forge_pattern__")?;
+    let tree = parser.parse(&normalized, None).context("invalid pattern")?;
+    anyhow::ensure!(
+        !tree.root_node().has_error(),
+        "pattern is not valid {language} syntax"
+    );
+    let mut node = tree.root_node();
+    while node.named_child_count() == 1 && profile.pattern_wrapper(node.kind()) {
+        node = node.named_child(0).context("empty pattern")?;
+    }
+    if profile.symbol_with_source(node, &normalized).is_none() {
+        return Ok(None);
+    }
+    Ok(profile
+        .symbol_name(node, &normalized)
+        .filter(|name| !name.contains("__FORGE_"))
+        .map(str::to_owned))
+}
+
+fn search_range(
+    source: &str,
+    path: &str,
+    language: &str,
+    pattern: &str,
+    offset: usize,
+    limit: usize,
+    mut budget: SearchBudget,
+) -> Result<SearchPage> {
+    let bounded = budget.deadline.is_some();
+    let mut normalized = normalize_search_pattern(pattern);
     let profile = languages::require(language)?;
     let partial_body = profile.prepare_pattern(&mut normalized);
     let mut parser = profile.create_parser(path)?;

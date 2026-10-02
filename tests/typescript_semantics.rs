@@ -609,18 +609,24 @@ fn straight_line_factory_returns_prove_chains_and_reject_cycles_or_branches() {
 #[test]
 fn generic_containers_prove_only_documented_container_members() {
     let members = "push pop shift unshift slice splice indexOf includes join map filter forEach reduce find findIndex some every flat flatMap";
-    let member_calls = members.split_whitespace().map(|member| format!("items.{member}();")).collect::<String>();
+    let member_calls = members
+        .split_whitespace()
+        .map(|member| format!("items.{member}();"))
+        .collect::<String>();
     for annotation in ["Array<Worker>", "Worker[]", "Array<Array<Worker>>"] {
         let source = format!("class Worker {{ work() {{}} }} function run() {{ const items: {annotation} = []; {member_calls} items.work(); }}");
         let facts = ast::extract("generic.ts", "typescript", &source).unwrap();
         let graph = linker::link(&BTreeMap::from([("generic.ts".into(), facts)]));
-        for member in members.split_whitespace() { assert!(
-            graph
-                .coverage
-                .iter()
-                .any(|row| row.expression == format!("items.{member}") && row.status == "resolved"),
-            "{annotation}: {member}"
-        ); }
+        for member in members.split_whitespace() {
+            assert!(
+                graph
+                    .coverage
+                    .iter()
+                    .any(|row| row.expression == format!("items.{member}")
+                        && row.status == "resolved"),
+                "{annotation}: {member}"
+            );
+        }
         assert!(!graph.edges.iter().any(|edge| edge.evidence == "items.work"));
     }
     let source = "class Array<T> { custom() {} } function run() { const items: Array<string> = unknown(); items.map(); }";
@@ -696,7 +702,7 @@ fn namespace_factory_summaries_require_public_exports() {
 
 #[test]
 fn finite_browser_globals_resolve_in_javascript_and_typescript() {
-    let expressions = "fetch alert confirm prompt document.querySelector document.querySelectorAll document.getElementById document.getElementsByClassName document.getElementsByTagName document.createElement document.createTextNode document.addEventListener document.removeEventListener window.addEventListener window.removeEventListener window.dispatchEvent window.setTimeout window.clearTimeout window.setInterval window.clearInterval window.requestAnimationFrame window.cancelAnimationFrame localStorage.getItem localStorage.setItem localStorage.removeItem localStorage.clear sessionStorage.getItem sessionStorage.setItem sessionStorage.removeItem sessionStorage.clear console.debug console.info console.trace console.table";
+    let expressions = "fetch alert confirm prompt document.querySelector document.querySelectorAll document.getElementById document.getElementsByClassName document.getElementsByTagName document.createElement document.createTextNode document.addEventListener document.removeEventListener window.addEventListener window.removeEventListener window.dispatchEvent window.setTimeout window.clearTimeout window.setInterval window.clearInterval window.requestAnimationFrame window.cancelAnimationFrame localStorage.getItem localStorage.setItem localStorage.removeItem localStorage.clear sessionStorage.getItem sessionStorage.setItem sessionStorage.removeItem sessionStorage.clear console.debug console.info console.trace console.table URL FormData HTMLElement";
     let source = r#"function run() { const handler = () => {};
         fetch('/api'); alert('message'); confirm('message'); prompt('message');
         document.querySelector('div'); document.querySelectorAll('div'); document.getElementById('item'); document.getElementsByClassName('item'); document.getElementsByTagName('div');
@@ -706,24 +712,55 @@ fn finite_browser_globals_resolve_in_javascript_and_typescript() {
         localStorage.getItem('key'); localStorage.setItem('key', 'value'); localStorage.removeItem('key'); localStorage.clear();
         sessionStorage.getItem('key'); sessionStorage.setItem('key', 'value'); sessionStorage.removeItem('key'); sessionStorage.clear();
         console.debug('message'); console.info('message'); console.trace('message'); console.table([]);
+        URL('/path', 'https://example.test'); FormData(); HTMLElement();
     }"#;
     for (path, language) in [("browser.ts", "typescript"), ("browser.js", "javascript")] {
         let facts = ast::extract(path, language, source).unwrap();
         assert!(facts.errors.is_empty(), "{facts:#?}");
         let graph = linker::link(&BTreeMap::from([(path.to_owned(), facts)]));
         for expression in expressions.split_whitespace() {
-            assert!(graph.coverage.iter().any(|row| row.expression == expression && row.status == "resolved"), "{language}: {expression}");
+            assert!(
+                graph
+                    .coverage
+                    .iter()
+                    .any(|row| row.expression == expression && row.status == "resolved"),
+                "{language}: {expression}"
+            );
         }
     }
 }
 
 #[test]
 fn browser_names_preserve_local_providers_and_unknown_parameter_boundaries() {
-    assert_eq!(calls(&[("local.ts", "function fetch() {} function run() { fetch(); }")], "fetch"), ["local.ts"]);
+    assert_eq!(
+        calls(
+            &[(
+                "local.ts",
+                "function fetch() {} function run() { fetch(); }"
+            )],
+            "fetch"
+        ),
+        ["local.ts"]
+    );
     assert_eq!(calls(&[("local.ts", "class Document { querySelector() {} } function run(document: Document) { document.querySelector(); }")], "document.querySelector"), ["local.ts"]);
-    let facts = ast::extract("shadow.ts", "typescript", "function run(fetch, document, window, localStorage, sessionStorage) { fetch('/api'); document.querySelector('div'); window.addEventListener('click', handler); localStorage.getItem('key'); sessionStorage.clear(); }").unwrap();
+    let facts = ast::extract("shadow.ts", "typescript", "function run(fetch, document, window, localStorage, sessionStorage, URL, FormData, HTMLElement) { fetch('/api'); document.querySelector('div'); window.addEventListener('click', handler); localStorage.getItem('key'); sessionStorage.clear(); URL('/api'); FormData(); HTMLElement(); }").unwrap();
     let graph = linker::link(&BTreeMap::from([("shadow.ts".to_owned(), facts)]));
-    for expression in ["fetch", "document.querySelector", "window.addEventListener", "localStorage.getItem", "sessionStorage.clear"] {
-        assert!(graph.coverage.iter().any(|row| row.expression == expression && row.status == "unresolved"), "{expression}");
+    for expression in [
+        "fetch",
+        "document.querySelector",
+        "window.addEventListener",
+        "localStorage.getItem",
+        "sessionStorage.clear",
+        "URL",
+        "FormData",
+        "HTMLElement",
+    ] {
+        assert!(
+            graph
+                .coverage
+                .iter()
+                .any(|row| row.expression == expression && row.status == "unresolved"),
+            "{expression}"
+        );
     }
 }

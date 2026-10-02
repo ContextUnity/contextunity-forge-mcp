@@ -1,0 +1,52 @@
+{
+  "measured_at": "2026-10-02T01:08:51.856644+00:00",
+  "root": "/home/oleksii/ContextUnity/worktrees/commerce-release-update",
+  "db": "/tmp/bench-cru-cold.db",
+  "binary": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/target/release/contextunity-forge-mcp",
+  "repeats": 30,
+  "scenarios": {
+    "search_symbol": {
+      "first_ms": 128.829464,
+      "median_ms": 19.428462500000002,
+      "p95_ms": 23.436819,
+      "max_ms": 23.682322,
+      "result_total": null
+    },
+    "search_text": {
+      "first_ms": 14.257852,
+      "median_ms": 17.2120125,
+      "p95_ms": 24.24903,
+      "max_ms": 24.52429,
+      "result_total": null
+    },
+    "search_prefix": {
+      "first_ms": 17.344202,
+      "median_ms": 14.331156499999999,
+      "p95_ms": 17.235928,
+      "max_ms": 18.367021,
+      "result_total": null
+    },
+    "tests": {
+      "first_ms": 3.751524,
+      "median_ms": 3.4136615,
+      "p95_ms": 3.785287,
+      "max_ms": 4.001876,
+      "result_total": 12
+    },
+    "ast_workspace": {
+      "first_ms": 15.828264,
+      "median_ms": 15.4276135,
+      "p95_ms": 17.794481,
+      "max_ms": 18.996237,
+      "result_total": 1
+    }
+  },
+  "binary_sha256": "0fe7cf9afabbde7d5e4705f826d6457742fabeabd41182e147cce8dd07be9a2e",
+  "database_bytes": 176717824,
+  "metadata": {
+    "corpus_hash": "0538516cdc901786517dfb0f7b30f8f88a8852d753ee67cdd13f9906d0cf131e",
+    "index_semantics_version": "9:compact-storage-v8:473a11f3db3f0a51277435b533d149694d720e457c4b097427f18818cb56736e",
+    "output_root": "825f0276bad7d30f67bdd40a2ac8c60a7ca794f8ef87617eb255cfdcea4cb678",
+    "schema_version": "9"
+  }
+}

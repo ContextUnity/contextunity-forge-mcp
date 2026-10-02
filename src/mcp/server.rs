@@ -9,7 +9,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-const INVENTORY_FRESHNESS_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+const INVENTORY_FRESHNESS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct CachedConnection {
     identity: Identity,
@@ -235,6 +235,7 @@ impl Server {
                 if let Some(freshness) = &cached.freshness {
                     let mut freshness = freshness.clone();
                     freshness.refresh = "none";
+                    freshness.inventory_scan_ms = 0.0;
                     return Ok(freshness);
                 }
             }

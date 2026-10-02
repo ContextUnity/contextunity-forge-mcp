@@ -54,6 +54,23 @@ pub(super) fn unique_module_aliases(node: Node<'_>, source: &str) -> HashSet<Str
         if let Some(target) = target {
             targets(target, source, super::type_alias(node, source), writes);
         }
+        if matches!(node.kind(), "import_statement" | "import_from_statement") {
+            let mut cursor = node.walk();
+            for child in node.children_by_field_name("name", &mut cursor) {
+                let name = field(child, source, "alias")
+                    .or_else(|| field(child, source, "name"))
+                    .unwrap_or_else(|| text(child, source));
+                let bound = if node.kind() == "import_statement" && !child.kind().contains("alias")
+                {
+                    name.split('.').next().unwrap_or(name)
+                } else {
+                    name
+                };
+                let entry = writes.entry(bound.to_owned()).or_insert((0, true));
+                entry.0 += 1;
+                entry.1 = false;
+            }
+        }
         if node.kind() == "delete_statement" {
             let mut cursor = node.walk();
             for target in node.named_children(&mut cursor) {
@@ -116,8 +133,13 @@ fn annotation(node: Node<'_>, source: &str) -> TypeExpr {
             }
             let mut cursor = node.walk();
             let arguments: Vec<_> = if node.kind() == "subscript" {
-                node.children_by_field_name("subscript", &mut cursor)
-                    .collect()
+                let subs: Vec<_> = node.children_by_field_name("subscript", &mut cursor).collect();
+                if subs.len() == 1 && subs[0].kind() == "tuple" {
+                    let mut tuple_cursor = subs[0].walk();
+                    subs[0].named_children(&mut tuple_cursor).collect()
+                } else {
+                    subs
+                }
             } else {
                 let Some(parameters) = node.named_child(1) else {
                     return TypeExpr::Unknown;

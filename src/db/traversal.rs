@@ -38,14 +38,11 @@ fn removal_assessment(
     json!({"verdict":if reasons.is_empty() {"no_indexed_blockers"} else {"blocked"},"blocking_reasons":reasons})
 }
 
-fn removal_diagnostics(
-    conn: &Connection,
-    selected_ids: &[String],
-) -> Result<(usize, usize, usize, usize)> {
+fn removal_diagnostics(conn: &Connection, selected_ids: &[String]) -> Result<(usize, usize)> {
     let ids = serde_json::to_string(selected_ids)?;
     let target_unresolved = paging::count(
         conn,
-        "SELECT count(*) FROM resolution_coverage c WHERE c.status IN('unresolved','ambiguous') AND (c.expression IN (SELECT n.name FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR c.expression IN (SELECT n.qualname FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR EXISTS(SELECT 1 FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1)) AND (c.expression LIKE '%.'||n.name OR c.expression LIKE '%::'||n.name)) OR c.path IN (SELECT n.path FROM nodes n WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) OR c.path IN (SELECT e.path FROM edges e JOIN nodes m ON m.id=e.dst_public_id WHERE e.kind='imports' AND m.kind='module' AND m.path IN (SELECT n.path FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1)))))",
+        "SELECT count(*) FROM resolution_coverage c WHERE c.status IN('unresolved','ambiguous') AND (c.expression IN (SELECT n.name FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR c.expression IN (SELECT n.qualname FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR c.path IN (SELECT n.path FROM nodes n WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) OR (EXISTS(SELECT 1 FROM nodes n WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) AND c.path IN (SELECT e.path FROM edges e JOIN nodes m ON m.id=e.dst_public_id WHERE e.kind='imports' AND m.path IN (SELECT n.path FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))))))",
         &[&ids],
     )?;
     let target_errors = paging::count(
@@ -53,18 +50,7 @@ fn removal_diagnostics(
         "SELECT count(*) FROM errors WHERE path IN (SELECT n.path FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1)))",
         &[&ids],
     )?;
-    let workspace_unresolved = paging::count(
-        conn,
-        "SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous')",
-        &[],
-    )?;
-    let workspace_errors = paging::count(conn, "SELECT count(*) FROM errors", &[])?;
-    Ok((
-        target_unresolved,
-        target_errors,
-        workspace_unresolved,
-        workspace_errors,
-    ))
+    Ok((target_unresolved, target_errors))
 }
 
 pub(super) fn immediate_links(
@@ -234,10 +220,10 @@ pub fn removal(conn: &Connection, selector: &str) -> Result<Value> {
     let encoded = serde_json::to_string(&ids)?;
     let sql = format!("SELECT e.* FROM edges e WHERE e.dst_public_id IN(SELECT value FROM json_each(?1)) AND e.src_public_id NOT IN(SELECT value FROM json_each(?1)) AND e.kind NOT IN('contains','references_doc',{REVERSE_DEPENDENCIES}) UNION SELECT e.* FROM edges e WHERE e.src_public_id IN(SELECT value FROM json_each(?1)) AND e.dst_public_id NOT IN(SELECT value FROM json_each(?1)) AND e.kind IN({REVERSE_DEPENDENCIES}) ORDER BY path,line");
     let callers = reader::rows(conn, &sql, &[&encoded], 1001)?;
-    let (target_unresolved, target_errors, workspace_unresolved, workspace_errors) =
-        removal_diagnostics(conn, &ids)?;
+    let (target_unresolved, target_errors) = removal_diagnostics(conn, &ids)?;
+    let target_safe_to_remove = callers.is_empty() && target_unresolved == 0 && target_errors == 0;
     Ok(
-        json!({"assessment":removal_assessment(callers.len(),callers.len()<1001,target_unresolved,target_errors),"selector":selector,"selected_ids":ids,"incoming_dependencies":callers,"unresolved_references":workspace_unresolved,"target_unresolved_references":target_unresolved,"parse_errors":workspace_errors,"workspace_has_unresolved":workspace_unresolved>0,"workspace_errors_count":workspace_errors,"safe_to_remove":callers.is_empty()&&target_unresolved==0&&target_errors==0,"proof_scope":"indexed static references only; dynamic entrypoints and external callers require separate authority"}),
+        json!({"assessment":removal_assessment(callers.len(),callers.len()<1001,target_unresolved,target_errors),"selector":selector,"selected_ids":ids,"incoming_dependencies":callers,"target_safe_to_remove":target_safe_to_remove,"safe_to_remove":target_safe_to_remove,"unresolved_references":target_unresolved,"target_unresolved_references":target_unresolved,"parse_errors":target_errors,"target_parse_errors":target_errors,"proof_scope":"indexed static references only; dynamic entrypoints and external callers require separate authority"}),
     )
 }
 pub use super::cycles::cycles;
@@ -546,15 +532,14 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
         .iter()
         .filter_map(|node| node["id"].as_str().map(str::to_owned))
         .collect();
-    let (target_unresolved, target_errors, workspace_unresolved, workspace_errors) =
-        removal_diagnostics(conn, &selected_ids)?;
+    let (target_unresolved, target_errors) = removal_diagnostics(conn, &selected_ids)?;
     let callers = paging::query(conn, &format!("SELECT {} FROM ({dependencies}) d JOIN edges e ON e.src_public_id=d.src_public_id AND e.dst_public_id=d.dst_public_id AND e.kind=d.kind ORDER BY e.path,e.line,e.src_public_id,e.dst_public_id,e.kind", paging::edges("e", options.detail)), &[&selected_id], options)?;
+    let target_safe_to_remove =
+        dependency_count == 0 && target_unresolved == 0 && target_errors == 0;
     Ok(
         json!({"assessment":removal_assessment(dependency_count,true,target_unresolved,target_errors),"selector":selector,
         "selected_ids":paging::value(selected, file_count.max(1), options, &generation),
-        "incoming_dependencies":callers,"unresolved_references":workspace_unresolved,"target_unresolved_references":target_unresolved,"parse_errors":workspace_errors,
-        "workspace_has_unresolved":workspace_unresolved>0,"workspace_errors_count":workspace_errors,
-        "safe_to_remove":dependency_count == 0 && target_unresolved == 0 && target_errors == 0,
+        "incoming_dependencies":callers,"target_safe_to_remove":target_safe_to_remove,"safe_to_remove":target_safe_to_remove,"unresolved_references":target_unresolved,"target_unresolved_references":target_unresolved,"parse_errors":target_errors,"target_parse_errors":target_errors,
         "proof_scope":"indexed static references only; dynamic entrypoints and external callers require separate authority",
         "generation":generation}),
     )

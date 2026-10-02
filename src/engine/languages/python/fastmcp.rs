@@ -104,15 +104,21 @@ pub(super) fn module_assignment(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) 
         .and_then(|node| node.child_by_field_name("function"))
         .map(|node| text(node, ctx.source));
     let name = text(left, ctx.source);
+    let module_id: String = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == "module")
+        .map(|m| m.id.clone())
+        .unwrap_or_else(|| ctx.owner.to_owned());
     let tracked = facts
         .nodes
         .iter()
-        .find(|node| node.id == ctx.owner)
+        .find(|node| node.id == module_id)
         .and_then(|module| module.details["assignment_events"].as_array())
         .is_some_and(|events| events.iter().any(|event| event["name"] == name));
     let imported = facts.references.iter().any(|reference| {
         reference.kind == "imports"
-            && reference.source == ctx.owner
+            && reference.source == module_id
             && (reference.alias.as_deref() == callee || reference.alias.as_deref() == Some(name))
             && matches!(
                 reference.module.as_deref(),
@@ -125,7 +131,7 @@ pub(super) fn module_assignment(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) 
     {
         return;
     }
-    if let Some(module) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+    if let Some(module) = facts.nodes.iter_mut().find(|node| node.id == module_id) {
         let events = module.details["assignment_events"].as_array_mut();
         if let Some(events) = events {
             events.push(json!({"name":name,"callee":callee,"line":ctx.line()}));

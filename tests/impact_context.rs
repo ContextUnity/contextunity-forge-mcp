@@ -177,10 +177,10 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
         [],
     )?;
     let unrelated = traversal::removal_paged(&conn, "orphan", &options(10, 0, Detail::Compact)?)?;
+    assert_eq!(unrelated["target_safe_to_remove"], true);
     assert_eq!(unrelated["safe_to_remove"], true);
     assert_eq!(unrelated["target_unresolved_references"], 0);
-    assert_eq!(unrelated["workspace_has_unresolved"], true);
-    assert_eq!(unrelated["workspace_errors_count"], 1);
+    assert_eq!(unrelated["target_parse_errors"], 0);
     let result = traversal::removal_paged(&conn, "b", &options(10, 0, Detail::Compact)?)?;
     assert_eq!(result["assessment"]["verdict"], "blocked");
     assert_eq!(
@@ -200,14 +200,29 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     );
     assert_eq!(result["assessment"]["blocking_reasons"][0]["count"], 1);
     assert_eq!(result["target_unresolved_references"], 0);
-    assert_eq!(result["unresolved_references"], 1);
-    assert_eq!(result["parse_errors"], 1);
-    assert_eq!(result["workspace_errors_count"], 1);
+    assert_eq!(result["target_parse_errors"], 0);
+    assert_eq!(result["target_safe_to_remove"], false);
     assert_eq!(result["safe_to_remove"], false);
     assert_eq!(result["incoming_dependencies"]["total"], 1);
     assert!(result["proof_scope"]
         .as_str()
         .unwrap_or("")
         .contains("indexed static references only"));
+
+    // Target-scoped unresolved reference blocks removal
+    conn.execute(
+        "INSERT INTO resolution_coverage(path,line,expression,status,evidence) VALUES('caller.py',1,'orphan','unresolved','fixture')",
+        [],
+    )?;
+    let blocked_target =
+        traversal::removal_paged(&conn, "orphan", &options(10, 0, Detail::Compact)?)?;
+    assert_eq!(blocked_target["target_safe_to_remove"], false);
+    assert_eq!(blocked_target["safe_to_remove"], false);
+    assert_eq!(blocked_target["target_unresolved_references"], 1);
+    assert_eq!(blocked_target["assessment"]["verdict"], "blocked");
+    assert_eq!(
+        blocked_target["assessment"]["blocking_reasons"][0]["kind"],
+        "unresolved_references"
+    );
     Ok(())
 }

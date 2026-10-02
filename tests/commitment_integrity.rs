@@ -3,6 +3,8 @@ use contextunity_forge_mcp::{
     db::writer,
 };
 use rusqlite::{config::DbConfig, params, Connection};
+#[path = "commitment_integrity/cold_sealing.rs"]
+mod cold_sealing;
 #[path = "commitment_integrity/coverage.rs"]
 mod coverage;
 use std::{
@@ -685,6 +687,7 @@ fn serial_leaf(conn: &Connection, table: &str, owner: &str, order: &str) -> Stri
 
 #[test]
 fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
+    cold_sealing::assert_disk_build_matches_serial_seal();
     let mut conn = connection();
     let mut owners = std::collections::BTreeSet::new();
     for owner_index in (0..128).rev() {

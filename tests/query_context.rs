@@ -54,14 +54,14 @@ fn options(limit: usize) -> QueryOptions {
 }
 
 #[test]
-fn exact_symbol_search_bypasses_fts_and_keeps_scope_and_kind_filters() {
+fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
     let workspace = Workspace::new();
     workspace.write("pkg/service.py", "class Server:\n    def admit(self): pass\n\ndef admission():\n    \"\"\"admit clients\"\"\"\n    pass\n");
     workspace.write("other/service.py", "def admit(): pass\n");
     let conn = workspace.build();
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
-            table_name: "node_search" | "edges_raw" | "shared_owners_raw",
+            table_name: "edges_raw" | "shared_owners_raw",
             ..
         } => Authorization::Deny,
         _ => Authorization::Allow,
@@ -112,12 +112,11 @@ fn exact_symbol_search_bypasses_fts_and_keeps_scope_and_kind_filters() {
     );
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
     let plan = reader::rows(&conn,
-        "EXPLAIN QUERY PLAN SELECT n.id FROM nodes n WHERE (n.name=?1 COLLATE NOCASE OR n.qualname=?1 COLLATE NOCASE) AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY n.path,n.line,n.id",
-        &[&"admit", &"method", &"pkg", &"pkg/", &"pkg0", &false], 30).unwrap();
+        "EXPLAIN QUERY PLAN SELECT n.id FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY n.path,n.line,n.id",
+        &[&"\"admit\"", &"admit", &"method", &"pkg", &"pkg/", &"pkg0", &false], 30).unwrap();
     let plan = serde_json::to_string(&plan).unwrap();
-    assert!(plan.contains("idx_nodes_name_nocase"), "{plan}");
-    assert!(plan.contains("idx_nodes_qualname_nocase"), "{plan}");
-    assert!(!plan.contains("SCAN n"), "{plan}");
+    assert!(plan.contains("node_search"), "{plan}");
+    assert!(!plan.contains("SCAN n "), "{plan}");
     let default: contextunity_forge_mcp::mcp::tools::SearchSymbols =
         serde_json::from_value(serde_json::json!({"pattern":"admit"})).unwrap();
     assert!(!default.exact);
@@ -330,6 +329,7 @@ fn compact_queries_never_read_heavy_columns_and_full_detail_is_explicit() {
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
             column_name: "details" | "content" | "invariants" | "referenced_symbols",
+            table_name: "nodes" | "doc_sections",
             ..
         } => Authorization::Deny,
         _ => Authorization::Allow,

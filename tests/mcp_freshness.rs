@@ -48,7 +48,7 @@ fn snapshot(server: &Server) -> anyhow::Result<Value> {
 }
 
 fn wait_for_inventory_ttl() {
-    std::thread::sleep(std::time::Duration::from_millis(2100));
+    std::thread::sleep(std::time::Duration::from_millis(5100));
 }
 
 #[cfg(feature = "lang-python")]
@@ -367,6 +367,7 @@ fn unchanged_warm_reads_and_metadata_only_touch_do_not_rewrite_database() {
         assert_eq!(current["corpus_hash"], before["corpus_hash"]);
         assert_eq!(current["freshness"]["refresh"], "none");
         assert_eq!(current["freshness"]["files_checked"], 64);
+        assert_eq!(current["freshness"]["inventory_scan_ms"], 0.0);
         elapsed.push(current["freshness"]["inventory_scan_ms"].as_f64().unwrap());
     }
     fs::File::options()

@@ -81,14 +81,24 @@ pub fn search_paged(
     }
     let path = path.unwrap_or("");
     let (path_start, path_end) = crate::db::reader::path_bounds(path);
-    let files = crate::db::reader::rows(
+    let declaration = ast::pattern_symbol_name(pattern, language)?;
+    let files = if let Some(name) = declaration.as_deref() {
+        crate::db::reader::rows(
+            conn,
+            "SELECT DISTINCT f.path,f.digest FROM nodes n JOIN files f ON f.path=n.path WHERE n.name=?1 COLLATE NOCASE AND f.status='indexed' AND f.language=?2 AND (?3='' OR f.path=?3 OR (f.path>=?4 AND f.path<?5)) ORDER BY f.path",
+            &[&name, &language, &path, &path_start, &path_end],
+            500000,
+        )?
+    } else {
+        crate::db::reader::rows(
         conn,
         "SELECT path,digest FROM files WHERE status='indexed' AND language=?1 AND (?2='' OR path=?2 OR (path>=?3 AND path<?4)) ORDER BY path",
         &[&language, &path, &path_start, &path_end],
         500000,
-    )?;
+    )?
+    };
     let literal_tokens = ast_literal_tokens(pattern);
-    let candidate_paths = if literal_tokens.is_empty() {
+    let candidate_paths = if declaration.is_some() || literal_tokens.is_empty() {
         None
     } else {
         let query = literal_tokens
@@ -173,44 +183,23 @@ pub fn search_paged(
 }
 
 fn ast_literal_tokens(pattern: &str) -> Vec<String> {
-    const TREE_SITTER_KINDS: &[&str] = &[
-        "identifier",
-        "function_item",
-        "function_declaration",
-        "call_expression",
-        "expression_statement",
-        "string_literal",
-        "integer_literal",
-        "block",
-        "arguments",
-        "parameters",
-        "parameter",
-        "module",
-    ];
     let mut tokens = Vec::new();
-    let bytes = pattern.as_bytes();
-    let mut offset = 0;
-    while offset < bytes.len() {
-        if !bytes[offset].is_ascii_alphanumeric() && bytes[offset] != b'_' {
-            offset += 1;
-            continue;
+    let mut chars = pattern.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            while chars
+                .peek()
+                .is_some_and(|ch| *ch == '$' || *ch == '_' || ch.is_alphanumeric())
+            {
+                chars.next();
+            }
+        } else if ch.is_alphanumeric() {
+            let mut token = String::from(ch);
+            while chars.peek().is_some_and(|ch| ch.is_alphanumeric()) {
+                token.push(chars.next().unwrap());
+            }
+            tokens.push(token);
         }
-        let start = offset;
-        while offset < bytes.len()
-            && (bytes[offset].is_ascii_alphanumeric() || bytes[offset] == b'_')
-        {
-            offset += 1;
-        }
-        let token = &pattern[start..offset];
-        let after = pattern[start + token.len()..].trim_start();
-        let before = pattern[..start].trim_end();
-        let is_capture = before.ends_with('@');
-        let is_field = after.starts_with(':');
-        let is_node_kind = token.contains('_') && !after.starts_with('(');
-        if is_capture || is_field || is_node_kind || TREE_SITTER_KINDS.contains(&token) {
-            continue;
-        }
-        tokens.push(token.to_owned());
     }
     tokens.sort();
     tokens.dedup();

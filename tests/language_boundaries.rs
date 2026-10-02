@@ -295,6 +295,9 @@ function onSubmit() {
 }
 
 const user = { name: "Antigravity" };
+ref(); computed(); reactive(); shallowRef(); shallowReactive(); toRef(); toRefs(); unref(); isRef();
+watch(); watchEffect(); onMounted(); onUnmounted(); onUpdated(); onBeforeMount(); onBeforeUnmount();
+nextTick(); inject(); provide(); useSlots(); useAttrs(); useI18n(); t();
 </script>
 "#,
     );
@@ -331,6 +334,17 @@ const user = { name: "Antigravity" };
         "missing template interpolation user: {:?}",
         expressions
     );
+    let conn = w.build();
+    for name in "ref computed reactive shallowRef shallowReactive toRef toRefs unref isRef watch watchEffect onMounted onUnmounted onUpdated onBeforeMount onBeforeUnmount nextTick inject provide useSlots useAttrs useI18n t".split_ascii_whitespace() {
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM resolution_coverage WHERE path='App.vue' AND expression=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|error| panic!("missing Vue ambient call {name}: {error}"));
+        assert_eq!(status, "resolved", "Vue ambient call {name}");
+    }
 }
 
 #[cfg(feature = "lang-vue")]

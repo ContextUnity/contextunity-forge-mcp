@@ -5,6 +5,21 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::HashMap;
 
+pub(crate) fn encode_facts(facts: &TypedFacts) -> anyhow::Result<Vec<u8>> {
+    let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 1)?;
+    {
+        let mut writer = std::io::BufWriter::with_capacity(64 * 1024, &mut encoder);
+        serde_json::to_writer(&mut writer, facts)?;
+        std::io::Write::flush(&mut writer)?;
+    }
+    Ok(encoder.finish()?)
+}
+
+pub(crate) fn decode_facts(blob: &[u8]) -> anyhow::Result<TypedFacts> {
+    let decoder = zstd::stream::read::Decoder::new(blob)?;
+    Ok(serde_json::from_reader(decoder)?)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum FlowState {
     Valid {

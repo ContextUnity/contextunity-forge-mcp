@@ -255,12 +255,20 @@ pub fn search_paged_in_path_with_options(
     let path = path.unwrap_or("");
     let (path_start, path_end) = reader::path_bounds(path);
     let columns = paging::nodes("n", options.detail);
+    let graph_boost = "CASE WHEN EXISTS(SELECT 1 FROM edges_raw e WHERE e.dst_hash=n.node_hash AND e.kind NOT IN('contains','documents','references_doc')) THEN 50 ELSE 0 END";
     let mut nodes = if exact {
-        let sql = format!("SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM nodes n WHERE (n.name=?1 COLLATE NOCASE OR n.qualname=?1 COLLATE NOCASE) AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY n.path,n.line,n.id");
+        let fts_query = pattern
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(|part| format!("\"{part}\""))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let sql = format!("SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY n.path,n.line,n.id");
         paging::query(
             conn,
             &sql,
             &[
+                &fts_query,
                 &pattern,
                 &kind,
                 &path,
@@ -278,12 +286,35 @@ pub fn search_paged_in_path_with_options(
             .replace('*', "%");
         if let Some(prefix) = pattern
             .strip_suffix('*')
-            .filter(|p| !p.is_empty() && p.chars().all(char::is_alphanumeric))
+            .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_alphanumeric() || c == '_'))
         {
             let query = format!("\"{prefix}\"*");
-            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&query,&path,&path_start,&path_end,&include_docs], options)?
+            let from = "FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) AND (?7=1 OR n.language!='markdown')";
+            let probe = format!("SELECT n.node_id {from} LIMIT 1001");
+            let sql = format!(
+                "WITH fts_scored AS MATERIALIZED (
+                    SELECT n.node_id,n.path,n.line,n.id,(CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 500 ELSE 0 END - bm25(node_search)) AS score
+                    {from}
+                    ORDER BY score DESC,n.path,n.line,n.id
+                ), total_probe AS MATERIALIZED ({probe}), result_total AS (
+                    SELECT CASE WHEN (SELECT count(*) FROM total_probe)>=1001 THEN NULL
+                        ELSE (SELECT count(*) FROM total_probe) END AS search_total
+                ), graph_window AS MATERIALIZED (
+                    SELECT node_id,score FROM fts_scored ORDER BY score DESC,path,line,id LIMIT 50
+                ), boosted AS MATERIALIZED (
+                    SELECT p.node_id,{graph_boost} AS graph_boost
+                    FROM graph_window p JOIN nodes n ON n.node_id=p.node_id
+                ), ranked AS (
+                    SELECT f.node_id,f.score,CASE WHEN b.node_id IS NULL THEN 1 ELSE 0 END AS graph_group,
+                           COALESCE(b.graph_boost,0) AS graph_boost,t.search_total
+                    FROM fts_scored f LEFT JOIN boosted b ON b.node_id=f.node_id CROSS JOIN result_total t
+                ) SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason,c.graph_boost,c.search_total
+                FROM ranked c JOIN nodes n ON n.node_id=c.node_id
+                ORDER BY c.graph_group,(c.score+c.graph_boost) DESC,n.path,n.line,n.id"
+            );
+            ranked_search_page(conn, &sql, &[&like,&kind,&query,&path,&path_start,&path_end,&include_docs], options)?
         } else {
-            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end,&include_docs], options)?
+            paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 500 ELSE 0 END DESC,n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end,&include_docs], options)?
         }
     } else {
         let query = pattern
@@ -300,10 +331,62 @@ pub fn search_paged_in_path_with_options(
             .replace('%', "\\%")
             .replace('_', "\\_");
         let prefix = format!("{escaped}%");
-        let fragment = format!("%{escaped}%");
-        let graph_boost = "(CASE WHEN (SELECT count(*) FROM edges_raw e WHERE e.src_hash=n.node_hash OR e.dst_hash=n.node_hash)>=5 THEN 50 ELSE 0 END + CASE WHEN EXISTS(SELECT 1 FROM shared_owners_raw s JOIN shared_keys k ON k.key_hash=s.key_hash WHERE s.kind_id=2 AND s.key_hash=n.node_hash AND k.key=n.id) THEN 50 ELSE 0 END)";
-        let sql = format!("WITH fts AS (SELECT rowid node_id,bm25(node_search) rank FROM node_search WHERE node_search MATCH ?1) SELECT {columns},CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.qualname=?6 COLLATE NOCASE THEN 2 WHEN n.name LIKE ?9 ESCAPE '\\' THEN 3 ELSE 4 END match_rank,coalesce(fts.rank,0.0) bm25_rank,{graph_boost} graph_boost FROM nodes n LEFT JOIN fts ON fts.node_id=n.node_id WHERE (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?8=1 OR n.language!='markdown') AND (n.name=?6 COLLATE NOCASE OR n.name LIKE ?7 ESCAPE '\\' OR n.qualname=?6 COLLATE NOCASE OR n.name LIKE ?9 ESCAPE '\\' OR fts.node_id IS NOT NULL) ORDER BY CASE WHEN n.name=?6 COLLATE NOCASE THEN 0 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1 WHEN n.qualname=?6 COLLATE NOCASE THEN 2 WHEN n.name LIKE ?9 ESCAPE '\\' THEN 3 ELSE 4 END,CASE WHEN fts.node_id IS NOT NULL THEN fts.rank ELSE 0.0 END,graph_boost DESC,n.path,n.line,n.id");
-        paging::query(
+        let candidate_limit = i64::try_from(
+            options
+                .offset
+                .saturating_add(options.limit)
+                .saturating_add(1)
+                .max(500),
+        )
+            .context("search offset exceeds SQLite integer range")?;
+        let structural_candidates = "SELECT node_id FROM nodes_data WHERE name LIKE ?7 ESCAPE '\\' UNION SELECT node_id FROM nodes_data WHERE qualname=?6 COLLATE NOCASE";
+        let filters = "(?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?8=1 OR n.language!='markdown')";
+        let structural_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END";
+        let fts_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END - bm25(node_search)";
+        let sql = format!(
+            "WITH
+            fts AS MATERIALIZED (
+                SELECT n.node_id,n.path,n.line,n.id,({fts_score}) AS score
+                FROM node_search JOIN nodes n ON n.node_id=node_search.rowid
+                WHERE node_search MATCH ?1 AND {filters}
+                ORDER BY score DESC,n.path,n.line,n.id LIMIT ?9
+            ), fts_probe AS MATERIALIZED (
+                SELECT n.node_id FROM node_search JOIN nodes n ON n.node_id=node_search.rowid
+                WHERE node_search MATCH ?1 AND {filters} LIMIT 1001
+            ), structural_all AS MATERIALIZED (
+                SELECT n.node_id,n.path,n.line,n.id,({structural_score}) AS score
+                FROM ({structural_candidates}) s JOIN nodes n ON n.node_id=s.node_id
+                WHERE {filters}
+            ), structural AS MATERIALIZED (
+                SELECT node_id,path,line,id,score FROM structural_all
+                ORDER BY score DESC,path,line,id LIMIT ?9
+            ), candidates AS (
+                SELECT node_id,max(score) AS score FROM (
+                    SELECT node_id,score FROM fts UNION ALL SELECT node_id,score FROM structural
+                ) GROUP BY node_id
+            ), result_total AS (
+                SELECT CASE WHEN (SELECT count(*) FROM fts_probe)>=1001 THEN NULL
+                    ELSE (SELECT count(*) FROM (
+                        SELECT node_id FROM fts_probe UNION SELECT node_id FROM structural_all
+                    )) END AS search_total
+            ), graph_window AS MATERIALIZED (
+                SELECT c.node_id,c.score FROM candidates c JOIN nodes n ON n.node_id=c.node_id
+                ORDER BY c.score DESC,n.path,n.line,n.id LIMIT 50
+            ), boosted AS MATERIALIZED (
+                SELECT p.node_id,{graph_boost} AS graph_boost
+                FROM graph_window p JOIN nodes n ON n.node_id=p.node_id
+            ), ranked AS (
+                SELECT c.node_id,c.score,CASE WHEN b.node_id IS NULL THEN 1 ELSE 0 END AS graph_group,
+                       COALESCE(b.graph_boost,0) AS graph_boost,t.search_total
+                FROM candidates c LEFT JOIN boosted b ON b.node_id=c.node_id CROSS JOIN result_total t
+            ) SELECT {columns},CASE WHEN n.name=?6 COLLATE NOCASE THEN 0
+                WHEN n.qualname=?6 COLLATE NOCASE THEN 2
+                WHEN n.name LIKE ?7 ESCAPE '\\' THEN 1
+                WHEN n.name LIKE '%' || ?7 ESCAPE '\\' THEN 3 ELSE 4 END AS match_rank
+            ,c.graph_boost,c.search_total FROM ranked c JOIN nodes n ON n.node_id=c.node_id
+            ORDER BY c.graph_group,(c.score+c.graph_boost) DESC,n.path,n.line,n.id"
+        );
+        ranked_search_page(
             conn,
             &sql,
             &[
@@ -315,7 +398,7 @@ pub fn search_paged_in_path_with_options(
                 &pattern,
                 &prefix,
                 &include_docs,
-                &fragment,
+                &candidate_limit,
             ],
             options,
         )?
@@ -355,6 +438,55 @@ pub fn search_paged_in_path_with_options(
         }
     }
     Ok(json!({"pattern":pattern,"nodes":nodes}))
+}
+
+fn ranked_search_page(
+    conn: &Connection,
+    sql: &str,
+    params: &[&dyn rusqlite::ToSql],
+    options: &QueryOptions,
+) -> Result<Value> {
+    let generation = paging::generation(conn, options)?;
+    let limit = i64::try_from(options.limit.saturating_add(1))
+        .context("search limit exceeds SQLite integer range")?;
+    let offset = options.offset as i64;
+    let mut bindings = params.to_vec();
+    bindings.extend([&limit as &dyn rusqlite::ToSql, &offset]);
+    let limit_param = params.len() + 1;
+    let mut items = reader::rows(
+        conn,
+        &format!("{sql} LIMIT ?{} OFFSET ?{}", limit_param, limit_param + 1),
+        &bindings,
+        options.limit.saturating_add(1),
+    )?;
+    let total = items
+        .first()
+        .and_then(|item| item.get("search_total"))
+        .cloned()
+        .unwrap_or_else(|| {
+            if options.offset == 0 && items.is_empty() {
+                json!(0)
+            } else {
+                Value::Null
+            }
+        });
+    for item in &mut items {
+        item.as_object_mut()
+            .context("invalid search result")?
+            .remove("search_total");
+    }
+    let has_more = items.len() > options.limit;
+    items.truncate(options.limit);
+    Ok(json!({
+        "total": total,
+        "offset": options.offset,
+        "limit": options.limit,
+        "has_more": has_more,
+        "next_offset": if has_more { Some(options.offset.saturating_add(items.len())) } else { None },
+        "items": items,
+        "generation": generation,
+        "continuation_hint": if has_more { Some("Repeat the same query with next_offset as offset and this generation.") } else { None }
+    }))
 }
 
 pub fn tests_paged(
@@ -888,7 +1020,7 @@ fn compact_summary(conn: &Connection, node: &Value) -> Result<Value> {
             let path = node["path"].as_str().unwrap_or("");
             let candidates = reader::rows(
                 conn,
-                "SELECT id,kind,name,qualname,path,line FROM nodes WHERE path=?1 AND name=?2 AND kind IN('class','enum','interface','record','struct','trait','type') ORDER BY line,id LIMIT 101",
+                "SELECT id,kind,name,qualname,path,line FROM nodes WHERE path=?1 AND name=?2 COLLATE NOCASE AND name=?2 COLLATE BINARY AND kind IN('class','enum','interface','record','struct','trait','type') ORDER BY line,id LIMIT 101",
                 &[&path, &receiver],
                 101,
             )?;

@@ -430,6 +430,32 @@ fn import_binds_require(node: Syntax<'_>, source: &str) -> bool {
     false
 }
 
+fn browser_global_type(name: &str) -> bool {
+    matches!(
+        name,
+        "Element"
+            | "HTMLElement"
+            | "HTMLDivElement"
+            | "HTMLInputElement"
+            | "HTMLButtonElement"
+            | "HTMLAnchorElement"
+            | "Document"
+            | "Window"
+            | "Event"
+            | "CustomEvent"
+            | "MouseEvent"
+            | "KeyboardEvent"
+            | "Response"
+            | "Request"
+            | "Headers"
+            | "URL"
+            | "URLSearchParams"
+            | "FormData"
+            | "Blob"
+            | "File"
+    )
+}
+
 pub struct TypeScript {
     pub javascript: bool,
 }
@@ -714,6 +740,9 @@ impl LanguageProfile for TypeScript {
         }
     }
     fn builtin(&self, symbol: &str) -> bool {
+        if browser_global_type(symbol) {
+            return true;
+        }
         if matches!(
             symbol,
             "Object.assign"
@@ -842,6 +871,9 @@ impl LanguageProfile for TypeScript {
         )
     }
     fn builtin_type(&self, name: &str) -> bool {
+        if browser_global_type(name) {
+            return true;
+        }
         matches!(
             name,
             "string"
@@ -854,26 +886,6 @@ impl LanguageProfile for TypeScript {
                 | "Map"
                 | "Set"
                 | "Object"
-                | "Element"
-                | "HTMLElement"
-                | "HTMLDivElement"
-                | "HTMLInputElement"
-                | "HTMLButtonElement"
-                | "HTMLAnchorElement"
-                | "Document"
-                | "Window"
-                | "Event"
-                | "CustomEvent"
-                | "MouseEvent"
-                | "KeyboardEvent"
-                | "Response"
-                | "Request"
-                | "Headers"
-                | "URL"
-                | "URLSearchParams"
-                | "FormData"
-                | "Blob"
-                | "File"
         )
     }
 

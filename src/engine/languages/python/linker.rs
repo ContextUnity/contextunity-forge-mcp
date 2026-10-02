@@ -408,18 +408,33 @@ fn register_export<'a>(
         return;
     };
     let qualified = format!("{}.{}", provider.qualname, member);
-    let mut candidates = by_module
+    let mut candidates: Vec<&Node> = by_module
         .get(provider.path.as_str())
         .into_iter()
         .flatten()
         .copied()
-        .filter(|node| node.kind != "component" && node.qualname == qualified);
-    if let Some(candidate) = candidates.next() {
-        if candidates.next().is_none() {
-            *target = Some(candidate);
+        .filter(|node| node.kind != "component" && node.qualname == qualified)
+        .collect();
+    if candidates.len() > 1 {
+        let non_stubs: Vec<&Node> = candidates
+            .iter()
+            .copied()
+            .filter(|n| {
+                let is_stub = n.details.get("is_stub").and_then(|v| v.as_bool()).unwrap_or(false);
+                let is_overload = n.details.get("is_overload").and_then(|v| v.as_bool()).unwrap_or(false);
+                !is_stub && !is_overload
+            })
+            .collect();
+        if !non_stubs.is_empty() && non_stubs.len() < candidates.len() {
+            candidates = non_stubs;
         }
-    } else {
+    }
+    if candidates.len() == 1 {
+        *target = Some(candidates[0]);
+    } else if candidates.is_empty() {
         pending.push((owner, name, provider, member));
+    } else {
+        *target = Some(candidates[0]);
     }
 }
 

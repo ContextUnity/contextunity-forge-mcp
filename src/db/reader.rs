@@ -133,6 +133,11 @@ impl Drop for IntegritySnapshot {
 }
 
 pub(crate) fn validate_database_integrity(conn: &Connection) -> Result<()> {
+    let source_integrity: String =
+        conn.query_row("PRAGMA integrity_check(sqlite_schema)", [], |row| row.get(0))?;
+    if source_integrity != "ok" {
+        bail!("database integrity check failed: {source_integrity}");
+    }
     let snapshot = IntegritySnapshot::create()?;
     let mut copy = Connection::open_with_flags(
         &snapshot.path,
@@ -608,14 +613,14 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
         if is_path {
             let mut candidates = rows(
                 conn,
-                "SELECT id, kind FROM nodes WHERE path=?1 AND (name=?2 OR qualname=?2) ORDER BY id LIMIT 101",
+                "SELECT id, kind FROM nodes WHERE path=?1 AND ((name=?2 COLLATE NOCASE AND name=?2 COLLATE BINARY) OR (qualname=?2 COLLATE NOCASE AND qualname=?2 COLLATE BINARY)) ORDER BY id LIMIT 101",
                 &[&prefix, &symbol_part],
                 101,
             )?;
             if candidates.is_empty() {
                 candidates = rows(
                     conn,
-                    "SELECT id, kind FROM nodes WHERE substr(path,-length(?1))=?1 AND (name=?2 OR qualname=?2) ORDER BY id LIMIT 101",
+                    "SELECT id, kind FROM nodes WHERE substr(path,-length(?1))=?1 AND ((name=?2 COLLATE NOCASE AND name=?2 COLLATE BINARY) OR (qualname=?2 COLLATE NOCASE AND qualname=?2 COLLATE BINARY)) ORDER BY id LIMIT 101",
                     &[&prefix, &symbol_part],
                     101,
                 )?;
@@ -647,7 +652,7 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
             let kind = if prefix == "fn" { "function" } else { prefix };
             rows(
                 conn,
-                "SELECT id, kind FROM nodes INDEXED BY idx_nodes_name WHERE name=?1 AND kind=?2 UNION SELECT id, kind FROM nodes INDEXED BY idx_nodes_qualname WHERE qualname=?1 AND kind=?2 ORDER BY id LIMIT 101",
+                "SELECT id, kind FROM nodes WHERE name=?1 COLLATE NOCASE AND name=?1 COLLATE BINARY AND kind=?2 UNION SELECT id, kind FROM nodes WHERE qualname=?1 COLLATE NOCASE AND qualname=?1 COLLATE BINARY AND kind=?2 ORDER BY id LIMIT 101",
                 &[&symbol_part, &kind],
                 101,
             )?
@@ -655,7 +660,7 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
             let base_name = symbol_part.strip_prefix("./").unwrap_or(symbol_part);
             rows(
                 conn,
-                "SELECT id, kind FROM nodes WHERE ((name=?1 OR qualname=?1) AND (?2='' OR kind=?2)) OR path=?3 OR id=?4 ORDER BY id LIMIT 101",
+                "SELECT id,kind FROM nodes_data WHERE name=?1 COLLATE NOCASE AND name=?1 COLLATE BINARY AND (?2='' OR kind=?2) UNION SELECT id,kind FROM nodes_data WHERE qualname=?1 COLLATE NOCASE AND qualname=?1 COLLATE BINARY AND (?2='' OR kind=?2) UNION SELECT id,kind FROM nodes_data WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path=?3) UNION SELECT id,kind FROM nodes_data WHERE id=?4 ORDER BY id LIMIT 101",
                 &[&base_name, &prefix, &normalized, &format!("module:{normalized}")],
                 101,
             )?
@@ -664,7 +669,7 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
         let base_name = normalized.strip_prefix("./").unwrap_or(normalized);
         rows(
             conn,
-            "SELECT id, kind FROM nodes WHERE (name=?1 OR qualname=?1) OR path=?2 OR id=?3 ORDER BY id LIMIT 101",
+            "SELECT id,kind FROM nodes_data WHERE name=?1 COLLATE NOCASE AND name=?1 COLLATE BINARY UNION SELECT id,kind FROM nodes_data WHERE qualname=?1 COLLATE NOCASE AND qualname=?1 COLLATE BINARY UNION SELECT id,kind FROM nodes_data WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path=?2) UNION SELECT id,kind FROM nodes_data WHERE id=?3 ORDER BY id LIMIT 101",
             &[&base_name, &normalized, &format!("module:{normalized}")],
             101,
         )?

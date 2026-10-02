@@ -5,10 +5,11 @@ doc_type: architecture
 
 # Architecture
 
-[Indexing and resolution](indexing.md) describes the current scanner,
-language profiles, linker, persistence, generations, and query boundaries.
-Use [configuration](../reference/configuration.md) for workspace scope
-and [languages](../reference/languages.md) for compiled profile coverage.
+The architecture documentation describes verified system structure, contracts, and performance envelopes:
 
-Architecture pages describe verified implementation. Proposed topology belongs
-to a [plan](../plans/README.md) until admitted and implemented.
+- [Indexing and resolution](indexing.md): Scanner, AST fact extraction, symbol linking, and storage boundaries.
+- [SQLite concurrency and isolation](concurrency.md): Reader isolation, generation locking, RAII guards, and WAL mode pragmas.
+- [Engine modularity and traits](modularity.md): `LanguageProfile`, `TemplatePreprocessor`, and `LanguageLinker` extensibility contracts.
+- [Performance budgets and compaction](performance.md): Latency budgets, FTS5 BM25 hybrid search, inventory debouncing, and Zstd storage compaction.
+
+Related architectural decisions are recorded in [Architectural Decisions](../adr/README.md).

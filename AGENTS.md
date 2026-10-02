@@ -1,7 +1,7 @@
 # ContextUnity Forge MCP — Agent Router
 
 Read [documentation instructions](docs/AGENTS.md) before documentation changes.
-Read [repository plans](docs/plans/README.md) for proposed and ongoing work.
+Read [architecture](docs/architecture/README.md) and [decisions](docs/adr/README.md) for structural constraints.
 Read [roadmap](docs/roadmap.md) for strategic context and
 [milestones](docs/milestones/README.md) for admitted commitments.
 
@@ -12,8 +12,31 @@ Read [roadmap](docs/roadmap.md) for strategic context and
 - Reference: [configuration and tools](docs/reference/README.md).
 - Operations: [runbooks](docs/runbooks/README.md).
 - Verification: [testing](docs/testing/README.md).
+- Planning and execution queue: [roadmap](docs/roadmap.md), [milestones](docs/milestones/README.md), and [plans](docs/plans/README.md).
+- Architecture & Decisions: [architecture](docs/architecture/README.md) and [decisions](docs/adr/README.md).
 - Forge code-graph workflow: [`contextunity-forge`](.agents/skills/contextunity-forge/SKILL.md).
 - Test suite rules and boundaries: [`tests/AGENTS.md`](tests/AGENTS.md).
+
+## Task Execution & Repository Milestones
+
+This repository directly owns its execution queue and task commitments:
+- **Macro direction**: [docs/roadmap.md](docs/roadmap.md).
+- **Execution queue & milestones**: [`docs/milestones/`](docs/milestones/) ordered by numeric prefix (`010-*.md`, `020-*.md`).
+- **Research & proposal drafts**: [`docs/plans/`](docs/plans/README.md).
+- **Active milestone discovery algorithm**:
+  1. Inspect `docs/milestones/0*.md` in ascending lexicographical order by numeric prefix.
+  2. Parse the YAML frontmatter: skip milestones marked `status: completed` or `status: deferred`.
+  3. The first milestone with `status: active` is the current execution target. If no milestone is marked `active`, the lowest-numbered milestone with `status: planned` is the candidate for activation.
+  4. Once native MCP task lifecycle tools are available, query `task_list` (defaults strictly to `status: "ready"`).
+- **Ephemeral task state**: `.forge/tasks/` (local and gitignored until native MCP task tools are implemented).
+
+## Development Worktrees
+
+For isolated subagent work, parallel branches, or spikes:
+- Create worktrees under `.worktrees/<branch-name>`:
+  `git worktree add .worktrees/<branch-name> <branch-name>`
+- `.worktrees/` is gitignored at repository root to keep untracked workspaces clean.
+- Prune worktrees when finished: `git worktree remove .worktrees/<branch-name>`.
 
 ## Codebase Architecture
 
@@ -36,6 +59,18 @@ src/
                #   linker.rs   -> Cross-file symbol resolution, receiver inference,
                #                  external status classification, edge creation
 ```
+
+## Architectural Discovery & Prior Art Inspection
+
+Before designing or introducing new tables, indices, extractors, or pipeline stages:
+1. **Inspect Existing Code & Symbols**:
+   - Use `code_map_explain` with `show_doc: true` or `code_map_inspect` with `show_doc: true` to discover the purpose and contracts of existing subsystems.
+   - Use `code_map_search` with exact/pattern selectors to verify whether a symbol or helper already exists before writing duplicate functionality.
+2. **Read Architectural Documentation First**:
+   - Use `get_doc` or `search_docs` to read the relevant ADRs (`docs/adr/`) and architecture guides (`docs/architecture/`).
+   - Check `src/core/schema.rs` and existing virtual FTS tables (`node_search`, `doc_search`) before proposing any new index or schema modification.
+3. **Prohibition on Redundant Reinvention**:
+   - Never create duplicate parallel mechanisms (e.g. creating a new FTS table for files when `node_search` already indexes symbol tokens and `files` indexes file paths). Always build upon established architectural seams.
 
 ## Benchmarks & Performance Profiling
 
@@ -61,6 +96,11 @@ Read [`tests/AGENTS.md`](tests/AGENTS.md) before authoring, moving, or editing t
    - Keep test files <= 800 lines.
 3. **Public Seams**:
    - Drive tests through public interfaces (CLI, MCP tool router, reader, or linker pipeline); do not construct tests around unexported private internals.
+4. **No Self-Justifying Synthetic Feature Tests**:
+   - Never author artificial tests that assert an invented, uncontracted requirement (such as matching raw string literals inside unindexed function bodies) solely to justify introducing heavy, redundant, or regressive subsystems. Tests must validate admitted contract specifications from active milestones.
+5. **Bounded Profiling and Honest Receipts**:
+   - Record measured metrics honestly in milestone receipts without spinning in recursive profiling loops (cap profiling iterations to <= 3 per turn).
+   - If an acceptance budget remains open due to physical or external bottlenecks, document the measured finding transparently in the receipt and hand off rather than stalling execution.
 
 ## Performance & Optimization Invariants
 
@@ -83,13 +123,41 @@ must respect these performance laws:
 4. **Measured parallelism**:
    - Use Rayon (`into_par_iter()`) for CPU-bound sorting, hashing, or AST extraction only when the collection size warrants thread synchronization overhead (e.g. `>= 8192` records).
 
-5. **Cold build latency regression gate**:
-   - Verify performance-sensitive edits against the reference benchmark repository:
-     `/home/oleksii/ContextUnity/worktrees/commerce-release-update`.
-   - Compile release binary: `cargo build --release`.
-   - Run cold build:
-     `rm -f /tmp/bench-cru-cold.db* && ./target/release/contextunity-forge-mcp --root /home/oleksii/ContextUnity/worktrees/commerce-release-update --db /tmp/bench-cru-cold.db build --verbose`.
-   - Compare `seal_ms`, `persist_graph_ms`, and `elapsed_ms`. Any unverified latency regression is a blocker.
+5. **Universal cold build throughput budget**:
+   - Cold build throughput must maintain `>= 400 files/sec` (`<= 2.5s per 1,000 files` end-to-end, including AST extraction, cross-file linking, SQLite persistence, and Merkle root sealing).
+   - AST extraction throughput must maintain `>= 800 files/sec` (`<= 1.25s per 1,000 files`).
+   - Node insertion latency (`rows_ms`) must remain `<= 1.5ms per 1,000 nodes`.
+   - Merkle sealing throughput must maintain `>= 100,000 entities/sec` (`<= 10ms per 1,000 entities`).
+
+6. **Lean node metadata & projection law**:
+   - `nodes.details` is an index-projection surface, NOT an AST fact dump or compiler analysis heap.
+   - Prohibit serializing large interprocedural analysis trees, complete value-flow AST graphs, or raw scope maps into `nodes.details`.
+   - Average node details payload size must remain `<= 120 bytes per node`.
+
+7. **Storage density budget & compressed fact storage**:
+   - Overall SQLite database storage density must not exceed `<= 45 KiB per indexed source file` (or `<= 3.0 KiB per indexed node`).
+   - Intermediate file AST facts (`local_facts.facts_blob`) must use Zstandard compression with compression ratio `>= 3.5:1`, capping fact storage at `<= 15 KiB per source file`.
+
+8. **Bulk SQLite ingestion pragmas**:
+   - Cold database builds and batch rebuilds must execute under non-syncing bulk pragmas (`PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;`), executing an explicit WAL checkpoint only upon build finalization before Merkle seal.
+
+9. **Interactive tool query latency budgets**:
+   - Exact/prefix symbol lookup (`code_map_search` with `exact=true`): `<= 10ms`.
+   - Full-text & BM25 hybrid search (`code_map_search`): `<= 30ms`.
+   - Structural symbol inspection (`code_map_inspect`, `code_map_explain`): `<= 25ms`.
+   - Graph impact & test dependency traversal (`code_map_impact`, `code_map_tests`): `<= 50ms`.
+   - Scoped removal safety proof (`code_map_prove_removal`): `<= 30ms`.
+
+10. **Target-scoped evaluation law (No global scans in localized tools)**:
+    - Interactive tools must never issue unindexed table scans (`LIKE '%...'`), unconstrained workspace-wide counts (`SELECT count(*) FROM table`), or global diagnostics during symbol-level operations. Safety checks must evaluate strictly within the target's dependency subgraph.
+
+11. **Prohibition against redundant disk re-reads and full-source DB duplication**:
+    - The scanner and AST extractors read workspace files once during the extraction phase.
+    - Persistence pipelines (`persist_files`, `persist_graph`, etc.) must NEVER re-read files from disk (`fs::read_to_string`).
+    - Never duplicate raw, uncompressed source code files into SQLite tables or virtual FTS tables. Forge stores code structure, symbols, signatures, and relations, NOT an uncompressed mirror of the filesystem.
+
+12. **Zero-allocation hot-path law in graph persistence**:
+    - Loops iterating over high-cardinality collections (edges, occurrences, dependencies) must never allocate ad-hoc heap collections (e.g. `HashSet` of multi-field tuples) or compute complex multi-field hashes on hot per-record paths. Deduplication must be stream-oriented, batch-oriented, or handled via ordered sorting without CPU cache thrashing.
 
 ## Semantic & Code Extraction Quality
 

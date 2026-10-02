@@ -362,8 +362,11 @@ impl Server {
                     {
                         let mut grouped: std::collections::BTreeMap<String, Vec<Value>> =
                             std::collections::BTreeMap::new();
-                        for item in items.drain(..) {
+                        for mut item in items.drain(..) {
                             let path = item["path"].as_str().unwrap_or("").to_string();
+                            if let Some(object) = item.as_object_mut() {
+                                object.remove("path");
+                            }
                             grouped.entry(path).or_default().push(item);
                         }
                         res["nodes"]["grouped_by_file"] =

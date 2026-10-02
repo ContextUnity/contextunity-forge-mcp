@@ -9,11 +9,29 @@ use std::collections::BTreeMap;
 fn collection_literals_propagate_intrinsic_types_through_aliases_returns_and_fields() {
     let source = "class dict:\n    def custom(self): pass\nclass list: pass\nclass set: pass\nclass tuple: pass\nraw: dict = {}\nalias = raw\nalias.get('key')\nitems: list[dict] = []\nitems.append(1)\nunique = {1}\nunique.add(2)\nordered = (1,)\nordered.count(1)\ncustom = dict()\ncustom.custom()\ndef make():\n    return {'key': 1}\ncreated = make()\ncreated.get('key')\nclass Store:\n    def __init__(self): self.data = {}\nstore = Store()\nstore.data.get('key')\nraw = unknown()\nraw.get('key')\n";
     let facts = ast::extract("literal_collections.py", "python", source).unwrap();
-    let module = facts.nodes.iter().find(|node| node.kind == "module").unwrap();
-    let flow: ValueFlowFacts = serde_json::from_value(module.details["value_flow"].clone()).unwrap();
-    for (name, spelling) in [("raw", "{}"), ("items", "[]"), ("unique", "{...}"), ("ordered", "()")] {
-        assert_eq!(flow.bindings.iter().find(|binding| binding.name == name).unwrap().value,
-            ValueExpr::Construct { callee: spelling.to_owned() });
+    let module = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == "module")
+        .unwrap();
+    let flow: ValueFlowFacts =
+        serde_json::from_value(module.details["value_flow"].clone()).unwrap();
+    for (name, spelling) in [
+        ("raw", "{}"),
+        ("items", "[]"),
+        ("unique", "{...}"),
+        ("ordered", "()"),
+    ] {
+        assert_eq!(
+            flow.bindings
+                .iter()
+                .find(|binding| binding.name == name)
+                .unwrap()
+                .value,
+            ValueExpr::Construct {
+                callee: spelling.to_owned()
+            }
+        );
     }
     let mut keys = Vec::new();
     flow.reference_keys(|key| keys.push(key));
@@ -21,11 +39,39 @@ fn collection_literals_propagate_intrinsic_types_through_aliases_returns_and_fie
     let mut durable_keys = Vec::new();
     ValueFlowFacts::reference_keys_from_details(&module.details, |key| durable_keys.push(key));
     assert_eq!(durable_keys, keys);
-    let graph = linker::link(&BTreeMap::from([("literal_collections.py".to_owned(), facts)]));
-    for expression in ["alias.get", "items.append", "unique.add", "ordered.count", "created.get", "store.data.get", "custom.custom"] {
-        assert_eq!(graph.coverage.iter().find(|coverage| coverage.expression == expression).unwrap().status, "resolved", "{expression}");
+    let graph = linker::link(&BTreeMap::from([(
+        "literal_collections.py".to_owned(),
+        facts,
+    )]));
+    for expression in [
+        "alias.get",
+        "items.append",
+        "unique.add",
+        "ordered.count",
+        "created.get",
+        "store.data.get",
+        "custom.custom",
+    ] {
+        assert_eq!(
+            graph
+                .coverage
+                .iter()
+                .find(|coverage| coverage.expression == expression)
+                .unwrap()
+                .status,
+            "resolved",
+            "{expression}"
+        );
     }
-    assert_eq!(graph.coverage.iter().find(|coverage| coverage.expression == "raw.get").unwrap().status, "unresolved");
+    assert_eq!(
+        graph
+            .coverage
+            .iter()
+            .find(|coverage| coverage.expression == "raw.get")
+            .unwrap()
+            .status,
+        "unresolved"
+    );
 }
 
 #[test]

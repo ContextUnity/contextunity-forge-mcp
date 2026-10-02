@@ -12,11 +12,16 @@ pub fn shorten_hash(hash: &str) -> &str {
     }
 }
 
-/// Shortens hashes only in verified top-level MCP metadata envelopes.
+/// Shortens hashes in verified top-level MCP metadata envelopes and paging envelopes.
 pub fn shorten_hashes_in_value(value: &mut Value) {
     let Some(object) = value.as_object_mut() else {
         return;
     };
+
+    // Shorten top-level generation if present
+    if let Some(Value::String(gen)) = object.get_mut("generation") {
+        *gen = shorten_hash(gen).to_owned();
+    }
 
     if object
         .get("freshness")
@@ -34,13 +39,30 @@ pub fn shorten_hashes_in_value(value: &mut Value) {
         .is_some_and(is_tool_metadata)
     {
         if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
-            shorten_fields(metadata, &["output_root", "corpus_hash"]);
+            shorten_fields(metadata, &["output_root", "corpus_hash", "generation"]);
+        }
+    }
+
+    // Shorten generation in top-level paging envelopes (e.g. nodes, components, languages, items, matches, rows)
+    for val in object.values_mut() {
+        if let Some(child_map) = val.as_object_mut() {
+            if is_paging_envelope(child_map) {
+                if let Some(Value::String(gen)) = child_map.get_mut("generation") {
+                    *gen = shorten_hash(gen).to_owned();
+                }
+            }
         }
     }
 }
 
+fn is_paging_envelope(object: &Map<String, Value>) -> bool {
+    object.contains_key("offset")
+        && object.contains_key("limit")
+        && object.get("generation").is_some_and(Value::is_string)
+}
+
 fn is_freshness_envelope(object: &Map<String, Value>) -> bool {
-    const FIELDS: [&str; 7] = [
+    const ALLOWED: [&str; 7] = [
         "status",
         "output_root",
         "corpus_hash",
@@ -50,15 +72,11 @@ fn is_freshness_envelope(object: &Map<String, Value>) -> bool {
         "refresh",
     ];
 
-    object.len() == FIELDS.len()
-        && FIELDS.iter().all(|field| object.contains_key(*field))
-        && object["status"].is_string()
-        && object["output_root"].is_string()
-        && object["corpus_hash"].is_string()
-        && object["checked_at_unix_ms"].as_u64().is_some()
-        && object["files_checked"].as_u64().is_some()
-        && object["inventory_scan_ms"].is_number()
-        && object["refresh"].is_string()
+    object.get("status").is_some_and(Value::is_string)
+        && object.get("output_root").is_some_and(Value::is_string)
+        && object.get("corpus_hash").is_some_and(Value::is_string)
+        && object.get("refresh").is_some_and(Value::is_string)
+        && object.keys().all(|k| ALLOWED.contains(&k.as_str()))
 }
 
 fn is_tool_metadata(object: &Map<String, Value>) -> bool {
@@ -174,7 +192,7 @@ mod tests {
             vec!["components", "metadata", "generation", "freshness"]
         );
 
-        assert_eq!(response["generation"], "abcdef0123456789abcdef");
+        assert_eq!(response["generation"], "abcdef01");
         assert_eq!(response["freshness"]["output_root"], "11223344");
         assert_eq!(response["freshness"]["corpus_hash"], "aabbccdd");
         assert!(response["freshness"].get("checked_at_unix_ms").is_none());
@@ -185,6 +203,7 @@ mod tests {
     fn hash_shortening_is_scoped_to_verified_metadata_envelopes() {
         let mut response = serde_json::json!({
             "generation": "a".repeat(64),
+            "pages": {"offset": 0, "limit": 10, "generation": "b".repeat(64), "items": []},
             "metadata": {"output_root": "metadata-root-1234", "corpus_hash": "metadata-hash-1234"},
             "rows": {"items": [{"generation": "1234567é", "output_root": "0123456789"}]},
             "nodes": {"items": [{"output_root": "node-root-12345", "corpus_hash": "node-hash-123456"}]},
@@ -207,7 +226,8 @@ mod tests {
 
         finalize_mcp_metadata(&mut response);
 
-        assert_eq!(response["generation"].as_str().unwrap().len(), 64);
+        assert_eq!(response["generation"], "a".repeat(8));
+        assert_eq!(response["pages"]["generation"], "b".repeat(8));
         assert_eq!(response["rows"]["items"][0]["generation"], "1234567é");
         assert_eq!(response["rows"]["items"][0]["output_root"], "0123456789");
         assert_eq!(response["metadata"]["output_root"], "metadata-root-1234");
@@ -262,10 +282,7 @@ mod tests {
             }
         });
         finalize_mcp_metadata(&mut tool_metadata);
-        assert_eq!(
-            tool_metadata["metadata"]["generation"],
-            "opaque-generation-1234"
-        );
+        assert_eq!(tool_metadata["metadata"]["generation"], "opaque-g");
         assert_eq!(tool_metadata["metadata"]["output_root"], "01234567");
         assert_eq!(tool_metadata["metadata"]["corpus_hash"], "abcdef01");
 

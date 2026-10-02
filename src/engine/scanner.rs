@@ -9,8 +9,11 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const ENGINE_SCHEMA_VERSION: &str = "8";
-pub const INDEX_SEMANTICS_VERSION: &str = concat!("8:", env!("FORGE_LANGUAGE_PROFILE_DIGEST"));
+pub const ENGINE_SCHEMA_VERSION: &str = "9";
+pub const INDEX_SEMANTICS_VERSION: &str = concat!(
+    "9:compact-storage-v8:",
+    env!("FORGE_LANGUAGE_PROFILE_DIGEST")
+);
 pub const DEFAULT_MAX_FILES: usize = 100_000;
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;

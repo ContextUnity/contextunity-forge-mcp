@@ -4,5 +4,7 @@ target/
 *.log
 .env
 .forge/
+.forge-mcp/
+.worktrees/
 __pycache__/
 *.pyc

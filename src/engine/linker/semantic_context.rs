@@ -298,23 +298,50 @@ impl<'a> Context<'a> {
     }
 
     fn classify(&self, nodes: impl Iterator<Item = &'a Node>, role: SymbolRole) -> Symbol<'a> {
-        let mut candidates = nodes.filter(|node| match role {
-            SymbolRole::Type => matches!(
-                node.kind.as_str(),
-                "class" | "struct" | "enum" | "type" | "type_alias" | "interface" | "trait"
-            ),
-            SymbolRole::Constructor => matches!(node.kind.as_str(), "class" | "struct" | "enum"),
-            SymbolRole::Callable => matches!(
-                node.kind.as_str(),
-                "function" | "method" | "class" | "struct" | "enum"
-            ),
-        });
-        let Some(node) = candidates.next() else {
+        let mut candidates: Vec<&'a Node> = nodes
+            .filter(|node| match role {
+                SymbolRole::Type => matches!(
+                    node.kind.as_str(),
+                    "class" | "struct" | "enum" | "type" | "type_alias" | "interface" | "trait"
+                ),
+                SymbolRole::Constructor => {
+                    matches!(node.kind.as_str(), "class" | "struct" | "enum")
+                }
+                SymbolRole::Callable => matches!(
+                    node.kind.as_str(),
+                    "function" | "method" | "class" | "struct" | "enum"
+                ),
+            })
+            .collect();
+        if candidates.len() > 1 {
+            let non_stubs: Vec<&'a Node> = candidates
+                .iter()
+                .copied()
+                .filter(|n| {
+                    let is_stub = n
+                        .details
+                        .get("is_stub")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let is_overload = n
+                        .details
+                        .get("is_overload")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    !is_stub && !is_overload
+                })
+                .collect();
+            if !non_stubs.is_empty() && non_stubs.len() < candidates.len() {
+                candidates = non_stubs;
+            }
+        }
+        if candidates.is_empty() {
             return Symbol::Unknown;
-        };
-        if candidates.next().is_some() {
+        }
+        if candidates.len() > 1 {
             return Symbol::Ambiguous;
         }
+        let node = candidates[0];
         if matches!(node.kind.as_str(), "function" | "method") {
             Symbol::Callable(node)
         } else {
@@ -439,7 +466,30 @@ impl<'a> Context<'a> {
                     .map(Vec::as_slice)
                 {
                     Some([node]) => Member::Local(node),
-                    Some(nodes) if nodes.len() > 1 => Member::Ambiguous,
+                    Some(nodes) if nodes.len() > 1 => {
+                        let non_stubs: Vec<&Node> = nodes
+                            .iter()
+                            .copied()
+                            .filter(|n| {
+                                let is_stub = n
+                                    .details
+                                    .get("is_stub")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                let is_overload = n
+                                    .details
+                                    .get("is_overload")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                !is_stub && !is_overload
+                            })
+                            .collect();
+                        if non_stubs.len() == 1 {
+                            Member::Local(non_stubs[0])
+                        } else {
+                            Member::Ambiguous
+                        }
+                    }
                     _ => Member::Unknown,
                 }
             }
@@ -476,7 +526,7 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             return None;
         }
         let (head, member) = callee.split_once('.').unwrap_or((callee, ""));
-        if !matches!(member, "" | "getLogger") {
+        if !matches!(member, "" | "getLogger" | "LoggerAdapter") {
             return None;
         }
         let mut scope = owner.qualname.as_str();
@@ -503,6 +553,9 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                     }
                     let canonical = match (reference.expression.as_str(), member) {
                         ("logging", "getLogger") | ("getLogger", "") => "logging.Logger",
+                        ("logging", "LoggerAdapter") | ("LoggerAdapter", "") => {
+                            "logging.LoggerAdapter"
+                        }
                         _ => return None,
                     };
                     let Symbol::Type(TypeTarget::External {
@@ -557,12 +610,22 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         _args: &[crate::core::semantic::TypeExpr],
         at: SourcePosition,
     ) -> TypeTarget<'a> {
+        let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
         match self.resolve_symbol(owner, base, at, SymbolRole::Type) {
             Symbol::Type(TypeTarget::Builtin(name))
                 if languages::by_id(&owner.language)
                     .is_some_and(|profile| profile.builtin_generic(&name)) =>
             {
                 TypeTarget::Builtin(name)
+            }
+            Symbol::Type(TypeTarget::External { module, .. })
+                if matches!(
+                    module.as_str(),
+                    "typing" | "typing_extensions" | "collections.abc"
+                ) && languages::by_id(&owner.language)
+                    .is_some_and(|profile| profile.builtin_generic(clean_base)) =>
+            {
+                TypeTarget::Builtin(clean_base.to_string())
             }
             _ => TypeTarget::Unknown,
         }
@@ -726,9 +789,34 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                                 if (owner.language == "python"
                                     && matches!(role, SymbolRole::Constructor))
                                     || (matches!(module.as_str(), "typing" | "typing_extensions")
-                                        && member == "Any")
+                                        && (member == "Any" || head == "Any"))
                                 {
                                     Symbol::Unknown
+                                } else if owner.language == "python"
+                                    && matches!(
+                                        module.as_str(),
+                                        "typing" | "typing_extensions" | "collections.abc"
+                                    )
+                                    && languages::by_id("python").is_some_and(|p| {
+                                        p.builtin_generic(head) || p.builtin_member(head, "get")
+                                    })
+                                {
+                                    Symbol::Type(TypeTarget::Builtin(head.to_string()))
+                                } else if owner.language == "python"
+                                    && module == "logging"
+                                    && (matches!(member, "Logger" | "LoggerAdapter")
+                                        || matches!(head, "Logger" | "LoggerAdapter"))
+                                {
+                                    let log_class = if matches!(member, "Logger" | "LoggerAdapter")
+                                    {
+                                        member
+                                    } else {
+                                        head
+                                    };
+                                    Symbol::Type(TypeTarget::External {
+                                        module: format!("logging.{log_class}"),
+                                        import_line: position.line,
+                                    })
                                 } else {
                                     Symbol::Type(TypeTarget::External {
                                         module: module.clone(),
