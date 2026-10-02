@@ -139,21 +139,31 @@ pub(crate) fn finalize_mcp_metadata_for_symbol(value: &mut Value, explain: Optio
         if let Some(explain) = explain {
             sparse_symbol(map, explain);
         }
+        let (has_page, all_empty, paged_generation) = map
+            .values()
+            .filter_map(Value::as_object)
+            .filter(|page| is_paging_envelope(page))
+            .fold(
+                (false, true, false),
+                |(_, all_empty, same_generation), page| {
+                    (
+                        true,
+                        all_empty && empty_page(page),
+                        same_generation || page.get("generation") == map.get("generation"),
+                    )
+                },
+            );
+        let empty_result = has_page && all_empty;
         for (key, child) in map.iter_mut() {
             if key != "rows" {
                 compact_graph_value(child);
             }
         }
-        let paged_generation = !map.contains_key("counts")
-            && map.values().any(|child| {
-                child.as_object().is_some_and(|page| {
-                    is_paging_envelope(page) && page.get("generation") == map.get("generation")
-                })
-            });
-        if paged_generation {
+        if paged_generation && !map.contains_key("counts") {
             map.remove("generation");
         }
         // Strip verbose freshness timestamps
+        let mut matched_no_refresh = false;
         if let Some(Value::Object(fmap)) = map.get_mut("freshness") {
             if is_freshness_envelope(fmap) {
                 fmap.remove("checked_at_unix_ms");
@@ -163,6 +173,7 @@ pub(crate) fn finalize_mcp_metadata_for_symbol(value: &mut Value, explain: Optio
                     Some("matched" | "source_inventory_matched")
                 ) && fmap["refresh"] == "none"
                 {
+                    matched_no_refresh = true;
                     let generation = fmap["output_root"].clone();
                     fmap.clear();
                     fmap.insert("status".into(), Value::String("matched".into()));
@@ -174,7 +185,9 @@ pub(crate) fn finalize_mcp_metadata_for_symbol(value: &mut Value, explain: Optio
         // Extract metadata fields
         let metadata = map.remove("metadata");
         let generation = map.remove("generation");
-        let freshness = map.remove("freshness");
+        let freshness = map
+            .remove("freshness")
+            .filter(|_| !empty_result || !matched_no_refresh);
 
         // Re-insert at the end in deterministic order
         if let Some(meta) = metadata {
@@ -198,6 +211,22 @@ fn empty_collection(value: &Value) -> bool {
                 .and_then(Value::as_array)
                 .is_some_and(Vec::is_empty))
         || value.as_object().is_some_and(Map::is_empty)
+}
+
+fn empty_page(page: &Map<String, Value>) -> bool {
+    page.get("has_more") != Some(&Value::Bool(true))
+        && !page_limited(page)
+        && (page.get("total").is_some_and(|total| total == 0)
+            || page
+                .get("items")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty))
+}
+
+fn page_limited(page: &Map<String, Value>) -> bool {
+    ["computation_truncated", "byte_limited"]
+        .iter()
+        .any(|field| page.get(*field) == Some(&Value::Bool(true)))
 }
 
 fn sparse_symbol(object: &mut Map<String, Value>, explain: bool) {
@@ -255,10 +284,25 @@ fn compact_graph_value(value: &mut Value) {
                 }
             }
             if is_paging_envelope(object) {
-                shorten_fields(object, &["generation"]);
+                if empty_page(object) {
+                    for field in [
+                        "offset",
+                        "limit",
+                        "has_more",
+                        "generation",
+                        "next_offset",
+                        "continuation_hint",
+                    ] {
+                        object.remove(field);
+                    }
+                } else {
+                    shorten_fields(object, &["generation"]);
+                }
+                if !page_limited(object) {
+                    object.remove("continuation_hint");
+                }
                 if object.get("has_more") == Some(&Value::Bool(false)) {
                     object.remove("next_offset");
-                    object.remove("continuation_hint");
                 }
             }
             for key in ["items", "nodes", "matches", "grouped_by_file"] {
@@ -333,7 +377,7 @@ mod tests {
     fn hash_shortening_is_scoped_to_verified_metadata_envelopes() {
         let mut response = serde_json::json!({
             "generation": "a".repeat(64),
-            "pages": {"offset": 0, "limit": 10, "generation": "b".repeat(64), "items": []},
+            "pages": {"offset": 0, "limit": 10, "generation": "b".repeat(64), "items": [1]},
             "metadata": {"output_root": "metadata-root-1234", "corpus_hash": "metadata-hash-1234"},
             "rows": {"items": [{"generation": "1234567é", "output_root": "0123456789"}]},
             "nodes": {"items": [{"output_root": "node-root-12345", "corpus_hash": "node-hash-123456"}]},

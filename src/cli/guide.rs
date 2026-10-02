@@ -76,7 +76,16 @@ pub fn checkpoint(
         Checkpoints::default()
     };
     match action {
-        "list" => Ok(json!(data.entries)),
+        "list" => {
+            let entries = data
+                .entries
+                .iter()
+                .map(|(name, value)| {
+                    Ok((name.clone(), json!({"bytes":serde_json::to_vec(value)?.len()})))
+                })
+                .collect::<Result<serde_json::Map<String, Value>>>()?;
+            Ok(Value::Object(entries))
+        }
         "get" => {
             let name = checkpoint_name(name)?;
             data.entries

@@ -565,13 +565,6 @@ impl Server {
                         page: &page,
                     },
                 )?;
-                if let Some(items) = res["nodes"]["items"].as_array_mut() {
-                    for item in items {
-                        if let Some(id) = item["id"].as_str().map(str::to_owned) {
-                            item["inspect_selector"] = Value::String(id);
-                        }
-                    }
-                }
                 if p.group_by_file {
                     if let Some(items) = res
                         .get_mut("nodes")
@@ -771,7 +764,7 @@ impl Server {
         self.responding(|_| cli::guide::run(&self.root, topic, p.force))
     }
     #[tool(
-        description = "Manage local session checkpoints saved in .forge/checkpoints.json. Actions: 'list', 'save' (requires name + content), 'get' (by name), 'delete' (by name)."
+        description = "Manage local session checkpoints saved in .forge/checkpoints.json. Actions: 'list' (names and byte sizes), 'save' (requires name + content), 'get' (by name), 'delete' (by name)."
     )]
     fn session_checkpoint(&self, Parameters(p): Parameters<Checkpoint>) -> CallToolResult {
         match scanner::load_adapter(&self.root, None) {

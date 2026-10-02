@@ -48,8 +48,24 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     );
     let all = client.payload("task_list", json!({"repository":"all"}));
     assert_eq!(all["tasks"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        all["workspaces"]["traverse/traverse"]["workspace_root"],
+        linked.0.to_str().unwrap()
+    );
     let selected = client.payload("task_list", json!({"repository":"traverse"}));
-    assert_eq!(selected["tasks"][0]["task_id"], id);
+    assert_eq!(selected["workspace_root"], linked.0.to_str().unwrap());
+    assert_eq!(selected["workspace"], "traverse");
+    assert_eq!(
+        selected["agents_guidance"],
+        linked.0.join("AGENTS.md").to_str().unwrap()
+    );
+    assert_eq!(
+        selected["tasks"][0],
+        json!({
+            "task_id":id,"target":"Deliver","status":"ready","stage":"design/v1",
+            "owner":null,"agent_type":"worker","rev":1
+        })
+    );
     let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args([
             "--root",
@@ -320,10 +336,10 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
         serde_json::from_str(collision["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "TASK_ALREADY_CLAIMED");
     assert_eq!(client.payload("task_list", json!({}))["tasks"], json!([]));
-    assert_eq!(
-        client.payload("task_list", json!({"status":"in_progress"}))["tasks"][0]["task_id"],
-        id
-    );
+    let active = client.payload("task_list", json!({"status":"in_progress"}));
+    assert_eq!(active["tasks"][0]["task_id"], id);
+    assert_eq!(active["tasks"][0]["owner"], "builder");
+    assert_eq!(active["tasks"][0]["stage"], "design/v1");
     let reset = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args(["--root", workspace.0.to_str().unwrap(), "task", "reset", id])
         .output()

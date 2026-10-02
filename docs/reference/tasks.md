@@ -66,7 +66,13 @@ Synchronize linked specifications explicitly before querying their queue.
 
 `task_list` omits linked tasks by default. Set `repository: "all"` to combine
 enabled namespaces, or a configured workspace name to select one. Status still
-defaults to `ready`. Existing task IDs route claim, submit, inspect, reset, delete,
+defaults to `ready`. Each list entry is a compact card with `task_id`, `target`,
+`status`, `stage`, `owner`, `agent_type`, and `rev` (the contract revision).
+The single-workspace response puts `workspace_root`, `agents_guidance`, and
+`workspace` beside `tasks`. With `repository: "all"`, `workspaces` maps each
+`repository/project` namespace to those paths and its workspace name.
+Use `task_manage` with `action: "inspect"` to read the full task specification
+and attempts. Existing task IDs route claim, submit, inspect, reset, delete,
 and scope extension to their owning namespace. Inspect and claim include absolute
 `workspace_root`, absolute `agents_guidance`, the milestone's local invariants,
 and stage-specific `workflow_guidance`. The latter gives `active_stage`,

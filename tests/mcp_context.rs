@@ -138,8 +138,9 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     );
     let page = &first["nodes"];
     assert_eq!(page["has_more"], true);
-    let selector = page["items"][0]["inspect_selector"].as_str().unwrap();
-    assert_eq!(page["items"][0]["id"], selector);
+    assert!(page.get("continuation_hint").is_none());
+    let selector = page["items"][0]["id"].as_str().unwrap();
+    assert!(page["items"][0].get("inspect_selector").is_none());
     assert!(page["items"][0].get("is_test").is_none());
     assert!(page["items"][0].get("generated").is_none());
     let second = client.payload("code_map_search", json!({"pattern":"target","exact":true,"limit":1,"offset":page["next_offset"],"generation":page["generation"]}));
@@ -197,6 +198,39 @@ fn compact_symbol_page_has_stable_lean_serialization() {
     assert_eq!(flagged["nodes"]["items"][0]["is_test"], true);
     assert_eq!(flagged["nodes"]["items"][0]["generated"], true);
     assert_eq!(flagged["nodes"]["items"][0]["qualname"], "suite.test");
+}
+
+#[test]
+fn stdio_zero_match_search_has_compact_page() {
+    let workspace = Workspace::new();
+    workspace.write("service.py", "def useful_symbol():\n    return 1\n");
+    let mut client = Client::new(&workspace);
+    let query = json!({"pattern":"*noise*","path":"service.py"});
+    client.payload("code_map_search", query.clone());
+    let payload = client.payload("code_map_search", query);
+    assert_eq!(
+        payload,
+        json!({"pattern":"*noise*","nodes":{"total":0,"items":[]}})
+    );
+}
+
+#[test]
+fn compact_incomplete_page_keeps_limit_evidence() {
+    for flag in ["computation_truncated", "byte_limited"] {
+        let mut payload = json!({"matches":{
+            "total":null,"offset":0,"limit":30,"has_more":false,
+            "generation":"123456789abcdef","items":[],
+            "continuation_hint":"Narrow the pattern"
+        }});
+        payload["matches"][flag] = json!(true);
+        response::compact_mcp_metadata(&mut payload);
+        assert_eq!(payload["matches"][flag], true);
+        assert_eq!(payload["matches"]["generation"], "12345678");
+        assert_eq!(
+            payload["matches"]["continuation_hint"],
+            "Narrow the pattern"
+        );
+    }
 }
 #[cfg(feature = "lang-rust")]
 #[test]
@@ -369,13 +403,15 @@ fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
         "session_checkpoint",
         json!({"action":"save","name":"large","content":"\"\\Привіт".repeat(20_000)}),
     );
-    for action in ["get", "list"] {
-        let (_, response) = client.call(
-            "session_checkpoint",
-            json!({"action":action,"name":"large"}),
-        );
-        assert_eq!(response["result"]["isError"], true, "{response}");
-    }
+    let (_, response) = client.call(
+        "session_checkpoint",
+        json!({"action":"get","name":"large"}),
+    );
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    assert_eq!(
+        client.payload("session_checkpoint", json!({"action":"list"})),
+        json!({"large":{"bytes":320002}})
+    );
     let (_, response) = client.call("get_doc", json!({"path_or_id":"README.md","limit":101}));
     assert_eq!(response["result"]["isError"], true);
 }
@@ -656,6 +692,12 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
     assert_eq!(payload["matches"]["computation_truncated"], true);
     assert!(payload["matches"]["total"].is_null());
     assert!(payload["matches"]["next_offset"].is_null());
+    assert_eq!(payload["matches"]["has_more"], true);
+    assert!(payload["matches"]["generation"].is_string());
+    assert!(payload["matches"]["continuation_hint"]
+        .as_str()
+        .unwrap()
+        .contains("narrow path or pattern"));
     let source = "f(1, 2, missing)\nf(1, 1)\nf(1, 2)\n";
     workspace.write("service.py", source);
     wait_for_source_inventory_ttl();
@@ -706,18 +748,21 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
         let stored = fs::read(workspace.0.join(".forge/checkpoints.json")).unwrap();
         let persisted: Value = serde_json::from_slice(&stored).unwrap();
         assert_eq!(persisted["entries"][name], value);
-        for action in ["get", "list"] {
-            let (_, response) =
-                client.call("session_checkpoint", json!({"action":action,"name":name}));
-            assert_eq!(
-                response["result"]["isError"], true,
-                "oversized {name} {action} created a fabricated page"
-            );
-            assert!(response["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains(".forge/checkpoints.json"));
-        }
+        let (_, response) =
+            client.call("session_checkpoint", json!({"action":"get","name":name}));
+        assert_eq!(
+            response["result"]["isError"], true,
+            "oversized {name} get created a fabricated page"
+        );
+        assert!(response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(".forge/checkpoints.json"));
+        let listed = client.payload("session_checkpoint", json!({"action":"list"}));
+        assert_eq!(
+            listed[name]["bytes"],
+            serde_json::to_vec(&value).unwrap().len()
+        );
         assert_eq!(
             fs::read(workspace.0.join(".forge/checkpoints.json")).unwrap(),
             stored

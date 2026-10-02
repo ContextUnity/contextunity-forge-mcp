@@ -411,10 +411,10 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
         m.ok("session_checkpoint", json!({"action":"get","name":"note"}))["state"],
         1
     );
-    assert!(m
-        .ok("session_checkpoint", json!({"action":"list"}))
-        .get("note")
-        .is_some());
+    assert_eq!(
+        m.ok("session_checkpoint", json!({"action":"list"})),
+        json!({"note":{"bytes":11}})
+    );
     m.ok(
         "session_checkpoint",
         json!({"action":"delete","name":"note"}),

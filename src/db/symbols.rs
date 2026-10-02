@@ -368,8 +368,7 @@ fn ranked_search_page(
         "has_more": has_more,
         "next_offset": if has_more { Some(options.offset.saturating_add(items.len())) } else { None },
         "items": items,
-        "generation": generation,
-        "continuation_hint": if has_more { Some("Repeat the same query with next_offset as offset and this generation.") } else { None }
+        "generation": generation
     }))
 }
 

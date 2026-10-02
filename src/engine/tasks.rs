@@ -232,7 +232,10 @@ pub fn list(root: &Path, p: List) -> Result<Value> {
     let registry = Registry::load(root)?;
     let status = p.status.unwrap_or(Status::Ready).name();
     let mut tasks = Vec::new();
-    for workspace in registry.selected(p.repository.as_deref())? {
+    let all_workspaces = p.repository.as_deref() == Some("all");
+    let mut workspaces = serde_json::Map::new();
+    let mut selected = registry.selected(p.repository.as_deref())?;
+    for workspace in &selected {
         let mut store = workspace.open(&registry.database)?;
         store.cleanup(crate::db::tasks_store::now())?;
         for mut task in store.list(p.milestone_ref.as_deref(), "all", p.stage.map(Stage::name))? {
@@ -256,11 +259,34 @@ pub fn list(root: &Path, p: List) -> Result<Value> {
                 task.status = "blocked".into();
             }
             if status == "all" || task.status == status {
-                tasks.push(workspace.envelope(serde_json::to_value(task)?)?);
+                let stage = if task.status == "completed" {
+                    "completed"
+                } else {
+                    crate::core::tasks::GATES[task.gate]
+                };
+                tasks.push(json!({
+                    "task_id": task.task_id,
+                    "target": task.spec.target,
+                    "status": task.status,
+                    "stage": stage,
+                    "owner": task.worker_id,
+                    "agent_type": task.spec.agent_type.as_deref().unwrap_or("worker"),
+                    "rev": task.contract_revision,
+                }));
             }
         }
+        if all_workspaces {
+            workspaces.insert(
+                format!("{}/{}", workspace.repository, workspace.project),
+                workspace.envelope(json!({}))?,
+            );
+        }
     }
-    Ok(json!({"tasks":tasks}))
+    if all_workspaces {
+        Ok(json!({"tasks":tasks,"workspaces":workspaces}))
+    } else {
+        selected.pop().context("task workspace missing")?.envelope(json!({"tasks":tasks}))
+    }
 }
 fn validate_authority(task: &crate::db::tasks_store::Task, root: &Path) -> Result<()> {
     let text = std::fs::read_to_string(confined_path(root, &task.milestone_ref)?)

@@ -174,8 +174,6 @@ pub fn search_paged(
     let can_continue = has_more && !work_limited;
     let hint = if work_limited {
         Some("AST computation limit reached; narrow path or pattern. Totals are unavailable and continuation cannot advance beyond this work horizon.")
-    } else if has_more {
-        Some("Repeat ast_grep_search with the same language, path and pattern, next_offset as offset, and this generation.")
     } else {
         None
     };

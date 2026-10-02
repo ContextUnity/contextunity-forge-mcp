@@ -138,7 +138,7 @@ fn known_external_alias_is_external_without_claiming_a_callable_target() {
     }
     let removal = traversal::removal_paged(&conn, "consumer.py", &page).unwrap();
     assert_eq!(removal["unresolved_references"], 0);
-    assert_eq!(removal["target_unresolved_references"], 0);
+    assert_eq!(removal["unresolved_references"], 0);
 }
 
 #[test]

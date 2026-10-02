@@ -488,12 +488,11 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
         .collect();
     let (target_unresolved, target_errors) = removal_diagnostics(conn, &selected_ids)?;
     let callers = paging::query(conn, &format!("SELECT {} FROM ({dependencies}) d JOIN edges e ON e.src_hash=d.src_hash AND e.dst_hash=d.dst_hash AND e.kind=d.kind ORDER BY e.path_id,e.line,e.src_hash,e.dst_hash,e.kind", paging::edges("e", options.detail)), &[&selected_id], options)?;
-    let target_safe_to_remove =
-        dependency_count == 0 && target_unresolved == 0 && target_errors == 0;
+    let safe_to_remove = dependency_count == 0 && target_unresolved == 0 && target_errors == 0;
     Ok(
         json!({"assessment":removal_assessment(dependency_count,true,target_unresolved,target_errors),"selector":selector,
         "selected_ids":paging::value(selected, file_count.max(1), options, &generation),
-        "incoming_dependencies":callers,"target_safe_to_remove":target_safe_to_remove,"safe_to_remove":target_safe_to_remove,"unresolved_references":target_unresolved,"target_unresolved_references":target_unresolved,"parse_errors":target_errors,"target_parse_errors":target_errors,
+        "incoming_dependencies":callers,"safe_to_remove":safe_to_remove,"unresolved_references":target_unresolved,"parse_errors":target_errors,
         "proof_scope":"indexed static references only; dynamic entrypoints and external callers require separate authority",
         "generation":generation}),
     )

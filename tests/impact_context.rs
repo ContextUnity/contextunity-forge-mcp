@@ -269,10 +269,16 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
         [],
     )?;
     let unrelated = traversal::removal_paged(&conn, "orphan", &options(10, 0, Detail::Compact)?)?;
-    assert_eq!(unrelated["target_safe_to_remove"], true);
     assert_eq!(unrelated["safe_to_remove"], true);
-    assert_eq!(unrelated["target_unresolved_references"], 0);
-    assert_eq!(unrelated["target_parse_errors"], 0);
+    assert_eq!(unrelated["unresolved_references"], 0);
+    assert_eq!(unrelated["parse_errors"], 0);
+    for duplicate in [
+        "target_safe_to_remove",
+        "target_unresolved_references",
+        "target_parse_errors",
+    ] {
+        assert!(unrelated.get(duplicate).is_none());
+    }
     let result = traversal::removal_paged(&conn, "b", &options(10, 0, Detail::Compact)?)?;
     assert_eq!(result["assessment"]["verdict"], "blocked");
     assert_eq!(
@@ -291,9 +297,8 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
         "selection"
     );
     assert_eq!(result["assessment"]["blocking_reasons"][0]["count"], 1);
-    assert_eq!(result["target_unresolved_references"], 0);
-    assert_eq!(result["target_parse_errors"], 0);
-    assert_eq!(result["target_safe_to_remove"], false);
+    assert_eq!(result["unresolved_references"], 0);
+    assert_eq!(result["parse_errors"], 0);
     assert_eq!(result["safe_to_remove"], false);
     assert_eq!(result["incoming_dependencies"]["total"], 1);
     assert!(result["proof_scope"]
@@ -308,9 +313,8 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     )?;
     let blocked_target =
         traversal::removal_paged(&conn, "orphan", &options(10, 0, Detail::Compact)?)?;
-    assert_eq!(blocked_target["target_safe_to_remove"], false);
     assert_eq!(blocked_target["safe_to_remove"], false);
-    assert_eq!(blocked_target["target_unresolved_references"], 1);
+    assert_eq!(blocked_target["unresolved_references"], 1);
     assert_eq!(blocked_target["assessment"]["verdict"], "blocked");
     assert_eq!(
         blocked_target["assessment"]["blocking_reasons"][0]["kind"],
