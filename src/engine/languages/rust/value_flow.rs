@@ -19,7 +19,7 @@ fn type_expr_inner(
     generic_names: &HashSet<&str>,
     depth: usize,
 ) -> TypeExpr {
-    if depth >= 8 {
+    if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
         return TypeExpr::Unknown;
     }
     let mut node = node;

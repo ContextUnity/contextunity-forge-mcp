@@ -1,5 +1,7 @@
 use super::*;
+/// Language profile for kotlin source files.
 pub struct Kotlin;
+/// Shared kotlin language profile.
 pub static KOTLIN: Kotlin = Kotlin;
 impl LanguageProfile for Kotlin {
     fn id(&self) -> &'static str {
@@ -153,4 +155,5 @@ impl LanguageProfile for Kotlin {
     }
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&KOTLIN];

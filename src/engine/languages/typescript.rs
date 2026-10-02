@@ -9,6 +9,7 @@ mod commonjs;
 pub(crate) use commonjs::commonjs_bindings;
 #[path = "typescript/value_flow.rs"]
 mod value_flow;
+/// Performs language.
 pub fn language(path: &str, language: &str) -> tree_sitter::Language {
     if language == "javascript"
         || path.ends_with(".js")
@@ -23,6 +24,7 @@ pub fn language(path: &str, language: &str) -> tree_sitter::Language {
         tree_sitter_typescript::language_typescript()
     }
 }
+/// Performs kind.
 pub fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_declaration"
@@ -456,10 +458,14 @@ fn browser_global_type(name: &str) -> bool {
     )
 }
 
+/// TypeScript family profile that shares syntax rules with JavaScript.
 pub struct TypeScript {
+    /// Enables JavaScript syntax and file extensions when true.
     pub javascript: bool,
 }
+/// Shared typescript language profile.
 pub static TYPESCRIPT: TypeScript = TypeScript { javascript: false };
+/// Shared javascript language profile.
 pub static JAVASCRIPT: TypeScript = TypeScript { javascript: true };
 impl LanguageProfile for TypeScript {
     fn id(&self) -> &'static str {
@@ -1272,4 +1278,5 @@ impl LanguageProfile for TypeScript {
     }
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&TYPESCRIPT, &JAVASCRIPT];

@@ -1,5 +1,7 @@
 use super::*;
+/// Language profile for cpp source files.
 pub struct Cpp;
+/// Shared cpp language profile.
 pub static CPP: Cpp = Cpp;
 impl LanguageProfile for Cpp {
     fn id(&self) -> &'static str {
@@ -178,4 +180,5 @@ fn unparenthesized(mut node: Syntax<'_>) -> Option<Syntax<'_>> {
     Some(node)
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&CPP];

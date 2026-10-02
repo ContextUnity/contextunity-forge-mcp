@@ -13,6 +13,32 @@ pub(super) const REVERSE_DEPENDENCIES: &str = "'decorates'";
 const STRUCTURAL_DEPENDENCIES: &str = ",'imports','contains','documents'";
 const MAX_DEEP_TRAVERSAL_FRONTIER: usize = 1000;
 
+/// Bounds and filters a graph traversal.
+pub struct TraversalOptions<'a> {
+    /// Maximum graph depth.
+    pub depth: u32,
+    /// Whether to follow incoming relationships.
+    pub inbound: bool,
+    /// Optional relationship mode.
+    pub mode: Option<&'a str>,
+    /// Optional exact relationship kinds.
+    pub edge_types: Option<&'a [String]>,
+    /// Bounded page and generation contract.
+    pub page: &'a QueryOptions,
+}
+
+/// Bounds a generic graph query.
+pub struct GraphQueryOptions<'a> {
+    /// Maximum graph depth for traversal operations.
+    pub depth: u32,
+    /// Incoming or outgoing impact direction.
+    pub direction: Option<&'a str>,
+    /// Optional resolution coverage.
+    pub coverage: CoverageOptions,
+    /// Bounded page and generation contract.
+    pub page: &'a QueryOptions,
+}
+
 fn removal_assessment(
     dependencies: usize,
     exact_dependencies: bool,
@@ -42,7 +68,7 @@ fn removal_diagnostics(conn: &Connection, selected_ids: &[String]) -> Result<(us
     let ids = serde_json::to_string(selected_ids)?;
     let target_unresolved = paging::count(
         conn,
-        "SELECT count(*) FROM resolution_coverage c WHERE c.status IN('unresolved','ambiguous') AND (c.expression IN (SELECT n.name FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR c.expression IN (SELECT n.qualname FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR c.path IN (SELECT n.path FROM nodes n WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) OR (EXISTS(SELECT 1 FROM nodes n WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) AND c.path IN (SELECT e.path FROM edges e JOIN nodes m ON m.id=e.dst_public_id WHERE e.kind='imports' AND m.path IN (SELECT n.path FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))))))",
+        "SELECT count(*) FROM resolution_coverage c JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN path_dictionary p ON p.path_id=c.path_id WHERE c.status IN('unresolved','ambiguous') AND (x.expression IN (SELECT n.name FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR x.expression IN (SELECT n.qualname FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR p.path IN (SELECT n.path FROM nodes n WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) OR (EXISTS(SELECT 1 FROM nodes n WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) AND p.path IN (SELECT ep.path FROM edges e JOIN path_dictionary ep ON ep.path_id=e.path_id JOIN nodes m ON m.node_hash=e.dst_hash WHERE e.kind='imports' AND m.path IN (SELECT n.path FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))))))",
         &[&ids],
     )?;
     let target_errors = paging::count(
@@ -71,13 +97,13 @@ pub(super) fn immediate_links(
     };
     let forward = paging::count(
         conn,
-        &format!("SELECT count(*) FROM edges_raw WHERE {forward}=?1 AND kind IN({FORWARD_DEPENDENCIES}{extra})"),
+        &format!("SELECT count(*) FROM edges WHERE {forward}=?1 AND kind IN({FORWARD_DEPENDENCIES}{extra})"),
         &[&stable_hash64(id)],
     )?;
     let reverse = paging::count(
         conn,
         &format!(
-            "SELECT count(*) FROM edges_raw WHERE {reverse}=?1 AND kind IN({REVERSE_DEPENDENCIES})"
+            "SELECT count(*) FROM edges WHERE {reverse}=?1 AND kind IN({REVERSE_DEPENDENCIES})"
         ),
         &[&stable_hash64(id)],
     )?;
@@ -158,9 +184,9 @@ pub(super) fn custom_dependency_steps(
     let depth = if bounded { ",w.depth+1" } else { "" };
     let guard = if bounded { "w.depth<?2 AND " } else { "" };
     if reverse.is_empty() {
-        format!("SELECT e.{to}{depth} FROM walk w JOIN edges_raw e ON e.{from}=w.id WHERE {guard}e.kind IN({forward})")
+        format!("SELECT e.{to}{depth} FROM walk w JOIN edges e ON e.{from}=w.id WHERE {guard}e.kind IN({forward})")
     } else {
-        format!("SELECT e.{to}{depth} FROM walk w JOIN edges_raw e ON e.{from}=w.id WHERE {guard}e.kind IN({forward}) UNION SELECT e.{from}{depth} FROM walk w JOIN edges_raw e ON e.{to}=w.id WHERE {guard}e.kind IN({reverse})")
+        format!("SELECT e.{to}{depth} FROM walk w JOIN edges e ON e.{from}=w.id WHERE {guard}e.kind IN({forward}) UNION SELECT e.{from}{depth} FROM walk w JOIN edges e ON e.{to}=w.id WHERE {guard}e.kind IN({reverse})")
     }
 }
 
@@ -168,66 +194,9 @@ pub(super) fn dependency_steps(inbound: bool, bounded: bool, structural: bool) -
     let (forward, reverse) = resolve_traversal_kinds(None, None, structural);
     custom_dependency_steps(inbound, bounded, &forward, &reverse)
 }
-pub fn traverse(
-    conn: &Connection,
-    selector: &str,
-    depth: u32,
-    inbound: bool,
-    limit: usize,
-) -> Result<Value> {
-    if depth > 16 {
-        bail!("depth must be <=16");
-    }
-    reader::validate_limit(limit)?;
-    let node = reader::select(conn, selector)?;
-    let id = node["id"].as_str().context("selected node has no id")?;
-    let id_hash = stable_hash64(id);
-    admit_traversal(conn, id, depth, inbound)?;
-    let size = limit + 1;
-    let steps = dependency_steps(inbound, true, true);
-    let sql = format!("WITH RECURSIVE walk(id,depth) AS (SELECT ?1,0 UNION {steps}) SELECT n.*,min(w.depth) distance FROM walk w JOIN nodes n ON n.node_hash=w.id GROUP BY n.id ORDER BY distance,n.id LIMIT ?3");
-    let mut nodes = reader::rows(conn, &sql, &[&id_hash, &depth, &size], size)?;
-    let truncated = nodes.len() > limit;
-    nodes.truncate(limit);
-    Ok(
-        json!({"selector":node,"direction":if inbound{"inbound"}else{"outbound"},"depth":depth,"nodes":nodes,"truncated":truncated,"limit":limit}),
-    )
-}
-pub fn removal(conn: &Connection, selector: &str) -> Result<Value> {
-    if selector.trim().ends_with(".md") {
-        bail!(
-            "'{selector}' is a Markdown file; use get_doc or search_docs to inspect documentation"
-        );
-    }
-    let nodes = reader::rows(
-        conn,
-        "SELECT id FROM nodes WHERE path=?1",
-        &[&selector],
-        10001,
-    )?;
-    let selected = if nodes.is_empty() {
-        vec![reader::select(conn, selector)?]
-    } else {
-        nodes
-    };
-    if selected.len() > 10000 {
-        bail!("removal scope exceeds 10000 nodes");
-    }
-    let ids: Vec<String> = selected
-        .iter()
-        .filter_map(|n| n["id"].as_str().map(str::to_owned))
-        .collect();
-    let encoded = serde_json::to_string(&ids)?;
-    let sql = format!("SELECT e.* FROM edges e WHERE e.dst_public_id IN(SELECT value FROM json_each(?1)) AND e.src_public_id NOT IN(SELECT value FROM json_each(?1)) AND e.kind NOT IN('contains','references_doc',{REVERSE_DEPENDENCIES}) UNION SELECT e.* FROM edges e WHERE e.src_public_id IN(SELECT value FROM json_each(?1)) AND e.dst_public_id NOT IN(SELECT value FROM json_each(?1)) AND e.kind IN({REVERSE_DEPENDENCIES}) ORDER BY path,line");
-    let callers = reader::rows(conn, &sql, &[&encoded], 1001)?;
-    let (target_unresolved, target_errors) = removal_diagnostics(conn, &ids)?;
-    let target_safe_to_remove = callers.is_empty() && target_unresolved == 0 && target_errors == 0;
-    Ok(
-        json!({"assessment":removal_assessment(callers.len(),callers.len()<1001,target_unresolved,target_errors),"selector":selector,"selected_ids":ids,"incoming_dependencies":callers,"target_safe_to_remove":target_safe_to_remove,"safe_to_remove":target_safe_to_remove,"unresolved_references":target_unresolved,"target_unresolved_references":target_unresolved,"parse_errors":target_errors,"target_parse_errors":target_errors,"proof_scope":"indexed static references only; dynamic entrypoints and external callers require separate authority"}),
-    )
-}
 pub use super::cycles::cycles;
 
+/// Performs impact inbound.
 pub fn impact_inbound(direction: Option<&str>) -> Result<bool> {
     match direction.unwrap_or("inbound") {
         "inbound" => Ok(true),
@@ -242,58 +211,17 @@ fn sql_selector(selector: Option<&str>) -> Result<&str> {
         .ok_or_else(|| anyhow::anyhow!("sql operation requires a SELECT or WITH selector"))
 }
 
-pub fn query(
-    conn: &Connection,
-    operation: &str,
-    selector: Option<&str>,
-    depth: u32,
-    limit: usize,
-) -> Result<Value> {
-    let op = operation.trim();
-    match op {
-        "overview" => reader::overview(conn),
-        "inspect" => reader::inspect(conn, selector.unwrap_or(""), true),
-        "explain" => reader::explain(conn, selector.unwrap_or("")),
-        "impact" => traverse(conn, selector.unwrap_or(""), depth, true, limit),
-        "slice" => traverse(conn, selector.unwrap_or(""), depth, false, limit),
-        "unwired" => Ok(json!({
-            "nodes": reader::rows(
-                conn,
-                "SELECT n.* FROM nodes n WHERE n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_public_id=n.id AND e.kind='calls') ORDER BY n.path,n.line",
-                &[],
-                limit
-            )?,
-            "meaning": "no indexed static caller; not a dead-code proof"
-        })),
-        "doctor" => reader::overview(conn),
-        "search" | "discover" | "find" => {
-            symbols::search(conn, selector.unwrap_or(""), None, limit)
-        }
-        _ => {
-            bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired")
-        }
-    }
-}
-
-pub fn traverse_paged(
+/// Traverse direct indexed relationships with bounded paging.
+pub fn traverse_with_options(
     conn: &Connection,
     selector: &str,
-    depth: u32,
-    inbound: bool,
-    options: &QueryOptions,
+    request: &TraversalOptions<'_>,
 ) -> Result<Value> {
-    traverse_paged_with_filter(conn, selector, depth, inbound, None, None, options)
-}
-
-pub fn traverse_paged_with_filter(
-    conn: &Connection,
-    selector: &str,
-    depth: u32,
-    inbound: bool,
-    mode: Option<&str>,
-    edge_types: Option<&[String]>,
-    options: &QueryOptions,
-) -> Result<Value> {
+    let depth = request.depth;
+    let inbound = request.inbound;
+    let mode = request.mode;
+    let edge_types = request.edge_types;
+    let options = request.page;
     if depth > 16 {
         bail!("depth must be <=16");
     }
@@ -378,7 +306,7 @@ pub fn traverse_paged_with_filter(
     let reverse_union = if reverse.is_empty() {
         String::new()
     } else {
-        format!("UNION ALL SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{reverse_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{reverse_to} WHERE e.{reverse_from}=p.__hash AND e.kind IN({reverse})")
+        format!("UNION ALL SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges e JOIN reached prior ON prior.id=e.{reverse_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{reverse_to} WHERE e.{reverse_from}=p.__hash AND e.kind IN({reverse})")
     };
     let sql = if immediate <= 3 && options.offset == 0 {
         // On sparse walks, count the reached rows in the page scan itself.
@@ -386,7 +314,7 @@ pub fn traverse_paged_with_filter(
         reached(id,distance) AS (SELECT id,min(depth) FROM walk GROUP BY id), \
         page AS (SELECT {columns},n.node_hash __hash,r.distance,count(*) OVER() __total FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4) \
         SELECT p.*,CASE WHEN p.distance=0 THEN NULL ELSE (SELECT json_array(predecessor,edge_kind) FROM ( \
-            SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{forward_to} WHERE e.{forward_from}=p.__hash AND e.kind IN({forward}) \
+            SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{forward_to} WHERE e.{forward_from}=p.__hash AND e.kind IN({forward}) \
             {reverse_union} \
         ) ORDER BY predecessor,edge_kind LIMIT 1) END __reason FROM page p")
     } else {
@@ -394,7 +322,7 @@ pub fn traverse_paged_with_filter(
         reached(id,distance) AS MATERIALIZED (SELECT id,min(depth) FROM walk GROUP BY id), \
         page AS (SELECT {columns},n.node_hash __hash,r.distance FROM reached r JOIN nodes n ON n.node_hash=r.id ORDER BY r.distance,n.id LIMIT ?3 OFFSET ?4) \
         SELECT totals.__total,p.*,CASE WHEN p.distance=0 THEN NULL ELSE (SELECT json_array(predecessor,edge_kind) FROM ( \
-            SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges_raw e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{forward_to} WHERE e.{forward_from}=p.__hash AND e.kind IN({forward}) \
+            SELECT predecessor.id AS predecessor,e.kind AS edge_kind FROM edges e JOIN reached prior ON prior.id=e.{forward_to} AND prior.distance=p.distance-1 JOIN nodes predecessor ON predecessor.node_hash=e.{forward_to} WHERE e.{forward_from}=p.__hash AND e.kind IN({forward}) \
             {reverse_union} \
         ) ORDER BY predecessor,edge_kind LIMIT 1) END __reason \
         FROM (SELECT count(*) __total FROM reached r JOIN nodes n ON n.node_hash=r.id) totals \
@@ -458,17 +386,35 @@ fn slice_paged(
     depth: u32,
     options: &QueryOptions,
 ) -> Result<Value> {
-    match traverse_paged(conn, selector, depth, false, options) {
+    match traverse_with_options(
+        conn,
+        selector,
+        &TraversalOptions {
+            depth,
+            inbound: false,
+            mode: None,
+            edge_types: None,
+            page: options,
+        },
+    ) {
         Ok(result) => return Ok(result),
-        Err(error) if !error.to_string().starts_with("selector not found:") => return Err(error),
+        Err(error)
+            if !matches!(
+                error.downcast_ref::<reader::SelectorError>(),
+                Some(reader::SelectorError::NotFound { .. })
+            ) =>
+        {
+            return Err(error);
+        }
         Err(_) => {}
     }
     let Some(path) = reader::directory_path(conn, selector)? else {
         let suggestions = reader::indexed_path_suggestions(conn, selector)?;
-        bail!(
-            "selector not found: {selector}; indexed path suggestions: {}; use a workspace-relative directory or a code_map_search node id",
-            serde_json::to_string(&suggestions)?
-        );
+        return Err(reader::SelectorError::NotFound {
+            selector: selector.to_owned(),
+            suggestions,
+        }
+        .into());
     };
     let (lower, upper) = reader::path_bounds(&path);
     let nodes = paging::query(
@@ -492,11 +438,13 @@ fn slice_paged(
     }))
 }
 
+/// Performs removal paged.
 pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) -> Result<Value> {
     if selector.trim().ends_with(".md") {
-        bail!(
-            "'{selector}' is a Markdown file; use get_doc or search_docs to inspect documentation"
-        );
+        return Err(reader::SelectorError::DocLink {
+            target: selector.to_owned(),
+        }
+        .into());
     }
     let generation = paging::generation(conn, options)?;
     let file_count = paging::count(
@@ -505,18 +453,21 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
         &[&selector],
     )?;
     let (selection, selected_id) = if file_count > 0 {
-        ("SELECT id FROM nodes WHERE path=?1", selector.to_owned())
+        (
+            "SELECT node_hash FROM nodes WHERE path=?1",
+            selector.to_owned(),
+        )
     } else {
         let node = reader::select_detail(conn, selector, crate::core::response::Detail::Compact)?;
         (
-            "SELECT id FROM nodes WHERE id=?1",
+            "SELECT node_hash FROM nodes WHERE id=?1",
             node["id"].as_str().unwrap_or("").to_owned(),
         )
     };
     if file_count > 10000 {
         bail!("removal scope exceeds 10000 nodes");
     }
-    let dependencies = format!("WITH selected(id) AS ({selection}) SELECT e.src_public_id,e.dst_public_id,e.kind FROM edges e WHERE e.dst_public_id IN(SELECT id FROM selected) AND e.src_public_id NOT IN(SELECT id FROM selected) AND e.kind NOT IN('contains','references_doc',{REVERSE_DEPENDENCIES}) UNION SELECT e.src_public_id,e.dst_public_id,e.kind FROM edges e WHERE e.src_public_id IN(SELECT id FROM selected) AND e.dst_public_id NOT IN(SELECT id FROM selected) AND e.kind IN({REVERSE_DEPENDENCIES})");
+    let dependencies = format!("WITH selected(hash) AS ({selection}) SELECT e.src_hash,e.dst_hash,e.kind FROM edges e WHERE e.dst_hash IN(SELECT hash FROM selected) AND e.src_hash NOT IN(SELECT hash FROM selected) AND e.kind NOT IN('contains','references_doc',{REVERSE_DEPENDENCIES}) UNION SELECT e.src_hash,e.dst_hash,e.kind FROM edges e WHERE e.src_hash IN(SELECT hash FROM selected) AND e.dst_hash NOT IN(SELECT hash FROM selected) AND e.kind IN({REVERSE_DEPENDENCIES})");
     let dependency_count = paging::count(
         conn,
         &format!("SELECT count(*) FROM ({dependencies})"),
@@ -524,7 +475,10 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
     )?;
     let selected = reader::rows(
         conn,
-        &format!("{selection} ORDER BY id"),
+        &format!(
+            "SELECT id FROM nodes WHERE {}=?1 ORDER BY id",
+            if file_count > 0 { "path" } else { "id" }
+        ),
         &[&selected_id],
         10001,
     )?;
@@ -533,7 +487,7 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
         .filter_map(|node| node["id"].as_str().map(str::to_owned))
         .collect();
     let (target_unresolved, target_errors) = removal_diagnostics(conn, &selected_ids)?;
-    let callers = paging::query(conn, &format!("SELECT {} FROM ({dependencies}) d JOIN edges e ON e.src_public_id=d.src_public_id AND e.dst_public_id=d.dst_public_id AND e.kind=d.kind ORDER BY e.path,e.line,e.src_public_id,e.dst_public_id,e.kind", paging::edges("e", options.detail)), &[&selected_id], options)?;
+    let callers = paging::query(conn, &format!("SELECT {} FROM ({dependencies}) d JOIN edges e ON e.src_hash=d.src_hash AND e.dst_hash=d.dst_hash AND e.kind=d.kind ORDER BY e.path_id,e.line,e.src_hash,e.dst_hash,e.kind", paging::edges("e", options.detail)), &[&selected_id], options)?;
     let target_safe_to_remove =
         dependency_count == 0 && target_unresolved == 0 && target_errors == 0;
     Ok(
@@ -545,47 +499,26 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
     )
 }
 
-pub fn query_paged(
+/// Execute a bounded graph operation through one options contract.
+pub fn query_with_options(
     conn: &Connection,
     operation: &str,
     selector: Option<&str>,
-    depth: u32,
-    options: &QueryOptions,
+    request: &GraphQueryOptions<'_>,
 ) -> Result<Value> {
-    query_paged_with_direction(conn, operation, selector, depth, None, options)
-}
-
-pub fn query_paged_with_direction(
-    conn: &Connection,
-    operation: &str,
-    selector: Option<&str>,
-    depth: u32,
-    direction: Option<&str>,
-    options: &QueryOptions,
-) -> Result<Value> {
-    query_paged_with_options(
-        conn,
-        operation,
-        selector,
-        depth,
-        direction,
-        CoverageOptions::default(),
-        options,
-    )
-}
-
-pub fn query_paged_with_options(
-    conn: &Connection,
-    operation: &str,
-    selector: Option<&str>,
-    depth: u32,
-    direction: Option<&str>,
-    coverage: CoverageOptions,
-    options: &QueryOptions,
-) -> Result<Value> {
+    let depth = request.depth;
+    let direction = request.direction;
+    let coverage = request.coverage;
+    let options = request.page;
     let op = operation.trim();
     match op {
-        "overview" => reader::overview_paged(conn, options),
+        "overview" => reader::overview_with_options(
+            conn,
+            &reader::OverviewOptions {
+                aspects: None,
+                page: options,
+            },
+        ),
         "inspect" => {
             symbols::inspect_paged_response(conn, selector.unwrap_or(""), true, options, coverage)
         }
@@ -597,22 +530,40 @@ pub fn query_paged_with_options(
             options,
             coverage,
         ),
-        "impact" => traverse_paged(
+        "impact" => traverse_with_options(
             conn,
             selector.unwrap_or(""),
-            depth,
-            impact_inbound(direction)?,
-            options,
+            &TraversalOptions {
+                depth,
+                inbound: impact_inbound(direction)?,
+                mode: None,
+                edge_types: None,
+                page: options,
+            },
         ),
         "slice" => slice_paged(conn, selector.unwrap_or(""), depth, options),
         "unwired" => Ok(
-            json!({"nodes":paging::query(conn, &format!("SELECT {} FROM nodes n WHERE n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_public_id=n.id AND e.kind='calls') ORDER BY n.path,n.line,n.id", paging::nodes("n", options.detail)), &[], options)?, "meaning":"no indexed static caller; not a dead-code proof"}),
+            json!({"nodes":paging::query(conn, &format!("SELECT {} FROM nodes n WHERE n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind='calls') ORDER BY n.path,n.line,n.id", paging::nodes("n", options.detail)), &[], options)?, "meaning":"no indexed static caller; not a dead-code proof"}),
         ),
         "sql" => reader::analyze_paged(conn, sql_selector(selector)?, None, options),
-        "doctor" => reader::overview_paged(conn, options),
-        "search" | "discover" | "find" => {
-            symbols::search_paged(conn, selector.unwrap_or(""), None, options)
-        }
+        "doctor" => reader::overview_with_options(
+            conn,
+            &reader::OverviewOptions {
+                aspects: None,
+                page: options,
+            },
+        ),
+        "search" | "discover" | "find" => symbols::search_with_options(
+            conn,
+            selector.unwrap_or(""),
+            &symbols::SearchOptions {
+                kind: None,
+                path: None,
+                include_docs: false,
+                exact: false,
+                page: options,
+            },
+        ),
         _ => {
             bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql")
         }

@@ -4,19 +4,18 @@ use rayon::prelude::*;
 use rusqlite::{params, types::ValueRef, Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+/// Domain-separated owner commitment algorithm persisted in index metadata.
 pub const ALGORITHM: &str = "forge-owner-sha256-v1";
+/// Logical table domains included in the deterministic output root.
 pub const DOMAINS: &[&str] = &[
     "source_inventory",
     "files",
     "nodes",
     "edges",
     "local_facts",
-    "owned_nodes",
     "edge_occurrences",
-    "owned_search",
     "dependencies",
     "shared_owners",
-    "file_commitments",
     "errors",
     "resolution_coverage",
     "doc_sections",
@@ -31,6 +30,7 @@ const FTS: &[(&str, &str)] = &[
     ("doc_search_docsize", "id"),
     ("doc_search_config", "k"),
 ];
+/// Returns a lowercase SHA-256 digest of the supplied bytes.
 pub fn hash(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -78,19 +78,7 @@ fn key(table: &str, owner: &str) -> String {
 }
 fn shape(table: &str) -> (&'static str, &'static str, &'static str) {
     match table {
-        "nodes" => (
-            "coalesce(o.owner, t.path)",
-            "LEFT JOIN node_owner_overrides o ON o.public_id=t.id",
-            "t.id",
-        ),
-        "edges" => ("t.path", "", "t.src_public_id,t.dst_public_id,t.kind"),
-        "owned_nodes" => ("t.owner", "", "t.public_id"),
-        "edge_occurrences" => ("t.owner", "", "t.ordinal"),
-        "owned_search" => ("t.owner", "", "t.public_id,t.ordinal"),
-        "dependencies" => ("t.owner", "", "t.target,t.kind,t.symbol,t.resolution"),
-        "shared_owners" => ("t.owner", "", "t.kind,t.key,t.ordinal"),
         "errors" => ("t.path", "", "t.line,t.message"),
-        "resolution_coverage" => ("t.path", "", "t.line,t.expression,t.status,t.evidence"),
         "doc_sections" => ("t.path", "", "t.doc_id"),
         _ => ("t.path", "", "t.path"),
     }
@@ -111,6 +99,63 @@ fn encode_int(h: &mut impl sha2::digest::Update, n: i64) {
 #[inline]
 fn encode_null(h: &mut impl sha2::digest::Update) {
     h.update(b"n");
+}
+
+fn leaves_nodes(
+    conn: &Connection,
+    owners: Option<&BTreeSet<String>>,
+) -> Result<BTreeMap<String, String>> {
+    let path_map: HashMap<i64, String> = conn
+        .prepare_cached("SELECT path_id,path FROM path_dictionary")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let filter = if owners.is_some() {
+        "WHERE owner_path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id,path FROM nodes {filter} ORDER BY owner_path_id,id"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let encoded = owners.map(serde_json::to_string).transpose()?;
+    let mut rows = if let Some(encoded) = &encoded {
+        statement.query([encoded])?
+    } else {
+        statement.query([])?
+    };
+    let mut hashers: HashMap<i64, Sha256> = HashMap::new();
+    while let Some(row) = rows.next()? {
+        let owner_id: i64 = row.get(12)?;
+        let owner = path_map.get(&owner_id).context("missing node owner path")?;
+        let path_id: i64 = row.get(4)?;
+        let path = path_map.get(&path_id).context("missing node path")?;
+        if row.get_ref(13)?.as_str()? != path {
+            bail!("node path differs from its path dictionary entry");
+        }
+        let hasher = hashers
+            .entry(owner_id)
+            .or_insert_with(|| new_leaf_hasher("nodes", owner));
+        hasher.update([0xff]);
+        for index in 0..4 {
+            encode_text(hasher, row.get_ref(index)?.as_str()?);
+        }
+        encode_text(hasher, path);
+        for index in 5..=7 {
+            encode_int(hasher, row.get(index)?);
+        }
+        encode_text(hasher, row.get_ref(8)?.as_str()?);
+        encode_int(hasher, row.get(9)?);
+        encode_text(hasher, row.get_ref(10)?.as_str()?);
+        encode_int(hasher, row.get(11)?);
+    }
+    Ok(hashers
+        .into_iter()
+        .map(|(owner_id, hasher)| {
+            let owner = &path_map[&owner_id];
+            (key("nodes", owner), hex::encode(hasher.finalize()))
+        })
+        .collect())
 }
 
 #[derive(Clone, Copy)]
@@ -186,7 +231,7 @@ fn leaves_edge_occurrences(
         ""
     };
     let sql = format!(
-        "SELECT owner_id, ordinal, src_hash, dst_hash, kind, line, evidence, confidence FROM edge_occurrences_raw {filter} ORDER BY owner_id, ordinal"
+        "SELECT owner_id, ordinal, src_hash, dst_hash, kind, line, evidence_id, confidence_id FROM edge_occurrences {filter} ORDER BY owner_id, ordinal"
     );
     let mut stmt = conn.prepare(&sql)?;
     let encoded = owners.map(serde_json::to_string).transpose()?;
@@ -284,7 +329,7 @@ fn leaves_edges(
         ""
     };
     let sql = format!(
-        "SELECT src_hash, kind, dst_hash, path_id, line, evidence, confidence, occurrence_count FROM edges_raw {filter}"
+        "SELECT src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count FROM edges {filter}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let encoded = owners.map(serde_json::to_string).transpose()?;
@@ -382,18 +427,33 @@ fn leaves_shared_owners(
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
 
-    let mut stmt_k = conn.prepare_cached("SELECT key_hash, key FROM shared_keys")?;
-    let key_map: HashMap<i64, String> = stmt_k
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let node_keys: HashMap<i64, (String, String)> = conn
+        .prepare_cached("SELECT node_id,qualname,id FROM nodes")?
+        .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?
         .collect::<rusqlite::Result<_>>()?;
+    let mut stmt_k = conn.prepare_cached("SELECT key_hash,key FROM shared_keys")?;
+    let mut key_rows = stmt_k.query([])?;
+    let mut key_map = HashMap::new();
+    while let Some(row) = key_rows.next()? {
+        let hash: i64 = row.get(0)?;
+        let key = match row.get_ref(1)? {
+            ValueRef::Integer(node_id) => node_keys
+                .get(&node_id)
+                .context("missing node for shared key")?
+                .0
+                .clone(),
+            ValueRef::Text(key) => std::str::from_utf8(key)?.to_owned(),
+            _ => bail!("invalid shared key storage"),
+        };
+        key_map.insert(hash, key);
+    }
 
     let filter = if owners.is_some() {
         "WHERE owner_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
     } else {
         ""
     };
-    let sql =
-        format!("SELECT kind_id, key_hash, owner_id, ordinal FROM shared_owners_raw {filter}");
+    let sql = format!("SELECT kind_id, key_hash, owner_id, ordinal FROM shared_owners {filter}");
     let mut stmt = conn.prepare(&sql)?;
     let encoded = owners.map(serde_json::to_string).transpose()?;
     let mut rows = if let Some(encoded) = &encoded {
@@ -406,6 +466,7 @@ fn leaves_shared_owners(
         kind: &'static str,
         key: &'a str,
         ordinal: i64,
+        node_id: Option<&'a str>,
     }
 
     let mut by_owner: HashMap<&str, Vec<SharedRow<'_>>> = HashMap::new();
@@ -431,10 +492,23 @@ fn leaves_shared_owners(
             2 => "default_export",
             _ => bail!("shared-owner commitment contains invalid kind {kind_id}"),
         };
-        by_owner
-            .entry(owner)
-            .or_default()
-            .push(SharedRow { kind, key, ordinal });
+        let node_id = if kind_id == 0 {
+            Some(
+                node_keys
+                    .get(&ordinal)
+                    .context("shared symbol owner references missing node")?
+                    .1
+                    .as_str(),
+            )
+        } else {
+            None
+        };
+        by_owner.entry(owner).or_default().push(SharedRow {
+            kind,
+            key,
+            ordinal,
+            node_id,
+        });
     }
 
     let mut result = BTreeMap::new();
@@ -443,6 +517,7 @@ fn leaves_shared_owners(
             a.kind
                 .cmp(b.kind)
                 .then_with(|| a.key.cmp(b.key))
+                .then_with(|| a.node_id.cmp(&b.node_id))
                 .then_with(|| a.ordinal.cmp(&b.ordinal))
         });
         let mut hasher = new_leaf_hasher("shared_owners", owner);
@@ -451,7 +526,11 @@ fn leaves_shared_owners(
             encode_text(&mut hasher, s.kind);
             encode_text(&mut hasher, s.key);
             encode_text(&mut hasher, owner);
-            encode_int(&mut hasher, s.ordinal);
+            if let Some(node_id) = s.node_id {
+                encode_text(&mut hasher, node_id);
+            } else {
+                encode_int(&mut hasher, s.ordinal);
+            }
         }
         result.insert(key("shared_owners", owner), hex::encode(hasher.finalize()));
     }
@@ -478,7 +557,7 @@ fn leaves_dependencies(
         ""
     };
     let sql = format!(
-        "SELECT owner_id, ordinal, kind, symbol, resolution, target_hash FROM dependencies_raw {filter}"
+        "SELECT owner_id, ordinal, kind, symbol, resolution, target_hash FROM dependencies {filter}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let encoded = owners.map(serde_json::to_string).transpose()?;
@@ -552,81 +631,17 @@ fn leaves_dependencies(
     Ok(result)
 }
 
-fn leaves_owned_search(
-    conn: &Connection,
-    owners: Option<&BTreeSet<String>>,
-) -> Result<BTreeMap<String, String>> {
-    let overrides: HashMap<i64, String> = conn
-        .prepare_cached("SELECT node_id,search_text FROM owned_search_raw")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    let owner_overrides: HashMap<String, String> = conn
-        .prepare_cached("SELECT public_id,owner FROM node_owner_overrides")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    let mut stmt = conn.prepare_cached(
-        "SELECT node_id,id,path,name,qualname,CASE WHEN json_valid(details) THEN CASE WHEN json_type(details,'$.doc')='text' THEN json_extract(details,'$.doc') ELSE '' END ELSE '' END FROM nodes ORDER BY id",
-    )?;
-    let mut rows = stmt.query([])?;
-    let mut hashers: HashMap<String, Sha256> = HashMap::new();
-    while let Some(row) = rows.next()? {
-        let id = row.get_ref(1)?.as_str()?;
-        let path = row.get_ref(2)?.as_str()?;
-        let owner = owner_overrides.get(id).map_or(path, String::as_str);
-        if owners.is_some_and(|owners| !owners.contains(owner)) {
-            continue;
-        }
-        if !hashers.contains_key(owner) {
-            hashers.insert(owner.to_owned(), new_leaf_hasher("owned_search", owner));
-        }
-        let hasher = hashers
-            .get_mut(owner)
-            .context("missing search owner hasher")?;
-        hasher.update([0xff]);
-        encode_text(hasher, owner);
-        encode_text(hasher, id);
-        encode_int(hasher, 0);
-        if let Some(text) = overrides.get(&row.get::<_, i64>(0)?) {
-            encode_text(hasher, text);
-        } else {
-            let name = row.get_ref(3)?.as_str()?;
-            let qualname = row.get_ref(4)?.as_str()?;
-            let doc = row.get_ref(5)?.as_str()?;
-            let length = name.len()
-                + qualname.len()
-                + path.len()
-                + 2
-                + if doc.is_empty() { 0 } else { doc.len() + 1 };
-            hasher.update(b"t");
-            hasher.update((length as u64).to_le_bytes());
-            hasher.update(name);
-            hasher.update(b" ");
-            hasher.update(qualname);
-            hasher.update(b" ");
-            hasher.update(path);
-            if !doc.is_empty() {
-                hasher.update(b" ");
-                hasher.update(doc);
-            }
-        }
-    }
-    Ok(hashers
-        .into_iter()
-        .map(|(owner, hasher)| (key("owned_search", &owner), hex::encode(hasher.finalize())))
-        .collect())
-}
-
 fn leaves(
     conn: &Connection,
     table: &str,
     owners: Option<&BTreeSet<String>>,
 ) -> Result<BTreeMap<String, String>> {
     match table {
+        "nodes" => return leaves_nodes(conn, owners),
         "edge_occurrences" => return leaves_edge_occurrences(conn, owners),
         "edges" => return leaves_edges(conn, owners),
         "shared_owners" => return leaves_shared_owners(conn, owners),
         "dependencies" => return leaves_dependencies(conn, owners),
-        "owned_search" => return leaves_owned_search(conn, owners),
         "resolution_coverage" => {
             if let Some(leaves) = canonical_coverage_leaves(conn, owners)? {
                 return Ok(leaves);
@@ -679,12 +694,12 @@ fn canonical_coverage_leaves(
         "SELECT path_id,path FROM path_dictionary"
     };
     let expression_sql = if owners.is_some() {
-        format!("SELECT expression_id,expression FROM coverage_expressions WHERE expression_id IN(SELECT expression_id FROM resolution_coverage_data {filter})")
+        format!("SELECT expression_id,expression FROM coverage_expressions WHERE expression_id IN(SELECT expression_id FROM resolution_coverage {filter})")
     } else {
         "SELECT expression_id,expression FROM coverage_expressions".to_owned()
     };
     let evidence_sql = if owners.is_some() {
-        format!("SELECT evidence_id,evidence FROM coverage_evidence WHERE evidence_id IN(SELECT evidence_id FROM resolution_coverage_data {filter})")
+        format!("SELECT evidence_id,evidence FROM coverage_evidence WHERE evidence_id IN(SELECT evidence_id FROM resolution_coverage {filter})")
     } else {
         "SELECT evidence_id,evidence FROM coverage_evidence".to_owned()
     };
@@ -700,7 +715,7 @@ fn canonical_coverage_leaves(
     let mut statuses = HashSet::new();
     {
         let mut statement = conn.prepare_cached(&format!(
-            "SELECT DISTINCT status FROM resolution_coverage_data {filter}"
+            "SELECT DISTINCT status FROM resolution_coverage {filter}"
         ))?;
         let mut rows = if let Some(encoded) = encoded {
             statement.query([encoded])?
@@ -718,7 +733,7 @@ fn canonical_coverage_leaves(
         }
     }
     let mut statement = conn.prepare(&format!(
-        "SELECT path_id,line,expression_id,status,evidence_id FROM resolution_coverage_data {filter}"
+        "SELECT path_id,line,expression_id,status,evidence_id FROM resolution_coverage {filter}"
     ))?;
     let mut rows = if let Some(encoded) = encoded {
         statement.query([encoded])?
@@ -865,7 +880,7 @@ fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> 
 fn root(conn: &Connection) -> Result<String> {
     let mut h = Sha256::new();
     h.update(ALGORITHM);
-    let mut stmt=conn.prepare("SELECT domain,CASE WHEN typeof(digest)='blob' THEN lower(hex(digest)) ELSE digest END FROM domain_commitments_raw WHERE owner_id=0 ORDER BY domain")?;
+    let mut stmt=conn.prepare("SELECT domain,CASE WHEN typeof(digest)='blob' THEN lower(hex(digest)) ELSE digest END FROM domain_commitments WHERE owner_id=0 ORDER BY domain")?;
     for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
         let (k, v) = row?;
         h.update((k.len() as u64).to_le_bytes());
@@ -976,7 +991,7 @@ fn insert_commitment_chunk(
     if chunk.is_empty() {
         return Ok(());
     }
-    let mut sql = String::from("INSERT OR REPLACE INTO domain_commitments_raw VALUES");
+    let mut sql = String::from("INSERT OR REPLACE INTO domain_commitments VALUES");
     for i in 0..chunk.len() {
         if i > 0 {
             sql.push(',');
@@ -995,7 +1010,7 @@ fn insert_commitment_chunk(
 }
 fn stored(conn: &Connection, table: &str) -> Result<BTreeMap<String, String>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT p.path,CASE WHEN typeof(d.digest)='blob' THEN lower(hex(d.digest)) ELSE d.digest END FROM domain_commitments_raw d LEFT JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.domain=?1 AND d.owner_id!=0",
+        "SELECT p.path,CASE WHEN typeof(d.digest)='blob' THEN lower(hex(d.digest)) ELSE d.digest END FROM domain_commitments d LEFT JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.domain=?1 AND d.owner_id!=0",
     )?;
     let rows = stmt
         .query_map([table], |r| {
@@ -1005,6 +1020,11 @@ fn stored(conn: &Connection, table: &str) -> Result<BTreeMap<String, String>> {
         .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
     Ok(rows)
 }
+/// Recomputes every owner leaf and stores the deterministic output root.
+///
+/// # Errors
+///
+/// Fails if indexed rows or dictionary references are malformed, or SQLite fails.
 pub fn seal(conn: &Connection) -> Result<String> {
     seal_owners(conn, None)
 }
@@ -1080,7 +1100,7 @@ pub(crate) fn install_snapshot(conn: &Connection, snapshot: SnapshotCommitments)
         "INSERT OR REPLACE INTO metadata VALUES('commitment_algorithm',?1)",
         [ALGORITHM],
     )?;
-    tx.execute("DELETE FROM domain_commitments_raw", [])?;
+    tx.execute("DELETE FROM domain_commitments", [])?;
     for DomainCommitment {
         table,
         entries,
@@ -1091,7 +1111,7 @@ pub(crate) fn install_snapshot(conn: &Connection, snapshot: SnapshotCommitments)
             batch_insert_commitments(&tx, table, &entries)?;
         }
         tx.execute(
-            "INSERT INTO domain_commitments VALUES(?1,?2)",
+            "INSERT INTO domain_commitments VALUES(?1,0,unhex(?2))",
             params![table, digest],
         )?;
     }
@@ -1104,21 +1124,30 @@ pub(crate) fn install_snapshot(conn: &Connection, snapshot: SnapshotCommitments)
     Ok(root)
 }
 
+/// Reseals selected owner leaves and recomputes their domain and output roots.
+///
+/// `None` seals the complete index. The caller owns the SQLite transaction and
+/// must keep the source rows stable until the seal has completed.
+///
+/// # Errors
+///
+/// Fails on malformed graph references, hashing errors, or SQLite failures.
 pub fn seal_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Result<String> {
     conn.execute(
         "INSERT OR REPLACE INTO metadata VALUES('commitment_algorithm',?1)",
         [ALGORITHM],
     )?;
+    let encoded_owners = owners.map(serde_json::to_string).transpose()?;
     for table in DOMAINS {
         let changed = leaves(conn, table, owners)?;
-        if let Some(owners) = owners {
-            let mut st = conn.prepare_cached("DELETE FROM domain_commitments_raw WHERE domain=?1 AND owner_id=(SELECT path_id FROM path_dictionary WHERE path=?2)")?;
-            for owner in owners {
-                st.execute(params![table, owner])?;
-            }
+        if let Some(encoded) = &encoded_owners {
+            conn.execute(
+                "DELETE FROM domain_commitments WHERE domain=?1 AND owner_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?2)))",
+                params![table, encoded],
+            )?;
         } else {
             conn.execute(
-                "DELETE FROM domain_commitments_raw WHERE domain=?1 AND owner_id!=0",
+                "DELETE FROM domain_commitments WHERE domain=?1 AND owner_id!=0",
                 [table],
             )?;
         }
@@ -1128,12 +1157,12 @@ pub fn seal_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Resu
         } else {
             aggregate(table, &stored(conn, table)?)
         };
-        conn.prepare_cached("INSERT OR REPLACE INTO domain_commitments VALUES(?1,?2)")?
+        conn.prepare_cached("INSERT OR REPLACE INTO domain_commitments VALUES(?1,0,unhex(?2))")?
             .execute(params![table, digest])?;
     }
     for &(table, order_by) in FTS {
         conn.execute(
-            "INSERT OR REPLACE INTO domain_commitments VALUES(?1,?2)",
+            "INSERT OR REPLACE INTO domain_commitments VALUES(?1,0,unhex(?2))",
             params![table, fts_digest(conn, table, order_by)?],
         )?;
     }
@@ -1144,9 +1173,21 @@ pub fn seal_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Resu
     )?;
     Ok(root)
 }
+/// Verifies every stored owner leaf, domain root, and output root.
+///
+/// # Errors
+///
+/// Returns a mismatch error when the committed index differs from its seal.
 pub fn verify(conn: &Connection) -> Result<()> {
     verify_owners(conn, None)
 }
+/// Verifies selected owner leaves and all affected domain and output roots.
+///
+/// `None` verifies the complete index.
+///
+/// # Errors
+///
+/// Returns a mismatch error when the stored commitment differs from source rows.
 pub fn verify_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Result<()> {
     let algorithm: String = conn.query_row(
         "SELECT value FROM metadata WHERE key='commitment_algorithm'",
@@ -1172,7 +1213,7 @@ pub fn verify_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Re
             bail!("commitment mismatch: {table}");
         }
         let stored: String = conn.query_row(
-            "SELECT CASE WHEN typeof(digest)='blob' THEN lower(hex(digest)) ELSE digest END FROM domain_commitments_raw WHERE domain=?1 AND owner_id=0",
+            "SELECT CASE WHEN typeof(digest)='blob' THEN lower(hex(digest)) ELSE digest END FROM domain_commitments WHERE domain=?1 AND owner_id=0",
             [table],
             |r| r.get(0),
         )?;
@@ -1182,7 +1223,7 @@ pub fn verify_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Re
     }
     for &(table, order_by) in FTS {
         let stored: String = conn.query_row(
-            "SELECT CASE WHEN typeof(digest)='blob' THEN lower(hex(digest)) ELSE digest END FROM domain_commitments_raw WHERE domain=?1 AND owner_id=0",
+            "SELECT CASE WHEN typeof(digest)='blob' THEN lower(hex(digest)) ELSE digest END FROM domain_commitments WHERE domain=?1 AND owner_id=0",
             [table],
             |r| r.get(0),
         )?;

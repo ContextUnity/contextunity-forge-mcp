@@ -2,7 +2,9 @@ use super::*;
 #[path = "vue/template.rs"]
 mod template;
 
+/// Represents vue data.
 pub struct Vue;
+/// Shared vue language profile.
 pub static VUE: Vue = Vue;
 impl LanguageProfile for Vue {
     fn id(&self) -> &'static str {
@@ -85,6 +87,7 @@ impl LanguageProfile for Vue {
     }
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&VUE];
 
 fn extract_file_impl(

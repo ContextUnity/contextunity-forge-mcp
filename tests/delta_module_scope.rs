@@ -47,8 +47,8 @@ impl Workspace {
         let cold = reader::open(&cold, &self.0).unwrap();
         for query in [
             "SELECT id||'|'||qualname FROM nodes ORDER BY id",
-            "SELECT src_public_id||'|'||dst_public_id||'|'||kind||'|'||path||'|'||line||'|'||occurrence_count FROM edges ORDER BY src_public_id,dst_public_id,kind",
-            "SELECT path||'|'||line||'|'||expression||'|'||status||'|'||evidence FROM resolution_coverage ORDER BY path,line,expression,status,evidence",
+            "SELECT (SELECT id FROM nodes WHERE node_hash=src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=dst_hash)||'|'||kind||'|'||(SELECT path FROM path_dictionary WHERE path_id=edges.path_id)||'|'||line||'|'||occurrence_count FROM edges ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind",
+            "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
         ] { assert_eq!(rows(&incremental, query), rows(&cold, query), "{query}"); }
     }
 }
@@ -92,12 +92,12 @@ fn stable_module_edit_keeps_relative_consumers_and_docs_without_basename_fanout(
     let delta = w.delta("pkg/types.py");
     assert_eq!(delta["affected_owners"], 3, "{delta}");
     let conn = reader::open(&w.db(), &w.0).unwrap();
-    let statuses = rows(&conn, "SELECT status FROM resolution_coverage WHERE path='pkg/consumer.py' AND expression='future'");
+    let statuses = rows(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='pkg/consumer.py' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='future'");
     assert!(!statuses.is_empty());
     assert!(statuses.iter().all(|s| s == "resolved"));
     assert!(!rows(
         &conn,
-        "SELECT dst_public_id FROM edges WHERE kind='documents' AND dst_public_id LIKE '%future%'"
+        "SELECT (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='documents' AND (SELECT id FROM nodes WHERE node_hash=dst_hash) LIKE '%future%'"
     )
     .is_empty());
     drop(conn);

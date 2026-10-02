@@ -1,5 +1,7 @@
 use super::*;
+/// Language profile for c source files.
 pub struct CProfile;
+/// Shared c language profile.
 pub static C: CProfile = CProfile;
 impl LanguageProfile for CProfile {
     fn id(&self) -> &'static str {
@@ -50,4 +52,5 @@ impl LanguageProfile for CProfile {
         }
     }
 }
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&C];

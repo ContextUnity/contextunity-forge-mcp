@@ -1,10 +1,17 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
-use contextunity_forge_mcp::db::reader;
 use contextunity_forge_mcp::engine::scanner;
 use contextunity_forge_mcp::mcp::server::Server;
+use contextunity_forge_mcp::{
+    core::response::{QueryOptions, ResponsePolicy},
+    db::reader,
+};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+fn page(limit: usize) -> QueryOptions {
+    QueryOptions::resolve(&ResponsePolicy::default(), Some(limit), 0, None, None).unwrap()
+}
 
 #[test]
 fn test_multi_workspace_indexing_and_resilience() {
@@ -85,12 +92,18 @@ linked_workspaces:
     // 5. Initial read: should index traverse + commerce + gridviewspec
     let overview_res = server
         .read(|conn| {
-            let ov = reader::overview(conn)?;
+            let ov = reader::overview_with_options(
+                conn,
+                &reader::OverviewOptions {
+                    aspects: None,
+                    page: &page(100),
+                },
+            )?;
             Ok(ov)
         })
         .expect("read overview");
 
-    let file_count = overview_res["counts"][0]["files"].as_i64().unwrap_or(0);
+    let file_count = overview_res["counts"]["files"].as_i64().unwrap_or(0);
     // 2 files in traverse + 2 in commerce + 1 in gridviewspec = 5 files
     assert_eq!(
         file_count, 5,
@@ -101,11 +114,18 @@ linked_workspaces:
     let node_check = server
         .read(|conn| {
             // Inspect symbol from traverse
-            let tr = reader::inspect(conn, "function:run_traverse", false).is_ok();
+            let tr =
+                reader::inspect_paged(conn, "function:run_traverse", false, &page(100)).is_ok();
             // Inspect symbol from commerce
-            let cm = reader::inspect(conn, "function:revert_confirmed_bindings", false).is_ok();
+            let cm = reader::inspect_paged(
+                conn,
+                "function:revert_confirmed_bindings",
+                false,
+                &page(100),
+            )
+            .is_ok();
             // Inspect symbol from gridviewspec
-            let gr = reader::inspect(conn, "interface:GridColumn", false).is_ok();
+            let gr = reader::inspect_paged(conn, "interface:GridColumn", false, &page(100)).is_ok();
             Ok(serde_json::json!({
                 "tr": tr,
                 "cm": cm,
@@ -129,11 +149,29 @@ linked_workspaces:
     // Check docs from both traverse and commerce are indexed
     let doc_check = server
         .read(|conn| {
-            let tr_doc = reader::search_docs(conn, "Route Planning", None, None, 5)?;
-            let cm_doc = reader::search_docs(conn, "Binding Rules", None, None, 5)?;
+            let tr_doc = reader::search_docs_with_options(
+                conn,
+                "Route Planning",
+                &reader::DocSearchOptions {
+                    doc_type: None,
+                    component: None,
+                    include_excerpt: false,
+                    page: &page(5),
+                },
+            )?;
+            let cm_doc = reader::search_docs_with_options(
+                conn,
+                "Binding Rules",
+                &reader::DocSearchOptions {
+                    doc_type: None,
+                    component: None,
+                    include_excerpt: false,
+                    page: &page(5),
+                },
+            )?;
             Ok(serde_json::json!({
-                "tr_sections": tr_doc["sections"].as_array().unwrap().len(),
-                "cm_sections": cm_doc["sections"].as_array().unwrap().len(),
+                "tr_sections": tr_doc["sections"]["items"].as_array().unwrap().len(),
+                "cm_sections": cm_doc["sections"]["items"].as_array().unwrap().len(),
             }))
         })
         .expect("check docs");
@@ -152,12 +190,18 @@ linked_workspaces:
     // 7. Next read: server must detect missing workspace, skip it, and automatically reindex without errors!
     let overview_res2 = server
         .read(|conn| {
-            let ov = reader::overview(conn)?;
+            let ov = reader::overview_with_options(
+                conn,
+                &reader::OverviewOptions {
+                    aspects: None,
+                    page: &page(100),
+                },
+            )?;
             Ok(ov)
         })
         .expect("read overview after workspace removed");
 
-    let file_count2 = overview_res2["counts"][0]["files"].as_i64().unwrap_or(0);
+    let file_count2 = overview_res2["counts"]["files"].as_i64().unwrap_or(0);
     // 2 files in traverse + 2 in commerce = 4 files (gridviewspec safely purged)
     assert_eq!(
         file_count2, 4,
@@ -166,9 +210,16 @@ linked_workspaces:
 
     let node_check2 = server
         .read(|conn| {
-            let tr = reader::inspect(conn, "function:run_traverse", false).is_ok();
-            let cm = reader::inspect(conn, "function:revert_confirmed_bindings", false).is_ok();
-            let gr = reader::inspect(conn, "interface:GridColumn", false).is_ok();
+            let tr =
+                reader::inspect_paged(conn, "function:run_traverse", false, &page(100)).is_ok();
+            let cm = reader::inspect_paged(
+                conn,
+                "function:revert_confirmed_bindings",
+                false,
+                &page(100),
+            )
+            .is_ok();
+            let gr = reader::inspect_paged(conn, "interface:GridColumn", false, &page(100)).is_ok();
             Ok(serde_json::json!({
                 "tr": tr,
                 "cm": cm,

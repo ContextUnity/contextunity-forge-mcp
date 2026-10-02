@@ -24,19 +24,51 @@ use std::{
 use tree_sitter::{Node as Syntax, Parser};
 #[cfg(any(feature = "lang-java", feature = "lang-kotlin"))]
 pub(crate) mod build_manifest;
-#[cfg(any(feature = "lang-python", feature = "lang-rust"))]
-pub(crate) mod manifest;
+/// Implements manifests support.
 pub mod manifests;
+#[path = "python/receivers.rs"]
+pub(crate) mod python_receivers;
+#[cfg(any(feature = "lang-html", feature = "lang-vue"))]
+#[path = "support/template.rs"]
+pub(crate) mod template;
+#[cfg(any(feature = "lang-python", feature = "lang-rust"))]
+pub(crate) mod toml_manifest;
+#[path = "typescript/linker_bindings.rs"]
+pub(crate) mod typescript_bindings;
+
+pub(crate) const MAX_VALUE_FLOW_TYPE_DEPTH: usize = 8;
+
+pub(crate) fn source_start(node: Syntax<'_>) -> crate::core::semantic::SourcePosition {
+    let position = node.start_position();
+    crate::core::semantic::SourcePosition {
+        line: position.row + 1,
+        column: position.column,
+    }
+}
+
+pub(crate) fn source_end(node: Syntax<'_>) -> crate::core::semantic::SourcePosition {
+    let position = node.end_position();
+    crate::core::semantic::SourcePosition {
+        line: position.row + 1,
+        column: position.column,
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+/// Import namespace shared by language profiles that can resolve one another.
 pub struct LanguageFamily(pub &'static str);
 
+/// Normalized module namespace and import interpretation for the linker.
 pub struct ImportPath {
+    /// Canonical namespace used for module lookup.
     pub namespace: String,
+    /// Whether the import is relative to its owning module.
     pub relative: bool,
+    /// Whether the namespace includes an imported symbol suffix.
     pub symbol_path: bool,
 }
 impl ImportPath {
+    /// Creates an absolute module import with no symbol suffix.
     pub fn absolute(namespace: String) -> Self {
         Self {
             namespace,
@@ -47,48 +79,81 @@ impl ImportPath {
 }
 
 #[derive(Default)]
+/// Per-file extraction state shared by hooks of one language profile.
 pub struct FileContext {
+    /// Export bindings discovered during extraction.
     pub exports: Vec<crate::core::semantic::ExportBinding>,
+    /// Deferred export bindings resolved during linking.
     pub lazy_exports: Vec<LazyExport>,
+    /// Names exported as defaults.
     pub default_exports: HashSet<String>,
+    /// Package namespace when the source belongs to a package.
     pub package: Option<String>,
+    /// Scope identifiers where a local binding shadows CommonJS `require`.
     pub shadowed_require_scopes: Arc<HashSet<usize>>,
 }
 #[derive(serde::Serialize)]
+/// Export that refers to another module or member and resolves during linking.
 pub struct LazyExport {
+    /// Exported name in the current module.
     pub name: String,
+    /// Module that supplies the binding.
     pub module: String,
+    /// Named member, or the module itself when absent.
     pub member: Option<String>,
+    /// Whether the module path is relative to the current module.
     pub relative_to_module: bool,
 }
 #[derive(Default)]
+/// Compact semantic metadata projected into an indexed symbol.
 pub struct SymbolMetadata {
+    /// Optional return type value.
     pub return_type: Option<crate::core::semantic::TypeExpr>,
+    /// The param types value.
     pub param_types: BTreeMap<String, String>,
+    /// Optional receiver name value.
     pub receiver_name: Option<String>,
+    /// The decorators value.
     pub decorators: Vec<String>,
+    /// Optional bases value.
     pub bases: Option<String>,
+    /// Optional receiver value.
     pub receiver: Option<String>,
+    /// Optional receiver type value.
     pub receiver_type: Option<String>,
+    /// Whether method applies.
     pub is_method: Option<bool>,
+    /// Whether static applies.
     pub is_static: Option<bool>,
+    /// Whether default export applies.
     pub default_export: bool,
+    /// Whether async applies.
     pub is_async: bool,
+    /// Whether overload applies.
     pub is_overload: bool,
+    /// Whether stub applies.
     pub is_stub: bool,
 }
 
+/// Borrowed syntax and source context passed to extraction hooks.
 pub struct SyntaxContext<'a, 'tree> {
+    /// The node value.
     pub node: Syntax<'tree>,
+    /// The source value.
     pub source: &'a str,
+    /// The owner value.
     pub owner: &'a str,
+    /// The offset value.
     pub offset: usize,
+    /// The shadowed require scopes value.
     pub shadowed_require_scopes: &'a HashSet<usize>,
 }
 impl SyntaxContext<'_, '_> {
+    /// Returns the one-based source line after applying the file offset.
     pub fn line(&self) -> usize {
         self.node.start_position().row + self.offset + 1
     }
+    /// Appends an import reference at this syntax node to the file facts.
     pub fn import(
         &self,
         facts: &mut Facts,
@@ -110,45 +175,70 @@ impl SyntaxContext<'_, '_> {
     }
 }
 
+/// Supplies syntax extraction and normalization rules for one language.
+///
+/// Profiles are shared as `Send + Sync` statics. Default hooks keep extraction
+/// bounded to a source file; cross-file resolution belongs to `LanguageLinker`.
 pub trait LanguageProfile: Send + Sync {
+    /// Returns the stable language identifier used in indexed nodes.
     fn id(&self) -> &'static str;
+    /// Lists manifest filenames recognized by this profile.
     fn manifest_filenames(&self) -> &'static [&'static str] {
         &[]
     }
+    /// Extracts dependency names from a recognized manifest file.
     fn extract_manifest_dependencies(&self, _filename: &str, _content: &str) -> Vec<String> {
         Vec::new()
     }
+    /// Reports whether a module belongs to this language's standard library.
     fn is_stdlib(&self, _module: &str) -> bool {
         false
     }
+    /// Returns the namespace family used for cross-profile import matching.
     fn family(&self) -> LanguageFamily {
         LanguageFamily(self.id())
     }
+    /// Returns source file extensions accepted by this profile.
     fn extensions(&self) -> &'static [&'static str];
+    /// Selects the Tree-sitter grammar for a source path.
     fn grammar(&self, path: &str) -> tree_sitter::Language;
+    /// Creates a Tree-sitter parser configured for the source path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Tree-sitter rejects the grammar.
     fn create_parser(&self, path: &str) -> Result<Parser> {
         let mut parser = Parser::new();
         parser.set_language(&self.grammar(path))?;
         Ok(parser)
     }
+    /// Maps a grammar node kind to an indexed symbol category.
     fn symbol_kind(&self, kind: &str) -> Option<&'static str>;
+    /// Classifies a syntax node as an indexed symbol when applicable.
     fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
         self.symbol_kind(node.kind())
     }
+    /// Classifies a syntax node using its source text when needed.
     fn symbol_with_source(&self, node: Syntax<'_>, _source: &str) -> Option<&'static str> {
         self.symbol(node)
     }
+    /// Returns the identifier prefix for a symbol category.
     fn node_prefix(&self, kind: &str) -> &'static str;
+    /// Derives a module name from a workspace-relative path.
     fn module_name(&self, path: &str) -> String {
         module_stem(path).replace('/', ".")
     }
+    /// Derives a module name when source content can affect its namespace.
     fn module_name_for_source(&self, path: &str, _source: &str) -> String {
         self.module_name(path)
     }
+    /// Reports whether a declaration in one file is visible to a sibling file.
     fn sibling_accessible(&self, _path_a: &str, _path_b: &str) -> bool {
         false
     }
+    /// Normalizes an import expression against its owning source path.
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath>;
+    /// Normalizes an import when workspace root context is available.
     fn normalize_import_with_root(
         &self,
         _root: Option<&Path>,
@@ -157,30 +247,39 @@ pub trait LanguageProfile: Send + Sync {
     ) -> Option<ImportPath> {
         self.normalize_import(owner, module)
     }
+    /// Classifies a module as an external dependency when known.
     fn external_import(&self, _module: &str) -> Option<&'static str> {
         None
     }
+    /// Reports whether a name is a language builtin.
     fn builtin(&self, _name: &str) -> bool {
         false
     }
+    /// Reports whether a name is a builtin type.
     fn builtin_type(&self, _name: &str) -> bool {
         false
     }
+    /// Reports whether a member is builtin on a receiver type.
     fn builtin_member(&self, _receiver: &str, _member: &str) -> bool {
         false
     }
+    /// Reports whether a receiver names a builtin generic type.
     fn builtin_generic(&self, _receiver: &str) -> bool {
         false
     }
+    /// Extracts documentation text attached to a syntax node.
     fn doc_comment(&self, node: Syntax<'_>, source: &str) -> String {
         ast::doc_comment(node, source)
     }
+    /// Extracts a symbol name borrowed from the source text.
     fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
         ast::symbol_name(node, source)
     }
+    /// Initializes per-file extraction state before walking the syntax tree.
     fn prepare(&self, _root: Syntax<'_>, _source: &str) -> FileContext {
         FileContext::default()
     }
+    /// Projects bounded semantic metadata for an indexed declaration.
     fn metadata(
         &self,
         _node: Syntax<'_>,
@@ -190,15 +289,19 @@ pub trait LanguageProfile: Send + Sync {
     ) -> SymbolMetadata {
         SymbolMetadata::default()
     }
+    /// Reports whether a syntax node marks a test declaration.
     fn test_attribute(&self, _node: Syntax<'_>, _source: &str) -> bool {
         false
     }
+    /// Reports whether this grammar needs class-scoped binding extraction.
     fn class_scope(&self) -> bool {
         false
     }
+    /// Extracts local scope bindings from a syntax node.
     fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
         ast::scope_bindings(node, source)
     }
+    /// Extracts bounded local value-flow facts from a syntax node.
     fn value_flow(
         &self,
         _node: Syntax<'_>,
@@ -206,16 +309,23 @@ pub trait LanguageProfile: Send + Sync {
     ) -> crate::core::semantic::ValueFlowFacts {
         crate::core::semantic::ValueFlowFacts::default()
     }
+    /// Reports whether a reference can use local value-flow bindings.
     fn value_binding_applies(&self, _reference: &Reference) -> bool {
         true
     }
+    /// Reports whether a name denotes the receiver of its owning method.
     fn receiver(&self, name: &str, _owner: &Node) -> bool {
         name == "self" || name == "this" || name == "cls"
     }
+    /// Appends import references found at the current syntax node.
     fn extract_imports(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {}
+    /// Appends structural relations found at the current syntax node.
     fn extract_relations(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {}
+    /// Appends call references found at the current syntax node.
     fn extract_calls(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {}
+    /// Appends mutation references found at the current syntax node.
     fn extract_mutations(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {}
+    /// Appends route relationships found at the current syntax node.
     fn extract_routes(
         &self,
         _ctx: &SyntaxContext<'_, '_>,
@@ -223,16 +333,24 @@ pub trait LanguageProfile: Send + Sync {
         _symbols: &HashMap<usize, String>,
     ) {
     }
+    /// Finalizes extracted facts after the syntax walk.
     fn finish(&self, _facts: &mut Facts) {}
+    /// Rewrites a search pattern before language-specific matching.
     fn prepare_pattern(&self, _pattern: &mut String) -> bool {
         false
     }
+    /// Reports whether a syntax kind only wraps a searchable pattern.
     fn pattern_wrapper(&self, kind: &str) -> bool {
         matches!(
             kind,
             "module" | "program" | "source_file" | "expression_statement"
         )
     }
+    /// Extracts symbols and references from a source file into bounded facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the grammar cannot parse or extract the file.
     fn extract_file(&self, path: &str, source: &str, module: &str, facts: &mut Facts)
         -> Result<()>;
 }
@@ -244,6 +362,7 @@ fn registry() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone {
         .iter()
         .flat_map(|group| group.iter().copied())
 }
+/// Performs validate profiles.
 pub fn validate_profiles(
     profiles: impl IntoIterator<Item = &'static dyn LanguageProfile>,
 ) -> Result<()> {
@@ -271,15 +390,18 @@ pub fn validate_profiles(
     }
     Ok(())
 }
+/// Performs profiles.
 pub fn profiles() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone {
     static VALIDATED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     VALIDATED
         .get_or_init(|| validate_profiles(registry()).expect("invalid compiled language registry"));
     registry()
 }
+/// Performs by id.
 pub fn by_id(id: &str) -> Option<&'static dyn LanguageProfile> {
     profiles().find(|p| p.id() == id)
 }
+/// Performs linker for.
 pub fn linker_for(id: &str) -> &'static dyn LanguageLinker {
     #[cfg(feature = "lang-rust")]
     if id == "rust" {
@@ -296,6 +418,7 @@ pub fn linker_for(id: &str) -> &'static dyn LanguageLinker {
     let _ = id;
     &GENERIC_LINKER
 }
+/// Performs require.
 pub fn require(id: &str) -> Result<&'static dyn LanguageProfile> {
     if let Some(profile) = by_id(id) {
         return Ok(profile);
@@ -315,19 +438,23 @@ pub fn require(id: &str) -> Result<&'static dyn LanguageProfile> {
     }
     anyhow::bail!("unknown AST language '{id}'; compiled languages: {compiled}");
 }
+/// Performs for path.
 pub fn for_path(path: &Path) -> Option<&'static dyn LanguageProfile> {
     let extension = path.extension()?.to_str()?;
     profiles().find(|p| p.extensions().contains(&extension))
 }
+/// Performs module stem.
 pub fn module_stem(path: &str) -> &str {
     path.rsplit_once('.').map_or(path, |(p, _)| p)
 }
+/// Performs workspace path.
 pub fn workspace_path(path: &str) -> (&str, &str) {
     match path.split_once('/') {
         Some((head, tail)) if head.starts_with('[') && head.ends_with(']') => (head, tail),
         _ => ("", path),
     }
 }
+/// Performs relative namespace.
 pub fn relative_namespace(owner: &str, module: &str) -> Option<String> {
     let (_, owner) = workspace_path(owner);
     let mut parts: Vec<_> = owner
@@ -347,6 +474,7 @@ pub fn relative_namespace(owner: &str, module: &str) -> Option<String> {
     }
     Some(parts.join("."))
 }
+/// Parses file.
 pub fn parse_file(
     profile: &dyn LanguageProfile,
     path: &str,
@@ -384,6 +512,7 @@ pub(crate) fn parse_file_typed(
     );
     Ok(())
 }
+/// Performs call.
 pub fn call(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, dynamic_imports: bool) {
     let Some(callee) =
         field(ctx.node, ctx.source, "function").or_else(|| field(ctx.node, ctx.source, "macro"))
@@ -417,6 +546,7 @@ pub fn call(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, dynamic_imports: boo
     });
 }
 
+/// Performs module name.
 pub fn module_name(path: &str) -> String {
     for_path(Path::new(path)).map_or_else(
         || module_stem(path).replace('/', "."),

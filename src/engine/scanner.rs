@@ -9,25 +9,35 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const ENGINE_SCHEMA_VERSION: &str = "9";
+/// The engine schema version value.
+pub const ENGINE_SCHEMA_VERSION: &str = "10";
+/// The index semantics version value.
 pub const INDEX_SEMANTICS_VERSION: &str = concat!(
     "9:compact-storage-v8:",
     env!("FORGE_LANGUAGE_PROFILE_DIGEST")
 );
+/// The default max files value.
 pub const DEFAULT_MAX_FILES: usize = 100_000;
+/// The default max file bytes value.
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+/// The default max total bytes value.
 pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;
 pub(crate) const MAX_FILE_BYTES: u64 = DEFAULT_MAX_FILE_BYTES;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+/// Represents scanner limits data.
 pub struct ScannerLimits {
     #[serde(default = "default_max_files")]
+    /// The max files value.
     pub max_files: usize,
     #[serde(default = "default_max_file_bytes")]
+    /// The max file bytes value.
     pub max_file_bytes: u64,
     #[serde(default = "default_max_total_bytes")]
+    /// The max total bytes value.
     pub max_total_bytes: u64,
     #[serde(default)]
+    /// Whether allow broad root applies.
     pub allow_broad_root: bool,
 }
 
@@ -84,24 +94,36 @@ const DEFAULT_IGNORED_NAMES: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, Deserialize, Default, Serialize, PartialEq, Eq)]
+/// Configures linked workspace operations.
 pub struct LinkedWorkspaceConfig {
+    /// The name value.
     pub name: String,
+    /// The path value.
     pub path: String,
     #[serde(default)]
+    /// Optional enabled value.
     pub enabled: Option<bool>,
     #[serde(default)]
+    /// Optional roots value.
     pub roots: Option<Vec<String>>,
     #[serde(default)]
+    /// Optional doc roots value.
     pub doc_roots: Option<Vec<String>>,
     #[serde(default)]
+    /// Optional ignore value.
     pub ignore: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Represents linked workspace data.
 pub struct LinkedWorkspace {
+    /// The name value.
     pub name: String,
+    /// The path value.
     pub path: PathBuf,
+    /// The roots value.
     pub roots: Vec<PathBuf>,
+    /// The ignored names value.
     pub ignored_names: BTreeSet<String>,
 }
 
@@ -127,47 +149,79 @@ struct AdapterFile {
 }
 
 #[derive(Debug, Clone)]
+/// Represents adapter data.
 pub struct Adapter {
+    /// Optional adapter path value.
     pub adapter_path: Option<PathBuf>,
+    /// The response value.
     pub response: crate::core::response::ResponsePolicy,
+    /// The limits value.
     pub limits: ScannerLimits,
+    /// The roots value.
     pub roots: Vec<PathBuf>,
+    /// The ignored names value.
     pub ignored_names: BTreeSet<String>,
+    /// Optional adapter version value.
     pub adapter_version: Option<String>,
+    /// The digest value.
     pub digest: String,
+    /// The linked workspaces value.
     pub linked_workspaces: Vec<LinkedWorkspace>,
+    /// The owners value.
     pub owners: BTreeMap<String, String>,
+    /// The aliases value.
     pub aliases: BTreeMap<String, String>,
+    /// Whether debug applies.
     pub debug: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Represents file entry data.
 pub struct FileEntry {
+    /// The path value.
     pub path: String,
+    /// The digest value.
     pub digest: String,
+    /// The bytes value.
     pub bytes: u64,
+    /// The mtime ns value.
     pub mtime_ns: u128,
     #[serde(default)]
+    /// The identity value.
     pub identity: [u64; 3],
+    /// The language value.
     pub language: String,
+    /// Whether doc applies.
     pub is_doc: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Represents scan report data.
 pub struct ScanReport {
+    /// The files value.
     pub files: usize,
+    /// The bytes value.
     pub bytes: u64,
+    /// The elapsed ms value.
     pub elapsed_ms: u128,
+    /// The entries value.
     pub entries: Vec<FileEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Represents build report data.
 pub struct BuildReport {
+    /// The output value.
     pub output: String,
+    /// The files value.
     pub files: usize,
+    /// The nodes value.
     pub nodes: usize,
+    /// The doc sections value.
     pub doc_sections: usize,
+    /// The elapsed ms value.
     pub elapsed_ms: u128,
+    /// The engine schema version value.
     pub engine_schema_version: &'static str,
 }
 
@@ -175,6 +229,7 @@ fn error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
 }
 
+/// Performs canonical root.
 pub fn canonical_root(path: &Path) -> std::io::Result<PathBuf> {
     let root = path.canonicalize()?;
     if !root.is_dir() {
@@ -183,6 +238,7 @@ pub fn canonical_root(path: &Path) -> std::io::Result<PathBuf> {
     Ok(root)
 }
 
+/// Performs safe relative.
 pub fn safe_relative(path: &Path) -> bool {
     !path.as_os_str().is_empty()
         && path
@@ -220,6 +276,7 @@ pub fn checked_child(root: &Path, relative: &Path) -> std::io::Result<PathBuf> {
     Ok(target)
 }
 
+/// Resolves file path.
 pub fn resolve_file_path(
     root: &Path,
     adapter: &Adapter,
@@ -252,6 +309,7 @@ fn ensure_bounds(files: usize, bytes: u64, limits: &ScannerLimits) -> std::io::R
     Ok(())
 }
 
+/// Checks root scope.
 pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
     if allow_broad
         || std::env::var("FORGE_ALLOW_BROAD_ROOT")
@@ -327,6 +385,7 @@ pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Performs available memory bytes.
 pub fn available_memory_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {
@@ -503,6 +562,7 @@ fn memory_budget_from_available(available: u64) -> u64 {
     (available / 3).clamp(64 * 1024 * 1024, 16 * 1024 * 1024 * 1024)
 }
 
+/// Performs memory budget bytes.
 pub fn memory_budget_bytes() -> u64 {
     memory_budget_from_available(available_memory_bytes())
 }
@@ -521,6 +581,7 @@ pub(crate) fn bounded_batch_size(
         .min(max_items.max(1) as u64)) as usize
 }
 
+/// Loads adapter.
 pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<Adapter> {
     let default_path = root.join("forge-mcp.yaml");
     let default_path = default_path.exists().then_some(default_path);
@@ -713,6 +774,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     })
 }
 
+/// Performs language.
 pub fn language(path: &Path) -> Option<(&'static str, bool)> {
     if matches!(
         path.extension().and_then(|e| e.to_str()),
@@ -723,10 +785,12 @@ pub fn language(path: &Path) -> Option<(&'static str, bool)> {
     super::languages::for_path(path).map(|p| (p.id(), false))
 }
 
+/// Performs digest.
 pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Performs entry with rel.
 pub fn entry_with_rel(
     path: &Path,
     relative: String,
@@ -764,6 +828,7 @@ pub fn entry_with_rel(
     }))
 }
 
+/// Performs entry.
 pub fn entry(root: &Path, path: &Path) -> std::io::Result<Option<FileEntry>> {
     let relative = path
         .strip_prefix(root)
@@ -820,11 +885,13 @@ fn cached_entry(
     entry_with_rel(full_path, rel_path.to_owned(), max_file_bytes)
 }
 
+/// Performs scan with adapter.
 pub fn scan_with_adapter(root: &Path, adapter: &Adapter) -> std::io::Result<ScanReport> {
     check_root_scope(root, adapter.limits.allow_broad_root)?;
     scan_reusing(root, adapter, &[])
 }
 
+/// Performs scan reusing.
 pub fn scan_reusing(
     root: &Path,
     adapter: &Adapter,
@@ -988,6 +1055,7 @@ fn push_candidate(
     Ok(())
 }
 
+/// Performs scan.
 pub fn scan(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<ScanReport> {
     let root = canonical_root(root)?;
     let adapter = load_adapter(&root, adapter_path)?;

@@ -26,43 +26,71 @@ impl hashbrown::Equivalent<(&str, SourcePosition)> for ComputedKey<'_> {
 }
 
 #[derive(Clone, Debug)]
+/// Enumerates the supported type target values.
 pub enum TypeTarget<'a> {
+    /// Represents the local case.
     Local(&'a Node),
+    /// Represents the callable case.
     Callable(&'a Node),
-    External { module: String, import_line: usize },
+    /// Type supplied by a dependency outside the indexed workspace.
+    External {
+        /// Import module that supplies the type.
+        module: String,
+        /// Source line of the import declaration.
+        import_line: usize,
+    },
+    /// Represents the builtin case.
     Builtin(String),
+    /// Represents the object case.
     Object(Arc<HashMap<String, &'a Node>>),
+    /// Represents the ambiguous case.
     Ambiguous,
+    /// Represents the unknown case.
     Unknown,
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Enumerates the supported symbol role values.
 pub enum SymbolRole {
+    /// Represents the type case.
     Type,
+    /// Represents the constructor case.
     Constructor,
+    /// Represents the callable case.
     Callable,
 }
 
+/// Enumerates the supported symbol values.
 pub enum Symbol<'a> {
+    /// Represents the type case.
     Type(TypeTarget<'a>),
+    /// Represents the callable case.
     Callable(&'a Node),
+    /// Represents the ambiguous case.
     Ambiguous,
+    /// Represents the unknown case.
     Unknown,
 }
 
+/// Defines semantic resolver behavior.
 pub trait SemanticResolver<'a> {
+    /// Performs value flow.
     fn value_flow(&self, _node: &'a Node) -> Option<&'a ValueFlowFacts> {
         None
     }
+    /// Performs invalid value flow.
     fn invalid_value_flow(&self, _node: &'a Node) -> bool {
         false
     }
+    /// Performs raw value flow.
     fn raw_value_flow(&self, _node: &'a Node) -> Option<&'a serde_json::Value> {
         None
     }
+    /// Reports whether typed flows applies.
     fn has_typed_flows(&self) -> bool {
         false
     }
+    /// Resolves symbol.
     fn resolve_symbol(
         &self,
         scope: &'a Node,
@@ -70,6 +98,7 @@ pub trait SemanticResolver<'a> {
         at: SourcePosition,
         role: SymbolRole,
     ) -> Symbol<'a>;
+    /// Resolves external factory.
     fn resolve_external_factory(
         &self,
         _scope: &'a Node,
@@ -78,6 +107,7 @@ pub trait SemanticResolver<'a> {
     ) -> Option<TypeTarget<'a>> {
         None
     }
+    /// Resolves member.
     fn resolve_member(
         &self,
         _receiver: &TypeTarget<'a>,
@@ -87,6 +117,7 @@ pub trait SemanticResolver<'a> {
     ) -> Symbol<'a> {
         Symbol::Unknown
     }
+    /// Resolves applied.
     fn resolve_applied(
         &self,
         _scope: &'a Node,
@@ -99,9 +130,13 @@ pub trait SemanticResolver<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Represents semantic limits data.
 pub struct SemanticLimits {
+    /// The facts per scope value.
     pub facts_per_scope: usize,
+    /// The name bytes value.
     pub name_bytes: usize,
+    /// The alias depth value.
     pub alias_depth: usize,
 }
 
@@ -127,6 +162,7 @@ struct Scope<'a> {
     module: bool,
 }
 
+/// Represents value flow index data.
 pub struct ValueFlowIndex<'a> {
     scopes: HashMap<&'a str, Scope<'a>>,
     returns: HashMap<&'a str, TypeTarget<'a>>,
@@ -329,10 +365,12 @@ fn initialize_scope<'a>(
 }
 
 impl<'a> ValueFlowIndex<'a> {
+    /// Performs build.
     pub fn build(all: &'a BTreeMap<String, Facts>, resolver: &impl SemanticResolver<'a>) -> Self {
         Self::build_with_limits(all, resolver, SemanticLimits::default())
     }
 
+    /// Builds with limits.
     pub fn build_with_limits(
         all: &'a BTreeMap<String, Facts>,
         resolver: &impl SemanticResolver<'a>,
@@ -712,6 +750,7 @@ impl<'a> ValueFlowIndex<'a> {
         index
     }
 
+    /// Performs lookup.
     pub fn lookup(&self, owner: &Node, name: &str, at: SourcePosition) -> Option<&TypeTarget<'a>> {
         self.lookup_tracked(owner, name, at, None)
     }
@@ -761,6 +800,7 @@ impl<'a> ValueFlowIndex<'a> {
         None
     }
 
+    /// Performs return type.
     pub fn return_type(&self, callable: &Node) -> Option<&TypeTarget<'a>> {
         self.return_type_tracked(callable, None)
     }
@@ -780,6 +820,7 @@ impl<'a> ValueFlowIndex<'a> {
             })
     }
 
+    /// Performs computed receiver.
     pub fn computed_receiver(&self, reference: &Reference) -> Option<&TypeTarget<'a>> {
         self.computed.get(&ComputedKey {
             source: reference.source.as_str(),
@@ -790,6 +831,7 @@ impl<'a> ValueFlowIndex<'a> {
         })
     }
 
+    /// Performs field type.
     pub fn field_type(&self, class: &Node, name: &str) -> Option<&TypeTarget<'a>> {
         self.field_type_tracked(class, name, None)
     }
@@ -808,6 +850,7 @@ impl<'a> ValueFlowIndex<'a> {
             .and_then(|fields| fields.get(name))
     }
 
+    /// Performs object member.
     pub fn object_member(target: &TypeTarget<'a>, name: &str) -> Option<&'a Node> {
         match target {
             TypeTarget::Object(members) => members.get(name).copied(),
@@ -815,6 +858,7 @@ impl<'a> ValueFlowIndex<'a> {
         }
     }
 
+    /// Resolves value.
     pub fn resolve_value(
         &self,
         owner: &'a Node,
@@ -825,6 +869,7 @@ impl<'a> ValueFlowIndex<'a> {
         self.evaluate(owner, value, at, resolver, None)
     }
 
+    /// Performs type of expression.
     pub fn type_of_expression(
         &self,
         owner: &'a Node,
@@ -886,6 +931,7 @@ impl<'a> ValueFlowIndex<'a> {
         )
     }
 
+    /// Performs value type.
     pub fn value_type(
         &self,
         owner: &'a Node,
@@ -1136,19 +1182,12 @@ fn resolve_type<'a>(
             .and_then(|facts| facts.alias_type.as_ref())
         {
             Cow::Borrowed(alias)
-        } else if let Some(raw) = resolver.raw_value_flow(node) {
-            let encoded = &raw["alias_type"];
-            if encoded.is_null() {
-                return target;
-            }
-            let Ok(alias) = TypeExpr::deserialize(encoded) else {
-                return TypeTarget::Unknown;
-            };
-            Cow::Owned(alias)
-        } else if resolver.has_typed_flows() {
-            return target;
         } else {
-            let encoded = &node.details["value_flow"]["alias_type"];
+            let encoded = match resolver.raw_value_flow(node) {
+                Some(raw) => &raw["alias_type"],
+                None if resolver.has_typed_flows() => return target,
+                None => &node.details["value_flow"]["alias_type"],
+            };
             if encoded.is_null() {
                 return target;
             }

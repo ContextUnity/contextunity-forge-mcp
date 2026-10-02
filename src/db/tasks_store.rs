@@ -4,40 +4,63 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// The retention seconds value.
 pub const RETENTION_SECONDS: i64 = 14 * 24 * 60 * 60;
 
 #[derive(Debug, Serialize)]
+/// Represents delete report data.
 pub struct DeleteReport {
+    /// The deleted ids value.
     pub deleted_ids: Vec<String>,
+    /// The count value.
     pub count: usize,
+    /// The revoked claims value.
     pub revoked_claims: usize,
+    /// The mode value.
     pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Represents task data.
 pub struct Task {
+    /// The task id value.
     pub task_id: String,
+    /// The milestone ref value.
     pub milestone_ref: String,
+    /// The spec value.
     pub spec: TaskSpec,
+    /// The digest value.
     pub digest: String,
+    /// The contract revision value.
     pub contract_revision: u64,
+    /// The claim revision value.
     pub claim_revision: u64,
+    /// The status value.
     pub status: String,
+    /// The gate value.
     pub gate: usize,
+    /// Optional worker id value.
     pub worker_id: Option<String>,
+    /// Optional worktree value.
     pub worktree: Option<String>,
+    /// Optional completed at value.
     pub completed_at: Option<i64>,
+    /// Optional receipt value.
     pub receipt: Option<Receipt>,
     #[serde(default)]
+    /// The applicable invariants value.
     pub applicable_invariants: Vec<String>,
 }
 
+/// Represents tasks store data.
 pub struct TasksStore {
+    /// The connection value.
     pub connection: Connection,
     namespace: String,
 }
 
 #[derive(Debug)]
+/// Represents task already claimed data.
 pub struct TaskAlreadyClaimed;
 impl std::fmt::Display for TaskAlreadyClaimed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,9 +70,11 @@ impl std::fmt::Display for TaskAlreadyClaimed {
 impl std::error::Error for TaskAlreadyClaimed {}
 
 impl TasksStore {
+    /// Performs open.
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_project(path, "forge-mcp", "forge-mcp")
     }
+    /// Performs open project.
     pub fn open_project(path: &Path, repository: &str, project: &str) -> Result<Self> {
         crate::core::tasks::valid_identity(repository)?;
         crate::core::tasks::valid_identity(project)?;
@@ -109,10 +134,12 @@ impl TasksStore {
         }
         Ok(())
     }
+    /// Performs inspect.
     pub fn inspect(&self, id: &str) -> Result<Task> {
         self.assert_id(id)?;
         load(&self.connection, id)?.context("TASK_NOT_FOUND")
     }
+    /// Performs inspect details.
     pub fn inspect_details(&self, id: &str) -> Result<serde_json::Value> {
         let _snapshot = self.connection.unchecked_transaction()?;
         let task = self.inspect(id)?;
@@ -139,6 +166,7 @@ impl TasksStore {
         object.insert("gate_states".into(),serde_json::json!(GATES.iter().enumerate().map(|(i,name)|serde_json::json!({"stage":name,"state":if i<task.gate || task.status=="completed" {"passed"} else if i==task.gate && task.status=="in_progress" {"in_progress"} else {"pending"}})).collect::<Vec<_>>()));
         Ok(value)
     }
+    /// Performs sync.
     pub fn sync(
         &mut self,
         milestone: &Milestone,
@@ -147,6 +175,7 @@ impl TasksStore {
     ) -> Result<Vec<Task>> {
         self.sync_selected(milestone, reference, root, None)
     }
+    /// Performs create.
     pub fn create(
         &mut self,
         milestone: &Milestone,
@@ -289,6 +318,7 @@ impl TasksStore {
         tx.commit()?;
         Ok(result)
     }
+    /// Performs list.
     pub fn list(
         &self,
         milestone: Option<&str>,
@@ -315,6 +345,7 @@ impl TasksStore {
         }
         Ok(result)
     }
+    /// Performs claim.
     pub fn claim(&mut self, id: &str, stage: &str, worker: &str, worktree: &str) -> Result<Task> {
         self.assert_id(id)?;
         if worker.trim().is_empty() {
@@ -341,6 +372,7 @@ impl TasksStore {
         tx.commit()?;
         Ok(task)
     }
+    /// Performs reset.
     pub fn reset(&mut self, id: &str) -> Result<Task> {
         self.assert_id(id)?;
         let tx = self
@@ -363,6 +395,7 @@ impl TasksStore {
         tx.commit()?;
         Ok(task)
     }
+    /// Performs extend scope.
     pub fn extend_scope(&mut self, id: &str, paths: &[String], root: &Path) -> Result<Task> {
         self.assert_id(id)?;
         if paths.is_empty() {
@@ -412,6 +445,7 @@ impl TasksStore {
         tx.commit()?;
         Ok(task)
     }
+    /// Performs delete.
     pub fn delete(
         &mut self,
         id: Option<&str>,
@@ -462,6 +496,7 @@ impl TasksStore {
             mode: if force { "force" } else { "standard" }.into(),
         })
     }
+    /// Performs cleanup.
     pub fn cleanup(&mut self, at: i64) -> Result<Vec<String>> {
         let ids: Vec<String> = self
             .list(None, "completed", None)?
@@ -513,6 +548,7 @@ pub(crate) fn check_stage(task: &Task, stage: &str) -> Result<()> {
 fn dependencies_ready(conn: &Connection, id: &str) -> Result<bool> {
     Ok(conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM task_dependencies d LEFT JOIN tasks t ON t.task_id=d.dependency_id WHERE d.task_id=?1 AND d.satisfied=0 AND (t.task_id IS NULL OR json_extract(t.descriptor,'$.status')!='completed'))",[id],|r|r.get(0))?)
 }
+/// Performs now.
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }

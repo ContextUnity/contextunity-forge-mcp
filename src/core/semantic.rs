@@ -29,55 +29,111 @@ pub(crate) fn python_literal_constructor(builtin: &str) -> Option<&'static str> 
     Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(deny_unknown_fields)]
+/// Represents source position data.
 pub struct SourcePosition {
+    /// The line value.
     pub line: usize,
+    /// The column value.
     pub column: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+/// Enumerates the supported type expr values.
 pub enum TypeExpr {
-    Named { name: String },
-    Applied { base: String, args: Vec<TypeExpr> },
+    /// Type identified by a declaration name.
+    Named {
+        /// Declared type name.
+        name: String,
+    },
+    /// Generic type with resolved type arguments.
+    Applied {
+        /// Generic type name.
+        base: String,
+        /// Type arguments in source order.
+        args: Vec<TypeExpr>,
+    },
+    /// Represents the unknown case.
     Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+/// Enumerates the supported value expr values.
 pub enum ValueExpr {
-    Annotated { type_expr: TypeExpr },
-    Construct { callee: String },
-    Alias { name: String },
-    Call { callee: String },
-    Field { receiver: String, member: String },
-    Object { members: Vec<ObjectMember> },
+    /// Value with an explicit type annotation.
+    Annotated {
+        /// Annotated type.
+        type_expr: TypeExpr,
+    },
+    /// Value created by a constructor call.
+    Construct {
+        /// Constructor expression.
+        callee: String,
+    },
+    /// Value bound to another name.
+    Alias {
+        /// Referenced name.
+        name: String,
+    },
+    /// Value returned by a call.
+    Call {
+        /// Called expression.
+        callee: String,
+    },
+    /// Value obtained from a receiver member.
+    Field {
+        /// Receiver expression.
+        receiver: String,
+        /// Accessed member name.
+        member: String,
+    },
+    /// Object value with known members.
+    Object {
+        /// Members retained by bounded value flow.
+        members: Vec<ObjectMember>,
+    },
+    /// Represents the unknown case.
     Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+/// Represents object member data.
 pub struct ObjectMember {
+    /// The name value.
     pub name: String,
+    /// The position value.
     pub position: SourcePosition,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+/// Represents binding fact data.
 pub struct BindingFact {
+    /// The name value.
     pub name: String,
+    /// The position value.
     pub position: SourcePosition,
+    /// The value value.
     pub value: ValueExpr,
     #[serde(default, skip_serializing_if = "is_false")]
+    /// Whether conditional applies.
     pub conditional: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+/// Represents field fact data.
 pub struct FieldFact {
+    /// The name value.
     pub name: String,
+    /// The position value.
     pub position: SourcePosition,
+    /// The value value.
     pub value: ValueExpr,
     #[serde(default, skip_serializing_if = "is_false")]
+    /// Whether conditional applies.
     pub conditional: bool,
 }
 
@@ -87,18 +143,25 @@ fn is_false(value: &bool) -> bool {
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
+/// Represents value flow facts data.
 pub struct ValueFlowFacts {
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// The bindings value.
     pub bindings: Vec<BindingFact>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional return type value.
     pub return_type: Option<TypeExpr>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional return value value.
     pub return_value: Option<ValueExpr>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional return position value.
     pub return_position: Option<SourcePosition>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// The fields value.
     pub fields: Vec<FieldFact>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional alias type value.
     pub alias_type: Option<TypeExpr>,
 }
 
@@ -121,6 +184,7 @@ impl ValueFlowFacts {
         Self::deserialize(encoded)
     }
 
+    /// Performs reference keys.
     pub fn reference_keys<'a>(&'a self, mut visit: impl FnMut(&'a str)) {
         fn type_keys<'a>(ty: &'a TypeExpr, visit: &mut impl FnMut(&'a str), depth: usize) {
             if depth >= 8 {
@@ -167,6 +231,7 @@ impl ValueFlowFacts {
         }
     }
 
+    /// Performs reference keys from details.
     pub fn reference_keys_from_details<'a>(
         details: &'a serde_json::Value,
         visit: impl FnMut(&'a str),
@@ -257,6 +322,7 @@ impl ValueFlowFacts {
         }
     }
 
+    /// Reports whether empty applies.
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
             && self.return_type.is_none()
@@ -265,6 +331,7 @@ impl ValueFlowFacts {
             && self.alias_type.is_none()
     }
 
+    /// Performs offset lines.
     pub fn offset_lines(&mut self, offset: usize) {
         if let Some(position) = &mut self.return_position {
             position.line = position.line.saturating_add(offset);
@@ -296,13 +363,19 @@ impl ValueFlowFacts {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+/// Represents export binding data.
 pub struct ExportBinding {
+    /// The name value.
     pub name: String,
+    /// Optional local value.
     pub local: Option<String>,
+    /// Optional module value.
     pub module: Option<String>,
     #[serde(default)]
+    /// Whether type only applies.
     pub type_only: bool,
     #[serde(default)]
+    /// Whether star applies.
     pub star: bool,
 }
 

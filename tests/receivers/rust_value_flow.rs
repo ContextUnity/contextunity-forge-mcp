@@ -621,7 +621,7 @@ fn rust_lifetime_nominal_factory_contracts_survive_cache_and_delta() {
     let db = workspace.0.join(".forge/code-map.sqlite");
     writer::build(&workspace.0, &db, None).unwrap();
     let coverage = |conn: &rusqlite::Connection| -> Vec<(String, String)> {
-        let mut statement = conn.prepare("SELECT status,evidence FROM resolution_coverage WHERE path='src/client.rs' AND expression='returned.kind' ORDER BY status,evidence").unwrap();
+        let mut statement = conn.prepare("SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='src/client.rs' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='returned.kind' ORDER BY status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)").unwrap();
         statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap()

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// The short hash len value.
 pub const SHORT_HASH_LEN: usize = 8;
 
 /// Returns an eight-byte prefix when it ends on a UTF-8 character boundary.
@@ -101,16 +102,22 @@ fn shorten_fields(object: &mut Map<String, Value>, fields: &[&str]) {
 /// Unified tool metadata format for MCP responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMetadata {
+    /// The generation value.
     pub generation: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional status value.
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional refresh value.
     pub refresh: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional files checked value.
     pub files_checked: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional output root value.
     pub output_root: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional corpus hash value.
     pub corpus_hash: Option<String>,
 }
 
@@ -122,9 +129,16 @@ pub struct ToolMetadata {
 /// 3. Display hashes are shortened only in verified top-level freshness or metadata envelopes.
 /// 4. Metadata fields (`metadata`, `generation`, `freshness`) are moved to the VERY END of the object.
 pub fn finalize_mcp_metadata(value: &mut Value) {
+    finalize_mcp_metadata_for_symbol(value, None);
+}
+
+pub(crate) fn finalize_mcp_metadata_for_symbol(value: &mut Value, explain: Option<bool>) {
     shorten_hashes_in_value(value);
 
     if let Value::Object(map) = value {
+        if let Some(explain) = explain {
+            sparse_symbol(map, explain);
+        }
         for (key, child) in map.iter_mut() {
             if key != "rows" {
                 compact_graph_value(child);
@@ -172,6 +186,46 @@ pub fn finalize_mcp_metadata(value: &mut Value) {
         if let Some(fresh) = freshness {
             map.insert("freshness".into(), fresh);
         }
+    }
+}
+
+fn empty_collection(value: &Value) -> bool {
+    value.as_array().is_some_and(Vec::is_empty)
+        || value.get("total").is_some_and(|total| total == 0)
+        || (value.get("total").is_none()
+            && value
+                .get("items")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty))
+        || value.as_object().is_some_and(Map::is_empty)
+}
+
+fn sparse_symbol(object: &mut Map<String, Value>, explain: bool) {
+    for key in ["documents", "coverage"] {
+        if object.get(key).is_some_and(empty_collection) {
+            object.remove(key);
+        }
+    }
+    if explain {
+        let mut relations = Vec::new();
+        for key in [
+            "calls",
+            "callers",
+            "implements",
+            "implementors",
+            "overrides",
+            "dependencies",
+            "unwired",
+            "incoming",
+            "outgoing",
+        ] {
+            if object.get(key).is_some_and(empty_collection) {
+                object.remove(key);
+            } else if object.contains_key(key) {
+                relations.push(key);
+            }
+        }
+        object.insert("relations".into(), serde_json::json!(relations));
     }
 }
 

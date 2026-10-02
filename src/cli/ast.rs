@@ -3,6 +3,7 @@ use crate::engine::{ast, scanner};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::Path;
+/// Performs search.
 pub fn search(
     conn: &rusqlite::Connection,
     root: &Path,
@@ -52,6 +53,7 @@ pub fn search(
     Ok(json!({"matches":matches,"limit":limit,"truncated":truncated}))
 }
 
+/// Performs search paged.
 pub fn search_paged(
     conn: &rusqlite::Connection,
     root: &Path,

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::core::models::{is_test, Diagnostic, Edge};
+use crate::engine::languages::template::TemplateMasker;
 
 struct Document<'a> {
     path: &'a str,
@@ -28,8 +29,9 @@ impl Document<'_> {
 pub(super) fn extract(path: &str, source: &str, module: &str, facts: &mut Facts) -> Result<()> {
     let mut html = Parser::new();
     html.set_language(&tree_sitter_html::language())?;
+    let masked = TemplateMasker::mask(source, |_| {}, None);
     let tree = html
-        .parse(source, None)
+        .parse(masked.as_ref(), None)
         .context("Vue template parse cancelled")?;
     let mut javascript = typescript::JAVASCRIPT.create_parser("expression.js")?;
     let owner = format!("module:{path}");
@@ -263,34 +265,71 @@ fn visit_element(
             );
         }
     }
+    let mut content_offset = start.end_byte();
     for child in node.named_children(&mut node.walk()) {
         if child == start {
             continue;
         }
+        if content_offset < child.start_byte() {
+            interpolation_facts(
+                &source[content_offset..child.start_byte()],
+                content_offset,
+                document,
+                &owner,
+                facts,
+                parser,
+            );
+        }
         match child.kind() {
             "element" | "self_closing_tag" => visit_element(child, document, &owner, facts, parser),
-            "text" => {
-                let input = text(child, source);
-                let mut offset = 0;
-                while let Some(open) = input[offset..].find("{{") {
-                    let begin = offset + open + 2;
-                    let Some(close) = input[begin..].find("}}") else {
-                        break;
-                    };
-                    expression_facts(
-                        &input[begin..begin + close],
-                        child.start_byte() + begin,
-                        document,
-                        &owner,
-                        false,
-                        facts,
-                        parser,
-                    );
-                    offset = begin + close + 2;
-                }
-            }
+            "text" => interpolation_facts(
+                text(child, source),
+                child.start_byte(),
+                document,
+                &owner,
+                facts,
+                parser,
+            ),
             _ => {}
         }
+        content_offset = content_offset.max(child.end_byte());
+    }
+    if content_offset < node.end_byte() {
+        interpolation_facts(
+            &source[content_offset..node.end_byte()],
+            content_offset,
+            document,
+            &owner,
+            facts,
+            parser,
+        );
+    }
+}
+
+fn interpolation_facts(
+    input: &str,
+    absolute_start: usize,
+    document: &mut Document<'_>,
+    owner: &str,
+    facts: &mut Facts,
+    parser: &mut Parser,
+) {
+    let mut offset = 0;
+    while let Some(open) = input[offset..].find("{{") {
+        let begin = offset + open + 2;
+        let Some(close) = input[begin..].find("}}") else {
+            break;
+        };
+        expression_facts(
+            &input[begin..begin + close],
+            absolute_start + begin,
+            document,
+            owner,
+            false,
+            facts,
+            parser,
+        );
+        offset = begin + close + 2;
     }
 }
 

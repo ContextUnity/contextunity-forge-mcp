@@ -1,23 +1,33 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// The max output bytes value.
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+/// The max page size value.
 pub const MAX_PAGE_SIZE: usize = 100;
+/// The min output bytes value.
 pub const MIN_OUTPUT_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates the supported detail values.
 pub enum Detail {
     #[default]
+    /// Represents the compact case.
     Compact,
+    /// Represents the full case.
     Full,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
+/// Represents source context policy data.
 pub struct SourceContextPolicy {
+    /// Whether enabled by default applies.
     pub enabled_by_default: bool,
+    /// The leading lines value.
     pub leading_lines: usize,
+    /// The max body lines value.
     pub max_body_lines: usize,
 }
 
@@ -33,10 +43,15 @@ impl Default for SourceContextPolicy {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
+/// Represents response policy data.
 pub struct ResponsePolicy {
+    /// The detail value.
     pub detail: Detail,
+    /// The page size value.
     pub page_size: usize,
+    /// The max output bytes value.
     pub max_output_bytes: usize,
+    /// The source context value.
     pub source_context: SourceContextPolicy,
 }
 
@@ -52,6 +67,7 @@ impl Default for ResponsePolicy {
 }
 
 impl ResponsePolicy {
+    /// Performs validate.
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             (1..=MAX_PAGE_SIZE).contains(&self.page_size),
@@ -67,14 +83,20 @@ impl ResponsePolicy {
 }
 
 #[derive(Debug, Clone)]
+/// Configures query operations.
 pub struct QueryOptions {
+    /// The limit value.
     pub limit: usize,
+    /// The offset value.
     pub offset: usize,
+    /// The detail value.
     pub detail: Detail,
+    /// Optional generation value.
     pub generation: Option<String>,
 }
 
 impl QueryOptions {
+    /// Performs resolve.
     pub fn resolve(
         policy: &ResponsePolicy,
         limit: Option<usize>,
@@ -109,18 +131,25 @@ impl QueryOptions {
 /// Controls whether symbol queries include paged resolution coverage.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CoverageOptions {
+    /// Whether include coverage applies.
     pub include_coverage: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Configures source operations.
 pub struct SourceOptions {
+    /// Whether enabled applies.
     pub enabled: bool,
+    /// The leading lines value.
     pub leading_lines: usize,
+    /// The max body lines value.
     pub max_body_lines: usize,
+    /// The offset value.
     pub offset: usize,
 }
 
 impl SourceOptions {
+    /// Performs resolve.
     pub fn resolve(
         policy: &ResponsePolicy,
         enabled: Option<bool>,

@@ -474,7 +474,7 @@ fn changing_a_transitive_barrel_matches_cold_resolution() {
     let delta = reader::open(&db, &root).unwrap();
     commitments::verify(&delta).unwrap();
     let targets = |connection: &rusqlite::Connection| {
-        connection.prepare("SELECT dst.path FROM edges e JOIN nodes src ON src.id=e.src_public_id JOIN nodes dst ON dst.id=e.dst_public_id WHERE src.path='consumer.ts' AND e.kind='calls' ORDER BY dst.path").unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+        connection.prepare("SELECT dst.path FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.path='consumer.ts' AND e.kind='calls' ORDER BY dst.path").unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()
     };
     assert_eq!(targets(&delta), ["second.ts"]);
     let cold = root.join(".forge/cold.sqlite");

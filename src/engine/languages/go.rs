@@ -1,7 +1,9 @@
 use super::*;
+/// Performs language.
 pub fn language() -> tree_sitter::Language {
     tree_sitter_go::language()
 }
+/// Performs kind.
 pub fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_declaration" => Some("function"),
@@ -33,7 +35,9 @@ fn dependency_path(line: &str) -> Option<String> {
     (path.contains('.') || path.contains('/')).then(|| path.to_owned())
 }
 
+/// Language profile for go source files.
 pub struct Go;
+/// Shared go language profile.
 pub static GO: Go = Go;
 impl LanguageProfile for Go {
     fn id(&self) -> &'static str {
@@ -231,4 +235,5 @@ impl LanguageProfile for Go {
     }
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&GO];

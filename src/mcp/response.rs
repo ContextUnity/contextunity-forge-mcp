@@ -11,23 +11,35 @@ use tokio::io::AsyncWrite;
 // The tool result is JSON inside a text block, then escaped by JSON-RPC again.
 const ENVELOPE_RESERVE: usize = 256;
 
+/// Performs result.
 pub fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
+    result_with_symbol(value, policy, None)
+}
+
+pub(crate) fn result_with_symbol(
+    value: anyhow::Result<Value>,
+    policy: &ResponsePolicy,
+    explain: Option<bool>,
+) -> CallToolResult {
     let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
     match value {
         Ok(mut value) => {
-            super::metadata::finalize_mcp_metadata(&mut value);
-            loop {
-                let result = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
-                if serialized_bytes(&result) <= budget {
-                    return result;
-                }
-                if !trim_page_tail(&mut value) {
-                    return bounded_error(
-                        "Output exceeds the response byte limit. Use detail='compact', a smaller limit, or a narrower selector/SQL projection. A single oversized item must be read from its local file; no items were skipped and no continuation was consumed.",
-                        budget,
-                    );
+            super::metadata::finalize_mcp_metadata_for_symbol(&mut value, explain);
+            let output_too_large = || {
+                bounded_error(
+                    "Output exceeds the response byte limit. Use detail='compact', a smaller limit, or a narrower selector/SQL projection. A single oversized item must be read from its local file; no items were skipped and no continuation was consumed.",
+                    budget,
+                )
+            };
+            let size = success_json_bytes(&value);
+            if size > budget {
+                let mut excess = size.saturating_sub(budget).saturating_add(256);
+                if !trim_page_tails(&mut value, &mut excess) || success_json_bytes(&value) > budget
+                {
+                    return output_too_large();
                 }
             }
+            CallToolResult::success(vec![ContentBlock::text(value.to_string())])
         }
         Err(error) => {
             if error.is::<crate::db::tasks_store::TaskAlreadyClaimed>() {
@@ -52,17 +64,18 @@ pub fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallTool
     }
 }
 
+/// Performs compact mcp metadata.
 pub fn compact_mcp_metadata(value: &mut Value) {
     super::metadata::finalize_mcp_metadata(value);
 }
 
+/// Performs checkpoint result.
 pub fn checkpoint_result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
     match value {
         Ok(value) => {
-            let result = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
             let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
-            if serialized_bytes(&result) <= budget {
-                result
+            if success_json_bytes(&value) <= budget {
+                CallToolResult::success(vec![ContentBlock::text(value.to_string())])
             } else {
                 bounded_error("Checkpoint output exceeds the response byte limit. Read the complete saved content from the local .forge/checkpoints.json file; checkpoint contents are unchanged and are not paginated.", budget)
             }
@@ -71,10 +84,50 @@ pub fn checkpoint_result(value: anyhow::Result<Value>, policy: &ResponsePolicy) 
     }
 }
 
+/// Performs serialized bytes.
 pub fn serialized_bytes(result: &CallToolResult) -> usize {
-    serde_json::to_vec(result).map_or(usize::MAX, |bytes| bytes.len())
+    let mut counter = JsonByteCounter::default();
+    serde_json::to_writer(&mut counter, result).map_or(usize::MAX, |()| counter.bytes)
 }
 
+#[derive(Default)]
+struct JsonByteCounter {
+    bytes: usize,
+    escaped_bytes: usize,
+}
+
+impl io::Write for JsonByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(bytes.len());
+        for byte in bytes {
+            self.escaped_bytes = self.escaped_bytes.saturating_add(match byte {
+                b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 1,
+                0..=31 => 5,
+                _ => 0,
+            });
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn escaped_json_bytes(value: &Value) -> usize {
+    let mut counter = JsonByteCounter::default();
+    if serde_json::to_writer(&mut counter, value).is_err() {
+        return usize::MAX;
+    }
+    counter.bytes.saturating_add(counter.escaped_bytes)
+}
+
+fn success_json_bytes(value: &Value) -> usize {
+    let empty = CallToolResult::success(vec![ContentBlock::text("")]);
+    serialized_bytes(&empty).saturating_add(escaped_json_bytes(value))
+}
+
+/// Performs enforce.
 pub fn enforce(result: CallToolResult, policy: &ResponsePolicy) -> CallToolResult {
     let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
     if serialized_bytes(&result) <= budget {
@@ -98,6 +151,7 @@ pub fn enforce(result: CallToolResult, policy: &ResponsePolicy) -> CallToolResul
     }
 }
 
+/// Performs bounded error.
 pub fn bounded_error(message: &str, budget: usize) -> CallToolResult {
     let mut end = message.len().min(budget);
     loop {
@@ -117,18 +171,23 @@ pub fn bounded_error(message: &str, budget: usize) -> CallToolResult {
     }
 }
 
-fn trim_page_tail(value: &mut Value) -> bool {
+fn trim_page_tails(value: &mut Value, excess: &mut usize) -> bool {
     let Some(object) = value.as_object_mut() else {
         return false;
     };
+    let mut trimmed = false;
     if object.contains_key("total")
         && (object.contains_key("next_offset")
             || object.contains_key("offset")
             || object.contains_key("has_more"))
     {
         if let Some(items) = object.get_mut("items").and_then(Value::as_array_mut) {
-            if items.len() > 1 {
-                items.pop();
+            while items.len() > 1 && *excess > 0 {
+                let removed = items.pop().expect("page tail exists");
+                *excess = excess.saturating_sub(escaped_json_bytes(&removed).saturating_add(1));
+                trimmed = true;
+            }
+            if trimmed {
                 let returned = items.len();
                 let offset = object.get("offset").and_then(Value::as_u64).unwrap_or(0);
                 let next = offset.saturating_add(returned as u64);
@@ -136,15 +195,24 @@ fn trim_page_tail(value: &mut Value) -> bool {
                 object.insert("next_offset".into(), json!(next));
                 object.insert("byte_limited".into(), json!(true));
                 object.insert("continuation_hint".into(), json!(format!("Repeat the same tool and filters with offset={next} and this page's generation; items after this offset were omitted to respect max_output_bytes.")));
-                return true;
             }
         }
     }
+    if *excess == 0 {
+        return trimmed;
+    }
     // Preserve scalar node metadata, source continuation and freshness evidence.
     // Collection boundaries are produced by the database; arbitrary arrays are not pages.
-    object.values_mut().any(trim_page_tail)
+    for child in object.values_mut() {
+        trimmed |= trim_page_tails(child, excess);
+        if *excess == 0 {
+            break;
+        }
+    }
+    trimmed
 }
 
+/// Performs stdio.
 pub fn stdio() -> (tokio::io::Stdin, BoundedWriter<tokio::io::Stdout>) {
     (tokio::io::stdin(), BoundedWriter::new(tokio::io::stdout()))
 }
@@ -160,6 +228,7 @@ pub struct BoundedWriter<W> {
 }
 
 impl<W> BoundedWriter<W> {
+    /// Creates a new instance.
     pub fn new(writer: W) -> Self {
         Self {
             writer,
@@ -256,6 +325,13 @@ fn protocol_limit_error(prefix: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_size_matches_the_serialized_mcp_envelope() {
+        let value = json!({"message":"quotes: \"; slash: \\; newline: \n; unicode: λ", "items":[1, true, null]});
+        let actual = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+        assert_eq!(success_json_bytes(&value), serialized_bytes(&actual));
+    }
 
     #[test]
     fn interrupted_sqlite_query_reports_a_recovery_path() {

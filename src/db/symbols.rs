@@ -9,10 +9,50 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::{collections::HashMap, fs::File, io::Read, path::Path};
 
+/// Filters and paging for a symbol search.
+pub struct SearchOptions<'a> {
+    /// Optional symbol kind.
+    pub kind: Option<&'a str>,
+    /// Workspace-relative file or directory scope.
+    pub path: Option<&'a str>,
+    /// Whether Markdown document symbols are included.
+    pub include_docs: bool,
+    /// Whether the name or qualified name must match exactly.
+    pub exact: bool,
+    /// Bounded page and generation contract.
+    pub page: &'a QueryOptions,
+}
+
+/// Output controls for symbol inspection.
+pub struct InspectOptions<'a> {
+    /// Whether linked documentation is included.
+    pub show_doc: bool,
+    /// Optional bounded source preview.
+    pub source: &'a SourceOptions,
+    /// Optional resolution coverage.
+    pub coverage: CoverageOptions,
+    /// Bounded page and generation contract.
+    pub page: &'a QueryOptions,
+}
+
+/// Output controls for symbol explanation.
+pub struct ExplainOptions<'a> {
+    /// Incoming, outgoing, or both directions.
+    pub direction: Option<&'a str>,
+    /// Whether linked documentation is included.
+    pub show_doc: bool,
+    /// Optional bounded source preview.
+    pub source: &'a SourceOptions,
+    /// Optional resolution coverage.
+    pub coverage: CoverageOptions,
+    /// Bounded page and generation contract.
+    pub page: &'a QueryOptions,
+}
+
 fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> {
     let seeds = paging::count(
         conn,
-        "SELECT count(*) FROM edges_raw WHERE src_hash=?1 AND kind='contains'",
+        "SELECT count(*) FROM edges WHERE src_hash=?1 AND kind='contains'",
         &[&stable_hash64(id)],
     )?;
     let dependencies = super::traversal::immediate_links(conn, id, inbound, false)?;
@@ -21,37 +61,6 @@ fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> 
         bail!("test mapping from {id} starts with {immediate} direct graph links before its unbounded dependency walk. Select a narrower module or symbol; reducing limit alone does not reduce traversal work");
     }
     Ok(())
-}
-
-pub fn inspect(
-    conn: &Connection,
-    root: &Path,
-    selector: &str,
-    show_doc: bool,
-    show_source: bool,
-) -> Result<Value> {
-    let mut result = reader::inspect(conn, selector, show_doc)?;
-    if !show_source {
-        return Ok(result);
-    }
-    let node = &result["node"];
-    let path = node["path"].as_str().context("invalid node path")?;
-    let start = node["line"].as_u64().context("invalid start line")? as usize;
-    let end = node["end_line"].as_u64().context("invalid end line")? as usize;
-    if start == 0 || end < start {
-        bail!("node has no source range");
-    }
-    let source = verified_source(conn, root, path)?;
-    let lines: Vec<_> = source.split_inclusive('\n').collect();
-    if end > lines.len() {
-        bail!("source range exceeds indexed file");
-    }
-    let snippet = lines[start - 1..end].concat();
-    if serde_json::to_vec(&snippet)?.len() > 8 * 1024 * 1024 {
-        bail!("source exceeds serialized byte limit");
-    }
-    result["source"] = json!(snippet);
-    Ok(result)
 }
 
 fn verified_source(conn: &Connection, root: &Path, path: &str) -> Result<String> {
@@ -76,157 +85,19 @@ fn verified_source(conn: &Connection, root: &Path, path: &str) -> Result<String>
     String::from_utf8(bytes).context("source is not UTF-8")
 }
 
-pub fn search(conn: &Connection, pattern: &str, kind: Option<&str>, limit: usize) -> Result<Value> {
-    reader::validate_limit(limit)?;
-    let pattern = pattern.trim();
-    if pattern.is_empty() || pattern.len() > 1024 || pattern.chars().all(|c| c == '*') {
-        bail!("pattern must contain a symbol fragment and be at most 1024 bytes");
-    }
-    let kind = kind.unwrap_or("");
-    let size = limit + 1;
-    let mut nodes = if pattern.contains('*') {
-        // Only '*' has pattern semantics; SQL wildcards remain literal.
-        let like = pattern
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-            .replace('*', "%");
-        if let Some(prefix) = pattern
-            .strip_suffix('*')
-            .filter(|p| !p.is_empty() && p.chars().all(char::is_alphanumeric))
-        {
-            let query = format!("\"{prefix}\"*");
-            reader::rows(conn, "SELECT n.* FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?4 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2) ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,n.path,n.line,n.id LIMIT ?3", &[&like, &kind, &size, &query], size)?
-        } else {
-            reader::rows(conn, "SELECT * FROM nodes WHERE (name LIKE ?1 ESCAPE '\\' OR qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR kind=?2) ORDER BY CASE WHEN name LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END,path,line,id LIMIT ?3", &[&like, &kind, &size], size)?
-        }
-    } else {
-        let terms: Vec<_> = pattern
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let query = if terms.len() == 1 && pattern.chars().all(char::is_alphanumeric) {
-            format!("\"{}\"*", terms[0])
-        } else {
-            terms
-                .iter()
-                .map(|s| format!("\"{s}\""))
-                .collect::<Vec<_>>()
-                .join(" AND ")
-        };
-        if query.is_empty() {
-            bail!("pattern must contain a symbol fragment");
-        }
-        reader::rows(conn, "SELECT n.* FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (?2='' OR n.kind=?2) ORDER BY n.path,n.line,n.id LIMIT ?3", &[&query, &kind, &size], size)?
-    };
-    let truncated = nodes.len() > limit;
-    nodes.truncate(limit);
-    Ok(json!({"pattern":pattern,"nodes":nodes,"truncated":truncated,"limit":limit}))
-}
-
-pub fn tests(conn: &Connection, selector: &str, direction: &str, limit: usize) -> Result<Value> {
-    reader::validate_limit(limit)?;
-    let (inbound, is_test) = match direction {
-        "inbound" => (true, 1),
-        "outbound" => (false, 0),
-        _ => bail!("direction must be inbound or outbound"),
-    };
-    let node = reader::select(conn, selector)?;
-    let id = node["id"].as_str().context("invalid node id")?;
-    let id_hash = stable_hash64(id);
-    admit_test_mapping(conn, id, inbound)?;
-    // Containment expands only the selected scope; UNION visits each dependency once.
-    let max_depth = 4;
-    let steps = super::traversal::dependency_steps(inbound, true, false);
-    let sql = format!("WITH RECURSIVE seeds(id,depth) AS (SELECT ?1,0 UNION SELECT e.dst_hash,s.depth+1 FROM seeds s JOIN edges_raw e ON e.src_hash=s.id WHERE e.kind='contains' AND s.depth<?2), walk(id,depth) AS (SELECT id,depth FROM seeds UNION {steps}), reached(id) AS (SELECT id FROM walk GROUP BY id) SELECT n.* FROM reached w JOIN nodes n ON n.node_hash=w.id WHERE n.is_test=?3 AND n.kind IN ('function','method','class','struct') AND n.node_hash!=?1 ORDER BY n.path,n.line,n.id LIMIT ?4");
-    let size = limit + 1;
-    let mut nodes = reader::rows(conn, &sql, &[&id_hash, &max_depth, &is_test, &size], size)?;
-    if inbound && nodes.is_empty() {
-        let name = node["name"].as_str().unwrap_or_default();
-        let mut words = Vec::new();
-        let mut current = String::new();
-        for ch in name.chars() {
-            if ch.is_uppercase() && !current.is_empty() {
-                words.push(std::mem::take(&mut current));
-            }
-            if ch.is_alphanumeric() {
-                current.push(ch.to_ascii_lowercase());
-            } else if !current.is_empty() {
-                words.push(std::mem::take(&mut current));
-            }
-        }
-        if !current.is_empty() {
-            words.push(current);
-        }
-        let snake = words.join("_");
-        let lexical_query = if words.len() > 1 {
-            format!(
-                "\"{}\" OR ({})",
-                name,
-                words
-                    .iter()
-                    .map(|w| format!("\"{w}\""))
-                    .collect::<Vec<_>>()
-                    .join(" AND ")
-            )
-        } else {
-            format!("\"{name}\"")
-        };
-        if !lexical_query.is_empty() {
-            nodes = reader::rows(
-                conn,
-                "SELECT n.* FROM node_search JOIN nodes n ON n.node_id=node_search.rowid JOIN files f ON f.path=n.path WHERE node_search MATCH ?1 AND n.is_test=1 AND f.is_test=1 AND n.kind IN('function','method','class','struct') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),n.path,n.line,n.id LIMIT ?5",
-                &[&lexical_query, &id, &name, &snake, &size],
-                size,
-            )?;
-        }
-    }
-    let truncated = nodes.len() > limit;
-    nodes.truncate(limit);
-    Ok(
-        json!({"selector":node,"direction":direction,"nodes":nodes,"truncated":truncated,"scope":"indexed static dependencies; unresolved references can hide tests"}),
-    )
-}
-
-pub fn search_paged(
+/// Search indexed symbols using one bounded options contract.
+pub fn search_with_options(
     conn: &Connection,
     pattern: &str,
-    kind: Option<&str>,
-    options: &QueryOptions,
+    options: &SearchOptions<'_>,
 ) -> Result<Value> {
-    search_paged_in_path(conn, pattern, kind, None, options)
-}
-
-pub fn search_paged_in_path(
-    conn: &Connection,
-    pattern: &str,
-    kind: Option<&str>,
-    path: Option<&str>,
-    options: &QueryOptions,
-) -> Result<Value> {
-    search_paged_in_path_with_docs(conn, pattern, kind, path, false, options)
-}
-
-pub fn search_paged_in_path_with_docs(
-    conn: &Connection,
-    pattern: &str,
-    kind: Option<&str>,
-    path: Option<&str>,
-    include_docs: bool,
-    options: &QueryOptions,
-) -> Result<Value> {
-    search_paged_in_path_with_options(conn, pattern, kind, path, include_docs, false, options)
-}
-
-pub fn search_paged_in_path_with_options(
-    conn: &Connection,
-    pattern: &str,
-    kind: Option<&str>,
-    path: Option<&str>,
-    include_docs: bool,
-    exact: bool,
-    options: &QueryOptions,
-) -> Result<Value> {
+    let SearchOptions {
+        kind,
+        path,
+        include_docs,
+        exact,
+        page: options,
+    } = *options;
     let pattern = pattern.trim();
     if pattern.is_empty() || pattern.len() > 1024 || pattern.chars().all(|c| c == '*') {
         bail!("pattern must contain a symbol fragment and be at most 1024 bytes");
@@ -255,7 +126,7 @@ pub fn search_paged_in_path_with_options(
     let path = path.unwrap_or("");
     let (path_start, path_end) = reader::path_bounds(path);
     let columns = paging::nodes("n", options.detail);
-    let graph_boost = "CASE WHEN EXISTS(SELECT 1 FROM edges_raw e WHERE e.dst_hash=n.node_hash AND e.kind NOT IN('contains','documents','references_doc')) THEN 50 ELSE 0 END";
+    let graph_boost = "CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind NOT IN('contains','documents','references_doc')) THEN 50 ELSE 0 END";
     let mut nodes = if exact {
         let fts_query = pattern
             .split(|c: char| !c.is_alphanumeric())
@@ -312,7 +183,20 @@ pub fn search_paged_in_path_with_options(
                 FROM ranked c JOIN nodes n ON n.node_id=c.node_id
                 ORDER BY c.graph_group,(c.score+c.graph_boost) DESC,n.path,n.line,n.id"
             );
-            ranked_search_page(conn, &sql, &[&like,&kind,&query,&path,&path_start,&path_end,&include_docs], options)?
+            ranked_search_page(
+                conn,
+                &sql,
+                &[
+                    &like,
+                    &kind,
+                    &query,
+                    &path,
+                    &path_start,
+                    &path_end,
+                    &include_docs,
+                ],
+                options,
+            )?
         } else {
             paging::query(conn, &format!("SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 500 ELSE 0 END DESC,n.path,n.line,n.id"), &[&like,&kind,&path,&path_start,&path_end,&include_docs], options)?
         }
@@ -338,8 +222,8 @@ pub fn search_paged_in_path_with_options(
                 .saturating_add(1)
                 .max(500),
         )
-            .context("search offset exceeds SQLite integer range")?;
-        let structural_candidates = "SELECT node_id FROM nodes_data WHERE name LIKE ?7 ESCAPE '\\' UNION SELECT node_id FROM nodes_data WHERE qualname=?6 COLLATE NOCASE";
+        .context("search offset exceeds SQLite integer range")?;
+        let structural_candidates = "SELECT node_id FROM nodes WHERE name LIKE ?7 ESCAPE '\\' UNION SELECT node_id FROM nodes WHERE qualname=?6 COLLATE NOCASE";
         let filters = "(?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?8=1 OR n.language!='markdown')";
         let structural_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END";
         let fts_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END - bm25(node_search)";
@@ -489,6 +373,7 @@ fn ranked_search_page(
     }))
 }
 
+/// Performs tests paged.
 pub fn tests_paged(
     conn: &Connection,
     selector: &str,
@@ -511,7 +396,7 @@ pub fn tests_paged(
 
     let unresolved_count: usize = conn
         .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous') AND path=?1 AND line BETWEEN ?2 AND ?3",
+            "SELECT count(*) FROM resolution_coverage WHERE status IN('unresolved','ambiguous') AND path_id=(SELECT path_id FROM path_dictionary WHERE path=?1) AND line BETWEEN ?2 AND ?3",
             rusqlite::params![path, start_line, end_line],
             |r| r.get(0),
         )
@@ -524,7 +409,7 @@ pub fn tests_paged(
         ("dst_hash", "src_hash", "src_hash", "dst_hash")
     };
     let max_depth = 4;
-    let sql = format!("WITH RECURSIVE seeds(id,depth) AS (SELECT ?1,0 UNION SELECT e.dst_hash,s.depth+1 FROM seeds s JOIN edges_raw e ON e.src_hash=s.id WHERE e.kind='contains' AND s.depth<?2), walk(id,depth) AS (SELECT id,depth FROM seeds UNION {steps}), reached(id) AS (SELECT id FROM walk GROUP BY id) SELECT {} FROM reached w JOIN nodes n ON n.node_hash=w.id WHERE n.is_test=?3 AND n.kind IN ('function','method','class','struct') AND n.node_hash!=?1 ORDER BY CASE WHEN EXISTS(SELECT 1 FROM edges_raw e WHERE e.{forward_selected}=?1 AND e.{forward_candidate}=n.node_hash AND e.kind IN({})) OR EXISTS(SELECT 1 FROM edges_raw e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate}=n.node_hash AND e.kind IN({})) THEN 0 ELSE 1 END,n.path,n.line,n.id", paging::nodes("n", options.detail), super::traversal::FORWARD_DEPENDENCIES, super::traversal::REVERSE_DEPENDENCIES);
+    let sql = format!("WITH RECURSIVE seeds(id,depth) AS (SELECT ?1,0 UNION SELECT e.dst_hash,s.depth+1 FROM seeds s JOIN edges e ON e.src_hash=s.id WHERE e.kind='contains' AND s.depth<?2), walk(id,depth) AS (SELECT id,depth FROM seeds UNION {steps}), reached(id) AS (SELECT id FROM walk GROUP BY id) SELECT {} FROM reached w JOIN nodes n ON n.node_hash=w.id WHERE n.is_test=?3 AND n.kind IN ('function','method','class','struct') AND n.node_hash!=?1 ORDER BY CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.{forward_selected}=?1 AND e.{forward_candidate}=n.node_hash AND e.kind IN({})) OR EXISTS(SELECT 1 FROM edges e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate}=n.node_hash AND e.kind IN({})) THEN 0 ELSE 1 END,n.path,n.line,n.id", paging::nodes("n", options.detail), super::traversal::FORWARD_DEPENDENCIES, super::traversal::REVERSE_DEPENDENCIES);
     let mut nodes = paging::query(conn, &sql, &[&id_hash, &max_depth, &is_test], options)?;
     let mut discovery_method = "graph";
     if inbound && nodes["total"].as_u64() == Some(0) {
@@ -616,37 +501,33 @@ fn annotate_test_connections(
         .collect::<Vec<_>>()
         .join(",");
     let (forward_candidate, forward_selected, reverse_candidate, reverse_selected) = if inbound {
-        (
-            "src_public_id",
-            "dst_public_id",
-            "dst_public_id",
-            "src_public_id",
-        )
+        ("src_hash", "dst_hash", "dst_hash", "src_hash")
     } else {
-        (
-            "dst_public_id",
-            "src_public_id",
-            "src_public_id",
-            "dst_public_id",
-        )
+        ("dst_hash", "src_hash", "src_hash", "dst_hash")
     };
     let sql = format!(
-        "SELECT e.{forward_candidate} related_id,e.kind,e.path,e.line FROM edges e WHERE e.{forward_selected}=?1 AND e.{forward_candidate} IN ({placeholders}) AND e.kind IN({}) UNION ALL SELECT e.{reverse_candidate} related_id,e.kind,e.path,e.line FROM edges e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate} IN ({placeholders}) AND e.kind IN({}) ORDER BY related_id,kind,path,line",
+        "SELECT e.{forward_candidate} related_hash,e.kind,p.path,e.line FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE e.{forward_selected}=?1 AND e.{forward_candidate} IN ({placeholders}) AND e.kind IN({}) UNION ALL SELECT e.{reverse_candidate} related_hash,e.kind,p.path,e.line FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate} IN ({placeholders}) AND e.kind IN({}) ORDER BY related_hash,kind,path,line",
         super::traversal::FORWARD_DEPENDENCIES,
         super::traversal::REVERSE_DEPENDENCIES,
     );
-    let bindings: Vec<&dyn rusqlite::ToSql> = std::iter::once(&selected_id as &dyn rusqlite::ToSql)
-        .chain(ids.iter().map(|id| id as &dyn rusqlite::ToSql))
-        .collect();
+    let selected_hash = stable_hash64(selected_id);
+    let candidate_hashes: Vec<i64> = ids.iter().map(|id| stable_hash64(id)).collect();
+    let bindings: Vec<&dyn rusqlite::ToSql> =
+        std::iter::once(&selected_hash as &dyn rusqlite::ToSql)
+            .chain(
+                candidate_hashes
+                    .iter()
+                    .map(|hash| hash as &dyn rusqlite::ToSql),
+            )
+            .collect();
     // At most seven dependency kinds are persisted per selected/candidate pair.
     let direct = reader::rows(conn, &sql, &bindings, ids.len() * 7)?;
     let mut reasons = HashMap::new();
     for edge in direct {
-        let related_id = edge["related_id"]
-            .as_str()
-            .context("invalid related node id")?
-            .to_owned();
-        reasons.entry(related_id).or_insert_with(|| {
+        let related_hash = edge["related_hash"]
+            .as_i64()
+            .context("invalid related node hash")?;
+        reasons.entry(related_hash).or_insert_with(|| {
             json!({
                 "relation": "direct",
                 "edge_kind": edge["kind"],
@@ -658,7 +539,7 @@ fn annotate_test_connections(
     for item in items {
         let id = item["id"].as_str().context("invalid test result id")?;
         let mut connection = reasons
-            .remove(id)
+            .remove(&stable_hash64(id))
             .unwrap_or_else(|| json!({"relation":"scope_or_transitive"}));
         if compact && connection["relation"] == "direct" {
             let evidence_path = connection["path"].as_str().unwrap_or("");
@@ -676,38 +557,24 @@ fn annotate_test_connections(
     Ok(())
 }
 
-pub fn inspect_paged(
+/// Inspect one indexed symbol with bounded documentation, coverage, and source.
+pub fn inspect_with_options(
     conn: &Connection,
     root: &Path,
     selector: &str,
-    show_doc: bool,
-    source: &SourceOptions,
-    options: &QueryOptions,
+    options: &InspectOptions<'_>,
 ) -> Result<Value> {
-    inspect_paged_with_coverage(
+    let result = inspect_paged_response(
         conn,
-        root,
         selector,
-        show_doc,
-        source,
-        options,
-        CoverageOptions::default(),
-    )
+        options.show_doc,
+        options.page,
+        options.coverage,
+    )?;
+    with_source(conn, root, result, options.source, options.page)
 }
 
-pub fn inspect_paged_with_coverage(
-    conn: &Connection,
-    root: &Path,
-    selector: &str,
-    show_doc: bool,
-    source: &SourceOptions,
-    options: &QueryOptions,
-    coverage: CoverageOptions,
-) -> Result<Value> {
-    let result = inspect_paged_response(conn, selector, show_doc, options, coverage)?;
-    with_source(conn, root, result, source, options)
-}
-
+/// Performs snippet paged.
 pub fn snippet_paged(
     conn: &Connection,
     root: &Path,
@@ -726,73 +593,22 @@ pub fn snippet_paged(
     )
 }
 
-pub fn explain_paged(
+/// Explain direct relationships of one indexed symbol.
+pub fn explain_with_options(
     conn: &Connection,
     root: &Path,
     selector: &str,
-    direction: Option<&str>,
-    source: &SourceOptions,
-    options: &QueryOptions,
+    options: &ExplainOptions<'_>,
 ) -> Result<Value> {
-    explain_paged_with_coverage(
+    let result = explain_paged_response(
         conn,
-        root,
         selector,
-        direction,
-        source,
-        options,
-        CoverageOptions::default(),
-    )
-}
-
-pub fn explain_paged_with_coverage(
-    conn: &Connection,
-    root: &Path,
-    selector: &str,
-    direction: Option<&str>,
-    source: &SourceOptions,
-    options: &QueryOptions,
-    coverage: CoverageOptions,
-) -> Result<Value> {
-    explain_paged_with_docs_and_coverage(
-        conn, root, selector, direction, true, source, options, coverage,
-    )
-}
-
-pub fn explain_paged_with_docs(
-    conn: &Connection,
-    root: &Path,
-    selector: &str,
-    direction: Option<&str>,
-    show_doc: bool,
-    source: &SourceOptions,
-    options: &QueryOptions,
-) -> Result<Value> {
-    explain_paged_with_docs_and_coverage(
-        conn,
-        root,
-        selector,
-        direction,
-        show_doc,
-        source,
-        options,
-        CoverageOptions::default(),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn explain_paged_with_docs_and_coverage(
-    conn: &Connection,
-    root: &Path,
-    selector: &str,
-    direction: Option<&str>,
-    show_doc: bool,
-    source: &SourceOptions,
-    options: &QueryOptions,
-    coverage: CoverageOptions,
-) -> Result<Value> {
-    let result = explain_paged_response(conn, selector, direction, show_doc, options, coverage)?;
-    with_source(conn, root, result, source, options)
+        options.direction,
+        options.show_doc,
+        options.page,
+        options.coverage,
+    )?;
+    with_source(conn, root, result, options.source, options.page)
 }
 
 pub(crate) fn inspect_paged_response(
@@ -819,7 +635,15 @@ pub(crate) fn explain_paged_response(
     coverage: CoverageOptions,
 ) -> Result<Value> {
     let result = if coverage.include_coverage {
-        reader::explain_paged_with_docs(conn, selector, direction, show_doc, options)?
+        reader::explain_with_options(
+            conn,
+            selector,
+            &reader::ExplainOptions {
+                direction,
+                show_doc,
+                page: options,
+            },
+        )?
     } else {
         explain_without_coverage(conn, selector, direction, show_doc, options)?
     };
@@ -839,10 +663,10 @@ fn inspect_without_coverage(
         paging::query(
             conn,
             &format!(
-                "SELECT {} FROM doc_sections d JOIN edges e ON e.dst_public_id=d.doc_id WHERE e.src_public_id=?1 AND e.kind='references_doc' ORDER BY d.is_invariant DESC,d.path,d.doc_id",
+                "SELECT {} FROM doc_sections d JOIN nodes dn ON dn.id=d.doc_id JOIN edges e ON e.dst_hash=dn.node_hash WHERE e.src_hash=?1 AND e.kind='references_doc' ORDER BY d.is_invariant DESC,d.path,d.doc_id",
                 paging::docs("d", options.detail)
             ),
-            &[&id],
+            &[&stable_hash64(id)],
             options,
         )?
     } else {
@@ -866,6 +690,7 @@ fn explain_without_coverage(
         .as_str()
         .context("invalid node id")?
         .to_owned();
+    let node_hash = stable_hash64(&id);
     let direction = match direction.unwrap_or("both") {
         "inbound" => "incoming",
         "outbound" => "outgoing",
@@ -876,10 +701,10 @@ fn explain_without_coverage(
             let mut incoming = paging::query(
                 conn,
                 &format!(
-                    "SELECT {} FROM edges e WHERE e.dst_public_id=?1 ORDER BY e.kind,e.src_public_id,e.path,e.line",
+                    "SELECT {} FROM edges e WHERE e.dst_hash=?1 ORDER BY e.kind,e.src_hash,e.path_id,e.line",
                     paging::edges("e", options.detail)
                 ),
-                &[&id],
+                &[&node_hash],
                 options,
             )?;
             if options.detail == Detail::Compact {
@@ -890,8 +715,8 @@ fn explain_without_coverage(
         "outgoing" => {
             let total = paging::count(
                 conn,
-                "SELECT count(*) FROM edges WHERE dst_public_id=?1",
-                &[&id],
+                "SELECT count(*) FROM edges WHERE dst_hash=?1",
+                &[&node_hash],
             )?;
             result["incoming"] = json!({"total":total,"omitted":true,"hint":"Pass direction='incoming' to page incoming edges."});
         }
@@ -902,10 +727,10 @@ fn explain_without_coverage(
             let mut outgoing = paging::query(
                 conn,
                 &format!(
-                    "SELECT {} FROM edges e WHERE e.src_public_id=?1 ORDER BY e.kind,e.dst_public_id,e.path,e.line",
+                    "SELECT {} FROM edges e WHERE e.src_hash=?1 ORDER BY e.kind,e.dst_hash,e.path_id,e.line",
                     paging::edges("e", options.detail)
                 ),
-                &[&id],
+                &[&node_hash],
                 options,
             )?;
             if options.detail == Detail::Compact {
@@ -916,8 +741,8 @@ fn explain_without_coverage(
         "incoming" => {
             let total = paging::count(
                 conn,
-                "SELECT count(*) FROM edges WHERE src_public_id=?1",
-                &[&id],
+                "SELECT count(*) FROM edges WHERE src_hash=?1",
+                &[&node_hash],
             )?;
             result["outgoing"] = json!({"total":total,"omitted":true,"hint":"Pass direction='outgoing' to page outgoing edges."});
         }
@@ -925,8 +750,8 @@ fn explain_without_coverage(
     }
     let implementors = reader::rows(
         conn,
-        "SELECT e.src_public_id, e.kind, e.path, e.line, e.evidence, n.name, n.kind as node_kind FROM edges e JOIN nodes n ON n.id=e.src_public_id WHERE e.dst_public_id=?1 AND e.kind IN('implements','overrides','extends') ORDER BY e.path, e.line",
-        &[&id],
+        "SELECT n.id AS src_public_id,e.kind,p.path,e.line,v.evidence,n.name,n.kind AS node_kind FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=e.path_id JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE e.dst_hash=?1 AND e.kind IN('implements','overrides','extends') ORDER BY p.path,e.line",
+        &[&node_hash],
         50,
     )?;
     if !implementors.is_empty() {
@@ -934,8 +759,8 @@ fn explain_without_coverage(
     }
     let implements = reader::rows(
         conn,
-        "SELECT e.dst_public_id, e.kind, e.path, e.line, e.evidence, n.name, n.kind as node_kind FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.src_public_id=?1 AND e.kind IN('implements','overrides','extends') ORDER BY e.path, e.line",
-        &[&id],
+        "SELECT n.id AS dst_public_id,e.kind,p.path,e.line,v.evidence,n.name,n.kind AS node_kind FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=e.path_id JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE e.src_hash=?1 AND e.kind IN('implements','overrides','extends') ORDER BY p.path,e.line",
+        &[&node_hash],
         50,
     )?;
     if !implements.is_empty() {
@@ -1002,8 +827,8 @@ fn compact_summary(conn: &Connection, node: &Value) -> Result<Value> {
     )?;
     let mut container = reader::rows(
         conn,
-        "SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line FROM edges e JOIN nodes n ON n.id=e.src_public_id WHERE e.dst_public_id=?1 AND e.kind='contains' ORDER BY CASE WHEN n.kind IN('module','file') THEN 1 ELSE 0 END,n.line DESC,n.end_line,n.id LIMIT 1",
-        &[&id],
+        "SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line FROM edges e JOIN nodes n ON n.node_hash=e.src_hash WHERE e.dst_hash=?1 AND e.kind='contains' ORDER BY CASE WHEN n.kind IN('module','file') THEN 1 ELSE 0 END,n.line DESC,n.end_line,n.id LIMIT 1",
+        &[&stable_hash64(id)],
         1,
     )?
     .into_iter()
@@ -1107,18 +932,18 @@ fn direct_call_summary(
 ) -> Result<Value> {
     let (count_sql, preview_sql) = if inbound {
         (
-            "SELECT count(*),coalesce(sum(occurrence_count),0) FROM edges WHERE dst_public_id=?1 AND kind='calls'",
-            "SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line FROM edges e JOIN nodes n ON n.id=e.src_public_id WHERE e.dst_public_id=?1 AND e.kind='calls' ORDER BY n.path,n.line,n.id LIMIT ?2",
+            "SELECT count(*),coalesce(sum(occurrence_count),0) FROM edges WHERE dst_hash=?1 AND kind='calls'",
+            "SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line FROM edges e JOIN nodes n ON n.node_hash=e.src_hash WHERE e.dst_hash=?1 AND e.kind='calls' ORDER BY n.path,n.line,n.id LIMIT ?2",
         )
     } else {
         (
-            "SELECT count(*),coalesce(sum(occurrence_count),0) FROM edges WHERE src_public_id=?1 AND kind='calls'",
-            "SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line FROM edges e JOIN nodes n ON n.id=e.dst_public_id WHERE e.src_public_id=?1 AND e.kind='calls' ORDER BY n.path,n.line,n.id LIMIT ?2",
+            "SELECT count(*),coalesce(sum(occurrence_count),0) FROM edges WHERE src_hash=?1 AND kind='calls'",
+            "SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE e.src_hash=?1 AND e.kind='calls' ORDER BY n.path,n.line,n.id LIMIT ?2",
         )
     };
     let (count, occurrences) = {
         let budget = reader::QueryBudget::new(conn);
-        let counts = conn.query_row(count_sql, [id], |row| {
+        let counts = conn.query_row(count_sql, [stable_hash64(id)], |row| {
             Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?))
         })?;
         budget.check()?;
@@ -1127,7 +952,7 @@ fn direct_call_summary(
     let preview = reader::rows(
         conn,
         preview_sql,
-        &[&id, &preview_limit],
+        &[&stable_hash64(id), &preview_limit],
         preview_limit as usize,
     )?;
     Ok(json!({"count":count,"occurrences":occurrences,"preview":preview}))

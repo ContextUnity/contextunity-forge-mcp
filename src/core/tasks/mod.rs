@@ -5,8 +5,10 @@ use std::{
     collections::BTreeSet,
     path::{Component, Path, PathBuf},
 };
+/// Implements gates support.
 pub mod gates;
 
+/// The gates value.
 pub const GATES: [&str; 5] = [
     "design/v1",
     "contract/v1",
@@ -17,31 +19,48 @@ pub const GATES: [&str; 5] = [
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+/// Represents receipt data.
 pub struct Receipt {
+    /// The commit value.
     pub commit: String,
+    /// The contract revision value.
     pub contract_revision: u64,
+    /// The passed at value.
     pub passed_at: String,
+    /// The evidence value.
     pub evidence: serde_json::Value,
+    /// The review value.
     pub review: serde_json::Value,
+    /// The decision value.
     pub decision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Represents task spec data.
 pub struct TaskSpec {
+    /// The task ref value.
     pub task_ref: String,
+    /// The target value.
     pub target: String,
+    /// The proof policy value.
     pub proof_policy: String,
+    /// The scope value.
     pub scope: Vec<String>,
     #[serde(default = "initial_revision")]
+    /// The contract revision value.
     pub contract_revision: u64,
     #[serde(default)]
+    /// The depends on value.
     pub depends_on: Vec<String>,
     #[serde(default)]
+    /// The invariants value.
     pub invariants: Vec<String>,
     #[serde(default)]
+    /// Optional status value.
     pub status: Option<String>,
     #[serde(default)]
+    /// Optional receipt value.
     pub receipt: Option<Receipt>,
 }
 fn initial_revision() -> u64 {
@@ -49,20 +68,30 @@ fn initial_revision() -> u64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Represents milestone data.
 pub struct Milestone {
+    /// The id value.
     pub id: String,
+    /// The repository value.
     pub repository: String,
+    /// The project value.
     pub project: String,
+    /// The invariants value.
     pub invariants: Vec<String>,
+    /// The owners value.
     pub owners: Vec<String>,
+    /// The depends on value.
     pub depends_on: Vec<String>,
+    /// The tasks value.
     pub tasks: Vec<TaskSpec>,
 }
 
 impl Milestone {
+    /// Performs parse.
     pub fn parse(text: &str, repository: &str) -> Result<Self> {
         Self::parse_specification(text, repository, None)
     }
+    /// Parses with identity.
     pub fn parse_with_identity(text: &str, repository: &str, project: &str) -> Result<Self> {
         Self::parse_specification(text, repository, Some(project))
     }
@@ -185,12 +214,14 @@ impl Milestone {
             tasks,
         })
     }
+    /// Performs task id.
     pub fn task_id(&self, task: &TaskSpec) -> String {
         format!(
             "{}/{}/{}:{}",
             self.repository, self.project, self.id, task.task_ref
         )
     }
+    /// Performs digest.
     pub fn digest(&self, task: &TaskSpec) -> Result<String> {
         let mut spec = task.clone();
         spec.receipt = None;
@@ -218,6 +249,7 @@ pub(crate) fn valid_identity(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Performs relative path.
 pub fn relative_path(value: &str) -> Result<PathBuf> {
     let path = Path::new(value);
     if value.is_empty()
@@ -248,6 +280,7 @@ pub(crate) fn claim_worktree(value: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Performs confined path.
 pub fn confined_path(root: &Path, value: &str) -> Result<PathBuf> {
     let root = root.canonicalize()?;
     let relative = relative_path(value)?;

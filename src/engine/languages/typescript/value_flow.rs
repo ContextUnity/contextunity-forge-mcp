@@ -5,17 +5,11 @@ use crate::core::semantic::{
 };
 
 fn position(node: Syntax<'_>) -> SourcePosition {
-    SourcePosition {
-        line: node.start_position().row + 1,
-        column: node.start_position().column,
-    }
+    crate::engine::languages::source_start(node)
 }
 
 fn completed(node: Syntax<'_>) -> SourcePosition {
-    SourcePosition {
-        line: node.end_position().row + 1,
-        column: node.end_position().column,
-    }
+    crate::engine::languages::source_end(node)
 }
 
 fn named_type(node: Syntax<'_>, source: &str) -> TypeExpr {
@@ -23,7 +17,7 @@ fn named_type(node: Syntax<'_>, source: &str) -> TypeExpr {
 }
 
 fn type_expr(node: Syntax<'_>, source: &str, depth: usize) -> TypeExpr {
-    if depth >= 8 {
+    if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
         return TypeExpr::Unknown;
     }
     if node.kind() == "type_annotation" {

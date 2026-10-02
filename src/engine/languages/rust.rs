@@ -6,9 +6,11 @@ pub(crate) mod linker;
 pub(crate) mod patterns;
 #[path = "rust/value_flow.rs"]
 mod value_flow;
+/// Performs language.
 pub fn language() -> tree_sitter::Language {
     tree_sitter_rust::language()
 }
+/// Performs kind.
 pub fn kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_item" => Some("function"),
@@ -36,7 +38,9 @@ fn method_owner(node: Syntax<'_>) -> Option<Syntax<'_>> {
     None
 }
 
+/// Represents rust data.
 pub struct Rust;
+/// Shared rust language profile.
 pub static RUST: Rust = Rust;
 impl LanguageProfile for Rust {
     fn id(&self) -> &'static str {
@@ -50,7 +54,7 @@ impl LanguageProfile for Rust {
             return Vec::new();
         }
         let mut dependencies = Vec::new();
-        super::manifest::visit_toml_pairs(content, &mut |path, _value| {
+        super::toml_manifest::visit_toml_pairs(content, &mut |path, _value| {
             let parts: Vec<_> = path.split('.').collect();
             let is_dependency_section = |section: &str| {
                 matches!(
@@ -619,4 +623,5 @@ fn collect_use(node: Syntax<'_>, source: &str, prefix: &str, out: &mut Vec<(Stri
     }
 }
 
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&RUST];

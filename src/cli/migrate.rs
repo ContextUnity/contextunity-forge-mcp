@@ -8,12 +8,26 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 #[derive(Debug, Subcommand)]
+/// Enumerates the supported migrate command values.
 pub enum MigrateCommand {
-    Preview { milestone_ref: Option<String> },
-    Apply { milestone_ref: Option<String> },
-    Verify { milestone_ref: Option<String> },
+    /// Checks a milestone migration without writing it.
+    Preview {
+        /// Milestone reference, or every discovered milestone when absent.
+        milestone_ref: Option<String>,
+    },
+    /// Applies a milestone migration.
+    Apply {
+        /// Milestone reference, or every discovered milestone when absent.
+        milestone_ref: Option<String>,
+    },
+    /// Verifies the current milestone state.
+    Verify {
+        /// Milestone reference, or every discovered milestone when absent.
+        milestone_ref: Option<String>,
+    },
 }
 
+/// Runs the selected migration command and returns its JSON report.
 pub fn run(root: &Path, command: MigrateCommand) -> Result<Value> {
     let (reference, mode) = match command {
         MigrateCommand::Preview { milestone_ref } => (milestone_ref, "preview"),

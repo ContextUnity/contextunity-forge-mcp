@@ -334,7 +334,7 @@ fn manifest_only_delta_reclassifies_existing_import_and_matches_cold_graph() {
     .unwrap();
     let cold = workspace.0.join(".forge/cold.db");
     writer::build(&workspace.0, &cold, None).unwrap();
-    let query = "SELECT expression,status,evidence FROM resolution_coverage ORDER BY path,line,expression,status,evidence";
+    let query = "SELECT (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)";
     let snapshot = |path: &std::path::Path| {
         let conn = reader::open(path, &workspace.0).unwrap();
         let mut statement = conn.prepare(query).unwrap();
@@ -389,7 +389,7 @@ fn unlisted_manifest_change_rebuilds_unmodified_import_owners() {
     workspace.write("consumer.py", "def run(): return 2\n");
     writer::delta(&workspace.0, &db, &[PathBuf::from("consumer.py")]).unwrap();
     let conn = reader::open(&db, &workspace.0).unwrap();
-    let evidence: String = conn.query_row("SELECT evidence FROM resolution_coverage WHERE path='unchanged.py' AND expression='novel_library'", [], |row| row.get(0)).unwrap();
+    let evidence: String = conn.query_row("SELECT (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='unchanged.py' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='novel_library'", [], |row| row.get(0)).unwrap();
     assert!(evidence.contains("manifest"), "{evidence}");
 }
 
@@ -504,7 +504,7 @@ fn commonjs_binding_provenance_persists_and_delta_matches_cold() {
             .unwrap();
         let details: serde_json::Value = serde_json::from_str(&details).unwrap();
         assert_eq!(details["commonjs_bindings"][0]["invalidated"], invalidated);
-        let status: String = conn.query_row("SELECT status FROM resolution_coverage WHERE path='origin.cjs' AND expression='assert.equal'", [], |row| row.get(0)).unwrap();
+        let status: String = conn.query_row("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='origin.cjs' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='assert.equal'", [], |row| row.get(0)).unwrap();
         assert_eq!(status, expected_status);
         commitments::verify(&conn).unwrap();
     };
@@ -519,8 +519,8 @@ fn commonjs_binding_provenance_persists_and_delta_matches_cold() {
     let cold = reader::open(&cold, &workspace.0).unwrap();
     for sql in [
         "SELECT path||'|'||hex(facts_blob) FROM local_facts ORDER BY path",
-        "SELECT path||'|'||line||'|'||expression||'|'||status||'|'||evidence FROM resolution_coverage ORDER BY path,line,expression,status,evidence",
-        "SELECT path||'|'||facts_hash||'|'||nodes_hash||'|'||edges_hash||'|'||search_hash||'|'||deps_hash FROM file_commitments ORDER BY path",
+        "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
+        "SELECT p.path||'|'||c.domain||'|'||hex(c.digest) FROM domain_commitments c JOIN path_dictionary p ON p.path_id=c.owner_id ORDER BY p.path,c.domain",
     ] {
         let rows = |conn: &rusqlite::Connection| conn.prepare(sql).unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>();
         assert_eq!(rows(&incremental), rows(&cold), "{sql}");
@@ -558,7 +558,12 @@ fn commonjs_provider_body_edits_preserve_unchanged_consumer_contracts() {
     let snapshot = |db: &std::path::Path| {
         let conn = reader::open(db, &workspace.0).unwrap();
         commitments::verify(&conn).unwrap();
-        conn.query_row("SELECT facts_hash,nodes_hash,edges_hash,search_hash,deps_hash FROM file_commitments WHERE path='consumer.cjs'", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?))).unwrap()
+        let mut statement = conn.prepare("SELECT domain||'|'||hex(digest) FROM domain_commitments WHERE owner_id=(SELECT path_id FROM path_dictionary WHERE path='consumer.cjs') ORDER BY domain").unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
     };
     let consumer_before = snapshot(&db);
     workspace.write("provider.cjs", &after_source);

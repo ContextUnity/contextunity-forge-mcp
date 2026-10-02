@@ -50,8 +50,8 @@ impl Workspace {
         let cold = reader::open(&cold, &self.0).unwrap();
         commitments::verify(&cold).unwrap();
         for sql in [
-            "SELECT public_id||'|'||kind||'|'||qualname||'|'||line||'|'||end_line||'|'||details_json FROM owned_nodes ORDER BY public_id",
-            "SELECT src_public_id||'|'||dst_public_id||'|'||kind||'|'||path||'|'||line FROM edges ORDER BY src_public_id,dst_public_id,kind",
+            "SELECT id||'|'||kind||'|'||qualname||'|'||line||'|'||end_line||'|'||details FROM nodes ORDER BY id",
+            "SELECT (SELECT id FROM nodes WHERE node_hash=src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=dst_hash)||'|'||kind||'|'||(SELECT path FROM path_dictionary WHERE path_id=edges.path_id)||'|'||line FROM edges ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind",
             "SELECT path||'|'||line||'|'||message FROM errors ORDER BY path,line,message",
         ] { assert_eq!(rows(&incremental, sql), rows(&cold, sql), "{sql}"); }
     }

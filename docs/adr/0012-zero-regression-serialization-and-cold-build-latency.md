@@ -56,7 +56,7 @@ ContextUnity Forge MCP must maintain linear, predictable performance across code
    - Bulk B-tree indexing latency during cold build must not exceed `<= 1.0s per 100,000 entities` (`indexes_ms <= 1000ms`).
 
 10. **Prohibition of Correlated Subqueries on Broad Candidate Sets**:
-   - Graph degree, in-degree connectivity, or edge existence scoring (`graph_boost`) must NEVER run as correlated subqueries against high-cardinality tables (`edges_raw`, `edge_occurrences_raw`) over unconstrained candidate CTEs.
+   - Graph degree, in-degree connectivity, or edge existence scoring (`graph_boost`) must NEVER run as correlated subqueries against high-cardinality tables (`edges`, `edge_occurrences`) over unconstrained candidate CTEs.
    - Any graph-degree scoring must evaluate strictly on the final bounded candidate window (`LIMIT 30` or `LIMIT 50`).
 
 11. **Bounded Profiling and Honest Receipts**:

@@ -1,7 +1,10 @@
 #![cfg(feature = "lang-python")]
 
 use contextunity_forge_mcp::{
-    core::commitments,
+    core::{
+        commitments,
+        response::{CoverageOptions, QueryOptions, ResponsePolicy},
+    },
     db::{reader, traversal, writer},
 };
 use rusqlite::Connection;
@@ -54,8 +57,8 @@ impl Workspace {
         let cold = reader::open(&cold_path, &self.0).unwrap();
         commitments::verify(&cold).unwrap();
         for sql in [
-            "SELECT path||'|'||line||'|'||expression||'|'||status||'|'||evidence FROM resolution_coverage ORDER BY path,line,expression,status,evidence",
-            "SELECT src_public_id||'|'||dst_public_id||'|'||kind FROM edges ORDER BY src_public_id,dst_public_id,kind",
+            "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
+            "SELECT (SELECT id FROM nodes WHERE node_hash=src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=dst_hash)||'|'||kind FROM edges ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind",
         ] {
             assert_eq!(rows(&incremental, sql), rows(&cold, sql), "{sql}");
         }
@@ -70,7 +73,7 @@ impl Drop for Workspace {
 
 fn coverage(conn: &Connection, line: i64, expression: &str) -> (String, String) {
     conn.query_row(
-        "SELECT status,evidence FROM resolution_coverage WHERE path='consumer.py' AND line=?1 AND expression=?2",
+        "SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND line=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
         (line, expression),
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap()
@@ -107,14 +110,33 @@ fn known_external_alias_is_external_without_claiming_a_callable_target() {
         })
         .unwrap();
     assert_eq!(edges, 0);
+    let page = QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
     for overview in [
-        reader::overview(&conn).unwrap(),
-        traversal::query(&conn, "overview", None, 1, 10).unwrap(),
+        reader::overview_with_options(
+            &conn,
+            &reader::OverviewOptions {
+                aspects: None,
+                page: &page,
+            },
+        )
+        .unwrap(),
+        traversal::query_with_options(
+            &conn,
+            "overview",
+            None,
+            &traversal::GraphQueryOptions {
+                depth: 1,
+                direction: None,
+                coverage: CoverageOptions::default(),
+                page: &page,
+            },
+        )
+        .unwrap(),
     ] {
-        assert_eq!(overview["counts"][0]["unresolved"], 0);
-        assert_eq!(overview["counts"][0]["external_imports"], 2);
+        assert_eq!(overview["counts"]["unresolved"], 0);
+        assert_eq!(overview["counts"]["external_imports"], 2);
     }
-    let removal = traversal::removal(&conn, "consumer.py").unwrap();
+    let removal = traversal::removal_paged(&conn, "consumer.py", &page).unwrap();
     assert_eq!(removal["unresolved_references"], 0);
     assert_eq!(removal["target_unresolved_references"], 0);
 }
@@ -155,11 +177,11 @@ fn module_type_aliases_resolve_imports_and_annotation_references() {
             &format!("SELECT id FROM nodes WHERE path='aliases.py' AND name='{name}'")
         )[0]
         .starts_with("type:aliases.py:"));
-        let statuses = rows(&conn, &format!("SELECT status FROM resolution_coverage WHERE path='consumer.py' AND expression='{name}' ORDER BY line"));
+        let statuses = rows(&conn, &format!("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='{name}' ORDER BY line"));
         assert_eq!(statuses, vec!["resolved"; 2], "{name}");
     }
     assert!(rows(&conn, "SELECT name FROM nodes WHERE path='aliases.py' AND kind='type' AND name IN ('ordinary','annotated','Local','LocalVariable','LocalPep','Nested')").is_empty());
-    assert_eq!(rows(&conn, "SELECT expression FROM resolution_coverage WHERE path='consumer.py' AND status='unresolved' ORDER BY line"), vec!["Missing", "Missing"]);
+    assert_eq!(rows(&conn, "SELECT (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND status='unresolved' ORDER BY line"), vec!["Missing", "Missing"]);
 }
 
 #[test]
@@ -192,7 +214,7 @@ fn absolute_external_import_and_shadowed_alias_have_distinct_evidence() {
         .starts_with("call through external import unknown_package;"));
     assert!(rows(
         &conn,
-        "SELECT evidence FROM edges WHERE kind='calls' AND evidence='missing.get'"
+        "SELECT (SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id) FROM edges WHERE kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id)='missing.get'"
     )
     .is_empty());
     assert_eq!(coverage(&conn, 4, "http.get").0, "unresolved");

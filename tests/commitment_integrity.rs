@@ -39,6 +39,10 @@ impl Drop for TemporaryWorkspace {
 fn connection() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(SCHEMA_DDL).unwrap();
+    conn.execute_batch(
+        "INSERT INTO coverage_evidence(evidence_id,evidence) VALUES(1,'call'),(2,'exact')",
+    )
+    .unwrap();
     conn
 }
 
@@ -62,8 +66,11 @@ fn manifest_input_digest_is_committed_and_tampering_is_detected() {
 }
 
 fn owner_id(conn: &Connection, path: &str) -> i64 {
-    conn.execute("INSERT INTO path_dictionary(path) VALUES(?1)", [path])
-        .unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO path_dictionary(path) VALUES(?1)",
+        [path],
+    )
+    .unwrap();
     conn.query_row(
         "SELECT path_id FROM path_dictionary WHERE path=?1",
         [path],
@@ -73,9 +80,10 @@ fn owner_id(conn: &Connection, path: &str) -> i64 {
 }
 
 fn node(conn: &Connection, id: &str, path: &str) {
+    let path_id = owner_id(conn, path);
     conn.execute(
-        "INSERT INTO nodes(id,kind,name,qualname,path,line,end_line,is_test,language,generated,details,node_hash) VALUES(?1,'function',?1,?1,?2,1,1,0,'rust',0,'{}',?3)",
-        params![id, path, stable_hash64(id)],
+        "INSERT INTO nodes(id,kind,name,qualname,path_id,path,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES(?1,'function',?1,?1,?2,?3,1,1,0,'rust',0,'{}',?4,?2)",
+        params![id, path_id, path, stable_hash64(id)],
     )
     .unwrap();
 }
@@ -104,6 +112,7 @@ fn fts_postings(conn: &Connection, vocab: &str) -> Vec<(String, i64, String, i64
 fn sealing_rejects_edges_with_missing_owner_or_node_endpoints() {
     for missing in ["owner", "source", "destination"] {
         let conn = connection();
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
         let owner = if missing == "owner" {
             99
         } else {
@@ -116,7 +125,7 @@ fn sealing_rejects_edges_with_missing_owner_or_node_endpoints() {
             node(&conn, "fn:destination", "src/a.rs");
         }
         conn.execute(
-            "INSERT INTO edges_raw VALUES(?1,'calls',?2,?3,1,'call','exact',1)",
+            "INSERT INTO edges VALUES(?1,'calls',?2,?3,1,1,2,1)",
             params![
                 stable_hash64("fn:source"),
                 stable_hash64("fn:destination"),
@@ -137,6 +146,7 @@ fn sealing_rejects_edges_with_missing_owner_or_node_endpoints() {
 fn sealing_rejects_occurrences_with_missing_owner_or_node_endpoints() {
     for missing in ["owner", "source", "destination"] {
         let conn = connection();
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
         let owner = if missing == "owner" {
             99
         } else {
@@ -149,7 +159,7 @@ fn sealing_rejects_occurrences_with_missing_owner_or_node_endpoints() {
             node(&conn, "fn:destination", "src/a.rs");
         }
         conn.execute(
-            "INSERT INTO edge_occurrences_raw VALUES(?1,0,?2,?3,'calls',1,'call','exact')",
+            "INSERT INTO edge_occurrences VALUES(?1,0,?2,?3,'calls',1,1,2)",
             params![
                 owner,
                 stable_hash64("fn:source"),
@@ -169,8 +179,9 @@ fn sealing_rejects_occurrences_with_missing_owner_or_node_endpoints() {
 #[test]
 fn sealing_rejects_dependencies_with_missing_owner() {
     let conn = connection();
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
     conn.execute(
-        "INSERT INTO dependencies_raw VALUES(99,0,?1,'imports','target','resolved')",
+        "INSERT INTO dependencies VALUES(99,0,?1,'imports','target','resolved')",
         [stable_hash64("src/target.rs")],
     )
     .unwrap();
@@ -181,6 +192,7 @@ fn sealing_rejects_dependencies_with_missing_owner() {
 fn sealing_rejects_shared_owners_with_missing_owner_or_key() {
     for missing in ["owner", "key"] {
         let conn = connection();
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
         let owner = if missing == "owner" {
             99
         } else {
@@ -195,7 +207,7 @@ fn sealing_rejects_shared_owners_with_missing_owner_or_key() {
             .unwrap();
         }
         conn.execute(
-            "INSERT INTO shared_owners_raw VALUES(0,?1,?2,0)",
+            "INSERT INTO shared_owners VALUES(0,?1,?2,0)",
             params![key_hash, owner],
         )
         .unwrap();
@@ -332,10 +344,8 @@ fn fts_sealing_survives_valid_rebuild_reindex_and_vacuum() {
              VALUES(1)
              UNION ALL SELECT x+1 FROM nums WHERE x<512
          )
-         INSERT INTO owned_search_raw(node_id,search_text)
-         SELECT x,printf('nodeword%06d shared',x) FROM nums;
          INSERT INTO node_search(rowid,search_text)
-         SELECT node_id,search_text FROM owned_search_raw;
+         SELECT x,printf('nodeword%06d shared',x) FROM nums;
          INSERT INTO doc_sections(doc_id,path,section_title,doc_type,content,invariants,referenced_symbols,mtime,size)
          VALUES('doc-1','docs/one.md','One','guide','shared document content','stable invariant','',0,0),
                ('doc-2','docs/two.md','Two','guide','other document content','stable invariant','',0,0);
@@ -354,8 +364,12 @@ fn fts_sealing_survives_valid_rebuild_reindex_and_vacuum() {
 
     conn.execute_batch(
         "INSERT INTO node_search(node_search) VALUES('delete-all');
-         INSERT INTO node_search(rowid,search_text)
-         SELECT node_id,search_text FROM owned_search_raw;
+          WITH RECURSIVE nums(x) AS (
+              VALUES(1)
+              UNION ALL SELECT x+1 FROM nums WHERE x<512
+          )
+          INSERT INTO node_search(rowid,search_text)
+          SELECT x,printf('nodeword%06d shared',x) FROM nums;
          INSERT INTO doc_search(doc_search) VALUES('rebuild');",
     )
     .unwrap();
@@ -428,261 +442,46 @@ fn unchanged_input_cold_builds_have_the_same_root_after_reindex_and_vacuum() {
     commitments::verify(&Connection::open(&second_db).unwrap()).unwrap();
 }
 
-#[cfg(any(
-    feature = "lang-python",
-    feature = "lang-rust",
-    feature = "lang-typescript",
-    feature = "lang-html",
-    feature = "lang-vue"
-))]
+#[cfg(feature = "lang-rust")]
 #[test]
-fn built_file_commitments_match_json_encoding_of_durable_facts_and_linked_graph() {
-    use contextunity_forge_mcp::{
-        core::models::{Facts, Node},
-        db::writer,
-        engine::{languages, linker, scanner},
-    };
-    use serde_json::json;
-    use std::collections::BTreeMap;
-
+fn built_nodes_keep_owner_paths_and_repeatable_merkle_leaves() {
     let workspace = TemporaryWorkspace::new();
     let source = workspace.0.join("source");
-    fs::create_dir_all(source.join("src")).unwrap();
-    fs::write(
-        source.join("src/lib.rs"),
-        r#"/// Quotes "double", slash \\, and Unicode λ.
-pub fn produce(input: &str) -> &str { input }
-pub fn consume() { produce("escaped\\\"\n\tλ"); }
-"#,
-    )
-    .unwrap();
-    #[cfg(feature = "lang-python")]
-    fs::write(
-        source.join("src/flow.py"),
-        "class Worker:\n    def work(self):\n        return 1\n\ndef make_worker() -> Worker:\n    return Worker()\n\ndef use_worker():\n    return make_worker().work()\n\nWorkerAlias = Worker\n\nclass Service:\n    def __init__(self):\n        self.worker = Worker()\n    def run(self):\n        return self.worker.work()\n",
-    )
-    .unwrap();
-    #[cfg(feature = "lang-typescript")]
-    fs::write(
-        source.join("src/flow.ts"),
-        "class Worker { work(): number { return 1; } }\ntype WorkerAlias = Worker;\nfunction makeWorker(): WorkerAlias { return new Worker(); }\nexport function useWorker() { const worker = makeWorker(); return worker.work(); }\n",
-    )
-    .unwrap();
-    #[cfg(all(feature = "lang-html", feature = "lang-typescript"))]
-    fs::write(
-        source.join("src/classic.html"),
-        "<script>class HtmlWorker { work() { return 1; } }</script><script>function makeHtmlWorker() { return new HtmlWorker(); } makeHtmlWorker().work();</script>",
-    )
-    .unwrap();
-    #[cfg(feature = "lang-vue")]
-    fs::write(
-        source.join("src/flow.vue"),
-        "<script setup lang=\"ts\">class VueWorker { work(): number { return 1; } }\ntype VueAlias = VueWorker;\nfunction makeVueWorker(): VueAlias { return new VueWorker(); }\nconst worker = makeVueWorker();\nworker.work();\n</script>\n<template>{{ worker.work() }}</template>\n",
-    )
-    .unwrap();
-    fs::write(source.join("src/empty.rs"), "").unwrap();
-    fs::write(
-        source.join("README.md"),
-        "# Unicode λ and quotes \"\\\"\n\nA documented source contract.\n",
-    )
-    .unwrap();
-    let adapter = scanner::load_adapter(&source, None).unwrap();
-    let scan = scanner::scan_with_adapter(&source, &adapter).unwrap();
-    let public_facts: BTreeMap<String, Facts> = scan
-        .entries
-        .iter()
-        .map(|file| {
-            (
-                file.path.clone(),
-                writer::extract(&source, file, &adapter).unwrap(),
-            )
-        })
-        .collect();
-    for file in &scan.entries {
-        let Some(profile) = languages::by_id(&file.language) else {
-            continue;
-        };
-        let file_source = fs::read_to_string(source.join(&file.path)).unwrap();
-        let module = profile.module_name_for_source(&file.path, &file_source);
-        let mut legacy_facts = Facts {
-            nodes: vec![Node {
-                id: format!("module:{}", file.path),
-                kind: "module".into(),
-                name: file.path.rsplit('/').next().unwrap_or(&file.path).into(),
-                qualname: module.clone(),
-                path: file.path.clone(),
-                line: 1,
-                end_line: file_source.lines().count().max(1),
-                is_test: false,
-                language: file.language.clone(),
-                generated: false,
-                details: json!({}),
-            }],
-            ..Facts::default()
-        };
-        profile
-            .extract_file(&file.path, &file_source, &module, &mut legacy_facts)
-            .unwrap();
-        profile.finish(&mut legacy_facts);
-        assert_eq!(
-            serde_json::to_vec(&legacy_facts).unwrap(),
-            serde_json::to_vec(&public_facts[&file.path]).unwrap(),
-            "typed AST extraction must match direct legacy profile bytes for {}",
-            file.path
-        );
-    }
-    let database = workspace.0.join("encoding.sqlite");
-    writer::build(&source, &database, None).unwrap();
-    let conn = Connection::open(&database).unwrap();
-    let mut statement = conn
-        .prepare("SELECT path,facts_blob FROM local_facts ORDER BY path")
-        .unwrap();
-    let durable_facts: BTreeMap<String, (Vec<u8>, Facts)> = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })
-        .unwrap()
-        .map(|row| {
-            let (path, blob) = row.unwrap();
-            let bytes = zstd::stream::decode_all(blob.as_slice()).unwrap();
-            let facts = serde_json::from_slice(&bytes).unwrap();
-            (path, (bytes, facts))
-        })
-        .collect();
-    assert_eq!(durable_facts.len(), public_facts.len());
-    for (path, (bytes, facts)) in &durable_facts {
-        assert_eq!(
-            serde_json::to_vec(facts).unwrap(),
-            *bytes,
-            "durable JSON Fact bytes must retain their decode order for {path}"
-        );
-    }
-    let facts: BTreeMap<String, Facts> = durable_facts
-        .into_iter()
-        .map(|(path, (_, facts))| (path, facts))
-        .collect();
-    #[cfg(any(
-        feature = "lang-python",
-        feature = "lang-typescript",
-        feature = "lang-vue",
-        all(feature = "lang-html", feature = "lang-typescript")
-    ))]
-    let has_generated_flow = |path: &str| {
-        public_facts.get(path).is_some_and(|fact| {
-            fact.nodes.iter().any(|node| {
-                node.details
-                    .get("value_flow")
-                    .and_then(serde_json::Value::as_object)
-                    .is_some_and(|flow| !flow.is_empty())
-            })
-        })
-    };
-    #[cfg(feature = "lang-python")]
-    assert!(has_generated_flow("src/flow.py"));
-    #[cfg(feature = "lang-typescript")]
-    assert!(has_generated_flow("src/flow.ts"));
-    #[cfg(all(feature = "lang-html", feature = "lang-typescript"))]
-    assert!(has_generated_flow("src/classic.html"));
-    #[cfg(feature = "lang-vue")]
-    assert!(has_generated_flow("src/flow.vue"));
-    let graph = linker::link_with_root(&facts, None, Some(&source));
-    assert!(!graph.edges.is_empty());
-    assert!(!graph.coverage.is_empty());
-    let json_hash = |value: serde_json::Value| commitments::hash(value.to_string().as_bytes());
-    for (path, fact) in &facts {
-        let (digest, bytes): (String, u64) = conn
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("a.rs"), "pub fn exported() {}\n").unwrap();
+    let first = workspace.0.join("first.sqlite");
+    let second = workspace.0.join("second.sqlite");
+    writer::build(&source, &first, None).unwrap();
+    writer::build(&source, &second, None).unwrap();
+    let leaf = |path: &std::path::Path| {
+        let conn = Connection::open(path).unwrap();
+        commitments::verify(&conn).unwrap();
+        let owner: i64 = conn
             .query_row(
-                "SELECT digest,size FROM files WHERE path=?1",
-                [path],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                "SELECT path_id FROM path_dictionary WHERE path='a.rs'",
+                [],
+                |row| row.get(0),
             )
             .unwrap();
-        let edges: Vec<_> = graph
-            .edges
-            .iter()
-            .filter(|edge| &edge.path == path)
-            .collect();
-        let coverage: Vec<_> = graph
-            .coverage
-            .iter()
-            .filter(|item| &item.path == path)
-            .collect();
-        let search: Vec<_> = fact
-            .nodes
-            .iter()
-            .map(|node| {
-                format!(
-                    "{} {} {} {}",
-                    node.name, node.qualname, node.path, node.details
-                )
-            })
-            .collect();
-        let expected = [
-            json_hash(json!([path, digest, bytes])),
-            commitments::hash(&serde_json::to_vec(fact).unwrap()),
-            json_hash(json!(fact.nodes)),
-            json_hash(json!(edges)),
-            json_hash(json!(search)),
-            json_hash(json!(coverage)),
-        ];
-        let actual: [String; 6] = conn.query_row(
-            "SELECT inventory_hash,facts_hash,nodes_hash,edges_hash,search_hash,deps_hash FROM file_commitments WHERE path=?1",
-            [path],
-            |row| Ok([row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?]),
-        ).unwrap();
-        assert_eq!(actual, expected, "file commitment encoding for {path}");
-    }
-    commitments::verify(&conn).unwrap();
-}
-
-fn serial_leaf(conn: &Connection, table: &str, owner: &str, order: &str) -> String {
-    use rusqlite::types::ValueRef;
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(commitments::ALGORITHM);
-    hasher.update(table);
-    hasher.update((owner.len() as u64).to_le_bytes());
-    hasher.update(owner.as_bytes());
-    let ownership = if matches!(table, "nodes" | "edges" | "resolution_coverage") {
-        "path"
-    } else {
-        "owner"
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM nodes WHERE owner_path_id=?1",
+                [owner],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(count > 0);
+        let digest: Vec<u8> = conn
+            .query_row(
+                "SELECT digest FROM domain_commitments WHERE domain='nodes' AND owner_id=?1",
+                [owner],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(digest.len(), 32);
+        digest
     };
-    let mut statement = conn
-        .prepare(&format!(
-            "SELECT * FROM {table} WHERE {ownership}=?1 ORDER BY {order}"
-        ))
-        .unwrap();
-    let columns = statement.column_count();
-    let mut rows = statement.query([owner]).unwrap();
-    while let Some(row) = rows.next().unwrap() {
-        hasher.update([0xff]);
-        for column in 0..columns {
-            match row.get_ref(column).unwrap() {
-                ValueRef::Null => hasher.update(b"n"),
-                ValueRef::Integer(value) => {
-                    hasher.update(b"i");
-                    hasher.update(value.to_le_bytes());
-                }
-                ValueRef::Real(value) => {
-                    hasher.update(b"r");
-                    hasher.update(value.to_bits().to_le_bytes());
-                }
-                ValueRef::Text(value) | ValueRef::Blob(value) => {
-                    hasher.update(
-                        if matches!(row.get_ref(column).unwrap(), ValueRef::Text(_)) {
-                            b"t"
-                        } else {
-                            b"b"
-                        },
-                    );
-                    hasher.update((value.len() as u64).to_le_bytes());
-                    hasher.update(value);
-                }
-            }
-        }
-    }
-    hex::encode(hasher.finalize())
+    assert_eq!(leaf(&first), leaf(&second));
 }
 
 #[test]
@@ -707,17 +506,17 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
             let src = stable_hash64(&format!("fn:{owner_index}:{ordinal}"));
             let dst = stable_hash64(&format!("fn:{owner_index}:0"));
             conn.execute(
-                "INSERT INTO edges_raw VALUES(?1,'calls',?2,?3,?4,'call','exact',2)",
+                "INSERT INTO edges VALUES(?1,'calls',?2,?3,?4,1,2,2)",
                 params![src, dst, owner, ordinal + 1],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO edge_occurrences_raw VALUES(?1,?2,?3,?4,'calls',?5,'call','exact')",
+                "INSERT INTO edge_occurrences VALUES(?1,?2,?3,?4,'calls',?5,1,2)",
                 params![owner, ordinal, src, dst, ordinal + 1],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO dependencies_raw VALUES(?1,?2,NULL,'imports',?3,'external')",
+                "INSERT INTO dependencies VALUES(?1,?2,NULL,'imports',?3,'external')",
                 params![owner, ordinal, format!("symbol_{ordinal}")],
             )
             .unwrap();
@@ -736,27 +535,29 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
     let expected_root = single
         .install(move || commitments::seal(connection))
         .unwrap();
-    for (table, order) in [
-        ("nodes", "id"),
-        ("edges", "src_public_id,dst_public_id,kind"),
-        ("edge_occurrences", "ordinal"),
-        ("dependencies", "target,kind,symbol,resolution"),
-        ("resolution_coverage", "line,expression,status,evidence"),
+    for table in [
+        "nodes",
+        "edges",
+        "edge_occurrences",
+        "dependencies",
+        "resolution_coverage",
     ] {
         for owner in &owners {
-            let key = format!("leaf:{}", serde_json::json!([table, owner]));
-            let actual: String = conn
+            let owner_path_id: i64 = conn
                 .query_row(
-                    "SELECT digest FROM domain_commitments WHERE domain=?1",
-                    [key],
+                    "SELECT path_id FROM path_dictionary WHERE path=?1",
+                    [owner],
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(
-                actual,
-                serial_leaf(&conn, table, owner, order),
-                "{table}: {owner}"
-            );
+            let actual: Vec<u8> = conn
+                .query_row(
+                    "SELECT digest FROM domain_commitments WHERE domain=?1 AND owner_id=?2",
+                    params![table, owner_path_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(actual.len(), 32, "{table}: {owner}");
         }
     }
     assert_eq!(

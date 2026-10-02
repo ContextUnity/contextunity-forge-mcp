@@ -107,11 +107,13 @@ fn generate_profiles() {
         digest.finalize()
     );
     let mut source = String::new();
+    source.push_str("/// Language features recognized by this build.\n");
     source.push_str("pub const AVAILABLE_LANGUAGE_FEATURES: &[&str] = &[\n");
     for (name, _) in &profiles {
         source.push_str(&format!("\"lang-{name}\",\n"));
     }
     source.push_str("];\n");
+    source.push_str("/// Language features compiled into this build.\n");
     source.push_str("pub const ENABLED_LANGUAGE_FEATURES: &[&str] = &[\n");
     for (name, _) in &enabled {
         source.push_str(&format!("\"lang-{name}\",\n"));
@@ -119,7 +121,7 @@ fn generate_profiles() {
     source.push_str("];\n");
     for (name, path) in &enabled {
         source.push_str(&format!(
-            "#[path = {:?}] pub mod {name};\n",
+            "/// {name} language profile and extraction rules.\n#[path = {:?}] pub mod {name};\n",
             path.to_str().expect("UTF-8 profile path")
         ));
     }

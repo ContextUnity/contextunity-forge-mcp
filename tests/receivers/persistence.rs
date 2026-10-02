@@ -42,7 +42,7 @@ fn assert_factory_delta(
     writer::build(&workspace.0, &db, None).unwrap();
     let initial = reader::open(&db, &workspace.0).unwrap();
     let status = |conn: &rusqlite::Connection| -> Vec<String> {
-        let mut statement = conn.prepare("SELECT status FROM resolution_coverage WHERE path=?1 AND expression=?2 ORDER BY status,evidence").unwrap();
+        let mut statement = conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2 ORDER BY status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)").unwrap();
         statement
             .query_map([consumer, expression], |row| row.get(0))
             .unwrap()
@@ -62,7 +62,7 @@ fn assert_factory_delta(
     commitments::verify(&cold).unwrap();
     assert_eq!(status(&delta), status(&cold));
     let calls = |conn: &rusqlite::Connection| -> Vec<(String, String, String)> {
-        let mut statement = conn.prepare("SELECT src,dst,confidence FROM edge_occurrences WHERE owner=?1 AND kind='calls' ORDER BY src,dst,confidence").unwrap();
+        let mut statement = conn.prepare("SELECT (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash),(SELECT evidence FROM coverage_evidence WHERE evidence_id=edge_occurrences.confidence_id) FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)=?1 AND kind='calls' ORDER BY (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash),(SELECT evidence FROM coverage_evidence WHERE evidence_id=edge_occurrences.confidence_id)").unwrap();
         statement
             .query_map([consumer], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))

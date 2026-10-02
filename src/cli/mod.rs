@@ -1,11 +1,15 @@
+/// Implements ast support.
 pub mod ast;
-pub mod build;
-pub mod delta;
-pub mod docs;
+/// Implements guide support.
 pub mod guide;
+/// Implements migrate support.
 pub mod migrate;
-pub mod query;
+/// Implements task support.
 pub mod task;
+use crate::{
+    core::response::{CoverageOptions, QueryOptions, ResponsePolicy, SourceOptions},
+    db::{reader, symbols, traversal, writer},
+};
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -17,151 +21,238 @@ use std::path::{Path, PathBuf};
     version,
     about = "Native code graph, documentation engine, MCP server and CLI"
 )]
+/// Represents cli data.
 pub struct Cli {
     #[arg(long, global = true, env = "FORGE_WORKSPACE_ROOT")]
+    /// Optional root value.
     pub root: Option<PathBuf>,
     #[arg(long, global = true, env = "FORGE_DB")]
+    /// Optional db value.
     pub db: Option<PathBuf>,
     #[command(subcommand)]
+    /// Optional command value.
     pub command: Option<Command>,
 }
 #[derive(Subcommand, Debug)]
+/// Enumerates the supported command values.
 pub enum Command {
+    /// Represents the migrate case.
     Migrate {
         #[command(subcommand)]
+        /// The command value.
         command: migrate::MigrateCommand,
     },
+    /// Represents the task case.
     Task {
         #[command(subcommand)]
+        /// The command value.
         command: task::TaskCommand,
     },
+    /// Represents the serve case.
     Serve,
+    /// Represents the build case.
     Build {
+        /// Optional workspace root value.
         workspace_root: Option<PathBuf>,
         #[arg(long)]
+        /// Optional output value.
         output: Option<PathBuf>,
         #[arg(long)]
+        /// Optional adapter value.
         adapter: Option<PathBuf>,
         #[arg(long)]
+        /// Whether verbose applies.
         verbose: bool,
     },
+    /// Represents the scan case.
     Scan {
+        /// Optional workspace root value.
         workspace_root: Option<PathBuf>,
         #[arg(long)]
+        /// Optional adapter value.
         adapter: Option<PathBuf>,
         #[arg(long)]
+        /// Whether pretty applies.
         pretty: bool,
     },
+    /// Represents the delta case.
     Delta {
+        /// Optional workspace root value.
         workspace_root: Option<PathBuf>,
+        /// The modified files value.
         modified_files: Vec<PathBuf>,
         #[arg(long = "modified", value_name = "FILE")]
+        /// The modified value.
         modified: Vec<PathBuf>,
     },
+    /// Represents the query case.
     Query {
         #[command(subcommand)]
+        /// The command value.
         command: QueryCommand,
     },
+    /// Represents the docs case.
     Docs {
         #[command(subcommand)]
+        /// The command value.
         command: DocsCommand,
     },
+    /// Represents the ast case.
     Ast {
         #[command(subcommand)]
+        /// The command value.
         command: AstCommand,
     },
+    /// Represents the guide case.
     Guide {
+        /// The topic value.
         topic: String,
         #[arg(long)]
+        /// Whether force applies.
         force: bool,
     },
+    /// Represents the checkpoint case.
     Checkpoint {
+        /// The action value.
         action: String,
         #[arg(long)]
+        /// Optional name value.
         name: Option<String>,
         #[arg(long)]
+        /// Optional content value.
         content: Option<String>,
     },
 }
 #[derive(Subcommand, Debug)]
+/// Enumerates the supported query command values.
 pub enum QueryCommand {
+    /// Represents the overview case.
     Overview,
+    /// Represents the inspect case.
     Inspect {
+        /// The selector value.
         selector: String,
         #[arg(long,default_value_t=true,action=clap::ArgAction::Set,num_args=0..=1,default_missing_value="true")]
+        /// Whether show doc applies.
         show_doc: bool,
         #[arg(long)]
+        /// Whether show source applies.
         show_source: bool,
     },
+    /// Represents the search case.
     Search {
+        /// The pattern value.
         pattern: String,
         #[arg(long)]
+        /// Optional kind value.
         kind: Option<String>,
         #[arg(long, default_value_t = 100)]
+        /// The limit value.
         limit: usize,
     },
+    /// Represents the tests case.
     Tests {
+        /// The selector value.
         selector: String,
         #[arg(long, default_value = "inbound")]
+        /// The direction value.
         direction: String,
         #[arg(long, default_value_t = 100)]
+        /// The limit value.
         limit: usize,
     },
+    /// Represents the impact case.
     Impact {
+        /// The selector value.
         selector: String,
         #[arg(long, default_value_t = 2)]
+        /// The depth value.
         depth: u32,
     },
+    /// Represents the explain case.
     Explain {
+        /// The selector value.
         selector: String,
     },
+    /// Represents the remove case.
     Remove {
+        /// The selector value.
         selector: String,
     },
+    /// Represents the analyze case.
     Analyze {
         #[arg(default_value = "")]
+        /// The target value.
         target: String,
     },
+    /// Represents the run case.
     Run {
+        /// The operation value.
         operation: String,
+        /// Optional selector value.
         selector: Option<String>,
         #[arg(long, default_value_t = 2)]
+        /// The depth value.
         depth: u32,
         #[arg(long, default_value_t = 100)]
+        /// The limit value.
         limit: usize,
     },
 }
 #[derive(Subcommand, Debug)]
+/// Enumerates the supported docs command values.
 pub enum DocsCommand {
+    /// Represents the search case.
     Search {
+        /// The query value.
         query: String,
         #[arg(long)]
+        /// Optional doc type value.
         doc_type: Option<String>,
         #[arg(long)]
+        /// Optional component value.
         component: Option<String>,
         #[arg(long, default_value_t = 100)]
+        /// The limit value.
         limit: usize,
     },
+    /// Represents the get case.
     Get {
+        /// The path or id value.
         path_or_id: String,
         #[arg(long)]
+        /// Optional section value.
         section: Option<String>,
     },
 }
 #[derive(Subcommand, Debug)]
+/// Enumerates the supported ast command values.
 pub enum AstCommand {
+    /// Represents the grep case.
     Grep {
+        /// The pattern value.
         pattern: String,
         #[arg(long = "lang", alias = "language")]
+        /// The language value.
         language: String,
         #[arg(long)]
+        /// Optional path value.
         path: Option<String>,
         #[arg(long, default_value_t = 100)]
+        /// The limit value.
         limit: usize,
     },
 }
+/// Performs default db.
 pub fn default_db(root: &std::path::Path) -> PathBuf {
     root.join(".forge/code-map.sqlite")
+}
+fn cli_page(limit: usize) -> Result<QueryOptions> {
+    QueryOptions::resolve(&ResponsePolicy::default(), Some(limit), 0, None, None)
+}
+
+fn cli_source(enabled: bool) -> Result<SourceOptions> {
+    SourceOptions::resolve(&ResponsePolicy::default(), Some(enabled), None, None, 0)
 }
 fn command_root(global: Option<&Path>, positional: Option<&Path>) -> Result<PathBuf> {
     let global = global.map(Path::canonicalize).transpose()?;
@@ -202,6 +293,7 @@ fn open_or_rebuild(db: &Path, root: &Path) -> Result<crate::db::reader::LockedCo
     }
 }
 impl Cli {
+    /// Performs run.
     pub async fn run(self) -> Result<()> {
         let root = command_root(self.root.as_deref(), None)?;
         let db = self.db.clone().unwrap_or_else(|| default_db(&root));
@@ -223,7 +315,7 @@ impl Cli {
                 let output = output
                     .or(self.db)
                     .unwrap_or_else(|| default_db(&workspace_root));
-                build::build(&workspace_root, &output, adapter.as_deref())?
+                writer::build(&workspace_root, &output, adapter.as_deref())?
             }
             Command::Scan {
                 workspace_root,
@@ -247,7 +339,7 @@ impl Cli {
                     bail!("delta requires at least one modified file");
                 }
                 let db = self.db.unwrap_or_else(|| default_db(&workspace_root));
-                delta::delta(&workspace_root, &db, &modified_files)?
+                writer::delta(&workspace_root, &db, &modified_files)?
             }
             Command::Guide { topic, force } => guide::run(&root, &topic, force)?,
             Command::Checkpoint {
@@ -275,41 +367,97 @@ impl Cli {
             Command::Query { command } => {
                 let conn = open_or_rebuild(&db, &root)?;
                 match command {
-                    QueryCommand::Overview => query::overview(&conn)?,
+                    QueryCommand::Overview => reader::overview_with_options(
+                        &conn,
+                        &reader::OverviewOptions {
+                            aspects: None,
+                            page: &cli_page(100)?,
+                        },
+                    )?,
                     QueryCommand::Inspect {
                         selector,
                         show_doc,
                         show_source,
-                    } => {
-                        crate::db::symbols::inspect(&conn, &root, &selector, show_doc, show_source)?
-                    }
+                    } => symbols::inspect_with_options(
+                        &conn,
+                        &root,
+                        &selector,
+                        &symbols::InspectOptions {
+                            show_doc,
+                            source: &cli_source(show_source)?,
+                            coverage: CoverageOptions {
+                                include_coverage: true,
+                            },
+                            page: &cli_page(100)?,
+                        },
+                    )?,
                     QueryCommand::Search {
                         pattern,
                         kind,
                         limit,
-                    } => crate::db::symbols::search(&conn, &pattern, kind.as_deref(), limit)?,
+                    } => symbols::search_with_options(
+                        &conn,
+                        &pattern,
+                        &symbols::SearchOptions {
+                            kind: kind.as_deref(),
+                            path: None,
+                            include_docs: false,
+                            exact: false,
+                            page: &cli_page(limit)?,
+                        },
+                    )?,
                     QueryCommand::Tests {
                         selector,
                         direction,
                         limit,
-                    } => crate::db::symbols::tests(&conn, &selector, &direction, limit)?,
-                    QueryCommand::Impact { selector, depth } => {
-                        query::traverse(&conn, &selector, depth, true, 1000)?
+                    } => symbols::tests_paged(&conn, &selector, &direction, &cli_page(limit)?)?,
+                    QueryCommand::Impact { selector, depth } => traversal::traverse_with_options(
+                        &conn,
+                        &selector,
+                        &traversal::TraversalOptions {
+                            depth,
+                            inbound: true,
+                            mode: None,
+                            edge_types: None,
+                            page: &cli_page(100)?,
+                        },
+                    )?,
+                    QueryCommand::Explain { selector } => symbols::explain_with_options(
+                        &conn,
+                        &root,
+                        &selector,
+                        &symbols::ExplainOptions {
+                            direction: None,
+                            show_doc: true,
+                            source: &cli_source(false)?,
+                            coverage: CoverageOptions {
+                                include_coverage: true,
+                            },
+                            page: &cli_page(100)?,
+                        },
+                    )?,
+                    QueryCommand::Remove { selector } => {
+                        traversal::removal_paged(&conn, &selector, &cli_page(100)?)?
                     }
-                    QueryCommand::Explain { selector } => query::explain(&conn, &selector)?,
-                    QueryCommand::Remove { selector } => query::removal(&conn, &selector)?,
-                    QueryCommand::Analyze { target } => query::analyze(&conn, &target)?,
+                    QueryCommand::Analyze { target } => {
+                        reader::analyze_paged(&conn, &target, None, &cli_page(100)?)?
+                    }
                     QueryCommand::Run {
                         operation,
                         selector,
                         depth,
                         limit,
-                    } => {
-                        if limit == 0 || limit > 10000 {
-                            bail!("limit must be1..10000");
-                        }
-                        query::query(&conn, &operation, selector.as_deref(), depth, limit)?
-                    }
+                    } => traversal::query_with_options(
+                        &conn,
+                        &operation,
+                        selector.as_deref(),
+                        &traversal::GraphQueryOptions {
+                            depth,
+                            direction: None,
+                            coverage: CoverageOptions::default(),
+                            page: &cli_page(limit)?,
+                        },
+                    )?,
                 }
             }
             Command::Docs { command } => {
@@ -320,17 +468,25 @@ impl Cli {
                         doc_type,
                         component,
                         limit,
-                    } => docs::search_docs(
+                    } => reader::search_docs_with_options(
                         &conn,
                         &query,
-                        doc_type.as_deref(),
-                        component.as_deref(),
-                        limit,
+                        &reader::DocSearchOptions {
+                            doc_type: doc_type.as_deref(),
+                            component: component.as_deref(),
+                            include_excerpt: false,
+                            page: &cli_page(limit)?,
+                        },
                     )?,
                     DocsCommand::Get {
                         path_or_id,
                         section,
-                    } => docs::get_doc(&conn, &path_or_id, section.as_deref())?,
+                    } => reader::get_doc_paged(
+                        &conn,
+                        &path_or_id,
+                        section.as_deref(),
+                        &cli_page(100)?,
+                    )?,
                 }
             }
         };

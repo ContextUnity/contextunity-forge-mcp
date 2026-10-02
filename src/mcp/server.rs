@@ -11,6 +11,7 @@ use std::{
 
 const INVENTORY_FRESHNESS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Represents cached connection data.
 pub struct CachedConnection {
     identity: Identity,
     connection: rusqlite::Connection,
@@ -23,6 +24,7 @@ pub struct CachedConnection {
     freshness: Option<Freshness>,
 }
 
+/// Names the connection slot type.
 pub type ConnectionSlot = Option<CachedConnection>;
 
 #[derive(Clone, serde::Serialize)]
@@ -37,12 +39,17 @@ struct Freshness {
 }
 
 #[derive(Clone)]
+/// Represents server data.
 pub struct Server {
+    /// The root value.
     pub root: PathBuf,
+    /// The db value.
     pub db: PathBuf,
+    /// The connection value.
     pub connection: Arc<Mutex<ConnectionSlot>>,
 }
 impl Server {
+    /// Creates a new instance.
     pub fn new(root: PathBuf, db: PathBuf) -> Self {
         Self {
             root,
@@ -50,6 +57,7 @@ impl Server {
             connection: Arc::new(Mutex::new(None)),
         }
     }
+    /// Performs ensure fresh.
     pub fn ensure_fresh(&self) -> Result<()> {
         self.read(|_| Ok(serde_json::Value::Null)).map(|_| ())
     }
@@ -346,6 +354,7 @@ impl Server {
         )
     }
 
+    /// Performs read.
     pub fn read(
         &self,
         f: impl FnOnce(&rusqlite::Connection) -> Result<serde_json::Value>,
@@ -384,6 +393,7 @@ impl Server {
         Ok(result)
     }
 }
+/// Performs serve.
 pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
     let service = Server::new(root, db)
         .serve(super::response::stdio())

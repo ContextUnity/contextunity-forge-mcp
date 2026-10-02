@@ -7,6 +7,7 @@ struct Frontmatter {
     doc_type: Option<String>,
     title: Option<String>,
 }
+/// Performs extract.
 pub fn extract(path: &str, source: &str, mtime: f64) -> Result<Vec<DocSection>> {
     let (meta, body) = if let Some(rest) = source
         .strip_prefix("---\n")

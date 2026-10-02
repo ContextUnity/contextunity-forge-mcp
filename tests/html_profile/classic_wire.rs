@@ -25,7 +25,7 @@ fn class_method(facts: &contextunity_forge_mcp::core::models::Facts, class: &str
 fn rows(db: &std::path::Path, root: &std::path::Path) -> Vec<String> {
     let conn = reader::open(db, root).unwrap();
     let mut statement = conn.prepare(
-        "SELECT json_array(src_public_id,dst_public_id,kind,path,line,evidence,confidence) FROM edges WHERE path='index.html' ORDER BY src_public_id,dst_public_id,kind",
+        "SELECT json_array((SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind,(SELECT path FROM path_dictionary WHERE path_id=edges.path_id),line,(SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id),(SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.confidence_id)) FROM edges WHERE (SELECT path FROM path_dictionary WHERE path_id=edges.path_id)='index.html' ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind",
     ).unwrap();
     statement
         .query_map([], |row| row.get(0))
@@ -72,7 +72,7 @@ fn classic_flow_wire_slots_and_constructor_receiver_survive_cold_build_and_delta
     assert!(flow.contains("],\"fields\":null}"), "{details}");
 
     let expected_alpha: i64 = conn.query_row(
-        "SELECT count(*) FROM edges WHERE path='index.html' AND kind='calls' AND evidence='worker.work' AND dst_public_id=?1",
+        "SELECT count(*) FROM edges WHERE (SELECT path FROM path_dictionary WHERE path_id=edges.path_id)='index.html' AND kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id)='worker.work' AND (SELECT id FROM nodes WHERE node_hash=dst_hash)=?1",
         [&alpha], |row| row.get(0),
     ).unwrap();
     assert_eq!(expected_alpha, 1);
@@ -84,7 +84,7 @@ fn classic_flow_wire_slots_and_constructor_receiver_survive_cold_build_and_delta
     let beta = class_method(&updated, "Beta");
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
     let expected_beta: i64 = conn.query_row(
-        "SELECT count(*) FROM edges WHERE path='index.html' AND kind='calls' AND evidence='worker.work' AND dst_public_id=?1",
+        "SELECT count(*) FROM edges WHERE (SELECT path FROM path_dictionary WHERE path_id=edges.path_id)='index.html' AND kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id)='worker.work' AND (SELECT id FROM nodes WHERE node_hash=dst_hash)=?1",
         [&beta], |row| row.get(0),
     ).unwrap();
     assert_eq!(expected_beta, 1);

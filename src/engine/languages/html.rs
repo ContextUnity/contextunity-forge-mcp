@@ -1,4 +1,5 @@
 use super::*;
+use super::template::{TemplateMasker, TemplateTagKind};
 #[path = "html/javascript.rs"]
 mod javascript;
 use serde_json::{json, Map, Value};
@@ -7,8 +8,11 @@ const HTMX_ATTRIBUTES: &[&str] = &[
     "get", "post", "put", "patch", "delete", "trigger", "target", "swap", "include", "vals",
 ];
 
+/// Represents html data.
 pub struct Html;
+/// Shared html language profile.
 pub static HTML: Html = Html;
+/// Language profiles provided by this module.
 pub static PROFILES: &[&dyn LanguageProfile] = &[&HTML];
 
 impl LanguageProfile for Html {
@@ -153,77 +157,26 @@ fn is_html_entity(slice: &str) -> bool {
     }
 }
 
-fn preprocess_template(source: &str, path: &str, facts: &mut Facts) -> (Option<String>, bool) {
-    let has_templates = source.contains("{%") || source.contains("{{") || source.contains("{#");
-    let has_amp = source.contains('&');
-    if !has_templates && !has_amp {
-        return (None, false);
-    }
-    let bytes = source.as_bytes();
-    let mut out = String::with_capacity(source.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'{' {
-            if bytes[i + 1] == b'#' {
-                let start = i;
-                let end = match source[start + 2..].find("#}") {
-                    Some(rel) => start + 2 + rel + 2,
-                    None => bytes.len(),
-                };
-                for b in &bytes[start..end] {
-                    out.push(if *b == b'\n' { '\n' } else { ' ' });
-                }
-                i = end;
-                continue;
-            } else if bytes[i + 1] == b'%' {
-                let start = i;
-                let (end, closed) = match source[start + 2..].find("%}") {
-                    Some(rel) => (start + 2 + rel + 2, true),
-                    None => (bytes.len(), false),
-                };
-                if closed && end >= start + 4 {
-                    let tag_content = source[start + 2..end - 2].trim();
-                    let line = source[..start].bytes().filter(|b| *b == b'\n').count() + 1;
-
-                    if let Some(rest) = tag_content.strip_prefix("include ") {
-                        if let Some(target) = extract_template_target(rest) {
-                            emit_template_reference(path, target, "includes", line, facts);
-                        }
-                    } else if let Some(rest) = tag_content.strip_prefix("extends ") {
-                        if let Some(target) = extract_template_target(rest) {
-                            emit_template_reference(path, target, "extends", line, facts);
-                        }
-                    }
-                }
-
-                for b in &bytes[start..end] {
-                    out.push(if *b == b'\n' { '\n' } else { ' ' });
-                }
-                i = end;
-                continue;
-            } else if bytes[i + 1] == b'{' {
-                let start = i;
-                let end = match source[start + 2..].find("}}") {
-                    Some(rel) => start + 2 + rel + 2,
-                    None => bytes.len(),
-                };
-                for b in &bytes[start..end] {
-                    out.push(if *b == b'\n' { '\n' } else { ' ' });
-                }
-                i = end;
-                continue;
+fn preprocess_template<'a>(source: &'a str, path: &str, facts: &mut Facts) -> std::borrow::Cow<'a, str> {
+    TemplateMasker::mask(
+        source,
+        |tag| {
+            if tag.kind != TemplateTagKind::Statement || !tag.closed {
+                return;
             }
-        }
-        if bytes[i] == b'&' && !is_html_entity(&source[i..]) {
-            out.push(' ');
-            i += 1;
-            continue;
-        }
-        let c = source[i..].chars().next().unwrap();
-        out.push(c);
-        i += c.len_utf8();
-    }
-    (Some(out), true)
+            let content = tag.content.trim();
+            if let Some(rest) = content.strip_prefix("include ") {
+                if let Some(target) = extract_template_target(rest) {
+                    emit_template_reference(path, target, "includes", tag.line, facts);
+                }
+            } else if let Some(rest) = content.strip_prefix("extends ") {
+                if let Some(target) = extract_template_target(rest) {
+                    emit_template_reference(path, target, "extends", tag.line, facts);
+                }
+            }
+        },
+        Some(|slice| !is_html_entity(slice)),
+    )
 }
 
 fn extract_template_target(input: &str) -> Option<&str> {
@@ -484,8 +437,12 @@ fn extract_file_impl(
     facts: &mut Facts,
     mut flows: Option<&mut crate::core::typed_facts::FlowStore>,
 ) -> Result<()> {
-    let (parsed_source, _has_template_tags) = preprocess_template(source, path, facts);
-    let parse_input = parsed_source.as_deref().unwrap_or(source);
+    let has_template_tags = source.contains("{%")
+        || source.contains("{{")
+        || source.contains("{#")
+        || source.contains('&');
+    let parsed_source = preprocess_template(source, path, facts);
+    let parse_input = parsed_source.as_ref();
     let is_script_fragment = (path.contains("_script") || path.contains("script"))
         && !parse_input.contains("<html")
         && !parse_input.contains("<div")
@@ -537,7 +494,7 @@ fn extract_file_impl(
         facts,
         flows.as_deref_mut(),
     );
-    if _has_template_tags {
+    if has_template_tags {
         facts.errors.truncate(err_count);
     }
     let javascript_profile = by_id("javascript");

@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashMap, collections::HashSet, path::Path};
 
 #[derive(Default)]
+/// Represents dependency registry data.
 pub struct DependencyRegistry {
     packages: HashMap<LanguageFamily, HashSet<String>>,
     scoped_packages: HashMap<LanguageFamily, HashMap<String, HashSet<String>>>,
@@ -10,6 +11,7 @@ pub struct DependencyRegistry {
 }
 
 impl DependencyRegistry {
+    /// Performs collect.
     pub fn collect(root: Option<&Path>) -> Self {
         let Some(root) = root else {
             return Self::default();
@@ -18,6 +20,7 @@ impl DependencyRegistry {
         Self::collect_with_adapter(root, adapter.as_ref())
     }
 
+    /// Performs collect with adapter.
     pub fn collect_with_adapter(
         root: &Path,
         adapter: Option<&crate::engine::scanner::Adapter>,
@@ -140,6 +143,7 @@ impl DependencyRegistry {
         registry
     }
 
+    /// Performs digest.
     pub fn digest(&self) -> &str {
         &self.digest
     }
@@ -166,6 +170,7 @@ impl DependencyRegistry {
         }
     }
 
+    /// Performs classification.
     pub fn classification(
         &self,
         profile: &dyn LanguageProfile,
@@ -204,6 +209,7 @@ fn filename_matches(pattern: &str, filename: &str) -> bool {
     }
 }
 
+/// Reports whether manifest filename applies.
 pub fn is_manifest_filename(filename: &str) -> bool {
     profiles().any(|profile| {
         profile

@@ -83,7 +83,9 @@ pub(crate) fn nodes(alias: &str, detail: Detail) -> String {
     columns(
         alias,
         detail,
-        &["id", "kind", "name", "path", "line", "end_line", "language"],
+        &[
+            "id", "kind", "name", "qualname", "path", "line", "end_line", "language",
+        ],
     )
 }
 
@@ -103,23 +105,37 @@ pub(crate) fn docs(alias: &str, detail: Detail) -> String {
 }
 
 pub(crate) fn edges(alias: &str, detail: Detail) -> String {
-    columns(
-        alias,
-        detail,
-        &[
-            "src_public_id",
-            "dst_public_id",
-            "kind",
-            "path",
-            "line",
-            "confidence",
-            "occurrence_count",
-        ],
-    )
+    let src = format!("(SELECT id FROM nodes WHERE node_hash={alias}.src_hash) AS src_public_id");
+    let dst = format!("(SELECT id FROM nodes WHERE node_hash={alias}.dst_hash) AS dst_public_id");
+    let path = format!("(SELECT path FROM path_dictionary WHERE path_id={alias}.path_id) AS path");
+    let confidence = format!(
+        "(SELECT evidence FROM coverage_evidence WHERE evidence_id={alias}.confidence_id) AS confidence"
+    );
+    if detail == Detail::Full {
+        let evidence = format!(
+            "(SELECT evidence FROM coverage_evidence WHERE evidence_id={alias}.evidence_id) AS evidence"
+        );
+        format!(
+            "{src},{dst},{alias}.kind,{path},{alias}.line,{evidence},{confidence},{alias}.occurrence_count"
+        )
+    } else {
+        format!(
+            "{src},{dst},{alias}.kind,{path},{alias}.line,{confidence},{alias}.occurrence_count"
+        )
+    }
 }
 
 pub(crate) fn coverage(alias: &str, detail: Detail) -> String {
-    columns(alias, detail, &["line", "expression", "status"])
+    let expression = format!(
+        "(SELECT expression FROM coverage_expressions WHERE expression_id={alias}.expression_id) AS expression"
+    );
+    if detail == Detail::Full {
+        format!(
+            "(SELECT path FROM path_dictionary WHERE path_id={alias}.path_id) AS path,{alias}.line,{expression},{alias}.status,(SELECT evidence FROM coverage_evidence WHERE evidence_id={alias}.evidence_id) AS evidence"
+        )
+    } else {
+        format!("{alias}.line,{expression},{alias}.status")
+    }
 }
 
 fn columns(alias: &str, detail: Detail, names: &[&str]) -> String {

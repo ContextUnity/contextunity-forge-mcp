@@ -8,6 +8,7 @@ use std::{
 
 static NONCE: AtomicU64 = AtomicU64::new(0);
 
+/// Performs atomic write.
 pub fn atomic_write(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
     let absolute = if path.is_absolute() {
         path.to_owned()

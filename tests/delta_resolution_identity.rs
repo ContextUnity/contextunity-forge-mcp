@@ -47,10 +47,10 @@ impl Workspace {
         let cold = reader::open(&cold, &self.0).unwrap();
         commitments::verify(&cold).unwrap();
         for query in [
-            "SELECT public_id||'|'||kind||'|'||qualname||'|'||line||'|'||end_line||'|'||details_json FROM owned_nodes ORDER BY public_id",
-            "SELECT src_public_id||'|'||dst_public_id||'|'||kind||'|'||path||'|'||line||'|'||occurrence_count FROM edges ORDER BY src_public_id,dst_public_id,kind",
-            "SELECT path||'|'||line||'|'||expression||'|'||status||'|'||evidence FROM resolution_coverage ORDER BY path,line,expression,status,evidence",
-            "SELECT owner||'|'||target||'|'||kind||'|'||symbol FROM dependencies WHERE target IS NOT NULL ORDER BY owner,target,kind,symbol",
+            "SELECT id||'|'||kind||'|'||qualname||'|'||line||'|'||end_line||'|'||details FROM nodes ORDER BY id",
+            "SELECT (SELECT id FROM nodes WHERE node_hash=src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=dst_hash)||'|'||kind||'|'||(SELECT path FROM path_dictionary WHERE path_id=edges.path_id)||'|'||line||'|'||occurrence_count FROM edges ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind",
+            "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
+            "SELECT p.path||'|'||f.path||'|'||d.kind||'|'||d.symbol FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.target_hash IS NOT NULL ORDER BY p.path,f.path,d.kind,d.symbol",
         ] { assert_eq!(rows(&incremental, query), rows(&cold, query), "{query}"); }
     }
 }
@@ -91,7 +91,7 @@ fn body_edits_refresh_owner_without_relinking_consumers_and_line_moves_relink() 
     assert_eq!(delta["affected_owners"], 1, "{delta}");
     assert_eq!(delta["loaded_fact_files"], 0, "{delta}");
     let conn = reader::open(&w.db(), &w.0).unwrap();
-    let targets = rows(&conn, "SELECT e.dst_public_id FROM edges e JOIN nodes n ON n.id=e.src_public_id WHERE n.qualname='provider.value' AND e.kind='calls'");
+    let targets = rows(&conn, "SELECT (SELECT id FROM nodes WHERE node_hash=e.dst_hash) AS dst_public_id FROM edges e JOIN nodes n ON n.node_hash=e.src_hash WHERE n.qualname='provider.value' AND e.kind='calls'");
     assert!(
         targets.iter().any(|target| target.contains("right")),
         "{targets:?}"

@@ -3,7 +3,7 @@ use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
-pub(super) enum Base<'a> {
+pub(crate) enum Base<'a> {
     Local(&'a str),
     External(String, &'a str, usize),
     Unknown,
@@ -22,20 +22,20 @@ impl PartialEq for Base<'_> {
 impl Eq for Base<'_> {}
 
 #[derive(Clone, Copy)]
-pub(super) enum Member<'a> {
+pub(crate) enum Member<'a> {
     Local(&'a Node),
     External(&'a str, usize),
     Unknown,
 }
 
 /// Python C3 order and member lookup are computed before linking references.
-pub(super) struct PythonReceivers<'a> {
+pub(crate) struct PythonReceivers<'a> {
     members: HashMap<&'a str, HashMap<&'a str, Member<'a>>>,
     supers: HashMap<&'a str, HashMap<&'a str, Member<'a>>>,
 }
 
 impl<'a> PythonReceivers<'a> {
-    pub(super) fn build<F: AsRef<Facts>>(
+    pub(crate) fn build<F: AsRef<Facts>>(
         all: &'a BTreeMap<String, F>,
         mut resolve: impl FnMut(&'a Node, &'a Reference) -> Base<'a>,
     ) -> Self {
@@ -262,7 +262,7 @@ impl<'a> PythonReceivers<'a> {
         self
     }
 
-    pub(super) fn lookup(&self, class: &Node, member: &str, super_call: bool) -> Member<'a> {
+    pub(crate) fn lookup(&self, class: &Node, member: &str, super_call: bool) -> Member<'a> {
         let map = if super_call {
             &self.supers
         } else {

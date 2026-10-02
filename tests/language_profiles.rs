@@ -117,7 +117,7 @@ fn persisted_imports_require_complete_language_and_workspace_identity() {
     linked.write("commerce/snapshot.py", "def revert(): pass\n");
     owner.build();
     let conn = reader::open(&owner.db(), &owner.0).unwrap();
-    let mut st = conn.prepare("SELECT dst FROM edge_occurrences WHERE owner='main.py' AND kind IN ('imports','calls') ORDER BY dst").unwrap();
+    let mut st = conn.prepare("SELECT (SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash) FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)='main.py' AND kind IN ('imports','calls') ORDER BY (SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash)").unwrap();
     let targets: Vec<String> = st
         .query_map([], |r| r.get(0))
         .unwrap()
@@ -131,7 +131,7 @@ fn persisted_imports_require_complete_language_and_workspace_identity() {
     assert!(targets.iter().all(|t| t.contains("commerce/snapshot.py")));
     let unresolved: i64 = conn
         .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE path='main.py' AND status='unresolved'",
+            "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='main.py' AND status='unresolved'",
             [],
             |r| r.get(0),
         )
@@ -142,7 +142,7 @@ fn persisted_imports_require_complete_language_and_workspace_identity() {
     );
     let external: i64 = conn
         .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE path='main.py' AND status='external'",
+            "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='main.py' AND status='external'",
             [],
             |r| r.get(0),
         )
@@ -153,7 +153,7 @@ fn persisted_imports_require_complete_language_and_workspace_identity() {
     );
     let unverified_external: i64 = conn
         .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE path='main.py' AND status='external' AND expression IN ('value','Path') AND evidence LIKE '%no indexed provider%'",
+            "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='main.py' AND status='external' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id) IN ('value','Path') AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) LIKE '%no indexed provider%'",
             [],
             |r| r.get(0),
         )
@@ -203,8 +203,8 @@ fn persisted_graph(w: &Workspace) -> Vec<Vec<String>> {
     let conn = reader::open(&w.db(), &w.0).unwrap();
     [
         "SELECT id||'|'||qualname||'|'||details FROM nodes ORDER BY id",
-        "SELECT src||'|'||dst||'|'||kind||'|'||owner||'|'||line||'|'||confidence FROM edge_occurrences ORDER BY owner,src,dst,kind,line",
-        "SELECT path||'|'||line||'|'||expression||'|'||status||'|'||evidence FROM resolution_coverage ORDER BY path,line,expression,status,evidence",
+        "SELECT (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash)||'|'||kind||'|'||(SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)||'|'||line||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=edge_occurrences.confidence_id) FROM edge_occurrences ORDER BY (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash),kind,line",
+        "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
     ].iter().map(|sql| {
         conn.prepare(sql).unwrap().query_map([], |r|r.get(0)).unwrap().collect::<Result<Vec<String>,_>>().unwrap()
     }).collect()
@@ -230,7 +230,7 @@ fn import_owner_family_relative_and_ambiguous_provider_matrix() {
     owner.build();
     let conn = reader::open(&owner.db(), &owner.0).unwrap();
     let mut st = conn
-        .prepare("SELECT owner, dst FROM edge_occurrences WHERE kind='calls' ORDER BY owner,dst")
+        .prepare("SELECT (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id), (SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash) FROM edge_occurrences WHERE kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash)")
         .unwrap();
     let calls: Vec<(String, String)> = st
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -244,7 +244,7 @@ fn import_owner_family_relative_and_ambiguous_provider_matrix() {
         "[a]/pkg/use.py".into(),
         "py:[a]/pkg/helpers.py:1:helper".into()
     )));
-    let ambiguous:i64=conn.query_row("SELECT count(*) FROM resolution_coverage WHERE path='main.py' AND expression='chosen' AND status='ambiguous'",[],|r|r.get(0)).unwrap();
+    let ambiguous:i64=conn.query_row("SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='main.py' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='chosen' AND status='ambiguous'",[],|r|r.get(0)).unwrap();
     assert_eq!(ambiguous, 1);
 }
 
@@ -478,7 +478,15 @@ class Worker : public Base {
             "{language}: {:?}",
             ast::extract(path, language, source).unwrap().errors
         );
-        let caller = reader::inspect(&conn, "caller", true).unwrap();
+        let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
+            &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
+            Some(100),
+            0,
+            None,
+            None,
+        )
+        .unwrap();
+        let caller = reader::inspect_paged(&conn, "caller", true, &page).unwrap();
         assert_eq!(caller["node"]["language"], language);
         let line = caller["node"]["line"].as_u64().unwrap() as usize;
         assert!(
@@ -492,7 +500,7 @@ class Worker : public Base {
                 .contains("caller documentation"),
             "{language}: {caller}"
         );
-        let mut st=conn.prepare("SELECT s.name,d.name FROM edge_occurrences e JOIN nodes s ON s.id=e.src JOIN nodes d ON d.id=e.dst WHERE e.kind='calls' ORDER BY s.name,d.name").unwrap();
+        let mut st=conn.prepare("SELECT s.name,d.name FROM edge_occurrences e JOIN nodes s ON s.id=(SELECT id FROM nodes WHERE node_hash=e.src_hash) JOIN nodes d ON d.id=(SELECT id FROM nodes WHERE node_hash=e.dst_hash) WHERE e.kind='calls' ORDER BY s.name,d.name").unwrap();
         let calls: Vec<(String, String)> = st
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()

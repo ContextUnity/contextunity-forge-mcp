@@ -2,8 +2,10 @@ use crate::engine::scanner;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::{fs, path::Path};
+/// The template value.
 pub const TEMPLATE: &str =
     "roots:\n  - .\nignore:\n  - target\n  - node_modules\n  - .venv\n  - .git\n";
+/// Performs run.
 pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
     let root = scanner::canonical_root(root)?;
     match topic {
@@ -26,7 +28,7 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
             "symbols": "Use code_map_search with FTS terms or prefix* pattern. Selectors support canonical ID, file path (resolves to module), path:symbol (resolves inner symbol), and path:line/path#Lline (resolves innermost AST node). Bare names never get hijacked into modules. Compact inspect and explain include signature, docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees; set include_coverage=true when resolution evidence is needed.",
             "snippets": "Use get_code_snippet for a fast, bounded AST preview (default 5 leading + 35 body lines) before reading entire files via ctx_read.",
             "tests": "Call code_map_tests on a narrow symbol or module; broad scopes are rejected before unbounded traversal.",
-            "queries": "Call code_map_query with operation='overview', 'inspect', 'explain', 'impact', 'slice', 'unwired', or 'sql'. For sql, put one read-only SELECT/WITH statement in selector; pages use limit, offset, and generation. Impact direction is inbound by default or outbound.",
+            "queries": "Use code_map_inspect and code_map_explain for symbols, code_map_analyze for diagnostics, and code_map_impact for traversal. The legacy code_map_query tool supports overview, impact, slice, unwired, and read-only SQL; its inspect and explain operations are deprecated. For SQL, put one SELECT/WITH statement in selector; pages use limit, offset, and generation.",
             "diagnostics": "Call code_map_analyze with target='' for workspace totals; use an indexed path for a smaller scope or an exact file for paged rows. Cycles require include_cycles=true.",
             "documents": "Use search_docs to find sections and get_doc to read the selected section.",
             "pages": "Start with compact detail and a small limit. Continue with the returned next_offset and generation for the same selector and filters. For tighter agent context, set adapter response.page_size=10 and response.max_output_bytes=16384.",
@@ -56,6 +58,7 @@ fn checkpoint_name(name: Option<&str>) -> Result<&str> {
     }
     Ok(name)
 }
+/// Performs checkpoint.
 pub fn checkpoint(
     root: &Path,
     action: &str,

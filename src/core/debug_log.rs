@@ -6,22 +6,34 @@ use std::path::Path;
 
 #[derive(Serialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
+/// Enumerates the supported debug log entry values.
 pub enum DebugLogEntry<'a> {
+    /// Represents the cli case.
     Cli {
+        /// The timestamp value.
         timestamp: String,
+        /// The command value.
         command: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
+        /// Optional parameters value.
         parameters: Option<serde_json::Value>,
+        /// The output value.
         output: serde_json::Value,
     },
+    /// Represents the mcp case.
     Mcp {
+        /// The timestamp value.
         timestamp: String,
+        /// The tool value.
         tool: &'a str,
+        /// The parameters value.
         parameters: serde_json::Value,
+        /// The output value.
         output: serde_json::Value,
     },
 }
 
+/// Performs log cli.
 pub fn log_cli(
     root: &Path,
     command: &str,
@@ -56,6 +68,7 @@ pub fn log_cli(
     }
 }
 
+/// Performs log mcp.
 pub fn log_mcp(root: &Path, tool: &str, parameters: &str, output: &serde_json::Value) {
     let now = Local::now();
     let date_str = now.format("%Y-%m-%d").to_string();
@@ -88,6 +101,7 @@ pub fn log_mcp(root: &Path, tool: &str, parameters: &str, output: &serde_json::V
     }
 }
 
+/// Performs log command.
 pub fn log_command(root: &Path, command: &str, input: Option<&str>, output: &str) {
     let output_val = serde_json::from_str::<serde_json::Value>(output)
         .unwrap_or_else(|_| serde_json::Value::String(output.to_string()));
