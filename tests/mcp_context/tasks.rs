@@ -452,3 +452,89 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     assert_eq!(stored[0].author, "mcp");
     assert_eq!(stored[1].author, "cli");
 }
+
+#[test]
+fn subtask_mcp_and_cli_operations() {
+    let workspace = Workspace::new();
+    let manifest = "---\nid: m-mcp-subtasks\ntitle: MCP Subtasks\ndoc_type: contract\ninvariants: [local-rules]\n---\n```yaml\ntask_ref: sub-demo\ntarget: Subtask demonstration\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    workspace.write("010-subtasks.md", manifest);
+    workspace.write("AGENTS.md", "# Agent Rules\n");
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: []\ndoc_roots: []\ntasks_db: tasks.sqlite\n",
+    );
+    let mut client = Client::new(&workspace);
+    client.payload(
+        "task_manage",
+        json!({"action": "sync", "milestone_ref": "010-subtasks.md"}),
+    );
+    let task_id = "forge-mcp/forge-mcp/m-mcp-subtasks:sub-demo";
+
+    // MCP task_manage subtask_add
+    let add_res = client.payload(
+        "task_manage",
+        json!({
+            "action": "subtask_add",
+            "task_id": task_id,
+            "subtask_ref": "step-1",
+            "title": "Initial exploration"
+        }),
+    );
+    assert_eq!(add_res["subtask"]["subtask_ref"], "step-1");
+    assert_eq!(add_res["subtask"]["status"], "pending");
+
+    // MCP task_manage subtask_update
+    let update_res = client.payload(
+        "task_manage",
+        json!({
+            "action": "subtask_update",
+            "task_id": task_id,
+            "subtask_ref": "step-1",
+            "subtask_status": "completed",
+            "evidence": "Explored symbols"
+        }),
+    );
+    assert_eq!(update_res["subtask"]["status"], "completed");
+    assert_eq!(update_res["subtask"]["evidence"], "Explored symbols");
+
+    // CLI task subtask add
+    let cli_add = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "subtask",
+            "add",
+            task_id,
+            "step-2",
+            "Run unit test",
+        ])
+        .output()
+        .unwrap();
+    assert!(cli_add.status.success(), "{}", String::from_utf8_lossy(&cli_add.stderr));
+    let cli_add_json: Value = serde_json::from_slice(&cli_add.stdout).unwrap();
+    assert_eq!(cli_add_json["subtask"]["subtask_ref"], "step-2");
+
+    // CLI task subtask list
+    let cli_list = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "subtask",
+            "list",
+            task_id,
+        ])
+        .output()
+        .unwrap();
+    assert!(cli_list.status.success(), "{}", String::from_utf8_lossy(&cli_list.stderr));
+    let cli_list_json: Value = serde_json::from_slice(&cli_list.stdout).unwrap();
+    assert_eq!(cli_list_json["subtasks"].as_array().unwrap().len(), 2);
+
+    // MCP task_manage inspect returns subtasks
+    let inspected = client.payload(
+        "task_manage",
+        json!({"action": "inspect", "task_id": task_id}),
+    );
+    assert_eq!(inspected["subtasks"].as_array().unwrap().len(), 2);
+}

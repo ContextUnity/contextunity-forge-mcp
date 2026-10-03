@@ -95,7 +95,7 @@ perimeter cannot claim a foreign task.
 | `task_list` | Optional `repository`, `milestone_ref`, `status`, and `stage`. Status defaults strictly to `ready`; explicit values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Stage is `build`, `review`, `deliver`, or null. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`. Claims the current gate atomically. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
-| `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, and `force` (default false). Selectors follow the table below. |
+| `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. Selectors follow the table below. |
 | `task_blackboard` | Required `action` (`post` or `read`) and `task_id`. Post requires `topic` and `payload`, accepts optional `author`, and returns an ID. Read accepts optional `topic` and `limit`, and returns chronological messages. |
 
 Unknown fields are rejected. Ready tasks are unclaimed and nonterminal, with
@@ -109,6 +109,9 @@ Null stage includes design and contract.
 | `inspect` | `task_id` | Omit workspace/milestone_ref/task_ref/paths; force=false. |
 | `delete` | Exactly one of `task_id`, `milestone_ref` | Workspace is allowed only with milestone_ref; omit task_ref/paths. |
 | `extend_scope` | `task_id`, nonempty `paths` | Omit workspace/milestone_ref/task_ref; force=false. |
+| `subtask_add` | `task_id`, `subtask_ref`, `title` | Optional workspace; omit milestone_ref/paths; force=false. |
+| `subtask_update` | `task_id`, `subtask_ref`, `subtask_status` | Optional `evidence`, `workspace`; status must be `pending`, `in_progress`, or `completed`. |
+| `subtask_list` | `task_id` | Optional workspace; omit milestone_ref/task_ref/paths; force=false. |
 
 Create reads the selected task; sync reads all task blocks atomically per file. Repeated
 creation preserves state. Changed specifications require a larger Git task
@@ -124,6 +127,44 @@ Claim requires an existing directory; an unavailable worktree reports
 The first accepted claim for a planned milestone activates its worktree document
 and records `started_at` from the first claim timestamp. Planned milestones
 retain an empty `started_at` while they wait in the queue.
+
+## Subtasks and iterative deepening
+
+Complex domain tasks often contain finer-grained milestones, discovered edge cases,
+or sub-component checklists (e.g. testing specific UI fixtures, verifying individual DOM
+queries, or step-by-step refactoring). Instead of proliferating root-level milestone tasks
+that inflate the queue and require heavyweight five-gate lifecycles (`design/v1` through `deliver/v1`),
+agents should deepen the active task using **subtasks**.
+
+- **Schema**: Each subtask contains `subtask_ref` (alphanumeric identity slug), `title` (goal description),
+  `status` (`pending`, `in_progress`, or `completed`), and optional `evidence` (verification command or test notes).
+- **Canonical State**: During active execution (`design/v1` through `review/v1`), SQLite (`task_subtasks` table
+  and `Task.spec.subtasks` descriptor) is the canonical operational state. Upon task completion at `deliver/v1`,
+  Forge serializes all subtasks directly into the milestone Markdown fenced YAML block alongside the delivery receipt.
+  The milestone document is the durable canonical record that survives SQLite clearing, rebuilds, and milestone handoff.
+- **Post-Delivery Immutability**: Subtasks are strictly operational execution artifacts. Once a task reaches `deliver/v1`
+  (`status: completed`), its subtasks and receipt are frozen. Calling `subtask_add` or `subtask_update` on a completed task
+  fails closed with `TASK_TERMINAL`.
+- **Digest Independence**: Contract digests exclude `spec.subtasks`. Adding, updating, or completing subtasks
+  never triggers `AUTHORITY_GAP` or forces contract re-admission.
+- **Sync Preservation**: Running `task sync` updates subtask titles if modified in Markdown, but never overwrites
+  in-progress or completed `status` or `evidence` recorded in SQLite. Subtasks created via CLI or MCP are preserved
+  in SQLite and the task descriptor across sync operations.
+
+```yaml
+task_ref: language-profile
+target: Implement profile
+proof_policy: seam-test-first
+scope: [src/]
+subtasks:
+  - subtask_ref: dom-methods
+    title: Extract query methods
+    status: completed
+    evidence: "tests/html_profile.rs passed"
+  - subtask_ref: alpine-attrs
+    title: Support Alpine x-directives
+    status: in_progress
+```
 
 ## Gates and evidence
 
@@ -158,7 +199,7 @@ passing build submission contains:
 }
 ```
 
-Contract proof has the form `{"contract_proof":{"seam_test_ref":"tests/...::test_name","red_exit_code":101}}`.
+Contract proof has the form `{"contract_proof":{"seam_test_ref":"tests/...::test_name","red_exit_code":101}}` (or `red_exit_code: 0` when `proof_policy: direct-proof`).
 Build proof is wrapped in `test_proof`; on pass it requires a nonempty command,
 exit code 0, at least one passing test, and zero failures. An optional `log` is
 limited to 64 KiB. Review proof is wrapped in `review_proof` and requires a

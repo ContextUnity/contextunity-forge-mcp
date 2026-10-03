@@ -80,6 +80,17 @@ contextunity-forge-mcp task blackboard read TASK_ID [--topic TOPIC] [--limit N]
 Post returns a message ID. Read returns chronological messages. An omitted
 author uses the current claim worker or `cli` if the task is unclaimed.
 
+Manage iterative subtasks within an admitted task:
+
+```sh
+contextunity-forge-mcp task subtask add TASK_ID SUBTASK_REF "Description of subtask" [--workspace WS]
+contextunity-forge-mcp task subtask update TASK_ID SUBTASK_REF --status in_progress|completed|pending [--evidence "Test notes"] [--workspace WS]
+contextunity-forge-mcp task subtask list TASK_ID [--workspace WS]
+```
+
+Subtasks allow tracking fine-grained discoveries, checklists, and verification steps
+without altering the parent task contract digest or inflating the milestone queue.
+
 ## Repository milestones
 
 ```sh

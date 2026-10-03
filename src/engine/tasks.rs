@@ -126,7 +126,7 @@ fn findings_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 fn evidence_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     serde_json::Map::from_iter([("type".into(), Value::String("object".into()))]).into()
 }
-#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema, clap::ValueEnum, Default)]
 #[serde(rename_all = "snake_case")]
 /// Enumerates the supported manage action values.
 pub enum ManageAction {
@@ -134,14 +134,21 @@ pub enum ManageAction {
     Create,
     /// Represents the sync case.
     Sync,
+    #[default]
     /// Represents the inspect case.
     Inspect,
     /// Represents the delete case.
     Delete,
     /// Represents the extend scope case.
     ExtendScope,
+    /// Add an iterative subtask to an existing task.
+    SubtaskAdd,
+    /// Update a subtask's status and evidence.
+    SubtaskUpdate,
+    /// List subtasks for a task.
+    SubtaskList,
 }
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 /// Represents manage data.
 pub struct Manage {
@@ -160,6 +167,18 @@ pub struct Manage {
     #[serde(default)]
     /// Whether force applies.
     pub force: bool,
+    #[serde(default)]
+    /// Optional subtask reference slug.
+    pub subtask_ref: Option<String>,
+    #[serde(default)]
+    /// Optional subtask title or goal description.
+    pub title: Option<String>,
+    #[serde(default)]
+    /// Optional subtask status: pending, in_progress, or completed.
+    pub subtask_status: Option<String>,
+    #[serde(default)]
+    /// Optional subtask verification evidence or test command.
+    pub evidence: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -264,7 +283,7 @@ pub fn list(root: &Path, p: List) -> Result<Value> {
                 } else {
                     crate::core::tasks::GATES[task.gate]
                 };
-                tasks.push(json!({
+                let mut item = json!({
                     "task_id": task.task_id,
                     "target": task.spec.target,
                     "status": task.status,
@@ -272,7 +291,11 @@ pub fn list(root: &Path, p: List) -> Result<Value> {
                     "owner": task.worker_id,
                     "agent_type": task.spec.agent_type.as_deref().unwrap_or("worker"),
                     "rev": task.contract_revision,
-                }));
+                });
+                if !task.spec.subtasks.is_empty() {
+                    item["subtasks"] = json!(task.spec.subtasks);
+                }
+                tasks.push(item);
             }
         }
         if all_workspaces {
@@ -401,6 +424,15 @@ pub fn manage(root: &Path, p: Manage) -> Result<Value> {
                 && !p.force
                 && workspace.is_none()
         }
+        ManageAction::SubtaskAdd => {
+            id.is_some() && p.subtask_ref.is_some() && p.title.is_some() && !p.force
+        }
+        ManageAction::SubtaskUpdate => {
+            id.is_some() && p.subtask_ref.is_some() && !p.force
+        }
+        ManageAction::SubtaskList => {
+            id.is_some() && !p.force
+        }
     };
     if !valid {
         bail!("TASK_SELECTOR_INVALID");
@@ -467,6 +499,34 @@ pub fn manage(root: &Path, p: Manage) -> Result<Value> {
                 paths.context("paths required")?,
                 &workspace.root,
             )?)?)
+        }
+        ManageAction::SubtaskAdd => {
+            let task_id = id.context("task_id required")?;
+            let subtask_ref = p.subtask_ref.as_deref().context("subtask_ref required")?;
+            let title = p.title.as_deref().context("title required")?;
+            let subtask = store.subtask_add(task_id, subtask_ref, title)?;
+            workspace.envelope(json!({
+                "task_id": task_id,
+                "subtask": subtask,
+            }))
+        }
+        ManageAction::SubtaskUpdate => {
+            let task_id = id.context("task_id required")?;
+            let subtask_ref = p.subtask_ref.as_deref().context("subtask_ref required")?;
+            let status = p.subtask_status.as_deref().unwrap_or("completed");
+            let subtask = store.subtask_update(task_id, subtask_ref, status, p.evidence.as_deref())?;
+            workspace.envelope(json!({
+                "task_id": task_id,
+                "subtask": subtask,
+            }))
+        }
+        ManageAction::SubtaskList => {
+            let task_id = id.context("task_id required")?;
+            let subtasks = store.subtask_list(task_id)?;
+            workspace.envelope(json!({
+                "task_id": task_id,
+                "subtasks": subtasks,
+            }))
         }
     }
 }

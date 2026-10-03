@@ -1,4 +1,4 @@
-use crate::core::tasks::{Milestone, Receipt, TaskSpec, GATES};
+use crate::core::tasks::{Milestone, Receipt, SubtaskSpec, TaskSpec, GATES};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -131,6 +131,8 @@ impl TasksStore {
             CREATE TABLE IF NOT EXISTS task_submissions(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,result TEXT NOT NULL,PRIMARY KEY(task_id,revision));
             CREATE TABLE IF NOT EXISTS task_blackboard(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,author TEXT NOT NULL,topic TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_task_blackboard_task_created ON task_blackboard(task_id, created_at);
+            CREATE TABLE IF NOT EXISTS task_subtasks(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,subtask_ref TEXT NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL,evidence TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(task_id,subtask_ref));
+            CREATE INDEX IF NOT EXISTS idx_task_subtasks_task ON task_subtasks(task_id);
             CREATE TRIGGER IF NOT EXISTS task_insert_generation AFTER INSERT ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
             CREATE TRIGGER IF NOT EXISTS task_update_generation AFTER UPDATE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
             CREATE TRIGGER IF NOT EXISTS task_delete_generation AFTER DELETE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;")?;
@@ -228,7 +230,135 @@ impl TasksStore {
         object.insert("gates".into(), serde_json::json!(gates));
         object.insert("findings".into(), serde_json::json!(findings));
         object.insert("gate_states".into(),serde_json::json!(GATES.iter().enumerate().map(|(i,name)|serde_json::json!({"stage":name,"state":if i<task.gate || task.status=="completed" {"passed"} else if i==task.gate && task.status=="in_progress" {"in_progress"} else {"pending"}})).collect::<Vec<_>>()));
+        object.insert("subtasks".into(), serde_json::json!(task.spec.subtasks));
         Ok(value)
+    }
+    /// Add a subtask to an existing task.
+    pub fn subtask_add(&mut self, task_id: &str, subtask_ref: &str, title: &str) -> Result<SubtaskSpec> {
+        self.assert_id(task_id)?;
+        crate::core::tasks::valid_identity(subtask_ref)?;
+        let title = title.trim();
+        if title.is_empty() {
+            bail!("TASK_SUBTASK_TITLE_EMPTY: subtask title cannot be empty");
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut task = load(&tx, task_id)?.context("TASK_NOT_FOUND")?;
+        if task.status == "completed" {
+            bail!("TASK_TERMINAL: cannot add subtasks to completed task");
+        }
+        let updated_at = now();
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO task_subtasks(task_id, subtask_ref, title, status, evidence, updated_at) VALUES(?1, ?2, ?3, 'pending', NULL, ?4)",
+            params![task_id, subtask_ref, title, updated_at],
+        )?;
+        if inserted == 0 {
+            bail!("TASK_SUBTASK_DUPLICATE: duplicate subtask_ref: {}", subtask_ref);
+        }
+        let mut stmt = tx.prepare(
+            "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
+        )?;
+        let subtasks = stmt
+            .query_map([task_id], |r| {
+                Ok(SubtaskSpec {
+                    subtask_ref: r.get(0)?,
+                    title: r.get(1)?,
+                    status: r.get(2)?,
+                    evidence: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let result = subtasks
+            .iter()
+            .find(|s| s.subtask_ref == subtask_ref)
+            .cloned()
+            .context("subtask missing after insert")?;
+        task.spec.subtasks = subtasks;
+        drop(stmt);
+        save(&tx, &task)?;
+        tx.commit()?;
+        Ok(result)
+    }
+    /// Update a subtask's status and evidence.
+    pub fn subtask_update(&mut self, task_id: &str, subtask_ref: &str, status: &str, evidence: Option<&str>) -> Result<SubtaskSpec> {
+        self.assert_id(task_id)?;
+        if !matches!(status, "pending" | "in_progress" | "completed") {
+            bail!("TASK_SUBTASK_STATUS_INVALID: invalid subtask status; must be pending, in_progress, or completed");
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut task = load(&tx, task_id)?.context("TASK_NOT_FOUND")?;
+        if task.status == "completed" {
+            bail!("TASK_TERMINAL: cannot update subtasks of completed task");
+        }
+        let updated_at = now();
+        let updated = match evidence {
+            Some(ev) => {
+                let trimmed = ev.trim();
+                let ev_value = if trimmed.is_empty() { None } else { Some(trimmed) };
+                tx.execute(
+                    "UPDATE task_subtasks SET status=?1, evidence=?2, updated_at=?3 WHERE task_id=?4 AND subtask_ref=?5",
+                    params![status, ev_value, updated_at, task_id, subtask_ref],
+                )?
+            }
+            None => {
+                tx.execute(
+                    "UPDATE task_subtasks SET status=?1, updated_at=?2 WHERE task_id=?3 AND subtask_ref=?4",
+                    params![status, updated_at, task_id, subtask_ref],
+                )?
+            }
+        };
+        if updated == 0 {
+            bail!("TASK_SUBTASK_NOT_FOUND: subtask '{subtask_ref}' not found");
+        }
+        let mut stmt = tx.prepare(
+            "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
+        )?;
+        let subtasks = stmt
+            .query_map([task_id], |r| {
+                Ok(SubtaskSpec {
+                    subtask_ref: r.get(0)?,
+                    title: r.get(1)?,
+                    status: r.get(2)?,
+                    evidence: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let result = subtasks
+            .iter()
+            .find(|s| s.subtask_ref == subtask_ref)
+            .cloned()
+            .context("subtask missing after update")?;
+        task.spec.subtasks = subtasks;
+        drop(stmt);
+        save(&tx, &task)?;
+        tx.commit()?;
+        Ok(result)
+    }
+    /// List all subtasks for a task.
+    pub fn subtask_list(&self, task_id: &str) -> Result<Vec<SubtaskSpec>> {
+        self.assert_id(task_id)?;
+        let mut stmt = self.connection.prepare(
+            "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
+        )?;
+        let subtasks = stmt
+            .query_map([task_id], |r| {
+                Ok(SubtaskSpec {
+                    subtask_ref: r.get(0)?,
+                    title: r.get(1)?,
+                    status: r.get(2)?,
+                    evidence: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if subtasks.is_empty() {
+            let task = self.inspect(task_id)?;
+            Ok(task.spec.subtasks)
+        } else {
+            Ok(subtasks)
+        }
     }
     /// Performs sync.
     pub fn sync(
@@ -276,10 +406,32 @@ impl TasksStore {
                     {
                         bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
                     }
+                    for sub in &spec.subtasks {
+                        tx.execute(
+                            "INSERT INTO task_subtasks(task_id, subtask_ref, title, status, evidence, updated_at) \
+                             VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
+                             ON CONFLICT(task_id, subtask_ref) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
+                            params![id, sub.subtask_ref, sub.title, sub.status, sub.evidence, now()],
+                        )?;
+                    }
+                    let mut stmt = tx.prepare(
+                        "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
+                    )?;
+                    let current_subtasks = stmt
+                        .query_map([&id], |r| {
+                            Ok(SubtaskSpec {
+                                subtask_ref: r.get(0)?,
+                                title: r.get(1)?,
+                                status: r.get(2)?,
+                                evidence: r.get(3)?,
+                            })
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    existing.spec.subtasks = current_subtasks;
                     if existing.status == "completed" {
                         existing.milestone_ref = reference.into();
-                        save(&tx, &existing)?;
                     }
+                    save(&tx, &existing)?;
                     result.push(existing);
                     continue;
                 }
@@ -292,6 +444,7 @@ impl TasksStore {
                 end_claim(&tx, &id)?;
                 tx.execute("DELETE FROM task_scope_paths WHERE task_id=?1", [&id])?;
                 tx.execute("DELETE FROM task_dependencies WHERE task_id=?1", [&id])?;
+                tx.execute("DELETE FROM task_subtasks WHERE task_id=?1", [&id])?;
             }
             let completed = spec.status.as_deref() == Some("completed");
             if completed {
@@ -354,6 +507,14 @@ impl TasksStore {
                     .collect(),
             };
             save(&tx, &task)?;
+            for sub in &spec.subtasks {
+                tx.execute(
+                    "INSERT INTO task_subtasks(task_id, subtask_ref, title, status, evidence, updated_at) \
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
+                     ON CONFLICT(task_id, subtask_ref) DO UPDATE SET title=excluded.title, status=excluded.status, evidence=COALESCE(excluded.evidence, task_subtasks.evidence), updated_at=excluded.updated_at",
+                    params![id, sub.subtask_ref, sub.title, sub.status, sub.evidence, now()],
+                )?;
+            }
             for scope in &spec.scope {
                 let path = crate::core::tasks::relative_path(scope)?;
                 crate::core::tasks::confined_path(root, scope)?;

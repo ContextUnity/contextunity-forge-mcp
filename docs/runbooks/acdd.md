@@ -44,6 +44,25 @@ messages. A code-index rebuild does not reset task state.
 7. Use distinct `worker_id` values for the builder and the review and delivery
    workers. Read `workflow_guidance`, `agent_type`, and the configured
    instruction path before claiming a stage.
+8. **Pre-existing code reconciliation**: When verifying tasks whose implementation was already authored
+   prior to a refactoring or imported from historical drafts, do NOT synthetically break working code to
+   force a red test. Prove the existing seam directly using `proof_policy: direct-proof` or targeted green
+   test evidence in `contract/v1`. If the seam test passes and meets the contract, proceed directly to review.
+9. **Targeted scope verification during parallel tasks**: When multiple tasks are in progress within a
+   milestone worktree, `test_proof` must execute ONLY the targeted test binary for that task (e.g.
+   `cargo test --test <seam_suite>`), NOT repository-wide suites (`--all-targets`). Incomplete work in sibling
+   files outside the task's declared scope must not block verification of a completed task.
+10. **Child worktrees for parallel subagents**: When delegating tasks to subagents to execute concurrently,
+    prefer creating dedicated child worktrees branched from the milestone:
+    `git worktree add .worktrees/<milestone-prefix>-<task-slug> -b <milestone-prefix>-<task-slug>`
+    Upon delivery, fast-forward or cherry-pick the atomic task commit into the milestone branch and prune the child worktree.
+11. **Subtasks for iterative deepening**: When new discoveries, component variations (e.g. Playwright fixtures,
+    Alpine directives, DOM query methods), or sub-checklists arise during implementation, record them as **subtasks**
+    under the active task (`task subtask add <task_id> <subtask_ref> <title>`). Do NOT spawn new root-level milestone tasks
+    for internal sub-discoveries, which would inflate the milestone and trigger heavy five-gate lifecycles (`design/v1` through `deliver/v1`)
+    for minor items. Subtasks maintain fine-grained status and evidence directly without breaking the parent contract digest.
+    During execution, SQLite is the canonical state; upon passing `deliver/v1`, Forge flushes all subtasks into the durable
+    milestone Markdown document alongside the delivery receipt. Completed tasks freeze subtask modification (`TASK_TERMINAL`).
 
 ## Deliver one task
 
@@ -53,9 +72,9 @@ open gate.
 
 | Gate | Worker action | Required proof |
 | --- | --- | --- |
-| `contract/v1` | Trace the proposed behavior from producer to consumer, owner, state, failure path, and observable proof. Write a red test through a public CLI, MCP, engine, or SQLite seam; verify its intended failure. Have another agent check the contract against live code and governing docs when using subagents. | `proof.contract_proof` names the seam test and its nonzero `red_exit_code`. |
-| `build/v1` | Implement inside the allowed scope; turn the seam test green; run the affected domain suite and Clippy. Create the candidate task commit. | `proof.test_proof` records the exact test command, exit code 0, at least one passing test, and zero failures. |
-| `review/v1` | Use a worker different from the accepted builder. Review the stable candidate diff against the task contract, then run focused verification. | `proof.review_proof` records `decision: "pass"` and evidence for all five review contours. |
+| `contract/v1` | Trace the proposed behavior from producer to consumer, owner, state, failure path, and observable proof. For greenfield tasks, write a red test through a public seam and verify its intended failure. For pre-existing code reconciliation, verify the existing seam directly without synthetic breakage. | `proof.contract_proof` names the seam test and its `red_exit_code` (or 0 for direct proof). |
+| `build/v1` | Implement inside the allowed scope; turn the seam test green; run the affected domain suite and Clippy. Create the candidate task commit touching only scoped files. | `proof.test_proof` records the exact test command, exit code 0, at least one passing test, and zero failures. |
+| `review/v1` | Use a worker different from the accepted builder. Review the candidate diff of scoped files against the task contract. Ignore unrelated dirty files outside this task's scope. | `proof.review_proof` records `decision: "pass"` and evidence for all five review contours. |
 | `deliver/v1` | Use a worker different from the builder. Submit the accepted commit for task delivery. | Forge validates the task and review proof, writes the receipt and context rollup, marks the task completed, and clears its blackboard. |
 
 Claim before submitting each gate. Pass a direct JSON `evidence` object; do not

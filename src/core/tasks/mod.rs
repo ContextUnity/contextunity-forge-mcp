@@ -60,6 +60,26 @@ pub struct ReviewSummary {
     pub contours: std::collections::BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+/// Represents an iterative subtask under a parent task contract.
+pub struct SubtaskSpec {
+    /// The unique subtask reference slug within the task.
+    pub subtask_ref: String,
+    /// Description of the subtask goal.
+    pub title: String,
+    #[serde(default = "default_subtask_status")]
+    /// Subtask status: pending, in_progress, or completed.
+    pub status: String,
+    #[serde(default)]
+    /// Optional verification evidence or test command.
+    pub evidence: Option<String>,
+}
+
+fn default_subtask_status() -> String {
+    "pending".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Represents task spec data.
@@ -90,6 +110,9 @@ pub struct TaskSpec {
     #[serde(default)]
     /// Optional receipt value.
     pub receipt: Option<Receipt>,
+    #[serde(default)]
+    /// Optional iterative subtasks detailing and deepening this task.
+    pub subtasks: Vec<SubtaskSpec>,
 }
 fn initial_revision() -> u64 {
     1
@@ -195,6 +218,19 @@ impl Milestone {
             if !ids.insert(task.task_ref.clone()) {
                 bail!("duplicate task_ref");
             }
+            let mut subtask_ids = BTreeSet::new();
+            for subtask in &task.subtasks {
+                valid_identity(&subtask.subtask_ref)?;
+                if subtask.title.trim().is_empty() {
+                    bail!("subtask requires a non-empty title");
+                }
+                if !matches!(subtask.status.as_str(), "pending" | "in_progress" | "completed") {
+                    bail!("invalid subtask status; must be pending, in_progress, or completed");
+                }
+                if !subtask_ids.insert(subtask.subtask_ref.clone()) {
+                    bail!("duplicate subtask_ref: {}", subtask.subtask_ref);
+                }
+            }
             tasks.push(task);
         }
         for task in &tasks {
@@ -254,6 +290,7 @@ impl Milestone {
         let mut spec = task.clone();
         spec.receipt = None;
         spec.status = None;
+        spec.subtasks = Vec::new();
         Ok(hex::encode(Sha256::digest(serde_json::to_vec(&(
             &self.repository,
             &self.project,

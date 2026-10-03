@@ -284,7 +284,12 @@ pub fn activate_on_claim(worktree: &Path, reference: &str, claimed_at: i64) -> R
 }
 
 /// Replaces the YAML block for one task while preserving the surrounding milestone text.
-pub(crate) fn render_task_receipt(text: &str, task_ref: &str, receipt: &Receipt) -> Result<String> {
+pub(crate) fn render_task_receipt(
+    text: &str,
+    task_ref: &str,
+    receipt: &Receipt,
+    subtasks: &[crate::core::tasks::SubtaskSpec],
+) -> Result<String> {
     let mut block_start = None;
     let mut cursor = 0;
     for line in text.split_inclusive('\n') {
@@ -297,6 +302,9 @@ pub(crate) fn render_task_receipt(text: &str, task_ref: &str, receipt: &Receipt)
                     let map = block.as_mapping_mut().context("task block must be a mapping")?;
                     map.insert("status".into(), "completed".into());
                     map.insert("receipt".into(), serde_yaml::to_value(receipt)?);
+                    if !subtasks.is_empty() {
+                        map.insert("subtasks".into(), serde_yaml::to_value(subtasks)?);
+                    }
                     let yaml = serde_yaml::to_string(&block)?;
                     return Ok(format!("{}{}{}", &text[..start], yaml, &text[cursor..]));
                 }

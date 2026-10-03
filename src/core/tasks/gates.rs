@@ -1,4 +1,4 @@
-use super::{Milestone, Receipt, ReceiptRollup, ReviewSummary, GATES};
+use super::{Milestone, Receipt, ReceiptRollup, ReviewSummary, SubtaskSpec, GATES};
 use crate::db::tasks_store::{check_stage, clear_blackboard, end_claim, load, now, save, Task, TasksStore};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, TransactionBehavior};
@@ -82,11 +82,20 @@ fn proof_payload<'a>(
         .with_context(|| format!("TASK_EVIDENCE_INVALID: expected {expected}"))
 }
 
-fn validate_contract(value: &serde_json::Value, passed: bool) -> Result<()> {
+fn validate_contract(value: &serde_json::Value, proof_policy: &str, passed: bool) -> Result<()> {
     let proof: ContractProof = serde_json::from_value(proof_payload(value, "contract_proof")?.clone())
         .context("TASK_EVIDENCE_INVALID: typed contract proof required")?;
-    if passed && (proof.seam_test_ref.trim().is_empty() || proof.red_exit_code <= 0) {
-        bail!("TASK_EVIDENCE_INVALID: red seam test and nonzero exit code required");
+    if passed {
+        if proof.seam_test_ref.trim().is_empty() {
+            bail!("TASK_EVIDENCE_INVALID: seam test reference required");
+        }
+        if proof_policy == "direct-proof" {
+            if proof.red_exit_code < 0 {
+                bail!("TASK_EVIDENCE_INVALID: exit code must be non-negative");
+            }
+        } else if proof.red_exit_code <= 0 {
+            bail!("TASK_EVIDENCE_INVALID: red seam test and nonzero exit code required");
+        }
     }
     Ok(())
 }
@@ -206,7 +215,7 @@ impl TasksStore {
             bail!("TASK_EVIDENCE_INVALID");
         }
         match task.gate {
-            1 => validate_contract(&evidence.proof, action == "pass")?,
+            1 => validate_contract(&evidence.proof, &task.spec.proof_policy, action == "pass")?,
             2 => validate_tests(&evidence.proof, action == "pass")?,
             3 => validate_review(&evidence.proof, action == "pass")?,
             _ => {}
@@ -279,7 +288,26 @@ impl TasksStore {
             };
             validate_receipt(&receipt, &task, &build, &review)?;
             let (_, task_ref) = id.rsplit_once(':').context("invalid task identity")?;
-            let written = crate::engine::milestones::render_task_receipt(&text, task_ref, &receipt)?;
+            let mut stmt = tx.prepare(
+                "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
+            )?;
+            let current_subtasks = stmt
+                .query_map([id], |r| {
+                    Ok(SubtaskSpec {
+                        subtask_ref: r.get(0)?,
+                        title: r.get(1)?,
+                        status: r.get(2)?,
+                        evidence: r.get(3)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let final_subtasks = if !current_subtasks.is_empty() {
+                current_subtasks
+            } else {
+                task.spec.subtasks.clone()
+            };
+            let written = crate::engine::milestones::render_task_receipt(&text, task_ref, &receipt, &final_subtasks)?;
+            task.spec.subtasks = final_subtasks;
             document_update = Some((path, text, written));
             task.receipt = Some(receipt);
             task.completed_at = Some(now());

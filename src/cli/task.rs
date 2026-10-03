@@ -37,8 +37,55 @@ pub enum BlackboardCommand {
 }
 
 #[derive(Debug, Subcommand)]
+/// Subtask management commands.
+pub enum SubtaskCommand {
+    /// Add an iterative subtask to an existing task.
+    Add {
+        /// Task identifier.
+        task_id: String,
+        /// Unique subtask reference slug within the task.
+        subtask_ref: String,
+        /// Description of the subtask goal.
+        title: String,
+        #[arg(long)]
+        /// Optional workspace value.
+        workspace: Option<String>,
+    },
+    /// List subtasks for a task.
+    List {
+        /// Task identifier.
+        task_id: String,
+        #[arg(long)]
+        /// Optional workspace value.
+        workspace: Option<String>,
+    },
+    /// Update a subtask's status and evidence.
+    Update {
+        /// Task identifier.
+        task_id: String,
+        /// Subtask reference slug.
+        subtask_ref: String,
+        #[arg(long)]
+        /// Subtask status: pending, in_progress, or completed.
+        status: String,
+        #[arg(long)]
+        /// Optional verification evidence or test command.
+        evidence: Option<String>,
+        #[arg(long)]
+        /// Optional workspace value.
+        workspace: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 /// Enumerates the supported task command values.
 pub enum TaskCommand {
+    /// Manage iterative subtasks for a task.
+    Subtask {
+        #[command(subcommand)]
+        /// Selected subtask operation.
+        command: SubtaskCommand,
+    },
     /// Exchange task-scoped collaboration messages.
     Blackboard {
         #[command(subcommand)]
@@ -147,15 +194,7 @@ pub enum TaskCommand {
 
 /// Performs run.
 pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
-    let mut manage = Manage {
-        workspace: None,
-        action: ManageAction::Inspect,
-        task_id: None,
-        milestone_ref: None,
-        task_ref: None,
-        paths: None,
-        force: false,
-    };
+    let mut manage = Manage::default();
     match command {
         TaskCommand::Blackboard { command } => {
             return match command {
@@ -249,6 +288,39 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                 serde_json::json!({"deleted":tasks::store(root)?.cleanup(crate::db::tasks_store::now())?}),
             )
         }
+        TaskCommand::Subtask { command } => match command {
+            SubtaskCommand::Add {
+                task_id,
+                subtask_ref,
+                title,
+                workspace,
+            } => {
+                manage.action = ManageAction::SubtaskAdd;
+                manage.task_id = Some(task_id);
+                manage.subtask_ref = Some(subtask_ref);
+                manage.title = Some(title);
+                manage.workspace = workspace;
+            }
+            SubtaskCommand::List { task_id, workspace } => {
+                manage.action = ManageAction::SubtaskList;
+                manage.task_id = Some(task_id);
+                manage.workspace = workspace;
+            }
+            SubtaskCommand::Update {
+                task_id,
+                subtask_ref,
+                status,
+                evidence,
+                workspace,
+            } => {
+                manage.action = ManageAction::SubtaskUpdate;
+                manage.task_id = Some(task_id);
+                manage.subtask_ref = Some(subtask_ref);
+                manage.subtask_status = Some(status);
+                manage.evidence = evidence;
+                manage.workspace = workspace;
+            }
+        },
         TaskCommand::Inspect { task_id } => manage.task_id = Some(task_id),
         TaskCommand::Create {
             milestone_ref,

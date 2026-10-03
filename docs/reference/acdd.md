@@ -31,9 +31,10 @@ milestone decision process; they do not silently expand the frozen contract.
 
 Each task moves through `design/v1`, `contract/v1`, `build/v1`, `review/v1`, and
 `deliver/v1`. A worker claims the current gate before submitting evidence for
-that claim. Contract records a failing test through a public seam. Build
-records passing tests. Review checks the candidate against the contract and
-five review contours. The accepted reviewer and delivery worker must have a
+that claim. Contract records a failing test through a public seam for greenfield
+tasks, or proves existing seams directly via `proof_policy: direct-proof` (with exit code 0)
+without synthetic breakage. Build records passing tests. Review checks the candidate against
+the contract and five review contours. The accepted reviewer and delivery worker must have a
 different `worker_id` from the accepted builder; review and delivery use the
 accepted build commit.
 
@@ -51,10 +52,11 @@ default to `AGENTS.md` in their own repository. A missing file produces
 `task_submit` accepts a JSON `evidence` object directly. It binds `task_id`,
 stage, claim and contract revisions, worker, worktree, commit, and non-null
 `proof` to the active claim. Contract, build, and review use typed proof.
-Contract proof names the red seam test and its
-nonzero exit code; build proof records the command, exit code, and test counts;
-review proof records a decision and evidence for the five contours. The same
-object is retained in SQLite `task_gates.evidence`. No evidence file is needed.
+Contract proof names the public seam test and its nonzero failure exit code (or
+exit code 0 when `proof_policy: direct-proof` reconciles pre-existing code); build
+proof records the command, exit code, and test counts; review proof records a
+decision and evidence for the five contours. The same object is retained in SQLite
+`task_gates.evidence`. No evidence file is needed.
 
 Build proof accepts a passing, focused domain test. Run the full
 `cargo test --all-targets` suite for the deferred final milestone test. The
