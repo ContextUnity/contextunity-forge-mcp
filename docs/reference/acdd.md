@@ -29,7 +29,7 @@ milestone decision process; they do not silently expand the frozen contract.
 
 ## Task lifecycle
 
-Each task moves through `design/v1`, `contract/v1`, `build/v1`, `review/v1`, and
+Each task moves through `contract/v1`, `build/v1`, `review/v1`, and
 `deliver/v1`. A worker claims the current gate before submitting evidence for
 that claim. Contract records a failing test through a public seam for greenfield
 tasks, or proves existing seams directly via `proof_policy: direct-proof` (with exit code 0)

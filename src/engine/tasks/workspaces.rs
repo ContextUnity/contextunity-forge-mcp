@@ -71,13 +71,12 @@ impl Workspace {
         };
         let agent_type = value["spec"]["agent_type"].as_str().unwrap_or("worker");
         let (subagent_role, actions): (&str, &[&str]) = match stage {
-            "design/v1" => (
-                "planner",
-                &["Inspect the task target, scope, and invariants.", "Record the design proof before advancing the gate."],
-            ),
             "contract/v1" => (
                 "contract_author",
-                &["Write and run a failing public-seam test.", "Have an independent reviewer verify the contract before submitting the proof."],
+                &[
+                    "Inspect the task target, scope, ADRs, and invariants.",
+                    "Define allowed_write_scope and author/verify the public-seam test proof (or direct-proof exit code 0 for pre-existing code).",
+                ],
             ),
             "build/v1" => (
                 "builder",

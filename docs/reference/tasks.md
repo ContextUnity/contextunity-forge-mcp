@@ -92,7 +92,7 @@ perimeter cannot claim a foreign task.
 
 | Tool | Arguments and behavior |
 | --- | --- |
-| `task_list` | Optional `repository`, `milestone_ref`, `status`, and `stage`. Status defaults strictly to `ready`; explicit values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Stage is `build`, `review`, `deliver`, or null. |
+| `task_list` | Optional `repository`, `milestone_ref`, `status`, and `stage`. Status defaults strictly to `ready`; explicit values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Stage is `contract`, `build`, `review`, `deliver`, or null. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`. Claims the current gate atomically. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. Selectors follow the table below. |
@@ -100,7 +100,7 @@ perimeter cannot claim a foreign task.
 
 Unknown fields are rejected. Ready tasks are unclaimed and nonterminal, with
 satisfied local prerequisites. Missing or amended authority blocks open work.
-Null stage includes design and contract.
+Null stage matches all gates.
 
 | Manage action | Required fields | Other constraints |
 | --- | --- | --- |
@@ -115,7 +115,7 @@ Null stage includes design and contract.
 
 Create reads the selected task; sync reads all task blocks atomically per file. Repeated
 creation preserves state. Changed specifications require a larger Git task
-`contract_revision`; sync revokes claims and restarts design/contract. Digests
+`contract_revision`; sync revokes claims and restarts contract. Digests
 cover task fields, identity, owners, dependencies, and invariants, excluding
 sibling tasks, completion status, and receipts.
 
@@ -133,12 +133,12 @@ retain an empty `started_at` while they wait in the queue.
 Complex domain tasks often contain finer-grained milestones, discovered edge cases,
 or sub-component checklists (e.g. testing specific UI fixtures, verifying individual DOM
 queries, or step-by-step refactoring). Instead of proliferating root-level milestone tasks
-that inflate the queue and require heavyweight five-gate lifecycles (`design/v1` through `deliver/v1`),
+that inflate the queue and require full four-gate lifecycles (`contract/v1` through `deliver/v1`),
 agents should deepen the active task using **subtasks**.
 
 - **Schema**: Each subtask contains `subtask_ref` (alphanumeric identity slug), `title` (goal description),
   `status` (`pending`, `in_progress`, or `completed`), and optional `evidence` (verification command or test notes).
-- **Canonical State**: During active execution (`design/v1` through `review/v1`), SQLite (`task_subtasks` table
+- **Canonical State**: During active execution (`contract/v1` through `review/v1`), SQLite (`task_subtasks` table
   and `Task.spec.subtasks` descriptor) is the canonical operational state. Upon task completion at `deliver/v1`,
   Forge serializes all subtasks directly into the milestone Markdown fenced YAML block alongside the delivery receipt.
   The milestone document is the durable canonical record that survives SQLite clearing, rebuilds, and milestone handoff.
@@ -168,7 +168,7 @@ subtasks:
 
 ## Gates and evidence
 
-Gates are `design/v1`, `contract/v1`, `build/v1`, `review/v1`, and `deliver/v1`.
+Gates are `contract/v1`, `build/v1`, `review/v1`, and `deliver/v1`.
 The final task gate performs task delivery; `milestone handoff` is the separate
 command that closes and archives the whole milestone.
 Claim/submit arguments also accept unversioned gate names. Each accepted

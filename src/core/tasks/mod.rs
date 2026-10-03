@@ -9,8 +9,7 @@ use std::{
 pub mod gates;
 
 /// The gates value.
-pub const GATES: [&str; 5] = [
-    "design/v1",
+pub const GATES: [&str; 4] = [
     "contract/v1",
     "build/v1",
     "review/v1",

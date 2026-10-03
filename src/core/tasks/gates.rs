@@ -215,12 +215,12 @@ impl TasksStore {
             bail!("TASK_EVIDENCE_INVALID");
         }
         match task.gate {
-            1 => validate_contract(&evidence.proof, &task.spec.proof_policy, action == "pass")?,
-            2 => validate_tests(&evidence.proof, action == "pass")?,
-            3 => validate_review(&evidence.proof, action == "pass")?,
+            0 => validate_contract(&evidence.proof, &task.spec.proof_policy, action == "pass")?,
+            1 => validate_tests(&evidence.proof, action == "pass")?,
+            2 => validate_review(&evidence.proof, action == "pass")?,
             _ => {}
         }
-        if task.gate >= 3 {
+        if task.gate >= 2 {
             let builder: String = tx.query_row("SELECT json_extract(evidence,'$.worker_id') FROM task_gates WHERE task_id=?1 AND gate='build/v1' AND state='passed' ORDER BY revision DESC LIMIT 1",[id],|r|r.get(0))?;
             if builder == evidence.worker_id {
                 bail!("TASK_REVIEW_NOT_INDEPENDENT");
@@ -230,7 +230,7 @@ impl TasksStore {
                 bail!("TASK_CANDIDATE_MISMATCH");
             }
         }
-        if task.gate == 4 && action == "pass" {
+        if task.gate == 3 && action == "pass" {
             let build = accepted(&tx, id, "build/v1")?;
             let review = accepted(&tx, id, "review/v1")?;
             let claim_worktree: String = tx.query_row(
@@ -321,7 +321,7 @@ impl TasksStore {
                 "INSERT INTO task_findings VALUES(?1,?2,?3)",
                 params![id, task.claim_revision, serde_json::to_string(findings)?],
             )?;
-            task.gate = task.gate.min(2);
+            task.gate = task.gate.min(1);
             task.status = "ready".into();
         }
         tx.execute(

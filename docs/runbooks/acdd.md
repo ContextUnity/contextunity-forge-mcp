@@ -59,16 +59,15 @@ messages. A code-index rebuild does not reset task state.
 11. **Subtasks for iterative deepening**: When new discoveries, component variations (e.g. Playwright fixtures,
     Alpine directives, DOM query methods), or sub-checklists arise during implementation, record them as **subtasks**
     under the active task (`task subtask add <task_id> <subtask_ref> <title>`). Do NOT spawn new root-level milestone tasks
-    for internal sub-discoveries, which would inflate the milestone and trigger heavy five-gate lifecycles (`design/v1` through `deliver/v1`)
+    for internal sub-discoveries, which would inflate the milestone and trigger full four-gate lifecycles (`contract/v1` through `deliver/v1`)
     for minor items. Subtasks maintain fine-grained status and evidence directly without breaking the parent contract digest.
     During execution, SQLite is the canonical state; upon passing `deliver/v1`, Forge flushes all subtasks into the durable
     milestone Markdown document alongside the delivery receipt. Completed tasks freeze subtask modification (`TASK_TERMINAL`).
 
 ## Deliver one task
 
-If `design/v1` is active, claim it and submit a non-null design proof before the
-contract stage. Use the stage shown by claim or inspect rather than skipping an
-open gate.
+Claim and advance tasks through the 4 gates in order (`contract/v1` -> `build/v1` -> `review/v1` -> `deliver/v1`).
+Use the stage shown by claim or inspect rather than skipping an open gate.
 
 | Gate | Worker action | Required proof |
 | --- | --- | --- |

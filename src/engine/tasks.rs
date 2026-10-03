@@ -42,6 +42,8 @@ impl Status {
 #[serde(rename_all = "snake_case")]
 /// Enumerates the supported stage values.
 pub enum Stage {
+    /// Represents the contract case.
+    Contract,
     /// Represents the build case.
     Build,
     /// Represents the review case.
@@ -53,6 +55,7 @@ impl Stage {
     /// Performs name.
     pub fn name(self) -> &'static str {
         match self {
+            Self::Contract => "contract",
             Self::Build => "build",
             Self::Review => "review",
             Self::Deliver => "deliver",

@@ -62,7 +62,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert_eq!(
         selected["tasks"][0],
         json!({
-            "task_id":id,"target":"Deliver","status":"ready","stage":"design/v1",
+            "task_id":id,"target":"Deliver","status":"ready","stage":"contract/v1",
             "owner":null,"agent_type":"worker","rev":1
         })
     );
@@ -90,7 +90,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     );
     let claimed = client.payload(
         "task_claim",
-        json!({"task_id":id,"stage":"design","worker_id":"builder","worktree":linked.0}),
+        json!({"task_id":id,"stage":"contract","worker_id":"builder","worktree":linked.0}),
     );
     assert_eq!(claimed["agents_guidance"], inspected["agents_guidance"]);
     assert_eq!(claimed["applicable_invariants"], json!(["local-rules"]));
@@ -119,7 +119,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         .iter()
         .enumerate()
     {
-        let worker = match gate { 3 => "reviewer", 4 => "delivery-reviewer", _ => "builder" };
+        let worker = match gate { 2 => "reviewer", 3 => "delivery-reviewer", _ => "builder" };
         let claim = if gate == 0 {
             claimed.clone()
         } else {
@@ -128,9 +128,9 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
                 json!({"task_id":id,"stage":stage,"worker_id":worker,"worktree":linked.0}),
             )
         };
-        let proof = if gate == 3 {
+        let proof = if gate == 2 {
             &review_proof
-        } else if gate == 1 {
+        } else if gate == 0 {
             &contract_proof
         } else {
             &build_proof
@@ -142,7 +142,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         );
         assert_eq!(
             result["status"],
-            if gate == 4 { "completed" } else { "ready" }
+            if gate == 3 { "completed" } else { "ready" }
         );
     }
     drop(client);
@@ -207,15 +207,15 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
         .collect();
     let review_proof = json!({"review_proof":{"decision":"pass","contours":contours}});
     for (gate, stage) in GATES.iter().enumerate() {
-        let workspace = if gate == 3 { &reviewer } else { &builder };
-        let worker = match gate { 3 => "reviewer", 4 => "delivery-reviewer", _ => "builder" };
+        let workspace = if gate == 2 { &reviewer } else { &builder };
+        let worker = match gate { 2 => "reviewer", 3 => "delivery-reviewer", _ => "builder" };
         let claim = client.payload(
             "task_claim",
             json!({"task_id":id,"stage":stage,"worker_id":worker,"worktree":workspace.0}),
         );
-        let proof = if gate == 3 {
+        let proof = if gate == 2 {
             &review_proof
-        } else if gate == 1 {
+        } else if gate == 0 {
             &contract_proof
         } else {
             &build_proof
@@ -233,7 +233,7 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
             }
         }
         let args = json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"});
-        if gate == 4 {
+        if gate == 3 {
             builder.write("010-tasks.md", &source.replace("target: Deliver", "target: Unadmitted change").replace('\n', "\r\n"));
             let (_, unadmitted) = client.call("task_submit", args.clone());
             assert_eq!(unadmitted["result"]["isError"], true);
@@ -242,7 +242,7 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
         let submitted = client.payload("task_submit", args.clone());
         assert_eq!(
             submitted["status"],
-            if gate == 4 { "completed" } else { "ready" }
+            if gate == 3 { "completed" } else { "ready" }
         );
         assert_eq!(client.payload("task_submit", args), submitted);
     }
@@ -328,7 +328,7 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
         String::from_utf8_lossy(&cli.stderr)
     );
     assert_eq!(serde_json::from_slice::<Value>(&cli.stdout).unwrap(), ready);
-    let args = json!({"task_id":id,"stage":"design","worker_id":"builder","worktree":workspace.0});
+    let args = json!({"task_id":id,"stage":"contract","worker_id":"builder","worktree":workspace.0});
     let claimed = client.payload("task_claim", args.clone());
     let (_, collision) = client.call("task_claim", args);
     assert_eq!(collision["result"]["isError"], true);
@@ -339,7 +339,7 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
     let active = client.payload("task_list", json!({"status":"in_progress"}));
     assert_eq!(active["tasks"][0]["task_id"], id);
     assert_eq!(active["tasks"][0]["owner"], "builder");
-    assert_eq!(active["tasks"][0]["stage"], "design/v1");
+    assert_eq!(active["tasks"][0]["stage"], "contract/v1");
     let reset = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args(["--root", workspace.0.to_str().unwrap(), "task", "reset", id])
         .output()
