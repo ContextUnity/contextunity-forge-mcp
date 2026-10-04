@@ -63,24 +63,70 @@ scope:
 - docs/reference/tasks.md
 - docs/reference/cli.md
 - tests/core_basics/tasks.rs
-status: ready
+status: completed
 subtasks:
 - subtask_ref: completed-task-reset-reopen
   title: Permit resetting and reopening completed tasks back to contract/v1 ready status across SQLite and milestone Markdown
   status: completed
-  evidence: 'cargo test --test core_basics tasks::completed_task_reopen_and_mcp_manage_action_lifecycle passes'
+  evidence: cargo test --test core_basics tasks::completed_task_reopen_and_mcp_manage_action_lifecycle passes
 - subtask_ref: clear-task-receipt-markdown-sync
   title: Atomically strip status completed and receipt YAML blocks from milestone Markdown on task reset or reopen
   status: completed
-  evidence: 'cargo test --test core_basics tasks::completed_task_reopen_and_mcp_manage_action_lifecycle proves receipt clearing and missing-document fail-closed behavior'
+  evidence: cargo test --test core_basics tasks::completed_task_reopen_and_mcp_manage_action_lifecycle proves receipt clearing and missing-document fail-closed behavior
 - subtask_ref: contract-readmission-on-revision-bump
   title: Allow contract re-admission during task sync when contract_revision is incremented on completed tasks
   status: completed
-  evidence: 'cargo test --test core_basics tasks::contract_readmission_and_reset_fence_old_evidence passes'
+  evidence: cargo test --test core_basics tasks::contract_readmission_and_reset_fence_old_evidence passes
 - subtask_ref: mcp-manage-action-symmetry
   title: Expose reset and reopen actions in MCP task_manage tool router with schema validation
   status: completed
-  evidence: 'task_manage supports actions reset and reopen with full test coverage'
+  evidence: task_manage supports actions reset and reopen with full test coverage
+receipt:
+  commit: 167fcc930765361a56453a29bfab195adadbdc3c
+  contract_revision: 2
+  passed_at: 2026-10-04T08:15:44.605129622+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test core_basics tasks::completed_task_reopen_and_mcp_manage_action_lifecycle
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Scope paths and Markdown confinement reviewed; missing document leaves SQLite unchanged.
+        claims:
+          applicable: true
+          evidence: Contract and build evidence bound to revision 2 and passing target seam.
+        concurrency:
+          applicable: true
+          evidence: Independent review confirmed shared advisory receipt lock prevents sibling document overwrite.
+        project_isolation:
+          applicable: true
+          evidence: Reversible project component encoding preserves natural names and disambiguates dot and Unicode paths.
+        administration:
+          applicable: true
+          evidence: Clippy, core task tests, Merkle and full all-target suite passed; independent review PASS.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIFIED-AGENT-CONTEXT: Claiming a task or querying task context optionally bundles the task contract, active blackboard state, related ADRs/documentation mapped to scope, code symbols in scope, and existing test harnesses in a single roundtrip, eliminating disjoint orientation loops.'
+    - 'INV-COMPLETED-TASK-REOPEN: Reopening or resetting a completed task clears the milestone receipt before resetting SQLite to ready at contract/v1, restores Markdown on a returned SQLite error, and preserves historical subtasks.'
+    - 'INV-MONOREPO-SUBPROJECT-INFERENCE: Subprojects across any repository layout infer project identities structurally from their owning directory hierarchy (without arbitrary folder name whitelists or Forge dictating repository structure), avoiding namespace collisions.'
+    - 'INV-SCANNER-CONTRACT-ISOLATION: Milestone and plan directories configured with wildcard patterns (e.g. extensions/*/docs/milestones) are strictly isolated from source code, AST, and doc search indices to prevent contract drafts from polluting graph queries.'
+    - 'INV-GATE-AWARE-GUIDANCE: Task guidance provides stage-specific tool recommendations tailored to each ACDD gate (code_map_overview on contract/v1, ast_grep_search on build/v1, code_map_impact on review/v1).'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 1. **Store Mechanics**: Reopen and reset remove the terminal barrier (`TASK_TERMINAL`) for completed tasks. Resets `gate = 0`, sets `status = "ready"`, clears `completed_at` and `receipt` from SQLite, increments `claim_revision`, and inserts a pending gate 0 record in `task_gates`.
