@@ -40,9 +40,8 @@ Read [documentation instructions](AGENTS.md) before editing these pages.
 - [Milestones](milestones/README.md): admitted commitments, task execution queue, and acceptance criteria.
 - [Historical archive](archive/README.md): retained historical material and completed milestone receipts.
 
-Current contracts and milestones are indexed through explicit doc_roots in
-forge-mcp.yaml. Plans remain in `docs/plans/` for research and proposal authoring
-prior to milestone admission. Completed milestone receipts remain within the
-indexed milestone root.
+Current contracts and milestones are configured through `milestones` in
+forge-mcp.yaml. Plans remain in `docs/plans/` (configured in `plans`) for research and proposal authoring
+prior to milestone admission. Both are automatically excluded from the code/documentation search index.
 
 For a code change, start with the workspace overview, select an exact symbol, inspect direct relationships, and verify the relevant source. Missing edges are bounded by the indexed languages, roots, and unresolved-reference coverage.

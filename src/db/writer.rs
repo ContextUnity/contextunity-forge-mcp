@@ -116,6 +116,8 @@ fn policy(root: &Path, adapter: &scanner::Adapter) -> Value {
         "linked_workspaces": adapter.linked_workspaces,
         "owners": adapter.owners,
         "aliases": adapter.aliases,
+        "milestones": adapter.milestones,
+        "plans": adapter.plans,
     })
 }
 fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
@@ -164,6 +166,14 @@ fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
         .get("aliases")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
+    let milestones: Vec<String> = value
+        .get("milestones")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_else(|| vec!["docs/milestones".into()]);
+    let plans: Vec<String> = value
+        .get("plans")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_else(|| vec!["docs/plans".into()]);
     Ok(scanner::Adapter {
         adapter_path,
         response: Default::default(),
@@ -175,6 +185,8 @@ fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
         linked_workspaces,
         owners,
         aliases,
+        milestones,
+        plans,
         debug: false,
     })
 }

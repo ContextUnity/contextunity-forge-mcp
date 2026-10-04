@@ -47,7 +47,7 @@ fn fixture() -> (ScopedWorkspace, TasksStore, Milestone) {
     root.write("src/lib.rs", "pub fn example() {}\n");
     root.write(
         "forge-mcp.yaml",
-        "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
     root.write("docs/010-test.md", SPEC);
     let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
@@ -132,6 +132,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
                 stage: "contract/v1".into(),
                 worker_id: "guidance-contract-author".into(),
                 worktree: workspace.to_string_lossy().into_owned(),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -152,6 +153,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
                     stage: "build/v1".into(),
                     worker_id: "guidance-builder".into(),
                     worktree: workspace.to_string_lossy().into_owned(),
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -613,6 +615,7 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
                 stage: "contract".into(),
                 worker_id: "linked-builder".into(),
                 worktree: worktree.to_string_lossy().into_owned(),
+                ..Default::default()
             },
         )
     };
@@ -658,6 +661,7 @@ fn linked_scope_extension_validates_owner_and_claimed_worktree() {
             stage: "contract".into(),
             worker_id: "builder".into(),
             worktree: worktree.0.to_string_lossy().into_owned(),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -717,6 +721,7 @@ fn nested_repository_tasks_preserve_distinct_write_perimeters() {
             stage: "contract".into(),
             worker_id: "library-builder".into(),
             worktree: main.0.join("src/library").to_string_lossy().into_owned(),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -792,6 +797,7 @@ fn task_configuration_defaults_and_crlf_preserve_operational_identity() {
             stage: "contract".into(),
             worker_id: "builder".into(),
             worktree: missing.to_string_lossy().into_owned(),
+            ..Default::default()
         },
     )
     .unwrap_err();
@@ -1048,7 +1054,7 @@ fn force_deletion_preserves_project_boundaries_and_revision_fencing() {
 fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
     let root = ScopedWorkspace::new("forge_task_schema");
     root.write("src/lib.rs", "pub fn sample() {}\n");
-    root.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: []\n");
+    root.write("forge-mcp.yaml", "roots: [src]\ndocs: []\n");
     let index = root.0.join("index.sqlite");
     writer::build(&root.0, &index, None).unwrap();
     assert!(TasksStore::open(&index).is_err());
@@ -1206,7 +1212,7 @@ fn milestone_init_imports_plan_metadata_and_rejects_duplicate_number() {
 #[test]
 fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
     let root = ScopedWorkspace::new("forge_milestone_inspection");
-    root.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n");
+    root.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n");
     let queued = "---\nid: m-queued\ntitle: Queued work\ndoc_type: contract\nstatus: planned\n---\n# Queued work\n### task: draft\n```yaml\ntask_ref: draft\ntarget: Draft work\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     let active = "---\nid: m-live\ntitle: Live work\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\ndepends_on: [m-queued]\ninvariants: [Keep receipts]\n---\n# Live work\n## Outcome and purpose\nDeliver visible progress.\n### task: first\n```yaml\ntask_ref: first\ntarget: First result\nproof_policy: seam-test-first\nscope: [src/]\n```\nImplementation steps for first.\n### task: second\n```yaml\ntask_ref: second\ntarget: Second result\nproof_policy: seam-test-first\nscope: [src/]\n```\nDelivery notes for second.\n";
     let archived = "---\nid: m-prior\ntitle: Prior work\ndoc_type: contract\nstatus: completed\nstarted_at: 2026-09-01T10:00:00Z\n---\n# Prior work\n### task: shipped\n```yaml\ntask_ref: shipped\ntarget: Shipped result\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
@@ -1239,14 +1245,14 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
 }
 #[test]
 fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
-    let root = ScopedWorkspace::new("forge_milestone_handoff"); root.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n");
+    let root = ScopedWorkspace::new("forge_milestone_handoff"); root.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n");
     let source = "---\nid: m-close\ntitle: Close work\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Close work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish work\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     root.write("docs/milestones/010-close.md", source); let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap(); store.sync(&Milestone::parse(source, "forge-mcp").unwrap(), "docs/milestones/010-close.md", &root.0).unwrap();
     let args = ["handoff", "m-close", "--commit", "0123456789abcdef0123456789abcdef01234567", "--verification-command", "cargo test --all-targets", "--tests-passed", "7", "--tests-failed", "0"]; let rejected = milestone_cli(&root, &args); assert!(!rejected.status.success()); assert!(String::from_utf8_lossy(&rejected.stderr).contains("finish")); assert!(root.0.join("docs/milestones/010-close.md").exists()); let mut task = store.list(None, "all", None).unwrap().pop().unwrap(); task.status = "completed".into(); store.connection.execute("UPDATE tasks SET descriptor=?1 WHERE task_id=?2", rusqlite::params![serde_json::to_string(&task).unwrap(), task.task_id]).unwrap();
     let completed = milestone_cli(&root, &args); assert!(completed.status.success(), "{}", String::from_utf8_lossy(&completed.stderr)); assert!(!root.0.join("docs/milestones/010-close.md").exists()); let reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap(); assert_eq!(reopened.list(None, "all", None).unwrap()[0].milestone_ref, "docs/milestones/archive/010-close.md");
     let archived = std::fs::read_to_string(root.0.join("docs/milestones/archive/010-close.md")).unwrap(); let header = archived.strip_prefix("---\n").unwrap().split_once("\n---\n").unwrap().0; let meta: serde_yaml::Value = serde_yaml::from_str(header).unwrap(); assert_eq!(meta["status"].as_str(), Some("completed")); assert_eq!(meta["handoff"]["commit"].as_str(), Some("0123456789abcdef0123456789abcdef01234567"));
     let started = chrono::DateTime::parse_from_rfc3339(meta["started_at"].as_str().unwrap()).unwrap(); let ended = chrono::DateTime::parse_from_rfc3339(meta["handoff"]["completed_at"].as_str().unwrap()).unwrap(); let minutes = (ended - started).num_minutes(); assert_eq!(meta["handoff"]["duration"].as_str().unwrap(), format!("{}h {}m", minutes / 60, minutes % 60)); let verification = &meta["handoff"]["verification"]; assert_eq!(verification["command"].as_str(), Some("cargo test --all-targets")); assert_eq!(verification["status"].as_str(), Some("passed")); assert_eq!(verification["tests_passed"].as_i64(), Some(7)); assert_eq!(verification["tests_failed"].as_i64(), Some(0));
-    let fallback = ScopedWorkspace::new("forge_handoff_claim_fallback"); fallback.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n"); fallback.write("src/lib.rs", "pub fn fallback() {}\n"); let source = "---\nid: m-fallback\ntitle: Fallback work\ndoc_type: contract\nstatus: active\n---\n# Fallback work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish fallback\nproof_policy: seam-test-first\nscope: [src/]\n```\n"; fallback.write("docs/milestones/020-fallback.md", source);
+    let fallback = ScopedWorkspace::new("forge_handoff_claim_fallback"); fallback.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n"); fallback.write("src/lib.rs", "pub fn fallback() {}\n"); let source = "---\nid: m-fallback\ntitle: Fallback work\ndoc_type: contract\nstatus: active\n---\n# Fallback work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish fallback\nproof_policy: seam-test-first\nscope: [src/]\n```\n"; fallback.write("docs/milestones/020-fallback.md", source);
     let milestone = Milestone::parse(source, "forge-mcp").unwrap(); let mut fallback_store = TasksStore::open(&fallback.0.join(".forge/tasks.sqlite")).unwrap(); fallback_store.sync(&milestone, "docs/milestones/020-fallback.md", &fallback.0).unwrap(); let id = milestone.task_id(&milestone.tasks[0]); let mut claimed = fallback_store.claim(&id, "contract", "worker", fallback.0.to_str().unwrap()).unwrap(); let claim_time = fallback_store.earliest_claim("forge-mcp/forge-mcp/m-fallback:").unwrap().unwrap();
     claimed.status = "completed".into(); fallback_store.connection.execute("UPDATE tasks SET descriptor=?1 WHERE task_id=?2", rusqlite::params![serde_json::to_string(&claimed).unwrap(), id]).unwrap(); let result = milestone_cli(&fallback, &["handoff", "m-fallback", "--commit", "0123456789abcdef0123456789abcdef01234567", "--verification-command", "cargo test", "--tests-passed", "1", "--tests-failed", "0"]); assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     let text = std::fs::read_to_string(fallback.0.join("docs/milestones/archive/020-fallback.md")).unwrap(); let header = text.strip_prefix("---\n").unwrap().split_once("\n---\n").unwrap().0; let meta: serde_yaml::Value = serde_yaml::from_str(header).unwrap(); let started = chrono::DateTime::parse_from_rfc3339(meta["started_at"].as_str().unwrap()).unwrap(); let ended = chrono::DateTime::parse_from_rfc3339(meta["handoff"]["completed_at"].as_str().unwrap()).unwrap(); let minutes = (ended - started).num_minutes(); assert_eq!(started.timestamp(), claim_time); assert_eq!(meta["handoff"]["duration"].as_str().unwrap(), format!("{}h {}m", minutes / 60, minutes % 60));
@@ -1258,7 +1264,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     root.write("src/lib.rs", "pub fn example() {}\n");
     root.write(
         "forge-mcp.yaml",
-        "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
     let source = SPEC.replace("task_ref: first\n", "task_ref: first\ninvariants: [first-rule]\n");
     let milestone_ref = "docs/milestones/010-test.md";
@@ -1393,7 +1399,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
 }
 #[test]
 fn first_cli_task_claim_activates_planned_milestone_with_started_at() {
-    let root = ScopedWorkspace::new("forge_milestone_claim_start"); root.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n"); root.write("src/lib.rs", "pub fn task() {}\n"); let source = "---\nid: m-start\ntitle: Start work\ndoc_type: contract\nstatus: planned\n---\n# Start work\n### task: begin\n```yaml\ntask_ref: begin\ntarget: Begin work\nproof_policy: seam-test-first\nscope: [src/]\n```\n"; root.write("docs/milestones/010-start.md", source);
+    let root = ScopedWorkspace::new("forge_milestone_claim_start"); root.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n"); root.write("src/lib.rs", "pub fn task() {}\n"); let source = "---\nid: m-start\ntitle: Start work\ndoc_type: contract\nstatus: planned\n---\n# Start work\n### task: begin\n```yaml\ntask_ref: begin\ntarget: Begin work\nproof_policy: seam-test-first\nscope: [src/]\n```\n"; root.write("docs/milestones/010-start.md", source);
     let milestone = Milestone::parse(source, "forge-mcp").unwrap(); let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap(); store.sync(&milestone, "docs/milestones/010-start.md", &root.0).unwrap(); let id = milestone.task_id(&milestone.tasks[0]); let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp")).args(["--root", root.0.to_str().unwrap(), "task", "claim", &id, "--stage", "contract", "--worker", "first", "--worktree", root.0.to_str().unwrap()]).output().unwrap(); assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let text = std::fs::read_to_string(root.0.join("docs/milestones/010-start.md")).unwrap(); let header = text.strip_prefix("---\n").unwrap().split_once("\n---\n").unwrap().0; let meta: serde_yaml::Value = serde_yaml::from_str(header).unwrap(); assert_eq!(meta["status"].as_str(), Some("active")); let started = chrono::DateTime::parse_from_rfc3339(meta["started_at"].as_str().unwrap()).unwrap(); assert!((chrono::Utc::now() - started.with_timezone(&chrono::Utc)).num_minutes().abs() < 2);
 }
@@ -1406,7 +1412,7 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
     root.write("src/lib.rs", "pub fn context() {}\n");
     root.write(
         "forge-mcp.yaml",
-        "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
     root.write(milestone_ref, source);
     let milestone = Milestone::parse(source, "forge-mcp").unwrap();
@@ -1460,6 +1466,7 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
                     stage: "handoff/v1".into(),
                     worker_id: worker.into(),
                     worktree: root.0.to_string_lossy().into_owned(),
+                    ..Default::default()
                 },
             )
             .unwrap_err();
@@ -1473,6 +1480,7 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
                 stage: (*stage).into(),
                 worker_id: worker.into(),
                 worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1585,7 +1593,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     root.write("src/lib.rs", "pub fn core() {}\n");
     root.write(
         "forge-mcp.yaml",
-        "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
     root.write("docs/010-subtasks.md", spec);
 
@@ -1714,6 +1722,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
                 stage: (*stage).into(),
                 worker_id: worker.into(),
                 worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1747,16 +1756,51 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     assert!(add_post_err.to_string().contains("TASK_TERMINAL"));
     let update_post_err = store.subtask_update(task_id, "sub-2", "pending", None).unwrap_err();
     assert!(update_post_err.to_string().contains("TASK_TERMINAL"));
+
+    // Reopening the completed task via tasks::reset clears terminal receipt from markdown and restores ready state in SQLite
+    let reopened_task = tasks::reset(&root.0, task_id).unwrap();
+    assert_eq!(reopened_task.status, "ready");
+    assert_eq!(reopened_task.gate, 0);
+    assert!(reopened_task.receipt.is_none());
+    assert!(reopened_task.completed_at.is_none());
+
+    // Markdown file reflects the reopened state (status: completed and receipt removed, subtasks preserved)
+    let reopened_doc = std::fs::read_to_string(root.0.join("docs/010-subtasks.md")).unwrap();
+    let reopened_milestone = Milestone::parse(&reopened_doc, "forge-mcp").unwrap();
+    assert_eq!(reopened_milestone.tasks[0].status.as_deref(), None);
+    assert!(reopened_milestone.tasks[0].receipt.is_none());
+    assert_eq!(reopened_milestone.tasks[0].subtasks.len(), 3);
+
+    // After reopening, adding and updating subtasks works cleanly
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    let sub4 = store.subtask_add(task_id, "sub-4", "Audit findings subtask").unwrap();
+    assert_eq!(sub4.subtask_ref, "sub-4");
+    assert_eq!(sub4.status, "pending");
+
+    let sub4_updated = store.subtask_update(task_id, "sub-4", "completed", Some("Audit verified")).unwrap();
+    assert_eq!(sub4_updated.status, "completed");
+    assert_eq!(sub4_updated.evidence.as_deref(), Some("Audit verified"));
+
+    // Syncing after reopen maintains the ready state without errors
+    let synced = store.sync(&reopened_milestone, "docs/010-subtasks.md", &root.0).unwrap();
+    assert_eq!(synced[0].status, "ready");
+
+    // Contract re-admission: bumping contract_revision in milestone markdown syncs cleanly even if completed
+    let readmitted_doc = reopened_doc.replace("proof_policy: seam-test-first", "contract_revision: 2\nproof_policy: seam-test-first");
+    let readmitted_milestone = Milestone::parse(&readmitted_doc, "forge-mcp").unwrap();
+    let readmitted = store.sync(&readmitted_milestone, "docs/010-subtasks.md", &root.0).unwrap();
+    assert_eq!(readmitted[0].status, "ready");
+    assert_eq!(readmitted[0].contract_revision, 2);
 }
 
 #[test]
-fn direct_proof_accepts_zero_exit_code_and_seam_test_first_rejects_it() {
-    let spec = "---\nid: m-policy\ntitle: Policy Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: direct\ntarget: Deliver direct\nproof_policy: direct-proof\nscope: [src/]\n```\n```yaml\ntask_ref: seam\ntarget: Deliver seam\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_first_rejects_it() {
+    let spec = "---\nid: m-policy\ntitle: Policy Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: direct\ntarget: Deliver direct\nproof_policy: direct-proof\nscope: [src/]\n```\n```yaml\ntask_ref: deferred\ntarget: Deliver deferred final test\nproof_policy: deferred-final-test\nscope: [src/]\n```\n```yaml\ntask_ref: seam\ntarget: Deliver seam\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     let root = ScopedWorkspace::new("forge_policy");
     root.write("src/lib.rs", "pub fn policy() {}\n");
     root.write(
         "forge-mcp.yaml",
-        "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
     root.write("docs/010-policy.md", spec);
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
@@ -1764,6 +1808,7 @@ fn direct_proof_accepts_zero_exit_code_and_seam_test_first_rejects_it() {
     store.sync(&milestone, "docs/010-policy.md", &root.0).unwrap();
 
     let direct_id = "forge-mcp/forge-mcp/m-policy:direct";
+    let deferred_id = "forge-mcp/forge-mcp/m-policy:deferred";
     let seam_id = "forge-mcp/forge-mcp/m-policy:seam";
 
     // direct-proof allows red_exit_code: 0
@@ -1778,6 +1823,19 @@ fn direct_proof_accepts_zero_exit_code_and_seam_test_first_rejects_it() {
     });
     let direct_submit = store.submit(direct_id, "contract/v1", &direct_evidence, "pass", None);
     assert!(direct_submit.is_ok(), "direct-proof policy must accept exit code 0");
+
+    // deferred-final-test allows red_exit_code: 0
+    store.claim(deferred_id, "contract/v1", "builder", root.0.to_str().unwrap()).unwrap();
+    let def_task = store.inspect(deferred_id).unwrap();
+    let mut def_evidence = evidence(&def_task);
+    def_evidence.proof = json!({
+        "contract_proof": {
+            "seam_test_ref": "tests/core_basics/tasks.rs",
+            "red_exit_code": 0
+        }
+    });
+    let def_submit = store.submit(deferred_id, "contract/v1", &def_evidence, "pass", None);
+    assert!(def_submit.is_ok(), "deferred-final-test policy must accept exit code 0");
 
     // seam-test-first rejects red_exit_code: 0
     store.claim(seam_id, "contract/v1", "builder", root.0.to_str().unwrap()).unwrap();
@@ -1810,7 +1868,7 @@ fn concurrent_subtask_add_preserves_all_subtasks_in_sqlite_and_descriptor() {
     let spec = "---\nid: m-concurrent\ntitle: Concurrent Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: worker\ntarget: Deliver worker\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     let root = ScopedWorkspace::new("forge_concurrent_subtasks");
     root.write("src/lib.rs", "pub fn work() {}\n");
-    root.write("forge-mcp.yaml", "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n");
+    root.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n");
     root.write("docs/010-concurrent.md", spec);
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
@@ -1855,7 +1913,7 @@ fn subtask_update_preserves_evidence_when_none_provided_and_contract_bump_resets
     root.write("src/lib.rs", "pub fn bump() {}\n");
     root.write(
         "forge-mcp.yaml",
-        "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
     root.write("docs/010-bump.md", spec_v1);
     let milestone_v1 = Milestone::parse(spec_v1, "forge-mcp").unwrap();
@@ -1914,7 +1972,7 @@ fn completed_tasks_sync_and_inspect_without_panic() {
     root.write("src/lib.rs", "pub fn legacy() {}\n");
     root.write(
         "forge-mcp.yaml",
-        "roots: [src]\ndoc_roots: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
     let spec = "---\nid: m-completed\ntitle: Completed Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: t1\ntarget: Deliver t1\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     root.write("docs/010-completed.md", spec);
@@ -1941,4 +1999,360 @@ fn completed_tasks_sync_and_inspect_without_panic() {
     let resynced = store.inspect(t1_id).unwrap();
     assert_eq!(resynced.status, "completed");
     assert_eq!(resynced.gate, 3);
+}
+
+#[test]
+fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
+    let root = ScopedWorkspace::new("forge_multi_milestones_and_plans");
+    root.write("src/lib.rs", "pub fn platform() {}\n");
+    root.write("docs/architecture.md", "# Platform Architecture\nGeneral documentation.\n");
+    root.write("docs/plans/platform_plan.md", "---\nid: p-platform\ntitle: Platform Plan\ndoc_type: plan\npurpose: Platform\n---\n# Platform Plan\n");
+    root.write("docs/milestones/010-platform.md", "---\nid: m-platform\ntitle: Platform Milestone\ndoc_type: contract\nstatus: active\n---\n# Platform Milestone\n### task: ptask\n```yaml\ntask_ref: ptask\ntarget: Deliver ptask\nproof_policy: direct-proof\nscope: [src/]\n```\n");
+    root.write("extensions/commerce/src/models.py", "# Commerce models\n");
+    root.write("extensions/commerce/docs/README.md", "# Commerce Readme\nDocumentation for commerce.\n");
+    root.write("extensions/commerce/docs/plans/commerce_plan.md", "---\nid: p-commerce\ntitle: Commerce Plan\ndoc_type: plan\npurpose: Commerce\n---\n# Commerce Plan\n");
+    root.write("extensions/commerce/docs/milestones/010-commerce.md", "---\nid: m-commerce\ntitle: Commerce Milestone\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Commerce Milestone\n### task: ctask\n```yaml\ntask_ref: ctask\ntarget: Deliver ctask\nproof_policy: direct-proof\nscope: [extensions/commerce/]\n```\n");
+
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src, extensions]\ndocs: [docs]\nmilestones:\n  - docs/milestones\n  - extensions/*/docs/milestones\nplans:\n  - docs/plans\n  - extensions/*/docs/plans\ntasks_db: .forge/tasks.sqlite\n",
+    );
+
+    // 1. Verify scanner automatically excludes plans and milestones from code/doc index
+    let scan = contextunity_forge_mcp::engine::scanner::scan(&root.0, None).unwrap();
+    let scanned_paths: Vec<_> = scan.entries.iter().map(|e| e.path.as_str()).collect();
+
+    assert!(scanned_paths.contains(&"src/lib.rs"));
+    assert!(scanned_paths.contains(&"docs/architecture.md"));
+    assert!(scanned_paths.contains(&"extensions/commerce/src/models.py"));
+    assert!(scanned_paths.contains(&"extensions/commerce/docs/README.md"));
+
+    assert!(!scanned_paths.contains(&"docs/plans/platform_plan.md"));
+    assert!(!scanned_paths.contains(&"docs/milestones/010-platform.md"));
+    assert!(!scanned_paths.contains(&"extensions/commerce/docs/plans/commerce_plan.md"));
+    assert!(!scanned_paths.contains(&"extensions/commerce/docs/milestones/010-commerce.md"));
+
+    // 2. Verify milestones::list discovers milestones across all configured milestone directories
+    let listed = contextunity_forge_mcp::engine::milestones::list(&root.0, false, None).unwrap();
+    let milestones = listed["milestones"].as_array().unwrap();
+    assert_eq!(milestones.len(), 2);
+    let ids: Vec<_> = milestones.iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert!(ids.contains(&"m-platform"));
+    assert!(ids.contains(&"m-commerce"));
+
+    // 3. Verify milestones::show finds milestone in extension directory
+    let show_commerce = contextunity_forge_mcp::engine::milestones::show(&root.0, "m-commerce", false).unwrap();
+    assert_eq!(show_commerce["id"], "m-commerce");
+    assert_eq!(show_commerce["title"], "Commerce Milestone");
+
+    // 4. Verify milestones::init with --plan automatically infers extension milestone directory
+    let init_result = contextunity_forge_mcp::engine::milestones::init(
+        &root.0,
+        contextunity_forge_mcp::engine::milestones::Init {
+            num: None,
+            slug: Some("commerce-v2".into()),
+            title: None,
+            plan: Some("extensions/commerce/docs/plans/commerce_plan.md".into()),
+            dir: None,
+            desc: None,
+            depends_on: vec![],
+            active: false,
+            stdin: String::new(),
+        },
+    ).unwrap();
+    assert_eq!(init_result["id"], "m-commerce-v2");
+    assert_eq!(init_result["path"], "extensions/commerce/docs/milestones/020-commerce-v2.md");
+    let init_v2_content = std::fs::read_to_string(root.0.join("extensions/commerce/docs/milestones/020-commerce-v2.md")).unwrap();
+    assert!(init_v2_content.contains("project: extensions.commerce"));
+
+    // 5. Verify task sync on extension milestone creates task in subproject namespace
+    let synced = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "extensions/commerce/docs/milestones/010-commerce.md"
+        })).unwrap(),
+    ).unwrap();
+    let tasks_array = synced["tasks"].as_array().unwrap();
+    assert_eq!(tasks_array.len(), 1);
+    let task_id = tasks_array[0]["task_id"].as_str().unwrap();
+    assert!(task_id.contains("/extensions.commerce/"));
+
+    // Verify milestones::list now shows task as synced (ready, not unsynced)
+    let listed_after_sync = contextunity_forge_mcp::engine::milestones::list(&root.0, false, None).unwrap();
+    let commerce_m = listed_after_sync["milestones"].as_array().unwrap().iter().find(|m| m["id"] == "m-commerce").unwrap();
+    assert_eq!(commerce_m["tasks"][0]["status"], "ready");
+
+    // Complete the task and verify handoff succeeds and archives into extension's archive
+    let store = TasksStore::open_project(&root.0.join(".forge/tasks.sqlite"), "forge-mcp", "extensions.commerce").unwrap();
+    let mut task = store.list(None, "all", None).unwrap().pop().unwrap();
+    task.status = "completed".into();
+    store.connection.execute("UPDATE tasks SET descriptor=?1 WHERE task_id=?2", rusqlite::params![serde_json::to_string(&task).unwrap(), task.task_id]).unwrap();
+    drop(store);
+
+    let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-commerce",
+        Some("0123456789abcdef0123456789abcdef01234567"),
+        "pytest extensions/commerce/tests",
+        5,
+        0,
+    ).unwrap();
+    assert_eq!(handoff_res["id"], "m-commerce");
+    assert!(root.0.join("extensions/commerce/docs/milestones/archive/010-commerce.md").exists());
+    assert!(!root.0.join("extensions/commerce/docs/milestones/010-commerce.md").exists());
+
+    // 6. Verify init with --dir rejects path escaping workspace or not in configured milestones
+    let escaping_init = contextunity_forge_mcp::engine::milestones::init(
+        &root.0,
+        contextunity_forge_mcp::engine::milestones::Init {
+            num: None,
+            slug: Some("escape".into()),
+            title: Some("Escape".into()),
+            plan: None,
+            dir: Some("../outside".into()),
+            desc: None,
+            depends_on: vec![],
+            active: false,
+            stdin: String::new(),
+        },
+    );
+    assert!(escaping_init.is_err());
+
+    let unconfigured_init = contextunity_forge_mcp::engine::milestones::init(
+        &root.0,
+        contextunity_forge_mcp::engine::milestones::Init {
+            num: None,
+            slug: Some("unconfigured".into()),
+            title: Some("Unconfigured".into()),
+            plan: None,
+            dir: Some("unconfigured/milestones".into()),
+            desc: None,
+            depends_on: vec![],
+            active: false,
+            stdin: String::new(),
+        },
+    );
+    assert!(unconfigured_init.is_err());
+}
+
+#[test]
+fn infer_project_from_path_supports_arbitrary_monorepo_structures_universally() {
+    use contextunity_forge_mcp::core::tasks::infer_project_from_path;
+    use std::path::Path;
+
+    // Standard docs/milestones and docs/plans under arbitrary subprojects
+    assert_eq!(infer_project_from_path(Path::new("extensions/commerce/docs/milestones/010.md")), Some("extensions.commerce".into()));
+    assert_eq!(infer_project_from_path(Path::new("packages/cli/docs/milestones/010.md")), Some("packages.cli".into()));
+    assert_eq!(infer_project_from_path(Path::new("services/brain/docs/plans/010.md")), Some("services.brain".into()));
+    assert_eq!(infer_project_from_path(Path::new("apps/web/docs/milestones/010.md")), Some("apps.web".into()));
+
+    // Arbitrary custom folders - Forge does not dictate folder naming conventions
+    assert_eq!(infer_project_from_path(Path::new("custom_dir/my-plugin/milestones/010.md")), Some("custom_5fdir.my-plugin".into()));
+    assert_eq!(infer_project_from_path(Path::new("team_alpha/backend/analytics/docs/milestones/020.md")), Some("team_5falpha.backend.analytics".into()));
+    assert_eq!(infer_project_from_path(Path::new("microservices/billing/docs/plans/030.md")), Some("microservices.billing".into()));
+    assert_ne!(infer_project_from_path(Path::new("packages/api/docs/milestones/010.md")), infer_project_from_path(Path::new("services/api/docs/milestones/010.md")));
+    assert_eq!(infer_project_from_path(Path::new("standalone_tool/milestones/010.md")), Some("standalone_tool".into()));
+
+    // Root repository milestones and plans have no subproject
+    assert_eq!(infer_project_from_path(Path::new("docs/milestones/010.md")), None);
+    assert_eq!(infer_project_from_path(Path::new("milestones/010.md")), None);
+    assert_eq!(infer_project_from_path(Path::new("docs/plans/010.md")), None);
+    assert_eq!(infer_project_from_path(Path::new("plans/010.md")), None);
+
+    let root = ScopedWorkspace::new("forge_project_hierarchy");
+    root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\nmilestones:\n  - docs/milestones\n  - packages/api/docs/milestones\n  - services/api/docs/milestones\n  - plugins/api/docs/milestones\n");
+    let task_block = "# Tasks\n```yaml\ntask_ref: shared\ntarget: Resolve one project\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    for (dir, project) in [
+        ("packages/api", ""),
+        ("services/api", ""),
+        ("plugins/api", "project: explicit-api\n"),
+    ] {
+        root.write(&format!("{dir}/docs/milestones/010-shared.md"), &format!("---\nid: m-shared\ntitle: Shared\ndoc_type: contract\n{project}---\n{task_block}"));
+    }
+    for (filename, project) in [
+        ("010-default.md", ""),
+        ("020-alpha.md", "project: alpha\n"),
+        ("030-beta.md", "project: beta\n"),
+    ] {
+        root.write(&format!("docs/milestones/{filename}"), &format!("---\nid: m-shared\ntitle: Shared\ndoc_type: contract\n{project}---\n{task_block}"));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for reference in [
+        "packages/api/docs/milestones/010-shared.md",
+        "services/api/docs/milestones/010-shared.md",
+        "plugins/api/docs/milestones/010-shared.md",
+        "docs/milestones/010-default.md",
+        "docs/milestones/020-alpha.md",
+        "docs/milestones/030-beta.md",
+    ] {
+        let response = tasks::manage(&root.0, tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some(reference.to_owned()),
+            ..Default::default()
+        }).unwrap();
+        ids.insert(response["tasks"][0]["task_id"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(ids.len(), 6);
+    assert!(ids.iter().any(|id| id.contains("/explicit-api/")));
+    assert!(ids.iter().any(|id| id.contains("/forge-mcp/")));
+    assert!(ids.iter().any(|id| id.contains("/alpha/")));
+    assert!(ids.iter().any(|id| id.contains("/beta/")));
+}
+
+#[test]
+fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
+    use sha2::Digest;
+    let spec = "---\nid: m-reopen\ntitle: Reopen Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: reopenable\ntarget: Deliver reopenable feature\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    let root = ScopedWorkspace::new("forge_reopen");
+    root.write("src/lib.rs", "pub fn reopenable() {}\n");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write("docs/010-reopen.md", spec);
+
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    store.sync(&milestone, "docs/010-reopen.md", &root.0).unwrap();
+    let task_id = "forge-mcp/forge-mcp/m-reopen:reopenable";
+
+    // Advance task through all 4 gates to completed
+    let stages = ["contract/v1", "build/v1", "review/v1", "deliver/v1"];
+    for (index, stage) in stages.iter().enumerate() {
+        let worker = if index >= 2 { "reviewer" } else { "builder" };
+        tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: task_id.into(),
+                stage: (*stage).into(),
+                worker_id: worker.into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let stored = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
+        let mut ev = evidence(&stored);
+        if *stage == "deliver/v1" {
+            ev.proof = json!({
+                "review_proof": {
+                    "decision": "pass",
+                    "contours": {
+                        "audit": {"applicable": true, "evidence": "Reopen verification passed"}
+                    }
+                }
+            });
+        }
+        tasks::submit(
+            &root.0,
+            serde_json::from_value(json!({
+                "task_id": task_id,
+                "stage": stage,
+                "action": "pass",
+                "evidence": serde_json::to_value(&ev).unwrap(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    // Verify task is completed in SQLite
+    let completed_task = store.inspect(task_id).unwrap();
+    assert_eq!(completed_task.status, "completed");
+    assert!(completed_task.completed_at.is_some());
+    assert!(completed_task.receipt.is_some());
+
+    // A persisted reset intent restores the receipt after an interrupted Markdown-first update.
+    let milestone_path = root.0.join("docs/010-reopen.md");
+    let completed_text = std::fs::read_to_string(&milestone_path).unwrap();
+    let digest = sha2::Sha256::digest(task_id.as_bytes());
+    let journal_rel = format!(".forge/task-reset/{}.json", hex::encode(digest));
+    root.write(&journal_rel, &json!({
+        "task_id": task_id,
+        "milestone_ref": "docs/010-reopen.md",
+        "original_text": completed_text,
+        "pid": std::process::id()
+    }).to_string());
+    root.write("docs/010-reopen.md", spec);
+    let pending = tasks::manage(&root.0, tasks::Manage {
+        action: tasks::ManageAction::Inspect,
+        task_id: Some(task_id.into()),
+        ..Default::default()
+    }).unwrap_err();
+    assert!(pending.to_string().contains("TASK_RESET_IN_PROGRESS"));
+    assert_eq!(std::fs::read_to_string(&milestone_path).unwrap(), spec);
+    assert!(root.0.join(&journal_rel).exists());
+    root.write(&journal_rel, &json!({
+        "task_id": task_id,
+        "milestone_ref": "docs/010-reopen.md",
+        "original_text": completed_text,
+        "pid": 0
+    }).to_string());
+    tasks::manage(&root.0, tasks::Manage {
+        action: tasks::ManageAction::Inspect,
+        task_id: Some(task_id.into()),
+        ..Default::default()
+    }).unwrap();
+    assert_eq!(std::fs::read_to_string(&milestone_path).unwrap(), completed_text);
+    assert!(!root.0.join(journal_rel).exists());
+
+    // Subtask modifications fail with informative TASK_TERMINAL message
+    let add_err = store.subtask_add(task_id, "sub-audit", "Post-completion audit").unwrap_err();
+    assert!(add_err.to_string().contains("TASK_TERMINAL"));
+    assert!(add_err.to_string().contains("reopen or reset"));
+
+    // Reopen requires its durable milestone receipt to be available before SQLite changes.
+    let held_path = root.0.join("docs/010-reopen-held.md");
+    std::fs::rename(&milestone_path, &held_path).unwrap();
+    assert!(tasks::reopen(&root.0, task_id).is_err());
+    assert_eq!(store.inspect(task_id).unwrap().status, "completed");
+    std::fs::rename(&held_path, &milestone_path).unwrap();
+
+    // MCP task_manage with action: "reopen"
+    let reopen_res = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Reopen,
+            task_id: Some(task_id.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(reopen_res["status"], "ready");
+    assert_eq!(reopen_res["gate"], 0);
+    assert!(reopen_res["receipt"].is_null());
+    assert!(reopen_res["completed_at"].is_null());
+
+    // Reopened task can accept subtasks
+    let sub = store.subtask_add(task_id, "sub-audit", "Post-completion audit").unwrap();
+    assert_eq!(sub.subtask_ref, "sub-audit");
+    assert_eq!(sub.status, "pending");
+
+    // Reopened task can be claimed again at contract/v1
+    let re_claimed = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "contract/v1".into(),
+            worker_id: "auditor".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(re_claimed["status"], "in_progress");
+
+    // MCP task_manage with action: "reset" resets in-progress claim
+    let reset_res = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Reset,
+            task_id: Some(task_id.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(reset_res["status"], "ready");
 }

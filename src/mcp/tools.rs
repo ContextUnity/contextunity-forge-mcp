@@ -429,7 +429,7 @@ impl Server {
         self.responding(|_| super::tasks::submit(&self.root, p))
     }
     #[tool(
-        description = "Create, sync, inspect, delete or extend task scope. Select workspace for creation, synchronization or milestone deletion; sync with only workspace imports its milestone directory."
+        description = "Create, sync, inspect, delete, extend task scope, or reset/reopen tasks. Select workspace for creation, synchronization or milestone deletion; sync with only workspace imports its milestone directory."
     )]
     fn task_manage(&self, Parameters(p): Parameters<super::tasks::Manage>) -> CallToolResult {
         self.responding(|_| super::tasks::manage(&self.root, p))

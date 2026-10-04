@@ -44,6 +44,8 @@ pub enum MilestoneCommand {
         #[arg(long)] title: Option<String>,
         /// Source plan path within the workspace.
         #[arg(long)] plan: Option<PathBuf>,
+        /// Target directory for the milestone document.
+        #[arg(long)] dir: Option<PathBuf>,
         /// Description added to the milestone body.
         #[arg(long)] desc: Option<String>,
         /// Milestone IDs that this contract depends on.
@@ -60,12 +62,12 @@ pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
         MilestoneCommand::Show { id, full } => milestones::show(root, &id, full),
         MilestoneCommand::Handoff { id, commit, verification_command, tests_passed, tests_failed } =>
             milestones::handoff(root, &id, commit.as_deref(), &verification_command, tests_passed, tests_failed),
-        MilestoneCommand::Init { num, slug, title, plan, desc, depends_on, active } => {
+        MilestoneCommand::Init { num, slug, title, plan, dir, desc, depends_on, active } => {
             let mut stdin = String::new();
             if !io::stdin().is_terminal() {
                 io::stdin().read_to_string(&mut stdin)?;
             }
-            milestones::init(root, Init { num, slug, title, plan, desc, depends_on, active, stdin })
+            milestones::init(root, Init { num, slug, title, plan, dir, desc, depends_on, active, stdin })
         }
     }
 }

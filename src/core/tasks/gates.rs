@@ -89,7 +89,7 @@ fn validate_contract(value: &serde_json::Value, proof_policy: &str, passed: bool
         if proof.seam_test_ref.trim().is_empty() {
             bail!("TASK_EVIDENCE_INVALID: seam test reference required");
         }
-        if proof_policy == "direct-proof" {
+        if proof_policy == "direct-proof" || proof_policy == "deferred-final-test" {
             if proof.red_exit_code < 0 {
                 bail!("TASK_EVIDENCE_INVALID: exit code must be non-negative");
             }

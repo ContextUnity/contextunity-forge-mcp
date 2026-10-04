@@ -106,9 +106,9 @@ pub struct LinkedWorkspaceConfig {
     #[serde(default)]
     /// Optional roots value.
     pub roots: Option<Vec<String>>,
-    #[serde(default)]
-    /// Optional doc roots value.
-    pub doc_roots: Option<Vec<String>>,
+    #[serde(default, alias = "doc_roots")]
+    /// Optional docs value.
+    pub docs: Option<Vec<String>>,
     #[serde(default)]
     /// Optional ignore value.
     pub ignore: Option<Vec<String>>,
@@ -137,7 +137,10 @@ struct AdapterFile {
     roots: Option<Vec<String>>,
     ignore: Option<Vec<String>>,
     eligible_roots: Option<Vec<String>>,
-    doc_roots: Option<Vec<String>>,
+    #[serde(default, alias = "doc_roots")]
+    docs: Option<Vec<String>>,
+    milestones: Option<Vec<String>>,
+    plans: Option<Vec<String>>,
     excluded_directory_names: Option<Vec<String>>,
     excluded_file_names: Option<Vec<String>>,
     linked_workspaces: Option<Vec<LinkedWorkspaceConfig>>,
@@ -171,6 +174,10 @@ pub struct Adapter {
     pub owners: BTreeMap<String, String>,
     /// The aliases value.
     pub aliases: BTreeMap<String, String>,
+    /// Milestone directories to scan for milestones and exclude from doc/code index.
+    pub milestones: Vec<String>,
+    /// Plan directories to exclude from doc/code index.
+    pub plans: Vec<String>,
     /// Whether debug applies.
     pub debug: bool,
 }
@@ -654,7 +661,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         Ok(values)
     })?;
     let mut roots = roots;
-    for item in raw.doc_roots.unwrap_or_default() {
+    for item in raw.docs.unwrap_or_default() {
         if item.contains('*') || item.contains('?') {
             continue;
         }
@@ -716,7 +723,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
                 }
             }
         }
-        for item in lw_cfg.doc_roots.unwrap_or_default() {
+        for item in lw_cfg.docs.unwrap_or_default() {
             if item.contains('*') || item.contains('?') {
                 continue;
             }
@@ -767,11 +774,66 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         linked_workspaces,
         owners: raw.owners.unwrap_or_default(),
         aliases: raw.aliases.unwrap_or_default(),
+        milestones: raw
+            .milestones
+            .unwrap_or_else(|| vec!["docs/milestones".into()]),
+        plans: raw
+            .plans
+            .unwrap_or_else(|| vec!["docs/plans".into()]),
         debug: raw.debug
             || std::env::var("FORGE_DEBUG")
                 .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             || std::env::var("DEBUG").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
     })
+}
+
+fn path_component_matches(component: &str, pattern: &str) -> bool {
+    if pattern == "*" || pattern == "**" {
+        return true;
+    }
+    if let Some((prefix, suffix)) = pattern.split_once('*') {
+        component.starts_with(prefix)
+            && component.ends_with(suffix)
+            && component.len() >= prefix.len() + suffix.len()
+    } else {
+        component == pattern
+    }
+}
+
+/// Checks if a relative path matches a pattern that may contain '*' components.
+pub fn matches_path_pattern(rel_path: &str, pattern: &str) -> bool {
+    let rel_norm = rel_path.trim_matches('/').replace('\\', "/");
+    let pat_norm = pattern.trim_matches('/').replace('\\', "/");
+    if pat_norm.is_empty() || rel_norm.is_empty() {
+        return false;
+    }
+    if pat_norm.contains('*') {
+        let pattern_parts: Vec<&str> = pat_norm.split('/').collect();
+        let path_parts: Vec<&str> = rel_norm.split('/').collect();
+        if path_parts.len() < pattern_parts.len() {
+            return false;
+        }
+        for (i, part) in pattern_parts.iter().enumerate() {
+            if !path_component_matches(path_parts[i], part) {
+                return false;
+            }
+        }
+        true
+    } else {
+        rel_norm == pat_norm || rel_norm.starts_with(&format!("{}/", pat_norm))
+    }
+}
+
+/// Checks if a relative path belongs to any configured milestone or plan directories.
+pub fn is_milestone_or_plan_path(
+    rel_str: &str,
+    milestones: &[String],
+    plans: &[String],
+) -> bool {
+    let check = |dirs: &[String]| {
+        dirs.iter().any(|d| matches_path_pattern(rel_str, d))
+    };
+    check(milestones) || check(plans)
 }
 
 /// Performs language.
@@ -936,6 +998,9 @@ pub fn scan_reusing(
                 }
                 if let Ok(rel) = full.strip_prefix(root) {
                     let rel_str = rel.to_string_lossy().replace('\\', "/");
+                    if is_milestone_or_plan_path(&rel_str, &adapter.milestones, &adapter.plans) {
+                        continue;
+                    }
                     push_candidate(
                         &mut candidates,
                         &mut seen_rel_paths,
@@ -979,8 +1044,12 @@ pub fn scan_reusing(
                         continue;
                     }
                     if let Ok(rel) = full.strip_prefix(&lw.path) {
+                        let rel_str_inner = rel.to_string_lossy().replace('\\', "/");
+                        if is_milestone_or_plan_path(&rel_str_inner, &adapter.milestones, &adapter.plans) {
+                            continue;
+                        }
                         let rel_str =
-                            format!("[{}]/{}", lw.name, rel.to_string_lossy().replace('\\', "/"));
+                            format!("[{}]/{}", lw.name, rel_str_inner);
                         push_candidate(
                             &mut candidates,
                             &mut seen_rel_paths,
@@ -1244,5 +1313,36 @@ mod tests {
             available_memory_from_sources(321, Some(proc_cgroup), &fixture.root()),
             321
         );
+    }
+
+    #[test]
+    fn matches_path_pattern_supports_wildcards_and_partial_globs() {
+        assert!(matches_path_pattern(
+            "extensions/commerce/docs/milestones/010-test.md",
+            "extensions/*/docs/milestones"
+        ));
+        assert!(matches_path_pattern(
+            "services/auth-api/docs/plans/arch.md",
+            "services/*-api/docs/plans"
+        ));
+        assert!(matches_path_pattern(
+            "docs/milestones/020.md",
+            "docs/milestones"
+        ));
+        assert!(!matches_path_pattern(
+            "docs/other/020.md",
+            "docs/milestones"
+        ));
+        assert!(!matches_path_pattern(
+            "extensions/commerce/src/lib.rs",
+            "extensions/*/docs/milestones"
+        ));
+    }
+
+    #[test]
+    fn doc_roots_backward_compatibility_deserializes_to_docs() {
+        let yaml = "roots: [src]\ndoc_roots: [docs, README.md]\n";
+        let parsed: AdapterFile = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.docs, Some(vec!["docs".into(), "README.md".into()]));
     }
 }

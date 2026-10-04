@@ -12,8 +12,12 @@ title: Workspace configuration
 ```yaml
 roots:
   - src
-doc_roots:
+docs:
   - docs
+milestones:
+  - docs/milestones
+plans:
+  - docs/plans
 ignore:
   - target
   - node_modules
@@ -23,11 +27,11 @@ linked_workspaces:
     enabled: true
     roots:
       - src
-    doc_roots:
+    docs:
       - docs
 ```
 
-`roots` and `doc_roots` are literal, relative directories or paths inside the workspace. `ignore` matches file or directory basenames. The scanner admits compiled source extensions and Markdown/MDX within these roots; scan roots do not define import or package roots. Unavailable linked workspaces are skipped. A linked entry with `enabled: false` is excluded; omission of `enabled` means true.
+`roots` and `docs` are literal, relative directories or paths inside the workspace. `milestones` and `plans` default to `docs/milestones` and `docs/plans` when omitted. Their `*` segments match one directory component (for example, `extensions/*/docs/milestones`). Files below these directories are excluded from the code and documentation search index. Milestone commands read contracts from the configured milestone directories. `ignore` matches file or directory basenames. The scanner admits compiled source extensions and Markdown/MDX within these roots; scan roots do not define import or package roots. Unavailable linked workspaces are skipped. A linked entry with `enabled: false` is excluded; omission of `enabled` means true.
 
 The default basename exclusions cover `.git`, `.forge`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.gradle`. The scanner also honors `.gitignore` and skips symbolic links. Add project-specific generated directories with `ignore`; authored source under an excluded basename can be scoped explicitly with a different directory name.
 
@@ -36,11 +40,9 @@ The index records linked paths under their configured workspace names. Changing 
 ## Repository documentation admission
 
 This repository lists current documentation files and directories explicitly in
-doc_roots: governance, navigation, roadmap, ADRs, architecture, reference,
-runbooks, testing, and milestones. The milestone root includes its archive.
-Repository plans and the general historical archive remain outside these roots.
-This uses the scanner's existing literal path admission; inspect scan output
-after changing the adapter to verify the selected corpus.
+`docs`: governance, navigation, roadmap, ADRs, architecture, reference,
+runbooks, and testing. Milestones and plans are declared separately in `milestones`
+and `plans`, keeping them out of the general code search index.
 
 ## Source-only linked libraries
 
@@ -51,7 +53,7 @@ linked_workspaces:
   - name: shared-library
     path: ../shared-library
     roots: [src, frontend, tests]
-    doc_roots: [docs]
+    docs: [docs]
     ignore: [vendor, vendors, dist, build]
 ```
 

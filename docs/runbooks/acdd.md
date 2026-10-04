@@ -105,11 +105,13 @@ through its public seam. Consolidate related findings into one bounded repair
 pass, then recheck the affected contours. Mark inapplicable contours with a
 reason rather than leaving them empty.
 
-### Keep one task commit
+### Keep one task commit and observe task taxonomy
 
 Use real callers and SQLite in contract and review tests. Keep tests in an
-existing domain suite, share fixtures, and use table-driven cases for related
-boundaries. When replacing tests, preserve each unique observable scenario.
+existing domain suite, share fixtures, and follow ACDD task taxonomy:
+- **Feature Tasks**: Define exactly 1 root seam test (`contract/v1`). Subtasks must not author separate unit test functions or binaries.
+- **Scope Tasks**: Operate across broad domains/subsystems via a single parameterized table-driven test harness, where subtasks add test cases.
+When replacing tests, preserve each unique observable scenario.
 Follow [test placement rules](../../tests/AGENTS.md).
 
 The reviewed candidate commit contains source, tests, and documentation. The
@@ -190,12 +192,15 @@ completed messages and resolve findings before follow-up work.
    receipt. Align the affected reference, architecture, runbook, root agent
    guidance, and README pages with changed CLI, MCP, configuration, and schema
    behavior. Validate changed metadata and relative links.
-2. Add a deferred end-to-end test that crosses real public callers and proves
-   the milestone invariants across the completed tasks.
+2. **Deferred final test & test-suite refactor**:
+   - Run the `test-suite-refactor` skill across all tests created or modified in the milestone.
+   - Verify and strengthen coverage at the boundaries where new contracts interface with pre-existing contracts.
+   - Refactor, consolidate, or clean up any pre-existing tests outside individual task scopes to eliminate duplicate checks and prevent drift.
+   - Add a deferred end-to-end test that crosses real public callers and proves the milestone invariants across the completed tasks.
 3. Run `cargo test --all-targets`,
    `cargo clippy --all-targets --all-features -- -D warnings`, and
    `cargo test --test commitment_integrity`. Record the actual test counts.
-4. Commit the deferred test, then run:
+4. Commit the deferred test and test refactors, then run:
 
 ```sh
 contextunity-forge-mcp milestone handoff <number> --verification-command "cargo test --all-targets" --tests-passed <count> --tests-failed 0

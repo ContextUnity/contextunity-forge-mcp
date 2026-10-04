@@ -37,7 +37,7 @@ pub fn run(root: &Path, command: MigrateCommand) -> Result<Value> {
     if let Some(reference) = reference {
         return reconcile(root, &reference, mode);
     }
-    let mut pending = vec![root.join("docs/milestones")];
+    let mut pending = crate::engine::milestones::configured_milestone_dirs(root);
     let mut references = Vec::new();
     while let Some(directory) = pending.pop() {
         if !directory.exists() {

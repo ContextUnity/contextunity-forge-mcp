@@ -246,7 +246,7 @@ impl TasksStore {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut task = load(&tx, task_id)?.context("TASK_NOT_FOUND")?;
         if task.status == "completed" {
-            bail!("TASK_TERMINAL: cannot add subtasks to completed task");
+            bail!("TASK_TERMINAL: cannot add subtasks to completed task; reopen or reset the task first (e.g. `task reset <task-id>`)");
         }
         let updated_at = now();
         let inserted = tx.execute(
@@ -291,7 +291,7 @@ impl TasksStore {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut task = load(&tx, task_id)?.context("TASK_NOT_FOUND")?;
         if task.status == "completed" {
-            bail!("TASK_TERMINAL: cannot update subtasks of completed task");
+            bail!("TASK_TERMINAL: cannot update subtasks of completed task; reopen or reset the task first (e.g. `task reset <task-id>`)");
         }
         let updated_at = now();
         let updated = match evidence {
@@ -435,8 +435,7 @@ impl TasksStore {
                     result.push(existing);
                     continue;
                 }
-                if existing.status == "completed"
-                    || spec.status.as_deref() == Some("completed")
+                if spec.status.as_deref() == Some("completed")
                     || spec.contract_revision <= existing.contract_revision
                 {
                     bail!("AUTHORITY_GAP: changed specification requires contract re-admission");
@@ -646,13 +645,23 @@ impl TasksStore {
     }
     /// Performs reset.
     pub fn reset(&mut self, id: &str) -> Result<Task> {
+        self.reset_with(id, |_| Ok(()))
+    }
+    /// Runs the Markdown change while the SQLite writer transaction serializes sibling delivery.
+    pub(crate) fn reset_with<F>(&mut self, id: &str, before_sqlite: F) -> Result<Task>
+    where
+        F: FnOnce(&Task) -> Result<()>,
+    {
         self.assert_id(id)?;
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        before_sqlite(&task)?;
         if task.status == "completed" {
-            bail!("TASK_TERMINAL");
+            task.gate = 0;
+            task.completed_at = None;
+            task.receipt = None;
         }
         end_claim(&tx, id)?;
         task.claim_revision = next_revision(&tx, id)?;
@@ -667,6 +676,10 @@ impl TasksStore {
         tx.commit()?;
         Ok(task)
     }
+    /// Performs reopen, resetting a task back to ready state.
+    pub fn reopen(&mut self, id: &str) -> Result<Task> {
+        self.reset(id)
+    }
     /// Performs extend scope.
     pub fn extend_scope(&mut self, id: &str, paths: &[String], root: &Path) -> Result<Task> {
         self.assert_id(id)?;
@@ -678,7 +691,7 @@ impl TasksStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
         if task.status == "completed" {
-            bail!("TASK_TERMINAL");
+            bail!("TASK_TERMINAL: cannot extend scope of completed task; reopen or reset the task first (e.g. `task reset <task-id>`)");
         }
         let worktree = task.worktree.as_deref().map(Path::new).unwrap_or(root);
         let bases: Vec<String> = tx

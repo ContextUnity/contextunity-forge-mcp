@@ -78,7 +78,7 @@ fn source_only_scope_removes_bundles_without_hiding_consumer_sources() {
         "library/docs/api.md",
         "# Library API\nAuthored documentation.\n",
     );
-    let config = "roots: ['.']\nlinked_workspaces:\n  - name: library\n    path: ../library\n    roots: [src, frontend, schema, tests]\n    doc_roots: [docs]\n";
+    let config = "roots: ['.']\nlinked_workspaces:\n  - name: library\n    path: ../library\n    roots: [src, frontend, schema, tests]\n    docs: [docs]\n";
     ws.write("app/forge-mcp.yaml", config);
     let root = ws.0.join("app");
     let server = Server::new(root.clone(), root.join(".forge/code-map.sqlite"));

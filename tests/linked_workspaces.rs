@@ -67,14 +67,14 @@ fn test_multi_workspace_indexing_and_resilience() {
 adapter_version: 1
 roots:
   - src
-doc_roots:
+docs:
   - docs
 linked_workspaces:
   - name: commerce
     path: "{}"
     roots:
       - extensions
-    doc_roots:
+    docs:
       - docs
   - name: gridviewspec
     path: "{}"

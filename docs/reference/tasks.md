@@ -93,7 +93,7 @@ perimeter cannot claim a foreign task.
 | Tool | Arguments and behavior |
 | --- | --- |
 | `task_list` | Optional `repository`, `milestone_ref`, `status`, and `stage`. Status defaults strictly to `ready`; explicit values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Stage is `contract`, `build`, `review`, `deliver`, or null. |
-| `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`. Claims the current gate atomically. Collisions return typed `TASK_ALREADY_CLAIMED`. |
+| `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean). Claims the current gate atomically. When `bundle: true`, returns an aggregated zero-shot task context bundle. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. Selectors follow the table below. |
 | `task_blackboard` | Required `action` (`post` or `read`) and `task_id`. Post requires `topic` and `payload`, accepts optional `author`, and returns an ID. Read accepts optional `topic` and `limit`, and returns chronological messages. |
@@ -107,11 +107,23 @@ Null stage matches all gates.
 | `create` | `milestone_ref`, `task_ref` | Optional workspace; omit task_id/paths; force=false. |
 | `sync` | `milestone_ref` or `workspace` | Optional explicit file within workspace; omit task_id/task_ref/paths; force=false. |
 | `inspect` | `task_id` | Omit workspace/milestone_ref/task_ref/paths; force=false. |
+| `context` | `task_id` | Omit workspace/milestone_ref/task_ref/paths; returns zero-shot context bundle without claiming. |
 | `delete` | Exactly one of `task_id`, `milestone_ref` | Workspace is allowed only with milestone_ref; omit task_ref/paths. |
 | `extend_scope` | `task_id`, nonempty `paths` | Omit workspace/milestone_ref/task_ref; force=false. |
 | `subtask_add` | `task_id`, `subtask_ref`, `title` | Optional workspace; omit milestone_ref/paths; force=false. |
 | `subtask_update` | `task_id`, `subtask_ref`, `subtask_status` | Optional `evidence`, `workspace`; status must be `pending`, `in_progress`, or `completed`. |
 | `subtask_list` | `task_id` | Optional workspace; omit milestone_ref/task_ref/paths; force=false. |
+| `reset` | `task_id` | Reopens in-progress or completed task back to ready at contract/v1. |
+| `reopen` | `task_id` | Alias for reset. |
+
+Completed task reset writes a durable intent in the owning worktree, clears the
+Markdown receipt, then resets SQLite to `contract/v1`. A returned SQLite error
+restores the original Markdown. After an interrupted process, the next task
+operation reconciles the intent: it restores the receipt when SQLite remains
+completed, or retains the cleared receipt when SQLite is ready. Missing milestone
+documents fail before SQLite changes.
+Concurrent task requests fail closed with `TASK_RESET_IN_PROGRESS` while the
+reset owner is active; callers retry after receipt synchronization.
 
 Create reads the selected task; sync reads all task blocks atomically per file. Repeated
 creation preserves state. Changed specifications require a larger Git task
@@ -239,14 +251,15 @@ Use the CLI milestone commands to create, inspect, and close repository
 contracts:
 
 ```sh
-contextunity-forge-mcp milestone init --plan docs/plans/proposal.md [--num 011] [--slug short-name] [--title "Title"] [--active]
+contextunity-forge-mcp milestone init --plan docs/plans/proposal.md [--dir docs/milestones] [--num 011] [--slug short-name] [--title "Title"] [--active]
 contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
 contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --verification-command "cargo test --all-targets" --tests-passed <count> --tests-failed 0
 ```
 
-`milestone init` chooses the highest current or archived milestone number plus ten when
-`--num` is absent, accepts a piped description and task blocks, and returns task
+`milestone init` chooses the highest current or archived milestone number in its
+destination plus ten when `--num` is absent. It accepts a piped description and
+task blocks and returns task
 sync guidance. `--active` records the creation time as `started_at`; planned
 documents gain that timestamp on the first accepted task claim.
 
@@ -261,7 +274,7 @@ with `completed_at`, `duration` as `Xh Ym`, and `verification` containing
 `command`, `status: passed`, `tests_passed`, and `tests_failed`. Duration starts
 at frontmatter `started_at`, or the earliest SQLite claim timestamp for an
 older active document. The command sets frontmatter `status: completed`, moves
-the document to `docs/milestones/archive/`, and updates the stored
+the document to the selected directory's `archive/`, and updates the stored
 `milestone_ref` of its tasks. The [CLI reference](cli.md) lists every flag.
 
 ## CLI and administration
@@ -279,15 +292,21 @@ contextunity-forge-mcp task extend-scope TASK_ID PATH...
 contextunity-forge-mcp task delete TASK_ID [--force]
 contextunity-forge-mcp task delete --milestone REF [--workspace NAME] [--force]
 contextunity-forge-mcp task reset TASK_ID
+contextunity-forge-mcp task reopen TASK_ID
 contextunity-forge-mcp task cleanup
 contextunity-forge-mcp migrate preview [MILESTONE_REF]
 contextunity-forge-mcp migrate apply [MILESTONE_REF]
 contextunity-forge-mcp migrate verify [MILESTONE_REF]
 ```
 
-Reset abandons ownership, increments claim revision, preserves passed predecessors,
-and marks the current gate pending. Stop the old worker before administrative
-reset; process management remains outside task operations.
+Reset (or `task reopen`, also available via MCP `task_manage` with `action: "reset"` or `"reopen"`)
+abandons ownership, increments claim revision, and marks the task pending. For in-progress tasks,
+passed predecessor gates are preserved. When executed on a completed task, reset cleanly reopens it:
+it clears terminal receipt data from both SQLite and the milestone Markdown document, resets the
+active gate to `contract/v1`, clears `completed_at`, restores `ready` status, and retains existing subtask
+history so new subtasks (e.g. audit or remediation items) can be added and progressed.
+Additionally, when a milestone document increments `contract_revision`, `task sync` re-admits and
+reopens completed tasks into `ready` at the new contract revision.
 
 Standard deletion requires completed state, no active claim, and age strictly
 greater than 14 days. Batch eligibility is checked before cascade deletion.
@@ -302,3 +321,19 @@ receipts. Cleanup does not run during import/reconciliation. After retention,
 completed task blocks return their durable descriptor without reopening execution.
 Without a reference, migration selects numbered Markdown milestones under
 `docs/milestones/`, including the archive, in filename order.
+
+## Unified Task Context Bundle
+
+To achieve zero-shot agent orientation and eliminate exploratory tool-call loops, Forge aggregates task context through `task_claim` (with `bundle: true` or CLI `--bundle`), `task_manage(action: "context")`, and CLI `task context <task-id>`.
+
+The returned payload contains:
+
+1. **`contract`**: Complete task contract, goal, active stage, status, proof policy, allowed write scope, invariants, subtasks, and revision counters.
+2. **`guidance`**: Dynamic gate-aware guidance presets tailored to the active ACDD gate (`contract/v1`, `build/v1`, `review/v1`, `deliver/v1`) with:
+   - `recommended_tools`: Stage-specific tool recommendations (e.g. `code_map_overview` and ADR reads at contract, `ast_grep_search` and `code_map_inspect` at build, `code_map_impact` and `code_map_prove_removal` at review).
+   - `actionable_steps`: Concrete operational steps to advance the gate.
+   - `subtask_dod`: Universal Subtask Definition of Done (DoD) reminders.
+3. **`adrs`**: Scope-to-ADR mapping querying `docs/adr/` and `docs/architecture/`. Documents are included when their path or content matches scope tokens; unrelated documents are omitted.
+4. **`scope_symbols`**: High-value symbol skeleton (structs, enums, traits, functions) within the task's declared scope from the code map index.
+5. **`covering_tests`**: Test suites covering the scope files or domain boundaries.
+6. **`blackboard`**: Active task-scoped collaboration messages and architectural notes.

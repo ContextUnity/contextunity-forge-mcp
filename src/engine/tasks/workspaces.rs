@@ -41,12 +41,37 @@ struct LinkedIdentity {
     task_project: Option<String>,
 }
 
+fn declared_projects(directory: &Path) -> Result<BTreeSet<String>> {
+    let mut projects = BTreeSet::new();
+    for dir in [directory.to_path_buf(), directory.join("archive")] {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|ext| ext != "md") {
+                continue;
+            }
+            let text = std::fs::read_to_string(entry.path())?;
+            let Some(header) = text.strip_prefix("---\n").and_then(|body| body.split_once("\n---\n")).map(|(header, _)| header) else {
+                continue;
+            };
+            let meta: serde_yaml::Value = serde_yaml::from_str(header)?;
+            if let Some(project) = meta["project"].as_str() {
+                valid_identity(project)?;
+                projects.insert(project.to_owned());
+            }
+        }
+    }
+    Ok(projects)
+}
+
 pub(super) struct Workspace {
     pub name: String,
     pub root: PathBuf,
     pub repository: String,
     pub project: String,
-    milestones: PathBuf,
+    milestones: Vec<PathBuf>,
     guidance: PathBuf,
 }
 impl Workspace {
@@ -147,7 +172,7 @@ impl Workspace {
         Ok(value)
     }
     pub fn manifests(&self) -> Result<Vec<String>> {
-        let mut directories = vec![self.milestones.clone()];
+        let mut directories = self.milestones.clone();
         let mut manifests = Vec::new();
         while let Some(directory) = directories.pop() {
             if !directory.exists() {
@@ -191,12 +216,38 @@ impl Registry {
         let guidance = settings.agents_guidance.unwrap_or_else(default_guidance);
         let repository = settings.task_repository;
         let project = settings.task_project.unwrap_or_else(|| repository.clone());
+        let primary_milestone_dirs = crate::engine::milestones::configured_milestone_dirs(&root);
+        let mut primary_milestones = Vec::new();
+        let mut subproject_milestones: std::collections::BTreeMap<String, Vec<PathBuf>> =
+            std::collections::BTreeMap::new();
+        for dir in primary_milestone_dirs {
+            let rel = dir.strip_prefix(&root).unwrap_or(&dir);
+            let inferred = crate::core::tasks::infer_project_from_path(rel);
+            if let Some(proj) = inferred {
+                subproject_milestones.entry(proj).or_default().push(dir.clone());
+            } else {
+                primary_milestones.push(dir.clone());
+            }
+            for declared in declared_projects(&dir)? {
+                if declared == project {
+                    primary_milestones.push(dir.clone());
+                } else {
+                    subproject_milestones.entry(declared).or_default().push(dir.clone());
+                }
+            }
+        }
+        primary_milestones.sort();
+        primary_milestones.dedup();
+        if primary_milestones.is_empty() {
+            primary_milestones.push(confined_path(&root, &default_milestones())?);
+        }
+        let guidance_path = confined_path(&root, &guidance)?;
         let mut workspaces = vec![Workspace {
             name: repository.clone(),
-            repository,
-            project,
-            milestones: confined_path(&root, &default_milestones())?,
-            guidance: confined_path(&root, &guidance)?,
+            repository: repository.clone(),
+            project: project.clone(),
+            milestones: primary_milestones,
+            guidance: guidance_path.clone(),
             root: root.clone(),
         }];
         let mut names = BTreeSet::from([workspaces[0].name.clone()]);
@@ -204,6 +255,28 @@ impl Registry {
             workspaces[0].repository.clone(),
             workspaces[0].project.clone(),
         )]);
+        for (sub_name, sub_dirs) in subproject_milestones {
+            if sub_name == repository || sub_name == project {
+                continue;
+            }
+            if names.insert(sub_name.clone())
+                && namespaces.insert((repository.clone(), sub_name.clone()))
+            {
+                workspaces.push(Workspace {
+                    name: sub_name.clone(),
+                    repository: repository.clone(),
+                    project: sub_name,
+                    milestones: {
+                        let mut dirs = sub_dirs;
+                        dirs.sort();
+                        dirs.dedup();
+                        dirs
+                    },
+                    guidance: guidance_path.clone(),
+                    root: root.clone(),
+                });
+            }
+        }
         for linked in settings.linked_workspaces {
             let Some(tasks) = linked
                 .tasks
@@ -246,15 +319,22 @@ impl Registry {
                 name: linked.name,
                 repository,
                 project,
-                milestones: confined_path(&path, &tasks.milestones_dir)?,
+                milestones: vec![confined_path(&path, &tasks.milestones_dir)?],
                 guidance: confined_path(&path, &tasks.agents_guidance)?,
                 root: path,
             });
         }
-        Ok(Self {
+        let registry = Self {
             database,
             workspaces,
-        })
+        };
+        let mut roots = BTreeSet::new();
+        for workspace in &registry.workspaces {
+            if roots.insert(workspace.root.clone()) {
+                super::recover_pending_resets(&workspace.root, &registry.database)?;
+            }
+        }
+        Ok(registry)
     }
     pub fn select(&self, name: Option<&str>) -> Result<&Workspace> {
         match name {
@@ -262,7 +342,7 @@ impl Registry {
             Some(name) => self
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.name == name)
+                .find(|workspace| workspace.name == name || workspace.project == name)
                 .context("TASK_WORKSPACE_NOT_FOUND"),
         }
     }
@@ -286,12 +366,15 @@ impl Registry {
             .context("TASK_PROJECT_MISMATCH")
     }
     pub fn check_worktree(&self, owner: &Workspace, worktree: &Path) -> Result<()> {
+        if worktree.starts_with(&owner.root) {
+            return Ok(());
+        }
         let foreign = self
             .workspaces
             .iter()
             .filter(|workspace| worktree.starts_with(&workspace.root))
             .max_by_key(|workspace| workspace.root.components().count());
-        if foreign.is_some_and(|workspace| workspace.name != owner.name) {
+        if foreign.is_some_and(|workspace| workspace.root != owner.root) {
             bail!("TASK_SCOPE_INVALID: worktree belongs to another repository");
         }
         Ok(())
@@ -307,7 +390,10 @@ impl Registry {
                 let resolved = confined_path(root, path)?;
                 let directory = path.ends_with('/') || resolved.is_dir();
                 for foreign in &self.workspaces {
-                    if foreign.name == owner.name || owner.root.starts_with(&foreign.root) {
+                    if foreign.name == owner.name
+                        || foreign.root == owner.root
+                        || owner.root.starts_with(&foreign.root)
+                    {
                         continue;
                     }
                     if resolved.starts_with(&foreign.root)

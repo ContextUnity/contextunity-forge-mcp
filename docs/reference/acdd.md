@@ -47,14 +47,25 @@ default to `AGENTS.md` in their own repository. A missing file produces
 `TASK_GUIDANCE_MISSING`, inline steps, and the
 [canonical ACDD reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/acdd.md).
 
+## Task taxonomy and test proof policies
+
+Tasks in ACDD fall into two structural categories:
+- **Feature Task**: Delivers a single coherent architectural capability. Requires exactly **one** root seam test at `contract/v1`. Subtasks represent iterative implementation steps and are strictly prohibited from authoring separate micro-unit test binaries or standalone test functions.
+- **Scope Task**: Operates across an entire architectural domain or subsystem (such as Language Semantics in Milestone 020). Replaces ad-hoc test function sprawl with a single unified, parameterized table-driven harness (`cases: [...]`), where each subtask contributes a test case row to prove red-to-green resolution.
+
+Task contracts specify one of three proof policies:
+- `seam-test-first`: Greenfield contract requiring a failing red seam test (`contract/v1`) with non-zero exit code, followed by a passing green test at `build/v1`.
+- `direct-proof`: Admitted for pre-existing code reconciliation or refactoring where working production code is already in place. Validates existing seams directly, accepting exit code 0 without authoring synthetic red breakage.
+- `deferred-final-test`: Milestone-level test review gate executed prior to milestone handoff. Governed by the `test-suite-refactor` skill to audit and strengthen coverage at the boundaries where new contracts interface with pre-existing contracts. It possesses explicit cross-scope authority to refactor, consolidate, or update pre-existing tests outside individual task scopes.
+
 ## Evidence and retained context
 
 `task_submit` accepts a JSON `evidence` object directly. It binds `task_id`,
 stage, claim and contract revisions, worker, worktree, commit, and non-null
 `proof` to the active claim. Contract, build, and review use typed proof.
 Contract proof names the public seam test and its nonzero failure exit code (or
-exit code 0 when `proof_policy: direct-proof` reconciles pre-existing code); build
-proof records the command, exit code, and test counts; review proof records a
+exit code 0 when `proof_policy: direct-proof` or `proof_policy: deferred-final-test` is used);
+build proof records the command, exit code, and test counts; review proof records a
 decision and evidence for the five contours. The same object is retained in SQLite
 `task_gates.evidence`. No evidence file is needed.
 

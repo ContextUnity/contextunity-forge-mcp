@@ -570,7 +570,7 @@ fn search_docs_resolves_component_via_adapter_aliases_and_owners() {
         "forge-mcp.yaml",
         r#"roots: [.]
 eligible_roots: [extensions, packages]
-doc_roots: [extensions, packages]
+docs: [extensions, packages]
 owners:
   extensions/commerce: commerce
   packages/core: core

@@ -1,10 +1,10 @@
 DEBUG: true
-tasks_db: /home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.forge/tasks.sqlite
+tasks_db: .forge/tasks.sqlite
 roots:
   - src
   - tests
   - build.rs
-doc_roots:
+docs:
   - README.md
   - docs/AGENTS.md
   - docs/README.md
@@ -14,7 +14,10 @@ doc_roots:
   - docs/reference
   - docs/runbooks
   - docs/testing
+milestones:
   - docs/milestones
+plans:
+  - docs/plans
 ignore:
   - target
   - vendor

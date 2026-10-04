@@ -367,3 +367,49 @@ pub fn confined_path(root: &Path, value: &str) -> Result<PathBuf> {
     }
     Ok(resolved)
 }
+
+/// Infers project name from a relative milestone or plan path structurally without arbitrary folder name whitelists.
+///
+/// In any project structure (monorepo, nested services, plugins, arbitrary folders):
+/// - `docs/milestones/010.md` or `docs/plans/010.md` -> None (root project)
+/// - `milestones/010.md` or `plans/010.md` -> None (root project)
+/// - `<subproject>/docs/milestones/...` -> Some("<subproject>")
+/// - `packages/api/docs/milestones/...` -> Some("packages.api")
+///
+/// Works universally regardless of how directories are named (extensions, packages, backend, custom_dir, etc.).
+pub fn infer_project_from_path(path: &Path) -> Option<String> {
+    let parts: Vec<_> = path.iter().map(|s| s.to_string_lossy()).collect();
+    for (i, part) in parts.iter().enumerate() {
+        if part == "milestones" || part == "plans" {
+            let candidate_idx = if i > 0 && parts[i - 1] == "docs" {
+                if i >= 2 { Some(i - 2) } else { None }
+            } else if i > 0 {
+                Some(i - 1)
+            } else {
+                None
+            };
+
+            if let Some(idx) = candidate_idx {
+                let owners = &parts[..=idx];
+                if owners.iter().any(|part| part.is_empty() || part.as_ref() == "." || part.starts_with('.')) {
+                    return None;
+                }
+                if owners.len() == 1 {
+                    return Some(owners[0].to_string());
+                }
+                return Some(owners.iter().map(|part| {
+                    let mut encoded = String::new();
+                    for byte in part.as_bytes() {
+                        if byte.is_ascii_alphanumeric() || *byte == b'-' {
+                            encoded.push(char::from(*byte));
+                        } else {
+                            encoded.push_str(&format!("_{byte:02x}"));
+                        }
+                    }
+                    encoded
+                }).collect::<Vec<_>>().join("."));
+            }
+        }
+    }
+    None
+}

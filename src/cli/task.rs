@@ -143,6 +143,9 @@ pub enum TaskCommand {
         #[arg(long)]
         /// The worktree value.
         worktree: String,
+        #[arg(long)]
+        /// Return unified zero-shot task context bundle.
+        bundle: bool,
     },
     /// Represents the submit case.
     Submit {
@@ -183,8 +186,18 @@ pub enum TaskCommand {
         /// Optional workspace value.
         workspace: Option<String>,
     },
-    /// Represents the reset case.
+    /// Reset or reopen a task (including a completed task), resetting it back to ready at contract stage.
     Reset {
+        /// The task id value.
+        task_id: String,
+    },
+    /// Reopen a task (including a completed task), resetting it back to ready at contract stage.
+    Reopen {
+        /// The task id value.
+        task_id: String,
+    },
+    /// Return the unified zero-shot task context bundle.
+    Context {
         /// The task id value.
         task_id: String,
     },
@@ -249,6 +262,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             stage,
             worker,
             worktree,
+            bundle,
         } => {
             return tasks::claim(
                 root,
@@ -257,6 +271,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                     stage,
                     worker_id: worker,
                     worktree,
+                    bundle: if bundle { Some(true) } else { None },
                 },
             )
         }
@@ -278,10 +293,15 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                 },
             )
         }
-        TaskCommand::Reset { task_id } => {
+        TaskCommand::Reset { task_id } | TaskCommand::Reopen { task_id } => {
             return Ok(serde_json::to_value(
-                tasks::store_for_task(root, &task_id)?.reset(&task_id)?,
+                tasks::reset(root, &task_id)?,
             )?)
+        }
+        TaskCommand::Context { task_id } => {
+            manage.action = ManageAction::Context;
+            manage.task_id = Some(task_id);
+            return tasks::manage(root, manage);
         }
         TaskCommand::Cleanup => {
             return Ok(

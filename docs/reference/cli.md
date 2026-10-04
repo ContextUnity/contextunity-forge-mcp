@@ -65,9 +65,14 @@ Use [repository tasks](tasks.md) for `task list`, `create`, `sync`, `inspect`,
 typed proof. The [ACDD workflow](acdd.md) completes a task with:
 
 ```sh
-contextunity-forge-mcp task claim TASK_ID --stage deliver --worker REVIEWER --worktree PATH
+contextunity-forge-mcp task claim TASK_ID --stage deliver --worker REVIEWER --worktree PATH [--bundle]
 contextunity-forge-mcp task submit TASK_ID --stage deliver --action pass --evidence '<JSON_OBJECT>'
+contextunity-forge-mcp task context TASK_ID
 ```
+
+`task claim --bundle` and `task context` return the unified zero-shot task context bundle:
+contract, gate-aware workflow guidance with subtask DoD, scope-to-ADR mapping,
+scope symbol skeleton, covering test seams, and active blackboard messages.
 
 These commands deliver one task. `milestone handoff` below closes the whole
 milestone. Exchange temporary task context with:
@@ -86,17 +91,23 @@ Manage iterative subtasks within an admitted task:
 contextunity-forge-mcp task subtask add TASK_ID SUBTASK_REF "Description of subtask" [--workspace WS]
 contextunity-forge-mcp task subtask update TASK_ID SUBTASK_REF --status in_progress|completed|pending [--evidence "Test notes"] [--workspace WS]
 contextunity-forge-mcp task subtask list TASK_ID [--workspace WS]
+contextunity-forge-mcp task reset TASK_ID
+contextunity-forge-mcp task reopen TASK_ID
+contextunity-forge-mcp task context TASK_ID
 ```
 
 Subtasks allow tracking fine-grained discoveries, checklists, and verification steps
 without altering the parent task contract digest or inflating the milestone queue.
+Resetting or reopening a completed task clears terminal receipt state from both
+SQLite and milestone Markdown, resets the gate to `contract/v1`, and retains existing subtask
+history so new work and audits can proceed.
 
 ## Repository milestones
 
 ```sh
 contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
-contextunity-forge-mcp milestone init [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--desc "Purpose"] [--depends-on m-prior] [--active]
+contextunity-forge-mcp milestone init [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
 contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --verification-command "cargo test --all-targets" --tests-passed <count> --tests-failed 0
 ```
 
@@ -107,9 +118,12 @@ include archived files. `milestone show` resolves a full ID or numeric file
 prefix and returns frontmatter, outcomes, and task metadata. `--full` includes
 the complete Markdown document.
 
-`milestone init` creates a numbered file under `docs/milestones/`. An omitted
-`--num` selects the largest current or archived milestone number plus ten, padded
-to at least three digits. `--plan` imports plan metadata and notes. Piped stdin
+`milestone init` creates a numbered file in a configured milestone directory.
+`--dir` selects the destination; without it, a plan beside a `milestones` directory
+selects that directory, and other invocations use the first resolved configured directory
+in path order.
+An omitted `--num` selects the largest current or archived number in the destination
+plus ten, padded to at least three digits. `--plan` imports plan metadata and notes. Piped stdin
 supplies a description and task blocks. Planned milestones omit `started_at`;
 `--active` records the current time. The command returns the file path and
 task sync and claim guidance.
@@ -117,8 +131,8 @@ task sync and claim guidance.
 `milestone handoff` requires every milestone task in SQLite to be completed and
 the verification command to have zero failed tests. It writes `status:
 completed` and a `handoff` receipt with `completed_at`, `duration`, full Git
-commit, and language-neutral verification fields. It moves the file into
-`docs/milestones/archive/` and updates SQLite task references. An omitted
+commit, and language-neutral verification fields. It moves the file into an
+`archive/` directory beside the selected milestone and updates SQLite task references. An omitted
 `--commit` uses the current Git `HEAD`. See [repository tasks](tasks.md) for
 task claims, receipts, and activation timing. Milestone commands are CLI-only;
 the MCP task interface contains five flat tools.

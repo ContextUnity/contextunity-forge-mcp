@@ -15,6 +15,8 @@ pub struct Init {
     pub title: Option<String>,
     /// Source plan path.
     pub plan: Option<PathBuf>,
+    /// Target directory for the milestone document.
+    pub dir: Option<PathBuf>,
     /// Description appended to the milestone body.
     pub desc: Option<String>,
     /// Milestone IDs required before this work.
@@ -25,9 +27,85 @@ pub struct Init {
     pub stdin: String,
 }
 
-fn milestone_paths(root: &Path) -> Result<Vec<PathBuf>> {
+/// Returns the list of milestone directories configured for the workspace.
+pub fn configured_milestone_dirs(root: &Path) -> Vec<PathBuf> {
+    if let Ok(config) = std::fs::read_to_string(root.join("forge-mcp.yaml")) {
+        #[derive(serde::Deserialize)]
+        struct Cfg {
+            milestones: Option<Vec<String>>,
+        }
+        if let Ok(cfg) = serde_yaml::from_str::<Cfg>(&config) {
+            if let Some(dirs) = cfg.milestones {
+                let resolved = resolve_dirs_with_wildcards(root, &dirs);
+                if !resolved.is_empty() {
+                    return resolved;
+                }
+            }
+        }
+    }
+    vec![root.join("docs/milestones")]
+}
+
+fn resolve_dirs_with_wildcards(root: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    let mut resolved = Vec::new();
+    for pat in patterns {
+        let norm = pat.trim_matches('/').replace('\\', "/");
+        if norm.contains("..") {
+            continue;
+        }
+        if norm.contains('*') {
+            let parts: Vec<&str> = norm.split('/').collect();
+            expand_parts(root, root, &parts, &mut resolved);
+        } else {
+            let candidate = root.join(&norm);
+            if candidate.exists() {
+                if let (Ok(canon), Ok(root_canon)) = (candidate.canonicalize(), root.canonicalize()) {
+                    if canon.starts_with(&root_canon) {
+                        resolved.push(candidate);
+                    }
+                }
+            } else {
+                resolved.push(candidate);
+            }
+        }
+    }
+    resolved.sort();
+    resolved.dedup();
+    resolved
+}
+
+fn expand_parts(root: &Path, current: &Path, parts: &[&str], out: &mut Vec<PathBuf>) {
+    if parts.is_empty() {
+        if current.exists() && current.is_dir() {
+            if let (Ok(canon), Ok(root_canon)) = (current.canonicalize(), root.canonicalize()) {
+                if canon.starts_with(&root_canon) {
+                    out.push(current.to_path_buf());
+                }
+            }
+        }
+        return;
+    }
+    let first = parts[0];
+    let remaining = &parts[1..];
+    if first == "*" {
+        if let Ok(entries) = fs::read_dir(current) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    expand_parts(root, &entry.path(), remaining, out);
+                }
+            }
+        }
+    } else {
+        let next = current.join(first);
+        if next.exists() {
+            expand_parts(root, &next, remaining, out);
+        }
+    }
+}
+
+fn target_milestone_paths(target_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
-    for dir in [root.join("docs/milestones"), root.join("docs/milestones/archive")] {
+    for dir in [target_dir.to_path_buf(), target_dir.join("archive")] {
         if !dir.exists() { continue; }
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
@@ -37,6 +115,26 @@ fn milestone_paths(root: &Path) -> Result<Vec<PathBuf>> {
             }
         }
     }
+    Ok(paths)
+}
+
+fn milestone_paths(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    let dirs = configured_milestone_dirs(root);
+    for base_dir in dirs {
+        for dir in [&base_dir, &base_dir.join("archive")] {
+            if !dir.exists() { continue; }
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                if entry.file_type()?.is_file() && entry.path().extension().is_some_and(|e| e == "md")
+                    && entry.file_name().to_str().is_some_and(|name| name.split_once('-').is_some_and(|(number, _)| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))) {
+                    paths.push(entry.path());
+                }
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
     Ok(paths)
 }
 
@@ -61,7 +159,39 @@ fn quote(value: &str) -> Result<String> {
 
 /// Creates the next numbered milestone contract from explicit or plan inputs.
 pub fn init(root: &Path, options: Init) -> Result<Value> {
-    let paths = milestone_paths(root)?;
+    let target_dir = if let Some(d) = &options.dir {
+        let path = if d.is_absolute() {
+            if !d.starts_with(root) {
+                bail!("milestone directory must be within workspace root: {}", d.display());
+            }
+            d.clone()
+        } else {
+            crate::core::tasks::confined_path(root, &d.to_string_lossy())?
+        };
+        let rel_target = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+        let matches = configured_milestone_dirs(root).iter().any(|c| {
+            let rel_c = c.strip_prefix(root).unwrap_or(c).to_string_lossy().replace('\\', "/");
+            crate::engine::scanner::matches_path_pattern(&rel_target, &rel_c)
+        });
+        if !matches {
+            bail!("target directory '{}' does not match any configured milestone directory in forge-mcp.yaml", rel_target);
+        }
+        path
+    } else if let Some(plan) = &options.plan {
+        let plan_full = if plan.is_absolute() { plan.clone() } else { root.join(plan) };
+        let candidate = plan_full
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("milestones"));
+        if candidate.as_ref().is_some_and(|p| p.exists()) {
+            candidate.unwrap()
+        } else {
+            configured_milestone_dirs(root).into_iter().next().unwrap_or_else(|| root.join("docs/milestones"))
+        }
+    } else {
+        configured_milestone_dirs(root).into_iter().next().unwrap_or_else(|| root.join("docs/milestones"))
+    };
+    let paths = target_milestone_paths(&target_dir)?;
     let numbered = paths.iter().map(|p| prefix(p)).collect::<Result<Vec<_>>>()?;
     let number = if let Some(num) = &options.num {
         if num.len() < 3 || !num.bytes().all(|b| b.is_ascii_digit()) {
@@ -95,7 +225,8 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
         || slug.starts_with('-') || slug.ends_with('-') || slug.contains("--") {
         bail!("milestone slug must use lowercase letters, digits, and single hyphens");
     }
-    for path in &paths {
+    let all_paths = milestone_paths(root)?;
+    for path in &all_paths {
         if file_id(path)?.as_deref() == Some(&format!("m-{slug}")) {
             bail!("milestone ID already exists: m-{slug}");
         }
@@ -109,7 +240,12 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
     }
     dependencies.sort(); dependencies.dedup();
     let status = if options.active { "active" } else { "planned" };
+    let target_dir_rel = target_dir.strip_prefix(root).unwrap_or(&target_dir);
+    let inferred_project = crate::core::tasks::infer_project_from_path(target_dir_rel);
     let mut header = format!("---\nid: m-{slug}\ntitle: {}\ndoc_type: contract\nstatus: {status}\n", quote(&title)?);
+    if let Some(proj) = &inferred_project {
+        header.push_str(&format!("project: {proj}\n"));
+    }
     if options.active { header.push_str(&format!("started_at: {}\n", Utc::now().to_rfc3339())); }
     if !dependencies.is_empty() {
         header.push_str("depends_on:\n");
@@ -132,14 +268,15 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
     } else { stdin_tasks.to_string() };
     let body = format!("# {title}\n\n## Outcome and purpose\n\n{}\n\n{}## Tasks in this milestone\n\n{}", description.trim(), notes, tasks);
     crate::core::tasks::Milestone::parse(&format!("{header}{body}"), "forge-mcp")?;
-    let relative = PathBuf::from(format!("docs/milestones/{number}-{slug}.md"));
+    let target_dir_rel = target_dir.strip_prefix(root).unwrap_or(&target_dir);
+    let relative = target_dir_rel.join(format!("{number}-{slug}.md"));
     let path = root.join(&relative);
     fs::create_dir_all(path.parent().context("milestone parent")?)?;
     let mut file = OpenOptions::new().write(true).create_new(true).open(&path)?;
     file.write_all(format!("{header}{body}").as_bytes())?;
     Ok(json!({"path": relative, "id": format!("m-{slug}"), "status": status,
         "sync": format!("contextunity-forge-mcp task sync {}", relative.display()),
-        "claim": format!("contextunity-forge-mcp task claim <task-id> --stage design --worker <worker-id> --worktree {}", root.display())}))
+        "claim": format!("contextunity-forge-mcp task claim <task-id> --stage contract --worker <worker-id> --worktree {}", root.display())}))
 }
 
 struct Snapshot {
@@ -161,7 +298,15 @@ fn snapshot(root: &Path, path: PathBuf, repository: &str, project: &str) -> Resu
     let frontmatter: serde_yaml::Value = serde_yaml::from_str(header)?;
     let id = frontmatter["id"].as_str().context("milestone requires id")?.to_string();
     let repository = frontmatter["repository"].as_str().unwrap_or(repository).to_string();
-    let project = frontmatter["project"].as_str().unwrap_or(project).to_string();
+    let inferred_project = path
+        .strip_prefix(root)
+        .ok()
+        .and_then(crate::core::tasks::infer_project_from_path);
+    let project = frontmatter["project"]
+        .as_str()
+        .map(str::to_owned)
+        .or(inferred_project)
+        .unwrap_or_else(|| project.to_string());
     for value in [&id, &repository, &project] { crate::core::tasks::valid_identity(value)?; }
     let depends_on = frontmatter.get("depends_on")
         .map(|value| serde_yaml::from_value(value.clone())).transpose()?.unwrap_or_default();
@@ -315,6 +460,30 @@ pub(crate) fn render_task_receipt(
     bail!("TASK_RECEIPT_INVALID: task block not found")
 }
 
+/// Clears completion status and receipt from the task YAML block in the milestone document.
+pub(crate) fn clear_task_receipt(text: &str, task_ref: &str) -> Result<String> {
+    let mut block_start = None;
+    let mut cursor = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim() == "```yaml" {
+            block_start = Some(cursor + line.len());
+        } else if line.trim() == "```" {
+            if let Some(start) = block_start.take() {
+                let mut block: serde_yaml::Value = serde_yaml::from_str(&text[start..cursor])?;
+                if block["task_ref"].as_str() == Some(task_ref) {
+                    let map = block.as_mapping_mut().context("task block must be a mapping")?;
+                    map.remove("status");
+                    map.remove("receipt");
+                    let yaml = serde_yaml::to_string(&block)?;
+                    return Ok(format!("{}{}{}", &text[..start], yaml, &text[cursor..]));
+                }
+            }
+        }
+        cursor += line.len();
+    }
+    bail!("TASK_RECEIPT_INVALID: task block not found")
+}
+
 pub(crate) fn atomic_replace(path: &Path, contents: &[u8]) -> Result<()> {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let name = path.file_name().context("milestone filename missing")?.to_string_lossy();
@@ -385,9 +554,11 @@ pub fn handoff(root: &Path, selector: &str, commit: Option<&str>, command: &str,
         "commit": sha, "verification": {"command": command, "status": "passed", "tests_passed": passed, "tests_failed": failed}
     }))?);
     let relative = item.path.strip_prefix(root)?.to_string_lossy().into_owned();
-    let archived = root.join("docs/milestones/archive").join(item.path.file_name().context("milestone filename missing")?);
+    let parent = item.path.parent().context("milestone parent missing")?;
+    let archive_dir = parent.join("archive");
+    let archived = archive_dir.join(item.path.file_name().context("milestone filename missing")?);
     let archive_ref = archived.strip_prefix(root)?.to_string_lossy().into_owned();
-    fs::create_dir_all(archived.parent().context("archive parent missing")?)?;
+    fs::create_dir_all(&archive_dir)?;
     let (_, body) = item.text.strip_prefix("---\n").context("milestone frontmatter missing")?
         .split_once("\n---\n").context("unterminated milestone frontmatter")?;
     let mut file = OpenOptions::new().write(true).create_new(true).open(&archived)?;

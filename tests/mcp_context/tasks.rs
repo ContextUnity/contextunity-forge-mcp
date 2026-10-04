@@ -15,7 +15,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         "docs/milestones/010-linked.md",
         &manifest.replace('\n', "\r\n"),
     );
-    main.write("forge-mcp.yaml", &format!("roots: []\ndoc_roots: []\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks: {{enabled: true}}\n", linked.0.display()));
+    main.write("forge-mcp.yaml", &format!("roots: []\ndocs: []\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks: {{enabled: true}}\n", linked.0.display()));
     let mut client = Client::new(&main);
     client.payload(
         "task_manage",
@@ -167,7 +167,7 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
     }
     builder.write(
         "forge-mcp.yaml",
-        "roots: []\ndoc_roots: []\ntask_repository: contextunity\ntask_project: tooling\n",
+        "roots: []\ndocs: []\ntask_repository: contextunity\ntask_project: tooling\n",
     );
     let mut client = Client::new(&builder);
     let synced = client.payload(
@@ -307,7 +307,7 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
     let workspace = Workspace::new();
     workspace.write(
         "forge-mcp.yaml",
-        "roots: []\ndoc_roots: []\ntasks_db: tasks.sqlite\n",
+        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
     );
     workspace.write("010-tasks.md","---\nid: m-pilot\ntitle: Pilot\ndoc_type: contract\n---\n```yaml\ntask_ref: first\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n");
     let mut client = Client::new(&workspace);
@@ -371,7 +371,7 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     let workspace = Workspace::new();
     workspace.write(
         "forge-mcp.yaml",
-        "roots: []\ndoc_roots: []\ntasks_db: tasks.sqlite\n",
+        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
     );
     workspace.write(
         "010-blackboard.md",
@@ -461,7 +461,7 @@ fn subtask_mcp_and_cli_operations() {
     workspace.write("AGENTS.md", "# Agent Rules\n");
     workspace.write(
         "forge-mcp.yaml",
-        "roots: []\ndoc_roots: []\ntasks_db: tasks.sqlite\n",
+        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
     );
     let mut client = Client::new(&workspace);
     client.payload(
@@ -537,4 +537,148 @@ fn subtask_mcp_and_cli_operations() {
         json!({"action": "inspect", "task_id": task_id}),
     );
     assert_eq!(inspected["subtasks"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
+    let workspace = Workspace::new();
+    fs::create_dir_all(workspace.0.join("src")).unwrap();
+    fs::create_dir_all(workspace.0.join("tests")).unwrap();
+    fs::create_dir_all(workspace.0.join("docs/adr")).unwrap();
+    fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
+
+    workspace.write("AGENTS.md", "# Test guidance\n");
+    workspace.write(
+        "docs/adr/001-task-routing.md",
+        "---\ntitle: Task Routing Invariants\nstatus: accepted\n---\n# Task Routing Invariants\nContext and rules for routing.",
+    );
+    workspace.write(
+        "docs/adr/002-unrelated.md",
+        "---\ntitle: Storage Layout\nstatus: accepted\n---\n# Storage Layout\nSQLite pages and retention.",
+    );
+    workspace.write("src/routing.rs", "pub struct Router;\npub fn route_task() {}\n");
+    workspace.write("tests/test_routing.rs", "#[test]\nfn test_routing() {}\n");
+
+    let manifest = "---\nid: m-context\ntitle: Context Milestone\ndoc_type: contract\ninvariants: [routing-invariant]\n---\n```yaml\ntask_ref: routing-task\ntarget: Deliver unified routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n  - tests/test_routing.rs\n```\n";
+    workspace.write("docs/milestones/010-context.md", manifest);
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    contextunity_forge_mcp::db::writer::build(
+        &workspace.0,
+        &workspace.0.join(".forge/code-map.sqlite"),
+        None,
+    )
+    .unwrap();
+
+    let mut client = Client::new(&workspace);
+    let sync_res = client.payload(
+        "task_manage",
+        json!({"action": "sync", "milestone_ref": "docs/milestones/010-context.md"}),
+    );
+    let task_id = sync_res["tasks"][0]["task_id"].as_str().unwrap();
+
+    // Post blackboard message
+    client.payload(
+        "task_blackboard",
+        json!({
+            "action": "post",
+            "task_id": task_id,
+            "topic": "architectural_notes",
+            "payload": "Route tasks through unified zero-shot context bundle",
+            "author": "architect"
+        }),
+    );
+
+    // 1. MCP task_manage action: "context"
+    let context_res = client.payload(
+        "task_manage",
+        json!({"action": "context", "task_id": task_id}),
+    );
+    let bundle = &context_res["context_bundle"];
+    assert!(bundle.is_object(), "bundle must be present in response");
+
+    // Check contract in bundle
+    assert_eq!(bundle["contract"]["task_id"], task_id);
+    assert_eq!(bundle["contract"]["target"], "Deliver unified routing");
+    assert_eq!(bundle["contract"]["stage"], "contract/v1");
+    assert_eq!(bundle["contract"]["status"], "ready");
+    assert_eq!(
+        bundle["contract"]["allowed_scope"],
+        json!(["src/routing.rs", "tests/test_routing.rs"])
+    );
+    assert_eq!(
+        bundle["contract"]["invariants"],
+        json!(["routing-invariant"])
+    );
+
+    // Check guidance in bundle
+    assert_eq!(bundle["guidance"]["stage"], "contract/v1");
+    assert_eq!(bundle["guidance"]["subagent_role"], "contract_author");
+    assert!(bundle["guidance"]["recommended_tools"].as_array().is_some_and(|tools| !tools.is_empty()));
+    assert!(bundle["guidance"]["actionable_steps"].as_array().is_some_and(|steps| !steps.is_empty()));
+    assert_eq!(bundle["guidance"]["subtask_dod"].as_array().unwrap().len(), 5);
+
+    // Check scope-to-ADR mapping
+    let adrs = bundle["adrs"].as_array().unwrap();
+    assert!(!adrs.is_empty(), "expected at least 1 mapped ADR");
+    let adr = &adrs[0];
+    assert_eq!(adr["path"], "docs/adr/001-task-routing.md");
+    assert_eq!(adr["title"], "Task Routing Invariants");
+    assert_eq!(adr["status"], "accepted");
+    assert_eq!(adr["relevance"], "direct");
+    assert_eq!(adrs.len(), 1, "unrelated ADRs must not appear as governing context");
+
+    let symbols = bundle["scope_symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|symbol| symbol["name"] == "route_task"));
+
+    // Check covering tests
+    let tests = bundle["covering_tests"].as_array().unwrap();
+    assert!(
+        tests.iter().any(|t| t["path"].as_str() == Some("tests/test_routing.rs")),
+        "covering_tests must include tests/test_routing.rs"
+    );
+
+    // Check blackboard
+    let bb = bundle["blackboard"].as_array().unwrap();
+    assert_eq!(bb.len(), 1);
+    assert_eq!(bb[0]["topic"], "architectural_notes");
+    assert_eq!(bb[0]["author"], "architect");
+    assert_eq!(
+        bb[0]["payload"],
+        "Route tasks through unified zero-shot context bundle"
+    );
+
+    // 2. MCP task_claim with bundle: true
+    let claim_res = client.payload(
+        "task_claim",
+        json!({
+            "task_id": task_id,
+            "stage": "contract",
+            "worker_id": "author-1",
+            "worktree": workspace.0,
+            "bundle": true
+        }),
+    );
+    assert!(claim_res["context_bundle"].is_object());
+    assert_eq!(claim_res["context_bundle"]["contract"]["worker_id"], "author-1");
+    assert_eq!(claim_res["context_bundle"]["adrs"][0]["relevance"], "direct");
+    assert_eq!(claim_res["context_bundle"]["blackboard"].as_array().unwrap().len(), 1);
+
+    // 3. CLI task context command
+    let cli_context = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "context",
+            task_id,
+        ])
+        .output()
+        .unwrap();
+    assert!(cli_context.status.success(), "{}", String::from_utf8_lossy(&cli_context.stderr));
+    let cli_json: Value = serde_json::from_slice(&cli_context.stdout).unwrap();
+    assert!(cli_json["context_bundle"].is_object());
+    assert_eq!(cli_json["context_bundle"]["contract"]["task_id"], task_id);
 }

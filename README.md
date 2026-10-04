@@ -76,8 +76,12 @@ The optional `forge-mcp.yaml` file belongs in the repository root. It defines so
 ```yaml
 roots:
   - src
-doc_roots:
+docs:
   - docs
+milestones:
+  - docs/milestones
+plans:
+  - docs/plans
 ignore:
   - target
   - node_modules
@@ -92,7 +96,7 @@ response:
   max_output_bytes: 65536
 ```
 
-`roots` and `doc_roots` admit paths inside the workspace; `ignore` matches exact basenames. Enabled linked workspaces contribute to the same index. Changes to indexing scope trigger a rebuild on the next MCP database read; response-only changes do not. `contextunity-forge-mcp guide init` creates a starter adapter when you need one and does not replace an existing file without `--force`. The [configuration reference](docs/reference/configuration.md) covers every setting.
+`roots` and `docs` admit paths inside the workspace. `milestones` and `plans` identify directories excluded from code and documentation search; milestone commands read contracts from the configured milestone directories. `ignore` matches exact basenames. Enabled linked workspaces contribute to the same index. Changes to indexing scope trigger a rebuild on the next MCP database read; response-only changes do not. `contextunity-forge-mcp guide init` creates a starter adapter when you need one and does not replace an existing file without `--force`. The [configuration reference](docs/reference/configuration.md) covers every setting.
 
 ## How the graph is built
 
