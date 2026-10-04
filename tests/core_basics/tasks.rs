@@ -2150,6 +2150,11 @@ fn infer_project_from_path_supports_arbitrary_monorepo_structures_universally() 
     // Arbitrary custom folders - Forge does not dictate folder naming conventions
     assert_eq!(infer_project_from_path(Path::new("custom_dir/my-plugin/milestones/010.md")), Some("custom_dir.my-plugin".into()));
     assert_eq!(infer_project_from_path(Path::new("team_alpha/backend/analytics/docs/milestones/020.md")), Some("team_alpha.backend.analytics".into()));
+    assert_eq!(infer_project_from_path(Path::new("user_service/docs/milestones/010.md")), Some("user_service".into()));
+    assert_ne!(infer_project_from_path(Path::new("foo.bar/docs/milestones/010.md")), infer_project_from_path(Path::new("foo/bar/docs/milestones/010.md")));
+    assert_ne!(infer_project_from_path(Path::new("a~d/docs/milestones/010.md")), infer_project_from_path(Path::new("a.b/docs/milestones/010.md")));
+    assert_eq!(infer_project_from_path(Path::new("packages/my app/docs/milestones/010.md")), Some("packages.my~u32~app".into()));
+    assert_eq!(infer_project_from_path(Path::new("packages/über/docs/milestones/010.md")), Some("packages.~u252~ber".into()));
     assert_eq!(infer_project_from_path(Path::new("microservices/billing/docs/plans/030.md")), Some("microservices.billing".into()));
     assert_ne!(infer_project_from_path(Path::new("packages/api/docs/milestones/010.md")), infer_project_from_path(Path::new("services/api/docs/milestones/010.md")));
     assert_eq!(infer_project_from_path(Path::new("standalone_tool/milestones/010.md")), Some("standalone_tool".into()));

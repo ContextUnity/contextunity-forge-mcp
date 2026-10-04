@@ -86,7 +86,7 @@ subtasks:
 1. **Store Mechanics**: Reopen and reset remove the terminal barrier (`TASK_TERMINAL`) for completed tasks. Resets `gate = 0`, sets `status = "ready"`, clears `completed_at` and `receipt` from SQLite, increments `claim_revision`, and inserts a pending gate 0 record in `task_gates`.
 2. **Subtask Retention**: Existing subtasks in `task_subtasks` are preserved across resets to retain implementation history.
 3. **Dual Surface**: Both CLI (`contextunity-forge-mcp task reset` / `reopen`) and MCP (`task_manage` with `action: "reset"` and `"reopen"`) are supported.
-4. **Markdown Synchronization**: `clear_task_receipt` removes `status: completed` and `receipt:` from the milestone document, then SQLite resets the task. A missing or unwritable document leaves SQLite unchanged; a returned SQLite error restores the old document. An interrupted process between the two writes requires manual reconciliation.
+4. **Markdown Synchronization**: `clear_task_receipt` removes `status: completed` and `receipt:` from the milestone document, then SQLite resets the task. A missing or unwritable document leaves SQLite unchanged; a returned SQLite error restores the old document. Reset and delivery hold one advisory receipt lock to prevent concurrent document overwrites. An interrupted process between the two writes requires manual reconciliation.
 
 ---
 
@@ -122,6 +122,7 @@ subtasks:
 
 1. **Universal Structural Inference**: Eliminates folder name whitelists (`extensions`, `packages`, `services`, etc.). Any directory enclosing `docs/milestones`, `docs/plans`, `milestones`, or `plans` is dynamically identified as the owning subproject.
 2. **Namespace Binding**: Binds tasks to `<repository>/<project>/<manifest>:<task_ref>`, preventing namespace collisions across workspaces.
+   Project names keep ordinary underscores and hyphens; dots and tildes within a path component use reversible `~d` and `~~` escapes, and other unsupported characters use decimal Unicode escapes before components are joined with dots.
 3. **Explicit Override**: Frontmatter `project: <name>` continues to serve as the primary override when explicitly authored.
 
 ---

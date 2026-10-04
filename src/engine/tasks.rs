@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::{fs::{File, OpenOptions}, path::Path};
 mod workspaces;
 use workspaces::Registry;
 mod context;
@@ -395,11 +395,19 @@ pub fn store_for_task(root: &Path, id: &str) -> Result<TasksStore> {
     registry.owner(id)?.open(&registry.database)
 }
 
+fn lock_receipts(database: &Path) -> Result<File> {
+    let lock_path = database.with_extension("receipt.lock");
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(lock_path)?;
+    file.lock()?;
+    Ok(file)
+}
+
 /// Resets or reopens a task back to ready state at contract gate, clearing terminal receipt and updating milestone text if needed.
 pub fn reset(root: &Path, id: &str) -> Result<Task> {
     let registry = Registry::load(root)?;
     let workspace = registry.owner(id)?;
     let mut store = workspace.open(&registry.database)?;
+    let _receipt_lock = lock_receipts(&registry.database)?;
     let previous = store.inspect(id)?;
     if previous.status != "completed" {
         return store.reset(id);
@@ -427,6 +435,11 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     let registry = Registry::load(root)?;
     let workspace = registry.owner(&p.task_id)?;
     let mut store = workspace.open(&registry.database)?;
+    let _receipt_lock = if p.stage.split('/').next() == Some("deliver") {
+        Some(lock_receipts(&registry.database)?)
+    } else {
+        None
+    };
     let task = store.inspect(&p.task_id)?;
     if !p.evidence.is_object() {
         bail!("TASK_EVIDENCE_INVALID: evidence must be a JSON object");

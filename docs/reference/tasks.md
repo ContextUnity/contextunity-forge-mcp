@@ -121,6 +121,9 @@ its Markdown receipt before resetting SQLite to `contract/v1`. Missing or
 unwritable milestone documents fail before SQLite changes. A returned SQLite
 error restores the original Markdown. The two stores are updated in sequence;
 an interrupted process between updates requires manual reconciliation.
+Reset and task delivery serialize receipt edits through one advisory file lock
+beside the task database, so concurrent tasks cannot overwrite each other's
+milestone receipts.
 
 Create reads the selected task; sync reads all task blocks atomically per file. Repeated
 creation preserves state. Changed specifications require a larger Git task

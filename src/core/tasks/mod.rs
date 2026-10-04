@@ -306,7 +306,7 @@ pub(crate) fn valid_identity(value: &str) -> Result<()> {
     if value.is_empty()
         || !value
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+            .all(|c| c.is_ascii_alphanumeric() || "-_.~".contains(c))
     {
         bail!("invalid identity");
     }
@@ -394,7 +394,18 @@ pub fn infer_project_from_path(path: &Path) -> Option<String> {
                 if owners.iter().any(|part| part.is_empty() || part.as_ref() == "." || part.starts_with('.')) {
                     return None;
                 }
-                return Some(owners.iter().map(|part| part.as_ref()).collect::<Vec<_>>().join("."));
+                return Some(owners.iter().map(|part| {
+                    let mut encoded = String::new();
+                    for ch in part.chars() {
+                        match ch {
+                            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => encoded.push(ch),
+                            '.' => encoded.push_str("~d"),
+                            '~' => encoded.push_str("~~"),
+                            _ => encoded.push_str(&format!("~u{}~", ch as u32)),
+                        }
+                    }
+                    encoded
+                }).collect::<Vec<_>>().join("."));
             }
         }
     }
