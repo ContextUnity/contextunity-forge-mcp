@@ -2,7 +2,7 @@
 id: m-unified-agent-context-and-task-lifecycle
 title: Unified agent context bundling, task lifecycle reopening, and monorepo isolation
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-task-blackboard-and-context-retention:completed
 owners:
@@ -16,12 +16,21 @@ owners:
 - docs/
 - tests/
 invariants:
-  - "INV-UNIFIED-AGENT-CONTEXT: Claiming a task or querying task context optionally bundles the task contract, active blackboard state, related ADRs/documentation mapped to scope, code symbols in scope, and existing test harnesses in a single roundtrip, eliminating disjoint orientation loops."
-  - "INV-COMPLETED-TASK-REOPEN: Reopening or resetting a completed task clears the milestone receipt before resetting SQLite to ready at contract/v1, restores Markdown on a returned SQLite error, and preserves historical subtasks."
-  - "INV-MONOREPO-SUBPROJECT-INFERENCE: Subprojects across any repository layout infer project identities structurally from their owning directory hierarchy (without arbitrary folder name whitelists or Forge dictating repository structure), avoiding namespace collisions."
-  - "INV-SCANNER-CONTRACT-ISOLATION: Milestone and plan directories configured with wildcard patterns (e.g. extensions/*/docs/milestones) are strictly isolated from source code, AST, and doc search indices to prevent contract drafts from polluting graph queries."
-  - "INV-GATE-AWARE-GUIDANCE: Task guidance provides stage-specific tool recommendations tailored to each ACDD gate (code_map_overview on contract/v1, ast_grep_search on build/v1, code_map_impact on review/v1)."
+- 'INV-UNIFIED-AGENT-CONTEXT: Claiming a task or querying task context optionally bundles the task contract, active blackboard state, related ADRs/documentation mapped to scope, code symbols in scope, and existing test harnesses in a single roundtrip, eliminating disjoint orientation loops.'
+- 'INV-COMPLETED-TASK-REOPEN: Reopening or resetting a completed task clears the milestone receipt before resetting SQLite to ready at contract/v1, restores Markdown on a returned SQLite error, and preserves historical subtasks.'
+- 'INV-MONOREPO-SUBPROJECT-INFERENCE: Subprojects across any repository layout infer project identities structurally from their owning directory hierarchy (without arbitrary folder name whitelists or Forge dictating repository structure), avoiding namespace collisions.'
+- 'INV-SCANNER-CONTRACT-ISOLATION: Milestone and plan directories configured with wildcard patterns (e.g. extensions/*/docs/milestones) are strictly isolated from source code, AST, and doc search indices to prevent contract drafts from polluting graph queries.'
+- 'INV-GATE-AWARE-GUIDANCE: Task guidance provides stage-specific tool recommendations tailored to each ACDD gate (code_map_overview on contract/v1, ast_grep_search on build/v1, code_map_impact on review/v1).'
 started_at: 2026-10-04T05:45:00+00:00
+handoff:
+  completed_at: 2026-10-04T08:19:55.585108908+00:00
+  duration: 2h 34m
+  commit: 55bedbe543b93d50a32fce03bca5b39444b93199
+  verification:
+    command: cargo test --all-targets
+    status: passed
+    tests_passed: 454
+    tests_failed: 0
 ---
 
 # Unified agent context bundling, task lifecycle reopening, and monorepo isolation
