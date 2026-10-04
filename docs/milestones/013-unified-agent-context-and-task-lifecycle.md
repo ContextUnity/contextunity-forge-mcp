@@ -53,7 +53,7 @@ task_ref: completed-task-reopen-and-contract-readmission
 target: Enable resetting and reopening completed tasks back to contract/v1 ready status across SQLite and milestone Markdown, and permit contract re-admission upon contract_revision increment
 agent_type: worker
 proof_policy: direct-proof
-contract_revision: 1
+contract_revision: 2
 scope:
 - src/db/tasks_store.rs
 - src/engine/tasks.rs
@@ -97,7 +97,7 @@ task_ref: monorepo-structural-subproject-inference
 target: Infer project namespace identities structurally from directory hierarchy without folder name whitelists, supporting arbitrary workspace and subproject layouts
 agent_type: worker
 proof_policy: direct-proof
-contract_revision: 1
+contract_revision: 2
 scope:
 - src/core/tasks/mod.rs
 - src/engine/tasks/workspaces.rs
@@ -133,7 +133,7 @@ task_ref: scanner-milestone-isolation-and-config-compat
 target: Isolate milestone and plan directories from code and doc search indices using path pattern wildcards and preserve backward compatibility for doc_roots
 agent_type: worker
 proof_policy: direct-proof
-contract_revision: 1
+contract_revision: 2
 scope:
 - src/engine/scanner.rs
 - src/db/writer.rs
@@ -173,7 +173,7 @@ task_ref: test-evidence-simplification-and-anti-proliferation
 target: Simplify test proof policies, support deferred-final-test natively with milestone test-suite-refactor review, and codify Feature Task versus Scope Task testing invariants
 agent_type: worker
 proof_policy: direct-proof
-contract_revision: 1
+contract_revision: 2
 scope:
 - src/core/tasks/gates.rs
 - docs/reference/acdd.md
@@ -214,7 +214,7 @@ task_ref: unified-task-context-bundler-and-guidance
 target: Implement unified zero-shot task context bundling, scope-to-ADR mapping, code skeleton discovery, covering test seams, and gate-aware guidance
 agent_type: worker
 proof_policy: direct-proof
-contract_revision: 1
+contract_revision: 2
 scope:
 - src/core/tasks/
 - src/db/reader.rs
