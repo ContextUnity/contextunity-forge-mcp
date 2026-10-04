@@ -116,14 +116,11 @@ Null stage matches all gates.
 | `reset` | `task_id` | Reopens in-progress or completed task back to ready at contract/v1. |
 | `reopen` | `task_id` | Alias for reset. |
 
-Completed task reset writes a durable intent in the owning worktree, clears the
-Markdown receipt, then resets SQLite to `contract/v1`. A returned SQLite error
-restores the original Markdown. After an interrupted process, the next task
-operation reconciles the intent: it restores the receipt when SQLite remains
-completed, or retains the cleared receipt when SQLite is ready. Missing milestone
-documents fail before SQLite changes.
-Concurrent task requests fail closed with `TASK_RESET_IN_PROGRESS` while the
-reset owner is active; callers retry after receipt synchronization.
+Completed task reset reads the owning milestone document and atomically replaces
+its Markdown receipt before resetting SQLite to `contract/v1`. Missing or
+unwritable milestone documents fail before SQLite changes. A returned SQLite
+error restores the original Markdown. The two stores are updated in sequence;
+an interrupted process between updates requires manual reconciliation.
 
 Create reads the selected task; sync reads all task blocks atomically per file. Repeated
 creation preserves state. Changed specifications require a larger Git task

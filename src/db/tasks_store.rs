@@ -645,19 +645,11 @@ impl TasksStore {
     }
     /// Performs reset.
     pub fn reset(&mut self, id: &str) -> Result<Task> {
-        self.reset_with(id, |_| Ok(()))
-    }
-    /// Runs the Markdown change while the SQLite writer transaction serializes sibling delivery.
-    pub(crate) fn reset_with<F>(&mut self, id: &str, before_sqlite: F) -> Result<Task>
-    where
-        F: FnOnce(&Task) -> Result<()>,
-    {
         self.assert_id(id)?;
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
-        before_sqlite(&task)?;
         if task.status == "completed" {
             task.gate = 0;
             task.completed_at = None;

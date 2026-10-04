@@ -394,20 +394,7 @@ pub fn infer_project_from_path(path: &Path) -> Option<String> {
                 if owners.iter().any(|part| part.is_empty() || part.as_ref() == "." || part.starts_with('.')) {
                     return None;
                 }
-                if owners.len() == 1 {
-                    return Some(owners[0].to_string());
-                }
-                return Some(owners.iter().map(|part| {
-                    let mut encoded = String::new();
-                    for byte in part.as_bytes() {
-                        if byte.is_ascii_alphanumeric() || *byte == b'-' {
-                            encoded.push(char::from(*byte));
-                        } else {
-                            encoded.push_str(&format!("_{byte:02x}"));
-                        }
-                    }
-                    encoded
-                }).collect::<Vec<_>>().join("."));
+                return Some(owners.iter().map(|part| part.as_ref()).collect::<Vec<_>>().join("."));
             }
         }
     }

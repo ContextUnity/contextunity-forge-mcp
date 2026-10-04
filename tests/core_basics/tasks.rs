@@ -2148,8 +2148,8 @@ fn infer_project_from_path_supports_arbitrary_monorepo_structures_universally() 
     assert_eq!(infer_project_from_path(Path::new("apps/web/docs/milestones/010.md")), Some("apps.web".into()));
 
     // Arbitrary custom folders - Forge does not dictate folder naming conventions
-    assert_eq!(infer_project_from_path(Path::new("custom_dir/my-plugin/milestones/010.md")), Some("custom_5fdir.my-plugin".into()));
-    assert_eq!(infer_project_from_path(Path::new("team_alpha/backend/analytics/docs/milestones/020.md")), Some("team_5falpha.backend.analytics".into()));
+    assert_eq!(infer_project_from_path(Path::new("custom_dir/my-plugin/milestones/010.md")), Some("custom_dir.my-plugin".into()));
+    assert_eq!(infer_project_from_path(Path::new("team_alpha/backend/analytics/docs/milestones/020.md")), Some("team_alpha.backend.analytics".into()));
     assert_eq!(infer_project_from_path(Path::new("microservices/billing/docs/plans/030.md")), Some("microservices.billing".into()));
     assert_ne!(infer_project_from_path(Path::new("packages/api/docs/milestones/010.md")), infer_project_from_path(Path::new("services/api/docs/milestones/010.md")));
     assert_eq!(infer_project_from_path(Path::new("standalone_tool/milestones/010.md")), Some("standalone_tool".into()));
@@ -2202,7 +2202,6 @@ fn infer_project_from_path_supports_arbitrary_monorepo_structures_universally() 
 
 #[test]
 fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
-    use sha2::Digest;
     let spec = "---\nid: m-reopen\ntitle: Reopen Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: reopenable\ntarget: Deliver reopenable feature\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
     let root = ScopedWorkspace::new("forge_reopen");
@@ -2264,39 +2263,8 @@ fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
     assert!(completed_task.completed_at.is_some());
     assert!(completed_task.receipt.is_some());
 
-    // A persisted reset intent restores the receipt after an interrupted Markdown-first update.
     let milestone_path = root.0.join("docs/010-reopen.md");
     let completed_text = std::fs::read_to_string(&milestone_path).unwrap();
-    let digest = sha2::Sha256::digest(task_id.as_bytes());
-    let journal_rel = format!(".forge/task-reset/{}.json", hex::encode(digest));
-    root.write(&journal_rel, &json!({
-        "task_id": task_id,
-        "milestone_ref": "docs/010-reopen.md",
-        "original_text": completed_text,
-        "pid": std::process::id()
-    }).to_string());
-    root.write("docs/010-reopen.md", spec);
-    let pending = tasks::manage(&root.0, tasks::Manage {
-        action: tasks::ManageAction::Inspect,
-        task_id: Some(task_id.into()),
-        ..Default::default()
-    }).unwrap_err();
-    assert!(pending.to_string().contains("TASK_RESET_IN_PROGRESS"));
-    assert_eq!(std::fs::read_to_string(&milestone_path).unwrap(), spec);
-    assert!(root.0.join(&journal_rel).exists());
-    root.write(&journal_rel, &json!({
-        "task_id": task_id,
-        "milestone_ref": "docs/010-reopen.md",
-        "original_text": completed_text,
-        "pid": 0
-    }).to_string());
-    tasks::manage(&root.0, tasks::Manage {
-        action: tasks::ManageAction::Inspect,
-        task_id: Some(task_id.into()),
-        ..Default::default()
-    }).unwrap();
-    assert_eq!(std::fs::read_to_string(&milestone_path).unwrap(), completed_text);
-    assert!(!root.0.join(journal_rel).exists());
 
     // Subtask modifications fail with informative TASK_TERMINAL message
     let add_err = store.subtask_add(task_id, "sub-audit", "Post-completion audit").unwrap_err();
@@ -2309,6 +2277,7 @@ fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
     assert!(tasks::reopen(&root.0, task_id).is_err());
     assert_eq!(store.inspect(task_id).unwrap().status, "completed");
     std::fs::rename(&held_path, &milestone_path).unwrap();
+    assert_eq!(std::fs::read_to_string(&milestone_path).unwrap(), completed_text);
 
     // MCP task_manage with action: "reopen"
     let reopen_res = tasks::manage(
@@ -2324,6 +2293,9 @@ fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
     assert_eq!(reopen_res["gate"], 0);
     assert!(reopen_res["receipt"].is_null());
     assert!(reopen_res["completed_at"].is_null());
+    let reopened_text = std::fs::read_to_string(&milestone_path).unwrap();
+    assert!(!reopened_text.contains("status: completed"));
+    assert!(!reopened_text.contains("receipt:"));
 
     // Reopened task can accept subtasks
     let sub = store.subtask_add(task_id, "sub-audit", "Post-completion audit").unwrap();

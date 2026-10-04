@@ -4,10 +4,9 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use std::{fs::{self, OpenOptions}, io::Write, path::{Path, PathBuf}};
+use std::path::Path;
 mod workspaces;
 use workspaces::Registry;
 mod context;
@@ -396,128 +395,25 @@ pub fn store_for_task(root: &Path, id: &str) -> Result<TasksStore> {
     registry.owner(id)?.open(&registry.database)
 }
 
-#[derive(Serialize, Deserialize)]
-struct ResetJournal {
-    task_id: String,
-    milestone_ref: String,
-    original_text: String,
-    pid: u32,
-    #[serde(default)]
-    process_start: Option<u64>,
-}
-
-fn process_start_ticks(pid: u32) -> Option<u64> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat.rsplit_once(") ")?.1.split_whitespace().nth(19)?.parse().ok()
-}
-
-fn reset_journal_path(root: &Path, id: &str) -> PathBuf {
-    let digest = Sha256::digest(id.as_bytes());
-    root.join(".forge/task-reset").join(format!("{}.json", hex::encode(digest)))
-}
-
-fn write_reset_journal(root: &Path, journal: &ResetJournal) -> Result<PathBuf> {
-    let path = reset_journal_path(root, &journal.task_id);
-    fs::create_dir_all(path.parent().context("reset journal directory missing")?)?;
-    let bytes = serde_json::to_vec(journal)?;
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&path)
-        .context("TASK_RESET_IN_PROGRESS")?;
-    if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
-        drop(file);
-        let _ = fs::remove_file(&path);
-        return Err(error.into());
-    }
-    Ok(path)
-}
-
-/// Reconciles an interrupted Markdown-first reset before any task operation observes its state.
-pub(super) fn recover_pending_resets(root: &Path, database: &Path) -> Result<()> {
-    let directory = root.join(".forge/task-reset");
-    if !directory.is_dir() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        if entry.path().extension().is_none_or(|ext| ext != "json") {
-            continue;
-        }
-        let bytes = match fs::read(entry.path()) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
-        };
-        let journal: ResetJournal = serde_json::from_slice(&bytes)?;
-        if entry.path() != reset_journal_path(root, &journal.task_id) {
-            bail!("TASK_RESET_JOURNAL_INVALID: task identity mismatch");
-        }
-        let owner_is_live = match journal.process_start {
-            Some(start) => process_start_ticks(journal.pid) == Some(start),
-            None => Path::new(&format!("/proc/{}", journal.pid)).exists(),
-        };
-        if owner_is_live {
-            bail!("TASK_RESET_IN_PROGRESS: retry after receipt synchronization");
-        }
-        let mut identity = journal.task_id.split('/');
-        let repository = identity.next().context("invalid reset journal task identity")?;
-        let project = identity.next().context("invalid reset journal task identity")?;
-        let store = TasksStore::open_project(database, repository, project)?;
-        let task = store.inspect(&journal.task_id)?;
-        if task.milestone_ref != journal.milestone_ref {
-            bail!("TASK_RESET_JOURNAL_INVALID: milestone reference changed");
-        }
-        match task.status.as_str() {
-            "completed" => {
-                let path = confined_path(root, &journal.milestone_ref)?;
-                crate::engine::milestones::atomic_replace(&path, journal.original_text.as_bytes())?;
-            }
-            "ready" => {}
-            _ => bail!("TASK_RESET_JOURNAL_INVALID: unexpected task status"),
-        }
-        fs::remove_file(entry.path())?;
-    }
-    Ok(())
-}
 /// Resets or reopens a task back to ready state at contract gate, clearing terminal receipt and updating milestone text if needed.
 pub fn reset(root: &Path, id: &str) -> Result<Task> {
     let registry = Registry::load(root)?;
     let workspace = registry.owner(id)?;
     let mut store = workspace.open(&registry.database)?;
-    let mut original = None;
-    let result = store.reset_with(id, |previous| {
-        if previous.status != "completed" {
-            return Ok(());
-        }
-        let milestone_path = crate::core::tasks::confined_path(&workspace.root, &previous.milestone_ref)?;
-        let text = std::fs::read_to_string(&milestone_path)?;
-        let task_ref = id.rsplit_once(':').map(|(_, r)| r).unwrap_or(id);
-        let updated = crate::engine::milestones::clear_task_receipt(&text, task_ref)?;
-        let journal = write_reset_journal(&workspace.root, &ResetJournal {
-            task_id: id.to_owned(),
-            milestone_ref: previous.milestone_ref.clone(),
-            original_text: text.clone(),
-            pid: std::process::id(),
-            process_start: process_start_ticks(std::process::id()),
-        })?;
-        if let Err(error) = crate::engine::milestones::atomic_replace(&milestone_path, updated.as_bytes()) {
-            fs::remove_file(&journal)?;
-            return Err(error);
-        }
-        original = Some((milestone_path, text, journal));
-        Ok(())
-    });
-    match result {
-        Ok(task) => {
-            if let Some((_, _, journal)) = original {
-                fs::remove_file(journal)?;
-            }
-            Ok(task)
-        }
+    let previous = store.inspect(id)?;
+    if previous.status != "completed" {
+        return store.reset(id);
+    }
+    let milestone_path = confined_path(&workspace.root, &previous.milestone_ref)?;
+    let original = std::fs::read_to_string(&milestone_path)?;
+    let task_ref = id.rsplit_once(':').map(|(_, reference)| reference).unwrap_or(id);
+    let updated = crate::engine::milestones::clear_task_receipt(&original, task_ref)?;
+    crate::engine::milestones::atomic_replace(&milestone_path, updated.as_bytes())?;
+    match store.reset(id) {
+        Ok(task) => Ok(task),
         Err(error) => {
-            if let Some((path, text, journal)) = original {
-                crate::engine::milestones::atomic_replace(&path, text.as_bytes())
-                    .context("TASK_RECEIPT_ROLLBACK_FAILED")?;
-                fs::remove_file(journal)?;
-            }
+            crate::engine::milestones::atomic_replace(&milestone_path, original.as_bytes())
+                .context("TASK_RECEIPT_ROLLBACK_FAILED")?;
             Err(error)
         }
     }

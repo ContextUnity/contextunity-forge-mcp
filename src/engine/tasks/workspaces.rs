@@ -324,17 +324,10 @@ impl Registry {
                 root: path,
             });
         }
-        let registry = Self {
+        Ok(Self {
             database,
             workspaces,
-        };
-        let mut roots = BTreeSet::new();
-        for workspace in &registry.workspaces {
-            if roots.insert(workspace.root.clone()) {
-                super::recover_pending_resets(&workspace.root, &registry.database)?;
-            }
-        }
-        Ok(registry)
+        })
     }
     pub fn select(&self, name: Option<&str>) -> Result<&Workspace> {
         match name {

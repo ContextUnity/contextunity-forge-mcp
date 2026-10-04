@@ -17,7 +17,7 @@ owners:
 - tests/
 invariants:
   - "INV-UNIFIED-AGENT-CONTEXT: Claiming a task or querying task context optionally bundles the task contract, active blackboard state, related ADRs/documentation mapped to scope, code symbols in scope, and existing test harnesses in a single roundtrip, eliminating disjoint orientation loops."
-  - "INV-COMPLETED-TASK-REOPEN: Reopening or resetting a completed task restores ready status on contract/v1, clears SQLite completion receipts and milestone markdown receipts atomically, and preserves historical subtasks without database corruption or manual SQLite hacks."
+  - "INV-COMPLETED-TASK-REOPEN: Reopening or resetting a completed task clears the milestone receipt before resetting SQLite to ready at contract/v1, restores Markdown on a returned SQLite error, and preserves historical subtasks."
   - "INV-MONOREPO-SUBPROJECT-INFERENCE: Subprojects across any repository layout infer project identities structurally from their owning directory hierarchy (without arbitrary folder name whitelists or Forge dictating repository structure), avoiding namespace collisions."
   - "INV-SCANNER-CONTRACT-ISOLATION: Milestone and plan directories configured with wildcard patterns (e.g. extensions/*/docs/milestones) are strictly isolated from source code, AST, and doc search indices to prevent contract drafts from polluting graph queries."
   - "INV-GATE-AWARE-GUIDANCE: Task guidance provides stage-specific tool recommendations tailored to each ACDD gate (code_map_overview on contract/v1, ast_grep_search on build/v1, code_map_impact on review/v1)."
@@ -72,7 +72,7 @@ subtasks:
 - subtask_ref: clear-task-receipt-markdown-sync
   title: Atomically strip status completed and receipt YAML blocks from milestone Markdown on task reset or reopen
   status: completed
-  evidence: 'cargo test --test core_basics tasks::completed_task_reopen_and_mcp_manage_action_lifecycle proves receipt clearing, missing-document fail-closed behavior, and interrupted reset recovery'
+  evidence: 'cargo test --test core_basics tasks::completed_task_reopen_and_mcp_manage_action_lifecycle proves receipt clearing and missing-document fail-closed behavior'
 - subtask_ref: contract-readmission-on-revision-bump
   title: Allow contract re-admission during task sync when contract_revision is incremented on completed tasks
   status: completed
@@ -86,7 +86,7 @@ subtasks:
 1. **Store Mechanics**: Reopen and reset remove the terminal barrier (`TASK_TERMINAL`) for completed tasks. Resets `gate = 0`, sets `status = "ready"`, clears `completed_at` and `receipt` from SQLite, increments `claim_revision`, and inserts a pending gate 0 record in `task_gates`.
 2. **Subtask Retention**: Existing subtasks in `task_subtasks` are preserved across resets to retain implementation history.
 3. **Dual Surface**: Both CLI (`contextunity-forge-mcp task reset` / `reopen`) and MCP (`task_manage` with `action: "reset"` and `"reopen"`) are supported.
-4. **Markdown Synchronization**: Writes a durable reset intent before `clear_task_receipt` removes `status: completed` and `receipt:` from the milestone document. A returned SQLite error restores the old document. On the next task operation after interruption, the intent restores the old receipt if SQLite is still completed, or retains the cleared document if SQLite is ready.
+4. **Markdown Synchronization**: `clear_task_receipt` removes `status: completed` and `receipt:` from the milestone document, then SQLite resets the task. A missing or unwritable document leaves SQLite unchanged; a returned SQLite error restores the old document. An interrupted process between the two writes requires manual reconciliation.
 
 ---
 
