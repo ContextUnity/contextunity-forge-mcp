@@ -150,20 +150,66 @@ scope:
 - src/engine/milestones.rs
 - src/cli/milestone.rs
 - tests/core_basics/tasks.rs
-status: ready
+status: completed
 subtasks:
 - subtask_ref: structural-project-inference-engine
   title: Infer subproject name from structural hierarchy containing docs/milestones, docs/plans, milestones, or plans without arbitrary folder whitelists
   status: completed
-  evidence: 'cargo test --test core_basics tasks::infer_project_from_path_supports_arbitrary_monorepo_structures_universally passes'
+  evidence: cargo test --test core_basics tasks::infer_project_from_path_supports_arbitrary_monorepo_structures_universally passes
 - subtask_ref: workspace-registry-subproject-mapping
   title: Map discovered subproject milestone directories to isolated TaskWorkspace entries in registry
   status: completed
-  evidence: 'Registry::load creates distinct project workspaces for subprojects'
+  evidence: Registry::load creates distinct project workspaces for subprojects
 - subtask_ref: milestone-init-dir-and-contract-stage-claim
   title: Support explicit milestone directory flag in init and preserve contract stage claim guidance
   status: completed
-  evidence: 'cargo test --test core_basics tasks::milestone_init_scaffolds_numbered_planned_and_active_documents passes'
+  evidence: cargo test --test core_basics tasks::milestone_init_scaffolds_numbered_planned_and_active_documents passes
+receipt:
+  commit: 5e2fea4250ed5d28b1197bf270d88e4df30e6fc1
+  contract_revision: 2
+  passed_at: 2026-10-04T08:16:31.640074188+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test core_basics tasks::infer_project_from_path_supports_arbitrary_monorepo_structures_universally
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Independent review verified task scope and structural path handling.
+        claims:
+          applicable: true
+          evidence: Direct-proof contract and passing root seam test bound to current candidate.
+        concurrency:
+          applicable: true
+          evidence: Receipt edits serialized by portable advisory file lock; no reset SQLite transaction spans file I/O.
+        project_isolation:
+          applicable: true
+          evidence: Directory components remain distinct for dots, tildes, spaces, Unicode and ordinary underscores.
+        administration:
+          applicable: true
+          evidence: Independent review PASS; strict Clippy, Merkle and all-target suite passed.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIFIED-AGENT-CONTEXT: Claiming a task or querying task context optionally bundles the task contract, active blackboard state, related ADRs/documentation mapped to scope, code symbols in scope, and existing test harnesses in a single roundtrip, eliminating disjoint orientation loops.'
+    - 'INV-COMPLETED-TASK-REOPEN: Reopening or resetting a completed task clears the milestone receipt before resetting SQLite to ready at contract/v1, restores Markdown on a returned SQLite error, and preserves historical subtasks.'
+    - 'INV-MONOREPO-SUBPROJECT-INFERENCE: Subprojects across any repository layout infer project identities structurally from their owning directory hierarchy (without arbitrary folder name whitelists or Forge dictating repository structure), avoiding namespace collisions.'
+    - 'INV-SCANNER-CONTRACT-ISOLATION: Milestone and plan directories configured with wildcard patterns (e.g. extensions/*/docs/milestones) are strictly isolated from source code, AST, and doc search indices to prevent contract drafts from polluting graph queries.'
+    - 'INV-GATE-AWARE-GUIDANCE: Task guidance provides stage-specific tool recommendations tailored to each ACDD gate (code_map_overview on contract/v1, ast_grep_search on build/v1, code_map_impact on review/v1).'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 1. **Universal Structural Inference**: Eliminates folder name whitelists (`extensions`, `packages`, `services`, etc.). Any directory enclosing `docs/milestones`, `docs/plans`, `milestones`, or `plans` is dynamically identified as the owning subproject.
