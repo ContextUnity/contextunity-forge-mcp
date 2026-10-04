@@ -409,7 +409,7 @@ scope:
 - docs/reference/tasks.md
 - tests/core_basics/tasks.rs
 - tests/mcp_context/tasks.rs
-status: ready
+status: completed
 subtasks:
 - subtask_ref: task-context-bundle-model-and-api
   title: Add bundle parameter to task_claim and task_context query aggregating contract, ADRs, scope skeleton, tests, and blackboard
@@ -418,19 +418,65 @@ subtasks:
 - subtask_ref: scope-to-adr-knowledge-mapping
   title: Map task allowed_scope paths to governing ADRs and architecture guides in docs/adr/ and docs/architecture/
   status: completed
-  evidence: 'context.rs scan_adrs resolves direct and referenced ADRs'
+  evidence: context.rs scan_adrs resolves direct and referenced ADRs
 - subtask_ref: scope-symbols-and-test-seam-resolution
   title: Resolve top-level symbols, public signatures, and covering test suites directly within allowed_scope
   status: completed
-  evidence: 'context.rs query_scope_symbols and find_covering_tests resolve scope artifacts'
+  evidence: context.rs query_scope_symbols and find_covering_tests resolve scope artifacts
 - subtask_ref: gate-aware-workflow-guidance
   title: Provide dynamic, actionable guidance presets tailored to active ACDD gates (contract, build, review, deliver)
   status: completed
-  evidence: 'context.rs builds gate-aware recommendations and Universal Subtask DoD'
+  evidence: context.rs builds gate-aware recommendations and Universal Subtask DoD
 - subtask_ref: unified-bundle-integration-and-verification
   title: Verify zero-shot agent orientation through public MCP tool router and CLI seams with complete test coverage
   status: completed
-  evidence: 'cargo test --test mcp_context task_claim_bundle_and_task_manage_context_returns_unified_agent_context passes'
+  evidence: cargo test --test mcp_context task_claim_bundle_and_task_manage_context_returns_unified_agent_context passes
+receipt:
+  commit: faef0773ba5a72ec518996f8652979dc2be2e401
+  contract_revision: 2
+  passed_at: 2026-10-04T08:17:55.384689038+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test mcp_context task_claim_bundle_and_task_manage_context_returns_unified_agent_context
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Context bundle only includes scope-related ADRs, symbols, tests and blackboard state.
+        claims:
+          applicable: true
+          evidence: Bundle claim and context routes preserve gate ownership and release failed claims.
+        concurrency:
+          applicable: true
+          evidence: Task context reads do not mutate claims; receipt edits serialized.
+        project_isolation:
+          applicable: true
+          evidence: Bundle resolves documents and index symbols within owning worktree and project.
+        administration:
+          applicable: true
+          evidence: Independent review PASS; strict Clippy, Merkle and full all-target suite passed.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIFIED-AGENT-CONTEXT: Claiming a task or querying task context optionally bundles the task contract, active blackboard state, related ADRs/documentation mapped to scope, code symbols in scope, and existing test harnesses in a single roundtrip, eliminating disjoint orientation loops.'
+    - 'INV-COMPLETED-TASK-REOPEN: Reopening or resetting a completed task clears the milestone receipt before resetting SQLite to ready at contract/v1, restores Markdown on a returned SQLite error, and preserves historical subtasks.'
+    - 'INV-MONOREPO-SUBPROJECT-INFERENCE: Subprojects across any repository layout infer project identities structurally from their owning directory hierarchy (without arbitrary folder name whitelists or Forge dictating repository structure), avoiding namespace collisions.'
+    - 'INV-SCANNER-CONTRACT-ISOLATION: Milestone and plan directories configured with wildcard patterns (e.g. extensions/*/docs/milestones) are strictly isolated from source code, AST, and doc search indices to prevent contract drafts from polluting graph queries.'
+    - 'INV-GATE-AWARE-GUIDANCE: Task guidance provides stage-specific tool recommendations tailored to each ACDD gate (code_map_overview on contract/v1, ast_grep_search on build/v1, code_map_impact on review/v1).'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 1. **Zero-Shot Task Orientation**: `task_claim(..., bundle: true)` returns contract, governing ADRs, scope skeleton, covering tests, and active blackboard messages in a single structured payload.
