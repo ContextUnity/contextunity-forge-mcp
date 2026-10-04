@@ -319,20 +319,66 @@ scope:
 - docs/reference/tasks.md
 - docs/runbooks/acdd.md
 - tests/core_basics/tasks.rs
-status: ready
+status: completed
 subtasks:
 - subtask_ref: deferred-final-test-support
   title: Support deferred-final-test policy in gates validator accepting exit code 0 alongside direct-proof
   status: completed
-  evidence: 'cargo test --test core_basics direct_proof_and_deferred_final_test passes'
+  evidence: cargo test --test core_basics direct_proof_and_deferred_final_test passes
 - subtask_ref: feature-vs-scope-task-test-boundaries
-  title: "Codify testing boundaries: Feature Tasks define 1 root seam test (subtasks do not write tests); Scope Tasks operate across broad domains via table-driven harnesses"
+  title: 'Codify testing boundaries: Feature Tasks define 1 root seam test (subtasks do not write tests); Scope Tasks operate across broad domains via table-driven harnesses'
   status: completed
-  evidence: 'docs/reference/acdd.md and docs/runbooks/acdd.md codify Feature Task and Scope Task test boundaries'
+  evidence: docs/reference/acdd.md and docs/runbooks/acdd.md codify Feature Task and Scope Task test boundaries
 - subtask_ref: deferred-final-test-suite-refactor-harmonization
-  title: "Formalize deferred-final-test as the milestone boundary review gate via test-suite-refactor, authorized to refactor legacy tests outside task scopes"
+  title: Formalize deferred-final-test as the milestone boundary review gate via test-suite-refactor, authorized to refactor legacy tests outside task scopes
   status: completed
-  evidence: 'docs/reference/acdd.md and docs/runbooks/acdd.md define deferred-final-test suite refactoring gate'
+  evidence: docs/reference/acdd.md and docs/runbooks/acdd.md define deferred-final-test suite refactoring gate
+receipt:
+  commit: b25c639176a76681dc5a4b7f1b0f1f6d24edee08
+  contract_revision: 2
+  passed_at: 2026-10-04T08:17:29.244377901+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test core_basics tasks::direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_first_rejects_it
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Evidence policies and test guidance reviewed in task and ACDD documentation.
+        claims:
+          applicable: true
+          evidence: Direct-proof and deferred-final-test accept green production seam; passing target test proves both.
+        concurrency:
+          applicable: true
+          evidence: Task gate revisions and claim ownership stay serialized by SQLite.
+        project_isolation:
+          applicable: true
+          evidence: Evidence is bound to task identity and owning worktree.
+        administration:
+          applicable: true
+          evidence: No duplicate micro-spike test binary added; independent review PASS; strict Clippy and full suite passed.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-UNIFIED-AGENT-CONTEXT: Claiming a task or querying task context optionally bundles the task contract, active blackboard state, related ADRs/documentation mapped to scope, code symbols in scope, and existing test harnesses in a single roundtrip, eliminating disjoint orientation loops.'
+    - 'INV-COMPLETED-TASK-REOPEN: Reopening or resetting a completed task clears the milestone receipt before resetting SQLite to ready at contract/v1, restores Markdown on a returned SQLite error, and preserves historical subtasks.'
+    - 'INV-MONOREPO-SUBPROJECT-INFERENCE: Subprojects across any repository layout infer project identities structurally from their owning directory hierarchy (without arbitrary folder name whitelists or Forge dictating repository structure), avoiding namespace collisions.'
+    - 'INV-SCANNER-CONTRACT-ISOLATION: Milestone and plan directories configured with wildcard patterns (e.g. extensions/*/docs/milestones) are strictly isolated from source code, AST, and doc search indices to prevent contract drafts from polluting graph queries.'
+    - 'INV-GATE-AWARE-GUIDANCE: Task guidance provides stage-specific tool recommendations tailored to each ACDD gate (code_map_overview on contract/v1, ast_grep_search on build/v1, code_map_impact on review/v1).'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 1. **Feature Task versus Scope Task Invariants**:
