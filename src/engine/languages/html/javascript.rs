@@ -64,6 +64,9 @@ pub(super) fn extract_island(
         generated: false,
         details: json!({"column":column,"embedded_language":"javascript","lexical_boundary":true,"html_import_owner":format!("module:{path}")}),
     });
+    if kind == "handler" {
+        facts.nodes[0].details["html_handler"] = json!(true);
+    }
     if kind != "classic" {
         facts.edges.push(Edge {
             src: global_owner,
@@ -167,6 +170,9 @@ pub(super) fn extract_island(
                 let target = &mut destination.nodes[global_index];
                 if let Some(previous) = flows.get_mut(&target.id) {
                     previous.bindings.append(&mut flow.bindings);
+                    previous
+                        .immutable_initializers
+                        .append(&mut flow.immutable_initializers);
                     previous.fields.append(&mut flow.fields);
                 } else {
                     target.details["value_flow"] = Value::Null;
@@ -206,11 +212,30 @@ pub(super) fn extract_handlers(
         let Some(name) = attribute.named_child(0).map(|node| text(node, source)) else {
             continue;
         };
-        if name.len() <= 2
-            || !name
-                .get(..2)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("on"))
+        let (is_handler, kind) = if name.len() > 2
+            && (name.starts_with("on")
+                || name.starts_with("ON")
+                || name.starts_with("On")
+                || name.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("on")))
         {
+            (true, "handler")
+        } else if name.starts_with('@')
+            || name.starts_with("x-on:")
+            || name.starts_with("X-ON:")
+            || (name.len() > 5 && name[..5].eq_ignore_ascii_case("x-on:"))
+        {
+            (true, "alpine_event")
+        } else if name.eq_ignore_ascii_case("x-data") {
+            let val = attribute.named_child(1).map(|v| text(v, source).trim()).unwrap_or("");
+            if val.contains('{') || val.contains("()") || val.contains("=>") || val.contains("function") {
+                (true, "alpine_data")
+            } else {
+                (false, "")
+            }
+        } else {
+            (false, "")
+        };
+        if !is_handler {
             continue;
         }
         let Some(value) = attribute.named_child(1) else {
@@ -245,7 +270,7 @@ pub(super) fn extract_handlers(
             start,
             end,
             position,
-            "handler",
+            kind,
             global_scope,
             facts,
             flows.as_deref_mut(),
@@ -309,7 +334,7 @@ fn merge_global_details(target: &mut Value, mut fragment: Value) {
                 .append(&mut values);
         }
     }
-    for key in ["bindings", "fields"] {
+    for key in ["bindings", "fields", "immutable_initializers"] {
         if let Value::Array(mut values) = fragment["value_flow"][key].take() {
             if !target["value_flow"].is_object() {
                 target["value_flow"] = json!({});
@@ -424,6 +449,12 @@ pub(super) fn finish(facts: &mut Facts) {
                 });
             }
         }
+        if let Some(values) = node.details["value_flow"]["immutable_initializers"].as_array_mut() {
+            values.sort_by(|left, right| {
+                (left["line"].as_u64(), left["column"].as_u64())
+                    .cmp(&(right["line"].as_u64(), right["column"].as_u64()))
+            });
+        }
     }
 }
 
@@ -438,6 +469,7 @@ pub(super) fn finish_typed(facts: &mut Facts, flows: &mut crate::core::typed_fac
             flow.bindings.sort_by(|left, right| {
                 (left.position, &left.name).cmp(&(right.position, &right.name))
             });
+            flow.immutable_initializers.sort_unstable();
             flow.fields.sort_by(|left, right| {
                 (left.position, &left.name).cmp(&(right.position, &right.name))
             });

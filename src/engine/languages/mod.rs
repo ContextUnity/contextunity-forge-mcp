@@ -38,6 +38,54 @@ pub(crate) mod typescript_bindings;
 
 pub(crate) const MAX_VALUE_FLOW_TYPE_DEPTH: usize = 8;
 
+thread_local! {
+    static THREAD_LOCAL_PARSERS: std::cell::RefCell<std::collections::HashMap<&'static str, tree_sitter::Parser>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Executes a closure with a warm, thread-local Tree-sitter parser configured for the grammar.
+pub fn with_warm_parser<R>(
+    lang_key: &'static str,
+    grammar: tree_sitter::Language,
+    f: impl FnOnce(&mut tree_sitter::Parser) -> R,
+) -> Result<R> {
+    let parser = THREAD_LOCAL_PARSERS.with(|cell| -> Result<tree_sitter::Parser> {
+        let mut map = cell.borrow_mut();
+        if let Some(mut p) = map.remove(lang_key) {
+            p.reset();
+            Ok(p)
+        } else {
+            let mut p = tree_sitter::Parser::new();
+            p.set_language(&grammar)?;
+            Ok(p)
+        }
+    })?;
+
+    struct ReturnGuard {
+        lang_key: &'static str,
+        parser: Option<tree_sitter::Parser>,
+    }
+    impl Drop for ReturnGuard {
+        fn drop(&mut self) {
+            if let Some(p) = self.parser.take() {
+                THREAD_LOCAL_PARSERS.with(|cell| {
+                    if let Ok(mut map) = cell.try_borrow_mut() {
+                        map.insert(self.lang_key, p);
+                    }
+                });
+            }
+        }
+    }
+
+    let mut guard = ReturnGuard {
+        lang_key,
+        parser: Some(parser),
+    };
+
+    let result = f(guard.parser.as_mut().expect("parser present"));
+    Ok(result)
+}
+
 pub(crate) fn source_start(node: Syntax<'_>) -> crate::core::semantic::SourcePosition {
     let position = node.start_position();
     crate::core::semantic::SourcePosition {
@@ -91,7 +139,77 @@ pub struct FileContext {
     pub package: Option<String>,
     /// Scope identifiers where a local binding shadows CommonJS `require`.
     pub shadowed_require_scopes: Arc<HashSet<usize>>,
+    /// Scope identifiers where a source binding shadows the standard Array type.
+    pub shadowed_array_type_scopes: Arc<HashSet<usize>>,
+    /// Lexical scopes where a binding or assignment masks a DOM global.
+    pub shadowed_dom_global_scopes: Arc<HashMap<usize, HashSet<String>>>,
+    /// Exact DOM receiver parameter annotations indexed by function syntax node.
+    pub dom_listener_receivers: Arc<HashMap<usize, HashMap<String, String>>>,
+    /// Direct class field DOM annotations; duplicate or unknown fields have no type.
+    pub dom_listener_class_fields: Arc<HashMap<usize, HashMap<String, Option<String>>>>,
+    /// Source positions of lexical receiver writes within each enclosing scope.
+    pub dom_listener_local_writes: Arc<HashMap<usize, HashMap<String, Vec<usize>>>>,
+    /// Exact direct lexical declarations used to bound DOM receiver factory flow.
+    pub dom_listener_local_declarations:
+        Arc<HashMap<usize, HashMap<String, DomListenerLocalDeclaration>>>,
+    /// Parameter and catch bindings that shadow DOM receiver names in their scope.
+    pub dom_listener_parameter_bindings: Arc<HashMap<usize, HashSet<String>>>,
+    /// Function scopes and names whose parameters are reassigned or rebound.
+    pub rebound_function_parameters: Arc<HashMap<usize, HashSet<String>>>,
 }
+
+#[derive(Clone, Debug, Default)]
+/// A bounded expression shape retained for DOM listener receiver inference.
+pub enum DomListenerReceiverExpression {
+    /// An identifier read at a source position.
+    Identifier {
+        /// Identifier spelling.
+        name: String,
+        /// Byte offset of the identifier read.
+        position: usize,
+    },
+    /// A field on lexical `this`.
+    ThisField {
+        /// Field spelling.
+        name: String,
+        /// Syntax identifier of the containing class.
+        class_scope: usize,
+        /// Whether the containing method is static.
+        static_method: bool,
+    },
+    /// A call to a member on a recursively described receiver.
+    MemberCall {
+        /// Receiver expression for the member call.
+        receiver: Box<DomListenerReceiverExpression>,
+        /// Member spelling.
+        method: String,
+        /// Exact type argument spellings, if supplied.
+        type_arguments: Vec<String>,
+        /// Whether the call has one or more explicit arguments.
+        has_arguments: bool,
+    },
+    /// A parenthesized receiver expression.
+    Parenthesized(Box<DomListenerReceiverExpression>),
+    /// Any syntax outside the bounded receiver expression grammar.
+    #[default]
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Default)]
+/// A lexical binding summary used by DOM listener receiver inference.
+pub struct DomListenerLocalDeclaration {
+    /// Number of same-name declarations in the lexical block.
+    pub declaration_count: usize,
+    /// Whether the unique declaration uses `const`.
+    pub is_const: bool,
+    /// End byte of the declaration statement.
+    pub statement_end: usize,
+    /// Bounded initializer shape for the unique declaration, when present.
+    pub initializer: Option<DomListenerReceiverExpression>,
+    /// Ancestor scope identifiers at the declaration site.
+    pub scope_chain: Arc<Vec<usize>>,
+}
+
 #[derive(serde::Serialize)]
 /// Export that refers to another module or member and resolves during linking.
 pub struct LazyExport {
@@ -133,6 +251,8 @@ pub struct SymbolMetadata {
     pub is_overload: bool,
     /// Whether stub applies.
     pub is_stub: bool,
+    /// Whether a declaration is guarded by source control flow in its owner scope.
+    pub is_conditional: bool,
 }
 
 /// Borrowed syntax and source context passed to extraction hooks.
@@ -474,7 +594,44 @@ pub fn relative_namespace(owner: &str, module: &str) -> Option<String> {
     }
     Some(parts.join("."))
 }
-/// Parses file.
+fn parser_slot(profile_id: &str, path: &str) -> Option<&'static str> {
+    Some(match profile_id {
+        "python" => "python",
+        "rust" => "rust",
+        "html" => "html",
+        "vue" => "vue",
+        "javascript" => "javascript",
+        "typescript" if path.ends_with(".tsx") => "typescript-tsx",
+        "typescript"
+            if path.ends_with(".js")
+                || path.ends_with(".jsx")
+                || path.ends_with(".mjs")
+                || path.ends_with(".cjs") =>
+        {
+            "javascript"
+        }
+        "typescript" => "typescript",
+        _ => return None,
+    })
+}
+
+fn parse_tree(
+    profile: &dyn LanguageProfile,
+    path: &str,
+    source: &str,
+) -> Result<tree_sitter::Tree> {
+    let grammar = profile.grammar(path);
+    if let Some(slot) = parser_slot(profile.id(), path) {
+        return with_warm_parser(slot, grammar, |parser| parser.parse(source, None))?
+            .context("Tree-sitter parse cancelled");
+    }
+    profile
+        .create_parser(path)?
+        .parse(source, None)
+        .context("Tree-sitter parse cancelled")
+}
+
+/// Parses one source file into indexed facts.
 pub fn parse_file(
     profile: &dyn LanguageProfile,
     path: &str,
@@ -482,10 +639,7 @@ pub fn parse_file(
     module: &str,
     facts: &mut Facts,
 ) -> Result<()> {
-    let tree = profile
-        .create_parser(path)?
-        .parse(source, None)
-        .context("Tree-sitter parse cancelled")?;
+    let tree = parse_tree(profile, path, source)?;
     ast::extract_tree(profile, tree.root_node(), path, source, module, facts);
     Ok(())
 }
@@ -496,10 +650,7 @@ pub(crate) fn parse_file_typed(
     module: &str,
     typed: &mut crate::core::typed_facts::TypedFacts,
 ) -> Result<()> {
-    let tree = profile
-        .create_parser(path)?
-        .parse(source, None)
-        .context("Tree-sitter parse cancelled")?;
+    let tree = parse_tree(profile, path, source)?;
     ast::extract_tree_with_flows(
         profile,
         tree.root_node(),

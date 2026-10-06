@@ -216,6 +216,14 @@ impl<'a> Contracts<'a> {
         }
         match value {
             ValueExpr::Unknown => json!({"kind": "unknown"}),
+            ValueExpr::LoopElement { .. } => json!({"opaque_value": value}),
+            ValueExpr::Scoped { value, body_end } => {
+                if at < *body_end {
+                    self.value_contract(owner, flow, value, at, stack, depth + 1)
+                } else {
+                    json!({"kind": "unknown"})
+                }
+            }
             ValueExpr::Await { value } => json!({"await": self.value_contract(
                 owner,
                 flow,
@@ -231,7 +239,8 @@ impl<'a> Contracts<'a> {
                 let latest = flow
                     .bindings
                     .iter()
-                    .filter(|binding| binding.name == *name && binding.position < at)
+                    .filter(|binding| binding.name == *name && binding.position < at
+                        && !matches!(&binding.value, ValueExpr::Scoped { body_end, .. } if at >= *body_end))
                     .max_by_key(|binding| binding.position);
                 if let Some(binding) = latest {
                     if binding.conditional
@@ -300,7 +309,7 @@ impl<'a> Contracts<'a> {
                     json!({"opaque_value": value})
                 }
             }
-            ValueExpr::Object { members } => {
+            ValueExpr::Object { members, .. } => {
                 let mut contracts = std::collections::BTreeMap::new();
                 for member in members {
                     let Some([target]) = self
@@ -327,6 +336,8 @@ impl<'a> Contracts<'a> {
             }
             ValueExpr::Field { receiver, .. } => json!({"opaque_value": value, "receiver":
                 self.value_contract(owner, flow, &ValueExpr::Alias { name: receiver.clone() }, at, stack, depth + 1)}),
+            ValueExpr::Project { value: source, .. } => json!({"opaque_value": value, "source":
+                self.value_contract(owner, flow, source, at, stack, depth + 1)}),
         }
     }
 

@@ -80,7 +80,7 @@ pub struct Edge {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-/// Syntax evidence that helps infer the receiver of a member reference.
+/// Syntax evidence that helps resolve a reference or its receiver.
 pub enum ReceiverHint {
     /// Member access on a string literal receiver.
     StringLiteral {
@@ -106,6 +106,23 @@ pub enum ReceiverHint {
         /// Accessed member name.
         member: String,
     },
+    /// Vue template identifier declared by the same file's script setup.
+    VueSetupBinding,
+    /// Custom Vue template element, distinct from a JavaScript expression.
+    VueComponentTag,
+    /// Vue template member proven by a same-file typed `defineProps` declaration.
+    VueTypedPropMember {
+        /// Stable ID of the indexed type-literal property.
+        field_id: String,
+    },
+    /// Call through a proven same-file `defineEmits` setup binding.
+    VueSetupMacroCallable,
+    /// Call through a proven same-file runtime composable setup binding (e.g. useI18n).
+    VueSetupRuntimeCallable,
+    /// TypeScript import binding available only in a type position.
+    TypeOnlyImport,
+    /// Exact synchronous classic script source declared by an HTML script tag.
+    HtmlClassicScriptSource,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Unlinked source reference awaiting cross-file resolution.

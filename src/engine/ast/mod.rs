@@ -188,6 +188,8 @@ pub(crate) fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
             let lhs = match n.kind() {
                 "assignment"
                 | "augmented_assignment"
+                | "assignment_expression"
+                | "augmented_assignment_expression"
                 | "for_statement"
                 | "for_in_statement"
                 | "for_in_clause"
@@ -210,6 +212,12 @@ pub(crate) fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
             if !callable {
                 if let Some(lhs) = lhs {
                     names(lhs, source, &mut body_names);
+                }
+            }
+            if n.kind() == "delete_statement" {
+                let mut c = n.walk();
+                for child in n.named_children(&mut c) {
+                    names(child, source, &mut body_names);
                 }
             }
             let mut c = n.walk();
@@ -327,15 +335,22 @@ impl Extraction<'_> {
                     if let Some(flows) = &mut self.flows {
                         if let Some(previous) = flows.take(&module.id) {
                             value_flow.bindings.extend(previous.bindings);
+                            value_flow
+                                .immutable_initializers
+                                .extend(previous.immutable_initializers);
                             value_flow.fields.extend(previous.fields);
                         }
                     } else if let Ok(previous) = crate::core::semantic::ValueFlowFacts::deserialize(
                         &module.details["value_flow"],
                     ) {
                         value_flow.bindings.extend(previous.bindings);
+                        value_flow
+                            .immutable_initializers
+                            .extend(previous.immutable_initializers);
                         value_flow.fields.extend(previous.fields);
                     }
                     value_flow.bindings.sort_by_key(|binding| binding.position);
+                    value_flow.immutable_initializers.sort_unstable();
                     value_flow.fields.sort_by_key(|field| field.position);
                     if let Some(flows) = &mut self.flows {
                         module.details["value_flow"] = serde_json::Value::Null;
@@ -409,11 +424,29 @@ impl Extraction<'_> {
             }
             self.symbols.insert(node.id(), id.clone());
             let metadata = self.profile.metadata(node, source, &name, &self.file);
+            let prototype_owner = (language == "javascript"
+                && matches!(node.kind(), "function_expression" | "arrow_function")
+                && metadata.is_method == Some(true))
+            .then(|| metadata.receiver_type.clone())
+            .flatten();
+            let qualname = if let Some(receiver) = prototype_owner.as_deref() {
+                qualified(module, scopes, &format!("{receiver}.{name}"))
+            } else {
+                qualified(module, scopes, &name)
+            };
             let bindings = self.profile.bindings(node, source);
             let mut details = json!({"receiver_name":metadata.receiver_name,"bindings":bindings.all,"rebindings":bindings.rebindings,"default_export":metadata.default_export,"doc":self.profile.doc_comment(node,source),"decorators":metadata.decorators,"bases":metadata.bases,"receiver":metadata.receiver,"signature":declaration_signature(node,source),"async":metadata.is_async});
             details["column"] = json!(node.start_position().column);
             if let Some(receiver_type) = metadata.receiver_type {
                 details["receiver_type"] = json!(receiver_type);
+            }
+            if prototype_owner.is_some() {
+                details["prototype"] = json!(true);
+            }
+            if language == "javascript"
+                && crate::engine::languages::typescript::commonjs_default_callable(node, source)
+            {
+                details["commonjs_default_callable"] = json!(true);
             }
             if let Some(is_method) = metadata.is_method {
                 details["is_method"] = json!(is_method);
@@ -443,11 +476,14 @@ impl Extraction<'_> {
             if metadata.is_stub {
                 details["is_stub"] = json!(true);
             }
+            if metadata.is_conditional {
+                details["is_conditional"] = json!(true);
+            }
             facts.nodes.push(Node {
                 id: id.clone(),
                 kind: kind.into(),
                 name: name.clone(),
-                qualname: qualified(module, scopes, &name),
+                qualname,
                 path: path.into(),
                 line,
                 end_line: node.end_position().row + offset + 1,
@@ -506,6 +542,28 @@ pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
     Ok(extract_typed(path, language, source)?.into_public())
 }
 
+fn is_trivial_source(source: &str, language: &str) -> bool {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    match language {
+        "python" => trimmed.lines().all(|l| {
+            let s = l.trim();
+            s.is_empty() || (s.starts_with('#') && !s.starts_with("# type:"))
+        }),
+        "rust" => trimmed.lines().all(|l| {
+            let s = l.trim();
+            s.is_empty() || (s.starts_with("//") && !s.starts_with("//!") && !s.starts_with("///"))
+        }),
+        "javascript" | "typescript" => trimmed.lines().all(|l| {
+            let s = l.trim();
+            s.is_empty() || (s.starts_with("//") && !s.starts_with("///"))
+        }),
+        _ => false,
+    }
+}
+
 pub(crate) fn extract_typed(path: &str, language: &str, source: &str) -> Result<TypedFacts> {
     let profile = languages::require(language)?;
     let module = profile.module_name_for_source(path, source);
@@ -524,10 +582,21 @@ pub(crate) fn extract_typed(path: &str, language: &str, source: &str) -> Result<
         details: json!({}),
     });
 
+    let bytes = source.len();
+    if bytes > 1024 {
+        facts.nodes.reserve((bytes / 512).clamp(4, 256));
+        facts.edges.reserve((bytes / 256).clamp(8, 512));
+        facts.references.reserve((bytes / 256).clamp(8, 512));
+    }
+
     let mut typed = TypedFacts {
         facts,
         flows: FlowStore::default(),
     };
+    if is_trivial_source(source, language) {
+        profile.finish(&mut typed.facts);
+        return Ok(typed);
+    }
     match language {
         "python" | "rust" | "typescript" | "javascript" => {
             languages::parse_file_typed(profile, path, source, &module, &mut typed)?;

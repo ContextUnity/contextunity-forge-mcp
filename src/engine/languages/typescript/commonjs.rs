@@ -1,4 +1,4 @@
-use super::{nearest_binding_scope, required_module};
+use super::{collect_require_bindings, nearest_binding_scope, required_module};
 use crate::core::semantic::SourcePosition;
 use crate::engine::ast::text;
 use serde::Serialize;
@@ -71,6 +71,64 @@ fn receiver_is_called(mut node: Node<'_>, source: &str) -> bool {
     false
 }
 
+fn candidate_declaration_name(node: Node<'_>, declaration_ids: &[usize]) -> bool {
+    let mut child = node;
+    let mut parent = node.parent();
+    while let Some(ancestor) = parent {
+        if ancestor.kind() == "assignment_pattern"
+            && ancestor.child_by_field_name("right") == Some(child)
+        {
+            return false;
+        }
+        if ancestor.kind() == "variable_declarator" {
+            return declaration_ids.contains(&ancestor.id())
+                && ancestor.child_by_field_name("name").is_some_and(|name| {
+                    name.start_byte() <= node.start_byte() && node.end_byte() <= name.end_byte()
+                });
+        }
+        child = ancestor;
+        parent = ancestor.parent();
+    }
+    false
+}
+
+fn inert_initializer(node: Node<'_>, depth: usize) -> bool {
+    if depth == 0 || node.named_child_count() > 64 {
+        return false;
+    }
+    match node.kind() {
+        "number" | "string" | "true" | "false" | "null" => true,
+        "parenthesized_expression" => node.named_child_count() == 1
+            && node.named_child(0).is_some_and(|child| inert_initializer(child, depth - 1)),
+        "array" => {
+            let mut cursor = node.walk();
+            let inert = node.named_children(&mut cursor)
+                .all(|child| inert_initializer(child, depth - 1));
+            inert
+        }
+        "object" => {
+            let mut cursor = node.walk();
+            let inert = node.named_children(&mut cursor).all(|child| {
+                child.kind() == "pair"
+                    && child.child_by_field_name("key").is_some_and(|key| {
+                        matches!(key.kind(), "property_identifier" | "string")
+                    })
+                    && child.child_by_field_name("value").is_some_and(|value| {
+                        inert_initializer(value, depth - 1)
+                    })
+            });
+            inert
+        }
+        _ => false,
+    }
+}
+
+fn inert_require(node: Node<'_>, source: &str) -> bool {
+    required_module(node, source).is_some()
+        && node.child_by_field_name("arguments")
+            .is_some_and(|arguments| arguments.named_child_count() == 1)
+}
+
 pub(crate) fn commonjs_bindings(
     root: Node<'_>,
     source: &str,
@@ -95,19 +153,30 @@ pub(crate) fn commonjs_bindings(
                 let value = declaration.child_by_field_name("value");
                 if is_const {
                     if let Some((name, module)) = declaration.child_by_field_name("name")
-                        .filter(|name| name.kind() == "identifier")
-                        .zip(value.and_then(|value| required_module(value, source)))
+                        .filter(|name| matches!(name.kind(), "identifier" | "object_pattern"))
+                        .zip(value.filter(|value| inert_require(*value, source))
+                            .and_then(|value| required_module(value, source)))
                     {
-                        candidates.push(CommonJsBinding {
-                            alias: text(name, source).to_owned(), module,
-                            declaration: position(declaration, offset, false),
-                            completed: position(declaration, offset, true),
-                            invalidated: false, captured_safe,
-                        });
-                        declaration_ids.push(declaration.id());
+                        let mut imports = Vec::new();
+                        collect_require_bindings(name, source, &mut imports);
+                        for (_, alias) in imports {
+                            if let Some(alias) = alias {
+                                candidates.push(CommonJsBinding {
+                                    alias, module: module.clone(),
+                                    declaration: position(declaration, offset, false),
+                                    completed: position(declaration, offset, true),
+                                    invalidated: false, captured_safe,
+                                });
+                                declaration_ids.push(declaration.id());
+                            }
+                        }
                     }
                 }
-                if value.is_some() { captured_safe = false; }
+                if !is_const || value.is_some_and(|value| {
+                    !inert_initializer(value, 8) && !inert_require(value, source)
+                }) {
+                    captured_safe = false;
+                }
             }
         } else { captured_safe = false; }
     }
@@ -178,7 +247,8 @@ pub(crate) fn commonjs_bindings(
         }
         if matches!(node.kind(), "identifier" | "shorthand_property_identifier") && aliases.contains(text(node, source)) {
             let alias = text(node, source);
-            let safe_use = node.kind() == "identifier" && node.parent().is_some_and(|parent| match parent.kind() {
+            let safe_use = candidate_declaration_name(node, &declaration_ids)
+                || node.kind() == "identifier" && node.parent().is_some_and(|parent| match parent.kind() {
                 "variable_declarator" => parent.child_by_field_name("name") == Some(node),
                 "member_expression" | "subscript_expression" => receiver_is_called(node, source),
                 "call_expression" => parent.child_by_field_name("function") == Some(node),

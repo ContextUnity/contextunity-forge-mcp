@@ -233,7 +233,7 @@ fn python_routes_preserve_http_decorators_and_django_patterns_as_mapping_calls_r
 #[cfg(feature = "lang-typescript")]
 #[test]
 fn javascript_routes_preserve_middleware_and_framework_decorators_with_finite_receivers() {
-    let source = "function auth() {}\nfunction view() {}\napp.get('/items', auth, view);\nserver.put('^items$', view);\napi.delete('/items', view);\nblueprint.patch('/items', view);\nroute.options('/items', view);\nrouter.head('/items', view);\napp.get('/asserted', view as Handler);\napp.get('/non-null', (view!));\napp.get('/type-assertion', <Handler>view);\napp.get('/string-as', 'view' as unknown as Handler);\nconst routes = [{path: 'settings', component: view}];\nclass Controller { @Get('/box') show() {} }\ncache.get('/setting', view);\napp.get('setting', view);\nget('/setting', view);\napp.get('/number', 0);\napp.get('/negative', -1);\napp.get('/boolean', true);\napp.get('/null', null);\napp.get('/string', 'view');\napp.get('/template', `view`);\napp.get('/array', [view]);\napp.get('/object', {view});\nconst values = [{path: '/primitive', component: false}];\n";
+    let source = "function auth() {}\nfunction view() {}\napp.get('/items', auth, view);\nserver.put('^items$', view);\napi.delete('/items', view);\nblueprint.patch('/items', view);\nroute.options('/items', view);\nrouter.head('/items', view);\napp.get('/asserted', view as Handler);\napp.get('/non-null', (view!));\napp.get('/type-assertion', <Handler>view);\napp.get('/string-as', 'view' as unknown as Handler);\nconst routes = [{path: 'settings', component: view}];\nclass Controller { @Get('/box') show() {} }\ncache.get('/setting', view);\napp.get('setting', view);\nget('/setting', view);\napp.get('/number', 0);\napp.get('/negative', -1);\napp.get('/boolean', true);\napp.get('/null', null);\napp.get('/string', 'view');\napp.get('/template', `view`);\napp.get('/array', [view]);\napp.get('/object', {view});\nconst values = [{path: '/primitive', component: false}];\nfunction configure(options) {}\nconfigure({path: '/settings', component: view});\naxios . get('/users');\nclient .post('/api/orders');\n";
     let facts = ast::extract("routes.ts", "typescript", source).unwrap();
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);
     let mut routes: Vec<_> = facts
@@ -243,6 +243,20 @@ fn javascript_routes_preserve_middleware_and_framework_decorators_with_finite_re
         .map(|node| node.name.as_str())
         .collect();
     routes.sort_unstable();
+    assert!(routes.contains(&"ANY settings"));
+    assert!(facts
+        .references
+        .iter()
+        .any(|reference| reference.kind == "calls" && reference.expression == "configure"));
+    for expression in ["GET /users", "POST /api/orders"] {
+        assert!(
+            facts.references.iter().any(|reference| {
+                reference.kind == "calls_endpoint" && reference.expression == expression
+            }),
+            "missing endpoint reference {expression}: {:?}",
+            facts.references
+        );
+    }
     assert_eq!(
         routes,
         [
@@ -293,4 +307,30 @@ fn javascript_routes_preserve_middleware_and_framework_decorators_with_finite_re
             .iter()
             .any(|edge| edge.src == route.id && edge.dst == view.id && edge.kind == "handles"));
     }
+}
+
+#[cfg(feature = "lang-python")]
+#[test]
+fn python_member_access_callee_does_not_emit_duplicate_reference() {
+    let source = r#"
+class ServiceClient:
+    def fetch(self, endpoint: str) -> dict:
+        return self._send_request(endpoint)
+
+    def _send_request(self, endpoint: str) -> dict:
+        return {"status": "ok"}
+"#;
+    let facts = ast::extract("service.py", "python", source).expect("python extraction failed");
+    let send_request_refs: Vec<_> = facts
+        .references
+        .iter()
+        .filter(|r| r.expression == "self._send_request")
+        .collect();
+    assert_eq!(
+        send_request_refs.len(),
+        1,
+        "Expected exactly 1 relation for self._send_request, got {:?}",
+        send_request_refs
+    );
+    assert_eq!(send_request_refs[0].kind, "calls");
 }

@@ -34,6 +34,21 @@ fn django_path(call: Syntax<'_>, source: &str) -> bool {
     )
 }
 
+fn in_routes_collection(node: Syntax<'_>, source: &str) -> bool {
+    let Some(array) = node.parent().filter(|parent| parent.kind() == "array") else {
+        return false;
+    };
+    let Some(container) = array.parent() else {
+        return false;
+    };
+    let name = match container.kind() {
+        "variable_declarator" => container.child_by_field_name("name"),
+        "pair" => container.child_by_field_name("key"),
+        _ => None,
+    };
+    name.is_some_and(|name| text(name, source).trim_matches(['\'', '"']) == "routes")
+}
+
 fn methods(call: Syntax<'_>, source: &str, decorated: bool) -> Vec<String> {
     if django_path(call, source) {
         return vec!["ANY".into()];
@@ -257,7 +272,7 @@ pub(crate) fn registration(
                 );
             }
         }
-    } else if node.kind() == "object" {
+    } else if node.kind() == "object" && in_routes_collection(node, source) {
         let mut path = None;
         let mut handler = None;
         let mut c = node.walk();
@@ -344,4 +359,146 @@ fn unwrapped(mut node: Syntax<'_>) -> Syntax<'_> {
         node = inner;
     }
     node
+}
+
+pub(crate) fn client_call(
+    node: Syntax<'_>,
+    source: &str,
+    owner: &str,
+    facts: &mut Facts,
+    offset: usize,
+) {
+    if !matches!(node.kind(), "call" | "call_expression") {
+        return;
+    }
+    let Some(fun) = node.child_by_field_name("function") else {
+        return;
+    };
+    let callee = text(fun, source);
+    let receiver_method = if callee.contains('.') {
+        let Some((receiver, method)) = callee.rsplit_once('.') else {
+            return;
+        };
+        let receiver = receiver.trim();
+        let method = method.trim();
+        let receiver_name = receiver
+            .rsplit_once('.')
+            .map_or(receiver, |(_, last)| last)
+            .trim();
+        if !matches!(
+            receiver_name,
+            "axios" | "http" | "client" | "$" | "jQuery" | "requests"
+        ) {
+            return;
+        }
+        Some(method)
+    } else {
+        if callee != "fetch" {
+            return;
+        }
+        None
+    };
+    let (is_http_client, default_method) = if callee == "fetch" {
+        (true, "GET")
+    } else if let Some(member) = receiver_method {
+        let m = match member {
+            "get" => "GET",
+            "post" => "POST",
+            "put" => "PUT",
+            "patch" => "PATCH",
+            "delete" => "DELETE",
+            "head" => "HEAD",
+            "options" => "OPTIONS",
+            "ajax" => "ANY",
+            _ => return,
+        };
+        (true, m)
+    } else {
+        return;
+    };
+    if !is_http_client {
+        return;
+    }
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return;
+    };
+    let Some(first_arg) = args.named_child(0) else {
+        return;
+    };
+    let url = if let Some(url_str) = literal(first_arg, source) {
+        url_str
+    } else if first_arg.kind() == "object" {
+        let mut u = None;
+        let mut c = first_arg.walk();
+        for pair in first_arg
+            .named_children(&mut c)
+            .filter(|n| n.kind() == "pair")
+        {
+            if let (Some(k), Some(v)) = (
+                pair.child_by_field_name("key"),
+                pair.child_by_field_name("value"),
+            ) {
+                if text(k, source).trim_matches(['\'', '"']) == "url" {
+                    u = literal(v, source);
+                    break;
+                }
+            }
+        }
+        let Some(u) = u else {
+            return;
+        };
+        u
+    } else {
+        return;
+    };
+    if !url.starts_with(['/', '^']) && !url.starts_with("api/") {
+        return;
+    }
+    let method = if default_method == "GET" && callee == "fetch" {
+        if let Some(opts) = args.named_child(1).filter(|n| n.kind() == "object") {
+            let mut m = "GET";
+            let mut c = opts.walk();
+            for pair in opts.named_children(&mut c).filter(|n| n.kind() == "pair") {
+                if let (Some(k), Some(v)) = (
+                    pair.child_by_field_name("key"),
+                    pair.child_by_field_name("value"),
+                ) {
+                    if text(k, source)
+                        .trim_matches(['\'', '"'])
+                        .eq_ignore_ascii_case("method")
+                    {
+                        if let Some(val) = literal(v, source) {
+                            m = match val.to_ascii_uppercase().as_str() {
+                                "POST" => "POST",
+                                "PUT" => "PUT",
+                                "PATCH" => "PATCH",
+                                "DELETE" => "DELETE",
+                                "HEAD" => "HEAD",
+                                "OPTIONS" => "OPTIONS",
+                                _ => "GET",
+                            };
+                            break;
+                        }
+                    }
+                }
+            }
+            m
+        } else {
+            "GET"
+        }
+    } else {
+        default_method
+    };
+    let line = node.start_position().row + offset + 1;
+    facts.references.push(crate::core::models::Reference {
+        source: owner.into(),
+        expression: format!("{method} {url}"),
+        kind: "calls_endpoint".into(),
+        line,
+        column: node.start_position().column,
+        alias: None,
+        module: None,
+        dynamic: false,
+        receiver_hint: None,
+    });
 }

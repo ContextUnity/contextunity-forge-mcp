@@ -63,7 +63,9 @@ struct ClassicFlow<'a> {
 
 impl Serialize for ClassicFlow<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(2))?;
+        let mut map = serializer.serialize_map(Some(
+            2 + usize::from(!self.facts.immutable_initializers.is_empty()),
+        ))?;
         let bindings = (!self.facts.bindings.is_empty()).then_some(&self.facts.bindings);
         let fields = (!self.facts.fields.is_empty()).then_some(&self.facts.fields);
         if self.fields_first {
@@ -72,6 +74,9 @@ impl Serialize for ClassicFlow<'_> {
         } else {
             map.serialize_entry("bindings", &bindings)?;
             map.serialize_entry("fields", &fields)?;
+        }
+        if !self.facts.immutable_initializers.is_empty() {
+            map.serialize_entry("immutable_initializers", &self.facts.immutable_initializers)?;
         }
         map.end()
     }
@@ -82,7 +87,49 @@ pub(crate) struct FlowStore {
     entries: HashMap<String, FlowState>,
 }
 
+const SCOPE_FACT_KEYS: [&str; 8] = [
+    "bindings",
+    "immutable_initializers",
+    "collection_elements",
+    "template_contexts",
+    "type_only_imports",
+    "annotation_references",
+    "vue_slots",
+    "fields",
+];
+
+/// Returns the total count of all scope facts across all 8 fact categories.
+pub fn scope_fact_count(facts: &ValueFlowFacts) -> usize {
+    facts
+        .bindings
+        .len()
+        .saturating_add(facts.immutable_initializers.len())
+        .saturating_add(facts.collection_elements.len())
+        .saturating_add(facts.template_contexts.len())
+        .saturating_add(facts.type_only_imports.len())
+        .saturating_add(facts.annotation_references.len())
+        .saturating_add(facts.vue_slots.len())
+        .saturating_add(facts.fields.len())
+}
+
+/// Counts the same eight arrays on a persisted value-flow object.
+pub fn encoded_scope_fact_count(encoded: &Value) -> usize {
+    SCOPE_FACT_KEYS
+        .into_iter()
+        .map(|key| encoded[key].as_array().map_or(0, Vec::len))
+        .fold(0usize, usize::saturating_add)
+}
+
 impl FlowStore {
+    fn invalid_overflow(mut original: Value) -> FlowState {
+        if let Some(facts) = original.as_object_mut() {
+            facts.remove("type_only_imports");
+            facts.remove("annotation_references");
+            facts.insert("fact_limit_exceeded".into(), Value::Bool(true));
+        }
+        FlowState::Invalid(original)
+    }
+
     pub(crate) fn state(&self, node: &Node) -> Option<&FlowState> {
         self.entries.get(&node.id)
     }
@@ -114,7 +161,18 @@ impl FlowStore {
         }
     }
 
+    fn exceeds_fact_limit(facts: &ValueFlowFacts) -> bool {
+        scope_fact_count(facts) > super::semantic::DEFAULT_FACTS_PER_SCOPE
+            || facts.fact_limit_exceeded
+    }
+
     pub(crate) fn insert(&mut self, id: String, facts: ValueFlowFacts) {
+        if Self::exceeds_fact_limit(&facts) {
+            let original = serde_json::to_value(facts)
+                .expect("value-flow facts contain only JSON-compatible values");
+            self.entries.insert(id, Self::invalid_overflow(original));
+            return;
+        }
         self.entries.insert(
             id,
             FlowState::Valid {
@@ -126,6 +184,12 @@ impl FlowStore {
     }
 
     pub(crate) fn insert_classic(&mut self, id: String, facts: ValueFlowFacts) {
+        if Self::exceeds_fact_limit(&facts) {
+            let original = serde_json::to_value(facts)
+                .expect("value-flow facts contain only JSON-compatible values");
+            self.entries.insert(id, Self::invalid_overflow(original));
+            return;
+        }
         let fields_first = facts.bindings.is_empty() && !facts.fields.is_empty();
         self.entries.insert(
             id,
@@ -148,15 +212,11 @@ impl FlowStore {
             return;
         }
         let original = value.take();
-        let limit = super::semantic::DEFAULT_FACTS_PER_SCOPE;
-        if original["bindings"]
-            .as_array()
-            .map_or(0, Vec::len)
-            .saturating_add(original["fields"].as_array().map_or(0, Vec::len))
-            > limit
+        if encoded_scope_fact_count(&original) > super::semantic::DEFAULT_FACTS_PER_SCOPE
+            || original["fact_limit_exceeded"] == true
         {
             self.entries
-                .insert(node.id.clone(), FlowState::Invalid(original));
+                .insert(node.id.clone(), Self::invalid_overflow(original));
             return;
         }
         let classic_fields_first = classic.then(|| {

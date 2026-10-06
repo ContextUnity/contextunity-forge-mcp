@@ -279,3 +279,146 @@ fn scanner_and_database_keep_documents_and_only_compiled_languages() {
         .unwrap();
     assert_eq!(semantic, scanner::INDEX_SEMANTICS_VERSION);
 }
+
+#[test]
+fn cross_layer_seams_endpoint_vue_alpine() {
+    let workspace = Workspace::new();
+    let root = &workspace.0;
+    fs::create_dir_all(root.join("stores")).unwrap();
+
+    // 1. Python Django backend route + view
+    fs::write(
+        root.join("urls.py"),
+        "from django.urls import path\ndef order_list(request): pass\nurlpatterns = [\n    path('api/v1/orders/', order_list, name='order-list'),\n]\n",
+    ).unwrap();
+
+    // 2. TypeScript client calling endpoint via fetch
+    fs::write(
+        root.join("api.ts"),
+        "export async function fetchOrders() {\n    return fetch('/api/v1/orders/');\n}\n",
+    )
+    .unwrap();
+
+    // 3. HTML calling endpoint via HTMX and Alpine.js component
+    fs::write(
+        root.join("index.html"),
+        concat!(
+            "<div>\n",
+            "  <button hx-get=\"/api/v1/orders/\">Load</button>\n",
+            "  <div x-data=\"{ draft: null, save() { this.draft = 1; } }\">\n",
+            "    <button @click=\"save()\">Save</button>\n",
+            "  </div>\n",
+            "</div>\n",
+        ),
+    )
+    .unwrap();
+
+    // 4. Pinia store
+    fs::write(
+        root.join("stores/admin.ts"),
+        "export function useAdminStore() {\n    return { bookmarks: [] };\n}\n",
+    )
+    .unwrap();
+
+    // 5. Vue component using auto-imported store and Nuxt built-in
+    fs::write(
+        root.join("Admin.vue"),
+        concat!(
+            "<script setup>\n",
+            "const adminStore = useAdminStore();\n",
+            "navigateTo('/dashboard');\n",
+            "</script>\n",
+            "<template><div>Admin</div></template>\n",
+        ),
+    )
+    .unwrap();
+
+    let db = root.join(".forge/code-map.sqlite");
+    writer::build(root, &db, None).unwrap();
+    let conn = reader::open(&db, root).unwrap();
+
+    // Verify calls_endpoint edges
+    let endpoint_edges: Vec<String> = conn
+        .prepare("SELECT kind FROM edges WHERE kind='calls_endpoint'")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        !endpoint_edges.is_empty(),
+        "calls_endpoint edges must exist"
+    );
+
+    // Verify Vue auto-import resolution
+    let admin_store_coverage: String = conn
+        .query_row(
+            "SELECT resolution FROM dependencies WHERE symbol='useAdminStore'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(admin_store_coverage, "resolved");
+
+    // Verify Nuxt builtin resolution (navigateTo -> external)
+    let navigate_coverage: String = conn
+        .query_row(
+            "SELECT resolution FROM dependencies WHERE symbol='navigateTo'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(navigate_coverage, "external");
+
+    // Verify Alpine @click handler island was extracted
+    let alpine_handler_count: usize = conn
+        .query_row(
+            "SELECT count(*) FROM nodes WHERE kind='template_scope' AND name LIKE 'alpine_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        alpine_handler_count >= 1,
+        "Alpine directive islands must be extracted"
+    );
+
+    // Verify impact / reachability traversal from order_list reaches client callers
+    let view_node_id: String = conn
+        .query_row(
+            "SELECT id FROM nodes WHERE name='order_list' AND path='urls.py'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let options = contextunity_forge_mcp::db::traversal::TraversalOptions {
+        depth: 4,
+        inbound: true,
+        mode: None,
+        edge_types: None,
+        page: &contextunity_forge_mcp::core::response::QueryOptions::resolve(
+            &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
+            Some(50),
+            0,
+            Some(contextunity_forge_mcp::core::response::Detail::Compact),
+            None,
+        )
+        .unwrap(),
+    };
+    let impact = contextunity_forge_mcp::db::traversal::traverse_with_options(
+        &conn,
+        &view_node_id,
+        &options,
+    )
+    .unwrap();
+    let impacted_items = impact["nodes"]["items"].as_array().expect("impact items");
+    let impacted_paths: Vec<&str> = impacted_items
+        .iter()
+        .filter_map(|item| item["path"].as_str())
+        .collect();
+    assert!(
+        impacted_paths.contains(&"api.ts") || impacted_paths.contains(&"index.html"),
+        "Inbound impact of backend view must reach frontend callers (api.ts or index.html), got: {:?}",
+        impacted_paths
+    );
+}

@@ -125,10 +125,24 @@ fn persisted_imports_require_complete_language_and_workspace_identity() {
         .unwrap();
     assert_eq!(
         targets.len(),
-        2,
-        "only the qualified linked package import and call may resolve: {targets:?}"
+        3,
+        "the qualified module import, symbol import, and call must resolve: {targets:?}"
     );
     assert!(targets.iter().all(|t| t.contains("commerce/snapshot.py")));
+    assert_eq!(
+        targets
+            .iter()
+            .filter(|target| target.starts_with("module:"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        targets
+            .iter()
+            .filter(|target| target.ends_with(":revert"))
+            .count(),
+        2
+    );
     let unresolved: i64 = conn
         .query_row(
             "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='main.py' AND status='unresolved'",
