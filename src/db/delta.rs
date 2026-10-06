@@ -43,14 +43,13 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         bail!("delta requires at least one modified path");
     }
     let root = scanner::canonical_root(root)?;
-    scanner::check_root_scope(&root, false)?;
     let generation_lock = crate::db::cache::exclusive_lock(db)?;
-    let schema_compatible = {
+    let (schema_compatible, previous_adapter_path) = {
         let probe = Connection::open_with_flags(
             db,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
-        probe
+        let schema_compatible = probe
             .query_row(
                 "SELECT value FROM metadata WHERE key='schema_version'",
                 [],
@@ -58,11 +57,26 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             )
             .optional()?
             .as_deref()
-            == Some(scanner::ENGINE_SCHEMA_VERSION)
+            == Some(scanner::ENGINE_SCHEMA_VERSION);
+        let raw_policy: Option<String> = probe
+            .query_row(
+                "SELECT value FROM metadata WHERE key='adapter'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let adapter_path = raw_policy
+            .map(|raw| {
+                let value: Value = serde_json::from_str(&raw)?;
+                crate::db::writer::persisted_adapter_path(&root, &value)
+            })
+            .transpose()?
+            .flatten();
+        (schema_compatible, adapter_path)
     };
     if !schema_compatible {
         drop(generation_lock);
-        return build(&root, db, None);
+        return build(&root, db, previous_adapter_path.as_deref());
     }
     let admitted = crate::db::reader::open(db, &root)?;
     let admitted_identity = crate::db::cache::identity(db)?;
@@ -73,6 +87,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     )?;
     let adapter = read_policy(&root, &admitted)?;
     let current_adapter = scanner::load_adapter(&root, adapter.adapter_path.as_deref())?;
+    scanner::check_root_scope(&root, current_adapter.limits.allow_broad_root)?;
     for path in modified {
         scanner::checked_child(&root, path)?;
     }
@@ -881,7 +896,15 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     persist_files(&tx, &mut path_cache, &changed_entries, &facts, None, false)?;
     let files_ms = files_writing.elapsed().as_secs_f64() * 1000.;
     let graph_writing = Instant::now();
-    persist_graph(&tx, &mut path_cache, &graph, &facts, &mut node_paths, false)?;
+    persist_graph(
+        &tx,
+        &mut path_cache,
+        &graph,
+        &facts,
+        Some(&affected),
+        &mut node_paths,
+        false,
+    )?;
     tx.execute(
         "DELETE FROM coverage_evidence WHERE evidence_id NOT IN(SELECT evidence_id FROM resolution_coverage UNION SELECT evidence_id FROM edges UNION SELECT confidence_id FROM edges UNION SELECT evidence_id FROM edge_occurrences UNION SELECT confidence_id FROM edge_occurrences)",
         [],

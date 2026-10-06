@@ -78,6 +78,30 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
     assert!(enabled.exact);
 }
 
+#[test]
+fn exact_symbol_search_handles_underscore_only_identifiers() {
+    let workspace = Workspace::new();
+    workspace.write("symbols.py", "def _(): pass\ndef __(): pass\n");
+    let conn = workspace.build();
+
+    for name in ["_", "__"] {
+        let found = symbols::search_with_options(
+            &conn,
+            name,
+            &symbols::SearchOptions {
+                kind: Some("function"),
+                path: None,
+                include_docs: false,
+                exact: true,
+                page: &options(30),
+            },
+        )
+        .unwrap();
+        assert_eq!(found["nodes"]["total"], 1, "{name}: {found}");
+        assert_eq!(found["nodes"]["items"][0]["name"], name);
+    }
+}
+
 #[cfg(feature = "lang-rust")]
 #[test]
 fn prefix_search_finds_namespaced_rust_methods_using_fts_candidates() {

@@ -781,6 +781,7 @@ fn extract_file_impl(
                                 owner: &owner,
                                 offset: 0,
                                 shadowed_require_scopes: &file.shadowed_require_scopes,
+                                type_checking_aliases: Some(&file.type_checking_aliases),
                             },
                             facts,
                         );

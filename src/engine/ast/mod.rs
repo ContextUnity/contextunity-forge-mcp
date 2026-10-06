@@ -285,6 +285,19 @@ struct Extraction<'a> {
     ids: HashSet<String>,
     flows: Option<&'a mut FlowStore>,
 }
+struct VisitContext<'a> {
+    source: &'a str,
+    path: &'a str,
+    profile: &'a dyn LanguageProfile,
+    file: &'a FileContext,
+    module: &'a str,
+    offset: usize,
+}
+struct VisitState<'a, 'flow> {
+    symbols: &'a mut HashMap<usize, String>,
+    ids: &'a mut HashSet<String>,
+    flows: &'a mut Option<&'flow mut FlowStore>,
+}
 impl Extraction<'_> {
     fn visit(
         &mut self,
@@ -293,12 +306,36 @@ impl Extraction<'_> {
         owner: &str,
         facts: &mut Facts,
     ) {
+        let context = VisitContext {
+            source: self.source,
+            path: self.path,
+            profile: self.profile,
+            file: &self.file,
+            module: self.module,
+            offset: self.offset,
+        };
+        let mut state = VisitState {
+            symbols: &mut self.symbols,
+            ids: &mut self.ids,
+            flows: &mut self.flows,
+        };
+        Self::visit_node(&context, &mut state, node, scopes, owner, facts);
+    }
+
+    fn visit_node(
+        context: &VisitContext<'_>,
+        state: &mut VisitState<'_, '_>,
+        node: Syntax<'_>,
+        scopes: &mut Vec<String>,
+        owner: &str,
+        facts: &mut Facts,
+    ) {
         let (source, path, language, module, offset) = (
-            self.source,
-            self.path,
-            self.profile.id(),
-            self.module,
-            self.offset,
+            context.source,
+            context.path,
+            context.profile.id(),
+            context.module,
+            context.offset,
         );
         if node.parent().is_none() {
             if let Some(module) = facts.nodes.iter_mut().find(|n| n.id == owner) {
@@ -320,19 +357,22 @@ impl Extraction<'_> {
                             node,
                             source,
                             offset,
-                            &self.file.shadowed_require_scopes,
+                            &context.file.shadowed_require_scopes,
                         ));
                 }
-                if !self.file.lazy_exports.is_empty() {
-                    module.details["lazy_exports"] = json!(self.file.lazy_exports);
+                if !context.file.lazy_exports.is_empty() {
+                    module.details["lazy_exports"] = json!(context.file.lazy_exports);
                 }
-                if !self.file.exports.is_empty() {
-                    module.details["exports"] = json!(self.file.exports);
+                if !context.file.exports.is_empty() {
+                    module.details["exports"] = json!(context.file.exports);
                 }
-                let mut value_flow = self.profile.value_flow(node, source);
+                let mut value_flow =
+                    context
+                        .profile
+                        .value_flow_with_context(node, source, context.file);
                 value_flow.offset_lines(offset);
                 if !value_flow.is_empty() {
-                    if let Some(flows) = &mut self.flows {
+                    if let Some(flows) = state.flows.as_mut() {
                         if let Some(previous) = flows.take(&module.id) {
                             value_flow.bindings.extend(previous.bindings);
                             value_flow
@@ -352,14 +392,14 @@ impl Extraction<'_> {
                     value_flow.bindings.sort_by_key(|binding| binding.position);
                     value_flow.immutable_initializers.sort_unstable();
                     value_flow.fields.sort_by_key(|field| field.position);
-                    if let Some(flows) = &mut self.flows {
+                    if let Some(flows) = state.flows.as_mut() {
                         module.details["value_flow"] = serde_json::Value::Null;
                         flows.insert(module.id.clone(), value_flow);
                     } else {
                         module.details["value_flow"] = json!(value_flow);
                     }
                 }
-                let scope_bindings = self.profile.bindings(node, source);
+                let scope_bindings = context.profile.bindings(node, source);
                 let bindings = module.details["bindings"]
                     .as_array()
                     .cloned()
@@ -403,8 +443,8 @@ impl Extraction<'_> {
         }
         let mut child_owner = owner.to_owned();
         let mut pushed = false;
-        if let Some(kind) = self.profile.symbol_with_source(node, source) {
-            let name = self
+        if let Some(kind) = context.profile.symbol_with_source(node, source) {
+            let name = context
                 .profile
                 .symbol_name(node, source)
                 .map(str::to_owned)
@@ -415,15 +455,15 @@ impl Extraction<'_> {
                         node.start_position().column + 1
                     )
                 });
-            let prefix = self.profile.node_prefix(kind);
+            let prefix = context.profile.node_prefix(kind);
             let line = node.start_position().row + offset + 1;
             let mut id = format!("{prefix}:{path}:{line}:{name}");
-            if !self.ids.insert(id.clone()) {
+            if !state.ids.insert(id.clone()) {
                 id.push_str(&format!(":{}", node.start_position().column));
-                self.ids.insert(id.clone());
+                state.ids.insert(id.clone());
             }
-            self.symbols.insert(node.id(), id.clone());
-            let metadata = self.profile.metadata(node, source, &name, &self.file);
+            state.symbols.insert(node.id(), id.clone());
+            let metadata = context.profile.metadata(node, source, &name, context.file);
             let prototype_owner = (language == "javascript"
                 && matches!(node.kind(), "function_expression" | "arrow_function")
                 && metadata.is_method == Some(true))
@@ -434,8 +474,8 @@ impl Extraction<'_> {
             } else {
                 qualified(module, scopes, &name)
             };
-            let bindings = self.profile.bindings(node, source);
-            let mut details = json!({"receiver_name":metadata.receiver_name,"bindings":bindings.all,"rebindings":bindings.rebindings,"default_export":metadata.default_export,"doc":self.profile.doc_comment(node,source),"decorators":metadata.decorators,"bases":metadata.bases,"receiver":metadata.receiver,"signature":declaration_signature(node,source),"async":metadata.is_async});
+            let bindings = context.profile.bindings(node, source);
+            let mut details = json!({"receiver_name":metadata.receiver_name,"bindings":bindings.all,"rebindings":bindings.rebindings,"default_export":metadata.default_export,"doc":context.profile.doc_comment(node,source),"decorators":metadata.decorators,"bases":metadata.bases,"receiver":metadata.receiver,"signature":declaration_signature(node,source),"async":metadata.is_async});
             details["column"] = json!(node.start_position().column);
             if let Some(receiver_type) = metadata.receiver_type {
                 details["receiver_type"] = json!(receiver_type);
@@ -457,13 +497,16 @@ impl Extraction<'_> {
             if !metadata.param_types.is_empty() {
                 details["param_types"] = json!(metadata.param_types);
             }
-            let mut value_flow = self.profile.value_flow(node, source);
+            let mut value_flow =
+                context
+                    .profile
+                    .value_flow_with_context(node, source, context.file);
             if value_flow.return_type.is_none() {
                 value_flow.return_type = metadata.return_type;
             }
             value_flow.offset_lines(offset);
             if !value_flow.is_empty() {
-                if let Some(flows) = &mut self.flows {
+                if let Some(flows) = state.flows.as_mut() {
                     details["value_flow"] = serde_json::Value::Null;
                     flows.insert(id.clone(), value_flow);
                 } else {
@@ -487,7 +530,7 @@ impl Extraction<'_> {
                 path: path.into(),
                 line,
                 end_line: node.end_position().row + offset + 1,
-                is_test: is_test(path) || self.profile.test_attribute(node, source),
+                is_test: is_test(path) || context.profile.test_attribute(node, source),
                 language: language.into(),
                 generated: false,
                 details,
@@ -501,14 +544,14 @@ impl Extraction<'_> {
                 evidence: node.kind().into(),
                 confidence: "exact".into(),
             });
-            let shadowed_require_scopes = std::sync::Arc::clone(&self.file.shadowed_require_scopes);
-            self.profile.extract_relations(
+            context.profile.extract_relations(
                 &SyntaxContext {
                     node,
                     source,
                     owner: &id,
                     offset,
-                    shadowed_require_scopes: &shadowed_require_scopes,
+                    shadowed_require_scopes: &context.file.shadowed_require_scopes,
+                    type_checking_aliases: Some(&context.file.type_checking_aliases),
                 },
                 facts,
             );
@@ -516,22 +559,22 @@ impl Extraction<'_> {
             scopes.push(name);
             pushed = true;
         }
-        let shadowed_require_scopes = std::sync::Arc::clone(&self.file.shadowed_require_scopes);
         let ctx = SyntaxContext {
             node,
             source,
             owner: &child_owner,
             offset,
-            shadowed_require_scopes: &shadowed_require_scopes,
+            shadowed_require_scopes: &context.file.shadowed_require_scopes,
+            type_checking_aliases: Some(&context.file.type_checking_aliases),
         };
-        self.profile.extract_imports(&ctx, facts);
-        self.profile.extract_calls(&ctx, facts);
-        self.profile.extract_mutations(&ctx, facts);
+        context.profile.extract_imports(&ctx, facts);
+        context.profile.extract_calls(&ctx, facts);
+        context.profile.extract_mutations(&ctx, facts);
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            self.visit(child, scopes, &child_owner, facts);
+            Self::visit_node(context, state, child, scopes, &child_owner, facts);
         }
-        self.profile.extract_routes(&ctx, facts, &self.symbols);
+        context.profile.extract_routes(&ctx, facts, state.symbols);
         if pushed {
             scopes.pop();
         }

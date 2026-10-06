@@ -110,6 +110,7 @@ fn policy(root: &Path, adapter: &scanner::Adapter) -> Value {
     json!({
         "adapter_path": adapter.adapter_path.as_ref().map(|path| path.strip_prefix(root).unwrap_or(path).to_string_lossy()),
         "roots": adapter.roots.iter().map(|p| p.strip_prefix(root).unwrap_or(p).to_string_lossy()).collect::<Vec<_>>(),
+        "limits": &adapter.limits,
         "ignored_names": adapter.ignored_names,
         "adapter_version": adapter.adapter_version,
         "digest": adapter.digest,
@@ -120,12 +121,24 @@ fn policy(root: &Path, adapter: &scanner::Adapter) -> Value {
         "plans": adapter.plans,
     })
 }
+
+pub(super) fn persisted_adapter_path(root: &Path, value: &Value) -> Result<Option<PathBuf>> {
+    match value.get("adapter_path") {
+        None | Some(Value::Null) => Ok(None),
+        Some(path) => Ok(Some(scanner::checked_child(
+            root,
+            Path::new(path.as_str().context("invalid persisted adapter path")?),
+        )?)),
+    }
+}
+
 fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
     let raw: String =
         conn.query_row("SELECT value FROM metadata WHERE key='adapter'", [], |r| {
             r.get(0)
         })?;
     let value: Value = serde_json::from_str(&raw)?;
+    let adapter_path = persisted_adapter_path(root, &value)?;
     let roots = value["roots"]
         .as_array()
         .context("invalid persisted roots")?
@@ -145,14 +158,14 @@ fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
         .iter()
         .map(|v| v.as_str().map(str::to_owned).context("invalid ignore name"))
         .collect::<Result<BTreeSet<_>>>()?;
+    let limits: scanner::ScannerLimits = serde_json::from_value(
+        value
+            .get("limits")
+            .cloned()
+            .context("missing persisted scanner limits")?,
+    )
+    .context("invalid persisted scanner limits")?;
     let adapter_version = value["adapter_version"].as_str().map(str::to_owned);
-    let adapter_path = match value.get("adapter_path") {
-        None | Some(Value::Null) => None,
-        Some(path) => Some(scanner::checked_child(
-            root,
-            Path::new(path.as_str().context("invalid persisted adapter path")?),
-        )?),
-    };
     let digest = value["digest"].as_str().unwrap_or_default().to_owned();
     let linked_workspaces: Vec<scanner::LinkedWorkspace> = value
         .get("linked_workspaces")
@@ -177,7 +190,7 @@ fn read_policy(root: &Path, conn: &Connection) -> Result<scanner::Adapter> {
     Ok(scanner::Adapter {
         adapter_path,
         response: Default::default(),
-        limits: Default::default(),
+        limits,
         roots,
         ignored_names,
         adapter_version,
@@ -303,7 +316,15 @@ fn populate(
     let doc_fts_insert_ms = t_doc_fts.elapsed().as_secs_f64() * 1000.;
 
     let t_graph = Instant::now();
-    let graph_timings = persist_graph(&tx, &mut path_cache, &graph, facts, &mut node_paths, true)?;
+    let graph_timings = persist_graph(
+        &tx,
+        &mut path_cache,
+        &graph,
+        facts,
+        None,
+        &mut node_paths,
+        true,
+    )?;
     let persist_graph_ms = t_graph.elapsed().as_secs_f64() * 1000.;
 
     let rows_ms = writing.elapsed().as_secs_f64() * 1000.;

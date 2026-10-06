@@ -82,6 +82,275 @@ fn rust_cross_file_inherent_impl_resolves_only_real_receiver_members() {
 }
 
 #[test]
+fn rust_nested_module_glob_uses_visible_same_crate_import_providers() {
+    let sources = [
+        ("crates/alpha/src/services.rs", "pub fn serve() {}"),
+        (
+            "crates/alpha/src/api/mod.rs",
+            "pub fn direct() {}\nuse crate::services::serve;",
+        ),
+        (
+            "crates/alpha/src/api/child.rs",
+            "use super::*;\nfn run() { direct(); serve(); missing(); }",
+        ),
+        ("crates/beta/src/services.rs", "pub fn serve() {}"),
+        (
+            "crates/beta/src/api/mod.rs",
+            "pub fn direct() {}\nuse crate::services::serve;",
+        ),
+        (
+            "crates/beta/src/api/child.rs",
+            "use super::*;\nfn run() { direct(); serve(); }",
+        ),
+    ];
+    let facts: BTreeMap<_, _> = sources
+        .into_iter()
+        .map(|(path, source)| (path.to_owned(), ast::extract(path, "rust", source).unwrap()))
+        .collect();
+    let graph = linker::link(&facts);
+    for crate_name in ["alpha", "beta"] {
+        let child_path = format!("crates/{crate_name}/src/api/child.rs");
+        for (expression, provider_path) in [
+            ("direct", format!("crates/{crate_name}/src/api/mod.rs")),
+            ("serve", format!("crates/{crate_name}/src/services.rs")),
+        ] {
+            let provider = facts[&provider_path]
+                .nodes
+                .iter()
+                .find(|node| node.name == expression && node.kind == "function")
+                .unwrap();
+            assert!(
+                graph.edges.iter().any(|edge| edge.path == child_path
+                    && edge.kind == "calls"
+                    && edge.evidence == expression
+                    && edge.dst == provider.id),
+                "{graph:#?}"
+            );
+        }
+    }
+    assert!(graph
+        .coverage
+        .iter()
+        .any(|coverage| coverage.path == "crates/alpha/src/api/child.rs"
+            && coverage.expression == "missing"
+            && coverage.status == "unresolved"));
+}
+
+#[test]
+fn rust_parent_glob_preserves_renamed_local_and_standard_import_providers() {
+    let facts: BTreeMap<_, _> = [
+        ("src/shared.rs", "pub struct Token; pub fn text() {}"),
+        (
+            "src/api/mod.rs",
+            "use crate::shared::{text as render, Token as Alias}; use std::path::Path as FilePath;",
+        ),
+        (
+            "src/api/child.rs",
+            "use super::*; fn run(_value: Alias) { render(); FilePath::new(\"x\"); missing(); }",
+        ),
+    ]
+    .into_iter()
+    .map(|(path, source)| (path.to_owned(), ast::extract(path, "rust", source).unwrap()))
+    .collect();
+    let graph = linker::link(&facts);
+    let function = facts["src/shared.rs"]
+        .nodes
+        .iter()
+        .find(|node| node.name == "text")
+        .unwrap();
+    let token = facts["src/shared.rs"]
+        .nodes
+        .iter()
+        .find(|node| node.name == "Token")
+        .unwrap();
+    for (expression, target) in [("render", function), ("Alias", token)] {
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.path == "src/api/child.rs"
+                    && edge.evidence == expression
+                    && edge.dst == target.id),
+            "{expression}: {graph:#?}"
+        );
+    }
+    assert!(
+        graph
+            .coverage
+            .iter()
+            .any(|row| row.path == "src/api/child.rs"
+                && row.expression == "FilePath::new"
+                && row.status == "external"
+                && row.evidence.contains("std.path.Path")),
+        "{graph:#?}"
+    );
+    assert!(
+        graph
+            .coverage
+            .iter()
+            .any(|row| row.path == "src/api/child.rs"
+                && row.expression == "missing"
+                && row.status == "unresolved"),
+        "{graph:#?}"
+    );
+}
+
+#[test]
+fn rust_local_constructor_binding_resolves_receiver_methods() {
+    let path = "src/workspace.rs";
+    let source = "pub struct Workspace {}\nimpl Workspace {\n    pub fn new() -> Self { Self {} }\n    pub fn open(&self) {}\n    pub fn create(&self) {}\n}\nfn run() {\n    let workspace = Workspace::new();\n    workspace.open();\n    workspace.create();\n}\n";
+    let facts = ast::extract(path, "rust", source).unwrap();
+    assert!(facts.errors.is_empty(), "{facts:#?}");
+    let files = BTreeMap::from([(path.to_owned(), facts)]);
+    let graph = linker::link(&files);
+    let workspace = files[path]
+        .nodes
+        .iter()
+        .find(|node| node.kind == "struct" && node.name == "Workspace")
+        .unwrap();
+    let constructor = files[path]
+        .nodes
+        .iter()
+        .find(|node| node.kind == "method" && node.name == "new")
+        .unwrap();
+    let self_references: Vec<_> = files[path]
+        .references
+        .iter()
+        .filter(|reference| reference.kind == "references" && reference.expression == "Self")
+        .collect();
+    assert!(!self_references.is_empty(), "{:#?}", files[path]);
+    for reference in self_references {
+        assert!(
+            graph.coverage.iter().any(|row| row.path == path
+                && row.line == reference.line
+                && row.expression == "Self"
+                && row.status == "resolved"),
+            "{graph:#?}"
+        );
+        assert!(
+            graph.edges.iter().any(|edge| edge.kind == "references"
+                && edge.path == path
+                && edge.line == reference.line
+                && edge.evidence == "Self"
+                && edge.src == constructor.id
+                && edge.dst == workspace.id),
+            "{graph:#?}"
+        );
+    }
+    for (expression, method) in [
+        ("Workspace::new", "new"),
+        ("workspace.open", "open"),
+        ("workspace.create", "create"),
+    ] {
+        assert!(
+            graph
+                .coverage
+                .iter()
+                .any(|coverage| coverage.expression == expression && coverage.status == "resolved"),
+            "{expression}: {graph:#?}"
+        );
+        let target = files[path]
+            .nodes
+            .iter()
+            .find(|node| node.kind == "method" && node.name == method)
+            .unwrap();
+        assert!(
+            graph.edges.iter().any(|edge| edge.kind == "calls"
+                && edge.evidence == expression
+                && edge.dst == target.id
+                && (expression == "Workspace::new" || edge.confidence == "inferred")),
+            "{expression}: {graph:#?}"
+        );
+    }
+}
+
+#[test]
+fn rust_generic_impl_methods_follow_the_declared_nominal_receiver() {
+    let path = "src/store.rs";
+    let source = "struct Store<T> { value: T }\nimpl<T> Store<T> { fn new(value: T) -> Self { Self { value } } fn read(&self) -> &T { &self.value } fn requires_clone(&self) where T: Clone {} fn constrained<U: Clone>(&self, _value: U) {} }\nimpl<T> Store<Vec<T>> { fn specialized(&self) {} }\ntrait Reading { fn default_constrained<U: Clone>(&self, _value: U) {} }\nimpl<T> Reading for Store<T> {}\nstruct Limited<T>(T);\nimpl<T: Clone> Limited<T> { fn checked(&self) {} }\nfn run(store: &Store<u8>, limited: &Limited<u8>) { store.read(); Store::new(1u8).read(); store.specialized(); store.requires_clone(); store.constrained(1u8); store.default_constrained(1u8); limited.checked(); }\nstruct Other;\nfn unknown(other: &Other) { other.read(); }";
+    let facts = ast::extract(path, "rust", source).unwrap();
+    assert!(facts.errors.is_empty(), "{facts:#?}");
+    let method = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == "method" && node.name == "read")
+        .unwrap();
+    let method_id = method.id.clone();
+    let graph = linker::link(&BTreeMap::from([(path.to_owned(), facts)]));
+    for expression in ["store.read", "Store::new(1u8).read"] {
+        assert!(
+            graph.edges.iter().any(|edge| edge.kind == "calls"
+                && edge.evidence == expression
+                && edge.dst == method_id),
+            "{expression}: {graph:#?}"
+        );
+    }
+    assert!(
+        graph
+            .coverage
+            .iter()
+            .any(|row| row.expression == "other.read" && row.status == "unresolved"),
+        "{graph:#?}"
+    );
+    for expression in [
+        "store.specialized",
+        "store.requires_clone",
+        "store.constrained",
+        "store.default_constrained",
+        "limited.checked",
+    ] {
+        assert!(
+            graph
+                .coverage
+                .iter()
+                .any(|row| row.expression == expression && row.status == "unresolved"),
+            "{expression}: {graph:#?}"
+        );
+    }
+}
+
+#[test]
+fn rust_standard_constructors_have_finite_external_origins() {
+    let path = "src/constructors.rs";
+    let source = "use std::path::Path;\nuse std::sync::Arc;\nfn run() { let mut values = Vec::new(); values.push(1); let text = String::from(\"x\"); text.len(); let path = Path::new(\"x\"); path.join(\"y\"); let boxed = Box::new(1); boxed.as_ref(); let shared = Arc::new(1); shared.clone(); }";
+    let facts = ast::extract(path, "rust", source).unwrap();
+    assert!(facts.errors.is_empty(), "{facts:#?}");
+    let graph = linker::link(&BTreeMap::from([(path.to_owned(), facts)]));
+    for expression in ["Vec::new", "String::from", "Box::new"] {
+        assert!(
+            graph.coverage.iter().any(|row| row.path == path
+                && row.expression == expression
+                && row.status == "external"
+                && row.evidence.contains("Rust standard library")),
+            "{expression}: {graph:#?}"
+        );
+    }
+    for (expression, origin) in [("Path::new", "std.path.Path"), ("Arc::new", "std.sync.Arc")] {
+        assert!(
+            graph.coverage.iter().any(|row| row.path == path
+                && row.expression == expression
+                && row.status == "external"
+                && row.evidence.contains(origin)),
+            "{expression}: {graph:#?}"
+        );
+    }
+    for expression in [
+        "values.push",
+        "text.len",
+        "path.join",
+        "boxed.as_ref",
+        "shared.clone",
+    ] {
+        assert!(
+            graph.coverage.iter().any(|row| row.path == path
+                && row.expression == expression
+                && row.status == "external"),
+            "{expression}: {graph:#?}"
+        );
+    }
+}
+
+#[test]
 fn rust_trait_methods_require_visible_proven_traits() {
     let facts: BTreeMap<_, _> = [
         ("src/model.rs", "pub struct Service;"),
@@ -116,6 +385,80 @@ fn rust_trait_methods_require_visible_proven_traits() {
 }
 
 #[test]
+fn rust_trait_default_methods_require_a_visible_concrete_impl() {
+    let facts: BTreeMap<_, _> = [
+        ("src/model.rs", "pub struct Service;"),
+        (
+            "src/traits.rs",
+            "pub trait Work { fn work(&self) {} fn overridden(&self) {} fn required(&self); }",
+        ),
+        (
+            "src/operations.rs",
+            "use crate::model::Service; use crate::traits::Work;\nimpl Work for Service { fn overridden(&self) {} fn required(&self) {} }",
+        ),
+        (
+            "src/client.rs",
+            "use crate::model::Service; use crate::traits::Work;\nfn run(client: &Service) { client.work(); client.overridden(); client.required(); }",
+        ),
+        (
+            "src/no_trait.rs",
+            "use crate::model::Service;\nfn run(client: &Service) { client.work(); }",
+        ),
+        (
+            "src/no_impl.rs",
+            "use crate::traits::Work;\nstruct Other;\nfn run(other: &Other) { other.work(); }",
+        ),
+    ]
+    .into_iter()
+    .map(|(path, source)| (path.to_owned(), ast::extract(path, "rust", source).unwrap()))
+    .collect();
+    let graph = linker::link(&facts);
+    let default_method = facts["src/traits.rs"]
+        .nodes
+        .iter()
+        .find(|node| node.name == "work" && node.kind == "method")
+        .unwrap();
+    let implementations = &facts["src/operations.rs"].nodes;
+    for (expression, target) in [
+        ("client.work", default_method),
+        (
+            "client.overridden",
+            implementations
+                .iter()
+                .find(|node| node.name == "overridden" && node.kind == "method")
+                .unwrap(),
+        ),
+        (
+            "client.required",
+            implementations
+                .iter()
+                .find(|node| node.name == "required" && node.kind == "method")
+                .unwrap(),
+        ),
+    ] {
+        assert!(
+            graph.edges.iter().any(|edge| edge.path == "src/client.rs"
+                && edge.kind == "calls"
+                && edge.evidence == expression
+                && edge.dst == target.id),
+            "{graph:#?}"
+        );
+    }
+    assert!(graph
+        .coverage
+        .iter()
+        .any(|coverage| coverage.path == "src/no_trait.rs"
+            && coverage.expression == "client.work"
+            && coverage.status == "unresolved"));
+    assert!(graph
+        .coverage
+        .iter()
+        .any(|coverage| coverage.path == "src/no_impl.rs"
+            && coverage.expression == "other.work"
+            && coverage.status == "unresolved"));
+}
+
+#[test]
 fn rust_builtin_members_are_finite_and_do_not_replace_local_types() {
     let facts: BTreeMap<_, _> = [("src/service.rs", "fn builtin(value: String) { value.len(); value.imaginary(); }\nmod local { struct String; fn custom(value: String) { value.len(); } }\n")]
         .into_iter().map(|(path, source)| (path.to_owned(), ast::extract(path, "rust", source).unwrap())).collect();
@@ -123,7 +466,7 @@ fn rust_builtin_members_are_finite_and_do_not_replace_local_types() {
     assert!(graph
         .coverage
         .iter()
-        .any(|coverage| coverage.expression == "value.len" && coverage.status == "resolved"));
+        .any(|coverage| coverage.expression == "value.len" && coverage.status == "external"));
     assert!(graph.coverage.iter().any(
         |coverage| coverage.expression == "value.imaginary" && coverage.status == "unresolved"
     ));
@@ -160,7 +503,16 @@ fn rust_declaration_proofs_start_after_the_initializer() {
             .iter()
             .filter(|coverage| coverage.expression == "value.len" && coverage.status == "resolved")
             .count(),
-        2,
+        1,
+        "{graph:#?}"
+    );
+    assert_eq!(
+        graph
+            .coverage
+            .iter()
+            .filter(|coverage| coverage.expression == "value.len" && coverage.status == "external")
+            .count(),
+        1,
         "{graph:#?}"
     );
 }
@@ -188,7 +540,7 @@ fn rust_generic_annotations_preserve_arguments_without_implicit_unwrapping() {
         assert!(
             graph.coverage.iter().any(|coverage| coverage.line == 2
                 && coverage.expression == expression
-                && coverage.status == "resolved"),
+                && coverage.status == "external"),
             "{graph:#?}"
         );
     }
@@ -379,6 +731,36 @@ fn rust_structural_method_initializers_use_nominal_return_contracts() {
 }
 
 #[test]
+fn rust_associated_generic_factory_uses_declared_return_for_member_chains() {
+    let source = "struct Factory; struct Service;\nimpl Factory { fn build<T>() -> Service { Service } }\nimpl Service { fn new() -> Self { Self } fn work(&self) {} }\nfn run() { Factory::build::<u8>().work(); let built = Factory::build::<u16>(); built.work(); Service::new().work(); }\nfn missing() { Factory::missing().work(); }";
+    let facts = ast::extract("src/service.rs", "rust", source).unwrap();
+    assert!(facts.errors.is_empty(), "{facts:#?}");
+    let facts = BTreeMap::from([("src/service.rs".to_owned(), facts)]);
+    let graph = linker::link(&facts);
+    let work = facts["src/service.rs"]
+        .nodes
+        .iter()
+        .find(|node| node.name == "work" && node.kind == "method")
+        .unwrap();
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == "calls" && edge.dst == work.id && edge.line == 4)
+            .count(),
+        3,
+        "{graph:#?}"
+    );
+    assert!(!graph
+        .edges
+        .iter()
+        .any(|edge| edge.kind == "calls" && edge.dst == work.id && edge.line == 5));
+    assert!(graph.coverage.iter().any(|coverage| coverage.line == 5
+        && coverage.expression.contains("Factory::missing")
+        && coverage.status == "unresolved"));
+}
+
+#[test]
 fn rust_computed_and_qualified_callees_keep_opaque_dispatch() {
     let source = "struct Service; trait Work { fn work(&self); }\nimpl Work for Service { fn work(&self) {} }\nfn choose() -> Service { Service {} }\nfn run(client: &Service) { choose().work(); <Service as Work>::work(client); }\nmacro_rules! invoke { () => {} }\nfn macro_call() { invoke!(); }";
     let facts = ast::extract("src/dispatch.rs", "rust", source).unwrap();
@@ -513,7 +895,7 @@ fn rust_destructuring_preserves_payload_bindings_and_constructor_calls() {
         assert!(
             graph.coverage.iter().any(|row| row.line == 7
                 && row.expression == expression
-                && row.status == "resolved"),
+                && row.status == "external"),
             "{graph:#?}"
         );
     }
@@ -696,7 +1078,7 @@ fn rust_declared_fields_resolve_nominal_parameters_and_tuple_receivers() {
             graph
                 .coverage
                 .iter()
-                .any(|row| row.expression == expression && row.status == "resolved"),
+                .any(|row| row.expression == expression && row.status == "external"),
             "{graph:#?}"
         );
     }
@@ -771,7 +1153,7 @@ fn rust_str_receivers_resolve_core_inherent_members_without_prelude_imports() {
             graph.coverage.iter().any(|row| row.path == "src/strings.rs"
                 && row.line == primitive_line
                 && row.expression == format!("value.{member}")
-                && row.status == "resolved"),
+                && row.status == "external"),
             "{graph:#?}"
         );
     }
@@ -789,4 +1171,193 @@ fn rust_str_receivers_resolve_core_inherent_members_without_prelude_imports() {
             .any(|row| row.expression == "unknown.as_bytes" && row.status == "unresolved"),
         "{graph:#?}"
     );
+}
+
+#[test]
+fn rust_smart_pointer_deref_dispatch_persists_exact_providers_and_boundaries() {
+    use contextunity_forge_mcp::db::{reader, writer};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    struct Workspace(PathBuf);
+    impl Drop for Workspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let workspace = Workspace(std::env::temp_dir().join(format!(
+        "forge_rust_smart_pointers_{}_{nonce}",
+        std::process::id()
+    )));
+    fs::create_dir_all(workspace.0.join("src")).unwrap();
+    fs::write(
+        workspace.0.join("Cargo.toml"),
+        "[package]\nname = \"smart-pointer-provenance\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let sources = [
+        (
+            "lib.rs",
+            "mod service; mod box_case; mod arc_case; mod rc_case; mod option_case; mod unimported_case; mod shadow_case; mod one; mod two; mod ambiguous_case;",
+        ),
+        (
+            "service.rs",
+            "pub struct Service; impl Service { pub fn work(&self) {} pub fn as_ref(&self) {} }",
+        ),
+        (
+            "box_case.rs",
+            "use crate::service::Service; pub fn run(value: Box<Service>) { value.work(); value.as_ref(); }",
+        ),
+        (
+            "arc_case.rs",
+            "use crate::service::Service; use std::sync::Arc; pub fn run(value: Arc<Service>) { value.work(); value.as_ref(); }",
+        ),
+        (
+            "rc_case.rs",
+            "use crate::service::Service; use std::rc::Rc; pub fn run(value: Rc<Service>) { value.work(); value.as_ref(); }",
+        ),
+        (
+            "option_case.rs",
+            "use crate::service::Service; pub fn run(value: Option<Service>) { value.work(); }",
+        ),
+        (
+            "unimported_case.rs",
+            "use crate::service::Service; pub fn run(value: Arc<Service>) { value.work(); }",
+        ),
+        (
+            "shadow_case.rs",
+            "use crate::service::Service; pub struct Arc<T>(T); impl<T> Arc<T> { pub fn as_ref(&self) -> &T { &self.0 } } pub fn run(value: Arc<Service>) { value.work(); value.as_ref(); }",
+        ),
+        ("one.rs", "pub struct Service; impl Service { pub fn work(&self) {} }"),
+        ("two.rs", "pub struct Service; impl Service { pub fn work(&self) {} }"),
+        (
+            "ambiguous_case.rs",
+            "use crate::one::Service; use crate::two::Service; pub fn run(value: Box<Service>) { value.work(); }",
+        ),
+    ];
+    for (name, source) in sources {
+        fs::write(workspace.0.join("src").join(name), source).unwrap();
+    }
+
+    let db = workspace.0.join(".forge/code-map.sqlite");
+    writer::build(&workspace.0, &db, None).unwrap();
+    let conn = reader::open(&db, &workspace.0).unwrap();
+    let mut coverage = conn
+        .prepare("SELECT c.status,v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path=?1 AND x.expression=?2 ORDER BY c.status,v.evidence")
+        .unwrap();
+    let mut edges = conn
+        .prepare("SELECT dst.path FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN coverage_evidence v ON v.evidence_id=e.evidence_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.kind='calls' AND v.evidence=?2 ORDER BY dst.path")
+        .unwrap();
+
+    for (path, expression, statuses, target, origin) in [
+        (
+            "src/box_case.rs",
+            "value.work",
+            &["resolved"][..],
+            Some("src/service.rs"),
+            None,
+        ),
+        (
+            "src/arc_case.rs",
+            "value.work",
+            &["resolved"],
+            Some("src/service.rs"),
+            None,
+        ),
+        (
+            "src/rc_case.rs",
+            "value.work",
+            &["resolved"],
+            Some("src/service.rs"),
+            None,
+        ),
+        (
+            "src/box_case.rs",
+            "value.as_ref",
+            &["external"],
+            None,
+            Some("Rust standard library built-in"),
+        ),
+        (
+            "src/arc_case.rs",
+            "value.as_ref",
+            &["external"],
+            None,
+            Some("Rust standard library built-in"),
+        ),
+        (
+            "src/rc_case.rs",
+            "value.as_ref",
+            &["external"],
+            None,
+            Some("Rust standard library built-in"),
+        ),
+        (
+            "src/option_case.rs",
+            "value.work",
+            &["unresolved"],
+            None,
+            None,
+        ),
+        (
+            "src/unimported_case.rs",
+            "value.work",
+            &["unresolved"],
+            None,
+            None,
+        ),
+        (
+            "src/shadow_case.rs",
+            "value.work",
+            &["unresolved"],
+            None,
+            None,
+        ),
+        (
+            "src/shadow_case.rs",
+            "value.as_ref",
+            &["resolved"],
+            Some("src/shadow_case.rs"),
+            None,
+        ),
+        (
+            "src/ambiguous_case.rs",
+            "value.work",
+            &["unresolved", "ambiguous"],
+            None,
+            None,
+        ),
+    ] {
+        let rows: Vec<(String, String)> = coverage
+            .query_map([path, expression], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(rows.len(), 1, "{path} {expression}: {rows:?}");
+        assert!(
+            statuses.contains(&rows[0].0.as_str()),
+            "{path} {expression}: {rows:?}"
+        );
+        if let Some(origin) = origin {
+            assert!(rows[0].1.contains(origin), "{path} {expression}: {rows:?}");
+        }
+        let targets: Vec<String> = edges
+            .query_map([path, expression], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            targets,
+            target.map_or_else(Vec::new, |target| vec![target.to_owned()]),
+            "{path} {expression}: {rows:?}"
+        );
+    }
 }

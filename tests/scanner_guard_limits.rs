@@ -1,4 +1,6 @@
+use contextunity_forge_mcp::db::writer;
 use contextunity_forge_mcp::engine::scanner;
+use rusqlite::Connection;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -214,4 +216,121 @@ fn scanner_memory_budget_has_a_defensive_floor_and_cap() {
         budget <= 16 * 1024 * 1024 * 1024,
         "budget must not exceed 16 GB"
     );
+}
+
+#[test]
+fn delta_preserves_the_configured_file_size_limit() {
+    let workspace = Workspace::new();
+    workspace.write(".git/config", "");
+    workspace.write(
+        "adapter.yaml",
+        "roots: [src]\nlimits:\n  max_files: 10\n  max_file_bytes: 3\n  max_total_bytes: 100000\n",
+    );
+    workspace.write("src/a.py", "x");
+    let database = workspace.0.join(".forge/code-map.sqlite");
+    let adapter = workspace.0.join("adapter.yaml");
+    writer::build(&workspace.0, &database, Some(&adapter)).unwrap();
+
+    workspace.write("src/a.py", "x=1\n");
+    let error = writer::delta(&workspace.0, &database, &[PathBuf::from("src/a.py")]).unwrap_err();
+    assert!(
+        error.to_string().contains("file exceeds byte limit"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn delta_accepts_a_root_allowed_by_the_current_adapter() {
+    let workspace = Workspace::new();
+    workspace.write("repo-a/.git/config", "");
+    workspace.write("repo-a/src/a.py", "x = 1\n");
+    workspace.write("repo-b/.git/config", "");
+    workspace.write("repo-b/src/b.py", "y = 2\n");
+    workspace.write(
+        "adapter.yaml",
+        "roots: [repo-a/src, repo-b/src]\nlimits:\n  allow_broad_root: true\n",
+    );
+    let database = workspace.0.join(".forge/code-map.sqlite");
+    let adapter = workspace.0.join("adapter.yaml");
+    writer::build(&workspace.0, &database, Some(&adapter)).unwrap();
+
+    workspace.write("repo-a/src/a.py", "x = 3\n");
+    let result = writer::delta(&workspace.0, &database, &[PathBuf::from("repo-a/src/a.py")]);
+    assert!(result.is_ok(), "{result:#?}");
+}
+
+#[test]
+fn delta_rebuilds_stale_policy_with_its_explicit_adapter() {
+    let workspace = Workspace::new();
+    workspace.write("repo-a/.git/config", "");
+    workspace.write("repo-a/src/a.py", "x = 1\n");
+    workspace.write("repo-b/.git/config", "");
+    workspace.write("repo-b/src/b.py", "y = 2\n");
+    workspace.write(
+        "adapter.yaml",
+        "roots: [repo-a/src, repo-b/src]\nlimits:\n  allow_broad_root: true\n",
+    );
+    let database = workspace.0.join(".forge/code-map.sqlite");
+    let adapter = workspace.0.join("adapter.yaml");
+    writer::build(&workspace.0, &database, Some(&adapter)).unwrap();
+
+    let conn = Connection::open(&database).unwrap();
+    let previous_digest: String = conn
+        .query_row(
+            "SELECT digest FROM source_inventory WHERE path='repo-a/src/a.py'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let raw_policy: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='adapter'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut policy: serde_json::Value = serde_json::from_str(&raw_policy).unwrap();
+    assert!(policy.as_object_mut().unwrap().remove("limits").is_some());
+    conn.execute(
+        "UPDATE metadata SET value=?1 WHERE key='adapter'",
+        [policy.to_string()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE metadata SET value='13' WHERE key='schema_version'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    workspace.write("repo-a/src/a.py", "x = 3\n");
+    writer::delta(&workspace.0, &database, &[PathBuf::from("repo-a/src/a.py")]).unwrap();
+
+    let conn = Connection::open(&database).unwrap();
+    let current_digest: String = conn
+        .query_row(
+            "SELECT digest FROM source_inventory WHERE path='repo-a/src/a.py'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(current_digest, previous_digest);
+    let version: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, scanner::ENGINE_SCHEMA_VERSION);
+    let raw_policy: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='adapter'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let policy: serde_json::Value = serde_json::from_str(&raw_policy).unwrap();
+    assert_eq!(policy["adapter_path"], "adapter.yaml");
+    assert_eq!(policy["limits"]["allow_broad_root"], true);
 }

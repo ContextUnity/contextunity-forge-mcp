@@ -1,4 +1,5 @@
 use crate::core::models::{Facts, Node};
+use crate::engine::languages::LanguageProfile;
 use crate::engine::linker::traits::LanguageLinker;
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeMap;
@@ -117,12 +118,31 @@ fn resolve_type<'a>(
 impl<'a> RustMembers<'a> {
     pub(crate) fn build<F: AsRef<Facts>>(all: &'a BTreeMap<String, F>) -> Self {
         let mut by_qual = HashMap::<&str, Vec<&Node>>::new();
+        let mut by_id = HashMap::<&str, &Node>::new();
         for node in all
             .values()
             .flat_map(|facts| &facts.as_ref().nodes)
             .filter(|node| node.language == "rust")
         {
             by_qual.entry(&node.qualname).or_default().push(node);
+            by_id.insert(node.id.as_str(), node);
+        }
+        let mut trait_defaults = HashMap::<&str, Vec<&Node>>::new();
+        for facts in all.values() {
+            for edge in facts.as_ref().edges.iter().filter(|edge| edge.kind == "contains") {
+                let (Some(owner), Some(method)) =
+                    (by_id.get(edge.src.as_str()), by_id.get(edge.dst.as_str()))
+                else {
+                    continue;
+                };
+                if owner.kind == "trait"
+                    && method.kind == "method"
+                    && method.details["trait_default"] == true
+                    && method.details["unproven_bounds"] != true
+                {
+                    trait_defaults.entry(owner.id.as_str()).or_default().push(method);
+                }
+            }
         }
         let mut index = Self {
             inherent: HashMap::new(),
@@ -133,11 +153,6 @@ impl<'a> RustMembers<'a> {
         };
         for facts in all.values() {
             let facts = facts.as_ref();
-            let by_id: HashMap<_, _> = facts
-                .nodes
-                .iter()
-                .map(|node| (node.id.as_str(), node))
-                .collect();
             let Some(module) = facts
                 .nodes
                 .iter()
@@ -150,7 +165,20 @@ impl<'a> RustMembers<'a> {
                 .iter()
                 .filter(|reference| reference.kind == "imports")
             {
-                if let Some(name) = import.alias.as_deref() {
+                if import.alias.as_deref() == Some("*") {
+                    let target_expr = import.module.as_deref().unwrap_or(&import.expression);
+                    if let Some(normalized) = super::RUST.normalize_import(&module.path, target_expr) {
+                        for target in by_qual.get(normalized.namespace.as_str()).into_iter().flatten() {
+                            if target.kind == "trait" {
+                                index
+                                    .visible_traits
+                                    .entry(&module.path)
+                                    .or_default()
+                                    .insert(&target.id);
+                            }
+                        }
+                    }
+                } else if let Some(name) = import.alias.as_deref() {
                     if let Some(target) = resolve_type(facts, module, name, &by_qual)
                         .filter(|node| node.kind == "trait")
                     {
@@ -177,14 +205,21 @@ impl<'a> RustMembers<'a> {
                 }
             }
             let mut impl_receivers = HashMap::new();
-            for owner in facts
-                .nodes
-                .iter()
-                .filter(|node| node.kind == "impl" && node.details["generic_impl"] != true)
-            {
+            for owner in facts.nodes.iter().filter(|node| {
+                node.kind == "impl"
+                    && (node.details["generic_impl"] != true
+                        || node.details["uniform_generic_impl"] == true)
+            }) {
                 let Some(receiver) = owner.details["receiver_type"]
                     .as_str()
-                    .and_then(|name| resolve_type(facts, owner, name, &by_qual))
+                    .and_then(|name| {
+                        let nominal = if owner.details["uniform_generic_impl"] == true {
+                            name.split_once('<').map_or(name, |(base, _)| base)
+                        } else {
+                            name
+                        };
+                        resolve_type(facts, owner, nominal, &by_qual)
+                    })
                     .filter(|node| matches!(node.kind.as_str(), "struct" | "enum"))
                 else {
                     continue;
@@ -202,6 +237,7 @@ impl<'a> RustMembers<'a> {
                 };
                 impl_receivers.insert(owner.id.as_str(), (receiver, trait_node));
             }
+            let mut implemented = HashMap::<&str, HashSet<(&str, bool)>>::new();
             for edge in facts.edges.iter().filter(|edge| edge.kind == "contains") {
                 let (Some(owner), Some(method)) =
                     (by_id.get(edge.src.as_str()), by_id.get(edge.dst.as_str()))
@@ -210,7 +246,7 @@ impl<'a> RustMembers<'a> {
                 };
                 if owner.kind != "impl"
                     || method.kind != "method"
-                    || owner.details["generic_impl"] == true
+                    || method.details["unproven_bounds"] == true
                 {
                     continue;
                 }
@@ -218,10 +254,15 @@ impl<'a> RustMembers<'a> {
                     continue;
                 };
                 index.receivers_by_method.insert(&method.id, receiver);
+                let associated = method.details["is_static"] == true;
+                implemented
+                    .entry(owner.id.as_str())
+                    .or_default()
+                    .insert((method.name.as_str(), associated));
                 let key = (
                     receiver.id.as_str(),
                     method.name.as_str(),
-                    method.details["is_static"] == true,
+                    associated,
                 );
                 if let Some(trait_node) = trait_node {
                     index
@@ -231,6 +272,28 @@ impl<'a> RustMembers<'a> {
                         .push((method, trait_node));
                 } else {
                     index.inherent.entry(key).or_default().push(method);
+                }
+            }
+            for (owner_id, (receiver, trait_node)) in impl_receivers {
+                let Some(trait_node) = trait_node else {
+                    continue;
+                };
+                for method in trait_defaults
+                    .get(trait_node.id.as_str())
+                    .into_iter()
+                    .flatten()
+                {
+                    let associated = method.details["is_static"] == true;
+                    if implemented.get(owner_id).is_some_and(|methods| {
+                        methods.contains(&(method.name.as_str(), associated))
+                    }) {
+                        continue;
+                    }
+                    index
+                        .traits
+                        .entry((receiver.id.as_str(), method.name.as_str(), associated))
+                        .or_default()
+                        .push((method, trait_node));
                 }
             }
         }

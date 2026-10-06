@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::models::ReceiverHint;
 use crate::engine::ast::relations;
 #[path = "rust/linker.rs"]
 pub(crate) mod linker;
@@ -36,6 +37,80 @@ fn method_owner(node: Syntax<'_>) -> Option<Syntax<'_>> {
         }
     }
     None
+}
+
+fn has_unproven_bounds(node: Syntax<'_>, source: &str) -> bool {
+    node.named_children(&mut node.walk())
+        .any(|child| child.kind() == "where_clause")
+        || node
+            .child_by_field_name("type_parameters")
+            .is_some_and(|parameters| {
+                parameters
+                    .named_children(&mut parameters.walk())
+                    .any(|parameter| text(parameter, source).contains([':', '=']))
+            })
+}
+
+fn uniform_generic_impl(node: Syntax<'_>, source: &str) -> bool {
+    let (Some(parameters), Some(receiver)) = (
+        node.child_by_field_name("type_parameters"),
+        node.child_by_field_name("type"),
+    ) else {
+        return false;
+    };
+    if receiver.kind() != "generic_type" || has_unproven_bounds(node, source) {
+        return false;
+    }
+    let Some(arguments) = receiver.child_by_field_name("type_arguments") else {
+        return false;
+    };
+    let mut names: Vec<_> = parameters
+        .named_children(&mut parameters.walk())
+        .map(|parameter| text(parameter, source))
+        .collect();
+    if names.is_empty()
+        || names.iter().any(|name| {
+            !name.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
+                || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+    {
+        return false;
+    }
+    for argument in arguments.named_children(&mut arguments.walk()) {
+        if argument.kind() != "type_identifier" {
+            return false;
+        }
+        let Some(index) = names.iter().position(|name| *name == text(argument, source)) else {
+            return false;
+        };
+        names.swap_remove(index);
+    }
+    names.is_empty()
+}
+
+fn call_result_hint(node: Syntax<'_>, source: &str) -> Option<ReceiverHint> {
+    let function = node.child_by_field_name("function")?;
+    if function.kind() != "field_expression" {
+        return None;
+    }
+    let receiver = function.child_by_field_name("value")?;
+    if receiver.kind() != "call_expression" {
+        return None;
+    }
+    let callee = receiver
+        .child_by_field_name("function")
+        .and_then(|node| value_flow::callee_name(node, source))?;
+    if !callee.contains("::") {
+        return None;
+    }
+    let member = function.child_by_field_name("field")?;
+    if member.kind() != "field_identifier" {
+        return None;
+    }
+    Some(ReceiverHint::CallResult {
+        callee: callee.into_owned(),
+        member: text(member, source).to_owned(),
+    })
 }
 
 /// Represents rust data.
@@ -166,7 +241,12 @@ impl LanguageProfile for Rust {
                     receiver_hint: None,
                 });
             } else {
+                let hint = call_result_hint(ctx.node, ctx.source);
+                let previous = facts.references.len();
                 call(ctx, facts, false);
+                if let (Some(hint), Some(reference)) = (hint, facts.references.get_mut(previous)) {
+                    reference.receiver_hint = Some(hint);
+                }
             }
         } else if ctx.node.kind() == "macro_invocation" {
             call(ctx, facts, false);
@@ -179,9 +259,18 @@ impl LanguageProfile for Rust {
         }
     }
     fn builtin(&self, symbol: &str) -> bool {
-        if let Some((rec, mem)) = symbol.split_once('.') {
-            return self.builtin_member(rec, mem)
-                || (self.builtin(rec) && matches!(mem, "new" | "default" | "from" | "with_capacity" | "clone" | "as_ref" | "as_mut"));
+        let (receiver, member) = if let Some((r, m)) = symbol.split_once("::") {
+            (r, m)
+        } else if let Some((r, m)) = symbol.split_once('.') {
+            (r, m)
+        } else {
+            (symbol, "")
+        };
+        if matches!(receiver, "Self" | "Path" | "PathBuf" | "Rc" | "Arc" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet") {
+            return false;
+        }
+        if !member.is_empty() {
+            return self.builtin_member(receiver, member);
         }
         matches!(
             symbol,
@@ -223,26 +312,33 @@ impl LanguageProfile for Rust {
                 | "f32"
                 | "f64"
                 | "String"
-                | "Path"
-                | "PathBuf"
+                | "Vec"
+                | "Option"
+                | "Result"
+                | "Box"
+                | "Drop"
+                | "Clone"
+                | "Default"
+        )
+    }
+    fn builtin_type(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "str"
+                | "String"
                 | "Vec"
                 | "Option"
                 | "Result"
                 | "Box"
                 | "Rc"
                 | "Arc"
+                | "Path"
+                | "PathBuf"
                 | "HashMap"
                 | "HashSet"
                 | "BTreeMap"
                 | "BTreeSet"
-                | "Drop"
-                | "Clone"
-                | "Default"
-                | "Self"
         )
-    }
-    fn builtin_type(&self, name: &str) -> bool {
-        matches!(name, "str" | "String" | "Vec" | "Option" | "Result" | "Box" | "Rc" | "Arc" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet")
     }
 
     fn builtin_member(&self, receiver: &str, member: &str) -> bool {
@@ -272,7 +368,11 @@ impl LanguageProfile for Rust {
                 member,
                 "new"
                     | "from"
+                    | "with_capacity"
                     | "default"
+                    | "clone"
+                    | "as_ref"
+                    | "as_mut"
                     | "len"
                     | "is_empty"
                     | "capacity"
@@ -283,6 +383,9 @@ impl LanguageProfile for Rust {
                     | "as_bytes"
                     | "chars"
                     | "bytes"
+                    | "lines"
+                    | "into_bytes"
+                    | "to_string"
                     | "trim"
                     | "split"
                     | "contains"
@@ -292,8 +395,12 @@ impl LanguageProfile for Rust {
             "Vec" => matches!(
                 member,
                 "new"
+                    | "from"
                     | "with_capacity"
                     | "default"
+                    | "clone"
+                    | "as_ref"
+                    | "as_mut"
                     | "len"
                     | "is_empty"
                     | "capacity"
@@ -301,10 +408,16 @@ impl LanguageProfile for Rust {
                     | "push"
                     | "pop"
                     | "get"
+                    | "get_mut"
                     | "first"
                     | "last"
                     | "iter"
                     | "iter_mut"
+                    | "into_iter"
+                    | "extend"
+                    | "drain"
+                    | "as_slice"
+                    | "as_mut_slice"
                     | "contains"
                     | "sort"
                     | "sort_unstable"
@@ -313,25 +426,38 @@ impl LanguageProfile for Rust {
             ),
             "Path" | "PathBuf" => matches!(
                 member,
-                "new" | "from" | "join" | "parent" | "file_name" | "extension" | "exists" | "is_file" | "is_dir" | "to_str" | "to_string_lossy" | "display"
+                "new" | "from" | "join" | "parent" | "file_name" | "file_stem" | "extension" | "exists" | "is_file" | "is_dir" | "to_str" | "to_string_lossy" | "display" | "as_path"
             ),
-            "Box" | "Rc" | "Arc" => matches!(
+            "Box" => matches!(
                 member,
-                "new" | "clone" | "default" | "as_ref"
+                "new" | "from" | "clone" | "default" | "as_ref" | "as_mut"
+            ),
+            "Rc" | "Arc" => matches!(
+                member,
+                "new" | "from" | "clone" | "default" | "as_ref"
             ),
             "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet" => matches!(
                 member,
-                "new" | "with_capacity" | "default" | "insert" | "get" | "contains_key" | "contains" | "remove" | "iter" | "len" | "is_empty" | "clear" | "entry"
+                "new" | "with_capacity" | "default" | "insert" | "get" | "get_mut" | "contains_key" | "contains" | "remove" | "iter" | "keys" | "values" | "len" | "is_empty" | "clear" | "entry"
             ),
             "Option" => matches!(
                 member,
                 "default"
+                    | "from"
+                    | "clone"
                     | "is_some"
                     | "is_none"
                     | "unwrap"
                     | "expect"
                     | "map"
                     | "and_then"
+                    | "unwrap_or"
+                    | "unwrap_or_else"
+                    | "unwrap_or_default"
+                    | "ok_or"
+                    | "ok_or_else"
+                    | "cloned"
+                    | "copied"
                     | "as_ref"
                     | "as_mut"
                     | "take"
@@ -339,7 +465,7 @@ impl LanguageProfile for Rust {
             ),
             "Result" => matches!(
                 member,
-                "default"
+                "clone"
                     | "is_ok"
                     | "is_err"
                     | "unwrap"
@@ -348,6 +474,9 @@ impl LanguageProfile for Rust {
                     | "expect_err"
                     | "map"
                     | "map_err"
+                    | "unwrap_or"
+                    | "unwrap_or_else"
+                    | "unwrap_or_default"
                     | "ok"
                     | "err"
                     | "as_ref"
@@ -373,12 +502,19 @@ impl LanguageProfile for Rust {
                     .map_or("src", |(first, _)| first)
                     .replace('/', ".")
             };
-            (format!("{crate_prefix}.{}", tail.replace("::", ".")), true)
+            let ns = if tail == "*" {
+                crate_prefix
+            } else {
+                format!("{crate_prefix}.{}", tail.replace("::", "."))
+            };
+            (ns, true)
         } else if let Some(tail) = module.strip_prefix("self::") {
-            (
-                format!("{}.{}", self.module_name(local), tail.replace("::", ".")),
-                true,
-            )
+            let ns = if tail == "*" {
+                self.module_name(local)
+            } else {
+                format!("{}.{}", self.module_name(local), tail.replace("::", "."))
+            };
+            (ns, true)
         } else if module.starts_with("super::") {
             let mut base = self
                 .module_name(local)
@@ -390,7 +526,9 @@ impl LanguageProfile for Rust {
                 base.pop()?;
                 tail = rest;
             }
-            base.push(tail.replace("::", "."));
+            if tail != "*" {
+                base.push(tail.replace("::", "."));
+            }
             (base.join("."), true)
         } else {
             let (first, tail) = module.split_once("::").unwrap_or((module, ""));
@@ -432,6 +570,9 @@ impl LanguageProfile for Rust {
             if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
                 owner.details["generic_impl"] =
                     serde_json::json!(ctx.node.child_by_field_name("type_parameters").is_some());
+                if uniform_generic_impl(ctx.node, ctx.source) {
+                    owner.details["uniform_generic_impl"] = serde_json::json!(true);
+                }
                 if let Some(trait_name) = field(ctx.node, ctx.source, "trait") {
                     owner.details["impl_trait"] = serde_json::json!(trait_name);
                 }
@@ -449,6 +590,18 @@ impl LanguageProfile for Rust {
                 );
             }
         } else if matches!(ctx.node.kind(), "function_item" | "function_signature_item") {
+            if has_unproven_bounds(ctx.node, ctx.source) {
+                if let Some(method) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+                    method.details["unproven_bounds"] = serde_json::json!(true);
+                }
+            }
+            if ctx.node.kind() == "function_item"
+                && method_owner(ctx.node).is_some_and(|owner| owner.kind() == "trait_item")
+            {
+                if let Some(method) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+                    method.details["trait_default"] = serde_json::json!(true);
+                }
+            }
             if let Some(parameters) = ctx.node.child_by_field_name("parameters") {
                 let mut c = parameters.walk();
                 for param in parameters.named_children(&mut c) {

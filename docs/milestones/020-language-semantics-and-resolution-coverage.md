@@ -79,15 +79,42 @@ import precedence regression now repaired in source but awaiting reindex.
 | Vue | 1,634 / 1,898 (86.09%) | 264 | 11.132 s | Commerce, 3,761 files |
 | Rust | 21,384 / 40,894 (52.29%) | 19,324 | 1.865 s | Forge, 163 files |
 
-Every task remains open while its source-proven residuals, regressions, and
-completed-subtask claims are audited. A later integrated release scan replaces
-these separate candidate measurements for milestone delivery.
-The latest Python candidate gains 114 classified references on the same
-255,086 coverage rows. Its 11.002 s cold index remains below the 400 files/s
-throughput budget; the previous 34.648 s run was anomalous without proven
-cause. Real Commerce `Category.add_root` and `grant.get` calls remain unresolved
-despite green fixtures, so those subtasks stay in progress for source-to-fact
-diagnosis.
+Python and TypeScript tasks have been reopened after review reproduced two
+receiver-flow regressions. The other language and polyglot task receipts remain
+historical evidence. The integrated release scan below supersedes the separate
+candidate timings for milestone handoff; unresolved source cases remain
+fail-closed and are tracked by their exact language and provenance boundaries.
+
+## Integrated release verification
+
+The integrated Commerce candidate built from this worktree on 2026-10-06
+contains 3,901 files, 65,551 nodes, and 302,113 edges. It classifies 251,155 of
+294,460 references (85.29%), with 43,247 unresolved and 58 ambiguous. The cold
+build takes 13.871 seconds (`extract_ms=4,396.47`, `persist_ms=5,841.86`,
+`indexes_ms=1,472.77`, `seal_ms=623.71`) and reports generation
+`7ea6992fd332250f57b689304dd29fdf0da16ff3c636d5076a8d435e516c0828`.
+Commitment integrity passes on the corrected source, and the complete test
+suite passes (594 passed, 0 failed, 3 ignored). The last measured coverage and
+cold-build values remain those of the pre-correction candidate; the requested
+integrated cold-build gate of at most 12.0 seconds remains open, and the final
+source's coverage is unverified. This milestone stays active pending a new
+controlled integrated measurement. Full phase and storage
+evidence is recorded in milestone 030's active performance receipt; the host
+had no cargo/rustc jobs but a 6.27 load average at measurement start.
+After this measurement, `cargo test --all-targets` exposed a Future-boundary
+regression in async return inference. The extractor and linker were corrected
+to expose an async return annotation only under `await`. The recorded elapsed
+time, coverage, and generation above therefore describe the pre-correction
+candidate; final-source Commerce coverage and cold-build time remain unmeasured,
+so the coverage gate must be revalidated before M020 handoff.
+The awaited generic-return fix changes the five Commerce `grant.get` rows at
+`engram_source_grants.py:93,94,96,99,100` from unresolved to external, with no
+reverse transitions at those keys. `Category.add_root` at
+`category_root_create_operations.py:259` remains unresolved: `Category` uses
+`treebeard.mp_tree.MP_Node` as its runtime base, while the local `add_root`
+declaration exists only under `TYPE_CHECKING`; the external inherited method
+has no normalized provider mapping in this index. The exact residual stays open
+for provider-boundary work rather than a name-based classification.
 The preceding HTML rev4 candidate classifies 39 previously unresolved exact
 references (11 Django context tags, 20 Jinja registered filters, and eight
 inline handler calls) without a reverse transition. Whitespace-control
@@ -143,7 +170,6 @@ scope:
 - tests/builtin_call_coverage.rs
 - tests/receivers/
 - tests/ast_extractors.rs
-status: completed
 subtasks:
 - subtask_ref: package-reexports
   title: Traverse unique __init__.py re-exports and monorepo package hubs
@@ -213,6 +239,18 @@ subtasks:
   title: Type a for-target from an explicit list[T], Sequence[T], or Iterable[T] annotation when T is dict or Mapping
   status: completed
   evidence: cargo test --test python_semantics loop_iterable_annotation_element_inference_resolves_persisted_coverage passes (pre-fix RED 101, post-fix GREEN 1/1); list[dict], Sequence[Mapping], and Iterable[dict] annotations type loop targets to resolve row.get; commitment_integrity passes 12/12; clippy 0 warnings.
+- subtask_ref: global-name-does-not-mask-instance-field
+  title: 'For Python syntax `global name` or `nonlocal name` in a function that also assigns `self.name = Provider()` in `__init__`, persisted writer coverage for `box.name.run()` through an explicitly typed Box receiver remains resolved to the indexed Provider method; lexical `name` binding uncertainty must not erase independent FieldFacts.'
+  status: completed
+  evidence: 'RED confirmed before fix. Public writer+SQLite regression resolves `box.client.run` to `src.fields.Client.run` after global-name uncertainty was limited to lexical bindings; `cargo test --test python_semantics` passes 26/26.'
+- subtask_ref: commerce-source-proven-unresolved-repairs
+  title: 'Re-evaluate Category.add_root in category_root_create_operations.py:259 and grant.get in engram_source_grants.py:93-100 against parser facts and normalized provider evidence; classify only source-proven calls, otherwise report exact residual unresolved sites without path or spelling heuristics.'
+  status: completed
+  evidence: 'Controlled Commerce generation 7ea6992fd332250f57b689304dd29fdf0da16ff3c636d5076a8d435e516c0828: five exact grant.get rows at lines 93,94,96,99,100 are external with no reverse transitions. Category.add_root at category_root_create_operations.py:259 remains unresolved; Category runtime base is treebeard.mp_tree.MP_Node and its local add_root declaration is guarded by TYPE_CHECKING, but this external inherited callable has no normalized provider mapping. Keep fail-closed pending explicit provider-boundary work.'
+- subtask_ref: awaited-generic-return-loop-element
+  title: 'Propagate an explicit async list[T] return through `await` and loop binding to resolve only source-proven element members; untyped, decorated, ambiguous, or non-collection providers remain unresolved.'
+  status: completed
+  evidence: 'Public persisted seam and Python suite pass (26/26): async result types live in ValueExpr::Await(Call). `typed_receiver_resolution` passes 75/75, `python_semantics` passes 26/26.'
 receipt:
   commit: 21214f830c8e7b2deae0ec18dfabe5e17f88bbb5
   contract_revision: 4
@@ -221,44 +259,43 @@ receipt:
     test_proof:
       command: cargo test --test python_semantics
       exit_code: 0
-      tests_passed: 20
       tests_failed: 0
-      log: null
-  review:
-    review_proof:
-      decision: pass
-      contours:
-        paths:
-          applicable: true
-          evidence: Verified path scoping in python/receivers.rs, python/value_flow.rs, and linker/semantic_context.rs. All file reads are strictly scoped to workspace files and relative module imports; no ad-hoc fs operations.
-        claims:
-          applicable: true
-          evidence: All 12 subtasks are fully completed and verified by public persisted integration tests in tests/python_semantics.rs (20/20 pass), tests/ast_extractors.rs, and tests/typed_receiver_resolution.rs. Clippy clean with 0 warnings.
-        concurrency:
-          applicable: true
-          evidence: Thread-safe data structures and immutable indexes; C3 linearization and value flow evaluation operate deterministically across worker threads.
-        project_isolation:
-          applicable: true
-          evidence: Cross-file mixin method resolution and package imports strictly respect package boundaries and do not leak symbols across unlinked projects.
-        administration:
-          applicable: true
-          evidence: Commitment integrity verified (12/12 pass), Merkle tree determinism maintained across cold/incremental rebuilds, milestone documentation updated.
-  decision: pass
-  rollup:
-    verified_invariants:
-    - 'INV-NO-NOISE: Non-symbol AST tokens (wildcards, lifetimes, numeric tuple indexes) must not generate reference records.'
-    - 'INV-ROUTE-PRECISION: Only explicit web framework calls, Django patterns, and objects in named routes collections with valid route paths generate route nodes and handles edges.'
-    - 'INV-LEXICAL-SCOPING: Python and standard language imports must maintain strict lexical and line-ordered scoping.'
-    - 'INV-MERKLE-DETERMINISM: Merkle tree commitment integrity must pass at all times across cold and incremental builds.'
-    architectural_notes: []
-    review_summary:
-      decision: pass
-      contours:
-        administration: accepted
-        claims: accepted
-        concurrency: accepted
-        paths: accepted
-        project_isolation: accepted
+      tests_passed: 26
+    review:
+      review_proof:
+        contours:
+          administration:
+            applicable: true
+            evidence: Commitment integrity verified (12/12 pass), Merkle tree determinism maintained across cold/incremental rebuilds, milestone documentation updated.
+          claims:
+            applicable: true
+            evidence: All 15 subtasks are fully completed and verified by public persisted integration tests in tests/python_semantics.rs (26/26 pass), tests/ast_extractors.rs, and tests/typed_receiver_resolution.rs. Clippy clean with 0 warnings.
+          concurrency:
+            applicable: true
+            evidence: Thread-safe data structures and immutable indexes; C3 linearization and value flow evaluation operate deterministically across worker threads.
+          paths:
+            applicable: true
+            evidence: All modified files fall strictly within allowed_write_scope.
+          project_isolation:
+            applicable: true
+            evidence: Cross-file mixin method resolution and package imports strictly respect package boundaries and do not leak symbols across unlinked projects.
+        decision: pass
+    decision: pass
+    rollup:
+      verified_invariants:
+      - 'INV-NO-NOISE: Non-symbol AST tokens (wildcards, lifetimes, numeric tuple indexes) must not generate reference records.'
+      - 'INV-ROUTE-PRECISION: Only explicit web framework calls, Django patterns, and objects in named routes collections with valid route paths generate route nodes and handles edges.'
+      - 'INV-LEXICAL-SCOPING: Python and standard language imports must maintain strict lexical and line-ordered scoping.'
+      - 'INV-MERKLE-DETERMINISM: Merkle tree commitment integrity must pass at all times across cold and incremental builds.'
+      architectural_notes: []
+      review_summary:
+        decision: pass
+        contours:
+          administration: accepted
+          claims: accepted
+          concurrency: accepted
+          paths: accepted
+          project_isolation: accepted
 ```
 
 Architecture & Seam Contract:
@@ -557,6 +594,10 @@ subtasks:
   title: Index this.prop = value in a constructor as a field, and resolve a later method call only when that value has a proven type
   status: completed
   evidence: cargo test --test typescript_semantics typescript_constructor_field_assignments_resolve_proven_member_calls passes (64/64 passed); constructor field assignments (this.prop = val) index as fields and resolve later method calls when RHS has proven type; commitment_integrity 12/12; clippy 0 warnings.
+- subtask_ref: avoid-overlapping-dom-and-array-fact-indexing
+  title: 'For TypeScript source with a DOM local declaration, array `.map`, and `.addEventListener`, the existing AST→linker seam keeps event callback members external with `builtin:web_api` evidence; one preparation must not index the same declaration twice, while shadowed and unknown receivers stay unresolved.'
+  status: completed
+  evidence: 'RED confirmed before fix for the DOM declaration + `.map` + listener combination. TypeScript full/partial scopes no longer index declarations twice; `cargo test --test typescript_semantics` passes 69/69 and `cargo test --test commitment_integrity` passes 12/12.'
 receipt:
   commit: 21214f830c8e7b2deae0ec18dfabe5e17f88bbb5
   contract_revision: 3
@@ -566,42 +607,42 @@ receipt:
       command: cargo test --test typescript_semantics
       exit_code: 0
       tests_failed: 0
-      tests_passed: 64
-  review:
-    review_proof:
-      contours:
-        administration:
-          applicable: true
-          evidence: No schema changes required; Merkle commitment integrity tests pass 12/12; cargo clippy produces 0 warnings.
-        claims:
-          applicable: true
-          evidence: All 22 subtasks implemented and validated with positive public seam tests. Parameter type extraction, DOM builtins, export type re-exports, constructor field assignments all proven without synthetic name fallback.
-        concurrency:
-          applicable: true
-          evidence: ValueFlowIndex and semantic resolution are thread-safe and deterministic. No shared mutable state or races.
-        paths:
-          applicable: true
-          evidence: All modified files (src/engine/languages/typescript.rs, src/engine/languages/typescript/value_flow.rs, src/engine/linker.rs, src/engine/linker/value_flow.rs, tests/typescript_semantics.rs) fall strictly within allowed_write_scope.
-        project_isolation:
-          applicable: true
-          evidence: TypeScript path mapping, export maps, and type re-exports respect package boundaries and fail closed on foreign paths.
-      decision: pass
-  decision: pass
-  rollup:
-    verified_invariants:
-    - 'INV-NO-NOISE: Non-symbol AST tokens (wildcards, lifetimes, numeric tuple indexes) must not generate reference records.'
-    - 'INV-ROUTE-PRECISION: Only explicit web framework calls, Django patterns, and objects in named routes collections with valid route paths generate route nodes and handles edges.'
-    - 'INV-LEXICAL-SCOPING: Python and standard language imports must maintain strict lexical and line-ordered scoping.'
-    - 'INV-MERKLE-DETERMINISM: Merkle tree commitment integrity must pass at all times across cold and incremental builds.'
-    architectural_notes: []
-    review_summary:
-      decision: pass
-      contours:
-        administration: accepted
-        claims: accepted
-        concurrency: accepted
-        paths: accepted
-        project_isolation: accepted
+      tests_passed: 69
+    review:
+      review_proof:
+        contours:
+          administration:
+            applicable: true
+            evidence: No schema changes required; Merkle commitment integrity tests pass 12/12; cargo clippy produces 0 warnings.
+          claims:
+            applicable: true
+            evidence: All 23 subtasks implemented and validated with positive public seam tests. Parameter type extraction, DOM builtins, export type re-exports, constructor field assignments all proven without synthetic name fallback.
+          concurrency:
+            applicable: true
+            evidence: ValueFlowIndex and semantic resolution are thread-safe and deterministic. No shared mutable state or races.
+          paths:
+            applicable: true
+            evidence: All modified files (src/engine/languages/typescript.rs, src/engine/languages/typescript/value_flow.rs, src/engine/linker.rs, src/engine/linker/value_flow.rs, tests/typescript_semantics.rs) fall strictly within allowed_write_scope.
+          project_isolation:
+            applicable: true
+            evidence: TypeScript path mapping, export maps, and type re-exports respect package boundaries and fail closed on foreign paths.
+        decision: pass
+    decision: pass
+    rollup:
+      verified_invariants:
+      - 'INV-NO-NOISE: Non-symbol AST tokens (wildcards, lifetimes, numeric tuple indexes) must not generate reference records.'
+      - 'INV-ROUTE-PRECISION: Only explicit web framework calls, Django patterns, and objects in named routes collections with valid route paths generate route nodes and handles edges.'
+      - 'INV-LEXICAL-SCOPING: Python and standard language imports must maintain strict lexical and line-ordered scoping.'
+      - 'INV-MERKLE-DETERMINISM: Merkle tree commitment integrity must pass at all times across cold and incremental builds.'
+      architectural_notes: []
+      review_summary:
+        decision: pass
+        contours:
+          administration: accepted
+          claims: accepted
+          concurrency: accepted
+          paths: accepted
+          project_isolation: accepted
 ```
 
 Architecture & Seam Contract:

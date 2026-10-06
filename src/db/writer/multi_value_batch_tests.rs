@@ -334,7 +334,16 @@ fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
                 )
             })
             .collect();
-        persist_graph(&tx, &mut path_cache, &graph, &facts, &mut node_paths, true).unwrap();
+        persist_graph(
+            &tx,
+            &mut path_cache,
+            &graph,
+            &facts,
+            None,
+            &mut node_paths,
+            true,
+        )
+        .unwrap();
         tx.commit().unwrap();
         assert_eq!(row_count(&conn, "resolution_coverage"), 251 * 4);
         assert_eq!(row_count(&conn, "dependencies"), 251 * 4);

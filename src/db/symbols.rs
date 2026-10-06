@@ -134,21 +134,38 @@ pub fn search_with_options(
             .map(|part| format!("\"{part}\""))
             .collect::<Vec<_>>()
             .join(" AND ");
-        let sql = format!("SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY n.path,n.line,n.id");
-        paging::query(
-            conn,
-            &sql,
-            &[
-                &fts_query,
-                &pattern,
-                &kind,
-                &path,
-                &path_start,
-                &path_end,
-                &include_docs,
-            ],
-            options,
-        )?
+        if fts_query.is_empty() {
+            let sql = format!("SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM nodes n WHERE (n.name=?1 OR n.qualname=?1) AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR n.path=?3 OR (n.path>=?4 AND n.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY n.path,n.line,n.id");
+            paging::query(
+                conn,
+                &sql,
+                &[
+                    &pattern,
+                    &kind,
+                    &path,
+                    &path_start,
+                    &path_end,
+                    &include_docs,
+                ],
+                options,
+            )?
+        } else {
+            let sql = format!("SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY n.path,n.line,n.id");
+            paging::query(
+                conn,
+                &sql,
+                &[
+                    &fts_query,
+                    &pattern,
+                    &kind,
+                    &path,
+                    &path_start,
+                    &path_end,
+                    &include_docs,
+                ],
+                options,
+            )?
+        }
     } else if pattern.contains('*') {
         let like = pattern
             .replace('\\', "\\\\")

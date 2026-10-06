@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// The engine schema version value.
-pub const ENGINE_SCHEMA_VERSION: &str = "13";
+pub const ENGINE_SCHEMA_VERSION: &str = "14";
 /// The index semantics version value.
 pub const INDEX_SEMANTICS_VERSION: &str = concat!(
     "9:compact-storage-v8:",

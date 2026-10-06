@@ -38,9 +38,52 @@ pub(crate) mod typescript_bindings;
 
 pub(crate) const MAX_VALUE_FLOW_TYPE_DEPTH: usize = 8;
 
+struct ThreadLocalParsers {
+    builtin: [Vec<tree_sitter::Parser>; 7],
+    other: HashMap<&'static str, Vec<tree_sitter::Parser>>,
+}
+
+impl ThreadLocalParsers {
+    fn new() -> Self {
+        Self {
+            builtin: std::array::from_fn(|_| Vec::new()),
+            other: HashMap::new(),
+        }
+    }
+
+    fn builtin_index(key: &str) -> Option<usize> {
+        Some(match key {
+            "python" => 0,
+            "rust" => 1,
+            "html" => 2,
+            "vue" => 3,
+            "javascript" => 4,
+            "typescript-tsx" => 5,
+            "typescript" => 6,
+            _ => return None,
+        })
+    }
+
+    fn take(&mut self, key: &'static str) -> Option<tree_sitter::Parser> {
+        if let Some(index) = Self::builtin_index(key) {
+            self.builtin[index].pop()
+        } else {
+            self.other.get_mut(key).and_then(Vec::pop)
+        }
+    }
+
+    fn give_back(&mut self, key: &'static str, parser: tree_sitter::Parser) {
+        if let Some(index) = Self::builtin_index(key) {
+            self.builtin[index].push(parser);
+        } else {
+            self.other.entry(key).or_default().push(parser);
+        }
+    }
+}
+
 thread_local! {
-    static THREAD_LOCAL_PARSERS: std::cell::RefCell<std::collections::HashMap<&'static str, tree_sitter::Parser>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    static THREAD_LOCAL_PARSERS: std::cell::RefCell<ThreadLocalParsers> =
+        std::cell::RefCell::new(ThreadLocalParsers::new());
 }
 
 /// Executes a closure with a warm, thread-local Tree-sitter parser configured for the grammar.
@@ -50,8 +93,8 @@ pub fn with_warm_parser<R>(
     f: impl FnOnce(&mut tree_sitter::Parser) -> R,
 ) -> Result<R> {
     let parser = THREAD_LOCAL_PARSERS.with(|cell| -> Result<tree_sitter::Parser> {
-        let mut map = cell.borrow_mut();
-        if let Some(mut p) = map.remove(lang_key) {
+        let mut pool = cell.borrow_mut();
+        if let Some(mut p) = pool.take(lang_key) {
             p.reset();
             Ok(p)
         } else {
@@ -69,8 +112,8 @@ pub fn with_warm_parser<R>(
         fn drop(&mut self) {
             if let Some(p) = self.parser.take() {
                 THREAD_LOCAL_PARSERS.with(|cell| {
-                    if let Ok(mut map) = cell.try_borrow_mut() {
-                        map.insert(self.lang_key, p);
+                    if let Ok(mut pool) = cell.try_borrow_mut() {
+                        pool.give_back(self.lang_key, p);
                     }
                 });
             }
@@ -156,6 +199,10 @@ pub struct FileContext {
     pub dom_listener_parameter_bindings: Arc<HashMap<usize, HashSet<String>>>,
     /// Function scopes and names whose parameters are reassigned or rebound.
     pub rebound_function_parameters: Arc<HashMap<usize, HashSet<String>>>,
+    /// Module-level `TYPE_CHECKING` alias imports and subsequent rebindings.
+    pub type_checking_aliases: HashMap<String, Vec<(usize, bool)>>,
+    /// Whether the module has a direct import from `django.shortcuts`.
+    pub has_django_shortcuts_import: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -267,6 +314,8 @@ pub struct SyntaxContext<'a, 'tree> {
     pub offset: usize,
     /// The shadowed require scopes value.
     pub shadowed_require_scopes: &'a HashSet<usize>,
+    /// Module-level `TYPE_CHECKING` alias events for Python syntax hooks.
+    pub type_checking_aliases: Option<&'a HashMap<String, Vec<(usize, bool)>>>,
 }
 impl SyntaxContext<'_, '_> {
     /// Returns the one-based source line after applying the file offset.
@@ -428,6 +477,15 @@ pub trait LanguageProfile: Send + Sync {
         _source: &str,
     ) -> crate::core::semantic::ValueFlowFacts {
         crate::core::semantic::ValueFlowFacts::default()
+    }
+    /// Extracts local value-flow facts using information prepared for the file.
+    fn value_flow_with_context(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        _file: &FileContext,
+    ) -> crate::core::semantic::ValueFlowFacts {
+        self.value_flow(node, source)
     }
     /// Reports whether a reference can use local value-flow bindings.
     fn value_binding_applies(&self, _reference: &Reference) -> bool {
