@@ -2,7 +2,7 @@
 id: m-language-semantics-and-resolution-coverage
 title: Language semantics and resolution coverage
 doc_type: contract
-status: active
+status: completed
 depends_on: []
 owners:
 - src/engine/
@@ -15,6 +15,15 @@ invariants:
 - 'INV-MERKLE-DETERMINISM: Merkle tree commitment integrity must pass at all times across cold and incremental builds.'
 related_plans: []
 started_at: 2026-10-02T17:06:10+00:00
+handoff:
+  completed_at: 2026-10-06T17:03:18.374532262+00:00
+  duration: 95h 57m
+  commit: 13cec7094962a6cc51244c9d6815f0b45fc86417
+  verification:
+    command: cargo test --all-targets
+    status: passed
+    tests_passed: 410
+    tests_failed: 0
 ---
 
 # Language semantics and resolution coverage
@@ -261,41 +270,41 @@ receipt:
       exit_code: 0
       tests_failed: 0
       tests_passed: 26
-    review:
-      review_proof:
-        contours:
-          administration:
-            applicable: true
-            evidence: Commitment integrity verified (12/12 pass), Merkle tree determinism maintained across cold/incremental rebuilds, milestone documentation updated.
-          claims:
-            applicable: true
-            evidence: All 15 subtasks are fully completed and verified by public persisted integration tests in tests/python_semantics.rs (26/26 pass), tests/ast_extractors.rs, and tests/typed_receiver_resolution.rs. Clippy clean with 0 warnings.
-          concurrency:
-            applicable: true
-            evidence: Thread-safe data structures and immutable indexes; C3 linearization and value flow evaluation operate deterministically across worker threads.
-          paths:
-            applicable: true
-            evidence: All modified files fall strictly within allowed_write_scope.
-          project_isolation:
-            applicable: true
-            evidence: Cross-file mixin method resolution and package imports strictly respect package boundaries and do not leak symbols across unlinked projects.
-        decision: pass
-    decision: pass
-    rollup:
-      verified_invariants:
-      - 'INV-NO-NOISE: Non-symbol AST tokens (wildcards, lifetimes, numeric tuple indexes) must not generate reference records.'
-      - 'INV-ROUTE-PRECISION: Only explicit web framework calls, Django patterns, and objects in named routes collections with valid route paths generate route nodes and handles edges.'
-      - 'INV-LEXICAL-SCOPING: Python and standard language imports must maintain strict lexical and line-ordered scoping.'
-      - 'INV-MERKLE-DETERMINISM: Merkle tree commitment integrity must pass at all times across cold and incremental builds.'
-      architectural_notes: []
-      review_summary:
-        decision: pass
-        contours:
-          administration: accepted
-          claims: accepted
-          concurrency: accepted
-          paths: accepted
-          project_isolation: accepted
+  review:
+    review_proof:
+      contours:
+        administration:
+          applicable: true
+          evidence: Commitment integrity verified (12/12 pass), Merkle tree determinism maintained across cold/incremental rebuilds, milestone documentation updated.
+        claims:
+          applicable: true
+          evidence: All 15 subtasks are fully completed and verified by public persisted integration tests in tests/python_semantics.rs (26/26 pass), tests/ast_extractors.rs, and tests/typed_receiver_resolution.rs. Clippy clean with 0 warnings.
+        concurrency:
+          applicable: true
+          evidence: Thread-safe data structures and immutable indexes; C3 linearization and value flow evaluation operate deterministically across worker threads.
+        paths:
+          applicable: true
+          evidence: All modified files fall strictly within allowed_write_scope.
+        project_isolation:
+          applicable: true
+          evidence: Cross-file mixin method resolution and package imports strictly respect package boundaries and do not leak symbols across unlinked projects.
+      decision: pass
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-NO-NOISE: Non-symbol AST tokens (wildcards, lifetimes, numeric tuple indexes) must not generate reference records.'
+    - 'INV-ROUTE-PRECISION: Only explicit web framework calls, Django patterns, and objects in named routes collections with valid route paths generate route nodes and handles edges.'
+    - 'INV-LEXICAL-SCOPING: Python and standard language imports must maintain strict lexical and line-ordered scoping.'
+    - 'INV-MERKLE-DETERMINISM: Merkle tree commitment integrity must pass at all times across cold and incremental builds.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 Architecture & Seam Contract:
@@ -608,41 +617,41 @@ receipt:
       exit_code: 0
       tests_failed: 0
       tests_passed: 69
-    review:
-      review_proof:
-        contours:
-          administration:
-            applicable: true
-            evidence: No schema changes required; Merkle commitment integrity tests pass 12/12; cargo clippy produces 0 warnings.
-          claims:
-            applicable: true
-            evidence: All 23 subtasks implemented and validated with positive public seam tests. Parameter type extraction, DOM builtins, export type re-exports, constructor field assignments all proven without synthetic name fallback.
-          concurrency:
-            applicable: true
-            evidence: ValueFlowIndex and semantic resolution are thread-safe and deterministic. No shared mutable state or races.
-          paths:
-            applicable: true
-            evidence: All modified files (src/engine/languages/typescript.rs, src/engine/languages/typescript/value_flow.rs, src/engine/linker.rs, src/engine/linker/value_flow.rs, tests/typescript_semantics.rs) fall strictly within allowed_write_scope.
-          project_isolation:
-            applicable: true
-            evidence: TypeScript path mapping, export maps, and type re-exports respect package boundaries and fail closed on foreign paths.
-        decision: pass
-    decision: pass
-    rollup:
-      verified_invariants:
-      - 'INV-NO-NOISE: Non-symbol AST tokens (wildcards, lifetimes, numeric tuple indexes) must not generate reference records.'
-      - 'INV-ROUTE-PRECISION: Only explicit web framework calls, Django patterns, and objects in named routes collections with valid route paths generate route nodes and handles edges.'
-      - 'INV-LEXICAL-SCOPING: Python and standard language imports must maintain strict lexical and line-ordered scoping.'
-      - 'INV-MERKLE-DETERMINISM: Merkle tree commitment integrity must pass at all times across cold and incremental builds.'
-      architectural_notes: []
-      review_summary:
-        decision: pass
-        contours:
-          administration: accepted
-          claims: accepted
-          concurrency: accepted
-          paths: accepted
-          project_isolation: accepted
+  review:
+    review_proof:
+      contours:
+        administration:
+          applicable: true
+          evidence: No schema changes required; Merkle commitment integrity tests pass 12/12; cargo clippy produces 0 warnings.
+        claims:
+          applicable: true
+          evidence: All 23 subtasks implemented and validated with positive public seam tests. Parameter type extraction, DOM builtins, export type re-exports, constructor field assignments all proven without synthetic name fallback.
+        concurrency:
+          applicable: true
+          evidence: ValueFlowIndex and semantic resolution are thread-safe and deterministic. No shared mutable state or races.
+        paths:
+          applicable: true
+          evidence: All modified files (src/engine/languages/typescript.rs, src/engine/languages/typescript/value_flow.rs, src/engine/linker.rs, src/engine/linker/value_flow.rs, tests/typescript_semantics.rs) fall strictly within allowed_write_scope.
+        project_isolation:
+          applicable: true
+          evidence: TypeScript path mapping, export maps, and type re-exports respect package boundaries and fail closed on foreign paths.
+      decision: pass
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-NO-NOISE: Non-symbol AST tokens (wildcards, lifetimes, numeric tuple indexes) must not generate reference records.'
+    - 'INV-ROUTE-PRECISION: Only explicit web framework calls, Django patterns, and objects in named routes collections with valid route paths generate route nodes and handles edges.'
+    - 'INV-LEXICAL-SCOPING: Python and standard language imports must maintain strict lexical and line-ordered scoping.'
+    - 'INV-MERKLE-DETERMINISM: Merkle tree commitment integrity must pass at all times across cold and incremental builds.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 Architecture & Seam Contract:
