@@ -448,6 +448,9 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
 
     let guide = m.ok("forge_guide", json!({"topic":"query"}));
     assert!(guide["start"].is_string());
+    let acdd = m.ok("forge_guide", json!({"topic":"acdd"}));
+    assert!(acdd["gates"].is_array());
+    assert!(acdd["proof_policies"].is_object());
     m.err(
         "forge_guide",
         json!({"topic":"no-such-topic"}),

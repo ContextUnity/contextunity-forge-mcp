@@ -14,7 +14,7 @@ Read [roadmap](docs/roadmap.md) for strategic context and
 - Verification: [testing](docs/testing/README.md).
 - Planning and execution queue: [roadmap](docs/roadmap.md), [milestones](docs/milestones/README.md), and [plans](docs/plans/README.md).
 - Architecture & Decisions: [architecture](docs/architecture/README.md) and [decisions](docs/adr/README.md).
-- Forge code-graph workflow: [`contextunity-forge`](.agents/skills/contextunity-forge/SKILL.md).
+- Forge code-graph workflow: [`contextunity-forge`](~/.agents/skills/contextunity-forge/SKILL.md).
 - Test suite rules and boundaries: [`tests/AGENTS.md`](tests/AGENTS.md).
 
 ## Task Execution & Repository Milestones
