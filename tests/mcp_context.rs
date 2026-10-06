@@ -403,10 +403,7 @@ fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
         "session_checkpoint",
         json!({"action":"save","name":"large","content":"\"\\Привіт".repeat(20_000)}),
     );
-    let (_, response) = client.call(
-        "session_checkpoint",
-        json!({"action":"get","name":"large"}),
-    );
+    let (_, response) = client.call("session_checkpoint", json!({"action":"get","name":"large"}));
     assert_eq!(response["result"]["isError"], true, "{response}");
     assert_eq!(
         client.payload("session_checkpoint", json!({"action":"list"})),
@@ -748,8 +745,7 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
         let stored = fs::read(workspace.0.join(".forge/checkpoints.json")).unwrap();
         let persisted: Value = serde_json::from_slice(&stored).unwrap();
         assert_eq!(persisted["entries"][name], value);
-        let (_, response) =
-            client.call("session_checkpoint", json!({"action":"get","name":name}));
+        let (_, response) = client.call("session_checkpoint", json!({"action":"get","name":name}));
         assert_eq!(
             response["result"]["isError"], true,
             "oversized {name} get created a fabricated page"

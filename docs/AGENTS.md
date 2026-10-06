@@ -25,6 +25,12 @@ Use `roadmap.md` for one or two paragraphs of strategic context. Read admitted
 commitments, ordering, and dependencies from `milestones/`. Keep research,
 proposals, and source plans in `plans/`; milestone admission creates an admitted commitment.
 
+## MCP client surface
+
+Keep connection steps in [MCP setup](reference/mcp-setup.md). Keep tool behavior in [MCP tools](reference/mcp-tools.md).
+
+When editing server instructions, tool descriptions, or input-schema text in `src/mcp/tools.rs`, assign each fact to one layer and match it to the handler before writing it. Update [MCP tools](reference/mcp-tools.md) in the same change when the contract changes.
+
 ## Forge MCP indexing rules
 
 Forge MCP parses documentation into searchable sections and links them directly

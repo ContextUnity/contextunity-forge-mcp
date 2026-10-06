@@ -119,7 +119,11 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         .iter()
         .enumerate()
     {
-        let worker = match gate { 2 => "reviewer", 3 => "delivery-reviewer", _ => "builder" };
+        let worker = match gate {
+            2 => "reviewer",
+            3 => "delivery-reviewer",
+            _ => "builder",
+        };
         let claim = if gate == 0 {
             claimed.clone()
         } else {
@@ -208,7 +212,11 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
     let review_proof = json!({"review_proof":{"decision":"pass","contours":contours}});
     for (gate, stage) in GATES.iter().enumerate() {
         let workspace = if gate == 2 { &reviewer } else { &builder };
-        let worker = match gate { 2 => "reviewer", 3 => "delivery-reviewer", _ => "builder" };
+        let worker = match gate {
+            2 => "reviewer",
+            3 => "delivery-reviewer",
+            _ => "builder",
+        };
         let claim = client.payload(
             "task_claim",
             json!({"task_id":id,"stage":stage,"worker_id":worker,"worktree":workspace.0}),
@@ -227,14 +235,17 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
                 json!({"task_id":id,"stage":stage,"action":"pass","evidence":42}),
             ] {
                 let (_, rejected) = client.call("task_submit", invalid);
-                assert!(
-                    rejected.get("error").is_some() || rejected["result"]["isError"] == true
-                );
+                assert!(rejected.get("error").is_some() || rejected["result"]["isError"] == true);
             }
         }
         let args = json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"});
         if gate == 3 {
-            builder.write("010-tasks.md", &source.replace("target: Deliver", "target: Unadmitted change").replace('\n', "\r\n"));
+            builder.write(
+                "010-tasks.md",
+                &source
+                    .replace("target: Deliver", "target: Unadmitted change")
+                    .replace('\n', "\r\n"),
+            );
             let (_, unadmitted) = client.call("task_submit", args.clone());
             assert_eq!(unadmitted["result"]["isError"], true);
             builder.write("010-tasks.md", &source.replace('\n', "\r\n"));
@@ -271,7 +282,13 @@ fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
         .filter(|n| n.starts_with("task_"))
         .collect();
     assert_eq!(names.len(), 5);
-    for name in ["task_list", "task_claim", "task_submit", "task_manage", "task_blackboard"] {
+    for name in [
+        "task_list",
+        "task_claim",
+        "task_submit",
+        "task_manage",
+        "task_blackboard",
+    ] {
         assert!(names.contains(&name));
         let schema = &tools.iter().find(|t| t["name"] == name).unwrap()["inputSchema"];
         assert_eq!(schema["additionalProperties"], false);
@@ -328,7 +345,8 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
         String::from_utf8_lossy(&cli.stderr)
     );
     assert_eq!(serde_json::from_slice::<Value>(&cli.stdout).unwrap(), ready);
-    let args = json!({"task_id":id,"stage":"contract","worker_id":"builder","worktree":workspace.0});
+    let args =
+        json!({"task_id":id,"stage":"contract","worker_id":"builder","worktree":workspace.0});
     let claimed = client.payload("task_claim", args.clone());
     let (_, collision) = client.call("task_claim", args);
     assert_eq!(collision["result"]["isError"], true);
@@ -411,8 +429,7 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
         String::from_utf8_lossy(&cli_post.stderr)
     );
     let mcp_post: Value =
-        serde_json::from_str(mcp_post["result"]["content"][0]["text"].as_str().unwrap())
-            .unwrap();
+        serde_json::from_str(mcp_post["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     let cli_post: Value = serde_json::from_slice(&cli_post.stdout).unwrap();
     let mcp_read = client.payload(
         "task_blackboard",
@@ -511,7 +528,11 @@ fn subtask_mcp_and_cli_operations() {
         ])
         .output()
         .unwrap();
-    assert!(cli_add.status.success(), "{}", String::from_utf8_lossy(&cli_add.stderr));
+    assert!(
+        cli_add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_add.stderr)
+    );
     let cli_add_json: Value = serde_json::from_slice(&cli_add.stdout).unwrap();
     assert_eq!(cli_add_json["subtask"]["subtask_ref"], "step-2");
 
@@ -527,7 +548,11 @@ fn subtask_mcp_and_cli_operations() {
         ])
         .output()
         .unwrap();
-    assert!(cli_list.status.success(), "{}", String::from_utf8_lossy(&cli_list.stderr));
+    assert!(
+        cli_list.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_list.stderr)
+    );
     let cli_list_json: Value = serde_json::from_slice(&cli_list.stdout).unwrap();
     assert_eq!(cli_list_json["subtasks"].as_array().unwrap().len(), 2);
 
@@ -556,7 +581,10 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         "docs/adr/002-unrelated.md",
         "---\ntitle: Storage Layout\nstatus: accepted\n---\n# Storage Layout\nSQLite pages and retention.",
     );
-    workspace.write("src/routing.rs", "pub struct Router;\npub fn route_task() {}\n");
+    workspace.write(
+        "src/routing.rs",
+        "pub struct Router;\npub fn route_task() {}\n",
+    );
     workspace.write("tests/test_routing.rs", "#[test]\nfn test_routing() {}\n");
 
     let manifest = "---\nid: m-context\ntitle: Context Milestone\ndoc_type: contract\ninvariants: [routing-invariant]\n---\n```yaml\ntask_ref: routing-task\ntarget: Deliver unified routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n  - tests/test_routing.rs\n```\n";
@@ -616,9 +644,16 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     // Check guidance in bundle
     assert_eq!(bundle["guidance"]["stage"], "contract/v1");
     assert_eq!(bundle["guidance"]["subagent_role"], "contract_author");
-    assert!(bundle["guidance"]["recommended_tools"].as_array().is_some_and(|tools| !tools.is_empty()));
-    assert!(bundle["guidance"]["actionable_steps"].as_array().is_some_and(|steps| !steps.is_empty()));
-    assert_eq!(bundle["guidance"]["subtask_dod"].as_array().unwrap().len(), 5);
+    assert!(bundle["guidance"]["recommended_tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty()));
+    assert!(bundle["guidance"]["actionable_steps"]
+        .as_array()
+        .is_some_and(|steps| !steps.is_empty()));
+    assert_eq!(
+        bundle["guidance"]["subtask_dod"].as_array().unwrap().len(),
+        5
+    );
 
     // Check scope-to-ADR mapping
     let adrs = bundle["adrs"].as_array().unwrap();
@@ -628,7 +663,11 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     assert_eq!(adr["title"], "Task Routing Invariants");
     assert_eq!(adr["status"], "accepted");
     assert_eq!(adr["relevance"], "direct");
-    assert_eq!(adrs.len(), 1, "unrelated ADRs must not appear as governing context");
+    assert_eq!(
+        adrs.len(),
+        1,
+        "unrelated ADRs must not appear as governing context"
+    );
 
     let symbols = bundle["scope_symbols"].as_array().unwrap();
     assert!(symbols.iter().any(|symbol| symbol["name"] == "route_task"));
@@ -636,7 +675,9 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     // Check covering tests
     let tests = bundle["covering_tests"].as_array().unwrap();
     assert!(
-        tests.iter().any(|t| t["path"].as_str() == Some("tests/test_routing.rs")),
+        tests
+            .iter()
+            .any(|t| t["path"].as_str() == Some("tests/test_routing.rs")),
         "covering_tests must include tests/test_routing.rs"
     );
 
@@ -662,9 +703,21 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         }),
     );
     assert!(claim_res["context_bundle"].is_object());
-    assert_eq!(claim_res["context_bundle"]["contract"]["worker_id"], "author-1");
-    assert_eq!(claim_res["context_bundle"]["adrs"][0]["relevance"], "direct");
-    assert_eq!(claim_res["context_bundle"]["blackboard"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        claim_res["context_bundle"]["contract"]["worker_id"],
+        "author-1"
+    );
+    assert_eq!(
+        claim_res["context_bundle"]["adrs"][0]["relevance"],
+        "direct"
+    );
+    assert_eq!(
+        claim_res["context_bundle"]["blackboard"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 
     // 3. CLI task context command
     let cli_context = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
@@ -677,7 +730,11 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         ])
         .output()
         .unwrap();
-    assert!(cli_context.status.success(), "{}", String::from_utf8_lossy(&cli_context.stderr));
+    assert!(
+        cli_context.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_context.stderr)
+    );
     let cli_json: Value = serde_json::from_slice(&cli_context.stdout).unwrap();
     assert!(cli_json["context_bundle"].is_object());
     assert_eq!(cli_json["context_bundle"]["contract"]["task_id"], task_id);

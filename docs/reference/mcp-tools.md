@@ -7,6 +7,18 @@ title: MCP tool reference
 
 The server exposes 20 tools over standard input and output. Start with `code_map_overview` to identify the indexed workspace. Search for a symbol, inspect its exact identifier, then use graph tools at a narrow scope. Check the reported path and line in source before acting on a structural inference.
 
+## Description layers
+
+A client receives three texts for this server. Keep each fact in one layer.
+
+| Layer | Source | Write |
+| --- | --- | --- |
+| Server instructions | `instructions` on the MCP server handler | Cross-tool budget and the first call: 64 KiB, 2 second SQLite budget, start at `code_map_overview`, continue a page with `offset` and `generation`, prefer `detail=compact`. |
+| Tool description | `description` on each tool | What that call returns, plus one limit the schema cannot express. |
+| Input schema | Description on each input field | Accepted values, defaults, and pairings such as nonzero `offset` with `generation`. |
+
+Selector grammar, SQL shape, proof objects, and examples stay in this page and in `forge_guide`. Verify a changed sentence against the handler in `src/mcp/tools.rs` and the query implementation it calls. Connection and the first-call check stay in [MCP setup](mcp-setup.md).
+
 ## Tools
 
 | Tool | Purpose and main input |
@@ -38,7 +50,7 @@ See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI p
 
 Use a symbol identifier returned by search whenever possible. A file path selects a module or file. `path:symbol` and `path::symbol` select a symbol in that path; `path:12` and `path#L12` select the narrowest symbol covering line 12. Relative paths may use `./`, `file:`, or `file://` prefixes. A bare name can be ambiguous when a module and symbol share that name; specify the path. Markdown belongs in `get_doc` and `search_docs`.
 
-`code_map_query` supports `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, and `sql`. Compact `inspect` and `explain` operations return the same symbol summary as their dedicated tools; set `include_coverage=true` to add resolution coverage. For `operation="sql"`, put exactly one read-only `SELECT` or `WITH` statement in `selector`; the same secure SQL validation, query budget, and paged `QueryOptions` used by `code_map_analyze` apply. Pass `limit`, `offset`, and `generation` as tool arguments. Impact direction defaults to `inbound`; `outbound` traverses dependencies used by the selected symbol. See [CLI reference](cli.md) for equivalent command forms.
+`code_map_query` supports `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, and `sql`. Aliases: `doctor` for overview, and `search`, `discover`, or `find` for symbol search. `unwired` lists functions and methods with no indexed static caller and is not a dead-code proof. Compact `inspect` and `explain` operations return the same symbol summary as their dedicated tools; set `include_coverage=true` to add resolution coverage. For `operation="sql"`, put exactly one read-only `SELECT` or `WITH` statement in `selector`; the same secure SQL validation, query budget, and paged `QueryOptions` used by `code_map_analyze` apply. Pass `limit`, `offset`, and `generation` as tool arguments. Impact direction defaults to `inbound`; `outbound` traverses dependencies used by the selected symbol. See [CLI reference](cli.md) for equivalent command forms.
 
 Depth is limited to 16. A deep traversal whose first frontier exceeds 1,000 links is rejected; retry with depth 1 or a narrower selector. Removal analysis rejects scopes above 10,000 nodes. Graph results describe indexed, statically resolved relationships.
 

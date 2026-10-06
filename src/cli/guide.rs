@@ -99,7 +99,10 @@ pub fn checkpoint(
                 .entries
                 .iter()
                 .map(|(name, value)| {
-                    Ok((name.clone(), json!({"bytes":serde_json::to_vec(value)?.len()})))
+                    Ok((
+                        name.clone(),
+                        json!({"bytes":serde_json::to_vec(value)?.len()}),
+                    ))
                 })
                 .collect::<Result<serde_json::Map<String, Value>>>()?;
             Ok(Value::Object(entries))

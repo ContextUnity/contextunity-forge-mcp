@@ -1,18 +1,13 @@
 use crate::engine::tasks::workspaces::Workspace;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::{
-    collections::BTreeSet,
-    fs,
-    path::Path,
-};
+use std::{collections::BTreeSet, fs, path::Path};
 
 /// Extract alphanumeric tokens of length >= 3 from paths, ignoring common folder/file extensions.
 fn extract_scope_tokens(scope: &[String]) -> BTreeSet<String> {
     let mut tokens = BTreeSet::new();
     let ignored = [
-        "src", "rs", "py", "ts", "js", "go", "java", "mod", "lib", "main", "core", "test",
-        "tests",
+        "src", "rs", "py", "ts", "js", "go", "java", "mod", "lib", "main", "core", "test", "tests",
     ];
     for path in scope {
         for segment in path.split(['/', '\\', '.', '_', '-']) {
@@ -53,7 +48,11 @@ fn scan_adrs(workspace_root: &Path, root: &Path, tokens: &BTreeSet<String>) -> V
             if path.file_name().and_then(|s| s.to_str()) == Some("README.md") {
                 continue;
             }
-            let rel_path = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().to_string();
+            let rel_path = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
             if seen_paths.contains(&rel_path) {
                 continue;
             }
@@ -84,10 +83,18 @@ fn scan_adrs(workspace_root: &Path, root: &Path, tokens: &BTreeSet<String>) -> V
                 }
             }
             if title.is_empty() {
-                title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                title = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
             }
 
-            let text_lower = format!("{} {}", rel_path.to_ascii_lowercase(), text.to_ascii_lowercase());
+            let text_lower = format!(
+                "{} {}",
+                rel_path.to_ascii_lowercase(),
+                text.to_ascii_lowercase()
+            );
             let matches_token = tokens.iter().any(|tok| text_lower.contains(tok));
 
             if !matches_token {
@@ -106,7 +113,9 @@ fn scan_adrs(workspace_root: &Path, root: &Path, tokens: &BTreeSet<String>) -> V
     results.sort_by(|a, b| {
         let a_rel = a["relevance"].as_str() == Some("direct");
         let b_rel = b["relevance"].as_str() == Some("direct");
-        b_rel.cmp(&a_rel).then_with(|| a["path"].as_str().cmp(&b["path"].as_str()))
+        b_rel
+            .cmp(&a_rel)
+            .then_with(|| a["path"].as_str().cmp(&b["path"].as_str()))
     });
     results.truncate(10);
     results
@@ -156,7 +165,11 @@ fn query_scope_symbols(workspace_root: &Path, root: &Path, scope: &[String]) -> 
                 let details_str: String = row.get(4)?;
                 let signature = serde_json::from_str::<Value>(&details_str)
                     .ok()
-                    .and_then(|v| v.get("signature").and_then(|s| s.as_str()).map(str::to_owned));
+                    .and_then(|v| {
+                        v.get("signature")
+                            .and_then(|s| s.as_str())
+                            .map(str::to_owned)
+                    });
                 Ok(json!({
                     "name": name,
                     "kind": kind,
@@ -178,11 +191,7 @@ fn query_scope_symbols(workspace_root: &Path, root: &Path, scope: &[String]) -> 
 }
 
 /// Discover tests covering symbols or modules within the task scope.
-fn find_covering_tests(
-    workspace_root: &Path,
-    root: &Path,
-    scope: &[String],
-) -> Vec<Value> {
+fn find_covering_tests(workspace_root: &Path, root: &Path, scope: &[String]) -> Vec<Value> {
     let mut covering = Vec::new();
     let mut seen = BTreeSet::new();
 
@@ -199,16 +208,28 @@ fn find_covering_tests(
     }
 
     // Indexed calls and imports prove a dependency from a test to a scoped symbol.
-    let db_path = [workspace_root.join(".forge/code-map.sqlite"), root.join(".forge/code-map.sqlite")]
-        .into_iter()
-        .find(|path| path.is_file());
+    let db_path = [
+        workspace_root.join(".forge/code-map.sqlite"),
+        root.join(".forge/code-map.sqlite"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file());
     if let Some(db_path) = db_path {
-        if let Ok(conn) = rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        if let Ok(conn) = rusqlite::Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) {
             for scope_path in scope.iter().filter(|path| !path.starts_with("tests/")) {
-                let predicate = if scope_path.ends_with('/') { "n.path LIKE ?1 || '%'" } else { "n.path = ?1" };
+                let predicate = if scope_path.ends_with('/') {
+                    "n.path LIKE ?1 || '%'"
+                } else {
+                    "n.path = ?1"
+                };
                 let sql = format!("SELECT DISTINCT t.path,t.name FROM nodes n JOIN edges e ON e.dst_hash=n.node_hash AND e.kind IN ('calls','imports') JOIN nodes t ON t.node_hash=e.src_hash WHERE {predicate} AND t.is_test=1 ORDER BY t.path,t.name LIMIT 15");
                 if let Ok(mut stmt) = conn.prepare(&sql) {
-                    if let Ok(rows) = stmt.query_map([scope_path], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) {
+                    if let Ok(rows) = stmt.query_map([scope_path], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    }) {
                         for row in rows.flatten() {
                             if seen.insert(row.0.clone()) {
                                 covering.push(json!({"path":row.0,"name":row.1,"kind":"test_symbol","match_reason":"indexed_dependency"}));
@@ -358,7 +379,9 @@ pub(super) fn context_bundle(
         "blackboard": blackboard_messages,
     });
 
-    let obj = details.as_object_mut().context("details must be an object")?;
+    let obj = details
+        .as_object_mut()
+        .context("details must be an object")?;
     obj.insert("workflow_guidance".into(), guidance);
     obj.insert("context_bundle".into(), bundle);
     obj.insert("adrs".into(), json!(adrs));

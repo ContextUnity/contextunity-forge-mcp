@@ -6,7 +6,10 @@ use anyhow::{bail, Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{fs::{File, OpenOptions}, path::Path};
+use std::{
+    fs::{File, OpenOptions},
+    path::Path,
+};
 mod workspaces;
 use workspaces::Registry;
 mod context;
@@ -15,21 +18,21 @@ use context::context_bundle;
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 #[value(rename_all = "snake_case")]
-/// Enumerates the supported status values.
+/// Task lifecycle status filter.
 pub enum Status {
-    /// Represents the ready case.
+    /// Tasks whose dependencies are satisfied and are ready for claim.
     Ready,
-    /// Represents the in progress case.
+    /// Tasks currently claimed and under active execution.
     InProgress,
-    /// Represents the blocked case.
+    /// Tasks blocked by incomplete dependencies or open blockers.
     Blocked,
-    /// Represents the completed case.
+    /// Completed tasks with durable receipts.
     Completed,
-    /// Represents the all case.
+    /// Query tasks across all statuses.
     All,
 }
 impl Status {
-    /// Performs name.
+    /// String name of the status.
     pub fn name(self) -> &'static str {
         match self {
             Self::Ready => "ready",
@@ -42,19 +45,19 @@ impl Status {
 }
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
-/// Enumerates the supported stage values.
+/// ACDD lifecycle gate stage.
 pub enum Stage {
-    /// Represents the contract case.
+    /// Contract specification and red-seam test proof gate.
     Contract,
-    /// Represents the build case.
+    /// Implementation and green-test proof gate.
     Build,
-    /// Represents the review case.
+    /// Independent review against contract, invariants, and contours.
     Review,
-    /// Represents the deliver case.
+    /// Milestone delivery and durable completion receipt generation.
     Deliver,
 }
 impl Stage {
-    /// Performs name.
+    /// String name of the stage.
     pub fn name(self) -> &'static str {
         match self {
             Self::Contract => "contract",
@@ -66,15 +69,15 @@ impl Stage {
 }
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
-/// Enumerates the supported action values.
+/// Gate submission decision action.
 pub enum Action {
-    /// Represents the pass case.
+    /// Pass gate criteria and advance to next stage (or deliver).
     Pass,
-    /// Represents the reject case.
+    /// Reject gate criteria with findings.
     Reject,
 }
 impl Action {
-    /// Performs name.
+    /// String name of the action.
     pub fn name(self) -> &'static str {
         match self {
             Self::Pass => "pass",
@@ -84,76 +87,84 @@ impl Action {
 }
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-/// Represents list data.
+/// Parameters for listing tasks in .forge/tasks.sqlite.
 pub struct List {
-    /// Optional repository value.
+    /// Repository or workspace name filter (e.g. 'forge-mcp', a linked workspace name, or 'all').
     pub repository: Option<String>,
-    /// Optional milestone ref value.
+    /// Filter tasks by milestone ID, prefix, or slug (e.g. '030' or 'm-tool-performance').
     pub milestone_ref: Option<String>,
-    /// Optional status value.
+    /// Filter by task status: ready (default), in_progress, blocked, completed, or all.
     pub status: Option<Status>,
-    /// Optional stage value.
+    /// Filter by lifecycle stage: contract, build, review, or deliver.
     pub stage: Option<Stage>,
 }
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
-/// Represents claim data.
+/// Parameters for claiming a task lifecycle gate.
 pub struct Claim {
-    /// The task id value.
+    /// Unique task identifier in repository/project/milestone:task_ref format.
     pub task_id: String,
-    /// The stage value.
+    /// Lifecycle gate to claim: 'contract/v1', 'build/v1', 'review/v1', or 'deliver/v1'.
     pub stage: String,
-    /// The worker id value.
+    /// Unique identifier of the claiming agent worker (must differ between builder and reviewer).
     pub worker_id: String,
-    /// The worktree value.
+    /// Absolute or repository-relative path of the development worktree executing this stage.
     pub worktree: String,
     #[serde(default)]
-    /// Whether to return an aggregated, zero-shot task context bundle.
+    /// Set true to return an aggregated zero-shot task context bundle (specification, guidance, blackboard history).
     pub bundle: Option<bool>,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-/// Represents submit data.
+/// Parameters for submitting evidence to advance or reject a lifecycle gate.
 pub struct Submit {
-    /// The task id value.
+    /// Unique task identifier in repository/project/milestone:task_ref format.
     pub task_id: String,
-    /// The stage value.
+    /// Active lifecycle gate being submitted: 'contract/v1', 'build/v1', 'review/v1', or 'deliver/v1'.
     pub stage: String,
-    /// Structured evidence supplied directly by the caller.
+    /// Claim-bound object: task_id, stage, claim_revision, contract_revision, worker_id, worktree, commit, and proof. proof has exactly one key. contract_proof: {seam_test_ref, red_exit_code}; red_exit_code must be > 0 unless proof_policy is direct-proof or deferred-final-test. test_proof: {command, exit_code, tests_passed, tests_failed, log?}; a pass needs a nonempty command, exit_code 0, tests_passed >= 1, tests_failed 0, and log <= 64 KiB. review_proof: {decision matching the action, contours}. contours must be exactly paths, claims, concurrency, project_isolation, and administration; each has boolean applicable and nonempty evidence.
     #[schemars(schema_with = "evidence_schema")]
     pub evidence: Value,
-    /// The action value.
+    /// Gate submission action: 'pass' to advance to next gate, or 'reject' to fail the gate.
     pub action: Action,
+    #[serde(default)]
     #[schemars(schema_with = "findings_schema")]
-    /// Optional findings value.
+    /// Optional JSON findings. Omit or null when unused. A review or delivery rejection records findings and returns the task to build.
     pub findings: Option<Value>,
 }
 fn findings_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    serde_json::Map::new().into()
+    let mut schema = serde_json::Map::new();
+    schema.insert(
+        "description".into(),
+        Value::String("Optional JSON findings. Omit or null when unused. A review or delivery rejection records findings and returns the task to build.".into()),
+    );
+    schema.into()
 }
 fn evidence_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    serde_json::Map::from_iter([("type".into(), Value::String("object".into()))]).into()
+    let mut schema = serde_json::Map::new();
+    schema.insert("type".into(), Value::String("object".into()));
+    schema.into()
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema, clap::ValueEnum, Default)]
 #[serde(rename_all = "snake_case")]
-/// Enumerates the supported manage action values.
+/// Administrative actions for task management.
 pub enum ManageAction {
-    /// Represents the create case.
+    /// Create a new root task specification in SQLite.
     Create,
-    /// Represents the sync case.
+    /// Synchronize task specifications from milestone markdown documents.
     Sync,
     #[default]
-    /// Represents the inspect case.
+    /// Inspect details, gate history, and evidence for a specific task.
     Inspect,
-    /// Represents the delete case.
+    /// Delete a task from SQLite.
     Delete,
-    /// Represents the extend scope case.
+    /// Extend the allowed file scope paths for a task.
     ExtendScope,
-    /// Add an iterative subtask to an existing task.
+    /// Add an iterative subtask with subtask_ref and title to an existing task.
     SubtaskAdd,
-    /// Update a subtask's status and evidence.
+    /// Update status and evidence for an existing subtask.
     SubtaskUpdate,
-    /// List subtasks for a task.
+    /// List all iterative subtasks for a parent task.
     SubtaskList,
     /// Reset an existing or completed task back to ready state.
     Reset,
@@ -164,34 +175,34 @@ pub enum ManageAction {
 }
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
-/// Represents manage data.
+/// Parameters for administrative task management in .forge/tasks.sqlite.
 pub struct Manage {
-    /// Optional workspace value.
+    /// Workspace or repository name (defaults to primary configured workspace).
     pub workspace: Option<String>,
-    /// The action value.
+    /// Administrative action to perform: inspect, sync, create, delete, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, context.
     pub action: ManageAction,
-    /// Optional task id value.
+    /// Task identifier for inspect, delete, subtask operations, reset, or reopen.
     pub task_id: Option<String>,
-    /// Optional milestone ref value.
+    /// Milestone reference or file path for sync or milestone-scoped operations.
     pub milestone_ref: Option<String>,
-    /// Optional task ref value.
+    /// Task reference slug for task creation.
     pub task_ref: Option<String>,
-    /// Optional paths value.
+    /// Allowed file scope paths for task creation or scope extension.
     pub paths: Option<Vec<String>>,
     #[serde(default)]
-    /// Whether force applies.
+    /// Force execution when resetting terminal tasks or deleting.
     pub force: bool,
     #[serde(default)]
-    /// Optional subtask reference slug.
+    /// Subtask reference slug for subtask_add or subtask_update (e.g. 'handle-null-return').
     pub subtask_ref: Option<String>,
     #[serde(default)]
-    /// Optional subtask title or goal description.
+    /// Subtask title or goal description for subtask_add.
     pub title: Option<String>,
     #[serde(default)]
-    /// Optional subtask status: pending, in_progress, or completed.
+    /// Subtask status for subtask_update: 'pending', 'in_progress', or 'completed'.
     pub subtask_status: Option<String>,
     #[serde(default)]
-    /// Optional subtask verification evidence or test command.
+    /// Subtask verification evidence, test command, or receipt for subtask_update.
     pub evidence: Option<String>,
 }
 
@@ -373,7 +384,10 @@ pub fn list(root: &Path, p: List) -> Result<Value> {
     if all_workspaces {
         Ok(json!({"tasks":tasks,"workspaces":workspaces}))
     } else {
-        selected.pop().context("task workspace missing")?.envelope(json!({"tasks":tasks}))
+        selected
+            .pop()
+            .context("task workspace missing")?
+            .envelope(json!({"tasks":tasks}))
     }
 }
 fn validate_authority(task: &crate::db::tasks_store::Task, root: &Path) -> Result<()> {
@@ -405,12 +419,21 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
     let claimed = store.claim(&p.task_id, &p.stage, &p.worker_id, &p.worktree)?;
     let activation = (|| {
-        let milestone_prefix = p.task_id.split_once(':').context("invalid task identity")?.0.to_string() + ":";
-        let claimed_at = store.earliest_claim(&milestone_prefix)?.context("task claim timestamp missing")?;
+        let milestone_prefix = p
+            .task_id
+            .split_once(':')
+            .context("invalid task identity")?
+            .0
+            .to_string()
+            + ":";
+        let claimed_at = store
+            .earliest_claim(&milestone_prefix)?
+            .context("task claim timestamp missing")?;
         crate::engine::milestones::activate_on_claim(&worktree, &claimed.milestone_ref, claimed_at)
     })();
     if let Err(error) = activation {
-        store.release_failed_claim(&p.task_id, claimed.claim_revision)
+        store
+            .release_failed_claim(&p.task_id, claimed.claim_revision)
             .context("failed to release claim after milestone activation error")?;
         return Err(error);
     }
@@ -423,7 +446,8 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
         }
     })();
     if response.is_err() {
-        store.release_failed_claim(&p.task_id, claimed.claim_revision)
+        store
+            .release_failed_claim(&p.task_id, claimed.claim_revision)
             .context("failed to release claim after context error")?;
     }
     response
@@ -436,7 +460,12 @@ pub fn store_for_task(root: &Path, id: &str) -> Result<TasksStore> {
 
 fn lock_receipts(database: &Path) -> Result<File> {
     let lock_path = database.with_extension("receipt.lock");
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(lock_path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
     file.lock()?;
     Ok(file)
 }
@@ -453,7 +482,10 @@ pub fn reset(root: &Path, id: &str) -> Result<Task> {
     }
     let milestone_path = confined_path(&workspace.root, &previous.milestone_ref)?;
     let original = std::fs::read_to_string(&milestone_path)?;
-    let task_ref = id.rsplit_once(':').map(|(_, reference)| reference).unwrap_or(id);
+    let task_ref = id
+        .rsplit_once(':')
+        .map(|(_, reference)| reference)
+        .unwrap_or(id);
     let updated = crate::engine::milestones::clear_task_receipt(&original, task_ref)?;
     crate::engine::milestones::atomic_replace(&milestone_path, updated.as_bytes())?;
     match store.reset(id) {
@@ -545,12 +577,8 @@ pub fn manage(root: &Path, p: Manage) -> Result<Value> {
         ManageAction::SubtaskAdd => {
             id.is_some() && p.subtask_ref.is_some() && p.title.is_some() && !p.force
         }
-        ManageAction::SubtaskUpdate => {
-            id.is_some() && p.subtask_ref.is_some() && !p.force
-        }
-        ManageAction::SubtaskList => {
-            id.is_some() && !p.force
-        }
+        ManageAction::SubtaskUpdate => id.is_some() && p.subtask_ref.is_some() && !p.force,
+        ManageAction::SubtaskList => id.is_some() && !p.force,
         ManageAction::Reset | ManageAction::Reopen => {
             id.is_some()
                 && milestone.is_none()
@@ -670,7 +698,8 @@ pub fn manage(root: &Path, p: Manage) -> Result<Value> {
             let task_id = id.context("task_id required")?;
             let subtask_ref = p.subtask_ref.as_deref().context("subtask_ref required")?;
             let status = p.subtask_status.as_deref().unwrap_or("completed");
-            let subtask = store.subtask_update(task_id, subtask_ref, status, p.evidence.as_deref())?;
+            let subtask =
+                store.subtask_update(task_id, subtask_ref, status, p.evidence.as_deref())?;
             workspace.envelope(json!({
                 "task_id": task_id,
                 "subtask": subtask,

@@ -1,5 +1,7 @@
 use super::{Milestone, Receipt, ReceiptRollup, ReviewSummary, SubtaskSpec, GATES};
-use crate::db::tasks_store::{check_stage, clear_blackboard, end_claim, load, now, save, Task, TasksStore};
+use crate::db::tasks_store::{
+    check_stage, clear_blackboard, end_claim, load, now, save, Task, TasksStore,
+};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -83,8 +85,9 @@ fn proof_payload<'a>(
 }
 
 fn validate_contract(value: &serde_json::Value, proof_policy: &str, passed: bool) -> Result<()> {
-    let proof: ContractProof = serde_json::from_value(proof_payload(value, "contract_proof")?.clone())
-        .context("TASK_EVIDENCE_INVALID: typed contract proof required")?;
+    let proof: ContractProof =
+        serde_json::from_value(proof_payload(value, "contract_proof")?.clone())
+            .context("TASK_EVIDENCE_INVALID: typed contract proof required")?;
     if passed {
         if proof.seam_test_ref.trim().is_empty() {
             bail!("TASK_EVIDENCE_INVALID: seam test reference required");
@@ -103,10 +106,11 @@ fn validate_contract(value: &serde_json::Value, proof_policy: &str, passed: bool
 fn validate_tests(value: &serde_json::Value, passed: bool) -> Result<()> {
     let proof: TestProof = serde_json::from_value(proof_payload(value, "test_proof")?.clone())
         .context("TASK_EVIDENCE_INVALID: typed test proof required")?;
-    if passed && (proof.command.trim().is_empty()
-        || proof.exit_code != 0
-        || proof.tests_passed == 0
-        || proof.tests_failed != 0)
+    if passed
+        && (proof.command.trim().is_empty()
+            || proof.exit_code != 0
+            || proof.tests_passed == 0
+            || proof.tests_failed != 0)
     {
         bail!("TASK_EVIDENCE_INVALID: passing test command and counts required");
     }
@@ -154,9 +158,21 @@ fn validate_review_contours(
 fn review_summary(proof: &ReviewProof) -> ReviewSummary {
     ReviewSummary {
         decision: proof.decision.clone(),
-        contours: proof.contours.iter().map(|(name, contour)| {
-            (name.clone(), if contour.applicable { "accepted" } else { "not_applicable" }.into())
-        }).collect(),
+        contours: proof
+            .contours
+            .iter()
+            .map(|(name, contour)| {
+                (
+                    name.clone(),
+                    if contour.applicable {
+                        "accepted"
+                    } else {
+                        "not_applicable"
+                    }
+                    .into(),
+                )
+            })
+            .collect(),
     }
 }
 
@@ -235,7 +251,9 @@ impl TasksStore {
             let review = accepted(&tx, id, "review/v1")?;
             let claim_worktree: String = tx.query_row(
                 "SELECT worktree FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0",
-                params![id, task.claim_revision], |row| row.get(0))?;
+                params![id, task.claim_revision],
+                |row| row.get(0),
+            )?;
             let path = super::confined_path(Path::new(&claim_worktree), &task.milestone_ref)?;
             let text = std::fs::read_to_string(&path)?;
             let mut identity = id.split('/');
@@ -250,9 +268,8 @@ impl TasksStore {
             if milestone.digest(spec)? != task.digest {
                 bail!("TASK_RECEIPT_INVALID: specification mismatch");
             }
-            let review_proof: ReviewProof = serde_json::from_value(
-                proof_payload(&review.proof, "review_proof")?.clone(),
-            )?;
+            let review_proof: ReviewProof =
+                serde_json::from_value(proof_payload(&review.proof, "review_proof")?.clone())?;
             let notes = tx.prepare(
                 "SELECT payload FROM task_blackboard WHERE task_id=?1 AND topic='architectural_notes' ORDER BY created_at,id",
             )?.query_map([id], |row| row.get::<_, String>(0))?
@@ -306,7 +323,12 @@ impl TasksStore {
             } else {
                 task.spec.subtasks.clone()
             };
-            let written = crate::engine::milestones::render_task_receipt(&text, task_ref, &receipt, &final_subtasks)?;
+            let written = crate::engine::milestones::render_task_receipt(
+                &text,
+                task_ref,
+                &receipt,
+                &final_subtasks,
+            )?;
             task.spec.subtasks = final_subtasks;
             document_update = Some((path, text, written));
             task.receipt = Some(receipt);
@@ -401,7 +423,10 @@ fn validate_receipt(
         || receipt.review != review.proof
         || receipt.decision != "pass"
         || chrono::DateTime::parse_from_rfc3339(&receipt.passed_at).is_err()
-        || receipt.rollup.as_ref().is_some_and(|rollup| rollup.verified_invariants != task.applicable_invariants)
+        || receipt
+            .rollup
+            .as_ref()
+            .is_some_and(|rollup| rollup.verified_invariants != task.applicable_invariants)
     {
         bail!("TASK_RECEIPT_INVALID: accepted proof mismatch");
     }
@@ -413,11 +438,13 @@ pub fn validate_durable_receipt(receipt: &Receipt, revision: u64) -> Result<()> 
     validate_tests(&receipt.evidence, true)?;
     validate_review(&receipt.review, true)?;
     if let Some(rollup) = &receipt.rollup {
-        let proof: ReviewProof = serde_json::from_value(
-            proof_payload(&receipt.review, "review_proof")?.clone(),
-        )?;
+        let proof: ReviewProof =
+            serde_json::from_value(proof_payload(&receipt.review, "review_proof")?.clone())?;
         if rollup.review_summary != review_summary(&proof)
-            || rollup.verified_invariants.iter().any(|invariant| invariant.trim().is_empty())
+            || rollup
+                .verified_invariants
+                .iter()
+                .any(|invariant| invariant.trim().is_empty())
         {
             bail!("TASK_RECEIPT_INVALID: malformed durable rollup");
         }

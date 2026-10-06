@@ -9,12 +9,7 @@ use std::{
 pub mod gates;
 
 /// The gates value.
-pub const GATES: [&str; 4] = [
-    "contract/v1",
-    "build/v1",
-    "review/v1",
-    "deliver/v1",
-];
+pub const GATES: [&str; 4] = ["contract/v1", "build/v1", "review/v1", "deliver/v1"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -223,7 +218,10 @@ impl Milestone {
                 if subtask.title.trim().is_empty() {
                     bail!("subtask requires a non-empty title");
                 }
-                if !matches!(subtask.status.as_str(), "pending" | "in_progress" | "completed") {
+                if !matches!(
+                    subtask.status.as_str(),
+                    "pending" | "in_progress" | "completed"
+                ) {
                     bail!("invalid subtask status; must be pending, in_progress, or completed");
                 }
                 if !subtask_ids.insert(subtask.subtask_ref.clone()) {
@@ -382,7 +380,11 @@ pub fn infer_project_from_path(path: &Path) -> Option<String> {
     for (i, part) in parts.iter().enumerate() {
         if part == "milestones" || part == "plans" {
             let candidate_idx = if i > 0 && parts[i - 1] == "docs" {
-                if i >= 2 { Some(i - 2) } else { None }
+                if i >= 2 {
+                    Some(i - 2)
+                } else {
+                    None
+                }
             } else if i > 0 {
                 Some(i - 1)
             } else {
@@ -391,21 +393,32 @@ pub fn infer_project_from_path(path: &Path) -> Option<String> {
 
             if let Some(idx) = candidate_idx {
                 let owners = &parts[..=idx];
-                if owners.iter().any(|part| part.is_empty() || part.as_ref() == "." || part.starts_with('.')) {
+                if owners
+                    .iter()
+                    .any(|part| part.is_empty() || part.as_ref() == "." || part.starts_with('.'))
+                {
                     return None;
                 }
-                return Some(owners.iter().map(|part| {
-                    let mut encoded = String::new();
-                    for ch in part.chars() {
-                        match ch {
-                            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => encoded.push(ch),
-                            '.' => encoded.push_str("~d"),
-                            '~' => encoded.push_str("~~"),
-                            _ => encoded.push_str(&format!("~u{}~", ch as u32)),
-                        }
-                    }
-                    encoded
-                }).collect::<Vec<_>>().join("."));
+                return Some(
+                    owners
+                        .iter()
+                        .map(|part| {
+                            let mut encoded = String::new();
+                            for ch in part.chars() {
+                                match ch {
+                                    'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => {
+                                        encoded.push(ch)
+                                    }
+                                    '.' => encoded.push_str("~d"),
+                                    '~' => encoded.push_str("~~"),
+                                    _ => encoded.push_str(&format!("~u{}~", ch as u32)),
+                                }
+                            }
+                            encoded
+                        })
+                        .collect::<Vec<_>>()
+                        .join("."),
+                );
             }
         }
     }

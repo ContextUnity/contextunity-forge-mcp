@@ -37,7 +37,7 @@ Read [documentation instructions](AGENTS.md) before editing these pages.
 
 - [Roadmap](roadmap.md): strategic context and macro themes.
 - [Plans](plans/README.md): active designs, proposals, and pre-implementation research.
-- [Milestones](milestones/README.md): admitted commitments, task execution queue, and acceptance criteria.
+- [Milestones](milestones/README.md): admitted commitments, domain taxonomy (`01x`–`05x`), execution queue, and acceptance criteria.
 - [Historical archive](archive/README.md): retained historical material and completed milestone receipts.
 
 Current contracts and milestones are configured through `milestones` in

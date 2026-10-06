@@ -294,9 +294,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             )
         }
         TaskCommand::Reset { task_id } | TaskCommand::Reopen { task_id } => {
-            return Ok(serde_json::to_value(
-                tasks::reset(root, &task_id)?,
-            )?)
+            return Ok(serde_json::to_value(tasks::reset(root, &task_id)?)?)
         }
         TaskCommand::Context { task_id } => {
             manage.action = ManageAction::Context;

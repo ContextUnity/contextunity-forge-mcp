@@ -43,16 +43,16 @@ fn navigation_error(error: anyhow::Error) -> anyhow::Error {
 }
 
 #[derive(Default, Deserialize, JsonSchema)]
-/// Represents page input data.
+/// Paging options for collections returning more items than the page limit.
 pub struct PageInput {
-    /// Items per collection, 1..=100; defaults to adapter response.page_size (30).
+    /// Maximum items per collection, 1..=100; defaults to 30.
     pub limit: Option<usize>,
     #[serde(default)]
-    /// The offset value.
+    /// Zero-based collection offset. Use next_offset from previous page.
     pub offset: usize,
-    /// Compact omits heavy node details; full remains subject to the byte limit.
+    /// compact omits heavy node details. full includes them within the byte budget.
     pub detail: Option<Detail>,
-    /// Use the generation returned by the previous page when offset is nonzero.
+    /// Token from the previous page. Required when offset is greater than 0.
     pub generation: Option<String>,
 }
 impl PageInput {
@@ -67,45 +67,45 @@ impl PageInput {
     }
 }
 #[derive(Default, Deserialize, JsonSchema)]
-/// Represents overview input data.
+/// Input for workspace overview query.
 pub struct OverviewInput {
     /// Optional aspects to include: 'counts', 'components', 'languages', 'cycles', 'compiled_profiles', 'metadata'. If omitted, all standard aspects are included.
     pub aspects: Option<Vec<String>>,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents selector data.
+/// Input for symbol removal safety proof.
 pub struct Selector {
-    /// The selector value.
+    /// Indexed symbol id, qualified name, file path, path:symbol, path::symbol, path:line, or path#Lline. Prefixes ./, file:, and file:// are accepted. A bare name can be ambiguous.
     pub selector: String,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents inspect data.
+/// Input for detailed code symbol inspection.
 pub struct Inspect {
-    /// The selector value.
+    /// Indexed symbol id, qualified name, file path, path:symbol, path::symbol, path:line, or path#Lline. Prefixes ./, file:, and file:// are accepted. A bare name can be ambiguous.
     pub selector: String,
     #[serde(default = "yes")]
-    /// Whether show doc applies.
+    /// Include linked documentation sections and docstring in output (default true).
     pub show_doc: bool,
-    /// Include paged resolution coverage in addition to the compact summary.
+    /// Include paged resolution coverage breakdown (resolved vs external vs unresolved references).
     #[serde(default)]
     pub include_coverage: bool,
-    /// Optional show source value.
+    /// Include bounded source code preview of symbol definition.
     pub show_source: Option<bool>,
-    /// Optional leading lines value.
+    /// Lines before the symbol. Default 5. Range 0..=20.
     pub leading_lines: Option<usize>,
-    /// Optional max body lines value.
+    /// Body lines to return. Default 35. Range 1..=100.
     pub max_body_lines: Option<usize>,
-    /// Body line offset returned as next_source_offset by a previous preview.
+    /// Line offset within symbol body for continuing preview; requires generation from previous preview.
     #[serde(default)]
     pub source_offset: usize,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 impl Inspect {
@@ -123,21 +123,21 @@ impl Inspect {
 }
 
 #[derive(Deserialize, JsonSchema)]
-/// Represents snippet data.
+/// Input for bounded source code snippet retrieval.
 pub struct Snippet {
-    /// The selector value.
+    /// Indexed symbol id, qualified name, file path, path:symbol, path::symbol, path:line, or path#Lline. Prefixes ./, file:, and file:// are accepted. A bare name can be ambiguous.
     pub selector: String,
-    /// Optional show source value.
+    /// Ignored. This tool always returns the preview.
     pub show_source: Option<bool>,
-    /// Optional leading lines value.
+    /// Lines before the symbol. Default 5. Range 0..=20.
     pub leading_lines: Option<usize>,
-    /// Optional max body lines value.
+    /// Body lines to return. Default 35. Range 1..=100.
     pub max_body_lines: Option<usize>,
-    /// Body line offset returned as next_source_offset by a previous preview.
+    /// Body line offset. Continue with next_source_offset and the previous generation.
     #[serde(default)]
     pub source_offset: usize,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 impl Snippet {
@@ -176,29 +176,29 @@ fn source_options(
     )
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents explain data.
+/// Input for structural symbol explanation and architectural invariant inspection.
 pub struct Explain {
-    /// The selector value.
+    /// Indexed symbol id, qualified name, file path, path:symbol, path::symbol, path:line, or path#Lline. Prefixes ./, file:, and file:// are accepted. A bare name can be ambiguous.
     pub selector: String,
-    /// Optional direction value.
+    /// both (default), incoming or inbound, outgoing or outbound.
     pub direction: Option<String>,
     #[serde(default = "yes")]
-    /// Whether show doc applies.
+    /// Include linked documentation sections, docstrings, and architectural invariants (default true).
     pub show_doc: bool,
-    /// Include paged resolution coverage in addition to the compact summary.
+    /// Include paged resolution coverage details for references within this symbol.
     #[serde(default)]
     pub include_coverage: bool,
-    /// Optional show source value.
+    /// Include bounded source code preview of symbol definition.
     pub show_source: Option<bool>,
-    /// Optional leading lines value.
+    /// Lines before the symbol. Default 5. Range 0..=20.
     pub leading_lines: Option<usize>,
-    /// Optional max body lines value.
+    /// Body lines to return. Default 35. Range 1..=100.
     pub max_body_lines: Option<usize>,
-    /// Body line offset returned as next_source_offset by a previous preview.
+    /// Body line offset. Continue with next_source_offset and the previous generation.
     #[serde(default)]
     pub source_offset: usize,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 impl Explain {
@@ -221,169 +221,179 @@ impl Explain {
     }
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents search symbols data.
+/// Input for workspace symbol search.
 pub struct SearchSymbols {
-    /// The pattern value.
+    /// Search query string. Supports token terms and prefix wildcards (e.g. 'Token*', 'parse_req*'). When exact=true, matches exact symbol or qualified name.
     pub pattern: String,
-    /// Match only the complete symbol name or qualified name, without full-text search.
+    /// If true, performs exact case-insensitive symbol name or qualified name matching without FTS.
     #[serde(default)]
     pub exact: bool,
-    /// Optional kind value.
+    /// nodes.kind filter. function and method match each other. Omit to match every kind.
     pub kind: Option<String>,
-    /// Restrict results to a workspace-relative file or directory.
+    /// Restrict results to a workspace-relative file or directory (e.g. 'src/engine/' or 'src/main.rs').
     pub path: Option<String>,
-    /// Group results by file path.
+    /// Group results by file path in the response.
     #[serde(default)]
     pub group_by_file: bool,
-    /// Include Markdown documentation nodes in the code symbol search.
+    /// Include Markdown documentation nodes matching pattern in search results.
     #[serde(default)]
     pub include_docs: bool,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents tests data.
+/// Input for finding test relationships for a symbol.
 pub struct Tests {
-    /// The selector value.
+    /// Indexed symbol id, qualified name, file path, path:symbol, path::symbol, path:line, or path#Lline. Prefixes ./, file:, and file:// are accepted. A bare name can be ambiguous.
     pub selector: String,
     #[serde(default = "inbound")]
-    /// The direction value.
+    /// inbound (default) finds tests that exercise the target. outbound finds production code a test depends on.
     pub direction: String,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents impact data.
+/// Input for dependency graph traversal and change impact analysis.
 pub struct Impact {
-    /// The selector value.
+    /// Indexed symbol id, qualified name, file path, path:symbol, path::symbol, path:line, or path#Lline. Prefixes ./, file:, and file:// are accepted. A bare name can be ambiguous.
     pub selector: String,
-    /// Impact direction: 'inbound' (default) or 'outbound'.
+    /// inbound (default) lists dependents. outbound lists dependencies.
     #[serde(default = "inbound")]
     pub direction: String,
     #[serde(default = "depth")]
-    /// The depth value.
+    /// Edge depth. Default 2. Maximum 16. Depth above 1 is rejected when the first frontier exceeds 1000 links.
     pub depth: u32,
-    /// Traversal mode: 'calls' (default, invocation/call graph), 'data-flow' (parameter/assignment flow), 'all' (all dependency edges).
+    /// Omit for the default walk: calls, inherits, implements, overrides, extends, includes, mutates, handles, references, calls_endpoint, imports, contains, documents, plus reverse decorates. data-flow or dataflow follows mutates, references, and handles. all matches the default walk.
     pub mode: Option<String>,
-    /// Optional specific edge kinds to follow (e.g. ['calls', 'mutates', 'inherits', 'implements', 'imports']).
+    /// Edge kind names. A non-empty list replaces mode. decorates is walked in reverse; every other kind is walked forward.
     pub edge_types: Option<Vec<String>>,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents query data.
+/// Input for specialized graph operations or read-only SQL queries.
 pub struct Query {
-    /// The operation value.
+    /// overview, impact, slice, unwired, or sql. inspect and explain match the dedicated tools. Aliases: doctor for overview; search, discover, and find for symbol search.
     pub operation: String,
-    /// Optional selector value.
+    /// Selector for impact, slice, inspect, or explain. For sql, exactly one read-only SELECT or WITH. Ignored for overview and unwired.
     pub selector: Option<String>,
-    /// Impact direction: 'inbound' (default) or 'outbound'.
+    /// inbound or outbound for impact and slice. Default inbound.
     pub direction: Option<String>,
-    /// Include paged resolution coverage for inspect and explain operations.
+    /// Include resolution coverage breakdown in query results.
     #[serde(default)]
     pub include_coverage: bool,
     #[serde(default = "depth")]
-    /// The depth value.
+    /// Edge depth for impact and slice. Default 2. Maximum 16.
     pub depth: u32,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents analyze data.
+/// Input for workspace diagnostics, parse errors, and dependency cycle analysis.
 pub struct Analyze {
-    /// The target value.
+    /// Empty string for workspace totals, an indexed file or directory, or exactly one read-only SELECT or WITH. lint=true reads stored syntax diagnostics for that path and does not run SQL.
     pub target: String,
-    /// Whether include cycles applies.
+    /// Compute static dependency cycles. Cannot combine with lint=true. Omitted cycles stay off.
     pub include_cycles: Option<bool>,
-    /// Read stored syntax diagnostics only; does not run a linter or reparse source.
+    /// Set true to return stored syntax parse diagnostics across indexed files. Cannot be combined with include_cycles=true.
     #[serde(default)]
     pub lint: bool,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents ast data.
+/// Input for structural AST pattern search using Tree-sitter.
 pub struct Ast {
-    /// The pattern value.
+    /// Structural syntax pattern with Tree-sitter metavariables (e.g. 'fn $NAME($$$ARGS) -> $RET', '$VAR = await $CALL($$$ARGS)').
     pub pattern: String,
-    /// The language value.
+    /// Compiled language profile id, such as rust, python, typescript, javascript, go, or java. An unknown id fails with the compiled list.
     pub language: String,
-    /// Optional path value.
+    /// Optional workspace-relative file or directory to constrain search scope (e.g. 'src/engine/').
     pub path: Option<String>,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents search docs data.
+/// Input for full-text search across indexed documentation and ADRs.
 pub struct SearchDocs {
-    /// The query value.
+    /// Documentation search query or keywords (e.g. 'Merkle tree commitments', 'LanguageLinker trait', 'ACDD gates').
     pub query: String,
-    /// Optional doc type value.
+    /// Exact doc_type frontmatter value, such as architecture, adr, guide, api, or plan.
     pub doc_type: Option<String>,
-    /// Optional component value.
+    /// Component name or document path prefix.
     pub component: Option<String>,
-    /// Include a short match-centered content excerpt in each result.
+    /// Include a match-centered text preview for each matched section (default false).
     #[serde(default)]
     pub include_excerpt: bool,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents get doc data.
+/// Input for reading indexed markdown documentation.
 pub struct GetDoc {
-    /// The path or id value.
+    /// Document path relative to workspace or document ID (e.g. 'docs/architecture/indexing.md', 'docs/adr/0001-record.md').
     pub path_or_id: String,
-    /// Optional section value.
+    /// Optional heading section title to read only that specific section instead of entire document.
     pub section: Option<String>,
     #[serde(flatten)]
-    /// The page value.
+    /// Paging options.
     pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents guide data.
+/// Input for interactive reference and operational guidance.
 pub struct Guide {
     #[serde(default)]
-    /// Optional topic value.
+    /// query (default), acdd, docs, adapter, validate, or init. An unknown topic fails.
     pub topic: Option<String>,
     #[serde(default)]
-    /// Whether force applies.
+    /// For topic=init, overwrite an existing forge-mcp.yaml.
     pub force: bool,
 }
 #[derive(Deserialize, JsonSchema)]
-/// Represents checkpoint data.
+/// Input for session checkpoint operations.
 pub struct Checkpoint {
-    /// The action value.
+    /// Checkpoint operation: 'list' (show all), 'save' (persist state), 'get' (retrieve by name), or 'delete' (remove by name).
     pub action: String,
-    /// Optional name value.
+    /// Required for save, get, and delete. Length 1..=200. Must not contain .., /, \, or NUL.
     pub name: Option<String>,
     #[schemars(schema_with = "checkpoint_content_schema")]
-    /// Optional content value.
+    /// JSON value required for save. At most 1 MiB.
     pub content: Option<Value>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-enum BlackboardAction {
+/// Operation for task blackboard.
+pub enum BlackboardAction {
+    /// Post a new coordination message to the task blackboard.
     Post,
+    /// Read chronological coordination messages from the task blackboard.
     Read,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct Blackboard {
-    action: BlackboardAction,
-    task_id: String,
-    author: Option<String>,
-    topic: Option<String>,
-    payload: Option<String>,
-    limit: Option<usize>,
+/// Parameters for task blackboard collaboration in .forge/tasks.sqlite.
+pub struct Blackboard {
+    /// Action to perform: 'post' to write a message, 'read' to read messages.
+    pub action: BlackboardAction,
+    /// Task identifier (e.g. 'repository/project/milestone:task_ref').
+    pub task_id: String,
+    /// Message author for 'post'. Defaults to the active claim worker or 'mcp'.
+    pub author: Option<String>,
+    /// Free-form topic. Conventional topics: hypothesis, architectural_seam, measured_delta, blockers, contract_draft, build_proof, architectural_notes. architectural_notes is kept in the delivery receipt; other topics are cleared at deliver.
+    pub topic: Option<String>,
+    /// Required for post. Rejected for read.
+    pub payload: Option<String>,
+    /// Maximum messages for read. Rejected for post. Omit to read every match.
+    pub limit: Option<usize>,
 }
 
 impl Server {
@@ -413,29 +423,31 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "List ready, unclaimed tasks with satisfied dependencies in the primary repository by default. Select repository=all or an enabled linked workspace name to include linked tasks."
+        description = "List tasks. The default is ready, unclaimed tasks with satisfied dependencies in the primary workspace."
     )]
     fn task_list(&self, Parameters(p): Parameters<super::tasks::List>) -> CallToolResult {
         self.responding(|_| super::tasks::list(&self.root, p))
     }
-    #[tool(description = "Atomically claim the current lifecycle gate in an isolated worktree.")]
+    #[tool(
+        description = "Atomically claim one gate in a worktree. bundle=true returns the specification, guidance, and recent blackboard messages."
+    )]
     fn task_claim(&self, Parameters(p): Parameters<super::tasks::Claim>) -> CallToolResult {
         self.responding(|_| super::tasks::claim(&self.root, p))
     }
     #[tool(
-        description = "Submit revision-bound JSON evidence. Task delivery writes the receipt in the milestone document from accepted proofs."
+        description = "Pass or reject the claimed gate. Passing deliver/v1 writes the milestone receipt and clears the blackboard. The evidence field describes the required object."
     )]
     fn task_submit(&self, Parameters(p): Parameters<super::tasks::Submit>) -> CallToolResult {
         self.responding(|_| super::tasks::submit(&self.root, p))
     }
     #[tool(
-        description = "Create, sync, inspect, delete, extend task scope, or reset/reopen tasks. Select workspace for creation, synchronization or milestone deletion; sync with only workspace imports its milestone directory."
+        description = "Run one task-store action: create, sync, inspect, delete, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, or context. sync without milestone_ref imports the workspace milestone directory."
     )]
     fn task_manage(&self, Parameters(p): Parameters<super::tasks::Manage>) -> CallToolResult {
         self.responding(|_| super::tasks::manage(&self.root, p))
     }
     #[tool(
-        description = "Post or read task-scoped SQLite blackboard messages. Post requires topic and payload; author defaults to the active worker or 'mcp'. Read accepts optional topic and limit."
+        description = "Post or read task messages. post requires topic and payload and rejects limit. read rejects author and payload. An omitted author is the claim worker, or mcp when unclaimed."
     )]
     fn task_blackboard(&self, Parameters(p): Parameters<Blackboard>) -> CallToolResult {
         self.responding(|_| {
@@ -476,7 +488,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Workspace overview: components, modules, counts, and coverage. Optional aspects: 'counts', 'components', 'languages', 'cycles', 'compiled_profiles', 'metadata'. Start here to verify workspace_root matches active worktree and check coverage before making absence claims. Collections independently paginated."
+        description = "Workspace root, counts, languages, and resolution coverage. Call this first and confirm workspace_root is the active worktree before an absence claim."
     )]
     fn code_map_overview(&self, Parameters(p): Parameters<OverviewInput>) -> CallToolResult {
         self.responding(|policy| {
@@ -493,7 +505,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Inspect an indexed symbol by selector (e.g. 'function:name', 'class:Name', 'module:path'). Compact output includes exact signature and docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees. Set include_coverage=true for paged resolution coverage; detail='full' includes node details and per-reference evidence. Set show_source=true for bounded source or use get_code_snippet."
+        description = "Compact symbol record: signature, docstring, container, call counts, and at most five direct call previews per direction. include_coverage adds paged resolution evidence. Source stays off unless show_source is true."
     )]
     fn code_map_inspect(&self, Parameters(p): Parameters<Inspect>) -> CallToolResult {
         self.responding_with_symbol(
@@ -521,7 +533,7 @@ impl Server {
         )
     }
     #[tool(
-        description = "Read source and location for a symbol selector (default 5 leading + 35 body lines). Pass source_offset with previous generation for next lines. Use code_map_inspect for resolution coverage and evidence; use ctx_read for full file edits."
+        description = "Bounded source preview for one selector. Defaults are 5 leading lines and 35 body lines. The on-disk file must match the indexed digest. Continue with source_offset and generation."
     )]
     fn get_code_snippet(&self, Parameters(p): Parameters<Snippet>) -> CallToolResult {
         self.responding(|policy| {
@@ -548,7 +560,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Search indexed symbols with FTS terms or prefix* pattern (e.g. 'Token*', 'router'). Set exact=true for indexed, case-insensitive name or qualified-name equality without FTS. Optional path restricts results to a workspace-relative file or directory. Returns symbol IDs, kinds, and paths. Compact pages default to 30; max 100."
+        description = "Search names, qualified names, and tokens. A trailing * is a prefix. exact=true matches an indexed name or qualname without full text. Results include selectors for inspect."
     )]
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         self.responding(|policy| {
@@ -589,7 +601,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Find test relationships: 'inbound' finds tests exercising a target symbol/module; 'outbound' finds production dependencies of a test. Each result labels a direct edge witness or a scope/transitive connection; it does not prove a full path. Narrow symbol or leaf module required; broad scopes are rejected."
+        description = "Test relationships for a narrow selector. inbound finds tests that exercise the target; outbound finds production code a test depends on. A hit is a direct edge or scope_or_transitive, not a full path. Broad scopes are rejected."
     )]
     fn code_map_tests(&self, Parameters(p): Parameters<Tests>) -> CallToolResult {
         self.responding(|policy| {
@@ -599,7 +611,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Trace dependencies for a selector. direction: 'inbound' (default) or 'outbound'. Optional mode: 'calls' (default, invocation/call graph), 'data-flow' (parameter/assignment flow), 'all' (all dependency edges). Optional edge_types: ['calls', 'mutates', 'inherits', 'implements', 'imports']. Always start with depth=1 to avoid exponential graph fan-out. Paged results require offset + generation for continuation."
+        description = "Transitive reachability from one selector. inbound (default) lists dependents; outbound lists dependencies. Start at depth=1. Each node includes one shortest predecessor edge. Depth above 1 fails when the first frontier exceeds 1000 links."
     )]
     fn code_map_impact(&self, Parameters(p): Parameters<Impact>) -> CallToolResult {
         self.responding(|policy| {
@@ -620,7 +632,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Explain symbol ownership, direct edges, and architectural invariants. Compact results include exact signature and docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees. direction: both (default), incoming/inbound, or outgoing/outbound. Set include_coverage=true for paged resolution coverage, show_doc=false to omit linked documents, or show_source=true for bounded source."
+        description = "Symbol summary plus paged incoming and outgoing edges of every kind. The embedded call summary shows counts and at most five direct call previews per direction. direction defaults to both."
     )]
     fn code_map_explain(&self, Parameters(p): Parameters<Explain>) -> CallToolResult {
         self.responding_with_symbol(
@@ -649,7 +661,7 @@ impl Server {
         )
     }
     #[tool(
-        description = "Legacy bounded graph operation: overview, impact, slice, unwired, or sql. The inspect and explain operations are deprecated; use code_map_inspect and code_map_explain. Use code_map_analyze for diagnostics. For sql, pass one read-only SELECT/WITH statement in selector; limit, offset, generation, and depth are separate arguments."
+        description = "Bounded graph operation or one read-only SELECT/WITH. Prefer code_map_inspect, code_map_explain, and code_map_impact for those jobs. unwired lists functions and methods with no indexed static caller and is not a dead-code proof."
     )]
     fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
         self.responding(|policy| {
@@ -671,7 +683,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Analyze diagnostics, errors, and cycles. target='' for workspace totals or an indexed path for diagnostics; include_cycles=true computes cycles. Also accepts read-only SELECT/WITH SQL. lint=true returns only stored parser syntax diagnostics across compiled profiles, with explicit coverage; no style/type/security checks or external process."
+        description = "Diagnostics for the workspace or one path, one read-only SELECT or WITH, stored syntax diagnostics, or static cycles. lint=true cannot combine with include_cycles=true and does not run SQL."
     )]
     fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
         self.responding(|policy| {
@@ -690,7 +702,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Check one candidate's removal safety using indexed incoming dependencies and candidate-scoped unresolved references. Workspace unresolved and parse-error diagnostics are reported separately."
+        description = "Indexed removal check for one symbol or file. Returns incoming dependency edges, candidate-scoped unresolved references and parse errors, and safe_to_remove. That verdict excludes workspace-wide diagnostics and is not a runtime-safety proof. More than 10000 nodes is rejected."
     )]
     fn code_map_prove_removal(&self, Parameters(p): Parameters<Selector>) -> CallToolResult {
         self.responding(|policy| {
@@ -698,7 +710,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Syntactic pattern search using Tree-sitter AST ($NAME captures nodes, $$$ARGS captures sequences where valid in the language). Requires a compiled language id, such as python, typescript, rust, html, yaml, or toml, and a valid pattern. Optional path filters scope."
+        description = "Tree-sitter structural search over admitted source. $NAME captures one node and $$$ARGS captures a sequence. language must be a compiled profile id."
     )]
     fn ast_grep_search(&self, Parameters(p): Parameters<Ast>) -> CallToolResult {
         self.responding(|policy| {
@@ -715,7 +727,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Full-text search indexed documentation and ADRs. Optional doc_type filter ('architecture', 'adr', 'guide', 'api', 'plan') and component filter. Returns section anchors for get_doc; include_excerpt=true adds a bounded match-centered preview."
+        description = "Full-text search of indexed Markdown sections. Returns paths and section anchors for get_doc. include_excerpt adds a short match-centered preview."
     )]
     fn search_docs(&self, Parameters(p): Parameters<SearchDocs>) -> CallToolResult {
         self.responding(|policy| {
@@ -734,7 +746,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Read documentation content by path or ID (e.g. 'docs/architecture/router.md'). Returns content by default; detail='compact' returns a section outline. Optional section narrows to an exact section title."
+        description = "Read one indexed Markdown document. The default detail is full text. detail=compact returns a heading outline. A missing path or section is an error."
     )]
     fn get_doc(&self, Parameters(p): Parameters<GetDoc>) -> CallToolResult {
         self.responding(|policy| {
@@ -745,9 +757,7 @@ impl Server {
             self.read(|c| reader::get_doc_paged(c, &p.path_or_id, p.section.as_deref(), &page))
         })
     }
-    #[tool(
-        description = "Interactive guide. Topics: 'query' (tool selection, budget recovery, paging rules), 'docs' (documentation frontmatter & invariants), 'adapter' (forge-mcp.yaml config), 'validate' (index status), 'init' (initialize config). Defaults to 'query'."
-    )]
+    #[tool(description = "Built-in guide. The default topic is query.")]
     fn forge_guide(&self, Parameters(p): Parameters<Guide>) -> CallToolResult {
         let topic = p.topic.as_deref().unwrap_or("query");
         let topic = if topic.trim().is_empty() {
@@ -764,7 +774,7 @@ impl Server {
         self.responding(|_| cli::guide::run(&self.root, topic, p.force))
     }
     #[tool(
-        description = "Manage local session checkpoints saved in .forge/checkpoints.json. Actions: 'list' (names and byte sizes), 'save' (requires name + content), 'get' (by name), 'delete' (by name)."
+        description = "List, save, get, or delete a JSON checkpoint in .forge/checkpoints.json."
     )]
     fn session_checkpoint(&self, Parameters(p): Parameters<Checkpoint>) -> CallToolResult {
         match scanner::load_adapter(&self.root, None) {
@@ -780,7 +790,7 @@ impl Server {
 #[tool_handler(
     name = "contextunity-forge-mcp",
     version = "0.2.0",
-    instructions = "Native workspace code graph and task coordination (20 tools). Max 64 KiB responses, 2s SQLite budget. Workflow: code_map_overview -> code_map_search (prefix*) -> code_map_inspect -> code_map_explain -> code_map_impact (depth=1) -> code_map_tests -> get_code_snippet -> ctx_read. Paged results include offset and generation; pass both for next page. Use compact detail. Inspect coverage before absence claims."
+    instructions = "Workspace code graph and task coordination, 20 tools. Responses cap at 64 KiB. SQLite budget is 2 seconds. Start with code_map_overview and check coverage before an absence claim. Continue a page with offset and generation. Prefer detail=compact. Selector rules and gate proofs: forge_guide topic=query or acdd."
 )]
 impl ServerHandler for Server {
     async fn call_tool(

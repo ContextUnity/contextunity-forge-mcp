@@ -49,11 +49,17 @@ fn declared_projects(directory: &Path) -> Result<BTreeSet<String>> {
         }
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
-            if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|ext| ext != "md") {
+            if !entry.file_type()?.is_file()
+                || entry.path().extension().is_none_or(|ext| ext != "md")
+            {
                 continue;
             }
             let text = std::fs::read_to_string(entry.path())?;
-            let Some(header) = text.strip_prefix("---\n").and_then(|body| body.split_once("\n---\n")).map(|(header, _)| header) else {
+            let Some(header) = text
+                .strip_prefix("---\n")
+                .and_then(|body| body.split_once("\n---\n"))
+                .map(|(header, _)| header)
+            else {
                 continue;
             };
             let meta: serde_yaml::Value = serde_yaml::from_str(header)?;
@@ -124,7 +130,10 @@ impl Workspace {
         };
         let guidance_exists = self.guidance.is_file();
         let mut steps = if guidance_exists {
-            vec![format!("Read the task instructions at {}.", self.guidance.display())]
+            vec![format!(
+                "Read the task instructions at {}.",
+                self.guidance.display()
+            )]
         } else {
             Vec::new()
         };
@@ -143,11 +152,14 @@ impl Workspace {
         let warning = if guidance_exists {
             Value::Null
         } else {
-            steps.extend([
-                "Use the current stage and task scope to continue.",
-                "Record a verifiable proof in the task store.",
-                "Request independent review before delivery.",
-            ].map(str::to_owned));
+            steps.extend(
+                [
+                    "Use the current stage and task scope to continue.",
+                    "Record a verifiable proof in the task store.",
+                    "Request independent review before delivery.",
+                ]
+                .map(str::to_owned),
+            );
             json!({
                 "code": "TASK_GUIDANCE_MISSING",
                 "message": "Task guidance file is missing; use the inline steps and scaffold repository instructions.",
@@ -224,7 +236,10 @@ impl Registry {
             let rel = dir.strip_prefix(&root).unwrap_or(&dir);
             let inferred = crate::core::tasks::infer_project_from_path(rel);
             if let Some(proj) = inferred {
-                subproject_milestones.entry(proj).or_default().push(dir.clone());
+                subproject_milestones
+                    .entry(proj)
+                    .or_default()
+                    .push(dir.clone());
             } else {
                 primary_milestones.push(dir.clone());
             }
@@ -232,7 +247,10 @@ impl Registry {
                 if declared == project {
                     primary_milestones.push(dir.clone());
                 } else {
-                    subproject_milestones.entry(declared).or_default().push(dir.clone());
+                    subproject_milestones
+                        .entry(declared)
+                        .or_default()
+                        .push(dir.clone());
                 }
             }
         }

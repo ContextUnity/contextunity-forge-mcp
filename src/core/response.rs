@@ -10,12 +10,12 @@ pub const MIN_OUTPUT_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-/// Enumerates the supported detail values.
+/// Response detail for paged collections.
 pub enum Detail {
     #[default]
-    /// Represents the compact case.
+    /// Omit heavy node details.
     Compact,
-    /// Represents the full case.
+    /// Include node details within the response byte budget.
     Full,
 }
 

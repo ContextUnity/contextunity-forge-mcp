@@ -156,7 +156,13 @@ impl TasksStore {
         Ok(())
     }
     /// Persist a message for one task and return its SQLite identifier.
-    pub fn blackboard_post(&self, task_id: &str, author: &str, topic: &str, payload: &str) -> Result<u64> {
+    pub fn blackboard_post(
+        &self,
+        task_id: &str,
+        author: &str,
+        topic: &str,
+        payload: &str,
+    ) -> Result<u64> {
         self.assert_id(task_id)?;
         if author.trim().is_empty() || topic.trim().is_empty() {
             bail!("TASK_BLACKBOARD_INVALID: author and topic are required");
@@ -176,23 +182,30 @@ impl TasksStore {
         Ok(u64::try_from(self.connection.last_insert_rowid())?)
     }
     /// Read messages in insertion order with an optional topic and result limit.
-    pub fn blackboard_read(&self, task_id: &str, topic: Option<&str>, limit: Option<usize>) -> Result<Vec<BlackboardMessage>> {
+    pub fn blackboard_read(
+        &self,
+        task_id: &str,
+        topic: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<BlackboardMessage>> {
         self.assert_id(task_id)?;
         let limit = limit.map(i64::try_from).transpose()?.unwrap_or(i64::MAX);
         let mut statement = self.connection.prepare(
             "SELECT id,task_id,author,topic,payload,created_at FROM task_blackboard \
              WHERE task_id=?1 AND (?2 IS NULL OR topic=?2) ORDER BY created_at,id LIMIT ?3",
         )?;
-        let messages = statement.query_map(params![task_id, topic, limit], |row| {
-            Ok(BlackboardMessage {
-                id: row.get(0)?,
-                task_id: row.get(1)?,
-                author: row.get(2)?,
-                topic: row.get(3)?,
-                payload: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let messages = statement
+            .query_map(params![task_id, topic, limit], |row| {
+                Ok(BlackboardMessage {
+                    id: row.get(0)?,
+                    task_id: row.get(1)?,
+                    author: row.get(2)?,
+                    topic: row.get(3)?,
+                    payload: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(messages)
     }
     /// Delete all transient messages for one task.
@@ -234,7 +247,12 @@ impl TasksStore {
         Ok(value)
     }
     /// Add a subtask to an existing task.
-    pub fn subtask_add(&mut self, task_id: &str, subtask_ref: &str, title: &str) -> Result<SubtaskSpec> {
+    pub fn subtask_add(
+        &mut self,
+        task_id: &str,
+        subtask_ref: &str,
+        title: &str,
+    ) -> Result<SubtaskSpec> {
         self.assert_id(task_id)?;
         crate::core::tasks::valid_identity(subtask_ref)?;
         let title = title.trim();
@@ -254,7 +272,10 @@ impl TasksStore {
             params![task_id, subtask_ref, title, updated_at],
         )?;
         if inserted == 0 {
-            bail!("TASK_SUBTASK_DUPLICATE: duplicate subtask_ref: {}", subtask_ref);
+            bail!(
+                "TASK_SUBTASK_DUPLICATE: duplicate subtask_ref: {}",
+                subtask_ref
+            );
         }
         let mut stmt = tx.prepare(
             "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
@@ -281,7 +302,13 @@ impl TasksStore {
         Ok(result)
     }
     /// Update a subtask's status and evidence.
-    pub fn subtask_update(&mut self, task_id: &str, subtask_ref: &str, status: &str, evidence: Option<&str>) -> Result<SubtaskSpec> {
+    pub fn subtask_update(
+        &mut self,
+        task_id: &str,
+        subtask_ref: &str,
+        status: &str,
+        evidence: Option<&str>,
+    ) -> Result<SubtaskSpec> {
         self.assert_id(task_id)?;
         if !matches!(status, "pending" | "in_progress" | "completed") {
             bail!("TASK_SUBTASK_STATUS_INVALID: invalid subtask status; must be pending, in_progress, or completed");
@@ -576,16 +603,27 @@ impl TasksStore {
             params![milestone_prefix, self.namespace], |row| row.get(0))?)
     }
     /// Moves a completed milestone's task references after verifying its exact task set.
-    pub fn relocate_milestone(&mut self, milestone_prefix: &str, old_ref: &str, new_ref: &str, expected_ids: &[String]) -> Result<()> {
-        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    pub fn relocate_milestone(
+        &mut self,
+        milestone_prefix: &str,
+        old_ref: &str,
+        new_ref: &str,
+        expected_ids: &[String],
+    ) -> Result<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut stmt = tx.prepare("SELECT descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 AND substr(task_id,1,length(?2))=?2")?;
-        let tasks: Vec<String> = stmt.query_map(params![milestone_prefix, self.namespace], |row| row.get(0))?
+        let tasks: Vec<String> = stmt
+            .query_map(params![milestone_prefix, self.namespace], |row| row.get(0))?
             .collect::<std::result::Result<_, _>>()?;
         drop(stmt);
         let mut found_ids = Vec::new();
         for descriptor in tasks {
             let mut task: Task = serde_json::from_str(&descriptor)?;
-            if task.milestone_ref != old_ref || task.status != "completed" { bail!("milestone task state changed during handoff"); }
+            if task.milestone_ref != old_ref || task.status != "completed" {
+                bail!("milestone task state changed during handoff");
+            }
             found_ids.push(task.task_id.clone());
             task.milestone_ref = new_ref.into();
             save(&tx, &task)?;
@@ -593,19 +631,27 @@ impl TasksStore {
         found_ids.sort();
         let mut expected = expected_ids.to_vec();
         expected.sort();
-        if found_ids != expected { bail!("milestone task set changed during handoff"); }
+        if found_ids != expected {
+            bail!("milestone task set changed during handoff");
+        }
         tx.commit()?;
         Ok(())
     }
     /// Releases only the claim revision whose document activation failed.
     pub fn release_failed_claim(&mut self, id: &str, revision: u64) -> Result<()> {
         self.assert_id(id)?;
-        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
         if task.status != "in_progress" || task.claim_revision != revision {
             bail!("TASK_STALE_CLAIM");
         }
-        if tx.execute("DELETE FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0", params![id, revision])? != 1 {
+        if tx.execute(
+            "DELETE FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0",
+            params![id, revision],
+        )? != 1
+        {
             bail!("TASK_STALE_CLAIM");
         }
         task.claim_revision = next_revision(&tx, id)?;
