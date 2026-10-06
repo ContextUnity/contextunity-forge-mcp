@@ -252,7 +252,7 @@ subtasks:
   status: completed
   evidence: 'Public persisted seam and Python suite pass (26/26): async result types live in ValueExpr::Await(Call). `typed_receiver_resolution` passes 75/75, `python_semantics` passes 26/26.'
 receipt:
-  commit: 21214f830c8e7b2deae0ec18dfabe5e17f88bbb5
+  commit: 17d82e0d7b5be298c531ab0a0b1d72c6c3bd262d
   contract_revision: 4
   passed_at: 2026-10-05T18:56:44.280889623+00:00
   evidence:
@@ -415,7 +415,7 @@ subtasks:
   status: completed
   evidence: cargo test --test typescript_semantics javascript_and_typescript_chained_call_return_value_flow passes; all 61 tests pass; Merkle 12/12, clippy 0 warnings
 receipt:
-  commit: 21214f830c8e7b2deae0ec18dfabe5e17f88bbb5
+  commit: 1502f93e4fd4dc8f34dcdf0f138a1718f214c655
   contract_revision: 5
   passed_at: 2026-10-05T19:24:55.967959883+00:00
   evidence:
@@ -599,7 +599,7 @@ subtasks:
   status: completed
   evidence: 'RED confirmed before fix for the DOM declaration + `.map` + listener combination. TypeScript full/partial scopes no longer index declarations twice; `cargo test --test typescript_semantics` passes 69/69 and `cargo test --test commitment_integrity` passes 12/12.'
 receipt:
-  commit: 21214f830c8e7b2deae0ec18dfabe5e17f88bbb5
+  commit: 5589a9afbb018c4a606db61b5d847e62e1f31e92
   contract_revision: 3
   passed_at: 2026-10-05T20:24:37.098011441+00:00
   evidence:
@@ -716,7 +716,7 @@ subtasks:
   status: completed
   evidence: test-only red exit 101 (encodeURIComponent resolved without provenance); targeted green cargo test --test html_profile embedded_javascript_uses_its_owner_profile_inside_html (1 passed). Public extraction proves JS island owner.language; persisted coverage proves JS/Web external origin and template boundary, exact returned-object field edge; git diff --check clean.
 receipt:
-  commit: b308121633a4edde95f3c98ad7f1ef01ec52bbb0
+  commit: d31d86253134fe3755bfa0de7d14ac4f288c9adf
   contract_revision: 2
   passed_at: 2026-10-04T12:20:31.700052545+00:00
   evidence:
@@ -886,7 +886,7 @@ subtasks:
   status: completed
   evidence: cargo test --test html_profile rendered_template_context_keys_follow_exact_targets_and_includes and render_context_requires_a_unique_unshadowed_import_provider pass; view render calls passing literal context dictionaries link to template variable references.
 receipt:
-  commit: 21214f830c8e7b2deae0ec18dfabe5e17f88bbb5
+  commit: 5070dcd5c6e8cb74854b3f0c5c3cb77e1ca31329
   contract_revision: 6
   passed_at: 2026-10-05T20:34:06.894433195+00:00
   evidence:
@@ -1014,7 +1014,7 @@ subtasks:
   status: completed
   evidence: Proven via tests/language_boundaries.rs::vue_transitive_nested_defineprops_interfaces. Multi-level nested interface declarations across imported TS modules resolve props.member.submember accesses in template expressions, including optional chains (?.), named props interfaces, and fail-closed missing member guards.
 receipt:
-  commit: 21214f830c8e7b2deae0ec18dfabe5e17f88bbb5
+  commit: e11187b4c6b494101a1eb7137efd2056a443ec04
   contract_revision: 2
   passed_at: 2026-10-05T20:33:58.371159072+00:00
   evidence:
@@ -1129,7 +1129,7 @@ subtasks:
   status: completed
   evidence: Proven via tests/receivers/rust_value_flow.rs::rust_smart_pointer_deref_dispatch_persists_exact_providers_and_boundaries. Deref stripping of &T, &mut T, Box<T>, Arc<T>, and Rc<T> dispatches to nominal T receiver methods, while Option<T> and unimported types fail closed.
 receipt:
-  commit: 21214f830c8e7b2deae0ec18dfabe5e17f88bbb5
+  commit: fceaedf32bc6be41329c36377e7f02e608d03d4b
   contract_revision: 5
   passed_at: 2026-10-05T20:33:50.604417625+00:00
   evidence:
