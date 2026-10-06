@@ -216,6 +216,14 @@ impl<'a> Contracts<'a> {
         }
         match value {
             ValueExpr::Unknown => json!({"kind": "unknown"}),
+            ValueExpr::Await { value } => json!({"await": self.value_contract(
+                owner,
+                flow,
+                value,
+                at,
+                stack,
+                depth + 1,
+            )}),
             ValueExpr::Annotated { type_expr } => {
                 self.type_contract(owner, type_expr, stack, depth + 1)
             }

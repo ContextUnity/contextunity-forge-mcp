@@ -9,6 +9,26 @@ use std::{borrow::Cow, cell::RefCell, collections::BTreeMap, sync::Arc};
 
 type Definitions<'a> = HashMap<(&'a str, SourcePosition), Vec<&'a Node>>;
 type NamedNodes<'a> = HashMap<(&'a str, &'a str), Vec<&'a Node>>;
+type CollectionElements<'a> =
+    HashMap<&'a str, HashMap<String, Vec<(SourcePosition, TypeTarget<'a>)>>>;
+
+fn normalize_dotted_expression(expression: &str) -> Cow<'_, str> {
+    let expression = expression.trim();
+    if !expression.contains('.') {
+        return Cow::Borrowed(expression);
+    }
+    if expression.split('.').all(|part| part.trim() == part) {
+        return Cow::Borrowed(expression);
+    }
+    let mut normalized = String::with_capacity(expression.len());
+    for (index, part) in expression.split('.').enumerate() {
+        if index > 0 {
+            normalized.push('.');
+        }
+        normalized.push_str(part.trim());
+    }
+    Cow::Owned(normalized)
+}
 
 struct ComputedKey<'a> {
     source: &'a str,
@@ -38,6 +58,13 @@ pub enum TypeTarget<'a> {
         module: String,
         /// Source line of the import declaration.
         import_line: usize,
+    },
+    /// Keep the Rust wrapper identity and bounded pointee result for member lookup.
+    RustDeref {
+        /// Name of the verified standard wrapper type.
+        wrapper: &'static str,
+        /// Type of the value reached through Rust's Deref contract.
+        target: Box<TypeTarget<'a>>,
     },
     /// Represents the builtin case.
     Builtin(String),
@@ -127,6 +154,15 @@ pub trait SemanticResolver<'a> {
     ) -> TypeTarget<'a> {
         TypeTarget::Unknown
     }
+    /// Resolves imported module.
+    fn resolve_import_module(
+        &self,
+        _scope: &'a Node,
+        _name: &str,
+        _at: SourcePosition,
+    ) -> Option<&'a Node> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -153,11 +189,15 @@ impl Default for SemanticLimits {
 struct Binding<'a> {
     position: SourcePosition,
     target: TypeTarget<'a>,
+    valid_until: Option<SourcePosition>,
+    restores_previous: bool,
+    immutable_initializer: bool,
 }
 
 struct Scope<'a> {
     parents: Vec<&'a str>,
     bindings: HashMap<String, Vec<Binding<'a>>>,
+    declared_at: SourcePosition,
     invalid: bool,
     module: bool,
 }
@@ -166,9 +206,14 @@ struct Scope<'a> {
 pub struct ValueFlowIndex<'a> {
     scopes: HashMap<&'a str, Scope<'a>>,
     returns: HashMap<&'a str, TypeTarget<'a>>,
+    async_returns: HashMap<&'a str, TypeTarget<'a>>,
+    return_collection_elements: HashMap<&'a str, TypeTarget<'a>>,
+    async_return_collection_elements: HashMap<&'a str, TypeTarget<'a>>,
     fields: HashMap<&'a str, HashMap<String, TypeTarget<'a>>>,
+    vue_slots: HashMap<&'a str, HashMap<(String, String), TypeTarget<'a>>>,
     local_types: HashMap<&'a str, TypeTarget<'a>>,
     computed: HashMap<(&'a str, SourcePosition), TypeTarget<'a>>,
+    collection_elements: CollectionElements<'a>,
     unknown: TypeTarget<'a>,
     ambiguous: TypeTarget<'a>,
     limits: SemanticLimits,
@@ -251,11 +296,8 @@ fn initialize_scope<'a>(
     let encoded = &node.details["value_flow"];
     let typed = resolver.value_flow(node);
     let oversized = typed.is_some_and(|facts| {
-        facts.bindings.len().saturating_add(facts.fields.len()) > limits.facts_per_scope
-    }) || encoded["bindings"]
-        .as_array()
-        .map_or(0, Vec::len)
-        .saturating_add(encoded["fields"].as_array().map_or(0, Vec::len))
+        crate::core::typed_facts::scope_fact_count(facts) > limits.facts_per_scope
+    }) || crate::core::typed_facts::encoded_scope_fact_count(encoded)
         > limits.facts_per_scope;
     let decoded = if oversized {
         Ok(Cow::Owned(ValueFlowFacts::default()))
@@ -311,6 +353,9 @@ fn initialize_scope<'a>(
                         vec![Binding {
                             position: node_position(node),
                             target: TypeTarget::Unknown,
+                            valid_until: None,
+                            restores_previous: false,
+                            immutable_initializer: false,
                         }],
                     );
                 }
@@ -327,18 +372,19 @@ fn initialize_scope<'a>(
                     .as_str()
                     .filter(|name| !name.is_empty() && name.len() <= limits.name_bytes)
                     .map_or(TypeTarget::Unknown, |name| {
-                        resolve_type(
-                            node,
-                            &TypeExpr::Named {
-                                name: name.to_owned(),
-                            },
-                            position,
-                            resolver,
-                            limits,
-                        )
+                        resolve_type(node, &stored_type_expr(name), position, resolver, limits)
                     })
             };
-            bindings.insert(name.clone(), vec![Binding { position, target }]);
+            bindings.insert(
+                name.clone(),
+                vec![Binding {
+                    position,
+                    target,
+                    valid_until: None,
+                    restores_previous: false,
+                    immutable_initializer: false,
+                }],
+            );
         }
     }
     let returned = if invalid {
@@ -357,6 +403,7 @@ fn initialize_scope<'a>(
         Scope {
             parents,
             bindings,
+            declared_at: node_position(node),
             invalid,
             module: node.kind == "module",
         },
@@ -365,6 +412,22 @@ fn initialize_scope<'a>(
 }
 
 impl<'a> ValueFlowIndex<'a> {
+    /// Reports a concrete lexical assignment, including one in a parent scope.
+    pub fn has_local_write(&self, owner: &Node, name: &str) -> bool {
+        let Some(scope) = self.scopes.get(owner.id.as_str()) else {
+            return false;
+        };
+        std::iter::once(owner.id.as_str())
+            .chain(scope.parents.iter().copied())
+            .filter_map(|id| self.scopes.get(id))
+            .any(|candidate| {
+                candidate.bindings.get(name).is_some_and(|writes| {
+                    writes
+                        .last()
+                        .is_some_and(|binding| binding.position > candidate.declared_at)
+                })
+            })
+    }
     /// Performs build.
     pub fn build(all: &'a BTreeMap<String, Facts>, resolver: &impl SemanticResolver<'a>) -> Self {
         Self::build_with_limits(all, resolver, SemanticLimits::default())
@@ -425,15 +488,76 @@ impl<'a> ValueFlowIndex<'a> {
         let mut index = Self {
             scopes: HashMap::with_capacity(nodes.len()),
             returns: HashMap::with_capacity(nodes.len()),
+            async_returns: HashMap::new(),
+            return_collection_elements: HashMap::new(),
+            async_return_collection_elements: HashMap::new(),
             fields: HashMap::new(),
+            vue_slots: HashMap::new(),
             local_types: HashMap::with_capacity(nodes.len()),
             computed: HashMap::new(),
+            collection_elements: HashMap::new(),
             unknown: TypeTarget::Unknown,
             ambiguous: TypeTarget::Ambiguous,
             limits,
         };
         let initialized = initialize(&nodes, &by_name);
         for (node, facts, scope, returned) in initialized {
+            if node.language == "python" && !scope.invalid {
+                for fact in &facts.collection_elements {
+                    let element =
+                        resolve_type(node, &fact.element_type, fact.position, resolver, limits);
+                    if matches!(element, TypeTarget::Unknown | TypeTarget::Ambiguous) {
+                        continue;
+                    }
+                    index
+                        .collection_elements
+                        .entry(node.id.as_str())
+                        .or_default()
+                        .entry(fact.name.clone())
+                        .or_default()
+                        .push((fact.position, element));
+                }
+                if matches!(node.kind.as_str(), "function" | "method") {
+                    if let Some(async_type) = facts.async_return_type.as_ref() {
+                        let returned =
+                            resolve_type(node, async_type, node_position(node), resolver, limits);
+                        if !matches!(returned, TypeTarget::Unknown | TypeTarget::Ambiguous) {
+                            index.async_returns.insert(node.id.as_str(), returned);
+                        }
+                        if let TypeExpr::Applied { base, args } = async_type {
+                            if matches!(base.as_str(), "list" | "List" | "Sequence" | "Iterable")
+                                && args.len() == 1
+                            {
+                                let element = resolve_type(
+                                    node,
+                                    &args[0],
+                                    node_position(node),
+                                    resolver,
+                                    limits,
+                                );
+                                if !matches!(element, TypeTarget::Unknown | TypeTarget::Ambiguous) {
+                                    index
+                                        .async_return_collection_elements
+                                        .insert(node.id.as_str(), element);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(TypeExpr::Applied { base, args }) = facts.return_type.as_ref() {
+                        if matches!(base.as_str(), "list" | "List" | "Sequence" | "Iterable")
+                            && args.len() == 1
+                        {
+                            let element =
+                                resolve_type(node, &args[0], node_position(node), resolver, limits);
+                            if !matches!(element, TypeTarget::Unknown | TypeTarget::Ambiguous) {
+                                index
+                                    .return_collection_elements
+                                    .insert(node.id.as_str(), element);
+                            }
+                        }
+                    }
+                }
+            }
             index.returns.insert(node.id.as_str(), returned);
             index
                 .local_types
@@ -461,11 +585,50 @@ impl<'a> ValueFlowIndex<'a> {
                 });
         let mut ordered = HashMap::with_capacity(owners.len());
         for owner in &owners {
+            if owner.language != "vue" || owner.kind != "module" {
+                continue;
+            }
+            for slot in &raw[owner.id.as_str()].vue_slots {
+                let target = if index.scopes[owner.id.as_str()].invalid {
+                    TypeTarget::Unknown
+                } else {
+                    index.evaluate(
+                        owner,
+                        &ValueExpr::Annotated {
+                            type_expr: slot.type_expr.clone(),
+                        },
+                        slot.position,
+                        resolver,
+                        Some(&definitions),
+                    )
+                };
+                use hashbrown::hash_map::Entry;
+                match index
+                    .vue_slots
+                    .entry(owner.id.as_str())
+                    .or_default()
+                    .entry((slot.slot.clone(), slot.binding.clone()))
+                {
+                    Entry::Vacant(entry) => {
+                        entry.insert(target);
+                    }
+                    Entry::Occupied(mut entry) => {
+                        entry.insert(TypeTarget::Ambiguous);
+                    }
+                }
+            }
+        }
+        for owner in &owners {
             let mut bindings: Vec<_> = raw[owner.id.as_str()].bindings.iter().collect();
             bindings.sort_by_key(|binding| binding.position);
             let mut events = Vec::with_capacity(bindings.len());
             for binding in bindings {
-                let target = if binding.conditional || index.scopes[owner.id.as_str()].invalid {
+                let loop_element = matches!(&binding.value, ValueExpr::LoopElement { .. });
+                let guarded_python = owner.language == "python"
+                    && matches!(&binding.value, ValueExpr::Scoped { .. });
+                let target = if (binding.conditional && !loop_element && !guarded_python)
+                    || index.scopes[owner.id.as_str()].invalid
+                {
                     TypeTarget::Unknown
                 } else {
                     index.evaluate(
@@ -476,6 +639,59 @@ impl<'a> ValueFlowIndex<'a> {
                         Some(&definitions),
                     )
                 };
+                if owner.language == "python"
+                    && matches!(
+                        &target,
+                        TypeTarget::Builtin(name)
+                            if matches!(name.as_str(), "list" | "List" | "Sequence" | "Iterable")
+                    )
+                {
+                    let call = match &binding.value {
+                        ValueExpr::Call { callee } => Some((callee.as_str(), false)),
+                        ValueExpr::Await { value } => match value.as_ref() {
+                            ValueExpr::Call { callee } => Some((callee.as_str(), true)),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some((callee, awaited)) = call {
+                        let callable = index.callable_expression_tracked(
+                            owner,
+                            callee,
+                            binding.position,
+                            resolver,
+                            None,
+                        );
+                        let return_elements = if awaited {
+                            &index.async_return_collection_elements
+                        } else {
+                            &index.return_collection_elements
+                        };
+                        if let Some(element) = callable
+                            .and_then(|callable| return_elements.get(callable.id.as_str()))
+                            .filter(|_| {
+                                !index
+                                    .collection_elements
+                                    .get(owner.id.as_str())
+                                    .and_then(|names| names.get(&binding.name))
+                                    .is_some_and(|elements| {
+                                        elements
+                                            .iter()
+                                            .any(|(position, _)| *position == binding.position)
+                                    })
+                            })
+                            .cloned()
+                        {
+                            index
+                                .collection_elements
+                                .entry(owner.id.as_str())
+                                .or_default()
+                                .entry(binding.name.clone())
+                                .or_default()
+                                .push((binding.position, element));
+                        }
+                    }
+                }
                 let writes = index
                     .scopes
                     .get_mut(owner.id.as_str())
@@ -487,6 +703,17 @@ impl<'a> ValueFlowIndex<'a> {
                 writes.push(Binding {
                     position: binding.position,
                     target,
+                    valid_until: match &binding.value {
+                        ValueExpr::LoopElement { body_end, .. } => Some(*body_end),
+                        ValueExpr::Scoped { body_end, .. } => Some(*body_end),
+                        _ => None,
+                    },
+                    restores_previous: owner.language != "python"
+                        && matches!(&binding.value, ValueExpr::Scoped { .. }),
+                    immutable_initializer: raw[owner.id.as_str()]
+                        .immutable_initializers
+                        .binary_search(&binding.position)
+                        .is_ok(),
                 });
             }
             ordered.insert(owner.id.as_str(), events);
@@ -524,7 +751,11 @@ impl<'a> ValueFlowIndex<'a> {
         // Replay in source order so aliases of field-derived values see the summaries.
         for owner in &owners {
             for (binding, event_index) in &ordered[owner.id.as_str()] {
-                if !binding.conditional && !index.scopes[owner.id.as_str()].invalid {
+                let guarded_python = owner.language == "python"
+                    && matches!(&binding.value, ValueExpr::Scoped { .. });
+                if (!binding.conditional || guarded_python)
+                    && !index.scopes[owner.id.as_str()].invalid
+                {
                     let writes = &index.scopes[owner.id.as_str()].bindings[&binding.name];
                     if duplicate_position(writes, *event_index) {
                         index
@@ -575,7 +806,12 @@ impl<'a> ValueFlowIndex<'a> {
             .flat_map(|owner| {
                 ordered[owner.id.as_str()]
                     .iter()
-                    .filter(|(binding, _)| !binding.conditional && flow_dependent(&binding.value))
+                    .filter(|(binding, _)| {
+                        (!binding.conditional
+                            || (owner.language == "python"
+                                && matches!(&binding.value, ValueExpr::Scoped { .. })))
+                            && flow_dependent(&binding.value)
+                    })
                     .map(move |(binding, event_index)| (*owner, *binding, *event_index))
             })
             .collect();
@@ -727,6 +963,18 @@ impl<'a> ValueFlowIndex<'a> {
                         || callee.matches('.').count() > limits.alias_depth
                     {
                         TypeTarget::Unknown
+                    } else if let Some(inner) = callee
+                        .strip_suffix("()")
+                        .filter(|_| owner.language == "python")
+                    {
+                        index
+                            .type_of_expression(owner, inner, at, resolver)
+                            .and_then(|target| match target {
+                                TypeTarget::Callable(callable) => index.return_type(callable),
+                                _ => None,
+                            })
+                            .cloned()
+                            .unwrap_or(TypeTarget::Unknown)
                     } else {
                         index.evaluate(
                             owner,
@@ -780,7 +1028,10 @@ impl<'a> ValueFlowIndex<'a> {
             if let Some(writes) = parent.bindings.get(name) {
                 let setup_complete =
                     owner.kind == "template_scope" && owner.language == "vue" && parent.module;
-                if writes.len() > 1 && !setup_complete {
+                let immutable_capture =
+                    matches!(owner.language.as_str(), "javascript" | "typescript")
+                        && stable_immutable_capture(writes);
+                if writes.len() > 1 && !setup_complete && !immutable_capture {
                     return Some(&self.unknown);
                 }
                 if let Some(trace) = trace {
@@ -798,6 +1049,55 @@ impl<'a> ValueFlowIndex<'a> {
             }
         }
         None
+    }
+
+    fn collection_element(
+        &self,
+        owner: &Node,
+        iterable: &str,
+        at: SourcePosition,
+    ) -> TypeTarget<'a> {
+        let Some(scope) = self.scopes.get(owner.id.as_str()) else {
+            return TypeTarget::Unknown;
+        };
+        for (depth, id) in std::iter::once(&owner.id.as_str())
+            .chain(scope.parents.iter())
+            .enumerate()
+        {
+            let Some(candidate_scope) = self.scopes.get(*id) else {
+                return TypeTarget::Unknown;
+            };
+            if candidate_scope.invalid {
+                return TypeTarget::Unknown;
+            }
+            let Some(writes) = candidate_scope.bindings.get(iterable) else {
+                continue;
+            };
+            if depth > 0 && writes.len() > 1 {
+                return TypeTarget::Unknown;
+            }
+            let Some(last) = writes.iter().rev().find(|write| write.position < at) else {
+                return TypeTarget::Unknown;
+            };
+            if !matches!(&last.target, TypeTarget::Builtin(name) if matches!(name.as_str(), "list" | "List" | "Sequence" | "Iterable"))
+            {
+                return TypeTarget::Unknown;
+            }
+            if let Some(element) = self
+                .collection_elements
+                .get(*id)
+                .and_then(|names| names.get(iterable))
+                .and_then(|elements| {
+                    elements
+                        .iter()
+                        .rfind(|(position, _)| *position == last.position)
+                })
+                .map(|(_, element)| element.clone())
+            {
+                return element;
+            }
+        }
+        TypeTarget::Unknown
     }
 
     /// Performs return type.
@@ -834,6 +1134,18 @@ impl<'a> ValueFlowIndex<'a> {
     /// Performs field type.
     pub fn field_type(&self, class: &Node, name: &str) -> Option<&TypeTarget<'a>> {
         self.field_type_tracked(class, name, None)
+    }
+
+    /// Returns a slot prop type declared in the exact Vue provider module.
+    pub fn vue_slot_type(
+        &self,
+        module: &Node,
+        slot: &str,
+        binding: &str,
+    ) -> Option<&TypeTarget<'a>> {
+        self.vue_slots
+            .get(module.id.as_str())
+            .and_then(|slots| slots.get(&(slot.to_owned(), binding.to_owned())))
     }
 
     fn field_type_tracked(
@@ -888,6 +1200,8 @@ impl<'a> ValueFlowIndex<'a> {
         resolver: &impl SemanticResolver<'a>,
         trace: Option<&ReadTrace<'a, '_>>,
     ) -> Option<&TypeTarget<'a>> {
+        let expression = normalize_dotted_expression(expression);
+        let expression = expression.as_ref();
         if expression.len() > self.limits.name_bytes
             || expression.matches('.').count() > self.limits.alias_depth
         {
@@ -929,6 +1243,51 @@ impl<'a> ValueFlowIndex<'a> {
             resolver.resolve_symbol(owner, expression, at, SymbolRole::Callable),
             trace,
         )
+    }
+
+    fn callable_expression_tracked(
+        &self,
+        owner: &'a Node,
+        expression: &str,
+        at: SourcePosition,
+        resolver: &impl SemanticResolver<'a>,
+        trace: Option<&ReadTrace<'a, '_>>,
+    ) -> Option<&'a Node> {
+        let expression = normalize_dotted_expression(expression);
+        let expression = expression.as_ref();
+        if expression.len() > self.limits.name_bytes
+            || expression.matches('.').count() > self.limits.alias_depth
+        {
+            return None;
+        }
+        if let Some(TypeTarget::Callable(callable)) =
+            self.lookup_tracked(owner, expression, at, trace)
+        {
+            return Some(*callable);
+        }
+        if let Some((receiver, member)) = expression.rsplit_once('.') {
+            if self.lookup_tracked(owner, receiver, at, trace).is_none()
+                && matches!(resolver.resolve_symbol(owner, receiver, at, SymbolRole::Type), Symbol::Type(TypeTarget::Local(node)) if matches!(node.kind.as_str(), "class" | "struct" | "interface" | "enum"))
+            {
+                return match resolver.resolve_symbol(owner, expression, at, SymbolRole::Callable) {
+                    Symbol::Callable(callable) => Some(callable),
+                    _ => None,
+                };
+            }
+            if let Some(target) = self.value_expression(owner, receiver, at, resolver, trace) {
+                if let Some(method) = Self::object_member(target, member) {
+                    return Some(method);
+                }
+                return match resolver.resolve_member(target, member, owner, at) {
+                    Symbol::Callable(callable) => Some(callable),
+                    _ => None,
+                };
+            }
+        }
+        match resolver.resolve_symbol(owner, expression, at, SymbolRole::Callable) {
+            Symbol::Callable(callable) => Some(callable),
+            _ => None,
+        }
     }
 
     /// Performs value type.
@@ -1027,6 +1386,11 @@ impl<'a> ValueFlowIndex<'a> {
                         return TypeTarget::Builtin(builtin.to_owned());
                     }
                 }
+                if matches!(owner.language.as_str(), "javascript" | "typescript" | "vue")
+                    && callee == "[]"
+                {
+                    return TypeTarget::Builtin("Array".to_owned());
+                }
                 symbol_type(resolver.resolve_symbol(owner, callee, at, SymbolRole::Constructor))
             }
             ValueExpr::Alias { name } => self
@@ -1038,6 +1402,22 @@ impl<'a> ValueFlowIndex<'a> {
                         _ => TypeTarget::Unknown,
                     }
                 }),
+            ValueExpr::LoopElement { iterable, .. } => self.collection_element(owner, iterable, at),
+            ValueExpr::Await { value } => {
+                let ValueExpr::Call { callee } = value.as_ref() else {
+                    return TypeTarget::Unknown;
+                };
+                let callable = self.callable_expression_tracked(owner, callee, at, resolver, trace);
+                callable.map_or(TypeTarget::Unknown, |callable| {
+                    self.async_returns
+                        .get(callable.id.as_str())
+                        .cloned()
+                        .unwrap_or(TypeTarget::Unknown)
+                })
+            }
+            ValueExpr::Scoped { value, .. } => {
+                self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
+            }
             ValueExpr::Call { callee } => {
                 if owner.language == "python" {
                     let constructor =
@@ -1050,23 +1430,44 @@ impl<'a> ValueFlowIndex<'a> {
                     if let Some(target) = resolver.resolve_external_factory(owner, callee, at) {
                         return target;
                     }
+                } else if matches!(owner.language.as_str(), "javascript" | "typescript" | "vue") {
+                    if let Some(target) = self.evaluate_js_call(owner, callee, at, resolver, trace)
+                    {
+                        return target;
+                    }
                 } else if owner.language == "rust" {
+                    let returned = self
+                        .type_of_expression_tracked(owner, callee, at, resolver, trace)
+                        .cloned()
+                        .unwrap_or(TypeTarget::Unknown);
+                    if !matches!(returned, TypeTarget::Unknown) {
+                        return returned;
+                    }
                     let callee_clean = callee.replace("::", ".");
                     if let Some((receiver, member)) = callee_clean.rsplit_once('.') {
                         if matches!(
                             member,
-                            "new" | "default" | "open" | "create" | "build" | "from_str" | "parse"
+                            "new"
+                                | "from"
+                                | "with_capacity"
+                                | "default"
+                                | "open"
+                                | "create"
+                                | "build"
+                                | "from_str"
+                                | "parse"
                         ) {
                             let type_sym =
                                 resolver.resolve_symbol(owner, receiver, at, SymbolRole::Type);
                             if let Symbol::Type(
-                                target @ (TypeTarget::Local(_) | TypeTarget::External { .. }),
+                                target @ (TypeTarget::External { .. } | TypeTarget::Builtin(_)),
                             ) = type_sym
                             {
                                 return target;
                             }
                         }
                     }
+                    return TypeTarget::Unknown;
                 }
                 self.type_of_expression_tracked(owner, callee, at, resolver, trace)
                     .cloned()
@@ -1095,12 +1496,63 @@ impl<'a> ValueFlowIndex<'a> {
                         return target.clone();
                     }
                 }
+                if let TypeTarget::Builtin(name) = &receiver_type {
+                    if matches!(owner.language.as_str(), "javascript" | "typescript") {
+                        if let Some(prop_type) =
+                            crate::engine::languages::typescript::typed_dom_property(name, member)
+                        {
+                            return TypeTarget::Builtin(prop_type.to_owned());
+                        }
+                    }
+                }
                 match resolver.resolve_member(&receiver_type, member, owner, at) {
                     Symbol::Callable(node) => TypeTarget::Callable(node),
                     _ => TypeTarget::Unknown,
                 }
             }
-            ValueExpr::Object { members } => {
+            ValueExpr::Project { value, member } => {
+                let source = self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
+                match source {
+                    TypeTarget::Object(ref members) => {
+                        members.get(member).map_or(TypeTarget::Unknown, |node| {
+                            if matches!(node.kind.as_str(), "function" | "method") {
+                                TypeTarget::Callable(node)
+                            } else {
+                                TypeTarget::Unknown
+                            }
+                        })
+                    }
+                    TypeTarget::Local(class) => self
+                        .field_type_tracked(class, member, trace)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            match resolver.resolve_member(
+                                &TypeTarget::Local(class),
+                                member,
+                                owner,
+                                at,
+                            ) {
+                                Symbol::Callable(node) => TypeTarget::Callable(node),
+                                Symbol::Ambiguous => TypeTarget::Ambiguous,
+                                _ => TypeTarget::Unknown,
+                            }
+                        }),
+                    TypeTarget::Ambiguous => TypeTarget::Ambiguous,
+                    _ => TypeTarget::Unknown,
+                }
+            }
+            ValueExpr::Object {
+                members,
+                builtin_guard,
+            } => {
+                if *builtin_guard
+                    && !matches!(
+                        resolver.resolve_symbol(owner, "Object", at, SymbolRole::Type),
+                        Symbol::Type(TypeTarget::Builtin(name)) if name == "Object"
+                    )
+                {
+                    return TypeTarget::Unknown;
+                }
                 let Some(definitions) = definitions else {
                     return TypeTarget::Unknown;
                 };
@@ -1112,7 +1564,7 @@ impl<'a> ValueFlowIndex<'a> {
                     else {
                         return TypeTarget::Unknown;
                     };
-                    if !matches!(node.kind.as_str(), "function" | "method")
+                    if !matches!(node.kind.as_str(), "function" | "method" | "field")
                         || resolved.contains_key(&member.name)
                     {
                         return TypeTarget::Unknown;
@@ -1124,6 +1576,117 @@ impl<'a> ValueFlowIndex<'a> {
             ValueExpr::Unknown => TypeTarget::Unknown,
         }
     }
+
+    fn evaluate_js_call(
+        &self,
+        owner: &'a Node,
+        callee: &str,
+        at: SourcePosition,
+        resolver: &dyn SemanticResolver<'a>,
+        trace: Option<&ReadTrace<'a, '_>>,
+    ) -> Option<TypeTarget<'a>> {
+        let callee = callee.trim();
+        if callee.ends_with(')') {
+            if let Some(base) = strip_call_arguments(callee) {
+                return self.evaluate_js_call(owner, base, at, resolver, trace);
+            }
+        }
+        if callee == "defineProps" && owner.language == "vue" && owner.kind == "module" {
+            return Some(TypeTarget::Local(owner));
+        }
+        if let Some(target) = resolver.resolve_external_factory(owner, callee, at) {
+            return Some(target);
+        }
+        if let Some((receiver_expr, member)) = callee.rsplit_once('.') {
+            let receiver_type = if receiver_expr.ends_with(')') {
+                self.evaluate_js_call(owner, receiver_expr, at, resolver, trace)
+            } else {
+                let (base_receiver, fields) =
+                    receiver_expr.split_once('.').unwrap_or((receiver_expr, ""));
+                let mut target = self
+                    .lookup_tracked(owner, base_receiver, at, trace)
+                    .cloned();
+                if !fields.is_empty() {
+                    for field in fields.split('.').filter(|f| !f.is_empty()) {
+                        let next = match target.as_ref() {
+                            Some(TypeTarget::Local(class)) => {
+                                self.field_type_tracked(class, field, trace).cloned()
+                            }
+                            Some(TypeTarget::Builtin(name)) => {
+                                crate::engine::languages::typescript::typed_dom_property(
+                                    name, field,
+                                )
+                                .map(|n| TypeTarget::Builtin(n.to_owned()))
+                            }
+                            _ => None,
+                        };
+                        target = next;
+                    }
+                }
+                target
+            };
+            let returned = match (receiver_type.as_ref(), member) {
+                (
+                    Some(TypeTarget::Builtin(name)),
+                    "filter" | "map" | "slice" | "concat" | "flat" | "flatMap" | "reverse" | "sort"
+                    | "splice",
+                ) if name == "Array" => Some("Array"),
+                (Some(TypeTarget::Builtin(name)), "then" | "catch" | "finally")
+                    if name == "Promise" =>
+                {
+                    Some("Promise")
+                }
+                (
+                    Some(TypeTarget::Builtin(name)),
+                    "querySelector" | "closest" | "appendChild" | "removeChild" | "cloneNode"
+                    | "insertBefore" | "replaceChild",
+                ) if matches!(name.as_str(), "Element" | "HTMLElement" | "Node")
+                    || crate::engine::languages::typescript::typed_dom_receiver(name)
+                        == Some("Element") =>
+                {
+                    Some("Element")
+                }
+                (Some(TypeTarget::Builtin(name)), "querySelector")
+                    if matches!(name.as_str(), "ParentNode" | "DocumentFragment") =>
+                {
+                    Some("Element")
+                }
+                (
+                    Some(TypeTarget::Builtin(name)),
+                    "createElement" | "getElementById" | "querySelector",
+                ) if name == "Document" => Some("Element"),
+                _ => None,
+            };
+            if let Some(returned) = returned {
+                return Some(TypeTarget::Builtin(returned.to_owned()));
+            }
+        }
+        None
+    }
+}
+
+fn strip_call_arguments(s: &str) -> Option<&str> {
+    if !s.ends_with(')') {
+        return None;
+    }
+    let mut depth = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    for (idx, c) in s.char_indices().rev() {
+        match c {
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            ')' if !in_single_quote && !in_double_quote => depth += 1,
+            '(' if !in_single_quote && !in_double_quote => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(s[..idx].trim());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn node_position(node: &Node) -> SourcePosition {
@@ -1135,7 +1698,30 @@ fn node_position(node: &Node) -> SourcePosition {
 
 fn reaching<'a, 'b>(writes: &'b [Binding<'a>], at: SourcePosition) -> Option<&'b TypeTarget<'a>> {
     let end = writes.partition_point(|binding| binding.position < at);
-    end.checked_sub(1).map(|index| &writes[index].target)
+    for binding in writes[..end].iter().rev().take(32) {
+        if binding.valid_until.is_none_or(|until| at < until) {
+            return Some(&binding.target);
+        }
+        if !binding.restores_previous {
+            return None;
+        }
+    }
+    None
+}
+
+fn stable_immutable_capture(writes: &[Binding<'_>]) -> bool {
+    let Some((initializer, sentinels)) = writes.split_last() else {
+        return false;
+    };
+    (2..=3).contains(&writes.len())
+        && initializer.immutable_initializer
+        && !matches!(
+            &initializer.target,
+            TypeTarget::Unknown | TypeTarget::Ambiguous
+        )
+        && sentinels.iter().all(|binding| {
+            !binding.immutable_initializer && matches!(&binding.target, TypeTarget::Unknown)
+        })
 }
 
 fn duplicate_position(writes: &[Binding<'_>], index: usize) -> bool {
@@ -1148,7 +1734,7 @@ fn duplicate_position(writes: &[Binding<'_>], index: usize) -> bool {
             .is_some_and(|next| next.position == position)
 }
 
-fn resolve_type<'a>(
+pub(super) fn resolve_type<'a>(
     scope: &'a Node,
     expression: &TypeExpr,
     at: SourcePosition,
@@ -1177,6 +1763,9 @@ fn resolve_type<'a>(
         let TypeTarget::Local(node) = &target else {
             return target;
         };
+        if node.language == "python" && node.kind == "class" && typed_dict_class(node, resolver) {
+            return TypeTarget::Builtin("Mapping".to_owned());
+        }
         let alias = if let Some(alias) = resolver
             .value_flow(node)
             .and_then(|facts| facts.alias_type.as_ref())
@@ -1207,6 +1796,63 @@ fn resolve_type<'a>(
     TypeTarget::Unknown
 }
 
+fn typed_dict_class<'a>(node: &'a Node, resolver: &impl SemanticResolver<'a>) -> bool {
+    let Some(bases) = node.details["bases"]
+        .as_str()
+        .and_then(|bases| bases.strip_prefix('('))
+        .and_then(|bases| bases.strip_suffix(')'))
+    else {
+        return false;
+    };
+    let (base, options) = bases
+        .split_once(',')
+        .map_or((bases, ""), |(base, options)| (base, options));
+    if !options.is_empty()
+        && !matches!(
+            options.trim().replace(' ', "").as_str(),
+            "total=False" | "total=True"
+        )
+    {
+        return false;
+    }
+    let base = base.trim();
+    if !matches!(
+        base,
+        "TypedDict" | "typing.TypedDict" | "typing_extensions.TypedDict"
+    ) {
+        return false;
+    }
+    matches!(
+        resolver.resolve_symbol(node, base, node_position(node), SymbolRole::Type),
+        Symbol::Type(TypeTarget::External { module, .. })
+            if matches!(module.as_str(), "typing" | "typing_extensions")
+    )
+}
+
+fn stored_type_expr(annotation: &str) -> TypeExpr {
+    let annotation = annotation.trim();
+    if let Some((base, rest)) = annotation.split_once('[') {
+        if let Some(argument) = rest.strip_suffix(']') {
+            let base = base.trim();
+            let argument = argument.trim();
+            if matches!(base, "list" | "List" | "Sequence" | "Iterable")
+                && !argument.is_empty()
+                && !argument.contains(['[', ',', ']'])
+            {
+                return TypeExpr::Applied {
+                    base: base.to_owned(),
+                    args: vec![TypeExpr::Named {
+                        name: argument.to_owned(),
+                    }],
+                };
+            }
+        }
+    }
+    TypeExpr::Named {
+        name: annotation.to_owned(),
+    }
+}
+
 fn symbol_type(symbol: Symbol<'_>) -> TypeTarget<'_> {
     match symbol {
         Symbol::Type(target) => target,
@@ -1221,6 +1867,9 @@ fn field_owner<'a>(
     resolver: &impl SemanticResolver<'a>,
 ) -> Option<&'a Node> {
     if matches!(owner.kind.as_str(), "class" | "struct" | "interface") {
+        return Some(owner);
+    }
+    if owner.kind == "module" && owner.language == "vue" {
         return Some(owner);
     }
     let mut parent = owner
@@ -1307,36 +1956,104 @@ fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
 }
 
 fn flow_dependent(value: &ValueExpr) -> bool {
+    if let ValueExpr::Scoped { value, .. } | ValueExpr::Await { value } = value {
+        return flow_dependent(value);
+    }
     matches!(
         value,
-        ValueExpr::Call { .. } | ValueExpr::Alias { .. } | ValueExpr::Field { .. }
+        ValueExpr::Call { .. }
+            | ValueExpr::Alias { .. }
+            | ValueExpr::Field { .. }
+            | ValueExpr::Project { .. }
+            | ValueExpr::LoopElement { .. }
     )
+}
+
+fn valid_immutable_initializers(facts: &ValueFlowFacts) -> bool {
+    if facts.immutable_initializers.is_empty() {
+        return true;
+    }
+    if facts
+        .immutable_initializers
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+    {
+        return false;
+    }
+    let mut next = 0;
+    for binding in &facts.bindings {
+        let Some(&position) = facts.immutable_initializers.get(next) else {
+            break;
+        };
+        if binding.position > position {
+            return false;
+        }
+        if binding.position == position {
+            if binding.conditional || matches!(&binding.value, ValueExpr::Unknown) {
+                return false;
+            }
+            next += 1;
+        }
+    }
+    next == facts.immutable_initializers.len()
 }
 
 fn valid_facts(facts: &ValueFlowFacts, limits: SemanticLimits) -> bool {
     let text = |name: &str| !name.is_empty() && name.len() <= limits.name_bytes;
-    let value = |value: &ValueExpr| match value {
-        ValueExpr::Alias { name } => text(name),
-        ValueExpr::Annotated { type_expr } => valid_type(type_expr, limits, 0),
-        ValueExpr::Unknown => true,
-        ValueExpr::Construct { callee } | ValueExpr::Call { callee } => text(callee),
-        ValueExpr::Field { receiver, member } => text(receiver) && text(member),
-        ValueExpr::Object { members } => {
-            members.len() <= limits.facts_per_scope
-                && members
-                    .iter()
-                    .all(|member| text(&member.name) && member.position.line > 0)
+    fn value(expr: &ValueExpr, limits: SemanticLimits, depth: usize) -> bool {
+        if depth >= 8 {
+            return false;
         }
-    };
-    facts.bindings.len().saturating_add(facts.fields.len()) <= limits.facts_per_scope
+        let text = |name: &str| !name.is_empty() && name.len() <= limits.name_bytes;
+        match expr {
+            ValueExpr::Alias { name } => text(name),
+            ValueExpr::Annotated { type_expr } => valid_type(type_expr, limits, 0),
+            ValueExpr::Unknown => true,
+            ValueExpr::Construct { callee } | ValueExpr::Call { callee } => text(callee),
+            ValueExpr::Await { value: inner } => value(inner, limits, depth + 1),
+            ValueExpr::LoopElement { iterable, body_end } => text(iterable) && body_end.line > 0,
+            ValueExpr::Scoped {
+                value: inner,
+                body_end,
+            } => body_end.line > 0 && value(inner, limits, depth + 1),
+            ValueExpr::Field { receiver, member } => text(receiver) && text(member),
+            ValueExpr::Project {
+                value: inner,
+                member,
+            } => text(member) && value(inner, limits, depth + 1),
+            ValueExpr::Object { members, .. } => {
+                members.len() <= limits.facts_per_scope
+                    && members
+                        .iter()
+                        .all(|member| text(&member.name) && member.position.line > 0)
+            }
+        }
+    }
+    valid_immutable_initializers(facts)
+        && facts
+            .bindings
+            .len()
+            .saturating_add(facts.fields.len())
+            .saturating_add(facts.collection_elements.len())
+            .saturating_add(facts.vue_slots.len())
+            <= limits.facts_per_scope
+        && facts.collection_elements.iter().all(|fact| {
+            text(&fact.name) && fact.position.line > 0 && valid_type(&fact.element_type, limits, 0)
+        })
+        && facts.vue_slots.iter().all(|fact| {
+            text(&fact.slot)
+                && text(&fact.binding)
+                && fact.position.line > 0
+                && valid_type(&fact.type_expr, limits, 0)
+        })
         && facts
             .bindings
             .iter()
-            .all(|fact| text(&fact.name) && fact.position.line > 0 && value(&fact.value))
+            .all(|fact| text(&fact.name) && fact.position.line > 0 && value(&fact.value, limits, 0))
         && facts
             .fields
             .iter()
-            .all(|fact| text(&fact.name) && fact.position.line > 0 && value(&fact.value))
+            .all(|fact| text(&fact.name) && fact.position.line > 0 && value(&fact.value, limits, 0))
         && facts
             .return_type
             .as_ref()
@@ -1346,7 +2063,7 @@ fn valid_facts(facts: &ValueFlowFacts, limits: SemanticLimits) -> bool {
             .as_ref()
             .is_none_or(|ty| valid_type(ty, limits, 0))
         && facts.return_value.as_ref().is_none_or(|returned| {
-            value(returned)
+            value(returned, limits, 0)
                 && facts
                     .return_position
                     .is_some_and(|position| position.line > 0)
@@ -1359,6 +2076,9 @@ pub(crate) fn valid_scope_facts(
     limits: SemanticLimits,
 ) -> bool {
     if !valid_facts(facts, limits) {
+        return false;
+    }
+    if !facts.vue_slots.is_empty() && (node.kind != "module" || node.language != "vue") {
         return false;
     }
     if matches!(
@@ -1381,8 +2101,7 @@ pub(crate) fn valid_scope_facts(
         .is_none_or(|params| {
             params
                 .len()
-                .saturating_add(facts.bindings.len())
-                .saturating_add(facts.fields.len())
+                .saturating_add(crate::core::typed_facts::scope_fact_count(facts))
                 <= limits.facts_per_scope
                 && params.keys().all(|name| name.len() <= limits.name_bytes)
         })
@@ -1415,6 +2134,9 @@ mod tests {
             Binding {
                 position: SourcePosition { line: 4, column: 8 },
                 target: TypeTarget::Builtin("str".into()),
+                valid_until: None,
+                restores_previous: false,
+                immutable_initializer: false,
             },
             Binding {
                 position: SourcePosition {
@@ -1422,6 +2144,9 @@ mod tests {
                     column: 20,
                 },
                 target: TypeTarget::Unknown,
+                valid_until: None,
+                restores_previous: false,
+                immutable_initializer: false,
             },
         ];
         assert!(reaching(&writes, SourcePosition { line: 4, column: 8 }).is_none());

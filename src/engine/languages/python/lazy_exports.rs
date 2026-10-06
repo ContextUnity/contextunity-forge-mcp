@@ -130,7 +130,7 @@ fn export_names<'a>(
     }
 }
 
-fn imported_binding(
+pub(super) fn imported_binding(
     statement: Node<'_>,
     source: &str,
     bindings: &mut HashMap<String, (String, Option<String>)>,
@@ -249,6 +249,7 @@ fn branch_exports(
     names: &[&str],
     parameter: &str,
     source: &str,
+    module_bindings: &HashMap<String, (String, Option<String>)>,
     importlib_bound: bool,
     getattr_bound: bool,
 ) -> Option<Vec<LazyExport>> {
@@ -269,7 +270,7 @@ fn branch_exports(
                 .iter()
                 .map(|name| {
                     let (target, relative_to_module) = if value.kind() == "identifier" {
-                        (bindings.get(text(value, source)).cloned(), false)
+                        (bindings.get(text(value, source)).or_else(|| module_bindings.get(text(value, source))).cloned(), false)
                     } else if value.kind() == "call"
                         && field(value, source, "function") == Some("getattr")
                         && !getattr_bound
@@ -281,7 +282,9 @@ fn branch_exports(
                         {
                             return None;
                         }
-                        let (module, member) = bindings.get(text(args.named_child(0)?, source))?;
+                        let (module, member) = bindings
+                            .get(text(args.named_child(0)?, source))
+                            .or_else(|| module_bindings.get(text(args.named_child(0)?, source)))?;
                         if member.is_some() {
                             return None;
                         }
@@ -316,15 +319,12 @@ fn branch_exports(
     result
 }
 
-pub(super) fn extract(root: Node<'_>, source: &str) -> Vec<LazyExport> {
-    let mut cursor = root.walk();
-    let getters: Vec<_> = root
-        .named_children(&mut cursor)
-        .filter(|node| {
-            node.kind() == "function_definition"
-                && field(*node, source, "name") == Some("__getattr__")
-        })
-        .collect();
+pub(super) fn extract(
+    root: Node<'_>,
+    source: &str,
+    statements: &[Node<'_>],
+    getters: &[Node<'_>],
+) -> Vec<LazyExport> {
     if getters.len() != 1 {
         return Vec::new();
     }
@@ -366,29 +366,32 @@ pub(super) fn extract(root: Node<'_>, source: &str) -> Vec<LazyExport> {
     let mut sets = HashMap::new();
     let mut set_originals = HashMap::new();
     let mut importlib_bound = false;
+    let mut module_bindings = HashMap::new();
     let mut getattr_bound = false;
     let mut frozenset_shadowed = false;
     let mut getter_rebound = false;
-    let mut cursor = root.walk();
-    for statement in root.named_children(&mut cursor) {
+    for &statement in statements {
         if matches!(
             statement.kind(),
             "import_statement" | "import_from_statement"
         ) {
             let mut names = HashMap::new();
-            if imported_binding(statement, source, &mut names) {
-                if let Some((module, member)) = names.get("importlib") {
-                    importlib_bound = module == "importlib" && member.is_none();
-                }
-                if names.contains_key("getattr") {
-                    getattr_bound = true;
-                }
-                if names.contains_key("frozenset") {
-                    frozenset_shadowed = true;
-                }
-                if names.contains_key("__getattr__") {
-                    getter_rebound = true;
-                }
+            if !imported_binding(statement, source, &mut names)
+                || !imported_binding(statement, source, &mut module_bindings)
+            {
+                return Vec::new();
+            }
+            if let Some((module, member)) = names.get("importlib") {
+                importlib_bound = module == "importlib" && member.is_none();
+            }
+            if names.contains_key("getattr") {
+                getattr_bound = true;
+            }
+            if names.contains_key("frozenset") {
+                frozenset_shadowed = true;
+            }
+            if names.contains_key("__getattr__") {
+                getter_rebound = true;
             }
         }
         let assignment = statement
@@ -402,7 +405,7 @@ pub(super) fn extract(root: Node<'_>, source: &str) -> Vec<LazyExport> {
                 let name = text(left, source);
                 let value = assignment
                     .child_by_field_name("right")
-                    .filter(|right| right.kind() == "call" || right.kind() == "tuple")
+                    .filter(|right| matches!(right.kind(), "call" | "tuple" | "list" | "set"))
                     .and_then(|right| literal_set(right, source));
                 if value.is_some() {
                     set_originals.insert(name, assignment.id());
@@ -444,6 +447,9 @@ pub(super) fn extract(root: Node<'_>, source: &str) -> Vec<LazyExport> {
         }
     }
     invalidate_rebound_sets(root, source, &set_originals, &mut sets);
+    for name in &module_rebindings {
+        module_bindings.remove(name);
+    }
     if module_rebindings.iter().any(|name| name == "getattr") {
         getattr_bound = true;
     }
@@ -500,6 +506,7 @@ pub(super) fn extract(root: Node<'_>, source: &str) -> Vec<LazyExport> {
                 &names,
                 parameter,
                 source,
+                &module_bindings,
                 importlib_bound,
                 getattr_bound,
             ) else {

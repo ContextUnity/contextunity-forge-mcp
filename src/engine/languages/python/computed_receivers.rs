@@ -47,6 +47,17 @@ pub(super) fn receiver_hint(call: Node<'_>, source: &str) -> Option<ReceiverHint
         }
         "call" => {
             let callee = receiver.child_by_field_name("function")?;
+            if callee.kind() == "call" {
+                let inner = callee.child_by_field_name("function")?;
+                let arguments = callee.child_by_field_name("arguments")?;
+                if !static_callee(inner) || arguments.named_child_count() != 0 {
+                    return None;
+                }
+                return Some(ReceiverHint::CallResult {
+                    callee: bounded_expression(&format!("{}()", text(inner, source))),
+                    member: text(member, source).to_owned(),
+                });
+            }
             if !static_callee(callee) {
                 return None;
             }

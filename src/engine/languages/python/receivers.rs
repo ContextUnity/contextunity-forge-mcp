@@ -24,7 +24,8 @@ impl Eq for Base<'_> {}
 #[derive(Clone, Copy)]
 pub(crate) enum Member<'a> {
     Local(&'a Node),
-    External(&'a str, usize),
+    External(&'a str, usize, Option<&'static str>),
+    Ambiguous,
     Unknown,
 }
 
@@ -109,9 +110,33 @@ impl<'a> PythonReceivers<'a> {
                 if let Some((parent, _)) = node.qualname.rsplit_once('.') {
                     if let Some(class) = find_class(node.path.as_str(), parent, node) {
                         let members = own.entry(class.id.as_str()).or_default();
+                        let callable = matches!(node.kind.as_str(), "function" | "method");
+                        let conditional = callable
+                            && node
+                                .details
+                                .get("is_conditional")
+                                .and_then(|value| value.as_bool())
+                                .unwrap_or(false);
+                        let node_is_stub = node
+                            .details
+                            .get("is_stub")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(false)
+                            || node
+                                .details
+                                .get("is_overload")
+                                .and_then(|value| value.as_bool())
+                                .unwrap_or(false);
                         match members.get(node.name.as_str()) {
                             None => {
-                                members.insert(node.name.as_str(), Member::Local(node));
+                                members.insert(
+                                    node.name.as_str(),
+                                    if conditional {
+                                        Member::Unknown
+                                    } else {
+                                        Member::Local(node)
+                                    },
+                                );
                             }
                             Some(Member::Local(existing)) => {
                                 let existing_is_stub = existing
@@ -124,41 +149,31 @@ impl<'a> PythonReceivers<'a> {
                                         .get("is_overload")
                                         .and_then(|v| v.as_bool())
                                         .unwrap_or(false);
-                                let node_is_stub = node
-                                    .details
-                                    .get("is_stub")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false)
-                                    || node
-                                        .details
-                                        .get("is_overload")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
                                 if existing_is_stub && !node_is_stub {
                                     members.insert(node.name.as_str(), Member::Local(node));
                                 } else if !existing_is_stub && node_is_stub {
                                     // keep existing non-stub
                                 } else if existing_is_stub && node_is_stub {
                                     // both are stubs/overloads; keep existing stub so runtime implementation can replace it
+                                } else if conditional || !callable {
+                                    members.insert(node.name.as_str(), Member::Ambiguous);
                                 } else {
-                                    members.insert(node.name.as_str(), Member::Unknown);
-                                }
-                            }
-                            Some(Member::Unknown) => {
-                                let node_is_stub = node
-                                    .details
-                                    .get("is_stub")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false)
-                                    || node
-                                        .details
-                                        .get("is_overload")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
-                                if !node_is_stub {
                                     members.insert(node.name.as_str(), Member::Local(node));
                                 }
                             }
+                            Some(Member::Ambiguous | Member::Unknown)
+                                if callable && !node_is_stub =>
+                            {
+                                members.insert(
+                                    node.name.as_str(),
+                                    if conditional {
+                                        Member::Ambiguous
+                                    } else {
+                                        Member::Local(node)
+                                    },
+                                );
+                            }
+                            Some(Member::Ambiguous | Member::Unknown) => {}
                             Some(Member::External(..)) => {}
                         }
                     }
@@ -240,15 +255,22 @@ impl<'a> PythonReceivers<'a> {
                             }
                         }
                     } else if let Base::External(key, origin, line) = base {
-                        for name in framework_members(key) {
-                            if name.starts_with("objects.") && inherited.contains_key("objects") {
-                                continue;
+                        if let Some((provider, members)) = framework_members(key) {
+                            for name in members {
+                                if name.starts_with("objects.") && inherited.contains_key("objects")
+                                {
+                                    continue;
+                                }
+                                inherited.entry(*name).or_insert(Member::External(
+                                    origin,
+                                    *line,
+                                    Some(provider),
+                                ));
                             }
-                            inherited
-                                .entry(*name)
-                                .or_insert(Member::External(origin, *line));
                         }
                         // An unindexed base can override any later base's members.
+                        break;
+                    } else if matches!(base, Base::Unknown) {
                         break;
                     }
                 }
@@ -286,88 +308,122 @@ impl<'a> PythonReceivers<'a> {
     }
 }
 
-fn framework_members(base: &str) -> &'static [&'static str] {
+fn framework_members(base: &str) -> Option<(&'static str, &'static [&'static str])> {
     match base {
-        "django.core.management.base.BaseCommand" => &[
-            "stdout.write",
-            "stderr.write",
-            "add_arguments",
-            "execute",
-            "run_from_argv",
-            "check",
-            "check_migrations",
-            "print_help",
-            "create_parser",
-        ],
+        "django.core.management.base.BaseCommand" => Some((
+            "django.core.management.base.BaseCommand",
+            &[
+                "stdout.write",
+                "stderr.write",
+                "add_arguments",
+                "execute",
+                "run_from_argv",
+                "check",
+                "check_migrations",
+                "print_help",
+                "create_parser",
+            ],
+        )),
+        "django.http.HttpRequest" | "django.http.request.HttpRequest" => Some((
+            "django.http.HttpRequest",
+            &[
+                "GET.get",
+                "GET.items",
+                "GET.keys",
+                "GET.values",
+                "POST.get",
+                "POST.items",
+                "POST.keys",
+                "POST.values",
+            ],
+        )),
         "unittest.TestCase"
         | "unittest.case.TestCase"
         | "django.test.TestCase"
-        | "django.test.testcases.TestCase" => &[
-            "assertEqual",
-            "assertNotEqual",
-            "assertTrue",
-            "assertFalse",
-            "assertIs",
-            "assertIsNot",
-            "assertIsNone",
-            "assertIsNotNone",
-            "assertIn",
-            "assertNotIn",
-            "assertIsInstance",
-            "assertNotIsInstance",
-            "assertRaises",
-            "assertRaisesRegex",
-            "assertWarns",
-            "assertWarnsRegex",
-            "assertLogs",
-            "assertNoLogs",
-            "assertAlmostEqual",
-            "assertNotAlmostEqual",
-            "assertGreater",
-            "assertGreaterEqual",
-            "assertLess",
-            "assertLessEqual",
-            "assertRegex",
-            "assertNotRegex",
-            "assertCountEqual",
-            "assertSequenceEqual",
-            "assertListEqual",
-            "assertTupleEqual",
-            "assertSetEqual",
-            "assertDictEqual",
-            "fail",
-            "skipTest",
-            "addCleanup",
-            "doCleanups",
-            "subTest",
-        ],
-        "django.db.models.Model" | "django.db.models.base.Model" => &[
-            "objects.all",
-            "objects.filter",
-            "objects.exclude",
-            "objects.get",
-            "objects.create",
-            "objects.get_or_create",
-            "objects.update_or_create",
-            "objects.bulk_create",
-            "objects.bulk_update",
-            "objects.count",
-            "objects.exists",
-            "objects.first",
-            "objects.last",
-            "objects.order_by",
-            "objects.values",
-            "objects.values_list",
-            "objects.select_related",
-            "objects.prefetch_related",
-            "objects.aggregate",
-            "objects.annotate",
-            "objects.none",
-            "objects.update",
-            "objects.delete",
-            "objects.using",
-        ],
-        _ => &[],
+        | "django.test.testcases.TestCase" => Some((
+            "TestCase",
+            &[
+                "assertEqual",
+                "assertNotEqual",
+                "assertTrue",
+                "assertFalse",
+                "assertIs",
+                "assertIsNot",
+                "assertIsNone",
+                "assertIsNotNone",
+                "assertIn",
+                "assertNotIn",
+                "assertIsInstance",
+                "assertNotIsInstance",
+                "assertRaises",
+                "assertRaisesRegex",
+                "assertWarns",
+                "assertWarnsRegex",
+                "assertLogs",
+                "assertNoLogs",
+                "assertAlmostEqual",
+                "assertNotAlmostEqual",
+                "assertGreater",
+                "assertGreaterEqual",
+                "assertLess",
+                "assertLessEqual",
+                "assertRegex",
+                "assertNotRegex",
+                "assertCountEqual",
+                "assertSequenceEqual",
+                "assertListEqual",
+                "assertTupleEqual",
+                "assertSetEqual",
+                "assertDictEqual",
+                "fail",
+                "skipTest",
+                "addCleanup",
+                "doCleanups",
+                "subTest",
+            ],
+        )),
+        "django.db.models.Model" | "django.db.models.base.Model" => Some((
+            "django.db.models.Model",
+            &[
+                "objects.all",
+                "objects.filter",
+                "objects.exclude",
+                "objects.get",
+                "objects.create",
+                "objects.get_or_create",
+                "objects.update_or_create",
+                "objects.bulk_create",
+                "objects.bulk_update",
+                "objects.count",
+                "objects.exists",
+                "objects.first",
+                "objects.last",
+                "objects.order_by",
+                "objects.values",
+                "objects.values_list",
+                "objects.select_related",
+                "objects.prefetch_related",
+                "objects.aggregate",
+                "objects.annotate",
+                "objects.none",
+                "objects.update",
+                "objects.delete",
+                "objects.using",
+            ],
+        )),
+        "pydantic.BaseModel" | "pydantic.main.BaseModel" => Some((
+            "pydantic.BaseModel",
+            &[
+                "model_validate",
+                "model_validate_json",
+                "model_dump",
+                "model_dump_json",
+                "model_copy",
+                "model_construct",
+                "model_json_schema",
+            ],
+        )),
+        _ => None,
     }
 }
 
@@ -392,8 +448,7 @@ fn linearize<'a>(
                 Some(order) => sequences.push(order),
                 None => valid = false,
             },
-            Base::External(..) => sequences.push(vec![base.clone()]),
-            Base::Unknown => valid = false,
+            Base::External(..) | Base::Unknown => sequences.push(vec![base.clone()]),
         }
     }
     sequences.push(direct);

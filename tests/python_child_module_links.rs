@@ -479,7 +479,11 @@ fn package_symbol_takes_precedence_over_same_named_child_module() {
     w.build();
     let conn = w.open();
     assert_eq!(status(&conn, "child"), "resolved");
-    assert_eq!(import_targets(&conn), ["pkg"]);
+    assert_eq!(import_targets(&conn), ["pkg", "pkg.child"]);
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/__init__.py"]
+    );
     assert_eq!(call_targets(&conn), ["pkg.child"]);
 }
 

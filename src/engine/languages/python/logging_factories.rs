@@ -53,7 +53,15 @@ pub(super) fn collect(root: Syntax<'_>, source: &str, offset: usize) -> serde_js
                     factory_changed |= field(parent, source, "attribute") == Some("setLoggerClass");
                     value = parent;
                 }
-                let escaped = !value.parent().is_some_and(|parent| {
+                let level_constant = value.kind() == "attribute"
+                    && matches!(
+                        field(value, source, "attribute"),
+                        Some("CRITICAL" | "ERROR" | "WARNING" | "INFO" | "DEBUG" | "NOTSET")
+                    )
+                    && value.parent().is_some_and(|parent| {
+                        matches!(parent.kind(), "argument_list" | "keyword_argument")
+                    });
+                let escaped = !level_constant && !value.parent().is_some_and(|parent| {
                     matches!(parent.kind(), "dotted_name" | "aliased_import"
                         | "import_statement" | "import_from_statement")
                         || (parent.kind() == "call"

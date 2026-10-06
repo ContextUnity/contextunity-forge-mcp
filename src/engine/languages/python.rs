@@ -8,6 +8,10 @@ mod fastmcp;
 mod lazy_exports;
 #[path = "python/logging_factories.rs"]
 mod logging_factories;
+#[path = "python/render_context.rs"]
+mod render_context;
+#[path = "python/template_loaders.rs"]
+mod template_loaders;
 
 pub(crate) fn logging_factories(root: Syntax<'_>, source: &str, offset: usize) -> serde_json::Value {
     logging_factories::collect(root, source, offset)
@@ -45,6 +49,22 @@ fn class_method_owner(node: Syntax<'_>) -> Option<Syntax<'_>> {
         .filter(|owner| owner.kind() == "class_definition")
 }
 
+fn conditional_class_member(mut node: Syntax<'_>) -> bool {
+    let mut conditional = false;
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "class_definition" => return conditional,
+            "function_definition" | "lambda" => return false,
+            "if_statement" | "elif_clause" | "else_clause" | "for_statement"
+            | "while_statement" | "try_statement" | "except_clause" | "finally_clause"
+            | "with_statement" | "match_statement" | "case_clause" => conditional = true,
+            _ => {}
+        }
+        node = parent;
+    }
+    false
+}
+
 fn is_static_decorator(decorator: &str) -> bool {
     let decorator = decorator
         .trim()
@@ -70,6 +90,175 @@ fn module_scope(node: Syntax<'_>) -> bool {
         }
     }
     false
+}
+
+fn direct_module_assignment(node: Syntax<'_>) -> bool {
+    node.kind() == "assignment"
+        && node
+            .child_by_field_name("left")
+            .is_some_and(|left| left.kind() == "identifier")
+        && node
+            .parent()
+            .filter(|parent| parent.kind() == "expression_statement")
+            .and_then(|parent| parent.parent())
+            .is_some_and(|parent| parent.kind() == "module")
+}
+
+fn module_alias_exports<'tree>(
+    root: Syntax<'tree>,
+    source: &str,
+    statements: &[Syntax<'tree>],
+    type_checking_aliases: &mut HashMap<String, Vec<(usize, bool)>>,
+    has_django_shortcuts_import: &mut bool,
+    lazy_getters: &mut Vec<Syntax<'tree>>,
+) -> Vec<crate::core::semantic::ExportBinding> {
+    fn mark_write(node: Syntax<'_>, source: &str, writes: &mut std::collections::HashSet<String>) {
+        match node.kind() {
+            "identifier" => {
+                writes.insert(text(node, source).to_owned());
+            }
+            "attribute" | "subscript" => {}
+            _ => {
+                let mut children = node.walk();
+                for child in node.named_children(&mut children) {
+                    mark_write(child, source, writes);
+                }
+            }
+        }
+    }
+    let mut imports = std::collections::HashMap::new();
+    let mut import_positions = std::collections::HashMap::new();
+    let mut conditional_imports = std::collections::HashSet::new();
+    let mut conditional_writes = std::collections::HashSet::new();
+    let mut assignments = std::collections::HashMap::<String, usize>::new();
+    let mut local_functions = std::collections::HashMap::<String, Vec<usize>>::new();
+    let mut local_aliases = Vec::new();
+    let mut aliases = Vec::new();
+    let mut imports_valid = true;
+    for &statement in statements {
+        collect_type_checking_aliases(statement, source, type_checking_aliases);
+        if statement.kind() == "function_definition"
+            && field(statement, source, "name") == Some("__getattr__")
+        {
+            lazy_getters.push(statement);
+        }
+        if statement.kind() == "function_definition" {
+            if let Some(name) = field(statement, source, "name") {
+                local_functions.entry(name.to_owned()).or_default().push(statement.start_byte());
+            }
+        }
+        if matches!(statement.kind(), "import_statement" | "import_from_statement") {
+            *has_django_shortcuts_import |= statement.kind() == "import_from_statement"
+                && field(statement, source, "module_name") == Some("django.shortcuts");
+            let mut names = std::collections::HashMap::new();
+            imports_valid &= lazy_exports::imported_binding(statement, source, &mut names);
+            for (name, target) in names {
+                import_positions.insert(name.clone(), statement.start_byte());
+                imports_valid &= imports.insert(name, target).is_none();
+            }
+        }
+        let Some(assignment) = statement.named_child(0).filter(|node| direct_module_assignment(*node)) else {
+            continue;
+        };
+        let Some(name) = field(assignment, source, "left") else {
+            continue;
+        };
+        *assignments.entry(name.to_owned()).or_default() += 1;
+        if let Some(target) = assignment.child_by_field_name("right").filter(|right| right.kind() == "identifier") {
+            local_aliases.push((name.to_owned(), text(target, source).to_owned(), assignment.start_byte()));
+        }
+        let Some(right) = assignment.child_by_field_name("right").filter(|right| right.kind() == "attribute") else {
+            continue;
+        };
+        let Some(receiver) = right.child_by_field_name("object").filter(|object| object.kind() == "identifier") else {
+            continue;
+        };
+        let Some(member) = field(right, source, "attribute") else {
+            continue;
+        };
+        aliases.push((name.to_owned(), text(receiver, source).to_owned(), member.to_owned(), assignment.start_byte()));
+    }
+    if aliases.is_empty() && local_aliases.is_empty() {
+        return Vec::new();
+    }
+    let mut nested = vec![root];
+    while let Some(node) = nested.pop() {
+        if node.kind() == "function_definition" && node.parent() != Some(root) {
+            if let Some(name) = field(node, source, "name") {
+                conditional_writes.insert(name.to_owned());
+            }
+        }
+        if node != root && matches!(node.kind(), "function_definition" | "class_definition" | "lambda") {
+            continue;
+        }
+        if matches!(node.kind(), "assignment" | "augmented_assignment" | "for_statement" | "named_expression")
+            && !direct_module_assignment(node)
+        {
+            if let Some(target) = node.child_by_field_name("left").or_else(|| node.child_by_field_name("name")) {
+                mark_write(target, source, &mut conditional_writes);
+            }
+        }
+        if matches!(node.kind(), "as_pattern" | "delete_statement") {
+            let mut targets = node.walk();
+            for target in node.named_children(&mut targets) {
+                mark_write(target, source, &mut conditional_writes);
+            }
+        }
+        if node.parent() != Some(root)
+            && matches!(node.kind(), "import_statement" | "import_from_statement")
+        {
+            let mut bindings = std::collections::HashMap::new();
+            let _ = lazy_exports::imported_binding(node, source, &mut bindings);
+            conditional_imports.extend(bindings.into_keys());
+        }
+        let mut children = node.walk();
+        nested.extend(node.named_children(&mut children));
+    }
+    let rebound = ast::scope_bindings(root, source).rebindings;
+    let mut exports: Vec<_> = aliases
+        .into_iter()
+        .filter(|(_, receiver, _, _)| imports.contains_key(receiver) || conditional_imports.contains(receiver))
+        .map(|(name, receiver, member, assignment_position)| {
+            let provider = imports_valid
+                .then(|| imports.get(&receiver))
+                .flatten()
+                .filter(|(_, imported_member)| imported_member.is_none())
+                .filter(|_| assignments.get(&name) == Some(&1))
+                .filter(|_| import_positions.get(&receiver).is_some_and(|position| *position < assignment_position))
+                .filter(|_| !rebound.contains(&receiver));
+            crate::core::semantic::ExportBinding {
+                name,
+                local: provider.map(|_| member),
+                module: provider.map(|(module, _)| module.clone()),
+                type_only: false,
+                star: false,
+            }
+        })
+        .collect();
+    exports.extend(local_aliases.into_iter().filter_map(|(name, target, position)| {
+        let [declared_at] = local_functions.get(&target)?.as_slice() else {
+            return None;
+        };
+        (declared_at < &position
+            && assignments.get(&name) == Some(&1)
+            && !assignments.contains_key(&target)
+            && !rebound.contains(&target)
+            && !local_functions.contains_key(&name)
+            && !imports.contains_key(&name)
+            && !imports.contains_key(&target)
+            && !conditional_imports.contains(&name)
+            && !conditional_imports.contains(&target)
+            && !conditional_writes.contains(&name)
+            && !conditional_writes.contains(&target))
+            .then_some(crate::core::semantic::ExportBinding {
+                name,
+                local: Some(target),
+                module: None,
+                type_only: false,
+                star: false,
+            })
+    }));
+    exports
 }
 
 fn typing_name(value: &str) -> &str {
@@ -165,8 +354,15 @@ fn type_alias(node: Syntax<'_>, source: &str) -> bool {
     is_type_alias_rhs(right, source)
 }
 
-fn is_inside_type_checking(mut curr: Syntax<'_>, source: &str) -> bool {
+fn is_inside_type_checking(
+    mut curr: Syntax<'_>,
+    source: &str,
+    aliases: &HashMap<String, Vec<(usize, bool)>>,
+) -> bool {
     while let Some(parent) = curr.parent() {
+        if parent.kind() == "function_definition" || parent.kind() == "class_definition" {
+            return false;
+        }
         if parent.kind() == "if_statement" {
             let in_consequence = parent
                 .child_by_field_name("consequence")
@@ -179,6 +375,7 @@ fn is_inside_type_checking(mut curr: Syntax<'_>, source: &str) -> bool {
                         || clean == "typing.TYPE_CHECKING"
                         || clean == "typing_extensions.TYPE_CHECKING"
                         || clean.ends_with(".TYPE_CHECKING")
+                        || is_type_checking_alias(aliases, parent.start_byte(), clean)
                     {
                         return true;
                     }
@@ -188,6 +385,72 @@ fn is_inside_type_checking(mut curr: Syntax<'_>, source: &str) -> bool {
         curr = parent;
     }
     false
+}
+
+/// `from typing import TYPE_CHECKING as TC` proves `if TC:` until that name is rebound.
+fn is_type_checking_alias(
+    aliases: &HashMap<String, Vec<(usize, bool)>>,
+    position: usize,
+    name: &str,
+) -> bool {
+    if name.is_empty() || name.contains('.') {
+        return false;
+    }
+    let Some(events) = aliases.get(name) else {
+        return false;
+    };
+    let prior = events.partition_point(|(event_position, _)| *event_position < position);
+    prior > 0 && events[prior - 1].1
+}
+
+fn collect_type_checking_aliases(
+    statement: Syntax<'_>,
+    source: &str,
+    aliases: &mut HashMap<String, Vec<(usize, bool)>>,
+) {
+    let position = statement.start_byte();
+    if statement.kind() == "import_from_statement"
+        && matches!(field(statement, source, "module_name"), Some("typing" | "typing_extensions"))
+    {
+        let mut names = statement.walk();
+        for child in statement.children_by_field_name("name", &mut names) {
+            if field(child, source, "name").unwrap_or_else(|| text(child, source)) == "TYPE_CHECKING" {
+                let alias = field(child, source, "alias").unwrap_or("TYPE_CHECKING");
+                aliases.entry(alias.to_owned()).or_default().push((position, true));
+            }
+        }
+        return;
+    }
+
+    let rebinding = if statement.kind() == "expression_statement" {
+        statement.named_child(0).filter(|expression| {
+            matches!(expression.kind(), "assignment" | "augmented_assignment")
+        })
+    } else {
+        Some(statement)
+    };
+    if let Some(rebinding) = rebinding {
+        match rebinding.kind() {
+            "assignment" | "augmented_assignment" => {
+                if let Some(left) = rebinding.child_by_field_name("left") {
+                    if let Some(events) = aliases.get_mut(text(left, source)) {
+                        events.push((position, false));
+                    }
+                }
+            }
+            "delete_statement" => {
+                for name in text(rebinding, source)
+                    .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                    .filter(|part| !part.is_empty())
+                {
+                    if let Some(events) = aliases.get_mut(name) {
+                        events.push((position, false));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn is_python_stub_body(node: Syntax<'_>, source: &str) -> bool {
@@ -288,7 +551,11 @@ impl LanguageProfile for Python {
     }
     fn symbol_with_source(&self, node: Syntax<'_>, source: &str) -> Option<&'static str> {
         if matches!(node.kind(), "assignment" | "type_alias_statement") {
-            type_alias(node, source).then_some("type")
+            if type_alias(node, source) {
+                Some("type")
+            } else {
+                direct_module_assignment(node).then_some("variable")
+            }
         } else {
             self.symbol(node)
         }
@@ -328,15 +595,42 @@ impl LanguageProfile for Python {
         parse_file(self, path, source, module, facts)
     }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
+        let mut cursor = root.walk();
+        let statements: Vec<_> = root.named_children(&mut cursor).collect();
+        let mut type_checking_aliases = HashMap::new();
+        let mut has_django_shortcuts_import = false;
+        let mut lazy_getters = Vec::new();
+        let exports = module_alias_exports(
+            root,
+            source,
+            &statements,
+            &mut type_checking_aliases,
+            &mut has_django_shortcuts_import,
+            &mut lazy_getters,
+        );
         FileContext {
-            lazy_exports: lazy_exports::extract(root, source),
+            exports,
+            lazy_exports: lazy_exports::extract(root, source, &statements, &lazy_getters),
+            type_checking_aliases,
+            has_django_shortcuts_import,
             ..FileContext::default()
         }
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
         let statement = text(node, source);
-        let mut add = |expression, alias, module| ctx.import(facts, expression, alias, module);
+        let is_type_only = matches!(node.kind(), "import_from_statement" | "import_statement")
+            && ctx
+                .type_checking_aliases
+                .is_some_and(|aliases| is_inside_type_checking(node, source, aliases));
+        let mut add = |expression, alias, module| {
+            ctx.import(facts, expression, alias, module);
+            if is_type_only {
+                if let Some(reference) = facts.references.last_mut() {
+                    reference.receiver_hint = Some(crate::core::models::ReceiverHint::TypeOnlyImport);
+                }
+            }
+        };
         match node.kind() {
             "import_from_statement" => {
                 let module = field(node, source, "module_name").unwrap_or("").to_owned();
@@ -379,6 +673,7 @@ impl LanguageProfile for Python {
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if matches!(ctx.node.kind(), "call") {
             call(ctx, facts, false);
+            template_loaders::extract(ctx, facts);
             if let Some(hint) = computed_receivers::receiver_hint(ctx.node, ctx.source) {
                 if let Some(reference) = facts.references.last_mut() {
                     reference.receiver_hint = Some(hint);
@@ -425,9 +720,11 @@ impl LanguageProfile for Python {
                 | "tuple"
                 | "super"
                 | "getattr"
+                | "globals"
                 | "setattr"
                 | "hasattr"
                 | "delattr"
+                | "locals"
                 | "type"
                 | "repr"
                 | "open"
@@ -445,6 +742,7 @@ impl LanguageProfile for Python {
                 | "abs"
                 | "round"
                 | "id"
+                | "input"
                 | "hash"
                 | "callable"
                 | "dir"
@@ -601,14 +899,22 @@ impl LanguageProfile for Python {
         matches!(name, "self" | "cls") && owner.details["receiver_name"] == name
     }
     fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
-        value_flow::extract(node, source)
+        value_flow::extract(node, source, true)
+    }
+    fn value_flow_with_context(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        file: &FileContext,
+    ) -> crate::core::semantic::ValueFlowFacts {
+        value_flow::extract(node, source, file.has_django_shortcuts_import)
     }
     fn metadata(
         &self,
         node: Syntax<'_>,
         source: &str,
         _name: &str,
-        _file: &FileContext,
+        file: &FileContext,
     ) -> SymbolMetadata {
         let decorators = node
             .parent()
@@ -692,7 +998,7 @@ impl LanguageProfile for Python {
                 || name.ends_with(".overload")
         });
         let is_stub = is_overload
-            || is_inside_type_checking(node, source)
+            || is_inside_type_checking(node, source, &file.type_checking_aliases)
             || (node.kind() == "function_definition" && is_python_stub_body(node, source));
         SymbolMetadata {
             receiver_name,
@@ -705,6 +1011,7 @@ impl LanguageProfile for Python {
             is_async: text(node, source).trim_start().starts_with("async "),
             is_overload,
             is_stub,
+            is_conditional: conditional_class_member(node),
             ..Default::default()
         }
     }
@@ -729,12 +1036,12 @@ impl LanguageProfile for Python {
                 let mut c = parameters.walk();
                 for param in parameters.named_children(&mut c) {
                     if let Some(ty) = param.child_by_field_name("type") {
-                        relations::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
+                        relations::type_references_at(facts, ctx.owner, ty, ctx.source, ctx.offset);
                     }
                 }
             }
             if let Some(ret) = ctx.node.child_by_field_name("return_type") {
-                relations::type_references(facts, ctx.owner, ret, ctx.source, ctx.line());
+                relations::type_references_at(facts, ctx.owner, ret, ctx.source, ctx.offset);
             }
         }
         relations::decorator_references(ctx, facts);
@@ -759,8 +1066,28 @@ impl LanguageProfile for Python {
     ) {
         if ctx.node.kind() == "call" {
             routes::registration(ctx.node, ctx.source, ctx.owner, facts, ctx.offset, symbols);
+            routes::client_call(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
         }
-        fastmcp::module_assignment(ctx, facts);
+        if ctx.node.kind() == "assignment" && !ctx.owner.starts_with("module:") {
+            if let Some(module_id) = facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == "module")
+                .map(|node| node.id.clone())
+            {
+                let module_ctx = SyntaxContext {
+                    node: ctx.node,
+                    source: ctx.source,
+                    owner: &module_id,
+                    offset: ctx.offset,
+                    shadowed_require_scopes: ctx.shadowed_require_scopes,
+                    type_checking_aliases: ctx.type_checking_aliases,
+                };
+                fastmcp::module_assignment(&module_ctx, facts);
+            }
+        } else {
+            fastmcp::module_assignment(ctx, facts);
+        }
     }
     fn finish(&self, facts: &mut Facts) {
         relations::implicit_fields(facts);
@@ -841,7 +1168,7 @@ pub(crate) fn builtin_member(receiver: &str, member: &str) -> bool {
                 | "reverse"
                 | "sort"
         ),
-        "dict" | "Dict" | "Mapping" | "MutableMapping" => matches!(
+        "dict" | "Dict" | "MutableMapping" => matches!(
             member,
             "clear"
                 | "copy"
@@ -855,7 +1182,8 @@ pub(crate) fn builtin_member(receiver: &str, member: &str) -> bool {
                 | "update"
                 | "values"
         ),
-        "Logger" | "LoggerAdapter" | "logging.Logger" | "logging.LoggerAdapter" => matches!(
+        "Mapping" => matches!(member, "get" | "items" | "keys" | "values"),
+        "Logger" | "logging.Logger" => matches!(
             member,
             "info"
                 | "warning"
@@ -868,6 +1196,43 @@ pub(crate) fn builtin_member(receiver: &str, member: &str) -> bool {
                 | "setLevel"
                 | "addHandler"
                 | "removeHandler"
+        ),
+        "LoggerAdapter" | "logging.LoggerAdapter" => matches!(
+            member,
+            "info"
+                | "warning"
+                | "error"
+                | "debug"
+                | "critical"
+                | "exception"
+                | "log"
+                | "isEnabledFor"
+                | "setLevel"
+                | "addHandler"
+                | "removeHandler"
+                | "process"
+        ),
+        "sqlite3.Connection" => matches!(
+            member,
+            "execute"
+                | "executemany"
+                | "executescript"
+                | "cursor"
+                | "commit"
+                | "rollback"
+                | "close"
+                | "total_changes"
+                | "interrupt"
+        ),
+        "sqlite3.Cursor" => matches!(
+            member,
+            "execute"
+                | "executemany"
+                | "executescript"
+                | "fetchone"
+                | "fetchmany"
+                | "fetchall"
+                | "close"
         ),
         "set" => matches!(
             member,
@@ -1113,7 +1478,6 @@ fn is_python_stdlib(pkg: &str) -> bool {
             | "turtledemo"
             | "types"
             | "typing"
-            | "typing_extensions"
             | "unicodedata"
             | "unittest"
             | "urllib"

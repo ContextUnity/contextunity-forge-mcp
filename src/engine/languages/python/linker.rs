@@ -13,6 +13,28 @@ pub(crate) struct PythonLinker;
 
 pub(crate) static PYTHON_LINKER: PythonLinker = PythonLinker;
 
+fn prefer_live_declaration(candidates: &mut Vec<&Node>) -> bool {
+    let latest_assignment = candidates
+        .iter()
+        .filter(|node| node.kind == "variable")
+        .map(|node| node.line)
+        .max();
+    let latest_declaration = candidates
+        .iter()
+        .filter(|node| node.kind != "variable")
+        .map(|node| node.line)
+        .max();
+    if let (Some(assignment), Some(declaration)) = (latest_assignment, latest_declaration) {
+        if assignment > declaration {
+            candidates.clear();
+            return true;
+        } else {
+            candidates.retain(|node| node.kind != "variable");
+        }
+    }
+    false
+}
+
 impl LanguageLinker for PythonLinker {
     fn resolve_import<'ctx, 'a, 'input>(
         &self,
@@ -27,6 +49,29 @@ impl LanguageLinker for PythonLinker {
         if tail.is_empty() {
             return result;
         }
+        if context.modules.is_empty() {
+            let Some(normalized) = context.normalized else {
+                return result;
+            };
+            let child_namespace = format!("{}.{}", normalized.namespace, tail);
+            let workspace = languages::workspace_path(context.path).0;
+            context.modules.extend(
+                context
+                    .modules_by_namespace
+                    .get(&context.family)
+                    .and_then(|namespaces| namespaces.get(&child_namespace))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|node| languages::workspace_path(&node.path).0 == workspace),
+            );
+            if let Some(stub) = prefer_runtime_module(context.modules) {
+                result.paired_stub = Some(stub);
+            }
+            context.candidates.extend(context.modules.iter().copied());
+            result.child_module = context.candidates.len() == 1;
+            return result;
+        }
         let Some(module) = context
             .modules
             .first()
@@ -35,6 +80,24 @@ impl LanguageLinker for PythonLinker {
         else {
             return result;
         };
+        let export = context
+            .package_exports
+            .get(module.path.as_str())
+            .and_then(|exports| exports.get(tail.as_str()));
+        if let Some(export) = export {
+            if context.candidates.iter().all(|candidate| candidate.kind == "variable") {
+                context.candidates.clear();
+                if let Some(target) = export {
+                    context.candidates.push(target);
+                    result.reexport_symbol = true;
+                }
+                return result;
+            }
+        }
+        let blocked_assignment = prefer_live_declaration(context.candidates);
+        if blocked_assignment {
+            return result;
+        }
         if context.candidates.is_empty() {
             let child_namespace = format!("{}.{}", context.selected_namespace, tail);
             let parent_workspace = languages::workspace_path(&module.path).0;
@@ -415,6 +478,7 @@ fn register_export<'a>(
         .copied()
         .filter(|node| node.kind != "component" && node.qualname == qualified)
         .collect();
+    let _ = prefer_live_declaration(&mut candidates);
     if candidates.len() > 1 {
         let non_stubs: Vec<&Node> = candidates
             .iter()
@@ -429,12 +493,22 @@ fn register_export<'a>(
             candidates = non_stubs;
         }
     }
+    if candidates.len() == 1
+        && candidates[0].kind == "variable"
+        && provider.details["exports"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|export| {
+                export["name"].as_str() == Some(member)
+                    && export["local"].as_str().is_some()
+            }))
+    {
+        pending.push((owner, name, provider, member));
+        return;
+    }
     if candidates.len() == 1 {
         *target = Some(candidates[0]);
     } else if candidates.is_empty() {
         pending.push((owner, name, provider, member));
-    } else {
-        *target = Some(candidates[0]);
     }
 }
 
@@ -444,7 +518,7 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
     by_module: &HashMap<&str, Vec<&'a Node>>,
     root: Option<&Path>,
 ) -> PackageExports<'a> {
-    let mut exports = HashMap::new();
+    let mut exports: PackageExports<'a> = HashMap::new();
     let mut pending = Vec::new();
     let mut seen = HashSet::new();
     for (path, facts) in all {
@@ -472,6 +546,7 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
                 continue;
             };
             if rebound(alias) {
+                exports.entry(path.as_str()).or_default().insert(alias, None);
                 continue;
             }
             if reference.expression == import_path
@@ -516,6 +591,28 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
                 by_module,
             );
         }
+        for export in module.details["exports"].as_array().into_iter().flatten() {
+            let Some(name) = export["name"].as_str() else {
+                continue;
+            };
+            exports.entry(path.as_str()).or_default().insert(name, None);
+            let provider = export["module"]
+                .as_str()
+                .and_then(|module_path| export_provider(path, module_path, modules_by_namespace, root))
+                .or_else(|| (export["local"].as_str().is_some() && export["module"].is_null()).then_some(module));
+            register_export(
+                &mut exports,
+                &mut pending,
+                &mut seen,
+                ExportBinding {
+                    owner: path,
+                    name,
+                    provider,
+                    member: export["local"].as_str(),
+                },
+                by_module,
+            );
+        }
         for export in module.details["lazy_exports"]
             .as_array()
             .into_iter()
@@ -524,6 +621,9 @@ pub(super) fn package_exports<'a, F: AsRef<Facts>>(
             let Some(name) = export["name"].as_str() else {
                 continue;
             };
+            if seen.contains(&(path.as_str(), name)) {
+                continue;
+            }
             if rebound(name) {
                 continue;
             }

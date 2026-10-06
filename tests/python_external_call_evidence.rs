@@ -72,9 +72,13 @@ impl Drop for Workspace {
 }
 
 fn coverage(conn: &Connection, line: i64, expression: &str) -> (String, String) {
+    coverage_at(conn, "consumer.py", line, expression)
+}
+
+fn coverage_at(conn: &Connection, path: &str, line: i64, expression: &str) -> (String, String) {
     conn.query_row(
-        "SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND line=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
-        (line, expression),
+        "SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=?2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?3",
+        (path, line, expression),
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap()
 }
@@ -193,12 +197,28 @@ fn module_alias_conversion_delta_matches_cold_build() {
         "from aliases import Value\ndef use(value: Value) -> Value: return value\n",
     );
     w.build();
-    assert_eq!(coverage(&w.open(), 1, "Value").0, "unresolved");
-    for source in ["type Value = str | list[Value]\n", "from typing import TypeAlias, TYPE_CHECKING\nif TYPE_CHECKING:\n    Value: TypeAlias = str\n", "Value = 1\n"] {
+    for (source, expected_status) in [
+        ("Value = 1\n", "resolved"),
+        ("type Value = str | list[Value]\n", "resolved"),
+        (
+            "from typing import TypeAlias, TYPE_CHECKING\nif TYPE_CHECKING:\n    Value: TypeAlias = str\n",
+            "resolved",
+        ),
+        ("Value = 1\nValue = 2\n", "ambiguous"),
+        ("", "unresolved"),
+        ("Value = 1\n", "resolved"),
+    ] {
         w.write("aliases.py", source);
         w.delta("aliases.py");
         w.assert_cold_equivalent();
-        assert_eq!(coverage(&w.open(), 1, "Value").0, if source == "Value = 1\n" { "unresolved" } else { "resolved" });
+        let conn = w.open();
+        assert_eq!(coverage(&conn, 1, "Value").0, expected_status, "{source:?}");
+        let import_edges: i64 = conn.query_row(
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.py' AND e.kind='imports' AND dst.path='aliases.py' AND dst.name='Value'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(import_edges, i64::from(expected_status == "resolved"), "{source:?}");
     }
 }
 
@@ -309,4 +329,240 @@ fn changing_import_provenance_preserves_cold_delta_equivalence() {
         coverage(&w.open(), 2, "client.get").1,
         "call through external import requests; callable target unverified"
     );
+}
+
+#[test]
+fn framework_lineage_and_local_protocol_members_keep_project_provenance() {
+    let first = Workspace::new();
+    first.write("app/__init__.py", "");
+    first.write(
+        "app/models.py",
+        "from django.db import models\nclass Product(models.Model):\n    pass\n",
+    );
+    first.write(
+        "app/contracts.py",
+        "from typing import Protocol\nclass Notifier(Protocol):\n    def notify(self) -> None: ...\n",
+    );
+    first.write(
+        "consumer.py",
+        concat!(
+            "from django.http import HttpRequest\n",
+            "from django.core.management.base import BaseCommand\n",
+            "from pydantic import BaseModel\n",
+            "from app.models import Product\n",
+            "from app.contracts import Notifier\n",
+            "class SecuredRequest(HttpRequest):\n",
+            "    pass\n",
+            "class Command(BaseCommand):\n",
+            "    def handle(self) -> None:\n",
+            "        self.stdout.write('ok')\n",
+            "class Record(BaseModel):\n",
+            "    title: str\n",
+            "def run(request: SecuredRequest, record: Record, notifier: Notifier) -> None:\n",
+            "    request.GET.get('q')\n",
+            "    Product.objects.create()\n",
+            "    Record.model_validate({'title': 'ok'})\n",
+            "    record.model_dump()\n",
+            "    notifier.notify()\n",
+            "def choose(flag: bool) -> None:\n",
+            "    if flag:\n",
+            "        model = Product\n",
+            "    else:\n",
+            "        model = Notifier\n",
+            "    model.objects.create()\n",
+        ),
+    );
+    first.build();
+    let first_db = first.open();
+    for (line, expression, origin) in [
+        (10, "self.stdout.write", "django"),
+        (14, "request.GET.get", "django"),
+        (15, "Product.objects.create", "django"),
+        (16, "Record.model_validate", "pydantic"),
+        (17, "record.model_dump", "pydantic"),
+    ] {
+        let (status, evidence) = coverage(&first_db, line, expression);
+        assert_eq!(status, "external", "{expression}: {evidence}");
+        assert!(evidence.contains(origin), "{expression}: {evidence}");
+    }
+    assert_eq!(coverage(&first_db, 18, "notifier.notify").0, "resolved");
+    assert_eq!(
+        coverage(&first_db, 24, "model.objects.create").0,
+        "unresolved",
+        "conditional alias cannot select Product as a unique provider"
+    );
+    let local_edge: i64 = first_db.query_row(
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.py' AND e.kind='calls' AND dst.path='app/contracts.py' AND dst.kind='method' AND dst.name='notify'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(
+        local_edge, 1,
+        "protocol call retains its exact local method"
+    );
+
+    let second = Workspace::new();
+    second.write("app/__init__.py", "");
+    second.write("app/models.py", "class Product:\n    pass\n");
+    second.write(
+        "app/contracts.py",
+        "from typing import Protocol\nclass Notifier(Protocol):\n    def cancel(self) -> None: ...\n",
+    );
+    second.write(
+        "consumer.py",
+        concat!(
+            "from app.models import Product\n",
+            "from app.contracts import Notifier\n",
+            "def run(notifier: Notifier, client) -> None:\n",
+            "    Product.objects.create()\n",
+            "    notifier.notify()\n",
+            "    client.send()\n",
+            "def test_injected(db_client) -> None:\n",
+            "    db_client.query()\n",
+        ),
+    );
+    second.build();
+    let second_db = second.open();
+    for (line, expression) in [
+        (4, "Product.objects.create"),
+        (5, "notifier.notify"),
+        (6, "client.send"),
+        (8, "db_client.query"),
+    ] {
+        assert_eq!(
+            coverage(&second_db, line, expression).0,
+            "unresolved",
+            "{expression}"
+        );
+    }
+
+    let linked = Workspace::new();
+    linked.write(
+        "forge-mcp.yaml",
+        &format!(
+            "roots: [.]\nlinked_workspaces:\n  - name: first\n    path: '{}'\n    roots: [.]\n  - name: second\n    path: '{}'\n    roots: [.]\n",
+            first.0.display(),
+            second.0.display()
+        ),
+    );
+    linked.build();
+    let linked_db = linked.open();
+    assert_eq!(
+        coverage_at(&linked_db, "[first]/consumer.py", 14, "request.GET.get").0,
+        "external"
+    );
+    assert_eq!(
+        coverage_at(&linked_db, "[first]/consumer.py", 18, "notifier.notify").0,
+        "resolved"
+    );
+    for (line, expression) in [(4, "Product.objects.create"), (5, "notifier.notify")] {
+        assert_eq!(
+            coverage_at(&linked_db, "[second]/consumer.py", line, expression).0,
+            "unresolved",
+            "project isolation for {expression}"
+        );
+    }
+}
+
+#[test]
+fn imported_cursor_methods_are_finite_and_untyped_logger_names_stay_unknown() {
+    let w = Workspace::new();
+    w.write(
+        "consumer.py",
+        "import sqlite3\ndef run(cursor: sqlite3.Cursor, logger):\n    cursor.execute('select 1')\n    cursor.unsupported_method()\n    logger.info('unknown')\n",
+    );
+    w.build();
+    let conn = w.open();
+    let (status, evidence) = coverage(&conn, 3, "cursor.execute");
+    assert_eq!(status, "external", "{evidence}");
+    assert!(evidence.contains("sqlite3.Cursor"), "{evidence}");
+    assert!(evidence.contains("line 1"), "{evidence}");
+    for (line, expression) in [(4, "cursor.unsupported_method"), (5, "logger.info")] {
+        assert_eq!(
+            coverage(&conn, line, expression).0,
+            "unresolved",
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn module_qualified_local_subclass_inherits_only_its_own_imported_framework_members() {
+    let first = Workspace::new();
+    first.write("pkg/__init__.py", "");
+    first.write(
+        "pkg/models.py",
+        "from pydantic import BaseModel\nclass Record(BaseModel):\n    title: str\n",
+    );
+    first.write(
+        "pkg/consumer.py",
+        "from pkg import models\ndef run():\n    models.Record.model_validate({'title': 'ok'})\n",
+    );
+
+    let second = Workspace::new();
+    second.write("pkg/__init__.py", "");
+    second.write(
+        "pkg/models.py",
+        "from pydantic import BaseModel\nclass Record(BaseModel):\n    title: str\nRecord = object\n",
+    );
+    second.write(
+        "pkg/consumer.py",
+        "from pkg import models\ndef run():\n    models.Record.model_validate({'title': 'unknown'})\n",
+    );
+
+    let linked = Workspace::new();
+    linked.write(
+        "forge-mcp.yaml",
+        &format!(
+            "roots: [.]\nlinked_workspaces:\n  - name: first\n    path: '{}'\n    roots: [.]\n  - name: second\n    path: '{}'\n    roots: [.]\n",
+            first.0.display(),
+            second.0.display()
+        ),
+    );
+    linked.build();
+    let conn = linked.open();
+    let (status, evidence) = coverage_at(
+        &conn,
+        "[first]/pkg/consumer.py",
+        3,
+        "models.Record.model_validate",
+    );
+    assert_eq!(status, "external", "{evidence}");
+    assert!(evidence.contains("pydantic"), "{evidence}");
+    assert_eq!(
+        coverage_at(
+            &conn,
+            "[second]/pkg/consumer.py",
+            3,
+            "models.Record.model_validate",
+        )
+        .0,
+        "unresolved"
+    );
+}
+
+#[test]
+fn module_qualified_framework_call_requires_an_earlier_import_position() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "");
+    w.write(
+        "pkg/models.py",
+        "from pydantic import BaseModel\nclass Record(BaseModel):\n    pass\n",
+    );
+    w.write(
+        "before.py",
+        "models.Record.model_validate({}); from pkg import models\n",
+    );
+    w.write(
+        "after.py",
+        "from pkg import models; models.Record.model_validate({})\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(
+        coverage_at(&conn, "before.py", 1, "models.Record.model_validate").0,
+        "unresolved"
+    );
+    let (status, evidence) = coverage_at(&conn, "after.py", 1, "models.Record.model_validate");
+    assert_eq!(status, "external", "{evidence}");
+    assert!(evidence.contains("pydantic"), "{evidence}");
 }

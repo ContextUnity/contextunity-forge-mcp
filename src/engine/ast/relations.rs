@@ -43,22 +43,72 @@ pub(crate) fn type_references(
     source: &str,
     line: usize,
 ) {
+    type_references_impl(facts, owner, type_node, source, line, false);
+}
+
+pub(crate) fn type_references_at(
+    facts: &mut Facts,
+    owner: &str,
+    type_node: Syntax<'_>,
+    source: &str,
+    line_offset: usize,
+) {
+    type_references_impl(facts, owner, type_node, source, line_offset, true);
+}
+
+fn type_references_impl(
+    facts: &mut Facts,
+    owner: &str,
+    type_node: Syntax<'_>,
+    source: &str,
+    line: usize,
+    exact_position: bool,
+) {
     let mut stack = vec![type_node];
     while let Some(n) = stack.pop() {
+        let position = n.start_position();
+        let line = if exact_position {
+            position.row + line + 1
+        } else {
+            line
+        };
         match n.kind() {
             "scoped_type_identifier" | "attribute" => {
                 let name = text(n, source);
                 reference(facts, owner, name, "references", line);
+                if exact_position {
+                    facts
+                        .references
+                        .last_mut()
+                        .expect("reference was pushed")
+                        .column = position.column;
+                }
             }
             "type_identifier" | "identifier" => {
                 let name = text(n, source);
                 if !name.starts_with('\'')
                     && !matches!(
                         name,
-                        "_" | "self" | "cls" | "this" | "true" | "false" | "None" | "nil" | "null"
+                        "_" | "self"
+                            | "cls"
+                            | "this"
+                            | "true"
+                            | "false"
+                            | "None"
+                            | "nil"
+                            | "null"
+                            | "infer"
                     )
+                    && !is_declaring_type_parameter(n, source, name)
                 {
                     reference(facts, owner, name, "references", line);
+                    if exact_position {
+                        facts
+                            .references
+                            .last_mut()
+                            .expect("reference was pushed")
+                            .column = position.column;
+                    }
                 }
             }
             _ => {
@@ -69,6 +119,40 @@ pub(crate) fn type_references(
             }
         }
     }
+}
+
+fn is_declaring_type_parameter(node: Syntax<'_>, source: &str, name: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if let Some(params) = ancestor.child_by_field_name("type_parameters") {
+            let mut cursor = params.walk();
+            for param in params.named_children(&mut cursor) {
+                if param.kind() == "type_parameter" {
+                    if let Some(param_name) =
+                        param.child_by_field_name("name").map(|n| text(n, source))
+                    {
+                        if param_name == name {
+                            return true;
+                        }
+                    } else if text(param, source).split_whitespace().next() == Some(name) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if ancestor.kind() == "infer_type" {
+            if let Some(param) = ancestor
+                .child_by_field_name("type_parameter")
+                .or_else(|| ancestor.named_child(0))
+            {
+                if text(param, source) == name {
+                    return true;
+                }
+            }
+        }
+        current = ancestor.parent();
+    }
+    false
 }
 
 pub(crate) fn decorator_references(
@@ -266,6 +350,11 @@ pub(crate) fn member_access(
                 | "update_expression"
         ) && (parent.child_by_field_name("left") == Some(node)
             || parent.child_by_field_name("argument") == Some(node))
+        {
+            return;
+        }
+        if matches!(parent.kind(), "call" | "call_expression")
+            && parent.child_by_field_name("function") == Some(node)
         {
             return;
         }
