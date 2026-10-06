@@ -483,6 +483,111 @@ fn collect_pattern_binding_names(pattern: Syntax<'_>, source: &str, names: &mut 
     }
 }
 
+fn dom_global_name(name: &str) -> Option<&'static str> {
+    match name {
+        "document" => Some("document"),
+        "window" => Some("window"),
+        "Event" => Some("Event"),
+        "CustomEvent" => Some("CustomEvent"),
+        "MouseEvent" => Some("MouseEvent"),
+        "KeyboardEvent" => Some("KeyboardEvent"),
+        "EventTarget" => Some("EventTarget"),
+        "Element" => Some("Element"),
+        "HTMLElement" => Some("HTMLElement"),
+        "HTMLTableElement" => Some("HTMLTableElement"),
+        "HTMLDivElement" => Some("HTMLDivElement"),
+        "HTMLInputElement" => Some("HTMLInputElement"),
+        "HTMLButtonElement" => Some("HTMLButtonElement"),
+        "HTMLAnchorElement" => Some("HTMLAnchorElement"),
+        "Document" => Some("Document"),
+        "Window" => Some("Window"),
+        _ => None,
+    }
+}
+
+fn remember_dom_global(
+    name: &str,
+    names: &mut [Option<&'static str>; 16],
+    count: &mut usize,
+) {
+    let Some(global) = dom_global_name(name.trim()) else {
+        return;
+    };
+    if !names[..*count].contains(&Some(global)) {
+        names[*count] = Some(global);
+        *count += 1;
+    }
+}
+
+fn collect_dom_pattern_globals(
+    pattern: Syntax<'_>,
+    source: &str,
+    names: &mut [Option<&'static str>; 16],
+    count: &mut usize,
+) {
+    match pattern.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => {
+            remember_dom_global(text(pattern, source), names, count);
+        }
+        "pair_pattern" => {
+            if let Some(value) = pattern.child_by_field_name("value") {
+                collect_dom_pattern_globals(value, source, names, count);
+            }
+        }
+        "assignment_pattern" => {
+            if let Some(left) = pattern.child_by_field_name("left") {
+                collect_dom_pattern_globals(left, source, names, count);
+            }
+        }
+        "formal_parameters" | "object_pattern" | "array_pattern" | "rest_pattern"
+        | "required_parameter" | "optional_parameter" | "formal_parameter" => {
+            if let Some(candidate) = pattern
+                .child_by_field_name("name")
+                .or_else(|| pattern.child_by_field_name("pattern"))
+            {
+                collect_dom_pattern_globals(candidate, source, names, count);
+                return;
+            }
+            let mut cursor = pattern.walk();
+            for child in pattern.named_children(&mut cursor) {
+                collect_dom_pattern_globals(child, source, names, count);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_dom_import_globals(
+    node: Syntax<'_>,
+    source: &str,
+    names: &mut [Option<&'static str>; 16],
+    count: &mut usize,
+) {
+    match node.kind() {
+        "import_clause" | "namespace_import" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    remember_dom_global(text(child, source), names, count);
+                }
+            }
+        }
+        "import_specifier" => {
+            if let Some(local) = node
+                .child_by_field_name("alias")
+                .or_else(|| node.child_by_field_name("name"))
+            {
+                remember_dom_global(text(local, source), names, count);
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_dom_import_globals(child, source, names, count);
+    }
+}
+
 fn dom_scope_chain(node: Syntax<'_>) -> Vec<usize> {
     let mut scopes = Vec::new();
     let mut current = Some(node);
@@ -659,6 +764,265 @@ fn nearest_binding_scope(node: Syntax<'_>, var_scoped: bool) -> Option<Syntax<'_
     None
 }
 
+fn collect_array_shadow_fact(node: Syntax<'_>, source: &str, file: &mut FileContext) {
+    let (array_binding, array_var_scoped) = match node.kind() {
+        "variable_declarator" => (
+            node.child_by_field_name("name")
+                .is_some_and(|name| name.kind() == "identifier" && text(name, source) == "Array"),
+            node.parent().is_some_and(|parent| parent.kind() == "variable_declaration"),
+        ),
+        "class_declaration" | "interface_declaration" | "type_alias_declaration"
+        | "enum_declaration" | "function_declaration" => {
+            (field(node, source, "name") == Some("Array"), false)
+        }
+        "type_parameter" => (field(node, source, "name") == Some("Array"), false),
+        "required_parameter" | "optional_parameter" => {
+            (field(node, source, "name") == Some("Array"), true)
+        }
+        "import_specifier" => (
+            node.child_by_field_name("alias")
+                .or_else(|| node.child_by_field_name("name"))
+                .is_some_and(|name| text(name, source) == "Array"),
+            false,
+        ),
+        "import_clause" => (
+            node.named_child(0)
+                .is_some_and(|name| name.kind() == "identifier" && text(name, source) == "Array"),
+            false,
+        ),
+        "namespace_import" => (
+            node.named_child(0)
+                .is_some_and(|name| name.kind() == "identifier" && text(name, source) == "Array"),
+            false,
+        ),
+        _ => (false, false),
+    };
+    if array_binding {
+        let scope = if node.kind() == "type_parameter" {
+            let mut current = node.parent();
+            let mut owner = None;
+            while let Some(candidate) = current {
+                if matches!(
+                    candidate.kind(),
+                    "class_declaration"
+                        | "class"
+                        | "function_declaration"
+                        | "function_expression"
+                        | "arrow_function"
+                        | "method_definition"
+                ) {
+                    owner = Some(candidate);
+                    break;
+                }
+                current = candidate.parent();
+            }
+            owner
+        } else {
+            nearest_binding_scope(node, array_var_scoped)
+        };
+        if let Some(scope) = scope {
+            std::sync::Arc::make_mut(&mut file.shadowed_array_type_scopes).insert(scope.id());
+        }
+    }
+}
+
+fn collect_rebound_parameter_fact(node: Syntax<'_>, source: &str, file: &mut FileContext) {
+    let rebound = match node.kind() {
+        "assignment_expression" | "augmented_assignment_expression" => {
+            node.child_by_field_name("left")
+        }
+        "variable_declarator" => node.child_by_field_name("name"),
+        "update_expression" => node.named_child(0),
+        _ => None,
+    };
+    let Some(name) = rebound.filter(|name| name.kind() == "identifier") else {
+        return;
+    };
+    let name = text(name, source);
+    let mut current = node.parent();
+    while let Some(scope) = current {
+        if matches!(
+            scope.kind(),
+            "function_declaration" | "method_definition" | "function_expression" | "arrow_function"
+        ) {
+            std::sync::Arc::make_mut(&mut file.rebound_function_parameters)
+                .entry(scope.id())
+                .or_default()
+                .insert(name.to_owned());
+        }
+        current = scope.parent();
+    }
+}
+
+fn collect_array_callback_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "variable_declarator" {
+            index_dom_listener_declarator(node, source, file);
+        }
+        collect_dom_global_shadow_fact(node, source, file);
+        collect_array_shadow_fact(node, source, file);
+        collect_rebound_parameter_fact(node, source, file);
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+}
+
+fn has_member_property(source: &str, matches_property: impl Fn(&[u8]) -> bool) -> bool {
+    let bytes = source.as_bytes();
+    let mut dot = 0;
+    while dot < bytes.len() {
+        if bytes[dot] != b'.' {
+            dot += 1;
+            continue;
+        }
+        let mut property = dot + 1;
+        loop {
+            while bytes
+                .get(property)
+                .is_some_and(|byte| byte.is_ascii_whitespace())
+            {
+                property += 1;
+            }
+            if bytes.get(property..property + 2) == Some(b"//") {
+                property += 2;
+                while bytes
+                    .get(property)
+                    .is_some_and(|byte| !matches!(byte, b'\n' | b'\r'))
+                {
+                    property += 1;
+                }
+                continue;
+            }
+            if bytes.get(property..property + 2) == Some(b"/*") {
+                property += 2;
+                while property + 1 < bytes.len()
+                    && bytes.get(property..property + 2) != Some(b"*/")
+                {
+                    property += 1;
+                }
+                property = (property + 2).min(bytes.len());
+                continue;
+            }
+            break;
+        }
+        if matches_property(&bytes[property..]) {
+            return true;
+        }
+        dot += 1;
+    }
+    false
+}
+
+fn has_member_method(source: &str, methods: &[&str]) -> bool {
+    has_member_property(source, |property| {
+        methods.iter().any(|method| {
+            property.starts_with(method.as_bytes())
+                && property
+                    .get(method.len())
+                    .is_none_or(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'$') && *byte < 0x80)
+        })
+    })
+}
+
+fn has_dom_event_property(source: &str) -> bool {
+    has_member_property(source, |property| {
+        property.starts_with(b"on")
+            && property.len() > 2
+            && property
+                .get(2)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$') || *byte >= 0x80)
+    })
+}
+
+fn collect_dom_global_shadow_fact(node: Syntax<'_>, source: &str, file: &mut FileContext) {
+    let mut shadowed_globals = [None; 16];
+    let mut shadowed_count = 0;
+    let mut var_scoped = false;
+    match node.kind() {
+        "variable_declarator" => {
+            var_scoped = node
+                .parent()
+                .is_some_and(|parent| parent.kind() == "variable_declaration");
+            if let Some(name) = node.child_by_field_name("name") {
+                collect_dom_pattern_globals(
+                    name,
+                    source,
+                    &mut shadowed_globals,
+                    &mut shadowed_count,
+                );
+            }
+        }
+        "formal_parameters" | "required_parameter" | "optional_parameter" | "formal_parameter" => {
+            var_scoped = true;
+            collect_dom_pattern_globals(
+                node,
+                source,
+                &mut shadowed_globals,
+                &mut shadowed_count,
+            );
+        }
+        "arrow_function" => {
+            var_scoped = true;
+            if let Some(parameter) = node.child_by_field_name("parameter") {
+                collect_dom_pattern_globals(
+                    parameter,
+                    source,
+                    &mut shadowed_globals,
+                    &mut shadowed_count,
+                );
+            }
+        }
+        "function_declaration" | "class_declaration" | "enum_declaration"
+        | "interface_declaration" | "type_alias_declaration" => {
+            if let Some(name) = field(node, source, "name") {
+                remember_dom_global(name, &mut shadowed_globals, &mut shadowed_count);
+            }
+        }
+        "function_expression" => {
+            var_scoped = true;
+            if let Some(name) = field(node, source, "name") {
+                remember_dom_global(name, &mut shadowed_globals, &mut shadowed_count);
+            }
+        }
+        "import_statement" => collect_dom_import_globals(
+            node,
+            source,
+            &mut shadowed_globals,
+            &mut shadowed_count,
+        ),
+        "catch_clause" => {
+            if let Some(parameter) = node.child_by_field_name("parameter") {
+                collect_dom_pattern_globals(
+                    parameter,
+                    source,
+                    &mut shadowed_globals,
+                    &mut shadowed_count,
+                );
+            }
+        }
+        "assignment_expression" | "augmented_assignment_expression" => {
+            var_scoped = true;
+            if let Some(left) = node
+                .child_by_field_name("left")
+                .filter(|left| left.kind() == "identifier")
+            {
+                remember_dom_global(text(left, source), &mut shadowed_globals, &mut shadowed_count);
+            }
+        }
+        _ => {}
+    }
+    if shadowed_count > 0 {
+        if let Some(scope) = nearest_binding_scope(node, var_scoped) {
+            let by_scope = std::sync::Arc::make_mut(&mut file.shadowed_dom_global_scopes);
+            let globals = by_scope.entry(scope.id()).or_default();
+            for global in shadowed_globals[..shadowed_count].iter().flatten() {
+                globals.insert((*global).to_owned());
+            }
+        }
+    }
+}
+
 fn collect_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext, typescript: bool) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -750,11 +1114,13 @@ fn collect_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext, t
         };
         if let Some(name) = written.filter(|name| name.kind() == "identifier") {
             let name = text(name, source).to_owned();
+            let local_writes = std::sync::Arc::make_mut(&mut file.dom_listener_local_writes);
             let mut parent = node.parent();
             while let Some(scope) = parent {
                 if matches!(scope.kind(), "statement_block" | "program" | "source_file") {
-                    std::sync::Arc::make_mut(&mut file.dom_listener_local_writes)
-                        .entry(scope.id()).or_default()
+                    local_writes
+                        .entry(scope.id())
+                        .or_default()
                         .entry(name.clone()).or_default().push(node.start_byte());
                 }
                 if matches!(scope.kind(), "function_declaration" | "function_expression" | "arrow_function" | "method_definition") {
@@ -763,51 +1129,7 @@ fn collect_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext, t
                 parent = scope.parent();
             }
         }
-        for global in [
-            "document", "window", "Event", "CustomEvent", "MouseEvent", "KeyboardEvent",
-            "EventTarget", "Element", "HTMLElement", "HTMLTableElement", "HTMLDivElement",
-            "HTMLInputElement", "HTMLButtonElement", "HTMLAnchorElement", "Document", "Window",
-        ] {
-            let (shadows, var_scoped) = match node.kind() {
-                "variable_declarator" => (
-                    node.child_by_field_name("name")
-                        .is_some_and(|name| pattern_binds_name(name, source, global)),
-                    node.parent().is_some_and(|parent| parent.kind() == "variable_declaration"),
-                ),
-                "formal_parameters" | "required_parameter" | "optional_parameter"
-                | "formal_parameter" => (pattern_binds_name(node, source, global), true),
-                "arrow_function" => (
-                    node.child_by_field_name("parameter")
-                        .is_some_and(|parameter| pattern_binds_name(parameter, source, global)),
-                    true,
-                ),
-                "function_declaration" | "class_declaration" | "enum_declaration"
-                | "interface_declaration" | "type_alias_declaration" => (
-                    field(node, source, "name") == Some(global), false,
-                ),
-                "function_expression" => (field(node, source, "name") == Some(global), true),
-                "import_statement" => (import_binds_name(node, source, global), false),
-                "catch_clause" => (
-                    node.child_by_field_name("parameter")
-                        .is_some_and(|pattern| pattern_binds_name(pattern, source, global)),
-                    false,
-                ),
-                "assignment_expression" | "augmented_assignment_expression" => (
-                    node.child_by_field_name("left")
-                        .is_some_and(|left| left.kind() == "identifier" && text(left, source) == global),
-                    true,
-                ),
-                _ => (false, false),
-            };
-            if shadows {
-                if let Some(scope) = nearest_binding_scope(node, var_scoped) {
-                    std::sync::Arc::make_mut(&mut file.shadowed_dom_global_scopes)
-                        .entry(scope.id())
-                        .or_default()
-                        .insert(global.to_owned());
-                }
-            }
-        }
+        collect_dom_global_shadow_fact(node, source, file);
         if matches!(node.kind(), "field_definition" | "public_field_definition") {
             if let Some(class) = node.parent()
                 .filter(|body| body.kind() == "class_body")
@@ -887,84 +1209,8 @@ fn collect_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext, t
                     .insert(node.id(), receivers);
             }
         }
-        let (array_binding, array_var_scoped) = match node.kind() {
-            "variable_declarator" => (
-                node.child_by_field_name("name")
-                    .is_some_and(|name| name.kind() == "identifier" && text(name, source) == "Array"),
-                node.parent().is_some_and(|parent| parent.kind() == "variable_declaration"),
-            ),
-            "class_declaration" | "interface_declaration" | "type_alias_declaration"
-            | "enum_declaration" | "function_declaration" => (
-                field(node, source, "name") == Some("Array"),
-                false,
-            ),
-            "type_parameter" => (field(node, source, "name") == Some("Array"), false),
-            "required_parameter" | "optional_parameter" => (
-                field(node, source, "name") == Some("Array"),
-                true,
-            ),
-            "import_specifier" => (
-                node.child_by_field_name("alias")
-                    .or_else(|| node.child_by_field_name("name"))
-                    .is_some_and(|name| text(name, source) == "Array"),
-                false,
-            ),
-            "import_clause" => (
-                node.named_child(0)
-                    .is_some_and(|name| name.kind() == "identifier" && text(name, source) == "Array"),
-                false,
-            ),
-            "namespace_import" => (
-                node.named_child(0)
-                    .is_some_and(|name| name.kind() == "identifier" && text(name, source) == "Array"),
-                false,
-            ),
-            _ => (false, false),
-        };
-        if array_binding {
-            let scope = if node.kind() == "type_parameter" {
-                let mut current = node.parent();
-                let mut owner = None;
-                while let Some(candidate) = current {
-                    if matches!(candidate.kind(),
-                        "class_declaration" | "class" | "function_declaration"
-                            | "function_expression" | "arrow_function" | "method_definition")
-                    {
-                        owner = Some(candidate);
-                        break;
-                    }
-                    current = candidate.parent();
-                }
-                owner
-            } else {
-                nearest_binding_scope(node, array_var_scoped)
-            };
-            if let Some(scope) = scope {
-                std::sync::Arc::make_mut(&mut file.shadowed_array_type_scopes).insert(scope.id());
-            }
-        }
-        let rebound = match node.kind() {
-            "assignment_expression" | "augmented_assignment_expression" => {
-                node.child_by_field_name("left")
-            }
-            "variable_declarator" => node.child_by_field_name("name"),
-            "update_expression" => node.named_child(0),
-            _ => None,
-        };
-        if let Some(name) = rebound.filter(|name| name.kind() == "identifier") {
-            let name = text(name, source);
-            let mut current = node.parent();
-            while let Some(scope) = current {
-                if matches!(scope.kind(),
-                    "function_declaration" | "method_definition" | "function_expression"
-                        | "arrow_function")
-                {
-                    std::sync::Arc::make_mut(&mut file.rebound_function_parameters)
-                        .entry(scope.id()).or_default().insert(name.into());
-                }
-                current = scope.parent();
-            }
-        }
+        collect_array_shadow_fact(node, source, file);
+        collect_rebound_parameter_fact(node, source, file);
         let mut cursor = node.walk();
         stack.extend(node.named_children(&mut cursor));
     }
@@ -2695,7 +2941,31 @@ impl LanguageProfile for TypeScript {
             exports: value_flow::exports(root, source),
             ..Default::default()
         };
-        collect_scope_facts(root, source, &mut file, !self.javascript);
+        let needs_dom_scope_facts =
+            source.contains("addEventListener") || has_dom_event_property(source);
+        let needs_array_callback_scope_facts = !self.javascript
+            && has_member_method(
+                source,
+                &["forEach", "map", "filter", "find", "some", "every", "flatMap"],
+            );
+        let needs_dom_array_receiver_facts = needs_array_callback_scope_facts
+            && ["querySelectorAll", "getElementsByTagName", "getElementsByClassName"]
+                .iter()
+                .any(|method| source.contains(method));
+        let needs_full_scope_facts = needs_dom_scope_facts
+            || needs_dom_array_receiver_facts
+            || source.contains("require");
+        if needs_full_scope_facts {
+            collect_scope_facts(root, source, &mut file, !self.javascript);
+        }
+        let needs_partial_scope_facts =
+            (self.javascript && (needs_dom_scope_facts || needs_array_callback_scope_facts))
+                || (!needs_full_scope_facts
+                    && needs_array_callback_scope_facts
+                    && !needs_dom_array_receiver_facts);
+        if needs_partial_scope_facts {
+            collect_array_callback_scope_facts(root, source, &mut file);
+        }
         let mut c = root.walk();
         for node in root
             .named_children(&mut c)

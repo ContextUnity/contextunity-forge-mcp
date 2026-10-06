@@ -10,6 +10,7 @@ type MemberMap<'a> = HashMap<(&'a str, bool), Vec<&'a Node>>;
 
 pub(crate) struct TypeScriptMembers<'a> {
     members: HashMap<&'a str, MemberMap<'a>>,
+    fields: HashMap<&'a str, MemberMap<'a>>,
 }
 
 impl<'a> TypeScriptMembers<'a> {
@@ -17,15 +18,19 @@ impl<'a> TypeScriptMembers<'a> {
         all: &'a BTreeMap<String, F>,
         resolver: &impl SemanticResolver<'a>,
     ) -> Self {
+        let vue_fields = all.keys().any(|path| path.ends_with(".vue"));
         let classes: Vec<_> = all
             .values()
             .flat_map(|facts| &facts.as_ref().nodes)
             .filter(|node| {
                 matches!(node.language.as_str(), "typescript" | "javascript" | "vue")
-                    && matches!(node.kind.as_str(), "class" | "interface")
+                    && (matches!(node.kind.as_str(), "class" | "interface" | "enum")
+                        || (node.language == "javascript" && node.kind == "function"
+                            && node.details["prototype_constructor"] == true))
             })
             .collect();
         let mut own = HashMap::<&str, MemberMap<'a>>::new();
+        let mut own_fields = HashMap::<&str, MemberMap<'a>>::new();
         let mut parents = HashMap::<&str, Option<Vec<&Node>>>::new();
         for class in &classes {
             let Some(facts) = all.get(&class.path) else {
@@ -34,19 +39,60 @@ impl<'a> TypeScriptMembers<'a> {
             let facts = facts.as_ref();
             let prefix = format!("{}.", class.qualname);
             let methods = own.entry(class.id.as_str()).or_default();
+            let mut fields = vue_fields.then(|| own_fields.entry(class.id.as_str()).or_default());
             for method in &facts.nodes {
-                if !matches!(method.kind.as_str(), "method" | "function") {
+                let is_method = matches!(method.kind.as_str(), "method" | "function")
+                    || (matches!(class.kind.as_str(), "enum" | "interface") && method.kind == "field");
+                let is_field = vue_fields && method.kind == "field";
+                if !is_method && !is_field {
                     continue;
                 }
-                if let Some(name) = method
-                    .qualname
-                    .strip_prefix(&prefix)
-                    .filter(|name| !name.contains('.'))
-                {
-                    methods
-                        .entry((name, method.details["is_static"] == true))
-                        .or_default()
-                        .push(method);
+                if let Some(name) = method.details["prototype_member"].as_str().or_else(|| {
+                    method
+                        .qualname
+                        .strip_prefix(&prefix)
+                        .filter(|name| !name.contains('.'))
+                }) {
+                    if method.details["prototype"] == true {
+                        if method.details["prototype_valid"] != true {
+                            continue;
+                        }
+                        let assignment_line = method.details["prototype_assignment_line"].as_u64()
+                            .unwrap_or(method.line as u64) as usize;
+                        let assignment_column = method.details["prototype_assignment_column"].as_u64()
+                            .or_else(|| method.details["column"].as_u64()).unwrap_or(0) as usize;
+                        let lexical_class = resolver.resolve_symbol(
+                            method,
+                            &class.name,
+                            SourcePosition {
+                                line: assignment_line,
+                                column: assignment_column,
+                            },
+                            SymbolRole::Constructor,
+                        );
+                        let exact_owner = matches!(lexical_class, Symbol::Type(TypeTarget::Local(node)) if node.id == class.id);
+                        let class_visible = class.kind == "function" || class.line < assignment_line
+                            || (class.line == assignment_line
+                                && class.details["column"].as_u64().unwrap_or(0)
+                                    < assignment_column as u64);
+                        if !exact_owner || !class_visible {
+                            continue;
+                        }
+                    }
+                    if is_field {
+                        if let Some(fields) = fields.as_deref_mut() {
+                            fields
+                                .entry((name, method.details["is_static"] == true))
+                                .or_default()
+                                .push(method);
+                        }
+                    }
+                    if is_method {
+                        methods
+                            .entry((name, method.details["is_static"] == true))
+                            .or_default()
+                            .push(method);
+                    }
                 }
             }
             for candidates in methods.values_mut() {
@@ -57,6 +103,11 @@ impl<'a> TypeScriptMembers<'a> {
                     candidates.retain(|node| node.details["is_stub"] != true);
                 }
                 candidates.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+            }
+            if let Some(fields) = fields {
+                for candidates in fields.values_mut() {
+                    candidates.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+                }
             }
             let mut bases = Vec::new();
             let mut invalid = false;
@@ -90,6 +141,7 @@ impl<'a> TypeScriptMembers<'a> {
             parents.insert(class.id.as_str(), (!invalid).then_some(bases));
         }
         let mut members = HashMap::new();
+        let mut fields = HashMap::new();
         let mut states = HashMap::new();
         let mut invalid = HashSet::new();
         for class in &classes {
@@ -100,8 +152,11 @@ impl<'a> TypeScriptMembers<'a> {
         }
         for class in classes {
             inherited(class, &own, &parents, &mut members, &mut HashSet::new(), 0);
+            if vue_fields {
+                inherited(class, &own_fields, &parents, &mut fields, &mut HashSet::new(), 0);
+            }
         }
-        Self { members }
+        Self { members, fields }
     }
 
     pub(crate) fn lookup(&self, receiver: &Node, member: &str, associated: bool) -> &[&'a Node] {
@@ -114,6 +169,17 @@ impl<'a> TypeScriptMembers<'a> {
             .from_hash(hash, |(name, is_static)| {
                 *name == member && *is_static == associated
             })
+            .map_or(&[], |(_, nodes)| nodes.as_slice())
+    }
+
+    pub(crate) fn lookup_field(&self, receiver: &Node, member: &str) -> &[&'a Node] {
+        let Some(fields) = self.fields.get(receiver.id.as_str()) else {
+            return &[];
+        };
+        let hash = fields.hasher().hash_one((member, false));
+        fields
+            .raw_entry()
+            .from_hash(hash, |(name, is_static)| *name == member && !*is_static)
             .map_or(&[], |(_, nodes)| nodes.as_slice())
     }
 }
@@ -243,16 +309,28 @@ impl LanguageLinker for TypeScriptLinker {
         context: &mut ImportContext<'ctx, 'a, 'input>,
     ) -> ImportResolution<'a> {
         let mut result = resolve_default_import(context);
-        context
-            .candidates
-            .retain(|node| !matches!(node.kind.as_str(), "type" | "interface"));
+        let typescript_source = context.path.rsplit_once('.').is_some_and(|(_, extension)| {
+            matches!(extension, "ts" | "tsx" | "mts" | "cts" | "vue")
+        });
+        if !typescript_source {
+            context.candidates.retain(|node| !matches!(node.kind.as_str(), "type" | "interface"));
+        }
         if let (Some([module]), Some(name)) = (
             Some(context.modules.as_slice()),
             context.tail().map(str::to_owned),
         ) {
             if !name.is_empty() {
                 let exported = target(context.package_exports, module, &name);
-                if name != "default" || exported.is_some() {
+                let direct_type_export = typescript_source
+                    && exported.is_none()
+                    && matches!(context.candidates.as_slice(), [node] if matches!(node.kind.as_str(), "type" | "interface")
+                        && module.details["exports"].as_array().is_some_and(|bindings| bindings.iter().any(|binding| {
+                            binding["type_only"] == true
+                                && binding["name"].as_str() == Some(name.as_str())
+                                && binding["local"].as_str() == Some(node.name.as_str())
+                                && binding["module"].is_null()
+                        })));
+                if (name != "default" || exported.is_some()) && !direct_type_export {
                     context.candidates.clear();
                 }
                 if let Some(node) = exported {
@@ -330,6 +408,10 @@ impl LanguageLinker for TypeScriptLinker {
     }
 }
 
+fn type_position_kind(kind: &str) -> bool {
+    matches!(kind, "type" | "interface" | "class" | "enum")
+}
+
 fn package_exports<'a, F: AsRef<Facts>>(
     all: &'a BTreeMap<String, F>,
     modules: &ModulesByNamespace<'a>,
@@ -355,9 +437,6 @@ fn package_exports<'a, F: AsRef<Facts>>(
             continue;
         };
         for binding in bindings {
-            if binding["type_only"] == true {
-                continue;
-            }
             if binding["star"] == true {
                 if let Some(provider) = binding["module"]
                     .as_str()
@@ -380,9 +459,10 @@ fn package_exports<'a, F: AsRef<Facts>>(
             }
             if !seen.insert((path.as_str(), name)) {
                 exports.entry(path.as_str()).or_default().insert(name, None);
-                pending.retain(|(owner, alias, _, _)| *owner != path.as_str() || *alias != name);
+                pending.retain(|(owner, alias, _, _, _)| *owner != path.as_str() || *alias != name);
                 continue;
             }
+            let type_only = binding["type_only"] == true;
             let mut source = binding["module"].as_str();
             let mut member = local;
             if source.is_none() {
@@ -406,26 +486,27 @@ fn package_exports<'a, F: AsRef<Facts>>(
             if let Some(source) = source {
                 if let Some(provider) = resolve_provider(path, source) {
                     if let Some(member) = member {
-                        pending.push((path.as_str(), name, provider, member));
-                    } else {
+                        pending.push((path.as_str(), name, provider, member, type_only));
+                    } else if !type_only || type_position_kind(provider.kind.as_str()) {
                         owner.insert(name, Some(provider));
                     }
                 }
             } else if let Some(local) = local {
                 let qualname = format!("{}.{}", module.qualname, local);
-                let mut nodes = by_module
+                let mut candidates: Vec<&Node> = by_module
                     .get(path.as_str())
                     .into_iter()
                     .flatten()
                     .copied()
-                    .filter(|node| {
-                        node.qualname == qualname
-                            && !matches!(node.kind.as_str(), "type" | "interface")
-                    });
-                if let Some(node) = nodes.next() {
-                    if nodes.next().is_none() {
-                        owner.insert(name, Some(node));
-                    }
+                    .filter(|node| node.qualname == qualname)
+                    .collect();
+                if type_only {
+                    candidates.retain(|node| type_position_kind(node.kind.as_str()));
+                } else {
+                    candidates.retain(|node| !matches!(node.kind.as_str(), "type" | "interface"));
+                }
+                if let [node] = candidates.as_slice() {
+                    owner.insert(name, Some(node));
                 }
             }
         }
@@ -458,8 +539,11 @@ fn package_exports<'a, F: AsRef<Facts>>(
                 changed = true;
             }
         }
-        for (owner, name, provider, member) in &pending {
-            let node = target(&exports, provider, member);
+        for (owner, name, provider, member, type_only) in &pending {
+            let mut node = target(&exports, provider, member);
+            if *type_only && node.is_some_and(|n| !type_position_kind(n.kind.as_str())) {
+                node = None;
+            }
             let existing = exports.get_mut(owner).expect("export owner exists");
             if existing
                 .get(name)

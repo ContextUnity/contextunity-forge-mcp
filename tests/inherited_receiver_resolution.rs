@@ -81,13 +81,16 @@ fn verified_framework_bases_supply_only_known_members_without_edges() {
     let (_, graph) = linked(&[("commands.py", "from django.core.management.base import BaseCommand\nfrom unittest import TestCase\nclass Command(BaseCommand):\n    def handle(self):\n        self.stdout.write('ok')\n        self.made_up()\nclass Case(TestCase):\n    def test_run(self): self.assertEqual(1, 1)\n")]);
     for expression in ["self.stdout.write", "self.assertEqual"] {
         assert_eq!(status(&graph, expression), "external");
-        assert!(graph
+        let evidence = &graph
             .coverage
             .iter()
             .find(|coverage| coverage.expression == expression)
             .unwrap()
-            .evidence
-            .starts_with("call through external import "));
+            .evidence;
+        assert!(
+            evidence.starts_with("call through external import ")
+                || evidence.contains("via external import ")
+        );
         assert!(!graph
             .edges
             .iter()

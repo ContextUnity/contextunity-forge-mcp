@@ -63,6 +63,21 @@ fn type_expr(node: Syntax<'_>, source: &str, depth: usize) -> TypeExpr {
                 args: vec![type_expr(element, source, depth + 1)],
             });
     }
+    if node.kind() == "union_type" {
+        let mut cursor = node.walk();
+        let non_null: Vec<_> = node
+            .named_children(&mut cursor)
+            .filter(|child| {
+                let txt = text(*child, source).trim();
+                !matches!(txt, "null" | "undefined" | "void")
+                    && !matches!(child.kind(), "null_type" | "undefined_type" | "void_type")
+            })
+            .collect();
+        if non_null.len() == 1 {
+            return type_expr(non_null[0], source, depth + 1);
+        }
+        return TypeExpr::Unknown;
+    }
     let value = text(node, source).trim().trim_start_matches(':').trim();
     if !value.is_empty()
         && value.split('.').all(|part| {
@@ -206,10 +221,154 @@ pub(super) fn jsdoc(
     (parameters, returned, declared)
 }
 
+fn returned_callables<'tree>(
+    root: Syntax<'tree>,
+    source: &str,
+) -> Option<hashbrown::HashMap<String, Syntax<'tree>>> {
+    let body = root.child_by_field_name("body")?;
+    if body.kind() != "statement_block" {
+        return None;
+    }
+    let mut definitions = hashbrown::HashMap::new();
+    let mut declared = hashbrown::HashSet::new();
+    for statement in body.named_children(&mut body.walk()) {
+        if statement.kind() == "function_declaration" {
+            let name = statement.child_by_field_name("name")?;
+            let name = text(name, source);
+            if !declared.insert(name.to_owned()) {
+                return None;
+            }
+            definitions.insert(name.to_owned(), statement);
+        } else if matches!(statement.kind(), "lexical_declaration" | "variable_declaration") {
+            let is_const = text(statement, source).trim_start().starts_with("const ");
+            for declaration in statement.named_children(&mut statement.walk()) {
+                if declaration.kind() != "variable_declarator" {
+                    continue;
+                }
+                let Some(name) = declaration.child_by_field_name("name")
+                    .filter(|name| name.kind() == "identifier") else { continue; };
+                let name = text(name, source);
+                if !declared.insert(name.to_owned()) {
+                    return None;
+                }
+                if is_const {
+                    if let Some(value) = declaration.child_by_field_name("value")
+                        .filter(|value| matches!(value.kind(), "arrow_function" | "function_expression"))
+                    {
+                        definitions.insert(name.to_owned(), value);
+                    }
+                }
+            }
+        }
+    }
+    let mut pending = vec![body];
+    while let Some(node) = pending.pop() {
+        let written = if matches!(node.kind(), "assignment_expression" | "augmented_assignment_expression") {
+            node.child_by_field_name("left")
+        } else if node.kind() == "update_expression" {
+            node.child_by_field_name("argument")
+        } else {
+            None
+        };
+        if written.is_some_and(|name| {
+            name.kind() == "identifier" && definitions.contains_key(text(name, source))
+        }) {
+            return None;
+        }
+        pending.extend(node.named_children(&mut node.walk()));
+    }
+    Some(definitions)
+}
+
+fn object_value(node: Syntax<'_>, source: &str, scope: Option<Syntax<'_>>) -> ValueExpr {
+    if node.named_child_count() > 128 {
+        return ValueExpr::Unknown;
+    }
+    let mut definitions = None;
+    let mut members = Vec::new();
+    let mut names = hashbrown::HashSet::new();
+    for item in node.named_children(&mut node.walk()) {
+        let (name, declaration) = if item.kind() == "method_definition" {
+            if text(item, source).trim_start().starts_with("get ")
+                || text(item, source).trim_start().starts_with("set ")
+            {
+                return ValueExpr::Unknown;
+            }
+            let Some(name) = item
+                .child_by_field_name("name")
+                .filter(|name| matches!(name.kind(), "property_identifier" | "identifier"))
+            else {
+                return ValueExpr::Unknown;
+            };
+            (text(name, source), item)
+        } else if item.kind() == "pair" {
+            let (Some(name), Some(declaration)) = (
+                item.child_by_field_name("key"),
+                item.child_by_field_name("value"),
+            ) else {
+                return ValueExpr::Unknown;
+            };
+            if !matches!(name.kind(), "property_identifier" | "identifier") {
+                return ValueExpr::Unknown;
+            }
+            (text(name, source), if matches!(declaration.kind(), "arrow_function" | "function_expression") {
+                declaration
+            } else {
+                item
+            })
+        } else if item.kind() == "shorthand_property_identifier" {
+            if definitions.is_none() {
+                let Some(found) = scope.and_then(|root| returned_callables(root, source)) else {
+                    return ValueExpr::Unknown;
+                };
+                definitions = Some(found);
+            }
+            let name = text(item, source);
+            let Some(declaration) = definitions.as_ref().and_then(|definitions| definitions.get(name)) else {
+                return ValueExpr::Unknown;
+            };
+            (name, *declaration)
+        } else {
+            return ValueExpr::Unknown;
+        };
+        if !names.insert(name) {
+            return ValueExpr::Unknown;
+        }
+        members.push(ObjectMember {
+            name: name.to_owned(),
+            position: position(declaration),
+        });
+    }
+    if members.is_empty() {
+        ValueExpr::Unknown
+    } else {
+        ValueExpr::Object {
+            members,
+            builtin_guard: false,
+        }
+    }
+}
+
 fn value(node: Syntax<'_>, source: &str) -> ValueExpr {
     match node.kind() {
+        "await_expression" => node
+            .named_child(0)
+            .filter(|expression| expression.kind() == "call_expression")
+            .map(|expression| {
+                if expression.child_by_field_name("function")
+                    .is_some_and(|callee| callee.kind() == "identifier" && text(callee, source) == "fetch")
+                {
+                    ValueExpr::Call { callee: "await fetch".to_owned() }
+                } else {
+                    value(expression, source)
+                }
+            })
+            .unwrap_or(ValueExpr::Unknown),
         "identifier" => ValueExpr::Alias {
             name: text(node, source).to_owned(),
+        },
+        "array" => ValueExpr::Construct {
+            callee: "[]".to_owned(),
         },
         "new_expression" => node
             .child_by_field_name("constructor")
@@ -217,12 +376,44 @@ fn value(node: Syntax<'_>, source: &str) -> ValueExpr {
                 callee: text(callee, source).to_owned(),
             })
             .unwrap_or(ValueExpr::Unknown),
-        "call_expression" => node
-            .child_by_field_name("function")
-            .map(|callee| ValueExpr::Call {
-                callee: text(callee, source).to_owned(),
-            })
-            .unwrap_or(ValueExpr::Unknown),
+        "call_expression" => {
+            let Some(callee) = node.child_by_field_name("function") else {
+                return ValueExpr::Unknown;
+            };
+            if text(callee, source) == "Object.freeze" {
+                let Some(arguments) = node.child_by_field_name("arguments") else {
+                    return ValueExpr::Unknown;
+                };
+                let mut cursor = arguments.walk();
+                let mut values = arguments.named_children(&mut cursor);
+                return match (values.next(), values.next()) {
+                    (Some(object), None) if object.kind() == "object" => match value(object, source) {
+                        ValueExpr::Object { members, .. } => ValueExpr::Object {
+                            members,
+                            builtin_guard: true,
+                        },
+                        _ => ValueExpr::Unknown,
+                    },
+                    _ => ValueExpr::Unknown,
+                };
+            }
+            let callee_text = text(callee, source);
+            if callee_text == "defineProps" {
+                if let Some(type_arguments) = node.child_by_field_name("type_arguments") {
+                    if let Some(first_arg) = type_arguments.named_child(0) {
+                        if first_arg.kind() != "object_type" {
+                            let ty = named_type(first_arg, source);
+                            if !matches!(ty, TypeExpr::Unknown) {
+                                return ValueExpr::Annotated { type_expr: ty };
+                            }
+                        }
+                    }
+                }
+            }
+            ValueExpr::Call {
+                callee: callee_text.to_owned(),
+            }
+        }
         "member_expression" => match (
             node.child_by_field_name("object"),
             node.child_by_field_name("property"),
@@ -237,59 +428,44 @@ fn value(node: Syntax<'_>, source: &str) -> ValueExpr {
             }
             _ => ValueExpr::Unknown,
         },
-        "object" => {
-            let mut members = Vec::new();
-            let mut names = hashbrown::HashSet::new();
-            let mut cursor = node.walk();
-            for item in node.named_children(&mut cursor) {
-                let (name, declaration) = if item.kind() == "method_definition" {
-                    if text(item, source).trim_start().starts_with("get ")
-                        || text(item, source).trim_start().starts_with("set ")
-                    {
-                        return ValueExpr::Unknown;
-                    }
-                    let Some(name) = item
-                        .child_by_field_name("name")
-                        .filter(|name| matches!(name.kind(), "property_identifier" | "identifier"))
-                    else {
-                        return ValueExpr::Unknown;
-                    };
-                    (text(name, source), item)
-                } else if item.kind() == "pair" {
-                    let (Some(name), Some(declaration)) = (
-                        item.child_by_field_name("key"),
-                        item.child_by_field_name("value"),
-                    ) else {
-                        return ValueExpr::Unknown;
-                    };
-                    if !matches!(name.kind(), "property_identifier" | "identifier")
-                        || !matches!(declaration.kind(), "arrow_function" | "function_expression")
-                    {
-                        return ValueExpr::Unknown;
-                    }
-                    (text(name, source), declaration)
-                } else {
-                    return ValueExpr::Unknown;
-                };
-                if !names.insert(name) {
-                    return ValueExpr::Unknown;
-                }
-                members.push(ObjectMember {
-                    name: name.to_owned(),
-                    position: position(declaration),
-                });
-            }
-            if members.is_empty() {
-                ValueExpr::Unknown
-            } else {
-                ValueExpr::Object { members }
-            }
-        }
+        "object" => object_value(node, source, None),
         _ => ValueExpr::Unknown,
     }
 }
 
+fn is_simple_assignment(node: Syntax<'_>, source: &str) -> bool {
+    if node.kind() != "assignment_expression" {
+        return false;
+    }
+    if let Some(operator) = node.child_by_field_name("operator") {
+        return text(operator, source).trim() == "=";
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if !child.is_named() {
+            let t = text(child, source).trim();
+            if t == "=" {
+                return true;
+            } else if t.ends_with('=') {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
+    if root.kind() == "pair" {
+        if let Some(field_value) = root.child_by_field_name("value")
+            .filter(|value| value.kind() == "array")
+        {
+            return ValueFlowFacts {
+                return_value: Some(value(field_value, source)),
+                return_position: Some(completed(field_value)),
+                ..Default::default()
+            };
+        }
+    }
     let mut cursor = root.walk();
     let wrapped_return = root.kind().contains("generator_function")
         || root
@@ -307,16 +483,20 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
     };
     if result.return_type.is_none() {
         if let Some(expression) = final_return(root) {
-            let returned = value(expression, source);
+            let returned = if expression.kind() == "object" {
+                object_value(expression, source, Some(root))
+            } else {
+                value(expression, source)
+            };
             if !matches!(returned, ValueExpr::Unknown) {
                 result.return_value = Some(returned);
                 result.return_position = Some(position(expression));
             }
         }
     }
-    let mut pending = vec![(root, false)];
+    let mut pending = vec![(root, false, false)];
     let mut object_aliases = std::collections::BTreeSet::new();
-    while let Some((node, conditional)) = pending.pop() {
+    while let Some((node, branch_conditional, try_conditional)) = pending.pop() {
         if node.id() != root.id()
             && matches!(
                 node.kind(),
@@ -333,7 +513,7 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
         {
             continue;
         }
-        let conditional = conditional
+        let branch_conditional = branch_conditional
             || matches!(
                 node.kind(),
                 "if_statement"
@@ -342,10 +522,35 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
                     | "for_in_statement"
                     | "while_statement"
                     | "do_statement"
-                    | "try_statement"
                     | "ternary_expression"
             );
+        let try_conditional = try_conditional || node.kind() == "try_statement";
+        let conditional = branch_conditional || try_conditional;
         if node.kind() == "variable_declarator" {
+            let lexical = node.parent().is_some_and(|parent| parent.kind() == "lexical_declaration");
+            let immutable = node.parent().is_some_and(|parent| {
+                parent.kind() == "lexical_declaration"
+                    && parent
+                        .child_by_field_name("kind")
+                        .is_some_and(|keyword| text(keyword, source) == "const")
+            });
+            let binding_conditional = branch_conditional || (try_conditional && !lexical);
+            let scope_end = (try_conditional && lexical && !branch_conditional)
+                .then(|| {
+                    let mut parent = node.parent();
+                    while let Some(ancestor) = parent {
+                        if ancestor.kind() == "statement_block" {
+                            return Some(completed(ancestor));
+                        }
+                        parent = ancestor.parent();
+                    }
+                    None
+                })
+                .flatten();
+            let scoped = |value| match scope_end {
+                Some(body_end) => ValueExpr::Scoped { value: Box::new(value), body_end },
+                None => value,
+            };
             if let Some(name) = node
                 .child_by_field_name("name")
                 .filter(|name| name.kind() == "identifier")
@@ -371,22 +576,26 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
                 result.bindings.push(BindingFact {
                     name: text(name, source).to_owned(),
                     position: position(node),
-                    value: ValueExpr::Unknown,
-                    conditional,
+                    value: scoped(ValueExpr::Unknown),
+                    conditional: binding_conditional,
                 });
                 if !matches!(&expression, ValueExpr::Unknown) {
+                    if immutable && !binding_conditional {
+                        result.immutable_initializers.push(completed(node));
+                    }
                     result.bindings.push(BindingFact {
                         name: text(name, source).to_owned(),
                         position: completed(node),
-                        value: expression,
-                        conditional,
+                        value: scoped(expression),
+                        conditional: binding_conditional,
                     });
                 }
             } else if let (Some(pattern), Some(initializer)) = (
                 node.child_by_field_name("name"),
                 node.child_by_field_name("value"),
             ) {
-                if pattern.kind() == "object_pattern" && initializer.kind() == "identifier" {
+                if pattern.kind() == "object_pattern" && pattern.named_child_count() <= 32 {
+                    let source_value = value(initializer, source);
                     let mut cursor = pattern.walk();
                     for item in pattern.named_children(&mut cursor) {
                         let pair = if item.kind() == "shorthand_property_identifier_pattern" {
@@ -412,18 +621,20 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
                             result.bindings.push(BindingFact {
                                 name: local.to_owned(),
                                 position: position(node),
-                                value: ValueExpr::Unknown,
-                                conditional,
+                                value: scoped(ValueExpr::Unknown),
+                                conditional: binding_conditional,
                             });
-                            result.bindings.push(BindingFact {
-                                name: local.to_owned(),
-                                position: completed(node),
-                                value: ValueExpr::Field {
-                                    receiver: text(initializer, source).to_owned(),
-                                    member: member.to_owned(),
-                                },
-                                conditional,
-                            });
+                            if !matches!(source_value, ValueExpr::Unknown) {
+                                result.bindings.push(BindingFact {
+                                    name: local.to_owned(),
+                                    position: completed(node),
+                                    value: scoped(ValueExpr::Project {
+                                        value: Box::new(source_value.clone()),
+                                        member: member.to_owned(),
+                                    }),
+                                    conditional: binding_conditional,
+                                });
+                            }
                         }
                     }
                 }
@@ -459,6 +670,21 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
             let left = node
                 .child_by_field_name("left")
                 .or_else(|| node.child_by_field_name("argument"));
+            if let Some(name) = left.filter(|left| left.kind() == "identifier") {
+                let assigned = if is_simple_assignment(node, source) {
+                    node.child_by_field_name("right")
+                        .map(|right| value(right, source))
+                        .unwrap_or(ValueExpr::Unknown)
+                } else {
+                    ValueExpr::Unknown
+                };
+                result.bindings.push(BindingFact {
+                    name: text(name, source).to_owned(),
+                    position: completed(node),
+                    value: assigned,
+                    conditional,
+                });
+            }
             if let Some(receiver) = left
                 .filter(|left| left.kind() == "member_expression")
                 .and_then(|left| left.child_by_field_name("object"))
@@ -476,15 +702,41 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
                     }
                 }
             }
+            if let Some(left) = left.filter(|left| left.kind() == "member_expression") {
+                if left
+                    .child_by_field_name("object")
+                    .is_some_and(|object| object.kind() == "this")
+                {
+                    if let Some(prop) = left
+                        .child_by_field_name("property")
+                        .filter(|p| p.kind() == "property_identifier")
+                    {
+                        let name = text(prop, source).to_owned();
+                        if is_simple_assignment(node, source) {
+                            let assigned = node
+                                .child_by_field_name("right")
+                                .map(|right| value(right, source))
+                                .unwrap_or(ValueExpr::Unknown);
+                            result.fields.push(FieldFact {
+                                name,
+                                value: assigned,
+                                position: position(node),
+                                conditional,
+                            });
+                        }
+                    }
+                }
+            }
         }
         let mut cursor = node.walk();
         let children: Vec<_> = node.named_children(&mut cursor).collect();
-        pending.extend(children.into_iter().rev().map(|child| (child, conditional)));
+        pending.extend(children.into_iter().rev().map(|child| (child, branch_conditional, try_conditional)));
     }
+    result.immutable_initializers.sort_unstable();
     result
 }
 
-fn final_return(root: Syntax<'_>) -> Option<Syntax<'_>> {
+pub(super) fn final_return(root: Syntax<'_>) -> Option<Syntax<'_>> {
     if !matches!(
         root.kind(),
         "function_declaration" | "function_expression" | "arrow_function" | "method_definition"
@@ -543,6 +795,7 @@ fn final_return(root: Syntax<'_>) -> Option<Syntax<'_>> {
     let expression = last.named_children(&mut cursor).next();
     expression
 }
+
 
 fn binding(
     name: &str,
@@ -681,6 +934,7 @@ pub(super) fn exports(root: Syntax<'_>, source: &str) -> Vec<ExportBinding> {
                     }
                     "function_declaration"
                     | "class_declaration"
+                    | "enum_declaration"
                     | "interface_declaration"
                     | "type_alias_declaration" => {
                         if let Some(name) = field(child, source, "name") {
@@ -745,12 +999,30 @@ pub(super) fn exports(root: Syntax<'_>, source: &str) -> Vec<ExportBinding> {
                     result.push(binding(name, Some(text(right, source)), None, false, false));
                 } else if let Some(module) = required_module(right, source) {
                     result.push(binding(name, None, Some(&module), false, false));
+                } else if matches!(right.kind(), "function_expression" | "arrow_function") {
+                    let local = field(right, source, "name").map(str::to_owned).unwrap_or_else(|| {
+                        format!(
+                            "anonymous@{}:{}",
+                            right.start_position().row + 1,
+                            right.start_position().column + 1
+                        )
+                    });
+                    result.push(binding(name, Some(&local), None, false, false));
                 } else {
                     result.push(binding(name, None, None, false, false));
                 }
             } else if left == "module.exports" && required_module(right, source).is_some() {
                 let module = required_module(right, source).expect("checked literal require");
                 result.push(binding("*", None, Some(&module), false, true));
+            } else if left == "module.exports" && matches!(right.kind(), "function_expression" | "arrow_function") {
+                let local = field(right, source, "name").map(str::to_owned).unwrap_or_else(|| {
+                    format!(
+                        "anonymous@{}:{}",
+                        right.start_position().row + 1,
+                        right.start_position().column + 1
+                    )
+                });
+                result.push(binding("default", Some(&local), None, false, false));
             } else if left == "module.exports" && right.kind() == "object" {
                 let mut cursor = right.walk();
                 for item in right.named_children(&mut cursor) {

@@ -3,9 +3,11 @@ use contextunity_forge_mcp::{
     engine::{
         ast,
         languages::{self, manifests::DependencyRegistry},
+        linker,
     },
 };
 use std::{
+    collections::BTreeMap,
     fs,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -43,10 +45,10 @@ impl Drop for Workspace {
 #[test]
 fn package_json_dependencies_include_runtime_development_and_peer_packages() {
     let profile = languages::require("typescript").unwrap();
-    assert_eq!(profile.manifest_filenames(), ["package.json"]);
+    assert!(profile.manifest_filenames().contains(&"package.json"));
     let dependencies = profile.extract_manifest_dependencies(
         "package.json",
-        r#"{"dependencies":{"react":"^18","@scope/pkg":"1"},"devDependencies":{"vitest":"1"},"peerDependencies":{"typescript":"5"},"optionalDependencies":{"ignored":"1"}}"#,
+        r#"{"dependencies":{"react":"^18","@scope/pkg":"1","local":"workspace:*"},"devDependencies":{"vitest":"1"},"peerDependencies":{"typescript":"5"},"optionalDependencies":{"ignored":"1"}}"#,
     );
     assert_eq!(
         dependencies,
@@ -58,6 +60,95 @@ fn package_json_dependencies_include_runtime_development_and_peer_packages() {
     assert!(!profile.is_stdlib("@scope/fs"));
     assert!(profile.builtin("process"));
     assert!(profile.builtin("Buffer"));
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn npm_lockfiles_register_direct_transitive_and_scoped_dependencies() {
+    use std::collections::BTreeSet;
+
+    let profile = languages::require("typescript").unwrap();
+    for filename in ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"] {
+        assert!(
+            profile.manifest_filenames().contains(&filename),
+            "{filename}"
+        );
+    }
+    let cases: [(&str, &str, &[&str]); 3] = [
+        (
+            "package-lock.json",
+            r#"{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "app", "dependencies": {"axios": "^1"}},
+    "node_modules/axios": {"version": "1.0.0"},
+    "node_modules/@vue/runtime-core": {"version": "3.5.0"},
+    "node_modules/axios/node_modules/follow-redirects": {"version": "1.0.0"},
+    "node_modules/local-link": {"resolved": "packages/local", "link": true}
+  },
+  "dependencies": {"legacy-only": {"version": "1.0.0"}}
+}"#,
+            &["axios", "@vue/runtime-core", "follow-redirects", "legacy-only"],
+        ),
+        (
+            "pnpm-lock.yaml",
+            "lockfileVersion: '9.0'\ndependencies:\n  legacy-only: 1.0.0\nimporters:\n  .:\n    dependencies:\n      '@types/node':\n        specifier: ^22.0.0\n        version: 22.0.0\n      workspace-local:\n        specifier: workspace:*\n        version: link:../local\n      linked-local:\n        specifier: ^1.0.0\n        version: link:../linked\npackages:\n  '@vue/runtime-core@3.5.0':\n    resolution: {integrity: sha512-example}\n  axios@1.0.0:\n    resolution: {integrity: sha512-example}\n  'workspace-local@link:../local':\n    resolution: {directory: ../local, type: directory}\n  'empty-selector@':\n",
+            &["@types/node", "@vue/runtime-core", "axios", "legacy-only"],
+        ),
+        (
+            "yarn.lock",
+            "# yarn lockfile v1\n\"@vue/runtime-core@^3.5.0\":\n  version \"3.5.0\"\naxios@^1.0.0:\n  version \"1.0.0\"\n  dependencies:\n    follow-redirects \"^1.0.0\"\nfollow-redirects@^1.0.0:\n  version \"1.0.0\"\nlocal@workspace:*:\n  version \"0.0.0-use.local\"\nempty-selector@:\n",
+            &["@vue/runtime-core", "axios", "follow-redirects"],
+        ),
+    ];
+    let mut mismatches = Vec::new();
+    for (filename, content, expected) in cases {
+        let actual: BTreeSet<_> = profile
+            .extract_manifest_dependencies(filename, content)
+            .into_iter()
+            .collect();
+        let expected: BTreeSet<_> = expected.iter().map(|name| (*name).to_owned()).collect();
+        if actual != expected {
+            mismatches.push(format!(
+                "{filename}: actual={actual:?}, expected={expected:?}"
+            ));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn package_lock_v1_nested_dependencies_register_transitive_packages() {
+    use std::collections::BTreeSet;
+
+    let profile = languages::require("javascript").unwrap();
+    let content = r#"{
+  "lockfileVersion": 1,
+  "dependencies": {
+    "legacy-parent": {
+      "version": "1.0.0",
+      "dependencies": {
+        "legacy-child": {
+          "version": "2.0.0",
+          "dependencies": {"@types/nested": {"version": "3.0.0"}}
+        }
+      }
+    }
+  }
+}"#;
+    let actual: BTreeSet<_> = profile
+        .extract_manifest_dependencies("package-lock.json", content)
+        .into_iter()
+        .collect();
+    assert_eq!(
+        actual,
+        BTreeSet::from([
+            "legacy-parent".to_owned(),
+            "legacy-child".to_owned(),
+            "@types/nested".to_owned(),
+        ])
+    );
 }
 
 #[cfg(feature = "lang-typescript")]
@@ -75,7 +166,7 @@ fn commonjs_require_imports_bind_identifiers_and_destructured_exports() {
         .filter(|r| r.kind == "imports")
         .collect();
     assert_eq!(imports.len(), 3, "{imports:?}");
-    assert!(imports.iter().any(|r| r.expression == "fs"
+    assert!(imports.iter().any(|r| r.expression == "*"
         && r.alias.as_deref() == Some("fs")
         && r.module.as_deref() == Some("fs")));
     assert!(imports.iter().any(|r| r.expression == "readFile"
@@ -87,6 +178,21 @@ fn commonjs_require_imports_bind_identifiers_and_destructured_exports() {
     assert!(!imports
         .iter()
         .any(|r| r.module.as_deref() == Some("not-a-module")));
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn commonjs_destructuring_default_reads_invalidate_import_provenance() {
+    let source = "const { spare = require } = require('node:assert/strict');\nspare('x');\n";
+    let facts = ast::extract("consumer.cjs", "javascript", source).unwrap();
+    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+    let graph = linker::link(&BTreeMap::from([("consumer.cjs".to_owned(), facts)]));
+    let coverage = graph
+        .coverage
+        .iter()
+        .find(|row| row.line == 2 && row.expression == "spare")
+        .unwrap_or_else(|| panic!("missing call coverage: {graph:#?}"));
+    assert_eq!(coverage.status, "unresolved", "{coverage:#?}");
 }
 
 #[cfg(feature = "lang-rust")]
@@ -312,6 +418,126 @@ fn custom_adapter_collects_enabled_linked_manifests_and_respects_ignored_names()
     assert_eq!(
         registry.classification(profile, "ignored_package"),
         Some("external dependency")
+    );
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn npm_lockfile_discovery_respects_workspace_and_ignored_directories() {
+    let workspace = Workspace::new();
+    let enabled = Workspace::new();
+    let disabled = Workspace::new();
+    workspace.write(
+        "package-lock.json",
+        r#"{"lockfileVersion":3,"packages":{"node_modules/axios":{"version":"1"}}}"#,
+    );
+    workspace.write("nested/yarn.lock", "axios@^2.0.0:\n  version \"2.0.0\"\n");
+    workspace.write(
+        "excluded/package-lock.json",
+        r#"{"lockfileVersion":3,"packages":{"node_modules/ignored-only":{"version":"1"}}}"#,
+    );
+    workspace.write(
+        "node_modules/vendor/package-lock.json",
+        r#"{"lockfileVersion":3,"packages":{"node_modules/vendor-only":{"version":"1"}}}"#,
+    );
+    enabled.write(
+        "pnpm-lock.yaml",
+        "lockfileVersion: '9.0'\npackages:\n  '@vue/runtime-core@3.5.0':\n    resolution: {integrity: sha512-example}\n",
+    );
+    disabled.write("yarn.lock", "disabled-only@^1.0.0:\n  version \"1.0.0\"\n");
+    workspace.write(
+        "custom-adapter.yaml",
+        &format!(
+            "roots: [.]\nexcluded_directory_names: [excluded]\nlinked_workspaces:\n  - name: enabled\n    path: '{}'\n    roots: [.]\n  - name: disabled\n    path: '{}'\n    enabled: false\n    roots: [.]\n",
+            enabled.0.display(),
+            disabled.0.display()
+        ),
+    );
+    let adapter = contextunity_forge_mcp::engine::scanner::load_adapter(
+        &workspace.0,
+        Some(&workspace.0.join("custom-adapter.yaml")),
+    )
+    .unwrap();
+    let registry = DependencyRegistry::collect_with_adapter(&workspace.0, Some(&adapter));
+    let profile = languages::require("typescript").unwrap();
+    for module in ["axios", "@vue/runtime-core/jsx-runtime"] {
+        assert_eq!(
+            registry.classification(profile, module),
+            Some("external dependency (manifest)"),
+            "{module}"
+        );
+    }
+    assert_eq!(
+        registry.classification_for_path(profile, "axios", "consumer.ts"),
+        Some("external dependency (manifest: package-lock.json)".to_owned())
+    );
+    assert_eq!(
+        registry.classification_for_path(profile, "axios", "nested/consumer.ts"),
+        Some("external dependency (manifest: nested/yarn.lock)".to_owned())
+    );
+    assert_eq!(
+        registry.classification_for_path(
+            profile,
+            "@vue/runtime-core/jsx-runtime",
+            "[enabled]/consumer.ts"
+        ),
+        Some("external dependency (manifest: [enabled]/pnpm-lock.yaml)".to_owned())
+    );
+    assert_eq!(
+        registry.classification_for_path(profile, "axios", "[enabled]/consumer.ts"),
+        Some("external dependency".to_owned())
+    );
+    for module in ["ignored-only", "vendor-only", "disabled-only"] {
+        assert_eq!(
+            registry.classification(profile, module),
+            Some("external dependency"),
+            "{module}"
+        );
+    }
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn npm_lockfile_imports_record_manifest_external_origin_in_build() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "package-lock.json",
+        r#"{"lockfileVersion":3,"packages":{"node_modules/@vue/runtime-core":{"version":"3.5.0"},"node_modules/axios":{"version":"1.0.0"},"node_modules/local-link":{"resolved":"packages/local","link":true}}}"#,
+    );
+    workspace.write(
+        "consumer.ts",
+        "import { createVNode } from '@vue/runtime-core';\nimport axios from 'axios';\nimport local from 'local-link';\nexport const request = () => axios.get('/');\n",
+    );
+    let db = workspace.0.join(".forge/index.db");
+    writer::build(&workspace.0, &db, None).unwrap();
+    let conn = reader::open(&db, &workspace.0).unwrap();
+    let mut statement = conn
+        .prepare("SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.ts' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1")
+        .unwrap();
+    for symbol in ["createVNode", "default"] {
+        let rows: Vec<(String, String)> = statement
+            .query_map([symbol], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            rows.iter().any(|(status, evidence)| status == "external"
+                && evidence.contains("external dependency (manifest: package-lock.json)")),
+            "{symbol}: {rows:?}"
+        );
+    }
+    let mut local_statement = conn
+        .prepare("SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.ts' AND line=3 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='default'")
+        .unwrap();
+    let local: Vec<(String, String)> = local_statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        local.iter().any(|(status, evidence)| status == "external"
+            && evidence.starts_with("external dependency;")),
+        "local: {local:?}"
     );
 }
 

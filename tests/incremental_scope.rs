@@ -405,6 +405,6 @@ fn vue_setup_body_edits_refresh_calls_and_preserve_consumer_contracts() {
     assert_eq!(report["affected_owners"], 1, "{report}");
     assert_eq!(report["reparsed_files"], 1, "{report}");
     assert_eq!(consumer_hashes(&w.open()), before);
-    assert_eq!(strings(&w.open(), "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='Provider.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='defineOptions'"), ["resolved"]);
+    assert_eq!(strings(&w.open(), "SELECT status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='Provider.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='defineOptions'"), ["external|builtin:vue_macro built-in: defineOptions"]);
     w.assert_cold_equivalent();
 }
