@@ -83,7 +83,7 @@ fn persisted_edge(
          JOIN coverage_evidence AS evidence ON evidence.evidence_id = occurrence.evidence_id \
          JOIN nodes AS target ON target.node_hash = occurrence.dst_hash \
          WHERE owner.path = ?1 AND occurrence.kind = ?2 AND evidence.evidence = ?3 \
-         AND target.path = ?4 AND target.qualname = ?5)",
+         AND (SELECT path FROM path_dictionary WHERE path_id=target.path_id) = ?4 AND target.qualname = ?5)",
         rusqlite::params![owner_path, kind, expression, target_path, target_qualname],
         |row| row.get(0),
     )
@@ -932,7 +932,7 @@ fn later_unconditional_python_method_overrides_conditional_providers() {
          JOIN coverage_evidence AS evidence ON evidence.evidence_id = occurrence.evidence_id \
          JOIN nodes AS target ON target.node_hash = occurrence.dst_hash \
          WHERE owner.path = ?1 AND occurrence.kind = 'calls' AND evidence.evidence = ?2 \
-         AND target.path = ?1 AND target.qualname = ?3 ORDER BY target.line",
+         AND (SELECT path FROM path_dictionary WHERE path_id=target.path_id) = ?1 AND target.qualname = ?3 ORDER BY target.line",
         )
         .unwrap();
     let targets: Vec<usize> = statement

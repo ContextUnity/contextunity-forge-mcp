@@ -319,7 +319,7 @@ function outside() { const arrow = () => this.mark(); arrow(); }"#,
         ("counter.js", 1, "ready", "field"),
     ] {
         let edges: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.line=?2 AND e.kind IN ('references','calls') AND dst.path=?1 AND dst.name=?3 AND dst.kind=?4",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.line=?2 AND e.kind IN ('references','calls') AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.name=?3 AND dst.kind=?4",
             rusqlite::params![path, line, target, kind],
             |row| row.get(0),
         ).unwrap();
@@ -330,7 +330,7 @@ function outside() { const arrow = () => this.mark(); arrow(); }"#,
     }
     for kind in ["calls", "references"] {
         let edges: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='counter.ts' AND e.line=28 AND e.kind=?1 AND dst.path='counter.ts' AND dst.kind='method' AND dst.name='mark'",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='counter.ts' AND e.line=28 AND e.kind=?1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='counter.ts' AND dst.kind='method' AND dst.name='mark'",
             [kind], |row| row.get(0),
         ).unwrap();
         assert_eq!(
@@ -339,7 +339,7 @@ function outside() { const arrow = () => this.mark(); arrow(); }"#,
         );
     }
     let sibling_edges: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='counter.ts' AND dst.path='other.ts'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='counter.ts' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='other.ts'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -392,7 +392,7 @@ export function run() {
 
     let modules: Vec<(String, String, String)> = {
         let mut stmt = conn
-            .prepare("SELECT id, qualname, path FROM nodes WHERE kind='module'")
+            .prepare("SELECT n.id, n.qualname, p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='module'")
             .unwrap();
         let rows = stmt
             .query_map([], |r| {
@@ -805,7 +805,7 @@ const props = defineProps<{ label: string }>();
         );
     }
     let exact_field_edges: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Props.vue' AND e.kind='references' AND e.line=2 AND src.path='Props.vue' AND dst.path='Props.vue' AND dst.kind='field' AND dst.name='label'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Props.vue' AND e.kind='references' AND e.line=2 AND (SELECT path FROM path_dictionary WHERE path_id=src.path_id)='Props.vue' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='Props.vue' AND dst.kind='field' AND dst.name='label'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -820,7 +820,7 @@ const props = defineProps<{ label: string }>();
         "Ordinary.vue",
     ] {
         let field_edges: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND dst.path=?1 AND dst.name='label'",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.name='label'",
             [path], |row| row.get(0),
         ).unwrap();
         assert_eq!(
@@ -893,7 +893,7 @@ const props = defineProps<{ user?: { profile: { name?: string } } }>();
         );
     }
     let exact_field_edges: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Nested.vue' AND e.kind='references' AND dst.path='Nested.vue' AND dst.kind='field' AND dst.name='name'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Nested.vue' AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='Nested.vue' AND dst.kind='field' AND dst.name='name'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -940,7 +940,7 @@ fn vue_composable_return_members_follow_setup_aliases() {
     for path in ["Good.vue", "Arrow.vue"] {
         assert_eq!(status(path), "resolved", "{path}");
         let exact_save_edge: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' AND e.line=1 AND dst.path=?1 AND dst.kind='function' AND dst.name='save'",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.kind='function' AND dst.name='save'",
             [path], |row| row.get(0),
         ).unwrap();
         assert_eq!(
@@ -981,7 +981,7 @@ fn vue_imported_composable_return_members_follow_unique_provider() {
     ).unwrap();
     assert_eq!(status, "resolved");
     let exact_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/View.vue' AND e.kind='calls' AND e.line=1 AND dst.path='app/actions.ts' AND dst.kind='function' AND dst.name='save'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/View.vue' AND e.kind='calls' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/actions.ts' AND dst.kind='function' AND dst.name='save'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -1046,7 +1046,7 @@ fn vue_nuxt_components_directory_resolves_with_project_scope() {
     ] {
         assert_eq!(status(page, tag), "resolved", "{page}");
         let exact_edge: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND e.line=1 AND dst.path=?2",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?2",
             rusqlite::params![page, component],
             |row| row.get(0),
         ).unwrap();
@@ -1111,7 +1111,7 @@ fn vue_nuxt_builtin_components_require_project_provenance() {
         "resolved"
     );
     let local_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/nuxt/pages/local.vue' AND e.kind='references' AND e.line=1 AND dst.path='apps/nuxt/widgets/ClientOnly.vue'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/nuxt/pages/local.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='apps/nuxt/widgets/ClientOnly.vue'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -1178,7 +1178,7 @@ fn vue_nuxt_module_components_require_registered_provider() {
         "resolved"
     );
     let local_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/radix/pages/local.vue' AND e.kind='references' AND e.line=1 AND dst.path='apps/radix/widgets/DialogTitle.vue'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/radix/pages/local.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='apps/radix/widgets/DialogTitle.vue'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -1228,7 +1228,7 @@ fn vue_options_api_registered_components_use_imported_aliases() {
     for path in ["Plain.vue", "Wrapped.vue"] {
         assert_eq!(status(path, "LeafCard"), "resolved", "{path}");
         let template_edge: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND e.line=1 AND dst.path='LeafCard.vue'",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='LeafCard.vue'",
             [path],
             |row| row.get(0),
         ).unwrap();
@@ -1441,7 +1441,7 @@ fn vue_typed_iteration_members_resolve_to_declared_element_fields() {
     ).unwrap();
     assert_eq!(status, "resolved", "{evidence}");
     let field_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='TypedList.vue' AND e.kind='references' AND e.line=1 AND dst.path='TypedList.vue' AND dst.kind='field' AND dst.name='title'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='TypedList.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='TypedList.vue' AND dst.kind='field' AND dst.name='title'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(field_edge, 1);
@@ -1531,7 +1531,7 @@ fn vue_typed_slot_members_follow_imported_component_provider() {
     assert_eq!(status("app/NestedSlot.vue"), "resolved");
     assert_eq!(status("app/UnrelatedImport.vue"), "resolved");
     let field_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/View.vue' AND e.kind='references' AND e.line=1 AND dst.path='app/Panel.vue' AND dst.kind='field' AND dst.name='title'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/View.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/Panel.vue' AND dst.kind='field' AND dst.name='title'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -1539,7 +1539,7 @@ fn vue_typed_slot_members_follow_imported_component_provider() {
         "slot member points to the uniquely imported provider field"
     );
     let nested_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/NestedSlot.vue' AND e.kind='references' AND e.line=1 AND dst.path='app/Panel.vue' AND dst.kind='field' AND dst.name='title'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/NestedSlot.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/Panel.vue' AND dst.kind='field' AND dst.name='title'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -1978,7 +1978,7 @@ const props = defineProps<Props>();
     );
 
     let edge_count: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/InlineProps.vue' AND e.kind='references' AND dst.path='app/types.ts' AND dst.kind='field' AND dst.name='url'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/InlineProps.vue' AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/types.ts' AND dst.kind='field' AND dst.name='url'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -2031,7 +2031,7 @@ fn vue_destructured_composable_call_uses_indexed_return_member() {
         ).unwrap();
         assert_eq!(status, "resolved", "{path} {expression}");
         let edge_count: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND dst.path=?2 AND e.kind='calls' AND dst.name='t'",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?2 AND e.kind='calls' AND dst.name='t'",
             rusqlite::params![path, "app/i18n.ts"], |row| row.get(0),
         ).unwrap();
         assert_eq!(edge_count, 1, "{path} call edge count to t");
@@ -2051,7 +2051,7 @@ fn vue_destructured_composable_call_uses_indexed_return_member() {
             "{path} t status={status}"
         );
         let edge_count: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND dst.path='app/i18n.ts' AND e.kind='calls' AND dst.name='t'",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/i18n.ts' AND e.kind='calls' AND dst.name='t'",
             rusqlite::params![path], |row| row.get(0),
         ).unwrap();
         assert_eq!(edge_count, 0, "{path} negative call edge count to t");

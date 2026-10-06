@@ -27,7 +27,7 @@ This repository directly owns its execution queue and task commitments:
 - **Milestone worktree mandate**: Every milestone must be developed in its own dedicated worktree. Always create and enter `.worktrees/<milestone-prefix>-<slug>` before editing files or claiming tasks. Keep the root checkout on `main` untouched.
 - **Milestone format integrity**: Resolve any legacy or mismatched receipt formats directly in the milestone markdown document inside the worktree to match the current typed receipt contract. Preserve engine and parser source in `src/` unchanged when importing milestone specifications.
 - **Milestone creation**: Run `contextunity-forge-mcp milestone init --plan <path>` to scaffold the next numbered contract. Use `--active` to start its active development clock at creation.
-- **Milestone closure**: Run `contextunity-forge-mcp milestone handoff <id-or-prefix> --verification-command <command> --tests-passed <count> --tests-failed 0` after every SQLite task reaches `completed`. The command records a structured receipt and moves the milestone into `docs/milestones/archive/`.
+- **Milestone closure**: Run `contextunity-forge-mcp milestone handoff <id-or-prefix> --verification-command <command> --tests-passed <count> --tests-failed 0` only after every SQLite task in the milestone is `completed` and the final verification passes. The command records one structured milestone receipt and moves the milestone into `docs/milestones/archive/`.
 - **Post-merge binary install**: After merging a completed milestone into `main`, install the updated release binary with `cargo install --path . --root ~/.local --force`.
 - **Milestone-free fixes & fast-forward branches**: Minor, self-contained fixes or maintenance improvements that do not belong to an active milestone may be committed directly to `main` or developed in a dedicated worktree branch and merged via fast-forward (`git merge --ff-only`), strictly upon explicit user instruction. All changes must satisfy clippy and test suites.
 - **Pre-existing code reconciliation**: When admitting or verifying tasks whose implementation already exists (e.g. historical migration or post-refactor reconciliation), do not author synthetic failing tests solely to force a red state. Validate the existing seam directly via `proof_policy: direct-proof` or targeted green test evidence in `contract/v1`.
@@ -144,7 +144,7 @@ Read [`tests/AGENTS.md`](tests/AGENTS.md) before authoring, moving, or editing t
    - Record measured metrics honestly in milestone receipts without spinning in recursive profiling loops (cap profiling iterations to <= 3 per turn).
    - If an acceptance budget remains open due to physical or external bottlenecks, document the measured finding transparently in the receipt and hand off rather than stalling execution.
 
-## Performance & Optimization Invariants
+## Performance & Optimization Principles
 
 Every change touching scanner, AST extractors, linker, writer, or commitments
 must respect these performance laws:
@@ -163,32 +163,27 @@ must respect these performance laws:
    - Prohibit intermediary heap allocations (e.g. `Vec<u8>`, cloned DTO batches) per row across large record sets.
 
 4. **Measured parallelism**:
-   - Use Rayon (`into_par_iter()`) for CPU-bound sorting, hashing, or AST extraction only when the collection size warrants thread synchronization overhead (e.g. `>= 8192` records).
+   - Use Rayon (`into_par_iter()`) for CPU-bound sorting, hashing, or AST extraction only when measurements show that the collection size warrants thread synchronization overhead (around 8,192 records is a useful initial profiling point, not a universal cutoff).
 
-5. **Universal cold build throughput budget**:
-   - Cold build throughput must maintain `>= 400 files/sec` (`<= 2.5s per 1,000 files` end-to-end, including AST extraction, cross-file linking, SQLite persistence, and Merkle root sealing).
-   - AST extraction throughput must maintain `>= 800 files/sec` (`<= 1.25s per 1,000 files`).
-   - Node insertion latency (`rows_ms`) must remain `<= 1.5ms per 1,000 nodes`.
-   - Merkle sealing throughput must maintain `>= 100,000 entities/sec` (`<= 10ms per 1,000 entities`).
+5. **Measured build performance**:
+   - Profile cold builds end to end and report extraction, linking, persistence, indexing, sealing, verification, and total wall time without double-counting nested phases.
+   - Treat `rows_ms` according to its implementation scope; do not describe aggregate persistence time as node-only latency.
+   - Use the Commerce reference repository for comparable measurements. The preferred cold-build aspiration is about 10 seconds there; this is guidance outside milestone 030, which owns the active acceptance gates.
 
 6. **Lean node metadata & projection law**:
    - `nodes.details` is an index-projection surface, NOT an AST fact dump or compiler analysis heap.
    - Prohibit serializing large interprocedural analysis trees, complete value-flow AST graphs, or raw scope maps into `nodes.details`.
-   - Average node details payload size must remain `<= 120 bytes per node`.
+   - Keep node details lean; around 120 bytes per node is a recommended reference, not a repository-wide gate.
 
-7. **Storage density budget & compressed fact storage**:
-   - Overall SQLite database storage density must not exceed `<= 45 KiB per indexed source file` (or `<= 3.0 KiB per indexed node`).
-   - Intermediate file AST facts (`local_facts.facts_blob`) must use Zstandard compression with compression ratio `>= 3.5:1`, capping fact storage at `<= 15 KiB per source file`.
+7. **Storage density & compressed fact storage**:
+   - Measure overall SQLite storage density per indexed source file and node. Around 45 KiB/file, 3 KiB/node, and a 3.5:1 Zstandard ratio are recommended reference values; milestone 030 owns the active storage gates.
+   - Keep `local_facts.facts_blob` compressed and preserve complete durable facts during encode/decode.
 
 8. **Bulk SQLite ingestion pragmas**:
    - Cold database builds and batch rebuilds must execute under non-syncing bulk pragmas (`PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;`), executing an explicit WAL checkpoint only upon build finalization before Merkle seal.
 
-9. **Interactive tool query latency budgets**:
-   - Exact/prefix symbol lookup (`code_map_search` with `exact=true`): `<= 10ms`.
-   - Full-text & BM25 hybrid search (`code_map_search`): `<= 30ms`.
-   - Structural symbol inspection (`code_map_inspect`, `code_map_explain`): `<= 25ms`.
-   - Graph impact & test dependency traversal (`code_map_impact`, `code_map_tests`): `<= 50ms`.
-   - Scoped removal safety proof (`code_map_prove_removal`): `<= 30ms`.
+9. **Interactive tool latency recommendations**:
+   - For planning and comparison, recommended values are around 10ms for exact/prefix search, 30ms for full-text search, 25ms for inspection/explanation, 50ms for impact/test traversal, and 30ms for scoped removal proof. These are guidance outside the milestone that explicitly admits a gate.
 
 10. **Target-scoped evaluation law (No global scans in localized tools)**:
     - Interactive tools must never issue unindexed table scans (`LIKE '%...'`), unconstrained workspace-wide counts (`SELECT count(*) FROM table`), or global diagnostics during symbol-level operations. Safety checks must evaluate strictly within the target's dependency subgraph.

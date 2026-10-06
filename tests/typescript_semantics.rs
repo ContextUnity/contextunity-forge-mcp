@@ -117,7 +117,7 @@ fn javascript_local_imports_require_indexed_project_targets() {
         let target = format!("[{name}]/server/api-proxy-target.ts");
         for kind in ["imports", "calls"] {
             let targets: Vec<String> = conn
-                .prepare("SELECT dst.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind=?2 AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='resolveBackendTarget' ORDER BY dst.path")
+                .prepare("SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind=?2 AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='resolveBackendTarget' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
                 .unwrap()
                 .query_map(rusqlite::params![owner, kind], |row| row.get(0))
                 .unwrap()
@@ -272,7 +272,7 @@ fn commonjs_function_expression_export_binds_named_import() {
     let conn = reader::open(&database, &workspace).unwrap();
     let persisted_calls: i64 = conn
         .query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.mjs' AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='multiply' AND dst.path='provider.cjs' AND dst.kind='function' AND dst.line=1",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.mjs' AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='multiply' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='provider.cjs' AND dst.kind='function' AND dst.line=1",
             [],
             |row| row.get(0),
         )
@@ -360,7 +360,7 @@ fn commonjs_default_function_expression_export_binds_esm_and_require_calls() {
     writer::build(&workspace, &database, None).unwrap();
     let conn = reader::open(&database, &workspace).unwrap();
     let persisted_calls: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id) IN ('consumer.mjs', 'consumer.cjs') AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='increment' AND dst.path='provider.cjs' AND dst.kind='function'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id) IN ('consumer.mjs', 'consumer.cjs') AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='increment' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='provider.cjs' AND dst.kind='function'",
         [],
         |row| row.get(0),
     ).unwrap();
@@ -947,7 +947,7 @@ fn changing_a_transitive_barrel_matches_cold_resolution() {
     let delta = reader::open(&db, &root).unwrap();
     commitments::verify(&delta).unwrap();
     let targets = |connection: &rusqlite::Connection| {
-        connection.prepare("SELECT dst.path FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.path='consumer.ts' AND e.kind='calls' ORDER BY dst.path").unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+        connection.prepare("SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.path_id=(SELECT path_id FROM path_dictionary WHERE path='consumer.ts') AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)").unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()
     };
     assert_eq!(targets(&delta), ["second.ts"]);
     let cold = root.join(".forge/cold.sqlite");
@@ -1095,6 +1095,63 @@ fn computed_receivers_use_constructors_and_explicit_factory_returns() {
         "class Worker { work() {} } function run() { Worker().work(); }",
         "Worker().work"
     ));
+}
+
+#[test]
+fn declaration_docs_preserve_annotation_precedence_and_unknown_returns() {
+    for (path, language, declaration, expected) in [
+        (
+            "service.js",
+            "javascript",
+            "/**\n * @param {Worker} client\n * @returns {Worker}\n */\nfunction make(client) { client.work(); return client; }",
+            "resolved",
+        ),
+        (
+            "service.ts",
+            "typescript",
+            "/**\n * @param {Other} client\n * @returns {Other}\n */\nfunction make(client: Worker): Worker { client.work(); return client; }",
+            "resolved",
+        ),
+        (
+            "service.js",
+            "javascript",
+            "/**\n * @param {Worker} client\n * @returns {Worker}\n * @returns {Other}\n */\nfunction make(client) { client.work(); return client; }",
+            "unresolved",
+        ),
+        (
+            "service.js",
+            "javascript",
+            "/**\n * @param {Worker} client\n * @returns {Worker}\n */\nasync function make(client) { client.work(); return client; }",
+            "unresolved",
+        ),
+    ] {
+        let source = format!("class Worker {{ work() {{}} }} class Other {{}}\n{declaration}\nconst output = make(new Worker()); output.work();");
+        let facts = ast::extract(path, language, &source).unwrap();
+        let graph = linker::link(&BTreeMap::from([(path.to_owned(), facts)]));
+        for (expression, status) in [("client.work", "resolved"), ("output.work", expected)] {
+            let rows: Vec<_> = graph.coverage.iter().filter(|row| row.expression == expression).collect();
+            assert!(!rows.is_empty(), "{source}: {expression}");
+            assert!(rows.iter().all(|row| row.status == status), "{source}: {rows:#?}");
+        }
+    }
+}
+
+#[test]
+fn commonjs_and_dom_dispatch_preserves_callback_provenance_in_both_orders() {
+    for (path, language) in [("listener.js", "javascript"), ("listener.ts", "typescript")] {
+        for (listener, expected) in [
+            ("document.addEventListener('click', event => event.preventDefault());", "external"),
+            ("function run(document) { document.addEventListener('click', event => event.preventDefault()); }", "unresolved"),
+        ] {
+            for source in [format!("require('fs'); {listener}"), format!("{listener} require('fs');")] {
+                let facts = ast::extract(path, language, &source).unwrap();
+                let graph = linker::link(&BTreeMap::from([(path.to_owned(), facts)]));
+                let rows: Vec<_> = graph.coverage.iter().filter(|row| row.expression == "event.preventDefault").collect();
+                assert!(!rows.is_empty(), "{path}: {source}");
+                assert!(rows.iter().all(|row| row.status == expected), "{path}: {source}: {rows:#?}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -1650,7 +1707,7 @@ function branch(flag) { if (flag) return { count: 0 }; return { count: 1, inc() 
     ).unwrap();
     assert_eq!(persisted, 1);
     let exact_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='objects.js' AND e.line=4 AND e.kind='mutates' AND dst.path='objects.js' AND dst.name='count' AND dst.kind='field' AND dst.line=3",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='objects.js' AND e.line=4 AND e.kind='mutates' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='objects.js' AND dst.name='count' AND dst.kind='field' AND dst.line=3",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(exact_edge, 1);
@@ -1723,7 +1780,7 @@ function shadow(Object) {
     writer::build(&workspace, &database, None).unwrap();
     let conn = reader::open(&database, &workspace).unwrap();
     let edge_count: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='state.js' AND e.line=7 AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='state.get' AND dst.path='state.js' AND dst.kind='function' AND dst.name='get' AND dst.line=3",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='state.js' AND e.line=7 AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='state.get' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='state.js' AND dst.kind='function' AND dst.name='get' AND dst.line=3",
         [],
         |row| row.get(0),
     ).unwrap();
@@ -1826,7 +1883,7 @@ fn commonjs_capture_keeps_linked_projects_isolated() {
         let owner = format!("[{name}]/consumer.cjs");
         let target = format!("[{name}]/provider.js");
         let edges: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='local.work' AND dst.path=?2 AND dst.name='work'",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='local.work' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?2 AND dst.name='work'",
             rusqlite::params![owner, target], |row| row.get(0),
         ).unwrap();
         assert_eq!(edges, 1, "CommonJS capture crossed linked project {name}");
@@ -1910,7 +1967,7 @@ fn dom_factory_return_receivers() {
         "resolved"
     );
     let local_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='local.ts' AND e.kind='calls' AND dst.path='local.ts' AND dst.kind='method' AND dst.name='addEventListener'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='local.ts' AND e.kind='calls' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='local.ts' AND dst.kind='method' AND dst.name='addEventListener'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -2181,7 +2238,7 @@ fn typescript_package_exports_paths_respect_workspace_boundaries() {
     writer::build(&workspace, &database, None).unwrap();
     let conn = reader::open(&database, &workspace).unwrap();
     let call_targets = |path: &str| -> Vec<String> {
-        conn.prepare("SELECT DISTINCT dst.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' ORDER BY dst.path")
+        conn.prepare("SELECT DISTINCT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
             .unwrap()
             .query_map([path], |row| row.get::<_, String>(0))
             .unwrap()
@@ -2210,7 +2267,7 @@ fn typescript_package_exports_paths_respect_workspace_boundaries() {
     .unwrap();
     let delta = reader::open(&database, &workspace).unwrap();
     contextunity_forge_mcp::core::commitments::verify(&delta).unwrap();
-    let changed_targets: Vec<String> = delta.prepare("SELECT DISTINCT dst.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/one/src/main.ts' AND e.kind='calls' ORDER BY dst.path")
+    let changed_targets: Vec<String> = delta.prepare("SELECT DISTINCT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/one/src/main.ts' AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
         .unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(
         changed_targets,
@@ -2253,7 +2310,7 @@ fn package_export_wildcards_select_declared_workspace_and_specific_subpath() {
     let database = workspace.join(".forge/code-map.sqlite");
     writer::build(&workspace, &database, None).unwrap();
     let conn = reader::open(&database, &workspace).unwrap();
-    let targets: Vec<String> = conn.prepare("SELECT DISTINCT dst.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/one/src/main.ts' AND e.kind='calls' ORDER BY dst.path")
+    let targets: Vec<String> = conn.prepare("SELECT DISTINCT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/one/src/main.ts' AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
         .unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(
         targets,
@@ -2324,7 +2381,7 @@ fn tsconfig_extends_inherits_alias_origin_and_rebuilds_on_base_change() {
     writer::build(&workspace, &database, None).unwrap();
     let targets = |path: &str| -> Vec<String> {
         let conn = reader::open(&database, &workspace).unwrap();
-        let mut stmt = conn.prepare("SELECT DISTINCT dst.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' ORDER BY dst.path").unwrap();
+        let mut stmt = conn.prepare("SELECT DISTINCT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)").unwrap();
         let rows = stmt
             .query_map([path], |row| row.get::<_, String>(0))
             .unwrap();
@@ -2428,7 +2485,7 @@ fn pnpm_workspace_globs_select_declared_package_exports_and_delta() {
     writer::build(&workspace, &database, None).unwrap();
     let targets = || -> Vec<String> {
         let conn = reader::open(&database, &workspace).unwrap();
-        let mut stmt = conn.prepare("SELECT DISTINCT dst.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/one/src/main.ts' AND e.kind='calls' ORDER BY dst.path").unwrap();
+        let mut stmt = conn.prepare("SELECT DISTINCT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/one/src/main.ts' AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)").unwrap();
         let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
         rows.map(Result::unwrap).collect()
     };
@@ -2484,7 +2541,7 @@ fn tsconfig_paths_choose_first_indexed_alternative_and_relink_on_new_file() {
     writer::build(&workspace, &database, None).unwrap();
     let targets = || -> Vec<String> {
         let conn = reader::open(&database, &workspace).unwrap();
-        let mut stmt = conn.prepare("SELECT DISTINCT dst.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/one/src/main.ts' AND e.kind='calls' ORDER BY dst.path").unwrap();
+        let mut stmt = conn.prepare("SELECT DISTINCT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/one/src/main.ts' AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)").unwrap();
         let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
         rows.map(Result::unwrap).collect()
     };
@@ -2604,7 +2661,7 @@ fn type_only_imports_resolve_indexed_local_interface_provider() {
         statuses.iter().all(|status| status == "resolved"),
         "type-only import statuses: {statuses:?}"
     );
-    let targets: Vec<String> = conn.prepare("SELECT DISTINCT dst.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/consumer.ts' AND e.kind='imports' AND dst.name='ColumnStateItem' ORDER BY dst.path")
+    let targets: Vec<String> = conn.prepare("SELECT DISTINCT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/consumer.ts' AND e.kind='imports' AND dst.name='ColumnStateItem' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
         .unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(targets, ["app/types.ts"]);
     let invalid_call: String = conn.query_row("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='app/consumer.ts' AND line=3 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='ColumnStateItem'", [], |row| row.get(0)).unwrap();
@@ -2986,6 +3043,48 @@ fn typed_array_callback_inherits_unique_element_provider() {
             .any(|row| row.expression == "item.work" && row.status == "unresolved"),
         "spaced member access: {graph:#?}"
     );
+    for (path, source) in [
+        (
+            "unicode-space-rebound.ts",
+            "class Worker { work() {} } function run(items: Worker[]) { items = unknown(); items.map\u{00a0}(item => item.work()); } // require",
+        ),
+        (
+            "unicode-bom-rebound.ts",
+            "class Worker { work() {} } function run(items: Worker[]) { items = unknown(); items.map\u{feff}(item => item.work()); } // require",
+        ),
+        (
+            "unicode-word-joiner-rebound.ts",
+            "class Worker { work() {} } function run(items: Worker[]) { items = unknown(); items.map\u{2060}(item => item.work()); } // require",
+        ),
+        (
+            "unicode-zero-width-space-rebound.ts",
+            "class Worker { work() {} } function run(items: Worker[]) { items = unknown(); items.map\u{200b}(item => item.work()); } // require",
+        ),
+        (
+            "unicode-line-separator-rebound.ts",
+            "class Worker { work() {} } function run(items: Worker[]) { items = unknown(); items.// gap\u{2028}map(item => item.work()); } // require",
+        ),
+        (
+            "unicode-paragraph-separator-rebound.ts",
+            "class Worker { work() {} } function run(items: Worker[]) { items = unknown(); items.// gap\u{2029}map(item => item.work()); } // require",
+        ),
+    ] {
+        let facts = ast::extract(path, "typescript", source).unwrap();
+        let graph = linker::link(&BTreeMap::from([(path.to_owned(), facts)]));
+        assert!(
+            graph
+                .coverage
+                .iter()
+                .any(|row| row.expression == "item.work" && row.status == "unresolved"),
+            "{path}: Unicode grammar trivia must preserve array callback rebound facts: {graph:#?}"
+        );
+        assert!(!graph
+            .edges
+            .iter()
+            .any(|edge| edge.kind == "calls" && edge.evidence == "item.work"),
+            "{path}: stale Worker[] inference must not produce a call edge"
+        );
+    }
     let spaced_shadow = "class Worker { work() {} } class Array<T> {} function run(items: Array<Worker>) { items . map(item => item.work()); }";
     let facts = ast::extract("spaced-shadow.ts", "typescript", spaced_shadow).unwrap();
     let graph = linker::link(&BTreeMap::from([("spaced-shadow.ts".to_owned(), facts)]));
@@ -3011,6 +3110,10 @@ fn array_callback_dom_inference_respects_shadowed_document() {
         ),
         (
             "function run(root: Element) { root.querySelectorAll('x').forEach(e => e.querySelector('.x')); }",
+            "external",
+        ),
+        (
+            "function run(root: Element) { root.\u{00a0}querySelectorAll('x').forEach(e => e.querySelector('.x')); }",
             "external",
         ),
     ];
@@ -3043,6 +3146,19 @@ fn finite_standard_static_members_require_unshadowed_globals() {
             assert!(graph.coverage.iter().any(|row| row.expression == expression && row.status == expected), "{expression}: {graph:#?}");
         }
     }
+    let facts = ast::extract(
+        "comment-require.ts",
+        "typescript",
+        "function run(document) { document.createElement('div'); } // require",
+    )
+    .unwrap();
+    let graph = linker::link(&BTreeMap::from([("comment-require.ts".to_owned(), facts)]));
+    assert!(
+        graph.coverage.iter().any(|row| {
+            row.expression == "document.createElement" && row.status == "unresolved"
+        }),
+        "shadowed document must stay unresolved even when a comment mentions require: {graph:#?}"
+    );
     let facts = ast::extract(
         "unknown.ts",
         "typescript",
@@ -3086,6 +3202,10 @@ fn dom_event_listener_callback_parameters_follow_verified_receiver_origin() {
         ),
         (
             "function run(target: Element) { target.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
+            "external",
+        ),
+        (
+            "function run(target: Element) { target.\u{00a0}addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
             "external",
         ),
         (
@@ -3135,6 +3255,23 @@ fn dom_event_listener_callback_parameters_follow_verified_receiver_origin() {
             }
         }
     }
+}
+
+#[test]
+fn escaped_dom_event_property_retains_shadowed_global_facts() {
+    let source = "function run(document) { document.on\\u0063lick = event => event.preventDefault(); } // require";
+    let facts = ast::extract("escaped-event.ts", "typescript", source).unwrap();
+    let graph = linker::link(&BTreeMap::from([("escaped-event.ts".to_owned(), facts)]));
+    let rows: Vec<_> = graph
+        .coverage
+        .iter()
+        .filter(|row| row.expression == "event.preventDefault")
+        .collect();
+    assert!(!rows.is_empty(), "{graph:#?}");
+    assert!(
+        rows.iter().all(|row| row.status == "unresolved"),
+        "{rows:#?}"
+    );
 }
 
 #[test]
@@ -3519,7 +3656,7 @@ function test(f: Foo, j: JsonValue, o: Outside) {}
 
     let edge_dst = |path: &str, expression: &str| -> String {
         conn.query_row(
-            "SELECT dst.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)=?2",
+            "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)=?2",
             rusqlite::params![path, expression],
             |row| row.get(0),
         ).unwrap()
@@ -3567,7 +3704,7 @@ class TableView {
 
     // Verify tbody and activeRow are indexed as fields under TableView
     let mut stmt = conn
-        .prepare("SELECT name, kind, qualname FROM nodes WHERE path='table.ts' AND kind='field' ORDER BY name")
+        .prepare("SELECT name, kind, qualname FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='table.ts') AND kind='field' ORDER BY name")
         .unwrap();
     let fields: Vec<(String, String, String)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -3831,7 +3968,7 @@ fn export_type_keeps_classes_and_value_export_drops_type_aliases() {
     assert_eq!(foo, "unresolved");
     let box_dst: String = conn
         .query_row(
-            "SELECT dst.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.ts' AND e.kind='references' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='Box'",
+            "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.ts' AND e.kind='references' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='Box'",
             [],
             |row| row.get(0),
         )

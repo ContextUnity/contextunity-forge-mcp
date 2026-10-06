@@ -456,8 +456,32 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
         .collect();
     package_exports.insert("", HashMap::new());
     mark("namespace indexes and exports");
+    let mut inheritance_imports: HashMap<(&str, &str, &str), Vec<&Reference>> = HashMap::new();
+    for (path, facts) in all {
+        let facts = facts.as_ref();
+        if !facts
+            .nodes
+            .iter()
+            .any(|node| node.language == "python" && node.kind == "class")
+        {
+            continue;
+        }
+        for import in facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == "imports")
+        {
+            if let (Some(alias), Some(owner)) =
+                (import.alias.as_deref(), by_id.get(import.source.as_str()))
+            {
+                inheritance_imports
+                    .entry((path.as_str(), owner.qualname.as_str(), alias))
+                    .or_default()
+                    .push(import);
+            }
+        }
+    }
     let python_receivers = receivers::PythonReceivers::build(all, |class, reference| {
-        let facts = all[&class.path].as_ref();
         let expression = reference.expression.as_str();
         let (head, tail) = expression.split_once('.').unwrap_or((expression, ""));
         let mut scope = class
@@ -466,6 +490,10 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
             .map_or("", |(parent, _)| parent);
         let mut key = String::new();
         while !scope.is_empty() {
+            let imports = inheritance_imports
+                .get(&(class.path.as_str(), scope, head))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             if by_qual.get(scope).is_some_and(|nodes| {
                 nodes.iter().any(|node| {
                     node.path == class.path
@@ -482,15 +510,10 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                 .filter(|node| node.path == class.path && node.kind == "class")
                 .collect();
             if local.len() == 1 {
-                if facts.references.iter().any(|import| {
-                    import.kind == "imports"
-                        && import.alias.as_deref() == Some(head)
-                        && import.line > local[0].line
-                        && import.line <= class.line
-                        && by_id
-                            .get(import.source.as_str())
-                            .is_some_and(|node| node.qualname == scope)
-                }) {
+                if imports
+                    .iter()
+                    .any(|import| import.line > local[0].line && import.line <= class.line)
+                {
                     return receivers::Base::Unknown;
                 }
                 return receivers::Base::Local(&local[0].id);
@@ -498,17 +521,6 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
             if local.len() > 1 {
                 return receivers::Base::Unknown;
             }
-            let imports: Vec<_> = facts
-                .references
-                .iter()
-                .filter(|import| {
-                    import.kind == "imports"
-                        && import.alias.as_deref() == Some(head)
-                        && by_id
-                            .get(import.source.as_str())
-                            .is_some_and(|node| node.qualname == scope)
-                })
-                .collect();
             if !imports.is_empty() {
                 if imports.len() != 1 {
                     return receivers::Base::Unknown;
@@ -619,6 +631,7 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
             receivers::Base::Unknown
         }
     });
+    drop(inheritance_imports);
     #[cfg(feature = "lang-rust")]
     let rust_members = languages::rust::linker::RustMembers::build(all);
     mark("inheritance indexes");
@@ -641,7 +654,15 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
     #[cfg(feature = "lang-typescript")]
     let semantic_context = semantic_context.with_typescript(&typescript_members);
     mark("semantic admission and members");
-    let value_flow = value_flow::ValueFlowIndex::build_parallel(all, &semantic_context);
+    // Preserve inventory order for path/suffix selection after value flow takes
+    // the full inventory and sorts it by lexical ownership.
+    let module_nodes: Vec<&Node> = nodes
+        .iter()
+        .copied()
+        .filter(|node| node.kind == "module")
+        .collect();
+    let value_flow =
+        value_flow::ValueFlowIndex::build_parallel(all, nodes, &by_id, &semantic_context);
     mark("value flow");
     #[cfg(feature = "lang-html")]
     let html_templates = html_templates::Registry::build(all, flows, dependency_registry);
@@ -1185,15 +1206,15 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                 } else if profile.is_some_and(|profile| profile.id() == "html") {
                     None
                 } else {
-                    nodes
+                    module_nodes
                         .iter()
-                        .find(|node| node.kind == "module" && node.path == target_path)
+                        .find(|node| node.path == target_path)
                         .copied()
                         .or_else(|| {
                             let suffix = format!("/{target_path}");
-                            nodes
+                            module_nodes
                                 .iter()
-                                .find(|node| node.kind == "module" && node.path.ends_with(&suffix))
+                                .find(|node| node.path.ends_with(&suffix))
                                 .copied()
                         })
                 };

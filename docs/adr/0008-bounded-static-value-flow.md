@@ -24,6 +24,6 @@ Accurate method call linking requires receiver type inference (e.g. knowing that
    - Receiver inference operates within proven lexical scope boundaries. Global or mutated variables without deterministic local initialization remain unresolved.
 
 ## Consequences
-- Fast, deterministic linker execution (sub-second link times across entire codebases).
+- Deterministic linker execution through bounded, fail-closed traversal.
 - Zero security risk from executing arbitrary codebase scripts.
 - Confident call graph edges with explicit provenance for resolved members.

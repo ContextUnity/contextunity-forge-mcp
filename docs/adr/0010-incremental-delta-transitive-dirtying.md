@@ -11,7 +11,7 @@ date: 2026-10-01
 Accepted
 
 ## Context
-Full cold builds on large codebases take several seconds. When an editor or agent edits a single file, re-indexing the entire repository wastes CPU cycles and introduces latency. Naive single-file updates leave cross-file symbol references and caller edges stale.
+Re-indexing the entire repository after a single-file edit repeats work and can leave cross-file symbol references and caller edges stale when updates are scoped too narrowly.
 
 ## Decision
 1. **Scoped Invalidation Perimeter**:
@@ -22,10 +22,9 @@ Full cold builds on large codebases take several seconds. When an editor or agen
 2. **Selective Relinking**:
    - Re-parse and extract AST facts only for files within the invalidated perimeter.
    - Retain cached nodes, edges, facts, and leaf digests for unaffected files.
-3. **Transaction and Generation Advancement**:
-   - Delta updates apply within a single SQLite transaction, updating modified rows and incrementing the database generation counter atomically.
+3. **Atomic delta publication and snapshot admission**:
+   - Delta updates apply within a SQLite transaction and publish the updated graph and Merkle output root as one committed snapshot. MCP readers validate the database file identity during admission and again after a query; changed snapshots invalidate the cached reader.
 
 ## Consequences
-- Sub-50ms delta update times for typical single-file edits.
 - Cross-file symbol resolution remains consistent with a fresh cold build.
-- MCP readers immediately observe updated facts upon generation advancement.
+- MCP readers use the newly published facts after their snapshot admission observes the updated database identity.

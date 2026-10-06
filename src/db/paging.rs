@@ -79,13 +79,24 @@ pub(crate) fn query(
 }
 
 pub(crate) fn nodes(alias: &str, detail: Detail) -> String {
-    columns(
+    nodes_with_path(
         alias,
         detail,
-        &[
-            "id", "kind", "name", "qualname", "path", "line", "end_line", "language",
-        ],
+        &format!("(SELECT path FROM path_dictionary WHERE path_id={alias}.path_id)"),
     )
+}
+
+pub(crate) fn nodes_with_path(alias: &str, detail: Detail, path_expression: &str) -> String {
+    let path = format!("{path_expression} AS path");
+    if detail == Detail::Full {
+        format!(
+            "{alias}.node_id,{alias}.id,{alias}.kind,{alias}.name,{alias}.qualname,{alias}.path_id,{path},{alias}.line,{alias}.end_line,{alias}.is_test,{alias}.language,{alias}.generated,{alias}.details,{alias}.node_hash,{alias}.owner_path_id"
+        )
+    } else {
+        format!(
+            "{alias}.id,{alias}.kind,{alias}.name,{alias}.qualname,{path},{alias}.line,{alias}.end_line,{alias}.language"
+        )
+    }
 }
 
 pub(crate) fn docs(alias: &str, detail: Detail) -> String {

@@ -22,10 +22,10 @@ Tools like `code_map_query(operation="sql")` and `code_map_analyze` accept SQL q
    - Any statement containing mutation keywords (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `ATTACH`, `DETACH`, `VACUUM`, `REINDEX`) is rejected before execution.
 3. **Stacked Statement Prevention**:
    - Statements with semicolons separating multiple commands are rejected to eliminate SQL chaining attacks.
-4. **Execution Budgets**:
-   - Queries execute under strict execution time limits (5000 ms) and row return limits (default 30, maximum 100 rows).
+4. **Execution Guard**:
+   - Graph queries use a two-second SQLite progress-handler guard. SQL result pagination defaults to 30 rows and is capped at 100 rows.
 
 ## Consequences
 - AI agents safely run diagnostic SQL without risk of database corruption or privilege escalation.
-- Query latencies remain bounded by execution timeouts and pagination limits.
+- Expensive graph queries are interrupted by the execution guard, and returned SQL rows remain bounded by pagination.
 - SQLite graph data remains immutable to all external query tools.

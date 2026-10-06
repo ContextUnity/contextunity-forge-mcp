@@ -42,15 +42,15 @@ fn canonical_graph_tables_store_numeric_keys_and_first_class_owners() -> Result<
     )?;
     for (id, path) in [("fn:a", "src/a.rs"), ("fn:b", "src/b.rs")] {
         conn.execute(
-            "INSERT INTO nodes(id,kind,name,qualname,path_id,path,line,end_line,is_test,language,generated,details,node_hash,owner_path_id)
-             VALUES(?1,'function',?1,?1,(SELECT path_id FROM path_dictionary WHERE path=?2),?2,1,1,0,'rust',0,'{}',?3,
+            "INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id)
+             VALUES(?1,'function',?1,?1,(SELECT path_id FROM path_dictionary WHERE path=?2),1,1,0,'rust',0,'{}',?3,
              (SELECT path_id FROM path_dictionary WHERE path=?2))",
             params![id, path, stable_hash64(id)],
         )?;
     }
     conn.execute(
-        "INSERT INTO nodes(id,kind,name,qualname,path_id,path,line,end_line,is_test,language,generated,details,node_hash,owner_path_id)
-         VALUES('component:src','component','src','src',(SELECT path_id FROM path_dictionary WHERE path='src'),'src',1,1,0,'workspace',0,'{}',?1,
+        "INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id)
+         VALUES('component:src','component','src','src',(SELECT path_id FROM path_dictionary WHERE path='src'),1,1,0,'workspace',0,'{}',?1,
          (SELECT path_id FROM path_dictionary WHERE path='src/a.rs'))",
         [stable_hash64("component:src")],
     )?;
@@ -99,7 +99,12 @@ fn canonical_graph_tables_store_numeric_keys_and_first_class_owners() -> Result<
         |row| row.get(0),
     )?;
     assert_eq!(owner, "src/a.rs");
-    let nodes = reader::rows(&conn, "SELECT * FROM nodes ORDER BY id", &[], 3)?;
+    let nodes = reader::rows(
+        &conn,
+        "SELECT n.id,n.kind,n.name,n.qualname,(SELECT path FROM path_dictionary WHERE path_id=n.path_id) AS path,n.line,n.end_line,n.details FROM nodes n ORDER BY n.id",
+        &[],
+        3,
+    )?;
     assert_eq!(nodes.len(), 3);
     assert!(nodes.iter().all(|node| {
         let object = node.as_object().unwrap();

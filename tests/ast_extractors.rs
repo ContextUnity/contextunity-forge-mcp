@@ -142,6 +142,61 @@ export const processUser = (u: User) => {
     assert!(process_user.details.get("receiver_type").is_none());
 }
 
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn typescript_tsx_parser_slot_reuses_cleanly_across_files() {
+    for (path, source, expected_name) in [
+        (
+            "First.tsx",
+            "export const First = () => <main><span /></main>;",
+            "First",
+        ),
+        (
+            "Second.tsx",
+            "export function Second() { return <button />; }",
+            "Second",
+        ),
+    ] {
+        let facts = ast::extract(path, "typescript", source).expect("TSX extraction failed");
+        assert!(facts.errors.is_empty(), "{path}: {:?}", facts.errors);
+        assert!(facts
+            .nodes
+            .iter()
+            .any(|node| node.name == expected_name && node.kind == "function"));
+    }
+}
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn vue_profile_parser_reuse_tracks_the_selected_grammar() {
+    let profile =
+        contextunity_forge_mcp::engine::languages::by_id("vue").expect("Vue profile is compiled");
+    for (path, source, expected_name) in [
+        (
+            "First.vue",
+            "export function First() { return 1; }",
+            "First",
+        ),
+        (
+            "Second.tsx",
+            "export function Second() { return <button />; }",
+            "Second",
+        ),
+        ("Third.js", "export function Third() { return 1; }", "Third"),
+    ] {
+        let mut facts = contextunity_forge_mcp::core::models::Facts::default();
+        contextunity_forge_mcp::engine::languages::parse_file(
+            profile, path, source, path, &mut facts,
+        )
+        .expect("Vue profile parse failed");
+        assert!(facts.errors.is_empty(), "{path}: {:?}", facts.errors);
+        assert!(facts
+            .nodes
+            .iter()
+            .any(|node| node.name == expected_name && node.kind == "function"));
+    }
+}
+
 #[cfg(feature = "lang-go")]
 #[test]
 fn test_go_ast_extractor() {

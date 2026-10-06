@@ -146,12 +146,12 @@ fn query_scope_symbols(workspace_root: &Path, root: &Path, scope: &[String]) -> 
     for scope_path in scope {
         let (sql, param) = if scope_path.ends_with('/') {
             (
-                "SELECT name, kind, path, line, details FROM nodes WHERE is_test = 0 AND kind IN ('struct', 'enum', 'trait', 'class', 'type', 'interface', 'function') AND path LIKE ?1 || '%' ORDER BY path, line LIMIT 15",
+                "SELECT n.name,n.kind,p.path,n.line,n.details FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.is_test=0 AND n.kind IN ('struct','enum','trait','class','type','interface','function') AND p.path LIKE ?1 || '%' ORDER BY p.path,n.line LIMIT 15",
                 scope_path.clone(),
             )
         } else {
             (
-                "SELECT name, kind, path, line, details FROM nodes WHERE is_test = 0 AND kind IN ('struct', 'enum', 'trait', 'class', 'type', 'interface', 'function') AND path = ?1 ORDER BY line LIMIT 15",
+                "SELECT n.name,n.kind,p.path,n.line,n.details FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.is_test=0 AND n.kind IN ('struct','enum','trait','class','type','interface','function') AND p.path=?1 ORDER BY n.line LIMIT 15",
                 scope_path.clone(),
             )
         };
@@ -221,11 +221,11 @@ fn find_covering_tests(workspace_root: &Path, root: &Path, scope: &[String]) -> 
         ) {
             for scope_path in scope.iter().filter(|path| !path.starts_with("tests/")) {
                 let predicate = if scope_path.ends_with('/') {
-                    "n.path LIKE ?1 || '%'"
+                    "np.path LIKE ?1 || '%'"
                 } else {
-                    "n.path = ?1"
+                    "np.path = ?1"
                 };
-                let sql = format!("SELECT DISTINCT t.path,t.name FROM nodes n JOIN edges e ON e.dst_hash=n.node_hash AND e.kind IN ('calls','imports') JOIN nodes t ON t.node_hash=e.src_hash WHERE {predicate} AND t.is_test=1 ORDER BY t.path,t.name LIMIT 15");
+                let sql = format!("SELECT DISTINCT tp.path,t.name FROM nodes n JOIN path_dictionary np ON np.path_id=n.path_id JOIN edges e ON e.dst_hash=n.node_hash AND e.kind IN ('calls','imports') JOIN nodes t ON t.node_hash=e.src_hash JOIN path_dictionary tp ON tp.path_id=t.path_id WHERE {predicate} AND t.is_test=1 ORDER BY tp.path,t.name LIMIT 15");
                 if let Ok(mut stmt) = conn.prepare(&sql) {
                     if let Ok(rows) = stmt.query_map([scope_path], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))

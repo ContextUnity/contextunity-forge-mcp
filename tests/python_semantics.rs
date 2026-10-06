@@ -71,7 +71,7 @@ fn persisted_import(
         rusqlite::params![path, line, name], |row| row.get(0),
     ).unwrap_or_else(|_| panic!("missing import coverage {path}:{line} {name}"));
     let targets = conn.prepare(
-        "SELECT dst.path || ':' || dst.name FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE p.path=?1 AND e.line=?2 AND e.kind='imports' AND v.evidence=?3 ORDER BY dst.path,dst.name",
+        "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) || ':' || dst.name FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE p.path=?1 AND e.line=?2 AND e.kind='imports' AND v.evidence=?3 ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id),dst.name",
     ).unwrap().query_map(rusqlite::params![path, line, name], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
     (status, targets)
 }
@@ -240,7 +240,7 @@ fn type_checking_imports_resolve_annotations_without_runtime_calls() {
             "unresolved"
         );
         let targets: Vec<String> = conn
-            .prepare("SELECT dst.path || ':' || dst.name FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.line=4 AND e.kind='references' ORDER BY dst.path,dst.name")
+            .prepare("SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) || ':' || dst.name FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.line=4 AND e.kind='references' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id),dst.name")
             .unwrap()
             .query_map([path], |row| row.get(0))
             .unwrap()
@@ -384,7 +384,7 @@ fn package_reexports_follow_callable_alias_targets() {
             "{path}: after import"
         );
         let called: Vec<String> = conn.prepare(
-            "SELECT dst.path || ':' || dst.name FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE p.path=?1 AND e.line=4 AND e.kind='calls' AND v.evidence='dispatch' ORDER BY dst.path,dst.name",
+            "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) || ':' || dst.name FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE p.path=?1 AND e.line=4 AND e.kind='calls' AND v.evidence='dispatch' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id),dst.name",
         ).unwrap().query_map([path], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
         assert_eq!(
             called,
@@ -538,7 +538,7 @@ fn module_assignment_exports_and_reexports_persist_exact_targets() {
             "{targets:?}"
         );
         let class_targets: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.line=11 AND e.kind='imports' AND dst.path=?2 AND dst.name='PRE' AND dst.kind='class'",
+            "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.line=11 AND e.kind='imports' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?2 AND dst.name='PRE' AND dst.kind='class'",
             rusqlite::params![consumer, format!("{prefix}pkg/rebound_declarations.py")], |row| row.get(0),
         ).unwrap();
         assert_eq!(
@@ -606,7 +606,7 @@ fn module_assignment_aliases_to_imported_classes_keep_exact_origin() {
             );
         }
         let calls: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.line=5 AND e.kind='calls' AND dst.path=?2 AND dst.name='Selection' AND dst.kind='class'",
+            "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.line=5 AND e.kind='calls' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?2 AND dst.name='Selection' AND dst.kind='class'",
             rusqlite::params![consumer, format!("{prefix}pkg/selection.py")], |row| row.get(0),
         ).unwrap();
         assert_eq!(calls, 1, "Selection() must call the indexed source class");

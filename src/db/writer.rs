@@ -302,8 +302,14 @@ fn populate(
     let bulk_paths_ms = t_bulk.elapsed().as_secs_f64() * 1000.;
 
     let t_files = Instant::now();
-    let (node_id, docs_count, fts_insert_ms) =
-        persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
+    let file_timings = persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
+    let node_id = file_timings.node_id;
+    let node_row_count = file_timings.node_row_count;
+    let node_row_insert_ms = file_timings
+        .node_row_insert_ms
+        .context("cold file persistence must report node row insertion time")?;
+    let docs_count = file_timings.docs_count;
+    let fts_insert_ms = file_timings.fts_insert_ms;
     let persist_files_ms = t_files.elapsed().as_secs_f64() * 1000. - fts_insert_ms;
 
     let t_doc_fts = Instant::now();
@@ -339,17 +345,17 @@ fn populate(
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(&index_sql)?;
         tx.commit()?;
-        conn.execute_batch(&format!("PRAGMA cache_size=-{cache_kb};"))?;
         Ok(started.elapsed().as_secs_f64() * 1000.)
     };
     let indexes_ms = index_candidate(conn)?;
     let started = Instant::now();
     let seal = commitments::seal_snapshot(conn)?;
     let seal_ms = started.elapsed().as_secs_f64() * 1000.;
+    conn.execute_batch(&format!("PRAGMA cache_size=-{cache_kb};"))?;
     let index_and_seal_ms = index_and_seal.elapsed().as_secs_f64() * 1000.;
     let persist_ms = writing.elapsed().as_secs_f64() * 1000.;
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-    let mut report = json!({"files":entries.len(),"nodes":node_id,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"doc_fts_insert_ms":doc_fts_insert_ms,"persist_graph_ms":persist_graph_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms});
+    let mut report = json!({"files":entries.len(),"nodes":node_id,"node_row_count":node_row_count,"node_row_insert_ms":node_row_insert_ms,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"doc_fts_insert_ms":doc_fts_insert_ms,"persist_graph_ms":persist_graph_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms});
     report["graph_phases_ms"] = json!({"occurrences_and_dependencies":graph_timings.occurrences,"unique_edges":graph_timings.edges,"coverage_dictionaries":graph_timings.dictionaries,"coverage_and_unresolved":graph_timings.coverage});
     report["index_and_seal_ms"] = json!(index_and_seal_ms);
     Ok(report)

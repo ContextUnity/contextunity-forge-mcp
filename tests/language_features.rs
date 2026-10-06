@@ -386,7 +386,7 @@ fn cross_layer_seams_endpoint_vue_alpine() {
     // Verify impact / reachability traversal from order_list reaches client callers
     let view_node_id: String = conn
         .query_row(
-            "SELECT id FROM nodes WHERE name='order_list' AND path='urls.py'",
+            "SELECT id FROM nodes WHERE name='order_list' AND path_id=(SELECT path_id FROM path_dictionary WHERE path='urls.py')",
             [],
             |row| row.get(0),
         )

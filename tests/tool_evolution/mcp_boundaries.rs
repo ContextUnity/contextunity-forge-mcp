@@ -205,6 +205,18 @@ fn mcp_search_ast_and_document_boundaries() {
         json!({"pattern":"print($VALUE)","language":"python","path":"src/app.py"}),
     );
     assert!(!ast["matches"]["items"].as_array().unwrap().is_empty());
+    let ranked = m.ok("code_map_search", json!({"pattern":"item_name","limit":10}));
+    let ranked_total = ranked["nodes"]["total"].clone();
+    assert!(ranked_total.as_u64().unwrap() > 0);
+    let empty_ranked_page = m.ok(
+        "code_map_search",
+        json!({"pattern":"item_name","limit":10,"offset":100,"generation":ranked["nodes"]["generation"]}),
+    );
+    assert!(empty_ranked_page["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(empty_ranked_page["nodes"]["total"], ranked_total);
     m.err(
         "ast_grep_search",
         json!({"pattern":"def (","language":"python"}),
@@ -247,6 +259,123 @@ fn mcp_search_ast_and_document_boundaries() {
         json!({"path_or_id":"docs/intro.md","section":"NonExistentSection"}),
         "document or section not found",
     );
+}
+
+#[test]
+fn ast_grep_prefilter_preserves_matches_for_body_only_literals() {
+    use serde_json::json;
+    let w = Workspace::new();
+    w.write("src/a_candidate.py", "def marker():\n    return 1\n");
+    w.write("src/z_body.py", "def other():\n    return \"marker\"\n");
+    w.build();
+    let mut m = Mcp::new(&w);
+    let result = m.ok(
+        "ast_grep_search",
+        json!({"pattern":"return \"marker\"","language":"python"}),
+    );
+    let items = result["matches"]["items"].as_array().unwrap();
+    assert!(
+        items.iter().any(|item| item["path"] == "src/z_body.py"),
+        "{result}"
+    );
+}
+
+#[test]
+fn removal_proof_normalizes_file_selector_aliases_before_scoping() {
+    use serde_json::json;
+    let w = Workspace::new();
+    w.write(
+        "target.py",
+        "def target(): return missing_target()\ndef spare(): return 1\n",
+    );
+    w.write(
+        "caller_a.py",
+        "from target import target\ndef caller_a(): return target()\n",
+    );
+    w.write(
+        "caller_b.py",
+        "from target import target\ndef caller_b(): return target()\n",
+    );
+    w.build();
+    let mut m = Mcp::new(&w);
+    let full = m.ok(
+        "code_map_prove_removal",
+        json!({"selector":"target.py","limit":100}),
+    );
+    let expected_selected = full["selected_ids"]["items"].as_array().unwrap().clone();
+    let expected_dependencies = full["incoming_dependencies"]["items"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let selected_total = full["selected_ids"]["total"].as_u64().unwrap();
+    let dependency_total = full["incoming_dependencies"]["total"].as_u64().unwrap();
+    assert!(selected_total > 1);
+    assert!(dependency_total > 1);
+    assert!(full["unresolved_references"].as_u64().unwrap() > 0);
+
+    for selector in [
+        "target.py",
+        "./target.py",
+        "file:target.py",
+        "file://target.py",
+    ] {
+        let first = m.ok(
+            "code_map_prove_removal",
+            json!({"selector":selector,"limit":1,"offset":0}),
+        );
+        let generation = first["selected_ids"]["generation"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut selected_items = Vec::new();
+        let mut dependency_items = Vec::new();
+        let last_offset = selected_total.max(dependency_total) as usize;
+        for offset in 0..=last_offset {
+            let result = if offset == 0 {
+                first.clone()
+            } else {
+                m.ok(
+                    "code_map_prove_removal",
+                    json!({"selector":selector,"limit":1,"offset":offset,"generation":generation}),
+                )
+            };
+            if (offset as u64) < selected_total {
+                assert_eq!(
+                    result["selected_ids"]["generation"], generation,
+                    "{selector}: {result}"
+                );
+            }
+            assert_eq!(result["selected_ids"]["total"], selected_total);
+            assert_eq!(result["incoming_dependencies"]["total"], dependency_total);
+            assert_eq!(result["safe_to_remove"], false, "{selector}: {result}");
+            assert_eq!(
+                result["unresolved_references"],
+                full["unresolved_references"]
+            );
+            assert_eq!(result["parse_errors"], full["parse_errors"]);
+            assert_eq!(
+                result["assessment"]["blocking_reasons"][0]["count"],
+                result["incoming_dependencies"]["total"],
+                "{selector}: {result}"
+            );
+            selected_items.extend(
+                result["selected_ids"]["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned(),
+            );
+            dependency_items.extend(
+                result["incoming_dependencies"]["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned(),
+            );
+        }
+        assert_eq!(selected_items, expected_selected, "{selector}");
+        assert_eq!(dependency_items, expected_dependencies, "{selector}");
+    }
 }
 
 #[test]

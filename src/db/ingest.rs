@@ -25,6 +25,15 @@ fn flush_owner_language_counts<'a>(
     }
 }
 
+#[derive(Debug)]
+pub(super) struct FilePersistenceTimings {
+    pub(super) node_id: i64,
+    pub(super) node_row_count: usize,
+    pub(super) docs_count: usize,
+    pub(super) fts_insert_ms: f64,
+    pub(super) node_row_insert_ms: Option<f64>,
+}
+
 pub(super) fn persist_files(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
@@ -32,10 +41,11 @@ pub(super) fn persist_files(
     facts: &BTreeMap<String, TypedFacts>,
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
     bulk_search: bool,
-) -> Result<(i64, usize, f64)> {
+) -> Result<FilePersistenceTimings> {
     let mut node_id: i64 = tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
         r.get(0)
     })?;
+    let initial_node_id = node_id;
     let mut docs_count = 0;
 
     let mut stmt_source_inv = (!bulk_search)
@@ -49,9 +59,7 @@ pub(super) fn persist_files(
         .transpose()?;
     let mut stmt_nodes = (!bulk_search)
         .then(|| {
-            tx.prepare(
-                "INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            )
+            tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)")
         })
         .transpose()?;
     let mut stmt_node_search = (!bulk_search)
@@ -97,17 +105,18 @@ pub(super) fn persist_files(
         })
         .transpose()?;
     let mut file_batch = Vec::<[SqlValue; 8]>::new();
-    let mut node_batch = Vec::<[BorrowedSqlValue<'_>; 15]>::new();
+    let mut node_batch = Vec::<[BorrowedSqlValue<'_>; 14]>::new();
     let mut reusable_detail_buffers = Vec::<Vec<u8>>::new();
     let mut owned_search_batch = Vec::<SearchRow>::new();
     let mut fts_insert_ms = 0.0;
+    let mut node_row_insert_ms = bulk_search.then_some(0.0);
     let mut reusable_search_buffers = Vec::<String>::new();
     let mut incremental_search_buffer = String::new();
     let mut shared_owner_rows = Vec::<[i64; 4]>::new();
     let (file_batch_rows, node_batch_rows, owned_search_batch_rows) = if bulk_search {
         (
             Some(multi_value_batch_rows::<8>(tx)?),
-            Some(multi_value_batch_rows::<15>(tx)?),
+            Some(multi_value_batch_rows::<14>(tx)?),
             Some(multi_value_batch_rows::<2>(tx)?),
         )
     } else {
@@ -205,7 +214,6 @@ pub(super) fn persist_files(
                     BorrowedSqlValue::Text(&n.name),
                     BorrowedSqlValue::Text(&n.qualname),
                     BorrowedSqlValue::Integer(node_path_id),
-                    BorrowedSqlValue::Text(&n.path),
                     BorrowedSqlValue::Integer(i64::try_from(n.line)?),
                     BorrowedSqlValue::Integer(i64::try_from(n.end_line)?),
                     BorrowedSqlValue::Integer(i64::from(n.is_test)),
@@ -216,7 +224,11 @@ pub(super) fn persist_files(
                     BorrowedSqlValue::Integer(owner_id),
                 ]);
                 if node_batch.len() == node_batch_rows.context("missing cold node batch size")? {
-                    flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
+                    let insert_ms =
+                        flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
+                    if let Some(total_ms) = node_row_insert_ms.as_mut() {
+                        *total_ms += insert_ms;
+                    }
                 }
             } else {
                 let details = serde_json::to_string(&n.navigation_details())?;
@@ -230,7 +242,6 @@ pub(super) fn persist_files(
                         n.name,
                         n.qualname,
                         node_path_id,
-                        n.path,
                         n.line,
                         n.end_line,
                         n.is_test,
@@ -329,7 +340,10 @@ pub(super) fn persist_files(
     }
 
     insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
-    flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
+    let insert_ms = flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
+    if let Some(total_ms) = node_row_insert_ms.as_mut() {
+        *total_ms += insert_ms;
+    }
     fts_insert_ms +=
         flush_owned_search_batch(tx, &mut owned_search_batch, &mut reusable_search_buffers)?;
     if let Some(batch) = source_inventory_batch.as_mut() {
@@ -344,15 +358,26 @@ pub(super) fn persist_files(
 
     shared_key_cache.flush()?;
     shared_owner_batch.flush()?;
-    Ok((node_id, docs_count, fts_insert_ms))
+    Ok(FilePersistenceTimings {
+        node_id,
+        node_row_count: usize::try_from(node_id - initial_node_id)?,
+        docs_count,
+        fts_insert_ms,
+        node_row_insert_ms,
+    })
 }
 
 fn flush_node_batch(
     tx: &Connection,
-    batch: &mut Vec<[BorrowedSqlValue<'_>; 15]>,
+    batch: &mut Vec<[BorrowedSqlValue<'_>; 14]>,
     reusable_buffers: &mut Vec<Vec<u8>>,
-) -> Result<()> {
+) -> Result<f64> {
+    if batch.is_empty() {
+        return Ok(0.0);
+    }
+    let started = Instant::now();
     insert_multi_value_batch(tx, "INSERT INTO nodes VALUES", batch)?;
+    let insert_ms = started.elapsed().as_secs_f64() * 1000.;
     for row in batch.drain(..) {
         for value in row {
             if let BorrowedSqlValue::OwnedJsonText(buffer) = value {
@@ -360,7 +385,7 @@ fn flush_node_batch(
             }
         }
     }
-    Ok(())
+    Ok(insert_ms)
 }
 
 fn write_node_search_text(search: &mut String, node: &Node, facts: &Facts) {

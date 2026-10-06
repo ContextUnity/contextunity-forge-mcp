@@ -158,6 +158,17 @@ All handlers must be asynchronous and tested.
     let report = writer::build(&ws.0, &db_path, None).expect("cold build failed");
     assert!(report["nodes"].as_i64().unwrap_or(0) > 0);
     assert!(report["files"].as_i64().unwrap_or(0) >= 2);
+    assert_eq!(
+        report["node_row_count"].as_u64(),
+        report["nodes"].as_u64(),
+        "cold build reports the number of node rows inserted"
+    );
+    assert!(
+        report["node_row_insert_ms"].as_f64().is_some(),
+        "cold build reports node-row batch insertion time"
+    );
+    assert!(report["rows_ms"].as_f64().is_some());
+    assert!(report["persist_ms"].as_f64().is_some());
 
     let conn = reader::open(&db_path, &ws.0).expect("reader open failed");
     let page = QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();

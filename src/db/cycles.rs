@@ -11,7 +11,7 @@ fn components(conn: &Connection, filter_path: Option<&str>) -> Result<Vec<Vec<i6
         let path = path.trim_end_matches('/');
         let (prefix, end) = path_bounds(path);
         let mut statement = conn.prepare(
-            "SELECT node_hash FROM nodes WHERE path=?1 OR (path>=?2 AND path<?3) LIMIT 1000001",
+            "SELECT n.node_hash FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE p.path=?1 OR (p.path>=?2 AND p.path<?3) LIMIT 1000001",
         )?;
         let selected = statement
             .query_map([path, &prefix, &end], |r| r.get::<_, i64>(0))?
@@ -91,7 +91,7 @@ pub(super) fn summary(conn: &Connection, filter_path: Option<&str>) -> Result<Va
     components.sort_unstable_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
     let total = components.len();
     let total_nodes: usize = components.iter().map(Vec::len).sum();
-    let mut lookup = conn.prepare_cached("SELECT id,path,line FROM nodes WHERE node_hash=?1")?;
+    let mut lookup = conn.prepare_cached("SELECT n.id,p.path,n.line FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.node_hash=?1")?;
     let mut largest = Vec::new();
     for component in components.iter().take(5) {
         let (id, path, line): (String, String, i64) =

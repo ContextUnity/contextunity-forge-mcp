@@ -239,22 +239,29 @@ fn returned_callables<'tree>(
                 return None;
             }
             definitions.insert(name.to_owned(), statement);
-        } else if matches!(statement.kind(), "lexical_declaration" | "variable_declaration") {
+        } else if matches!(
+            statement.kind(),
+            "lexical_declaration" | "variable_declaration"
+        ) {
             let is_const = text(statement, source).trim_start().starts_with("const ");
             for declaration in statement.named_children(&mut statement.walk()) {
                 if declaration.kind() != "variable_declarator" {
                     continue;
                 }
-                let Some(name) = declaration.child_by_field_name("name")
-                    .filter(|name| name.kind() == "identifier") else { continue; };
+                let Some(name) = declaration
+                    .child_by_field_name("name")
+                    .filter(|name| name.kind() == "identifier")
+                else {
+                    continue;
+                };
                 let name = text(name, source);
                 if !declared.insert(name.to_owned()) {
                     return None;
                 }
                 if is_const {
-                    if let Some(value) = declaration.child_by_field_name("value")
-                        .filter(|value| matches!(value.kind(), "arrow_function" | "function_expression"))
-                    {
+                    if let Some(value) = declaration.child_by_field_name("value").filter(|value| {
+                        matches!(value.kind(), "arrow_function" | "function_expression")
+                    }) {
                         definitions.insert(name.to_owned(), value);
                     }
                 }
@@ -263,7 +270,10 @@ fn returned_callables<'tree>(
     }
     let mut pending = vec![body];
     while let Some(node) = pending.pop() {
-        let written = if matches!(node.kind(), "assignment_expression" | "augmented_assignment_expression") {
+        let written = if matches!(
+            node.kind(),
+            "assignment_expression" | "augmented_assignment_expression"
+        ) {
             node.child_by_field_name("left")
         } else if node.kind() == "update_expression" {
             node.child_by_field_name("argument")
@@ -311,11 +321,14 @@ fn object_value(node: Syntax<'_>, source: &str, scope: Option<Syntax<'_>>) -> Va
             if !matches!(name.kind(), "property_identifier" | "identifier") {
                 return ValueExpr::Unknown;
             }
-            (text(name, source), if matches!(declaration.kind(), "arrow_function" | "function_expression") {
-                declaration
-            } else {
-                item
-            })
+            (
+                text(name, source),
+                if matches!(declaration.kind(), "arrow_function" | "function_expression") {
+                    declaration
+                } else {
+                    item
+                },
+            )
         } else if item.kind() == "shorthand_property_identifier" {
             if definitions.is_none() {
                 let Some(found) = scope.and_then(|root| returned_callables(root, source)) else {
@@ -324,7 +337,10 @@ fn object_value(node: Syntax<'_>, source: &str, scope: Option<Syntax<'_>>) -> Va
                 definitions = Some(found);
             }
             let name = text(item, source);
-            let Some(declaration) = definitions.as_ref().and_then(|definitions| definitions.get(name)) else {
+            let Some(declaration) = definitions
+                .as_ref()
+                .and_then(|definitions| definitions.get(name))
+            else {
                 return ValueExpr::Unknown;
             };
             (name, *declaration)
@@ -355,10 +371,15 @@ fn value(node: Syntax<'_>, source: &str) -> ValueExpr {
             .named_child(0)
             .filter(|expression| expression.kind() == "call_expression")
             .map(|expression| {
-                if expression.child_by_field_name("function")
-                    .is_some_and(|callee| callee.kind() == "identifier" && text(callee, source) == "fetch")
+                if expression
+                    .child_by_field_name("function")
+                    .is_some_and(|callee| {
+                        callee.kind() == "identifier" && text(callee, source) == "fetch"
+                    })
                 {
-                    ValueExpr::Call { callee: "await fetch".to_owned() }
+                    ValueExpr::Call {
+                        callee: "await fetch".to_owned(),
+                    }
                 } else {
                     value(expression, source)
                 }
@@ -387,13 +408,15 @@ fn value(node: Syntax<'_>, source: &str) -> ValueExpr {
                 let mut cursor = arguments.walk();
                 let mut values = arguments.named_children(&mut cursor);
                 return match (values.next(), values.next()) {
-                    (Some(object), None) if object.kind() == "object" => match value(object, source) {
-                        ValueExpr::Object { members, .. } => ValueExpr::Object {
-                            members,
-                            builtin_guard: true,
-                        },
-                        _ => ValueExpr::Unknown,
-                    },
+                    (Some(object), None) if object.kind() == "object" => {
+                        match value(object, source) {
+                            ValueExpr::Object { members, .. } => ValueExpr::Object {
+                                members,
+                                builtin_guard: true,
+                            },
+                            _ => ValueExpr::Unknown,
+                        }
+                    }
                     _ => ValueExpr::Unknown,
                 };
             }
@@ -455,8 +478,17 @@ fn is_simple_assignment(node: Syntax<'_>, source: &str) -> bool {
 }
 
 pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
+    extract_with_return(root, source, || jsdoc(root, source).1)
+}
+
+pub(super) fn extract_with_return(
+    root: Syntax<'_>,
+    source: &str,
+    documented_return: impl FnOnce() -> Option<TypeExpr>,
+) -> ValueFlowFacts {
     if root.kind() == "pair" {
-        if let Some(field_value) = root.child_by_field_name("value")
+        if let Some(field_value) = root
+            .child_by_field_name("value")
             .filter(|value| value.kind() == "array")
         {
             return ValueFlowFacts {
@@ -477,7 +509,7 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
         } else {
             root.child_by_field_name("return_type")
                 .map(|ty| named_type(ty, source))
-                .or_else(|| jsdoc(root, source).1)
+                .or_else(documented_return)
         },
         ..Default::default()
     };
@@ -527,7 +559,9 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
         let try_conditional = try_conditional || node.kind() == "try_statement";
         let conditional = branch_conditional || try_conditional;
         if node.kind() == "variable_declarator" {
-            let lexical = node.parent().is_some_and(|parent| parent.kind() == "lexical_declaration");
+            let lexical = node
+                .parent()
+                .is_some_and(|parent| parent.kind() == "lexical_declaration");
             let immutable = node.parent().is_some_and(|parent| {
                 parent.kind() == "lexical_declaration"
                     && parent
@@ -548,7 +582,10 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
                 })
                 .flatten();
             let scoped = |value| match scope_end {
-                Some(body_end) => ValueExpr::Scoped { value: Box::new(value), body_end },
+                Some(body_end) => ValueExpr::Scoped {
+                    value: Box::new(value),
+                    body_end,
+                },
                 None => value,
             };
             if let Some(name) = node
@@ -730,7 +767,12 @@ pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
         }
         let mut cursor = node.walk();
         let children: Vec<_> = node.named_children(&mut cursor).collect();
-        pending.extend(children.into_iter().rev().map(|child| (child, branch_conditional, try_conditional)));
+        pending.extend(
+            children
+                .into_iter()
+                .rev()
+                .map(|child| (child, branch_conditional, try_conditional)),
+        );
     }
     result.immutable_initializers.sort_unstable();
     result
@@ -796,7 +838,6 @@ pub(super) fn final_return(root: Syntax<'_>) -> Option<Syntax<'_>> {
     expression
 }
 
-
 fn binding(
     name: &str,
     local: Option<&str>,
@@ -813,10 +854,13 @@ fn binding(
     }
 }
 
-pub(super) fn exports(root: Syntax<'_>, source: &str) -> Vec<ExportBinding> {
+pub(super) fn exports(
+    root: Syntax<'_>,
+    source: &str,
+    bindings: &crate::engine::ast::ScopeBindings,
+) -> Vec<ExportBinding> {
     let mut result = Vec::new();
-    let commonjs_shadowed = TYPESCRIPT
-        .bindings(root, source)
+    let commonjs_shadowed = bindings
         .all
         .iter()
         .any(|name| matches!(name.as_str(), "module" | "exports"));
@@ -1000,13 +1044,15 @@ pub(super) fn exports(root: Syntax<'_>, source: &str) -> Vec<ExportBinding> {
                 } else if let Some(module) = required_module(right, source) {
                     result.push(binding(name, None, Some(&module), false, false));
                 } else if matches!(right.kind(), "function_expression" | "arrow_function") {
-                    let local = field(right, source, "name").map(str::to_owned).unwrap_or_else(|| {
-                        format!(
-                            "anonymous@{}:{}",
-                            right.start_position().row + 1,
-                            right.start_position().column + 1
-                        )
-                    });
+                    let local = field(right, source, "name")
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            format!(
+                                "anonymous@{}:{}",
+                                right.start_position().row + 1,
+                                right.start_position().column + 1
+                            )
+                        });
                     result.push(binding(name, Some(&local), None, false, false));
                 } else {
                     result.push(binding(name, None, None, false, false));
@@ -1014,14 +1060,18 @@ pub(super) fn exports(root: Syntax<'_>, source: &str) -> Vec<ExportBinding> {
             } else if left == "module.exports" && required_module(right, source).is_some() {
                 let module = required_module(right, source).expect("checked literal require");
                 result.push(binding("*", None, Some(&module), false, true));
-            } else if left == "module.exports" && matches!(right.kind(), "function_expression" | "arrow_function") {
-                let local = field(right, source, "name").map(str::to_owned).unwrap_or_else(|| {
-                    format!(
-                        "anonymous@{}:{}",
-                        right.start_position().row + 1,
-                        right.start_position().column + 1
-                    )
-                });
+            } else if left == "module.exports"
+                && matches!(right.kind(), "function_expression" | "arrow_function")
+            {
+                let local = field(right, source, "name")
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| {
+                        format!(
+                            "anonymous@{}:{}",
+                            right.start_position().row + 1,
+                            right.start_position().column + 1
+                        )
+                    });
                 result.push(binding("default", Some(&local), None, false, false));
             } else if left == "module.exports" && right.kind() == "object" {
                 let mut cursor = right.walk();

@@ -74,7 +74,7 @@ impl Workspace {
             }
         }
         for sql in [
-            "SELECT p.path||'|'||n.id||'|'||n.kind||'|'||n.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.owner_path_id ORDER BY p.path,n.id",
+            "SELECT p.path||'|'||n.id||'|'||n.kind||'|'||np.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.owner_path_id JOIN path_dictionary np ON np.path_id=n.path_id ORDER BY p.path,n.id",
             "SELECT path||'|'||hex(facts_blob) FROM local_facts ORDER BY path",
             "SELECT p.path||'|'||o.ordinal||'|'||s.id||'|'||d.id||'|'||o.kind||'|'||o.line||'|'||v.evidence FROM edge_occurrences o JOIN path_dictionary p ON p.path_id=o.owner_id JOIN nodes s ON s.node_hash=o.src_hash JOIN nodes d ON d.node_hash=o.dst_hash JOIN coverage_evidence v ON v.evidence_id=o.confidence_id ORDER BY p.path,o.ordinal",
             "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
@@ -123,7 +123,7 @@ fn one_file_edit_does_not_rewrite_unrelated_component_owners() {
     }
     w.build();
     let sql =
-        "SELECT id||'|'||node_id FROM nodes WHERE path NOT IN('part23','part23/b.py') ORDER BY id";
+        "SELECT id||'|'||node_id FROM nodes WHERE path_id NOT IN(SELECT path_id FROM path_dictionary WHERE path IN('part23','part23/b.py')) ORDER BY id";
     let before = strings(&w.open(), sql);
     w.write("part23/b.py", "def extra_23():\n    return 999\n");
     let report = w.delta(&["part23/b.py"]);
@@ -175,7 +175,7 @@ fn linked_component_transfer_preserves_unmodified_containment_edges() {
     linked.write("src/c.py", "def charlie(): pass\n");
     w.write("forge-mcp.yaml", &format!("roots: [local]\nlinked_workspaces:\n  - name: linked\n    path: {}\n    roots: [src]\n", linked.0.display()));
     w.build();
-    let untouched_sql = "SELECT id||'|'||node_id FROM nodes WHERE path='local/a.py' ORDER BY id";
+    let untouched_sql = "SELECT id||'|'||node_id FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='local/a.py') ORDER BY id";
     let before = strings(&w.open(), untouched_sql);
     linked.write("src/a.py", "def alpha(): pass\n");
     let report = w.delta(&["[linked]/src/a.py"]);

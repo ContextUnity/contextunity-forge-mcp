@@ -171,20 +171,20 @@ fn module_type_aliases_resolve_imports_and_annotation_references() {
     let conn = w.open();
     for name in names {
         let (kind, qualname): (String, String) = conn.query_row(
-            "SELECT kind,qualname FROM nodes WHERE path='aliases.py' AND name=?1", [name],
+            "SELECT kind,qualname FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='aliases.py') AND name=?1", [name],
             |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap_or_else(|error| panic!("missing type {name}: {error}; nodes: {:?}", rows(&conn, "SELECT name || ':' || kind FROM nodes WHERE path='aliases.py' ORDER BY line")));
+        ).unwrap_or_else(|error| panic!("missing type {name}: {error}; nodes: {:?}", rows(&conn, "SELECT name || ':' || kind FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='aliases.py') ORDER BY line")));
         assert_eq!(kind, "type", "{name}");
         assert_eq!(qualname, format!("aliases.{name}"));
         assert!(rows(
             &conn,
-            &format!("SELECT id FROM nodes WHERE path='aliases.py' AND name='{name}'")
+            &format!("SELECT id FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='aliases.py') AND name='{name}'")
         )[0]
         .starts_with("type:aliases.py:"));
         let statuses = rows(&conn, &format!("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='{name}' ORDER BY line"));
         assert_eq!(statuses, vec!["resolved"; 2], "{name}");
     }
-    assert!(rows(&conn, "SELECT name FROM nodes WHERE path='aliases.py' AND kind='type' AND name IN ('ordinary','annotated','Local','LocalVariable','LocalPep','Nested')").is_empty());
+    assert!(rows(&conn, "SELECT name FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='aliases.py') AND kind='type' AND name IN ('ordinary','annotated','Local','LocalVariable','LocalPep','Nested')").is_empty());
     assert_eq!(rows(&conn, "SELECT (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND status='unresolved' ORDER BY line"), vec!["Missing", "Missing"]);
 }
 
@@ -214,7 +214,7 @@ fn module_alias_conversion_delta_matches_cold_build() {
         let conn = w.open();
         assert_eq!(coverage(&conn, 1, "Value").0, expected_status, "{source:?}");
         let import_edges: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.py' AND e.kind='imports' AND dst.path='aliases.py' AND dst.name='Value'",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.py' AND e.kind='imports' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='aliases.py' AND dst.name='Value'",
             [],
             |row| row.get(0),
         ).unwrap();
@@ -392,7 +392,7 @@ fn framework_lineage_and_local_protocol_members_keep_project_provenance() {
         "conditional alias cannot select Product as a unique provider"
     );
     let local_edge: i64 = first_db.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.py' AND e.kind='calls' AND dst.path='app/contracts.py' AND dst.kind='method' AND dst.name='notify'",
+        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.py' AND e.kind='calls' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/contracts.py' AND dst.kind='method' AND dst.name='notify'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(

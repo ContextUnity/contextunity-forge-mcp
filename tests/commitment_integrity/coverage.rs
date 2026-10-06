@@ -85,3 +85,52 @@ fn coverage_uses_dictionary_values_for_unicode_and_custom_status() {
     .unwrap();
     assert_ne!(commitments::seal(&conn).unwrap(), initial);
 }
+
+#[test]
+fn resolution_coverage_rejects_rows_with_missing_dictionary_entries() {
+    for missing in ["path", "expression", "evidence"] {
+        let conn = connection();
+        let owner = owner_id(&conn, "src/owner_a.rs");
+        conn.execute(
+            "INSERT INTO coverage_expressions(expression) VALUES('known.expression')",
+            [],
+        )
+        .unwrap();
+        let expression: i64 = conn
+            .query_row(
+                "SELECT expression_id FROM coverage_expressions WHERE expression='known.expression'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO resolution_coverage VALUES(?1,1,?2,'resolved',1)",
+            params![owner, expression],
+        )
+        .unwrap();
+        commitments::seal(&conn).unwrap();
+
+        conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+        let orphan = 10_000;
+        let (path_id, expression_id, evidence_id) = match missing {
+            "path" => (orphan, expression, 1),
+            "expression" => (owner, orphan, 1),
+            "evidence" => (owner, expression, orphan),
+            _ => unreachable!(),
+        };
+        conn.execute(
+            "INSERT INTO resolution_coverage VALUES(?1,2,?2,'resolved',?3)",
+            params![path_id, expression_id, evidence_id],
+        )
+        .unwrap();
+
+        assert!(
+            commitments::verify(&conn).is_err(),
+            "verify accepted a resolution_coverage row with a missing {missing} dictionary entry"
+        );
+        assert!(
+            commitments::seal(&conn).is_err(),
+            "seal accepted a resolution_coverage row with a missing {missing} dictionary entry"
+        );
+    }
+}

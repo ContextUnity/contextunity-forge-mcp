@@ -20,16 +20,16 @@ Read [documentation instructions](AGENTS.md) before editing these pages.
 
 ## Architecture
 
-- [Architecture index](architecture/README.md): system structure, contracts, and performance envelopes.
+- [Architecture index](architecture/README.md): system structure, contracts, and recommended performance values.
 - [Indexing and resolution](architecture/indexing.md): source inventory, language profiles, linking, persistence, and query boundaries.
 - [SQLite concurrency](architecture/concurrency.md): reader isolation, generation locking, and WAL pragmas.
 - [Engine modularity](architecture/modularity.md): `LanguageProfile`, `TemplatePreprocessor`, and `LanguageLinker` traits.
-- [Performance budgets](architecture/performance.md): latency targets, FTS5 BM25 search, and storage compaction.
+- [Performance guidance](architecture/performance.md): recommended latency values, FTS5 BM25 search, and storage compaction.
 - [Architectural decisions](adr/README.md): accepted decision records (ADRs).
 
 ## Operations and verification
 
-- [Limits and freshness](runbooks/limits-and-freshness.md): budgets, recovery steps, source verification, and failure behavior.
+- [Limits and freshness](runbooks/limits-and-freshness.md): protective indexing/query ceilings, recovery steps, source verification, and failure behavior.
 - [ACDD execution runbook](runbooks/acdd.md): the task and milestone delivery sequence.
 - [Testing](testing/README.md): test authority and verification commands.
 

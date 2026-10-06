@@ -101,7 +101,7 @@ fn custom_adapter_exclusion_survives_delta_and_linked_configs_remain_sources() {
     let cold = reader::open(&cold_path, &workspace.0).unwrap();
     for query in [
         "SELECT path,digest FROM files ORDER BY path",
-        "SELECT id,kind,name,qualname,path,line,end_line,details FROM nodes ORDER BY id",
+        "SELECT n.id,n.kind,n.name,n.qualname,(SELECT path FROM path_dictionary WHERE path_id=n.path_id) AS path,n.line,n.end_line,n.details FROM nodes n ORDER BY n.id",
         "SELECT * FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
     ] {
         assert_eq!(

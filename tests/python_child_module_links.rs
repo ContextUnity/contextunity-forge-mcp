@@ -88,7 +88,7 @@ fn call_targets(conn: &Connection) -> Vec<String> {
 }
 
 fn call_target_paths(conn: &Connection) -> Vec<String> {
-    rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer.consume' AND e.kind='calls' ORDER BY dst.path")
+    rows(conn, "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer.consume' AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
 }
 
 fn import_targets(conn: &Connection) -> Vec<String> {
@@ -96,7 +96,7 @@ fn import_targets(conn: &Connection) -> Vec<String> {
 }
 
 fn import_target_paths(conn: &Connection) -> Vec<String> {
-    rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer' AND e.kind='imports' ORDER BY dst.path")
+    rows(conn, "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer' AND e.kind='imports' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
 }
 
 #[test]
@@ -221,7 +221,7 @@ fn src_layout_linked_reexports_preserve_owner_workspace_priority() {
     );
     w.build();
     let targets = |conn: &Connection| {
-        rows(conn, "SELECT dst.path FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.path='src/consumer.py' AND e.kind='calls' ORDER BY dst.path")
+        rows(conn, "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.path_id=(SELECT path_id FROM path_dictionary WHERE path='src/consumer.py') AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
     };
     assert_eq!(targets(&w.open()), ["[catalogue]/src/catalogue/models.py"]);
     w.write("src/catalogue/__init__.py", "from .api import Config\n");
@@ -354,7 +354,7 @@ fn paired_runtime_and_stub_choose_runtime_child() {
     assert_eq!(call_targets(&conn), ["pkg.child.value"]);
     let stub: i64 = conn
         .query_row(
-            "SELECT count(*) FROM nodes WHERE path='pkg/child.pyi'",
+            "SELECT count(*) FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='pkg/child.pyi')",
             [],
             |row| row.get(0),
         )

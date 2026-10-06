@@ -1254,7 +1254,7 @@ fn rust_smart_pointer_deref_dispatch_persists_exact_providers_and_boundaries() {
         .prepare("SELECT c.status,v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path=?1 AND x.expression=?2 ORDER BY c.status,v.evidence")
         .unwrap();
     let mut edges = conn
-        .prepare("SELECT dst.path FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN coverage_evidence v ON v.evidence_id=e.evidence_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.kind='calls' AND v.evidence=?2 ORDER BY dst.path")
+        .prepare("SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN coverage_evidence v ON v.evidence_id=e.evidence_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.kind='calls' AND v.evidence=?2 ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
         .unwrap();
 
     for (path, expression, statuses, target, origin) in [

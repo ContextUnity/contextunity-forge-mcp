@@ -439,7 +439,9 @@ impl<'a> ValueFlowIndex<'a> {
         resolver: &impl SemanticResolver<'a>,
         limits: SemanticLimits,
     ) -> Self {
-        Self::build_initialized(all, resolver, limits, |nodes, names| {
+        let nodes: Vec<&Node> = all.values().flat_map(|facts| &facts.nodes).collect();
+        let by_id = nodes.iter().map(|node| (node.id.as_str(), *node)).collect();
+        Self::build_initialized(all, nodes, &by_id, resolver, limits, |nodes, names| {
             nodes
                 .iter()
                 .map(|&node| initialize_scope(node, names, resolver, limits))
@@ -449,10 +451,12 @@ impl<'a> ValueFlowIndex<'a> {
 
     pub(crate) fn build_parallel<F: AsRef<Facts>>(
         all: &'a BTreeMap<String, F>,
+        nodes: Vec<&'a Node>,
+        by_id: &HashMap<&str, &'a Node>,
         resolver: &(impl SemanticResolver<'a> + Sync),
     ) -> Self {
         let limits = SemanticLimits::default();
-        Self::build_initialized(all, resolver, limits, |nodes, names| {
+        Self::build_initialized(all, nodes, by_id, resolver, limits, |nodes, names| {
             if nodes.len() >= 8192 {
                 nodes
                     .par_iter()
@@ -469,14 +473,12 @@ impl<'a> ValueFlowIndex<'a> {
 
     fn build_initialized<F: AsRef<Facts>>(
         all: &'a BTreeMap<String, F>,
+        nodes: Vec<&'a Node>,
+        by_id: &HashMap<&str, &'a Node>,
         resolver: &impl SemanticResolver<'a>,
         limits: SemanticLimits,
         initialize: impl FnOnce(&[&'a Node], &NamedNodes<'a>) -> Vec<InitializedScope<'a>>,
     ) -> Self {
-        let nodes: Vec<&Node> = all
-            .values()
-            .flat_map(|facts| &facts.as_ref().nodes)
-            .collect();
         let mut by_name: NamedNodes<'a> = HashMap::with_capacity(nodes.len());
         for node in &nodes {
             by_name
@@ -933,11 +935,13 @@ impl<'a> ValueFlowIndex<'a> {
                 index.fields = fields;
             }
         }
-        let by_id: HashMap<&str, &Node> = owners
-            .iter()
-            .map(|node| (node.id.as_str(), *node))
-            .collect();
         for reference in all.values().flat_map(|facts| &facts.as_ref().references) {
+            if !matches!(
+                reference.receiver_hint,
+                Some(ReceiverHint::ConstructorResult { .. } | ReceiverHint::CallResult { .. })
+            ) {
+                continue;
+            }
             let Some(owner) = by_id.get(reference.source.as_str()).copied() else {
                 continue;
             };

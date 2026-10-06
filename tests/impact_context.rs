@@ -36,7 +36,7 @@ impl Workspace {
         )?;
         conn.execute_batch("INSERT INTO path_dictionary(path_id,path) VALUES(1,'fixture.py'),(2,'module.py'); INSERT INTO coverage_evidence(evidence_id,evidence) VALUES(1,'fixture'),(2,'exact'),(3,'self');")?;
         for id in ["a", "b", "c", "d", "decorator"] {
-            conn.execute("INSERT INTO nodes(id,kind,name,qualname,path_id,path,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES(?1,'function',?1,?1,1,'fixture.py',1,1,0,'python',0,'{}',?2,1)", params![id, stable_hash64(id)])?;
+            conn.execute("INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES(?1,'function',?1,?1,1,1,1,0,'python',0,'{}',?2,1)", params![id, stable_hash64(id)])?;
         }
         for (from, to, kind) in [
             ("a", "b", "calls"),
@@ -215,7 +215,7 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
 fn structural_dependency_uses_the_same_edge_kind_for_reachability_and_explanation() -> Result<()> {
     let workspace = Workspace::new()?;
     let conn = workspace.database()?;
-    conn.execute("INSERT INTO nodes(id,kind,name,qualname,path_id,path,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES('module','module','module','module',2,'module.py',1,1,0,'python',0,'{}',?1,2)", [stable_hash64("module")])?;
+    conn.execute("INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES('module','module','module','module',2,1,1,0,'python',0,'{}',?1,2)", [stable_hash64("module")])?;
     conn.execute("INSERT INTO edges(src_hash,dst_hash,kind,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES(?1,?2,'imports',1,1,1,2,1)",params![stable_hash64("a"),stable_hash64("module")])?;
     let page = traversal::traverse_with_options(
         &conn,
@@ -245,7 +245,7 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     let workspace = Workspace::new()?;
     let conn = workspace.database()?;
     conn.execute_batch("INSERT INTO path_dictionary(path_id,path) VALUES(3,'orphan.py'),(4,'other.py'),(5,'caller.py'); INSERT INTO coverage_expressions(expression_id,expression) VALUES(1,'dynamic()'),(2,'orphan');")?;
-    conn.execute("INSERT INTO nodes(id,kind,name,qualname,path_id,path,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES('orphan','function','orphan','orphan',3,'orphan.py',1,1,0,'python',0,'{}',?1,3)", [stable_hash64("orphan")])?;
+    conn.execute("INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES('orphan','function','orphan','orphan',3,1,1,0,'python',0,'{}',?1,3)", [stable_hash64("orphan")])?;
     let clean = traversal::removal_paged(&conn, "orphan", &options(10, 0, Detail::Compact)?)?;
     assert_eq!(clean["assessment"]["verdict"], "no_indexed_blockers");
     assert_eq!(clean["safe_to_remove"], true);

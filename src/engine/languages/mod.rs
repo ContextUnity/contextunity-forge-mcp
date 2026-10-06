@@ -39,7 +39,7 @@ pub(crate) mod typescript_bindings;
 pub(crate) const MAX_VALUE_FLOW_TYPE_DEPTH: usize = 8;
 
 struct ThreadLocalParsers {
-    builtin: [Vec<tree_sitter::Parser>; 7],
+    builtin: [Vec<tree_sitter::Parser>; 6],
     other: HashMap<&'static str, Vec<tree_sitter::Parser>>,
 }
 
@@ -56,10 +56,9 @@ impl ThreadLocalParsers {
             "python" => 0,
             "rust" => 1,
             "html" => 2,
-            "vue" => 3,
-            "javascript" => 4,
-            "typescript-tsx" => 5,
-            "typescript" => 6,
+            "javascript" => 3,
+            "typescript-tsx" => 4,
+            "typescript" => 5,
             _ => return None,
         })
     }
@@ -172,6 +171,8 @@ impl ImportPath {
 #[derive(Default)]
 /// Per-file extraction state shared by hooks of one language profile.
 pub struct FileContext {
+    /// Bindings prepared for this exact syntax root; consumed by the shared visitor.
+    pub root_bindings: Option<(usize, ast::ScopeBindings)>,
     /// Export bindings discovered during extraction.
     pub exports: Vec<crate::core::semantic::ExportBinding>,
     /// Deferred export bindings resolved during linking.
@@ -458,6 +459,19 @@ pub trait LanguageProfile: Send + Sync {
     ) -> SymbolMetadata {
         SymbolMetadata::default()
     }
+    /// Analyzes one declaration, allowing profiles to share local intermediate facts.
+    fn declaration(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        name: &str,
+        file: &FileContext,
+    ) -> (SymbolMetadata, crate::core::semantic::ValueFlowFacts) {
+        (
+            self.metadata(node, source, name, file),
+            self.value_flow_with_context(node, source, file),
+        )
+    }
     /// Reports whether a syntax node marks a test declaration.
     fn test_attribute(&self, _node: Syntax<'_>, _source: &str) -> bool {
         false
@@ -657,10 +671,9 @@ fn parser_slot(profile_id: &str, path: &str) -> Option<&'static str> {
         "python" => "python",
         "rust" => "rust",
         "html" => "html",
-        "vue" => "vue",
         "javascript" => "javascript",
-        "typescript" if path.ends_with(".tsx") => "typescript-tsx",
-        "typescript"
+        "vue" | "typescript" if path.ends_with(".tsx") => "typescript-tsx",
+        "vue" | "typescript"
             if path.ends_with(".js")
                 || path.ends_with(".jsx")
                 || path.ends_with(".mjs")
@@ -668,7 +681,7 @@ fn parser_slot(profile_id: &str, path: &str) -> Option<&'static str> {
         {
             "javascript"
         }
-        "typescript" => "typescript",
+        "vue" | "typescript" => "typescript",
         _ => return None,
     })
 }

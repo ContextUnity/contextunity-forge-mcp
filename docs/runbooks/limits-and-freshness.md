@@ -27,7 +27,7 @@ These are protective ceilings, not latency promises. A query may finish earlier,
 
 ## Keeping the index current
 
-The default database is `<root>/.forge/code-map.sqlite`; override it with `--db` or `FORGE_DB`. The default workspace is `.`; use `--root` or `FORGE_WORKSPACE_ROOT` for another root. `build` creates a full index. `delta` updates changed and deleted files. The MCP server validates workspace identity and adapter configuration on each request, then updates or rebuilds stale data. It reuses a successful source-inventory check for up to two seconds when the adapter digest is unchanged, so an external source edit can remain unreflected during that interval. CLI read commands use the existing index, so refresh it with `build` or `delta` after source edits.
+The default database is `<root>/.forge/code-map.sqlite`; override it with `--db` or `FORGE_DB`. The default workspace is `.`; use `--root` or `FORGE_WORKSPACE_ROOT` for another root. `build` creates a full index. `delta` updates changed and deleted files. The MCP server validates workspace identity and adapter configuration on each request, then updates or rebuilds stale data. It reuses a successful source-inventory check for up to five seconds when the adapter digest and database identity remain valid, so an external source edit can remain unreflected during that interval. CLI read commands use the existing index, so refresh it with `build` or `delta` after source edits.
 
 If a source file has changed since it was indexed, `get_code_snippet` rejects stale content by digest. Refresh the index and retry. Response settings such as page size and source preview length do not require a rebuild; changes to admitted roots, linked workspaces, or enabled language profiles do.
 

@@ -420,7 +420,7 @@ fn cold_file_node_and_search_inserts_respect_live_batch_boundaries() {
     conn.execute_batch(SCHEMA_DDL).unwrap();
     let variable_limit = constrain_variable_limit(&conn) as usize;
     let rows_by_columns =
-        [8, 15, 2].map(|columns| (variable_limit / columns).min(super::MAX_MULTI_VALUE_BATCH_ROWS));
+        [8, 14, 2].map(|columns| (variable_limit / columns).min(super::MAX_MULTI_VALUE_BATCH_ROWS));
     assert!(rows_by_columns
         .iter()
         .all(|rows| (1..=super::MAX_MULTI_VALUE_BATCH_ROWS).contains(rows)));
@@ -429,7 +429,7 @@ fn cold_file_node_and_search_inserts_respect_live_batch_boundaries() {
         rows_by_columns[0]
     );
     assert_eq!(
-        multi_value_batch_rows::<15>(&conn).unwrap(),
+        multi_value_batch_rows::<14>(&conn).unwrap(),
         rows_by_columns[1]
     );
     assert_eq!(

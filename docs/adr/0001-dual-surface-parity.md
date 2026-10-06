@@ -26,7 +26,7 @@ Forge MCP serves two primary environments: AI coding assistants over the JSON-RP
    - **Type Layering (`src/core/`)**: Shared domain models are grouped by functional responsibility into dedicated submodules (`graph`, `semantic`, `docs`, `compact`). Business logic and query traversal remain strictly separated from core data definitions.
    - **Self-Contained Language Subsystems (`src/engine/languages/<lang>/`)**: Complex language engines (exceeding 500 lines or requiring language-specific linking/value-flow rules) are organized as self-contained packages containing their AST visitor, language-specific value flow, and linker profile.
    - **Language-Agnostic Linker Core (`src/engine/linker/`)**: The core graph linker operates exclusively through the `LanguageLinker` trait contract, keeping graph assembly and SQLite persistence free of language-specific `match` branching.
-   - **File Length Bounds**: Production and test source files adhere to an upper ceiling of 800 lines to guarantee modularity and maintainability.
+   - **Cohesive Module Boundaries**: Group production and test code by cohesive responsibility, owned inputs and outputs, and concrete producer/consumer seams. Use file length to find candidates for review; do not set a universal line ceiling or target a fixed child-module size.
 
 ## Consequences
 - Operations, task state, and graph queries are reproducible between human terminal sessions, CI workflows, and autonomous AI agents.

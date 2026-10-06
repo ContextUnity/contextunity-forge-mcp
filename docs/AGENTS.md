@@ -63,7 +63,7 @@ to code symbols in the SQLite code map. Follow these structural standards:
    Declare architectural invariants within GitHub alert callouts containing `Invariant:`:
    ```markdown
    > [!IMPORTANT]
-   > Invariant: Every reader acquires an RAII lock on the active `generation` counter.
+    > Invariant: Every reader holds the shared database snapshot lock while reading and rejects a result if the snapshot identity changes.
    ```
    Supported alert tags: `[!IMPORTANT]`, `[!WARNING]`, `[!NOTE]`.
    Forge marks matching sections with `is_invariant: true`, indexing them for

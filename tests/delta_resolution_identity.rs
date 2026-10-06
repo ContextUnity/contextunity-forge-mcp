@@ -50,6 +50,16 @@ impl Workspace {
             "SELECT id||'|'||kind||'|'||qualname||'|'||line||'|'||end_line||'|'||details FROM nodes ORDER BY id",
             "SELECT (SELECT id FROM nodes WHERE node_hash=src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=dst_hash)||'|'||kind||'|'||(SELECT path FROM path_dictionary WHERE path_id=edges.path_id)||'|'||line||'|'||occurrence_count FROM edges ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind",
             "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
+            r#"SELECT json_array(p.path, c.line, e.expression, c.status, v.evidence, c.language)
+               FROM coverage_owner_language c
+               JOIN path_dictionary p ON p.path_id=c.path_id
+               JOIN coverage_expressions e ON e.expression_id=c.expression_id
+               JOIN coverage_evidence v ON v.evidence_id=c.evidence_id
+               ORDER BY p.path, c.line, e.expression, c.status, v.evidence, c.language"#,
+            r#"SELECT json_array(p.path, c.language, c.status, c.records)
+               FROM coverage_language_counts c
+               JOIN path_dictionary p ON p.path_id=c.path_id
+               ORDER BY p.path, c.language, c.status"#,
             "SELECT p.path||'|'||f.path||'|'||d.kind||'|'||d.symbol FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.target_hash IS NOT NULL ORDER BY p.path,f.path,d.kind,d.symbol",
         ] { assert_eq!(rows(&incremental, query), rows(&cold, query), "{query}"); }
     }

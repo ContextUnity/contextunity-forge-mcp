@@ -368,7 +368,7 @@ fn source_preview_does_not_include_neighboring_symbols_on_the_same_line() {
     let conn = workspace.build();
     let anonymous: String = conn
         .query_row(
-            "SELECT id FROM nodes WHERE path='anonymous.ts' AND kind='function'",
+            "SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='anonymous.ts' AND n.kind='function'",
             [],
             |row| row.get(0),
         )

@@ -1,11 +1,15 @@
 use super::*;
 use crate::core::models::ReceiverHint;
 use crate::engine::ast::{relations, routes};
-#[path = "typescript/linker.rs"]
-pub(crate) mod linker;
 #[path = "typescript/commonjs.rs"]
 mod commonjs;
+#[path = "typescript/linker.rs"]
+pub(crate) mod linker;
 pub(crate) use commonjs::commonjs_bindings;
+#[path = "typescript/package_metadata.rs"]
+mod package_metadata;
+#[path = "typescript/scope_facts.rs"]
+mod scope_facts;
 #[path = "typescript/value_flow.rs"]
 mod value_flow;
 /// Performs language.
@@ -66,9 +70,14 @@ fn lexical_this_method<'tree>(node: Syntax<'tree>) -> Option<(Syntax<'tree>, Syn
         match parent.kind() {
             "arrow_function" => {}
             "method_definition" => return method_owner(parent).map(|class| (parent, class)),
-            "function_declaration" | "generator_function_declaration" | "function_expression"
-            | "generator_function" | "generator_function_expression" | "class_declaration"
-            | "class" | "method_signature" => return None,
+            "function_declaration"
+            | "generator_function_declaration"
+            | "function_expression"
+            | "generator_function"
+            | "generator_function_expression"
+            | "class_declaration"
+            | "class"
+            | "method_signature" => return None,
             _ => {}
         }
         current = parent.parent();
@@ -80,13 +89,17 @@ fn prototype_target<'a>(left: Syntax<'_>, source: &'a str) -> Option<(&'a str, &
     if left.kind() != "member_expression" {
         return None;
     }
-    let member = left.child_by_field_name("property")
+    let member = left
+        .child_by_field_name("property")
         .filter(|property| property.kind() == "property_identifier")?;
-    let prototype = left.child_by_field_name("object")
+    let prototype = left
+        .child_by_field_name("object")
         .filter(|object| object.kind() == "member_expression")?;
-    let property = prototype.child_by_field_name("property")
+    let property = prototype
+        .child_by_field_name("property")
         .filter(|property| property.kind() == "property_identifier")?;
-    let owner = prototype.child_by_field_name("object")
+    let owner = prototype
+        .child_by_field_name("object")
         .filter(|object| object.kind() == "identifier")?;
     let owner = text(owner, source);
     let member = text(member, source);
@@ -98,9 +111,11 @@ fn direct_prototype_owner<'a>(left: Syntax<'_>, source: &'a str) -> Option<&'a s
     if left.kind() != "member_expression" {
         return None;
     }
-    let property = left.child_by_field_name("property")
+    let property = left
+        .child_by_field_name("property")
         .filter(|property| property.kind() == "property_identifier")?;
-    let owner = left.child_by_field_name("object")
+    let owner = left
+        .child_by_field_name("object")
         .filter(|object| object.kind() == "identifier")?;
     (text(property, source) == "prototype").then(|| text(owner, source))
 }
@@ -109,10 +124,15 @@ pub(crate) fn commonjs_default_callable(node: Syntax<'_>, source: &str) -> bool 
     if !matches!(node.kind(), "function_expression" | "arrow_function") {
         return false;
     }
-    let Some(assignment) = node.parent().filter(|parent| parent.kind() == "assignment_expression") else {
+    let Some(assignment) = node
+        .parent()
+        .filter(|parent| parent.kind() == "assignment_expression")
+    else {
         return false;
     };
-    if assignment.child_by_field_name("right").is_none_or(|right| right.id() != node.id())
+    if assignment
+        .child_by_field_name("right")
+        .is_none_or(|right| right.id() != node.id())
         || !assignment.parent().is_some_and(|parent| {
             parent.kind() == "expression_statement"
                 && parent.parent().is_some_and(|root| root.kind() == "program")
@@ -120,24 +140,32 @@ pub(crate) fn commonjs_default_callable(node: Syntax<'_>, source: &str) -> bool 
     {
         return false;
     }
-    let Some(left) = assignment.child_by_field_name("left")
-        .filter(|left| left.kind() == "member_expression") else {
+    let Some(left) = assignment
+        .child_by_field_name("left")
+        .filter(|left| left.kind() == "member_expression")
+    else {
         return false;
     };
-    left.child_by_field_name("object").is_some_and(|object| {
-        object.kind() == "identifier" && text(object, source) == "module"
-    }) && left.child_by_field_name("property").is_some_and(|property| {
-        property.kind() == "property_identifier" && text(property, source) == "exports"
-    })
+    left.child_by_field_name("object")
+        .is_some_and(|object| object.kind() == "identifier" && text(object, source) == "module")
+        && left
+            .child_by_field_name("property")
+            .is_some_and(|property| {
+                property.kind() == "property_identifier" && text(property, source) == "exports"
+            })
 }
 
 fn prototype_assignment<'a>(node: Syntax<'_>, source: &'a str) -> Option<(&'a str, &'a str)> {
     if !matches!(node.kind(), "function_expression" | "arrow_function") {
         return None;
     }
-    let assignment = node.parent().filter(|parent| parent.kind() == "assignment_expression")?;
+    let assignment = node
+        .parent()
+        .filter(|parent| parent.kind() == "assignment_expression")?;
     if assignment.child_by_field_name("right")?.id() != node.id()
-        || assignment.child_by_field_name("operator").is_some_and(|operator| text(operator, source) != "=")
+        || assignment
+            .child_by_field_name("operator")
+            .is_some_and(|operator| text(operator, source) != "=")
         || !assignment.parent().is_some_and(|parent| {
             parent.kind() == "expression_statement"
                 && parent.parent().is_some_and(|root| root.kind() == "program")
@@ -148,16 +176,24 @@ fn prototype_assignment<'a>(node: Syntax<'_>, source: &'a str) -> Option<(&'a st
     prototype_target(assignment.child_by_field_name("left")?, source)
 }
 
-fn prototype_identifier_assignment<'a>(node: Syntax<'_>, source: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
+fn prototype_identifier_assignment<'a>(
+    node: Syntax<'_>,
+    source: &'a str,
+) -> Option<(&'a str, &'a str, &'a str)> {
     if node.kind() != "assignment_expression"
-        || !node.parent().is_some_and(|parent| parent.kind() == "expression_statement"
-            && parent.parent().is_some_and(|root| root.kind() == "program"))
-        || node.child_by_field_name("operator").is_some_and(|operator| text(operator, source) != "=")
+        || !node.parent().is_some_and(|parent| {
+            parent.kind() == "expression_statement"
+                && parent.parent().is_some_and(|root| root.kind() == "program")
+        })
+        || node
+            .child_by_field_name("operator")
+            .is_some_and(|operator| text(operator, source) != "=")
     {
         return None;
     }
     let (owner, member) = prototype_target(node.child_by_field_name("left")?, source)?;
-    let implementation = node.child_by_field_name("right")
+    let implementation = node
+        .child_by_field_name("right")
         .filter(|right| right.kind() == "identifier")?;
     Some((owner, member, text(implementation, source)))
 }
@@ -167,9 +203,15 @@ fn lexical_prototype_owner<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a 
     while let Some(parent) = current {
         match parent.kind() {
             "arrow_function" => {}
-            "function_expression" => return prototype_assignment(parent, source).map(|(owner, _)| owner),
-            "function_declaration" | "generator_function_declaration" | "generator_function"
-            | "generator_function_expression" | "method_definition" | "class_declaration"
+            "function_expression" => {
+                return prototype_assignment(parent, source).map(|(owner, _)| owner)
+            }
+            "function_declaration"
+            | "generator_function_declaration"
+            | "generator_function"
+            | "generator_function_expression"
+            | "method_definition"
+            | "class_declaration"
             | "class" => return None,
             _ => {}
         }
@@ -206,14 +248,15 @@ fn static_member_callee(function: Syntax<'_>, source: &str) -> Option<String> {
         _ => return None,
     };
     let mut bytes = member.bytes();
-    if !bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$'))
+    if !bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$'))
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
     {
         return None;
     }
     Some(format!("{}.{}", text(receiver, source), member))
 }
-
 
 fn supported_object(object: Syntax<'_>) -> Option<Syntax<'_>> {
     // The helper is called for each direct member. Keep the object-wide check
@@ -223,9 +266,11 @@ fn supported_object(object: Syntax<'_>) -> Option<Syntax<'_>> {
     let mut count = 0;
     for member in object.named_children(&mut cursor) {
         count += 1;
-        if count > 128 || member.kind() == "spread_element"
+        if count > 128
+            || member.kind() == "spread_element"
             || (member.kind() == "pair"
-                && !member.child_by_field_name("key")
+                && !member
+                    .child_by_field_name("key")
                     .is_some_and(|key| matches!(key.kind(), "property_identifier" | "identifier")))
         {
             return None;
@@ -240,7 +285,8 @@ fn returned_object(object: Syntax<'_>) -> Option<Syntax<'_>> {
     }
     let parent = object.parent()?;
     let expression = if parent.kind() == "parenthesized_expression"
-        && parent.named_child_count() == 1 && parent.named_child(0) == Some(object)
+        && parent.named_child_count() == 1
+        && parent.named_child(0) == Some(object)
     {
         parent
     } else {
@@ -249,7 +295,9 @@ fn returned_object(object: Syntax<'_>) -> Option<Syntax<'_>> {
     let enclosing = expression.parent()?;
     let function = if enclosing.kind() == "return_statement" {
         let body = enclosing.parent()?;
-        if body.kind() != "statement_block" { return None; }
+        if body.kind() != "statement_block" {
+            return None;
+        }
         body.parent()?
     } else if enclosing.kind() == "arrow_function" {
         enclosing
@@ -268,7 +316,8 @@ fn assigned_or_alpine_object<'tree>(object: Syntax<'tree>, source: &str) -> Opti
     }
     let parent = object.parent()?;
     let expression = if parent.kind() == "parenthesized_expression"
-        && parent.named_child_count() == 1 && parent.named_child(0) == Some(object)
+        && parent.named_child_count() == 1
+        && parent.named_child(0) == Some(object)
     {
         parent
     } else {
@@ -279,7 +328,10 @@ fn assigned_or_alpine_object<'tree>(object: Syntax<'tree>, source: &str) -> Opti
         if let Some(call) = enclosing.parent().filter(|n| n.kind() == "call_expression") {
             if let Some(fun) = call.child_by_field_name("function") {
                 let callee = text(fun, source);
-                if callee.ends_with(".data") || callee.ends_with(".mixin") || callee == "Alpine.data" {
+                if callee.ends_with(".data")
+                    || callee.ends_with(".mixin")
+                    || callee == "Alpine.data"
+                {
                     return supported_object(object);
                 }
             }
@@ -308,8 +360,12 @@ fn same_object_receiver<'tree>(node: Syntax<'tree>, source: &str) -> Option<Synt
             let parent = current?;
             match parent.kind() {
                 "method_definition" => break parent,
-                "function_declaration" | "function_expression" | "generator_function"
-                | "generator_function_declaration" | "class_declaration" | "class" => return None,
+                "function_declaration"
+                | "function_expression"
+                | "generator_function"
+                | "generator_function_declaration"
+                | "class_declaration"
+                | "class" => return None,
                 _ => current = parent.parent(),
             }
         }
@@ -321,17 +377,20 @@ fn same_object_receiver<'tree>(node: Syntax<'tree>, source: &str) -> Option<Synt
 
 fn object_marker(object: Syntax<'_>, source: &str) -> String {
     let start = object.start_position();
-    let is_alpine = object.parent().and_then(|p| p.parent()).is_some_and(|enclosing| {
-        if enclosing.kind() == "arguments" {
-            if let Some(call) = enclosing.parent().filter(|n| n.kind() == "call_expression") {
-                if let Some(fun) = call.child_by_field_name("function") {
-                    let callee = text(fun, source);
-                    return callee.ends_with(".data") || callee == "Alpine.data";
+    let is_alpine = object
+        .parent()
+        .and_then(|p| p.parent())
+        .is_some_and(|enclosing| {
+            if enclosing.kind() == "arguments" {
+                if let Some(call) = enclosing.parent().filter(|n| n.kind() == "call_expression") {
+                    if let Some(fun) = call.child_by_field_name("function") {
+                        let callee = text(fun, source);
+                        return callee.ends_with(".data") || callee == "Alpine.data";
+                    }
                 }
             }
-        }
-        false
-    });
+            false
+        });
     if is_alpine {
         format!("alpine_data:{}:{}", start.row + 1, start.column)
     } else {
@@ -505,11 +564,7 @@ fn dom_global_name(name: &str) -> Option<&'static str> {
     }
 }
 
-fn remember_dom_global(
-    name: &str,
-    names: &mut [Option<&'static str>; 16],
-    count: &mut usize,
-) {
+fn remember_dom_global(name: &str, names: &mut [Option<&'static str>; 16], count: &mut usize) {
     let Some(global) = dom_global_name(name.trim()) else {
         return;
     };
@@ -588,148 +643,6 @@ fn collect_dom_import_globals(
     }
 }
 
-fn dom_scope_chain(node: Syntax<'_>) -> Vec<usize> {
-    let mut scopes = Vec::new();
-    let mut current = Some(node);
-    while let Some(scope) = current {
-        scopes.push(scope.id());
-        current = scope.parent();
-    }
-    scopes
-}
-
-fn dom_listener_receiver_expression(
-    node: Syntax<'_>,
-    source: &str,
-    depth: usize,
-) -> DomListenerReceiverExpression {
-    if depth > 4 {
-        return DomListenerReceiverExpression::Unsupported;
-    }
-    match node.kind() {
-        "identifier" => DomListenerReceiverExpression::Identifier {
-            name: text(node, source).to_owned(),
-            position: node.start_byte(),
-        },
-        "member_expression" => {
-            let Some(object) = node.child_by_field_name("object") else {
-                return DomListenerReceiverExpression::Unsupported;
-            };
-            let Some(name) = node
-                .child_by_field_name("property")
-                .filter(|property| property.kind() == "property_identifier")
-            else {
-                return DomListenerReceiverExpression::Unsupported;
-            };
-            if object.kind() != "this" {
-                return DomListenerReceiverExpression::Unsupported;
-            }
-            let Some((method, class)) = lexical_this_method(node) else {
-                return DomListenerReceiverExpression::Unsupported;
-            };
-            let static_method = (0..method.child_count())
-                .any(|index| method.child(index).is_some_and(|child| child.kind() == "static"));
-            DomListenerReceiverExpression::ThisField {
-                name: text(name, source).to_owned(),
-                class_scope: class.id(),
-                static_method,
-            }
-        }
-        "call_expression" => {
-            let Some(callee) = node
-                .child_by_field_name("function")
-                .filter(|callee| callee.kind() == "member_expression")
-            else {
-                return DomListenerReceiverExpression::Unsupported;
-            };
-            let Some(receiver) = callee.child_by_field_name("object") else {
-                return DomListenerReceiverExpression::Unsupported;
-            };
-            let Some(method) = callee
-                .child_by_field_name("property")
-                .filter(|property| property.kind() == "property_identifier")
-            else {
-                return DomListenerReceiverExpression::Unsupported;
-            };
-            let has_arguments = node
-                .child_by_field_name("arguments")
-                .is_some_and(|arguments| arguments.named_child_count() > 0);
-            let type_arguments = node
-                .child_by_field_name("type_arguments")
-                .map(|arguments| {
-                    arguments
-                        .named_children(&mut arguments.walk())
-                        .map(|argument| text(argument, source).to_owned())
-                        .collect()
-                })
-                .unwrap_or_default();
-            DomListenerReceiverExpression::MemberCall {
-                receiver: Box::new(dom_listener_receiver_expression(receiver, source, depth + 1)),
-                method: text(method, source).to_owned(),
-                type_arguments,
-                has_arguments,
-            }
-        }
-        "parenthesized_expression" => node
-            .named_child(0)
-            .map(|inner| {
-                DomListenerReceiverExpression::Parenthesized(Box::new(
-                    dom_listener_receiver_expression(inner, source, depth + 1),
-                ))
-            })
-            .unwrap_or_default(),
-        _ => DomListenerReceiverExpression::Unsupported,
-    }
-}
-
-fn index_dom_listener_declarator(node: Syntax<'_>, source: &str, file: &mut FileContext) {
-    let Some(binding) = node.child_by_field_name("name") else {
-        return;
-    };
-    let Some(statement) = node.parent().filter(|statement| {
-        matches!(statement.kind(), "lexical_declaration" | "variable_declaration")
-    }) else {
-        return;
-    };
-    let Some(scope) = statement.parent().filter(|scope| {
-        matches!(scope.kind(), "statement_block" | "program" | "source_file")
-    }) else {
-        return;
-    };
-    let mut names = Vec::new();
-    collect_pattern_binding_names(binding, source, &mut names);
-    names.sort_unstable();
-    names.dedup();
-    if names.is_empty() {
-        return;
-    }
-    let is_const = statement.kind() == "lexical_declaration"
-        && statement
-            .child_by_field_name("kind")
-            .is_some_and(|keyword| text(keyword, source) == "const");
-    let initializer = if is_const {
-        node.child_by_field_name("value")
-            .map(|value| dom_listener_receiver_expression(value, source, 0))
-    } else {
-        None
-    };
-    let scope_chain = std::sync::Arc::new(dom_scope_chain(scope));
-    let declarations = std::sync::Arc::make_mut(&mut file.dom_listener_local_declarations);
-    let block = declarations.entry(scope.id()).or_default();
-    for name in names {
-        let declaration = block.entry(name).or_default();
-        declaration.declaration_count += 1;
-        if declaration.declaration_count == 1 {
-            declaration.is_const = is_const;
-            declaration.statement_end = statement.end_byte();
-            declaration.initializer = initializer.clone();
-            declaration.scope_chain = std::sync::Arc::clone(&scope_chain);
-        } else {
-            declaration.initializer = None;
-        }
-    }
-}
-
 fn nearest_binding_scope(node: Syntax<'_>, var_scoped: bool) -> Option<Syntax<'_>> {
     let mut current = Some(node);
     while let Some(scope) = current {
@@ -769,12 +682,14 @@ fn collect_array_shadow_fact(node: Syntax<'_>, source: &str, file: &mut FileCont
         "variable_declarator" => (
             node.child_by_field_name("name")
                 .is_some_and(|name| name.kind() == "identifier" && text(name, source) == "Array"),
-            node.parent().is_some_and(|parent| parent.kind() == "variable_declaration"),
+            node.parent()
+                .is_some_and(|parent| parent.kind() == "variable_declaration"),
         ),
-        "class_declaration" | "interface_declaration" | "type_alias_declaration"
-        | "enum_declaration" | "function_declaration" => {
-            (field(node, source, "name") == Some("Array"), false)
-        }
+        "class_declaration"
+        | "interface_declaration"
+        | "type_alias_declaration"
+        | "enum_declaration"
+        | "function_declaration" => (field(node, source, "name") == Some("Array"), false),
         "type_parameter" => (field(node, source, "name") == Some("Array"), false),
         "required_parameter" | "optional_parameter" => {
             (field(node, source, "name") == Some("Array"), true)
@@ -854,87 +769,6 @@ fn collect_rebound_parameter_fact(node: Syntax<'_>, source: &str, file: &mut Fil
     }
 }
 
-fn collect_array_callback_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext) {
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "variable_declarator" {
-            index_dom_listener_declarator(node, source, file);
-        }
-        collect_dom_global_shadow_fact(node, source, file);
-        collect_array_shadow_fact(node, source, file);
-        collect_rebound_parameter_fact(node, source, file);
-        let mut cursor = node.walk();
-        stack.extend(node.named_children(&mut cursor));
-    }
-}
-
-fn has_member_property(source: &str, matches_property: impl Fn(&[u8]) -> bool) -> bool {
-    let bytes = source.as_bytes();
-    let mut dot = 0;
-    while dot < bytes.len() {
-        if bytes[dot] != b'.' {
-            dot += 1;
-            continue;
-        }
-        let mut property = dot + 1;
-        loop {
-            while bytes
-                .get(property)
-                .is_some_and(|byte| byte.is_ascii_whitespace())
-            {
-                property += 1;
-            }
-            if bytes.get(property..property + 2) == Some(b"//") {
-                property += 2;
-                while bytes
-                    .get(property)
-                    .is_some_and(|byte| !matches!(byte, b'\n' | b'\r'))
-                {
-                    property += 1;
-                }
-                continue;
-            }
-            if bytes.get(property..property + 2) == Some(b"/*") {
-                property += 2;
-                while property + 1 < bytes.len()
-                    && bytes.get(property..property + 2) != Some(b"*/")
-                {
-                    property += 1;
-                }
-                property = (property + 2).min(bytes.len());
-                continue;
-            }
-            break;
-        }
-        if matches_property(&bytes[property..]) {
-            return true;
-        }
-        dot += 1;
-    }
-    false
-}
-
-fn has_member_method(source: &str, methods: &[&str]) -> bool {
-    has_member_property(source, |property| {
-        methods.iter().any(|method| {
-            property.starts_with(method.as_bytes())
-                && property
-                    .get(method.len())
-                    .is_none_or(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'$') && *byte < 0x80)
-        })
-    })
-}
-
-fn has_dom_event_property(source: &str) -> bool {
-    has_member_property(source, |property| {
-        property.starts_with(b"on")
-            && property.len() > 2
-            && property
-                .get(2)
-                .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$') || *byte >= 0x80)
-    })
-}
-
 fn collect_dom_global_shadow_fact(node: Syntax<'_>, source: &str, file: &mut FileContext) {
     let mut shadowed_globals = [None; 16];
     let mut shadowed_count = 0;
@@ -955,12 +789,7 @@ fn collect_dom_global_shadow_fact(node: Syntax<'_>, source: &str, file: &mut Fil
         }
         "formal_parameters" | "required_parameter" | "optional_parameter" | "formal_parameter" => {
             var_scoped = true;
-            collect_dom_pattern_globals(
-                node,
-                source,
-                &mut shadowed_globals,
-                &mut shadowed_count,
-            );
+            collect_dom_pattern_globals(node, source, &mut shadowed_globals, &mut shadowed_count);
         }
         "arrow_function" => {
             var_scoped = true;
@@ -973,8 +802,11 @@ fn collect_dom_global_shadow_fact(node: Syntax<'_>, source: &str, file: &mut Fil
                 );
             }
         }
-        "function_declaration" | "class_declaration" | "enum_declaration"
-        | "interface_declaration" | "type_alias_declaration" => {
+        "function_declaration"
+        | "class_declaration"
+        | "enum_declaration"
+        | "interface_declaration"
+        | "type_alias_declaration" => {
             if let Some(name) = field(node, source, "name") {
                 remember_dom_global(name, &mut shadowed_globals, &mut shadowed_count);
             }
@@ -985,12 +817,9 @@ fn collect_dom_global_shadow_fact(node: Syntax<'_>, source: &str, file: &mut Fil
                 remember_dom_global(name, &mut shadowed_globals, &mut shadowed_count);
             }
         }
-        "import_statement" => collect_dom_import_globals(
-            node,
-            source,
-            &mut shadowed_globals,
-            &mut shadowed_count,
-        ),
+        "import_statement" => {
+            collect_dom_import_globals(node, source, &mut shadowed_globals, &mut shadowed_count)
+        }
         "catch_clause" => {
             if let Some(parameter) = node.child_by_field_name("parameter") {
                 collect_dom_pattern_globals(
@@ -1007,7 +836,11 @@ fn collect_dom_global_shadow_fact(node: Syntax<'_>, source: &str, file: &mut Fil
                 .child_by_field_name("left")
                 .filter(|left| left.kind() == "identifier")
             {
-                remember_dom_global(text(left, source), &mut shadowed_globals, &mut shadowed_count);
+                remember_dom_global(
+                    text(left, source),
+                    &mut shadowed_globals,
+                    &mut shadowed_count,
+                );
             }
         }
         _ => {}
@@ -1067,7 +900,7 @@ fn collect_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext, t
             continue;
         }
         if node.kind() == "variable_declarator" {
-            index_dom_listener_declarator(node, source, file);
+            scope_facts::index_dom_listener_declarator(node, source, file);
         }
         if matches!(
             node.kind(),
@@ -1121,9 +954,17 @@ fn collect_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext, t
                     local_writes
                         .entry(scope.id())
                         .or_default()
-                        .entry(name.clone()).or_default().push(node.start_byte());
+                        .entry(name.clone())
+                        .or_default()
+                        .push(node.start_byte());
                 }
-                if matches!(scope.kind(), "function_declaration" | "function_expression" | "arrow_function" | "method_definition") {
+                if matches!(
+                    scope.kind(),
+                    "function_declaration"
+                        | "function_expression"
+                        | "arrow_function"
+                        | "method_definition"
+                ) {
                     break;
                 }
                 parent = scope.parent();
@@ -1131,24 +972,32 @@ fn collect_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext, t
         }
         collect_dom_global_shadow_fact(node, source, file);
         if matches!(node.kind(), "field_definition" | "public_field_definition") {
-            if let Some(class) = node.parent()
+            if let Some(class) = node
+                .parent()
                 .filter(|body| body.kind() == "class_body")
                 .and_then(|body| body.parent())
                 .filter(|class| matches!(class.kind(), "class_declaration" | "class"))
             {
-                if let Some(name) = node.child_by_field_name("name")
+                if let Some(name) = node
+                    .child_by_field_name("name")
                     .or_else(|| node.child_by_field_name("property"))
                     .filter(|name| matches!(name.kind(), "property_identifier" | "identifier"))
                 {
                     let static_field = (0..node.child_count()).any(|index| {
-                        node.child(index).is_some_and(|child| child.kind() == "static")
+                        node.child(index)
+                            .is_some_and(|child| child.kind() == "static")
                     });
-                    let ty = (!static_field).then(|| node.child_by_field_name("type")
-                        .and_then(|annotation| annotation.named_child(0))
-                        .filter(|ty| ty.kind() == "type_identifier")
-                        .map(|ty| text(ty, source).to_owned())).flatten();
+                    let ty = (!static_field)
+                        .then(|| {
+                            node.child_by_field_name("type")
+                                .and_then(|annotation| annotation.named_child(0))
+                                .filter(|ty| ty.kind() == "type_identifier")
+                                .map(|ty| text(ty, source).to_owned())
+                        })
+                        .flatten();
                     let fields = std::sync::Arc::make_mut(&mut file.dom_listener_class_fields)
-                        .entry(class.id()).or_default();
+                        .entry(class.id())
+                        .or_default();
                     let name = text(name, source).to_owned();
                     match fields.entry(name) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
@@ -1161,19 +1010,33 @@ fn collect_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext, t
                 }
             }
         }
-        if matches!(node.kind(), "function_declaration" | "method_definition" | "function_expression" | "arrow_function") {
+        if matches!(
+            node.kind(),
+            "function_declaration" | "method_definition" | "function_expression" | "arrow_function"
+        ) {
             let mut receivers = HashMap::new();
             let mut duplicates = HashSet::new();
             if let Some(parameters) = node.child_by_field_name("parameters") {
                 for parameter in parameters.named_children(&mut parameters.walk()) {
-                    let Some(name) = parameter.child_by_field_name("name")
+                    let Some(name) = parameter
+                        .child_by_field_name("name")
                         .or_else(|| parameter.child_by_field_name("pattern"))
-                        .filter(|name| name.kind() == "identifier") else { continue; };
-                    let Some(annotation) = parameter.child_by_field_name("type")
+                        .filter(|name| name.kind() == "identifier")
+                    else {
+                        continue;
+                    };
+                    let Some(annotation) = parameter
+                        .child_by_field_name("type")
                         .and_then(|ty| ty.named_child(0))
-                        .filter(|ty| ty.kind() == "type_identifier") else { continue; };
+                        .filter(|ty| ty.kind() == "type_identifier")
+                    else {
+                        continue;
+                    };
                     let ty = text(annotation, source);
-                    if !matches!(typed_dom_receiver(ty), Some("Element" | "Document" | "Window" | "EventTarget")) {
+                    if !matches!(
+                        typed_dom_receiver(ty),
+                        Some("Element" | "Document" | "Window" | "EventTarget")
+                    ) {
                         continue;
                     }
                     let name = text(name, source).to_owned();
@@ -1183,7 +1046,8 @@ fn collect_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext, t
                 }
             }
             if node.kind() == "arrow_function" {
-                let parameter = node.child_by_field_name("parameter")
+                let parameter = node
+                    .child_by_field_name("parameter")
                     .or_else(|| node.child_by_field_name("parameters")?.named_child(0))
                     .and_then(|p| {
                         if p.kind() == "identifier" {
@@ -1194,16 +1058,20 @@ fn collect_scope_facts(root: Syntax<'_>, source: &str, file: &mut FileContext, t
                                 .filter(|n| n.kind() == "identifier")
                         }
                     });
-                if let (Some(parameter), Some(element)) = (
-                    parameter,
-                    array_callback_element(node, source, file),
-                ) {
-                    if matches!(typed_dom_receiver(element), Some("Element" | "Document" | "Window" | "EventTarget")) {
+                if let (Some(parameter), Some(element)) =
+                    (parameter, array_callback_element(node, source, file))
+                {
+                    if matches!(
+                        typed_dom_receiver(element),
+                        Some("Element" | "Document" | "Window" | "EventTarget")
+                    ) {
                         receivers.insert(text(parameter, source).to_owned(), element.to_owned());
                     }
                 }
             }
-            for name in duplicates { receivers.remove(&name); }
+            for name in duplicates {
+                receivers.remove(&name);
+            }
             if !receivers.is_empty() {
                 std::sync::Arc::make_mut(&mut file.dom_listener_receivers)
                     .insert(node.id(), receivers);
@@ -1222,9 +1090,10 @@ fn import_binds_name(node: Syntax<'_>, source: &str, name: &str) -> bool {
         match current.kind() {
             "import_clause" | "namespace_import" => {
                 let mut cursor = current.walk();
-                if current.named_children(&mut cursor).any(|child| {
-                    child.kind() == "identifier" && text(child, source).trim() == name
-                }) {
+                if current
+                    .named_children(&mut cursor)
+                    .any(|child| child.kind() == "identifier" && text(child, source).trim() == name)
+                {
                     return true;
                 }
             }
@@ -1249,7 +1118,8 @@ fn import_binds_require(node: Syntax<'_>, source: &str) -> bool {
 
 fn has_type_import_modifier(node: Syntax<'_>) -> bool {
     (0..node.child_count()).any(|index| {
-        node.child(index).is_some_and(|child| child.kind() == "type")
+        node.child(index)
+            .is_some_and(|child| child.kind() == "type")
     })
 }
 
@@ -1274,31 +1144,58 @@ fn nuxt_module_declared(node: Syntax<'_>, source: &str, module_name: &str) -> bo
     if node.kind() != "call_expression"
         || node.parent().is_none_or(|parent| {
             parent.kind() != "export_statement"
-                || !text(parent, source).trim_start().starts_with("export default")
+                || !text(parent, source)
+                    .trim_start()
+                    .starts_with("export default")
         })
-        || node.child_by_field_name("function").is_none_or(|callee| text(callee, source) != "defineNuxtConfig")
+        || node
+            .child_by_field_name("function")
+            .is_none_or(|callee| text(callee, source) != "defineNuxtConfig")
     {
         return false;
     }
-    let Some(args) = node.child_by_field_name("arguments") else { return false; };
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return false;
+    };
     let mut cursor = args.walk();
     let mut values = args.named_children(&mut cursor);
-    let Some(config) = values.next().filter(|value| value.kind() == "object") else { return false; };
-    if values.next().is_some() { return false; }
+    let Some(config) = values.next().filter(|value| value.kind() == "object") else {
+        return false;
+    };
+    if values.next().is_some() {
+        return false;
+    }
     let mut modules = None;
     for pair in config.named_children(&mut config.walk()) {
-        if pair.kind() == "comment" { continue; }
-        if pair.kind() != "pair" { return false; }
-        if pair.child_by_field_name("key").is_some_and(|key| text(key, source) == "modules") {
-            if modules.is_some() { return false; }
-            modules = pair.child_by_field_name("value").filter(|value| value.kind() == "array");
-            if modules.is_none() { return false; }
+        if pair.kind() == "comment" {
+            continue;
+        }
+        if pair.kind() != "pair" {
+            return false;
+        }
+        if pair
+            .child_by_field_name("key")
+            .is_some_and(|key| text(key, source) == "modules")
+        {
+            if modules.is_some() {
+                return false;
+            }
+            modules = pair
+                .child_by_field_name("value")
+                .filter(|value| value.kind() == "array");
+            if modules.is_none() {
+                return false;
+            }
         }
     }
-    let Some(modules) = modules else { return false; };
+    let Some(modules) = modules else {
+        return false;
+    };
     let mut found = false;
     for item in modules.named_children(&mut modules.walk()) {
-        if item.kind() != "string" || text(item, source).contains('\\') { return false; }
+        if item.kind() != "string" || text(item, source).contains('\\') {
+            return false;
+        }
         found |= text(item, source).trim_matches(['\'', '"']) == module_name;
     }
     found
@@ -1308,7 +1205,9 @@ fn nuxt_default_components_enabled(node: Syntax<'_>, source: &str) -> Option<boo
     if node.kind() != "call_expression"
         || node.parent().is_none_or(|parent| {
             parent.kind() != "export_statement"
-                || !text(parent, source).trim_start().starts_with("export default")
+                || !text(parent, source)
+                    .trim_start()
+                    .starts_with("export default")
         })
         || node
             .child_by_field_name("function")
@@ -1327,7 +1226,9 @@ fn nuxt_default_components_enabled(node: Syntax<'_>, source: &str) -> Option<boo
     let mut enabled = true;
     let mut seen = false;
     for property in config.named_children(&mut config.walk()) {
-        if property.kind() == "comment" { continue; }
+        if property.kind() == "comment" {
+            continue;
+        }
         if property.kind() != "pair" {
             return Some(false);
         }
@@ -1358,8 +1259,8 @@ pub(crate) fn typed_dom_receiver(name: &str) -> Option<&'static str> {
         "Document" | "document" => Some("Document"),
         "Window" | "window" => Some("Window"),
         "EventTarget" => Some("EventTarget"),
-        "Event" | "CustomEvent" | "MouseEvent" | "KeyboardEvent"
-        | "DragEvent" | "ClipboardEvent" | "FocusEvent" => Some("Event"),
+        "Event" | "CustomEvent" | "MouseEvent" | "KeyboardEvent" | "DragEvent"
+        | "ClipboardEvent" | "FocusEvent" => Some("Event"),
         "URL" => Some("URL"),
         "URLSearchParams" => Some("URLSearchParams"),
         "Headers" => Some("Headers"),
@@ -1379,8 +1280,14 @@ pub(crate) fn typed_dom_receiver(name: &str) -> Option<&'static str> {
 
 pub(crate) fn typed_dom_property(receiver: &str, property: &str) -> Option<&'static str> {
     match (typed_dom_receiver(receiver)?, property) {
-        ("Element", "parentElement" | "firstElementChild" | "lastElementChild"
-            | "nextElementSibling" | "previousElementSibling") => Some("Element"),
+        (
+            "Element",
+            "parentElement"
+            | "firstElementChild"
+            | "lastElementChild"
+            | "nextElementSibling"
+            | "previousElementSibling",
+        ) => Some("Element"),
         ("Element", "ownerDocument") => Some("Document"),
         ("Element", "classList") => Some("DOMTokenList"),
         ("Document", "documentElement" | "body" | "head" | "activeElement") => Some("Element"),
@@ -1405,7 +1312,10 @@ fn element_type_from_annotation<'a>(
             let name = annotation.child_by_field_name("name")?;
             let name_str = text(name, source);
             if name.kind() != "type_identifier"
-                || !matches!(name_str, "Array" | "NodeListOf" | "HTMLCollectionOf" | "Set")
+                || !matches!(
+                    name_str,
+                    "Array" | "NodeListOf" | "HTMLCollectionOf" | "Set"
+                )
             {
                 return None;
             }
@@ -1423,12 +1333,23 @@ fn element_type_from_annotation<'a>(
     Some(text(element, source))
 }
 
-fn array_callback_element<'a>(arrow: Syntax<'_>, source: &'a str, file: &FileContext) -> Option<&'a str> {
-    let call = arrow.parent().filter(|parent| parent.kind() == "arguments")?.parent()?;
-    let function = call.child_by_field_name("function")
+fn array_callback_element<'a>(
+    arrow: Syntax<'_>,
+    source: &'a str,
+    file: &FileContext,
+) -> Option<&'a str> {
+    let call = arrow
+        .parent()
+        .filter(|parent| parent.kind() == "arguments")?
+        .parent()?;
+    let function = call
+        .child_by_field_name("function")
         .filter(|function| function.kind() == "member_expression")?;
     let method = function.child_by_field_name("property")?;
-    if !matches!(text(method, source), "forEach" | "map" | "filter" | "find" | "some" | "every" | "flatMap") {
+    if !matches!(
+        text(method, source),
+        "forEach" | "map" | "filter" | "find" | "some" | "every" | "flatMap"
+    ) {
         return None;
     }
     let receiver = function.child_by_field_name("object")?;
@@ -1437,7 +1358,13 @@ fn array_callback_element<'a>(arrow: Syntax<'_>, source: &'a str, file: &FileCon
         let mut parent = call.parent();
         let enclosing = loop {
             let node = parent?;
-            if matches!(node.kind(), "function_declaration" | "method_definition" | "function_expression" | "arrow_function") {
+            if matches!(
+                node.kind(),
+                "function_declaration"
+                    | "method_definition"
+                    | "function_expression"
+                    | "arrow_function"
+            ) {
                 break node;
             }
             parent = node.parent();
@@ -1445,14 +1372,19 @@ fn array_callback_element<'a>(arrow: Syntax<'_>, source: &'a str, file: &FileCon
         if let Some(parameters) = enclosing.child_by_field_name("parameters") {
             let mut cursor = parameters.walk();
             let mut matches = parameters.named_children(&mut cursor).filter(|parameter| {
-                parameter.child_by_field_name("name")
+                parameter
+                    .child_by_field_name("name")
                     .or_else(|| parameter.child_by_field_name("pattern"))
-                    .is_some_and(|name| name.kind() == "identifier" && text(name, source) == receiver_name)
+                    .is_some_and(|name| {
+                        name.kind() == "identifier" && text(name, source) == receiver_name
+                    })
             });
             if let Some(parameter) = matches.next() {
                 if matches.next().is_none() {
                     let annotation = parameter.child_by_field_name("type")?.named_child(0)?;
-                    if !file.rebound_function_parameters.get(&enclosing.id())
+                    if !file
+                        .rebound_function_parameters
+                        .get(&enclosing.id())
                         .is_some_and(|names| names.contains(receiver_name))
                     {
                         return element_type_from_annotation(annotation, arrow, file, source);
@@ -1473,20 +1405,44 @@ fn array_callback_element<'a>(arrow: Syntax<'_>, source: &'a str, file: &FileCon
                         for declarator in child.named_children(&mut decl_cursor) {
                             if declarator.kind() == "variable_declarator" {
                                 if let Some(var_name) = declarator.child_by_field_name("name") {
-                                    if var_name.kind() == "identifier" && text(var_name, source) == receiver_name {
-                                        if let Some(ty_node) = declarator.child_by_field_name("type") {
-                                            let annotation = ty_node.named_child(0).unwrap_or(ty_node);
-                                            if let Some(el) = element_type_from_annotation(annotation, arrow, file, source) {
+                                    if var_name.kind() == "identifier"
+                                        && text(var_name, source) == receiver_name
+                                    {
+                                        if let Some(ty_node) =
+                                            declarator.child_by_field_name("type")
+                                        {
+                                            let annotation =
+                                                ty_node.named_child(0).unwrap_or(ty_node);
+                                            if let Some(el) = element_type_from_annotation(
+                                                annotation, arrow, file, source,
+                                            ) {
                                                 return Some(el);
                                             }
                                         }
-                                        if let Some(init) = declarator.child_by_field_name("value") {
+                                        if let Some(init) = declarator.child_by_field_name("value")
+                                        {
                                             if init.kind() == "call_expression" {
-                                                if let Some(callee) = init.child_by_field_name("function").filter(|c| c.kind() == "member_expression") {
-                                                    if let Some(method) = callee.child_by_field_name("property") {
-                                                        if matches!(text(method, source), "querySelectorAll" | "getElementsByTagName" | "getElementsByClassName") {
-                                                            if let Some(obj) = callee.child_by_field_name("object") {
-                                                                if dom_receiver_from_ast(obj, source, file, 0).is_some() {
+                                                if let Some(callee) = init
+                                                    .child_by_field_name("function")
+                                                    .filter(|c| c.kind() == "member_expression")
+                                                {
+                                                    if let Some(method) =
+                                                        callee.child_by_field_name("property")
+                                                    {
+                                                        if matches!(
+                                                            text(method, source),
+                                                            "querySelectorAll"
+                                                                | "getElementsByTagName"
+                                                                | "getElementsByClassName"
+                                                        ) {
+                                                            if let Some(obj) =
+                                                                callee.child_by_field_name("object")
+                                                            {
+                                                                if dom_receiver_from_ast(
+                                                                    obj, source, file, 0,
+                                                                )
+                                                                .is_some()
+                                                                {
                                                                     return Some("Element");
                                                                 }
                                                             }
@@ -1502,14 +1458,22 @@ fn array_callback_element<'a>(arrow: Syntax<'_>, source: &'a str, file: &FileCon
                     }
                 }
             }
-            if matches!(node.kind(), "function_declaration" | "method_definition" | "function_expression" | "arrow_function") {
+            if matches!(
+                node.kind(),
+                "function_declaration"
+                    | "method_definition"
+                    | "function_expression"
+                    | "arrow_function"
+            ) {
                 break;
             }
             current_scope = node.parent();
         }
         None
     } else if receiver.kind() == "member_expression"
-        && receiver.child_by_field_name("object").is_some_and(|obj| obj.kind() == "this")
+        && receiver
+            .child_by_field_name("object")
+            .is_some_and(|obj| obj.kind() == "this")
     {
         let property = receiver.child_by_field_name("property")?;
         let field_name = text(property, source);
@@ -1518,7 +1482,10 @@ fn array_callback_element<'a>(arrow: Syntax<'_>, source: &'a str, file: &FileCon
         let mut cursor = body.walk();
         for child in body.named_children(&mut cursor) {
             if matches!(child.kind(), "field_definition" | "public_field_definition") {
-                if let Some(prop) = child.child_by_field_name("property").or_else(|| child.child_by_field_name("name")) {
+                if let Some(prop) = child
+                    .child_by_field_name("property")
+                    .or_else(|| child.child_by_field_name("name"))
+                {
                     if text(prop, source) == field_name {
                         let ty_node = child.child_by_field_name("type")?;
                         let annotation = ty_node.named_child(0).unwrap_or(ty_node);
@@ -1529,11 +1496,15 @@ fn array_callback_element<'a>(arrow: Syntax<'_>, source: &'a str, file: &FileCon
         }
         None
     } else if receiver.kind() == "call_expression" {
-        let callee = receiver.child_by_field_name("function")
+        let callee = receiver
+            .child_by_field_name("function")
             .filter(|callee| callee.kind() == "member_expression")?;
         let method = callee.child_by_field_name("property")?;
         let method_name = text(method, source);
-        if matches!(method_name, "querySelectorAll" | "getElementsByTagName" | "getElementsByClassName") {
+        if matches!(
+            method_name,
+            "querySelectorAll" | "getElementsByTagName" | "getElementsByClassName"
+        ) {
             let object = callee.child_by_field_name("object")?;
             if dom_receiver_from_ast(object, source, file, 0).is_some() {
                 return Some("Element");
@@ -1559,8 +1530,11 @@ fn array_type_shadowed(node: Syntax<'_>, file: &FileContext) -> bool {
 fn dom_global_shadowed(node: Syntax<'_>, file: &FileContext, name: &str) -> bool {
     let mut current = Some(node);
     while let Some(scope) = current {
-        if file.shadowed_dom_global_scopes.get(&scope.id())
-            .is_some_and(|names| names.contains(name)) {
+        if file
+            .shadowed_dom_global_scopes
+            .get(&scope.id())
+            .is_some_and(|names| names.contains(name))
+        {
             return true;
         }
         current = scope.parent();
@@ -1627,7 +1601,11 @@ fn dom_receiver_from_indexed_expression(
             if matches!(name.as_str(), "document" | "window")
                 && !dom_global_shadowed_in_scopes(scopes, file, name)
             {
-                return Some(if name == "document" { "Document" } else { "Window" });
+                return Some(if name == "document" {
+                    "Document"
+                } else {
+                    "Window"
+                });
             }
             match dom_indexed_const(file, name, *position, scopes)? {
                 Ok(declaration) => dom_receiver_from_indexed_expression(
@@ -1663,8 +1641,7 @@ fn dom_receiver_from_indexed_expression(
                 .get(class_scope)?
                 .get(name)?
                 .as_deref()?;
-            typed_dom_receiver(ty)
-                .filter(|_| !dom_global_shadowed_in_scopes(scopes, file, ty))
+            typed_dom_receiver(ty).filter(|_| !dom_global_shadowed_in_scopes(scopes, file, ty))
         }
         DomListenerReceiverExpression::MemberCall {
             receiver,
@@ -1682,8 +1659,7 @@ fn dom_receiver_from_indexed_expression(
             {
                 return None;
             }
-            let owner =
-                dom_receiver_from_indexed_expression(receiver, file, scopes, depth + 1)?;
+            let owner = dom_receiver_from_indexed_expression(receiver, file, scopes, depth + 1)?;
             let produces_element = match owner {
                 "Document" => {
                     matches!(
@@ -1722,17 +1698,19 @@ fn dom_const_initializer<'tree>(
                 .and_then(|names| names.get(name))
                 .is_some_and(|writes| writes.iter().any(|position| *position < at));
             if declaration.is_some() || rebound {
-                return Some(if declaration.is_some_and(|declaration| {
-                    declaration.declaration_count == 1
-                        && declaration.is_const
-                        && declaration.statement_end <= at
-                        && declaration.initializer.is_some()
-                        && !rebound
-                }) {
-                    Ok(scope)
-                } else {
-                    Err(scope)
-                });
+                return Some(
+                    if declaration.is_some_and(|declaration| {
+                        declaration.declaration_count == 1
+                            && declaration.is_const
+                            && declaration.statement_end <= at
+                            && declaration.initializer.is_some()
+                            && !rebound
+                    }) {
+                        Ok(scope)
+                    } else {
+                        Err(scope)
+                    },
+                );
             }
         }
         if file
@@ -1760,8 +1738,13 @@ fn dom_receiver_from_ast(
         "identifier" => {
             let name = text(receiver, source);
             if matches!(name, "document" | "window") {
-                return (!dom_global_shadowed(receiver, file, name))
-                    .then_some(if name == "document" { "Document" } else { "Window" });
+                return (!dom_global_shadowed(receiver, file, name)).then_some(
+                    if name == "document" {
+                        "Document"
+                    } else {
+                        "Window"
+                    },
+                );
             }
             match dom_const_initializer(receiver, file, name)? {
                 Ok(scope) => {
@@ -1776,48 +1759,66 @@ fn dom_receiver_from_ast(
                         depth + 1,
                     )
                 }
-                Err(scope) if matches!(scope.kind(), "function_declaration" | "function_expression" | "method_definition" | "arrow_function") => {
-                        if file.rebound_function_parameters.get(&scope.id())
-                            .is_some_and(|names| names.contains(name)) {
-                            return None;
-                        }
-                        let ty = file.dom_listener_receivers.get(&scope.id())?.get(name)?;
-                        typed_dom_receiver(ty)
-                            .filter(|_| !dom_global_shadowed(receiver, file, ty))
+                Err(scope)
+                    if matches!(
+                        scope.kind(),
+                        "function_declaration"
+                            | "function_expression"
+                            | "method_definition"
+                            | "arrow_function"
+                    ) =>
+                {
+                    if file
+                        .rebound_function_parameters
+                        .get(&scope.id())
+                        .is_some_and(|names| names.contains(name))
+                    {
+                        return None;
+                    }
+                    let ty = file.dom_listener_receivers.get(&scope.id())?.get(name)?;
+                    typed_dom_receiver(ty).filter(|_| !dom_global_shadowed(receiver, file, ty))
                 }
                 Err(_) => None,
             }
         }
         "member_expression" => {
             let object = receiver.child_by_field_name("object")?;
-            let property = receiver.child_by_field_name("property")
+            let property = receiver
+                .child_by_field_name("property")
                 .filter(|property| property.kind() == "property_identifier")?;
             if object.kind() == "this" {
                 let (method, class) = lexical_this_method(receiver)?;
                 if (0..method.child_count()).any(|index| {
-                    method.child(index).is_some_and(|child| child.kind() == "static")
+                    method
+                        .child(index)
+                        .is_some_and(|child| child.kind() == "static")
                 }) {
                     return None;
                 }
-                let ty = file.dom_listener_class_fields.get(&class.id())?
-                    .get(text(property, source))?.as_deref()?;
-                return typed_dom_receiver(ty)
-                    .filter(|_| !dom_global_shadowed(receiver, file, ty));
+                let ty = file
+                    .dom_listener_class_fields
+                    .get(&class.id())?
+                    .get(text(property, source))?
+                    .as_deref()?;
+                return typed_dom_receiver(ty).filter(|_| !dom_global_shadowed(receiver, file, ty));
             }
             None
         }
         "call_expression" => {
-            let callee = receiver.child_by_field_name("function")
+            let callee = receiver
+                .child_by_field_name("function")
                 .filter(|callee| callee.kind() == "member_expression")?;
             let object = callee.child_by_field_name("object")?;
-            let method = callee.child_by_field_name("property")
+            let method = callee
+                .child_by_field_name("property")
                 .filter(|property| property.kind() == "property_identifier")?;
             let arguments = receiver.child_by_field_name("arguments")?;
             if arguments.named_child_count() == 0 {
                 return None;
             }
             if let Some(type_arguments) = receiver.child_by_field_name("type_arguments") {
-                let ty = type_arguments.named_child(0)
+                let ty = type_arguments
+                    .named_child(0)
                     .filter(|_| type_arguments.named_child_count() == 1)?;
                 let name = text(ty, source);
                 if ty.kind() != "type_identifier"
@@ -1830,31 +1831,49 @@ fn dom_receiver_from_ast(
             let owner = dom_receiver_from_ast(object, source, file, depth + 1)?;
             let method = text(method, source);
             let produces_element = match owner {
-                "Document" => matches!(method, "getElementById" | "createElement" | "querySelector"),
+                "Document" => {
+                    matches!(method, "getElementById" | "createElement" | "querySelector")
+                }
                 "Element" => matches!(method, "querySelector" | "closest"),
                 _ => false,
             };
             produces_element.then_some("Element")
         }
-        "parenthesized_expression" => receiver.named_child(0)
+        "parenthesized_expression" => receiver
+            .named_child(0)
             .and_then(|inner| dom_receiver_from_ast(inner, source, file, depth + 1)),
         _ => None,
     }
 }
 
-fn dom_event_callback_parameter<'a>(callback: Syntax<'_>, source: &'a str, file: &FileContext) -> Option<&'a str> {
-    if let Some(args) = callback.parent().filter(|parent| parent.kind() == "arguments") {
+fn dom_event_callback_parameter<'a>(
+    callback: Syntax<'_>,
+    source: &'a str,
+    file: &FileContext,
+) -> Option<&'a str> {
+    if let Some(args) = callback
+        .parent()
+        .filter(|parent| parent.kind() == "arguments")
+    {
         if args.named_child(1) != Some(callback) || args.named_child_count() > 3 {
             return None;
         }
-        let event = args.named_child(0).filter(|event| event.kind() == "string")?;
+        let event = args
+            .named_child(0)
+            .filter(|event| event.kind() == "string")?;
         let literal = text(event, source);
-        if literal.len() < 2 || literal.contains('\\') || !matches!(literal.as_bytes()[0], b'\'' | b'"')
-            || literal.as_bytes()[0] != *literal.as_bytes().last()? {
+        if literal.len() < 2
+            || literal.contains('\\')
+            || !matches!(literal.as_bytes()[0], b'\'' | b'"')
+            || literal.as_bytes()[0] != *literal.as_bytes().last()?
+        {
             return None;
         }
-        let call = args.parent().filter(|parent| parent.kind() == "call_expression")?;
-        let callee = call.child_by_field_name("function")
+        let call = args
+            .parent()
+            .filter(|parent| parent.kind() == "call_expression")?;
+        let callee = call
+            .child_by_field_name("function")
             .filter(|callee| callee.kind() == "member_expression")?;
         let member = callee.child_by_field_name("property")?;
         if member.kind() != "property_identifier" || text(member, source) != "addEventListener" {
@@ -1865,16 +1884,21 @@ fn dom_event_callback_parameter<'a>(callback: Syntax<'_>, source: &'a str, file:
             dom_receiver_from_ast(receiver, source, file, 0),
             Some("Element" | "Document" | "Window" | "EventTarget")
         );
-        if !verified_receiver || dom_global_shadowed(callback, file, "Event")
-            || dom_global_shadowed(callback, file, "EventTarget") {
+        if !verified_receiver
+            || dom_global_shadowed(callback, file, "Event")
+            || dom_global_shadowed(callback, file, "EventTarget")
+        {
             return None;
         }
     } else {
-        let assignment = callback.parent().filter(|p| p.kind() == "assignment_expression")?;
+        let assignment = callback
+            .parent()
+            .filter(|p| p.kind() == "assignment_expression")?;
         if assignment.child_by_field_name("right") != Some(callback) {
             return None;
         }
-        let left = assignment.child_by_field_name("left")
+        let left = assignment
+            .child_by_field_name("left")
             .filter(|left| left.kind() == "member_expression")?;
         let property = left.child_by_field_name("property")?;
         let prop_name = text(property, source);
@@ -1890,19 +1914,24 @@ fn dom_event_callback_parameter<'a>(callback: Syntax<'_>, source: &'a str, file:
             return None;
         }
     }
-    let parameter = callback.child_by_field_name("parameter")
+    let parameter = callback
+        .child_by_field_name("parameter")
         .or_else(|| callback.child_by_field_name("parameters")?.named_child(0))?;
     let parameter = if parameter.kind() == "identifier" {
         parameter
     } else {
-        parameter.child_by_field_name("name")
+        parameter
+            .child_by_field_name("name")
             .or_else(|| parameter.child_by_field_name("pattern"))?
     };
     (parameter.kind() == "identifier").then(|| text(parameter, source))
 }
 
 fn nitro_event_callback_parameter<'a>(callback: Syntax<'_>, source: &'a str) -> Option<&'a str> {
-    let call = callback.parent().filter(|p| p.kind() == "arguments")?.parent()?;
+    let call = callback
+        .parent()
+        .filter(|p| p.kind() == "arguments")?
+        .parent()?;
     if call.kind() != "call_expression" {
         return None;
     }
@@ -1910,12 +1939,14 @@ fn nitro_event_callback_parameter<'a>(callback: Syntax<'_>, source: &'a str) -> 
     if callee.kind() != "identifier" || text(callee, source) != "defineEventHandler" {
         return None;
     }
-    let parameter = callback.child_by_field_name("parameter")
+    let parameter = callback
+        .child_by_field_name("parameter")
         .or_else(|| callback.child_by_field_name("parameters")?.named_child(0))?;
     let parameter = if parameter.kind() == "identifier" {
         parameter
     } else {
-        parameter.child_by_field_name("name")
+        parameter
+            .child_by_field_name("name")
             .or_else(|| parameter.child_by_field_name("pattern"))?
     };
     (parameter.kind() == "identifier").then(|| text(parameter, source))
@@ -1930,141 +1961,6 @@ pub struct TypeScript {
 pub static TYPESCRIPT: TypeScript = TypeScript { javascript: false };
 /// Shared javascript language profile.
 pub static JAVASCRIPT: TypeScript = TypeScript { javascript: true };
-
-fn local_package_reference(value: &str) -> bool {
-    ["workspace:", "link:", "file:", "portal:"].iter().any(|prefix| value.starts_with(prefix))
-}
-
-fn local_json_package(value: &serde_json::Value) -> bool {
-    value.get("link").and_then(serde_json::Value::as_bool) == Some(true)
-        || value.as_str().is_some_and(local_package_reference)
-        || ["version", "specifier", "resolved"].iter().any(|field| {
-            value.get(*field).and_then(serde_json::Value::as_str).is_some_and(local_package_reference)
-        })
-}
-
-fn npm_dependency_keys(value: &serde_json::Value, output: &mut Vec<String>) {
-    for section in [
-        "dependencies",
-        "devDependencies",
-        "optionalDependencies",
-        "peerDependencies",
-    ] {
-        if let Some(entries) = value.get(section).and_then(serde_json::Value::as_object) {
-            output.extend(entries.iter().filter(|(_, descriptor)| !local_json_package(descriptor)).map(|(name, _)| name.clone()));
-        }
-    }
-}
-
-fn package_lock_dependencies(content: &str) -> Vec<String> {
-    let Ok(lock) = serde_json::from_str::<serde_json::Value>(content) else {
-        return Vec::new();
-    };
-    let mut dependencies = Vec::new();
-    npm_dependency_keys(&lock, &mut dependencies);
-    if let Some(entries) = lock.get("dependencies").and_then(serde_json::Value::as_object) {
-        let mut pending: Vec<_> = entries.values().collect();
-        while let Some(entry) = pending.pop() {
-            if local_json_package(entry) {
-                continue;
-            }
-            npm_dependency_keys(entry, &mut dependencies);
-            if let Some(nested) = entry.get("dependencies").and_then(serde_json::Value::as_object) {
-                pending.extend(nested.values());
-            }
-        }
-    }
-    if let Some(packages) = lock.get("packages").and_then(serde_json::Value::as_object) {
-        for (path, package) in packages {
-            if local_json_package(package) {
-                continue;
-            }
-            if let Some((_, name)) = path.rsplit_once("node_modules/") {
-                if !name.is_empty() {
-                    dependencies.push(name.to_owned());
-                }
-            }
-            npm_dependency_keys(package, &mut dependencies);
-        }
-    }
-    dependencies
-}
-
-fn pnpm_package_name(locator: &str) -> Option<&str> {
-    let locator = locator.trim_start_matches('/');
-    let version = if let Some(scoped) = locator.strip_prefix('@') {
-        let package = scoped.find('/').map(|index| index + 2)?;
-        locator[package..].find(['@', '/']).map(|index| index + package)
-    } else {
-        locator.find(['@', '/'])
-    }?;
-    let descriptor = &locator[version + 1..];
-    (version > 0 && !descriptor.is_empty() && !local_package_reference(descriptor))
-        .then_some(&locator[..version])
-}
-
-fn local_yaml_package(value: &serde_yaml::Value) -> bool {
-    value.as_str().is_some_and(local_package_reference)
-        || ["specifier", "version"].iter().any(|field| {
-            value.get(*field).and_then(serde_yaml::Value::as_str).is_some_and(local_package_reference)
-        })
-}
-
-fn pnpm_lock_dependencies(content: &str) -> Vec<String> {
-    let Ok(lock) = serde_yaml::from_str::<serde_yaml::Value>(content) else {
-        return Vec::new();
-    };
-    let mut dependencies = Vec::new();
-    for section in ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] {
-        if let Some(entries) = lock.get(section).and_then(serde_yaml::Value::as_mapping) {
-            dependencies.extend(entries.iter().filter(|(_, descriptor)| !local_yaml_package(descriptor))
-                .filter_map(|(name, _)| name.as_str()).map(str::to_owned));
-        }
-    }
-    if let Some(importers) = lock.get("importers").and_then(serde_yaml::Value::as_mapping) {
-        for importer in importers.values() {
-            for section in ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] {
-                if let Some(entries) = importer.get(section).and_then(serde_yaml::Value::as_mapping) {
-                    dependencies.extend(entries.iter().filter(|(_, descriptor)| !local_yaml_package(descriptor))
-                        .filter_map(|(name, _)| name.as_str()).map(str::to_owned));
-                }
-            }
-        }
-    }
-    for section in ["packages", "snapshots"] {
-        if let Some(packages) = lock.get(section).and_then(serde_yaml::Value::as_mapping) {
-            dependencies.extend(packages.keys().filter_map(serde_yaml::Value::as_str).filter_map(pnpm_package_name).map(str::to_owned));
-        }
-    }
-    dependencies
-}
-
-fn yarn_package_name(selector: &str) -> Option<&str> {
-    let selector = selector.trim().trim_matches(['\'', '"']);
-    let version = if let Some(scoped) = selector.strip_prefix('@') {
-        scoped.find('@').map(|index| index + 1)
-    } else {
-        selector.find('@')
-    }?;
-    let descriptor = &selector[version + 1..];
-    (version > 0 && !descriptor.is_empty() && !local_package_reference(descriptor))
-        .then_some(&selector[..version])
-}
-
-fn yarn_lock_dependencies(content: &str) -> Vec<String> {
-    let mut dependencies = Vec::new();
-    for line in content.lines() {
-        if line.is_empty() || line.starts_with([' ', '\t', '#']) || !line.ends_with(':') {
-            continue;
-        }
-        for selector in line.trim_end_matches(':').split(',') {
-            if let Some(name) = yarn_package_name(selector) {
-                dependencies.push(name.to_owned());
-            }
-        }
-    }
-    dependencies
-}
 
 #[derive(Default)]
 struct TsCandidate {
@@ -2111,6 +2007,219 @@ thread_local! {
     static TS_SCRATCH: std::cell::RefCell<TypeScriptScratch> = std::cell::RefCell::new(TypeScriptScratch::default());
 }
 
+impl TypeScript {
+    fn metadata_with_documented(
+        &self,
+        mut node: Syntax<'_>,
+        source: &str,
+        name: &str,
+        file: &FileContext,
+        documented: BTreeMap<String, String>,
+    ) -> SymbolMetadata {
+        let mut param_types = BTreeMap::new();
+        if let Some(parameters) = node.child_by_field_name("parameters") {
+            let mut cursor = parameters.walk();
+            for parameter in parameters.named_children(&mut cursor) {
+                let mut p_cursor = parameter.walk();
+                let name = parameter
+                    .child_by_field_name("pattern")
+                    .or_else(|| parameter.child_by_field_name("name"))
+                    .or_else(|| (parameter.kind() == "identifier").then_some(parameter))
+                    .or_else(|| {
+                        parameter
+                            .named_children(&mut p_cursor)
+                            .find(|c| c.kind() == "identifier")
+                    })
+                    .filter(|node| node.kind() == "identifier")
+                    .map(|node| text(node, source).trim().to_owned());
+                let ty = parameter.child_by_field_name("type").map(|node| {
+                    let mut cursor = node.walk();
+                    let inner = if let Some(union_node) =
+                        (node.kind() == "union_type").then_some(node).or_else(|| {
+                            node.named_children(&mut cursor)
+                                .find(|c| c.kind() == "union_type")
+                        }) {
+                        let mut ucursor = union_node.walk();
+                        let non_null: Vec<_> = union_node
+                            .named_children(&mut ucursor)
+                            .filter(|c| {
+                                let t = text(*c, source).trim();
+                                !matches!(t, "null" | "undefined" | "void")
+                                    && !matches!(
+                                        c.kind(),
+                                        "null_type" | "undefined_type" | "void_type"
+                                    )
+                            })
+                            .collect();
+                        if non_null.len() == 1 {
+                            non_null[0]
+                        } else {
+                            node
+                        }
+                    } else {
+                        node
+                    };
+                    text(inner, source)
+                        .trim()
+                        .trim_start_matches(':')
+                        .trim()
+                        .to_owned()
+                });
+                let ty =
+                    ty.or_else(|| name.as_ref().and_then(|name| documented.get(name).cloned()));
+                if let (Some(name), Some(ty)) = (name, ty) {
+                    if !name.is_empty() && !ty.is_empty() {
+                        param_types.insert(name, ty);
+                    }
+                }
+            }
+        }
+        if !self.javascript && matches!(node.kind(), "arrow_function" | "function_expression") {
+            let parameter = node
+                .child_by_field_name("parameter")
+                .or_else(|| node.child_by_field_name("parameters")?.named_child(0))
+                .and_then(|p| {
+                    if p.kind() == "identifier" {
+                        Some(p)
+                    } else {
+                        p.child_by_field_name("name")
+                            .or_else(|| p.child_by_field_name("pattern"))
+                            .filter(|n| n.kind() == "identifier")
+                    }
+                });
+            if let (Some(parameter), Some(element)) =
+                (parameter, array_callback_element(node, source, file))
+            {
+                param_types.insert(text(parameter, source).to_owned(), element.to_owned());
+            }
+        }
+        if matches!(node.kind(), "arrow_function" | "function_expression") {
+            if let Some(event) = dom_event_callback_parameter(node, source, file) {
+                param_types
+                    .entry(event.to_owned())
+                    .or_insert_with(|| "Event".to_owned());
+            } else if let Some(event) = nitro_event_callback_parameter(node, source) {
+                param_types
+                    .entry(event.to_owned())
+                    .or_insert_with(|| "H3Event".to_owned());
+            }
+        }
+        let is_async = text(node, source).trim_start().starts_with("async ");
+        let is_method_node = matches!(node.kind(), "method_definition" | "method_signature");
+        let local_object = if self.javascript {
+            if node.kind() == "pair" {
+                node.parent().and_then(|object| same_object(object, source))
+            } else {
+                same_object_receiver(node, source)
+            }
+        } else {
+            None
+        };
+        let lexical_this = (node.kind() == "arrow_function")
+            .then(|| lexical_this_method(node))
+            .flatten();
+        let prototype_method = self
+            .javascript
+            .then(|| prototype_assignment(node, source))
+            .flatten();
+        let lexical_prototype = (self.javascript && node.kind() == "arrow_function")
+            .then(|| lexical_prototype_owner(node, source))
+            .flatten();
+        let (receiver_type, is_method, is_static) = if is_method_node {
+            let owner = method_owner(node);
+            let receiver_type = owner
+                .and_then(|o| o.child_by_field_name("name"))
+                .map(|n| text(n, source).trim().to_owned());
+            let is_static = (0..node.child_count()).any(|i| {
+                node.child(i)
+                    .is_some_and(|c| c.kind() == "static" || text(c, source).trim() == "static")
+            });
+            (receiver_type, Some(true), Some(is_static))
+        } else if let Some((owner, _)) = prototype_method {
+            (Some(owner.to_owned()), Some(true), Some(false))
+        } else if let Some((method, class)) = lexical_this {
+            let receiver_type = class
+                .child_by_field_name("name")
+                .map(|name| text(name, source).trim().to_owned());
+            let is_static = (0..method.child_count()).any(|index| {
+                method
+                    .child(index)
+                    .is_some_and(|child| child.kind() == "static")
+            });
+            (receiver_type, None, Some(is_static))
+        } else if let Some(owner) = lexical_prototype {
+            (Some(owner.to_owned()), None, Some(false))
+        } else if node.kind() == "enum_assignment"
+            || (node.kind() == "property_identifier"
+                && node
+                    .parent()
+                    .is_some_and(|parent| parent.kind() == "enum_body"))
+        {
+            (None, None, Some(true))
+        } else if node.kind() == "field_definition" {
+            let is_static = (0..node.child_count()).any(|index| {
+                node.child(index)
+                    .is_some_and(|child| child.kind() == "static")
+            });
+            (None, None, Some(is_static))
+        } else {
+            (None, None, None)
+        };
+        let is_ts_without_body = matches!(
+            node.kind(),
+            "function_declaration" | "method_definition" | "method_signature"
+        ) && node.child_by_field_name("body").is_none();
+        let is_overload = is_ts_without_body;
+        let is_stub = is_ts_without_body;
+        let mut default_export = false;
+        while let Some(parent) = node.parent() {
+            if parent.kind() == "export_statement"
+                && text(parent, source)
+                    .trim_start()
+                    .starts_with("export default")
+            {
+                default_export = true;
+                break;
+            }
+            if matches!(parent.kind(), "program" | "module") {
+                default_export = file.default_exports.contains(name);
+                break;
+            }
+            if !matches!(
+                parent.kind(),
+                "variable_declarator"
+                    | "lexical_declaration"
+                    | "variable_declaration"
+                    | "export_statement"
+            ) {
+                break;
+            }
+            node = parent;
+        }
+        SymbolMetadata {
+            param_types,
+            default_export,
+            is_async,
+            receiver_name: if local_object.is_some()
+                || lexical_this.is_some()
+                || lexical_prototype.is_some()
+                || (is_method == Some(true) && node.kind() != "arrow_function")
+            {
+                Some("this".into())
+            } else {
+                None
+            },
+            receiver: local_object.map(|object| object_marker(object, source)),
+            receiver_type,
+            is_method,
+            is_static,
+            is_overload,
+            is_stub,
+            ..Default::default()
+        }
+    }
+}
+
 impl LanguageProfile for TypeScript {
     fn id(&self) -> &'static str {
         if self.javascript {
@@ -2123,26 +2232,17 @@ impl LanguageProfile for TypeScript {
         name == "this" && owner.details["receiver_name"].as_str() == Some("this")
     }
     fn manifest_filenames(&self) -> &'static [&'static str] {
-        &["package.json", "package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "tsconfig*.json"]
+        &[
+            "package.json",
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "pnpm-workspace.yaml",
+            "yarn.lock",
+            "tsconfig*.json",
+        ]
     }
     fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
-        match filename {
-            "package-lock.json" => return package_lock_dependencies(content),
-            "pnpm-lock.yaml" => return pnpm_lock_dependencies(content),
-            "yarn.lock" => return yarn_lock_dependencies(content),
-            _ => {}
-        }
-        if filename != "package.json" {
-            return Vec::new();
-        }
-        let Ok(manifest) = serde_json::from_str::<serde_json::Value>(content) else {
-            return Vec::new();
-        };
-        ["dependencies", "devDependencies", "peerDependencies"]
-            .into_iter()
-            .filter_map(|section| manifest.get(section)?.as_object())
-            .flat_map(|dependencies| dependencies.iter().filter(|(_, value)| !local_json_package(value)).map(|(name, _)| name.clone()))
-            .collect()
+        package_metadata::extract_dependencies(filename, content)
     }
     fn is_stdlib(&self, module: &str) -> bool {
         const NODE_BUILTINS: &[&str] = &[
@@ -2231,29 +2331,38 @@ impl LanguageProfile for TypeScript {
         }
         if !self.javascript {
             if node.kind() == "property_identifier"
-                && node.parent().is_some_and(|parent| parent.kind() == "enum_body")
+                && node
+                    .parent()
+                    .is_some_and(|parent| parent.kind() == "enum_body")
             {
                 return Some("field");
             }
             if node.kind() == "enum_assignment"
-                && !node.child_by_field_name("name")
+                && !node
+                    .child_by_field_name("name")
                     .is_some_and(|name| name.kind() == "property_identifier")
             {
                 return None;
             }
         }
-        if self.javascript && node.kind() == "pair"
-            && node.child_by_field_name("key")
+        if self.javascript
+            && node.kind() == "pair"
+            && node
+                .child_by_field_name("key")
                 .is_some_and(|key| matches!(key.kind(), "property_identifier" | "identifier"))
             && node.child_by_field_name("value").is_some_and(|value| {
                 !matches!(value.kind(), "arrow_function" | "function_expression")
             })
-            && node.parent().and_then(|object| same_object(object, source)).is_some()
+            && node
+                .parent()
+                .and_then(|object| same_object(object, source))
+                .is_some()
         {
             return Some("field");
         }
         if node.kind() == "field_definition"
-            && !node.child_by_field_name("property")
+            && !node
+                .child_by_field_name("property")
                 .is_some_and(|property| property.kind() == "property_identifier")
         {
             return None;
@@ -2267,7 +2376,9 @@ impl LanguageProfile for TypeScript {
             }
         }
         if node.kind() == "property_identifier"
-            && node.parent().is_some_and(|parent| parent.kind() == "enum_body")
+            && node
+                .parent()
+                .is_some_and(|parent| parent.kind() == "enum_body")
         {
             return Some(text(node, source));
         }
@@ -2312,7 +2423,11 @@ impl LanguageProfile for TypeScript {
             let before = facts.references.len();
             let module =
                 field(node, source, "source").map(|s| s.trim_matches(['\'', '"']).to_owned());
-            fn ids(node: Syntax<'_>, source: &str, values: &mut Vec<(String, Option<String>, bool)>) {
+            fn ids(
+                node: Syntax<'_>,
+                source: &str,
+                values: &mut Vec<(String, Option<String>, bool)>,
+            ) {
                 match node.kind() {
                     "import_specifier" => {
                         let name =
@@ -2468,11 +2583,15 @@ impl LanguageProfile for TypeScript {
                 if self.javascript {
                     if let Some(function) = ctx.node.child_by_field_name("function") {
                         if let Some(expression) = static_member_callee(function, ctx.source) {
-                            if let Some(reference) = facts.references.get_mut(reference_count).filter(|reference| {
-                                reference.source == ctx.owner
-                                    && reference.kind == "calls"
-                                    && reference.line == ctx.line()
-                            }) {
+                            if let Some(reference) = facts
+                                .references
+                                .get_mut(reference_count)
+                                .filter(|reference| {
+                                    reference.source == ctx.owner
+                                        && reference.kind == "calls"
+                                        && reference.line == ctx.line()
+                                })
+                            {
                                 reference.expression = expression;
                                 reference.dynamic = false;
                             }
@@ -2481,12 +2600,17 @@ impl LanguageProfile for TypeScript {
                 }
                 if !self.javascript {
                     if let Some(reference) = facts.references.get_mut(reference_count) {
-                        if reference.source == ctx.owner && reference.kind == "calls"
-                            && reference.line == ctx.line() && reference.expression.contains("?.")
+                        if reference.source == ctx.owner
+                            && reference.kind == "calls"
+                            && reference.line == ctx.line()
+                            && reference.expression.contains("?.")
                         {
                             let normalized = reference.expression.replace("?.", ".");
                             if normalized.split('.').all(|part| {
-                                !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+                                !part.is_empty()
+                                    && part
+                                        .chars()
+                                        .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
                             }) {
                                 reference.dynamic = false;
                             }
@@ -2542,14 +2666,12 @@ impl LanguageProfile for TypeScript {
                         let full_member = member_path.join(".");
                         let hint =
                             match curr_receiver.kind() {
-                                "call_expression" => {
-                                    curr_receiver.child_by_field_name("function").map(|callee| {
-                                        ReceiverHint::CallResult {
-                                            callee: text(callee, ctx.source).to_owned(),
-                                            member: full_member,
-                                        }
-                                    })
-                                }
+                                "call_expression" => curr_receiver
+                                    .child_by_field_name("function")
+                                    .map(|callee| ReceiverHint::CallResult {
+                                        callee: text(callee, ctx.source).to_owned(),
+                                        member: full_member,
+                                    }),
                                 "new_expression" => curr_receiver
                                     .child_by_field_name("constructor")
                                     .map(|callee| ReceiverHint::ConstructorResult {
@@ -2771,14 +2893,25 @@ impl LanguageProfile for TypeScript {
     }
     fn builtin_member(&self, receiver: &str, member: &str) -> bool {
         match receiver {
-            "Web.Response" => matches!(member, "json" | "text" | "arrayBuffer" | "blob" | "formData" | "clone"),
+            "Web.Response" => matches!(
+                member,
+                "json" | "text" | "arrayBuffer" | "blob" | "formData" | "clone"
+            ),
             "H3Event" => matches!(member, "headers" | "context" | "node"),
             "Document" => matches!(
                 member,
-                "querySelector" | "querySelectorAll" | "getElementById"
-                    | "getElementsByClassName" | "getElementsByTagName" | "createElement"
-                    | "createTextNode" | "addEventListener" | "removeEventListener"
-                    | "body" | "head" | "documentElement"
+                "querySelector"
+                    | "querySelectorAll"
+                    | "getElementById"
+                    | "getElementsByClassName"
+                    | "getElementsByTagName"
+                    | "createElement"
+                    | "createTextNode"
+                    | "addEventListener"
+                    | "removeEventListener"
+                    | "body"
+                    | "head"
+                    | "documentElement"
             ),
             "ParentNode" | "DocumentFragment" => matches!(
                 member,
@@ -2787,18 +2920,33 @@ impl LanguageProfile for TypeScript {
             "ChildNode" => matches!(member, "appendChild" | "removeChild"),
             _ if typed_dom_receiver(receiver) == Some("Element") => matches!(
                 member,
-                "querySelector" | "querySelectorAll" | "getAttribute" | "setAttribute"
-                    | "removeAttribute" | "closest" | "matches" | "addEventListener"
-                    | "removeEventListener" | "appendChild" | "removeChild" | "classList"
+                "querySelector"
+                    | "querySelectorAll"
+                    | "getAttribute"
+                    | "setAttribute"
+                    | "removeAttribute"
+                    | "closest"
+                    | "matches"
+                    | "addEventListener"
+                    | "removeEventListener"
+                    | "appendChild"
+                    | "removeChild"
+                    | "classList"
             ),
-            "Window" => matches!(member, "addEventListener" | "removeEventListener" | "dispatchEvent"),
+            "Window" => matches!(
+                member,
+                "addEventListener" | "removeEventListener" | "dispatchEvent"
+            ),
             "Alpine" => matches!(
                 member,
                 "data" | "store" | "start" | "plugin" | "directive" | "magic" | "$data"
             ),
-            "EventTarget" => matches!(member, "addEventListener" | "removeEventListener" | "dispatchEvent"),
-            "Event" | "CustomEvent" | "MouseEvent" | "KeyboardEvent"
-            | "DragEvent" | "ClipboardEvent" | "FocusEvent" => matches!(
+            "EventTarget" => matches!(
+                member,
+                "addEventListener" | "removeEventListener" | "dispatchEvent"
+            ),
+            "Event" | "CustomEvent" | "MouseEvent" | "KeyboardEvent" | "DragEvent"
+            | "ClipboardEvent" | "FocusEvent" => matches!(
                 member,
                 "stopPropagation" | "stopImmediatePropagation" | "preventDefault"
             ),
@@ -2808,19 +2956,60 @@ impl LanguageProfile for TypeScript {
             ),
             "URLSearchParams" => matches!(
                 member,
-                "append" | "delete" | "get" | "getAll" | "has" | "set" | "sort" | "forEach" | "entries" | "keys" | "values"
+                "append"
+                    | "delete"
+                    | "get"
+                    | "getAll"
+                    | "has"
+                    | "set"
+                    | "sort"
+                    | "forEach"
+                    | "entries"
+                    | "keys"
+                    | "values"
             ),
             "Headers" => matches!(
                 member,
-                "append" | "delete" | "get" | "getSetCookie" | "has" | "set" | "forEach" | "entries" | "keys" | "values"
+                "append"
+                    | "delete"
+                    | "get"
+                    | "getSetCookie"
+                    | "has"
+                    | "set"
+                    | "forEach"
+                    | "entries"
+                    | "keys"
+                    | "values"
             ),
             "DOMTokenList" => matches!(
                 member,
-                "add" | "remove" | "toggle" | "contains" | "replace" | "supports" | "entries" | "forEach" | "keys" | "values"
+                "add"
+                    | "remove"
+                    | "toggle"
+                    | "contains"
+                    | "replace"
+                    | "supports"
+                    | "entries"
+                    | "forEach"
+                    | "keys"
+                    | "values"
             ),
             "URL" => matches!(
                 member,
-                "hash" | "host" | "hostname" | "href" | "origin" | "password" | "pathname" | "port" | "protocol" | "search" | "searchParams" | "username" | "toString" | "toJSON"
+                "hash"
+                    | "host"
+                    | "hostname"
+                    | "href"
+                    | "origin"
+                    | "password"
+                    | "pathname"
+                    | "port"
+                    | "protocol"
+                    | "search"
+                    | "searchParams"
+                    | "username"
+                    | "toString"
+                    | "toJSON"
             ),
             "string" | "String" => matches!(
                 member,
@@ -2937,34 +3126,32 @@ impl LanguageProfile for TypeScript {
         self.is_stdlib(module).then_some("Node.js standard library")
     }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
+        let root_bindings = self.bindings(root, source);
         let mut file = FileContext {
-            exports: value_flow::exports(root, source),
+            exports: value_flow::exports(root, source, &root_bindings),
+            root_bindings: Some((root.id(), root_bindings)),
             ..Default::default()
         };
-        let needs_dom_scope_facts =
-            source.contains("addEventListener") || has_dom_event_property(source);
-        let needs_array_callback_scope_facts = !self.javascript
-            && has_member_method(
-                source,
-                &["forEach", "map", "filter", "find", "some", "every", "flatMap"],
-            );
-        let needs_dom_array_receiver_facts = needs_array_callback_scope_facts
-            && ["querySelectorAll", "getElementsByTagName", "getElementsByClassName"]
-                .iter()
-                .any(|method| source.contains(method));
+        let scope_fact_needs =
+            scope_facts::classify_scope_fact_needs(root, source, self.javascript);
+        let needs_dom_scope_facts = scope_fact_needs.dom_scope_facts;
+        let needs_array_callback_scope_facts =
+            !self.javascript && scope_fact_needs.array_callback_scope_facts;
+        let needs_dom_array_receiver_facts =
+            needs_array_callback_scope_facts && scope_fact_needs.dom_array_receiver_facts;
         let needs_full_scope_facts = needs_dom_scope_facts
             || needs_dom_array_receiver_facts
-            || source.contains("require");
+            || scope_fact_needs.commonjs_scope_facts;
         if needs_full_scope_facts {
             collect_scope_facts(root, source, &mut file, !self.javascript);
         }
-        let needs_partial_scope_facts =
-            (self.javascript && (needs_dom_scope_facts || needs_array_callback_scope_facts))
-                || (!needs_full_scope_facts
-                    && needs_array_callback_scope_facts
-                    && !needs_dom_array_receiver_facts);
+        let needs_partial_scope_facts = (self.javascript
+            && (needs_dom_scope_facts || needs_array_callback_scope_facts))
+            || (!needs_full_scope_facts
+                && needs_array_callback_scope_facts
+                && !needs_dom_array_receiver_facts);
         if needs_partial_scope_facts {
-            collect_array_callback_scope_facts(root, source, &mut file);
+            scope_facts::collect_array_callback_scope_facts(root, source, &mut file);
         }
         let mut c = root.walk();
         for node in root
@@ -3006,187 +3193,27 @@ impl LanguageProfile for TypeScript {
 
     fn metadata(
         &self,
-        mut node: Syntax<'_>,
+        node: Syntax<'_>,
         source: &str,
         name: &str,
         file: &FileContext,
     ) -> SymbolMetadata {
-        let mut param_types = BTreeMap::new();
-        let documented = value_flow::jsdoc(node, source).0;
-        if let Some(parameters) = node.child_by_field_name("parameters") {
-            let mut cursor = parameters.walk();
-            for parameter in parameters.named_children(&mut cursor) {
-                let mut p_cursor = parameter.walk();
-                let name = parameter
-                    .child_by_field_name("pattern")
-                    .or_else(|| parameter.child_by_field_name("name"))
-                    .or_else(|| (parameter.kind() == "identifier").then_some(parameter))
-                    .or_else(|| parameter.named_children(&mut p_cursor).find(|c| c.kind() == "identifier"))
-                    .filter(|node| node.kind() == "identifier")
-                    .map(|node| text(node, source).trim().to_owned());
-                let ty = parameter.child_by_field_name("type").map(|node| {
-                    let mut cursor = node.walk();
-                    let inner = if let Some(union_node) = (node.kind() == "union_type")
-                        .then_some(node)
-                        .or_else(|| node.named_children(&mut cursor).find(|c| c.kind() == "union_type"))
-                    {
-                        let mut ucursor = union_node.walk();
-                        let non_null: Vec<_> = union_node.named_children(&mut ucursor)
-                            .filter(|c| {
-                                let t = text(*c, source).trim();
-                                !matches!(t, "null" | "undefined" | "void")
-                                    && !matches!(c.kind(), "null_type" | "undefined_type" | "void_type")
-                            })
-                            .collect();
-                        if non_null.len() == 1 {
-                            non_null[0]
-                        } else {
-                            node
-                        }
-                    } else {
-                        node
-                    };
-                    text(inner, source)
-                        .trim()
-                        .trim_start_matches(':')
-                        .trim()
-                        .to_owned()
-                });
-                let ty =
-                    ty.or_else(|| name.as_ref().and_then(|name| documented.get(name).cloned()));
-                if let (Some(name), Some(ty)) = (name, ty) {
-                    if !name.is_empty() && !ty.is_empty() {
-                        param_types.insert(name, ty);
-                    }
-                }
-            }
-        }
-        if !self.javascript && matches!(node.kind(), "arrow_function" | "function_expression") {
-            let parameter = node.child_by_field_name("parameter")
-                .or_else(|| node.child_by_field_name("parameters")?.named_child(0))
-                .and_then(|p| {
-                    if p.kind() == "identifier" {
-                        Some(p)
-                    } else {
-                        p.child_by_field_name("name")
-                            .or_else(|| p.child_by_field_name("pattern"))
-                            .filter(|n| n.kind() == "identifier")
-                    }
-                });
-            if let (Some(parameter), Some(element)) = (
-                parameter,
-                array_callback_element(node, source, file),
-            ) {
-                param_types.insert(text(parameter, source).to_owned(), element.to_owned());
-            }
-        }
-        if matches!(node.kind(), "arrow_function" | "function_expression") {
-            if let Some(event) = dom_event_callback_parameter(node, source, file) {
-                param_types.entry(event.to_owned()).or_insert_with(|| "Event".to_owned());
-            } else if let Some(event) = nitro_event_callback_parameter(node, source) {
-                param_types.entry(event.to_owned()).or_insert_with(|| "H3Event".to_owned());
-            }
-        }
-        let is_async = text(node, source).trim_start().starts_with("async ");
-        let is_method_node = matches!(node.kind(), "method_definition" | "method_signature");
-        let local_object = if self.javascript {
-            if node.kind() == "pair" {
-                node.parent().and_then(|object| same_object(object, source))
-            } else {
-                same_object_receiver(node, source)
-            }
-        } else {
-            None
-        };
-        let lexical_this = (node.kind() == "arrow_function")
-            .then(|| lexical_this_method(node))
-            .flatten();
-        let prototype_method = self.javascript.then(|| prototype_assignment(node, source)).flatten();
-        let lexical_prototype = (self.javascript && node.kind() == "arrow_function")
-            .then(|| lexical_prototype_owner(node, source)).flatten();
-        let (receiver_type, is_method, is_static) = if is_method_node {
-            let owner = method_owner(node);
-            let receiver_type = owner
-                .and_then(|o| o.child_by_field_name("name"))
-                .map(|n| text(n, source).trim().to_owned());
-            let is_static = (0..node.child_count()).any(|i| {
-                node.child(i)
-                    .is_some_and(|c| c.kind() == "static" || text(c, source).trim() == "static")
-            });
-            (receiver_type, Some(true), Some(is_static))
-        } else if let Some((owner, _)) = prototype_method {
-            (Some(owner.to_owned()), Some(true), Some(false))
-        } else if let Some((method, class)) = lexical_this {
-            let receiver_type = class.child_by_field_name("name")
-                .map(|name| text(name, source).trim().to_owned());
-            let is_static = (0..method.child_count()).any(|index| {
-                method.child(index).is_some_and(|child| child.kind() == "static")
-            });
-            (receiver_type, None, Some(is_static))
-        } else if let Some(owner) = lexical_prototype {
-            (Some(owner.to_owned()), None, Some(false))
-        } else if node.kind() == "enum_assignment"
-            || (node.kind() == "property_identifier"
-                && node.parent().is_some_and(|parent| parent.kind() == "enum_body"))
-        {
-            (None, None, Some(true))
-        } else if node.kind() == "field_definition" {
-            let is_static = (0..node.child_count()).any(|index| {
-                node.child(index).is_some_and(|child| child.kind() == "static")
-            });
-            (None, None, Some(is_static))
-        } else {
-            (None, None, None)
-        };
-        let is_ts_without_body = matches!(
-            node.kind(),
-            "function_declaration" | "method_definition" | "method_signature"
-        ) && node.child_by_field_name("body").is_none();
-        let is_overload = is_ts_without_body;
-        let is_stub = is_ts_without_body;
-        let mut default_export = false;
-        while let Some(parent) = node.parent() {
-            if parent.kind() == "export_statement"
-                && text(parent, source)
-                    .trim_start()
-                    .starts_with("export default")
-            {
-                default_export = true;
-                break;
-            }
-            if matches!(parent.kind(), "program" | "module") {
-                default_export = file.default_exports.contains(name);
-                break;
-            }
-            if !matches!(
-                parent.kind(),
-                "variable_declarator"
-                    | "lexical_declaration"
-                    | "variable_declaration"
-                    | "export_statement"
-            ) {
-                break;
-            }
-            node = parent;
-        }
-        SymbolMetadata {
-            param_types,
-            default_export,
-            is_async,
-            receiver_name: if local_object.is_some() || lexical_this.is_some() || lexical_prototype.is_some() || (is_method == Some(true) && node.kind() != "arrow_function") {
-                Some("this".into())
-            } else {
-                None
-            },
-            receiver: local_object.map(|object| object_marker(object, source)),
-            receiver_type,
-            is_method,
-            is_static,
-            is_overload,
-            is_stub,
-            ..Default::default()
-        }
+        self.metadata_with_documented(node, source, name, file, value_flow::jsdoc(node, source).0)
     }
+
+    fn declaration(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        name: &str,
+        file: &FileContext,
+    ) -> (SymbolMetadata, crate::core::semantic::ValueFlowFacts) {
+        let (parameters, returned, _) = value_flow::jsdoc(node, source);
+        let metadata = self.metadata_with_documented(node, source, name, file, parameters);
+        let flow = value_flow::extract_with_return(node, source, || returned);
+        (metadata, flow)
+    }
+
     fn extract_relations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source, id, line) = (ctx.node, ctx.source, ctx.owner, ctx.line());
         let mut c = node.walk();
@@ -3310,9 +3337,11 @@ impl LanguageProfile for TypeScript {
             });
             if !called {
                 if let (Some(object), Some(property)) = (
-                    ctx.node.child_by_field_name("object")
+                    ctx.node
+                        .child_by_field_name("object")
                         .filter(|object| object.kind() == "identifier"),
-                    ctx.node.child_by_field_name("property")
+                    ctx.node
+                        .child_by_field_name("property")
                         .filter(|property| property.kind() == "property_identifier"),
                 ) {
                     TS_SCRATCH.with(|s| {
@@ -3332,17 +3361,31 @@ impl LanguageProfile for TypeScript {
             }
         }
         if self.javascript
-            && (matches!(ctx.node.kind(), "assignment_expression" | "augmented_assignment_expression")
-                || (ctx.node.kind() == "unary_expression"
-                    && ctx.node.child(0).is_some_and(|operator| operator.kind() == "delete"))) {
-            if let Some(left) = ctx.node.child_by_field_name("left")
-                .or_else(|| ctx.node.child_by_field_name("argument")) {
-                if facts.nodes.first().is_some_and(|node| node.kind == "module") {
+            && (matches!(
+                ctx.node.kind(),
+                "assignment_expression" | "augmented_assignment_expression"
+            ) || (ctx.node.kind() == "unary_expression"
+                && ctx
+                    .node
+                    .child(0)
+                    .is_some_and(|operator| operator.kind() == "delete")))
+        {
+            if let Some(left) = ctx
+                .node
+                .child_by_field_name("left")
+                .or_else(|| ctx.node.child_by_field_name("argument"))
+            {
+                if facts
+                    .nodes
+                    .first()
+                    .is_some_and(|node| node.kind == "module")
+                {
                     TS_SCRATCH.with(|scratch| {
                         let mut s = scratch.borrow_mut();
                         if let Some(target) = (left.kind() == "identifier")
                             .then(|| text(left, ctx.source))
-                            .or_else(|| direct_prototype_owner(left, ctx.source)) {
+                            .or_else(|| direct_prototype_owner(left, ctx.source))
+                        {
                             if !s.assigned.contains(target) {
                                 if target.len() <= 128 && s.assigned.len() < 64 {
                                     s.assigned.insert(target.to_owned());
@@ -3364,8 +3407,12 @@ impl LanguageProfile for TypeScript {
                                 }
                             }
                         }
-                        if let Some((owner, member, implementation)) = prototype_identifier_assignment(ctx.node, ctx.source) {
-                            if s.aliases.len() < 64 && owner.len() + member.len() + implementation.len() <= 192 {
+                        if let Some((owner, member, implementation)) =
+                            prototype_identifier_assignment(ctx.node, ctx.source)
+                        {
+                            if s.aliases.len() < 64
+                                && owner.len() + member.len() + implementation.len() <= 192
+                            {
                                 s.aliases.push(JsPrototypeAlias {
                                     owner: owner.to_owned(),
                                     member: member.to_owned(),
@@ -3392,14 +3439,19 @@ impl LanguageProfile for TypeScript {
             ],
             &["member_expression"],
         );
-        if matches!(ctx.node.kind(), "public_field_definition" | "field_definition")
-            && (0..ctx.node.child_count()).any(|index| {
-                ctx.node.child(index).is_some_and(|child| child.kind() == "static")
-            })
-        {
+        if matches!(
+            ctx.node.kind(),
+            "public_field_definition" | "field_definition"
+        ) && (0..ctx.node.child_count()).any(|index| {
+            ctx.node
+                .child(index)
+                .is_some_and(|child| child.kind() == "static")
+        }) {
             if let (Some(owner), Some(name)) = (
                 facts.nodes.iter().find(|node| node.id == ctx.owner),
-                ctx.node.child_by_field_name("name").map(|name| text(name, ctx.source).to_owned()),
+                ctx.node
+                    .child_by_field_name("name")
+                    .map(|name| text(name, ctx.source).to_owned()),
             ) {
                 let qualname = format!("{}.{}", owner.qualname, name);
                 let path = owner.path.clone();
@@ -3495,57 +3547,106 @@ impl LanguageProfile for TypeScript {
             }
         }
         if self.javascript {
-            let (writes, write_overflow, prototype_aliases, alias_overflow, assigned, assignment_overflow) =
-                TS_SCRATCH.with(|s| {
-                    let mut b = s.borrow_mut();
-                    let writes = std::mem::take(&mut b.writes);
-                    let write_overflow = b.write_overflow;
-                    let prototype_aliases = std::mem::take(&mut b.aliases);
-                    let alias_overflow = b.alias_overflow;
-                    let assigned = std::mem::take(&mut b.assigned);
-                    let assignment_overflow = b.assignment_overflow;
-                    b.reset();
-                    (writes, write_overflow, prototype_aliases, alias_overflow, assigned, assignment_overflow)
-                });
+            let (
+                writes,
+                write_overflow,
+                prototype_aliases,
+                alias_overflow,
+                assigned,
+                assignment_overflow,
+            ) = TS_SCRATCH.with(|s| {
+                let mut b = s.borrow_mut();
+                let writes = std::mem::take(&mut b.writes);
+                let write_overflow = b.write_overflow;
+                let prototype_aliases = std::mem::take(&mut b.aliases);
+                let alias_overflow = b.alias_overflow;
+                let assigned = std::mem::take(&mut b.assigned);
+                let assignment_overflow = b.assignment_overflow;
+                b.reset();
+                (
+                    writes,
+                    write_overflow,
+                    prototype_aliases,
+                    alias_overflow,
+                    assigned,
+                    assignment_overflow,
+                )
+            });
             let Some(module) = facts.nodes.iter_mut().find(|node| node.kind == "module") else {
                 return;
             };
             let module_id = module.id.clone();
             let module_qualname = module.qualname.clone();
             let rebound: std::collections::HashSet<String> = module.details["rebindings"]
-                .as_array().into_iter().flatten().filter_map(|name| name.as_str().map(str::to_owned)).collect();
-            let declarations: std::collections::HashSet<&str> = facts.edges.iter()
-                .filter(|edge| edge.src == module_id && edge.kind == "contains"
-                    && matches!(edge.evidence.as_str(), "class_declaration" | "function_declaration"))
-                .map(|edge| edge.dst.as_str()).collect();
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|name| name.as_str().map(str::to_owned))
+                .collect();
+            let declarations: std::collections::HashSet<&str> = facts
+                .edges
+                .iter()
+                .filter(|edge| {
+                    edge.src == module_id
+                        && edge.kind == "contains"
+                        && matches!(
+                            edge.evidence.as_str(),
+                            "class_declaration" | "function_declaration"
+                        )
+                })
+                .map(|edge| edge.dst.as_str())
+                .collect();
             let mut direct_constructors: std::collections::HashMap<&str, Vec<&Node>> =
                 std::collections::HashMap::new();
-            for node in facts.nodes.iter().filter(|node| declarations.contains(node.id.as_str())) {
-                direct_constructors.entry(node.qualname.as_str()).or_default().push(node);
+            for node in facts
+                .nodes
+                .iter()
+                .filter(|node| declarations.contains(node.id.as_str()))
+            {
+                direct_constructors
+                    .entry(node.qualname.as_str())
+                    .or_default()
+                    .push(node);
             }
-            let parents: std::collections::HashMap<&str, &str> = facts.edges.iter()
+            let parents: std::collections::HashMap<&str, &str> = facts
+                .edges
+                .iter()
                 .filter(|edge| edge.kind == "contains")
-                .map(|edge| (edge.dst.as_str(), edge.src.as_str())).collect();
+                .map(|edge| (edge.dst.as_str(), edge.src.as_str()))
+                .collect();
             let mut methods = std::collections::HashSet::new();
             let mut constructor_ids = std::collections::HashSet::new();
             let mut valid_aliases = Vec::new();
-            for method in facts.nodes.iter().filter(|node| node.details["prototype"] == true) {
-                let Some(owner) = method.details["receiver_type"].as_str() else { continue; };
+            for method in facts
+                .nodes
+                .iter()
+                .filter(|node| node.details["prototype"] == true)
+            {
+                let Some(owner) = method.details["receiver_type"].as_str() else {
+                    continue;
+                };
                 let key = format!("{owner}.{}", method.name);
-                if write_overflow || assignment_overflow
+                if write_overflow
+                    || assignment_overflow
                     || writes.get(key.as_str()).copied() != Some(1)
-                    || rebound.contains(owner) || assigned.contains(owner)
+                    || rebound.contains(owner)
+                    || assigned.contains(owner)
                 {
                     continue;
                 }
                 let qualname = format!("{module_qualname}.{owner}");
-                let Some([constructor]) = direct_constructors.get(qualname.as_str()).map(Vec::as_slice) else {
+                let Some([constructor]) = direct_constructors
+                    .get(qualname.as_str())
+                    .map(Vec::as_slice)
+                else {
                     continue;
                 };
-                if constructor.kind == "class" && (constructor.line > method.line
-                    || (constructor.line == method.line
-                        && constructor.details["column"].as_u64().unwrap_or(0)
-                            >= method.details["column"].as_u64().unwrap_or(0))) {
+                if constructor.kind == "class"
+                    && (constructor.line > method.line
+                        || (constructor.line == method.line
+                            && constructor.details["column"].as_u64().unwrap_or(0)
+                                >= method.details["column"].as_u64().unwrap_or(0)))
+                {
                     continue;
                 }
                 methods.insert(method.id.clone());
@@ -3556,26 +3657,43 @@ impl LanguageProfile for TypeScript {
             if !write_overflow && !assignment_overflow && !alias_overflow {
                 let mut target_counts = std::collections::HashMap::<&str, usize>::new();
                 for alias in &prototype_aliases {
-                    *target_counts.entry(alias.implementation.as_str()).or_default() += 1;
+                    *target_counts
+                        .entry(alias.implementation.as_str())
+                        .or_default() += 1;
                 }
                 for alias in &prototype_aliases {
                     let key = format!("{}.{}", alias.owner, alias.member);
                     if writes.get(key.as_str()).copied() != Some(1)
-                        || rebound.contains(&alias.owner) || assigned.contains(&alias.owner)
-                        || rebound.contains(&alias.implementation) || assigned.contains(&alias.implementation)
+                        || rebound.contains(&alias.owner)
+                        || assigned.contains(&alias.owner)
+                        || rebound.contains(&alias.implementation)
+                        || assigned.contains(&alias.implementation)
                         || target_counts.get(alias.implementation.as_str()) != Some(&1)
                     {
                         continue;
                     }
                     let owner_qualname = format!("{module_qualname}.{}", alias.owner);
-                    let implementation_qualname = format!("{module_qualname}.{}", alias.implementation);
+                    let implementation_qualname =
+                        format!("{module_qualname}.{}", alias.implementation);
                     let (Some([constructor]), Some([function])) = (
-                        direct_constructors.get(owner_qualname.as_str()).map(Vec::as_slice),
-                        direct_constructors.get(implementation_qualname.as_str()).map(Vec::as_slice),
-                    ) else { continue; };
+                        direct_constructors
+                            .get(owner_qualname.as_str())
+                            .map(Vec::as_slice),
+                        direct_constructors
+                            .get(implementation_qualname.as_str())
+                            .map(Vec::as_slice),
+                    ) else {
+                        continue;
+                    };
                     if function.kind != "function"
-                        || (function.line, function.details["column"].as_u64().unwrap_or(0)) >= (alias.line, alias.column as u64)
-                        || (constructor.line, constructor.details["column"].as_u64().unwrap_or(0)) >= (alias.line, alias.column as u64)
+                        || (
+                            function.line,
+                            function.details["column"].as_u64().unwrap_or(0),
+                        ) >= (alias.line, alias.column as u64)
+                        || (
+                            constructor.line,
+                            constructor.details["column"].as_u64().unwrap_or(0),
+                        ) >= (alias.line, alias.column as u64)
                     {
                         continue;
                     }
@@ -3583,15 +3701,29 @@ impl LanguageProfile for TypeScript {
                     if constructor.kind == "function" {
                         constructor_ids.insert(constructor.id.clone());
                     }
-                    valid_aliases.push((function.id.clone(), alias.owner.clone(), alias.member.clone(), alias.line, alias.column));
+                    valid_aliases.push((
+                        function.id.clone(),
+                        alias.owner.clone(),
+                        alias.member.clone(),
+                        alias.line,
+                        alias.column,
+                    ));
                 }
             }
-            let valid_methods: std::collections::HashMap<String, String> = facts.nodes.iter()
+            let valid_methods: std::collections::HashMap<String, String> = facts
+                .nodes
+                .iter()
                 .filter(|node| methods.contains(&node.id))
-                .filter_map(|node| node.details["receiver_type"].as_str()
-                    .map(|owner| (node.id.clone(), owner.to_owned()))).collect();
+                .filter_map(|node| {
+                    node.details["receiver_type"]
+                        .as_str()
+                        .map(|owner| (node.id.clone(), owner.to_owned()))
+                })
+                .collect();
             for node in &mut facts.nodes {
-                if let Some((_, owner, member, line, column)) = valid_aliases.iter().find(|(id, ..)| *id == node.id) {
+                if let Some((_, owner, member, line, column)) =
+                    valid_aliases.iter().find(|(id, ..)| *id == node.id)
+                {
                     node.details["prototype"] = serde_json::json!(true);
                     node.details["prototype_member"] = serde_json::json!(member);
                     node.details["receiver_type"] = serde_json::json!(owner);
@@ -3608,8 +3740,13 @@ impl LanguageProfile for TypeScript {
                     let receiver = node.details["receiver_type"].as_str();
                     let mut ancestor = node.id.as_str();
                     for _ in 0..16 {
-                        let Some(parent) = parents.get(ancestor).copied() else { break; };
-                        if valid_methods.get(parent).is_some_and(|owner| Some(owner.as_str()) == receiver) {
+                        let Some(parent) = parents.get(ancestor).copied() else {
+                            break;
+                        };
+                        if valid_methods
+                            .get(parent)
+                            .is_some_and(|owner| Some(owner.as_str()) == receiver)
+                        {
                             node.details["prototype_lexical_this"] = serde_json::json!(true);
                             break;
                         }

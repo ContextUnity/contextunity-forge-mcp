@@ -87,7 +87,7 @@ pub fn search_paged(
     let files = if let Some(name) = declaration.as_deref() {
         crate::db::reader::rows(
             conn,
-            "SELECT DISTINCT f.path,f.digest FROM nodes n JOIN files f ON f.path=n.path WHERE n.name=?1 COLLATE NOCASE AND f.status='indexed' AND f.language=?2 AND (?3='' OR f.path=?3 OR (f.path>=?4 AND f.path<?5)) ORDER BY f.path",
+            "SELECT DISTINCT f.path,f.digest FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE n.name=?1 COLLATE NOCASE AND f.status='indexed' AND f.language=?2 AND (?3='' OR f.path=?3 OR (f.path>=?4 AND f.path<?5)) ORDER BY f.path",
             &[&name, &language, &path, &path_start, &path_end],
             500000,
         )?
@@ -99,28 +99,6 @@ pub fn search_paged(
         500000,
     )?
     };
-    let literal_tokens = ast_literal_tokens(pattern);
-    let candidate_paths = if declaration.is_some() || literal_tokens.is_empty() {
-        None
-    } else {
-        let query = literal_tokens
-            .iter()
-            .map(|token| format!("\"{token}\""))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        let candidates = crate::db::reader::rows(
-            conn,
-            "SELECT DISTINCT n.path FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND n.language=?2",
-            &[&query, &language],
-            500000,
-        )?;
-        (!candidates.is_empty()).then(|| {
-            candidates
-                .iter()
-                .filter_map(|candidate| candidate["path"].as_str().map(str::to_owned))
-                .collect::<std::collections::HashSet<_>>()
-        })
-    };
     let mut items = Vec::new();
     let mut matched = 0;
     let mut complete = true;
@@ -129,12 +107,6 @@ pub fn search_paged(
     for file in files {
         let file_path = file["path"].as_str().unwrap_or_default();
         let file_digest = file["digest"].as_str().unwrap_or_default();
-        if candidate_paths
-            .as_ref()
-            .is_some_and(|candidates| !candidates.contains(file_path))
-        {
-            continue;
-        }
         if std::time::Instant::now() >= deadline {
             complete = false;
             work_limited = true;
@@ -180,28 +152,4 @@ pub fn search_paged(
     Ok(
         json!({"matches":{"total":if complete {Some(matched)} else {None},"total_status":if complete {"exact"} else {"unavailable"},"offset":options.offset,"limit":limit,"items":items,"has_more":has_more,"next_offset":if can_continue {Some(next)} else {None},"generation":generation,"computation_truncated":work_limited,"continuation_hint":hint},"generation":generation}),
     )
-}
-
-fn ast_literal_tokens(pattern: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut chars = pattern.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '$' {
-            while chars
-                .peek()
-                .is_some_and(|ch| *ch == '$' || *ch == '_' || ch.is_alphanumeric())
-            {
-                chars.next();
-            }
-        } else if ch.is_alphanumeric() {
-            let mut token = String::from(ch);
-            while chars.peek().is_some_and(|ch| ch.is_alphanumeric()) {
-                token.push(chars.next().unwrap());
-            }
-            tokens.push(token);
-        }
-    }
-    tokens.sort();
-    tokens.dedup();
-    tokens
 }

@@ -41,6 +41,37 @@ impl Drop for Workspace {
     }
 }
 
+#[cfg(feature = "lang-typescript")]
+fn coverage_aggregate_rows(conn: &rusqlite::Connection) -> (Vec<String>, Vec<String>) {
+    let owner_language = conn
+        .prepare(
+            "SELECT json_array(p.path, c.line, e.expression, c.status, v.evidence, c.language) \
+             FROM coverage_owner_language c \
+             JOIN path_dictionary p ON p.path_id=c.path_id \
+             JOIN coverage_expressions e ON e.expression_id=c.expression_id \
+             JOIN coverage_evidence v ON v.evidence_id=c.evidence_id \
+             ORDER BY p.path, c.line, e.expression, c.status, v.evidence, c.language",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    let language_counts = conn
+        .prepare(
+            "SELECT json_array(p.path, c.language, c.status, c.records) \
+             FROM coverage_language_counts c \
+             JOIN path_dictionary p ON p.path_id=c.path_id \
+             ORDER BY p.path, c.language, c.status",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    (owner_language, language_counts)
+}
+
 #[test]
 fn html_files_are_indexed_and_snippets_preserve_markup_after_delta() {
     let workspace = Workspace::new();
@@ -167,7 +198,7 @@ fn inline_javascript_imports_resolve_without_html_namespace_collision() {
         .any(|reference| reference.module.as_deref() == Some("ignored")));
     writer::build(&workspace.0, &workspace.db(), None).unwrap();
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let resolved: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE e.src_hash=(SELECT node_hash FROM nodes WHERE id='module:app.html') AND e.kind='imports' AND n.path='app.js'", [], |row| row.get(0)).unwrap();
+    let resolved: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.src_hash=(SELECT node_hash FROM nodes WHERE id='module:app.html') AND e.kind='imports' AND p.path='app.js'", [], |row| row.get(0)).unwrap();
     assert!(resolved > 0);
     let self_imports: i64 = conn.query_row("SELECT count(*) FROM edges WHERE (SELECT id FROM nodes WHERE node_hash=src_hash)='module:app.html' AND (SELECT id FROM nodes WHERE node_hash=dst_hash)='module:app.html' AND kind='imports'", [], |row| row.get(0)).unwrap();
     assert_eq!(self_imports, 0);
@@ -561,7 +592,7 @@ fn html_javascript_import_scope_and_boolean_handlers_survive_delta() {
     workspace.write("page.html", "<script type='module'>import { answer } from './provider.js'; answer();</script>\n<script type='module'>answer();</script>\n<button onclick=\"function check() {} if (true && true) check();\">Run</button>");
     writer::build(&workspace.0, &workspace.db(), None).unwrap();
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let imports: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE e.src_hash=(SELECT node_hash FROM nodes WHERE id='module:page.html') AND e.kind='imports' AND n.path='provider.js'", [], |row| row.get(0)).unwrap();
+    let imports: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.src_hash=(SELECT node_hash FROM nodes WHERE id='module:page.html') AND e.kind='imports' AND p.path='provider.js'", [], |row| row.get(0)).unwrap();
     assert!(imports > 0);
     let resolved: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='page.html' AND line=1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='answer' AND status='resolved'", [], |row| row.get(0)).unwrap();
     let unresolved: i64 = conn.query_row("SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='page.html' AND line=2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='answer' AND status='unresolved'", [], |row| row.get(0)).unwrap();
@@ -701,7 +732,7 @@ fn inline_handlers_resolve_exact_local_classic_script_providers() {
     writer::build(&workspace.0, &workspace.db(), None).unwrap();
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
     let linked: i64 = conn.query_row(
-        "SELECT count(*) FROM edges e JOIN path_dictionary owner ON owner.path_id=e.path_id JOIN coverage_evidence evidence ON evidence.evidence_id=e.evidence_id JOIN nodes target ON target.node_hash=e.dst_hash WHERE owner.path='site/index.html' AND e.kind='calls' AND evidence.evidence='openCart' AND target.path='site/assets/cart.js' AND target.kind='function'",
+        "SELECT count(*) FROM edges e JOIN path_dictionary owner ON owner.path_id=e.path_id JOIN coverage_evidence evidence ON evidence.evidence_id=e.evidence_id JOIN nodes target ON target.node_hash=e.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE owner.path='site/index.html' AND e.kind='calls' AND evidence.evidence='openCart' AND target_path.path='site/assets/cart.js' AND target.kind='function'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(
@@ -737,6 +768,11 @@ fn inline_handlers_resolve_exact_local_classic_script_providers() {
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(status, "ambiguous");
+    let incremental_aggregates = coverage_aggregate_rows(&conn);
+    assert!(
+        !incremental_aggregates.0.is_empty(),
+        "the inline JavaScript handler exercises owner-language override persistence"
+    );
     commitments::verify(&conn).unwrap();
     drop(conn);
     let cold_db = workspace.0.join("bridge-cold.sqlite");
@@ -747,6 +783,7 @@ fn inline_handlers_resolve_exact_local_classic_script_providers() {
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(cold_status, status);
+    assert_eq!(incremental_aggregates, coverage_aggregate_rows(&cold));
     commitments::verify(&cold).unwrap();
 }
 
@@ -1380,7 +1417,7 @@ fn registered_django_template_symbols_use_loaded_project_library() {
         if !provider.is_empty() {
             let target_count: i64 = conn
                 .query_row(
-                    "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary pd ON pd.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE pd.path=?1 AND e.kind='references' AND dst.path=?2 AND dst.name=?3",
+                    "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary pd ON pd.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN path_dictionary target_path ON target_path.path_id=dst.path_id WHERE pd.path=?1 AND e.kind='references' AND target_path.path=?2 AND dst.name=?3",
                     [path, provider, function],
                     |row| row.get(0),
                 )
@@ -1486,7 +1523,7 @@ fn template_expressions_follow_proven_local_and_imported_bindings() {
         if !provider.is_empty() {
             let target_count: i64 = conn
                 .query_row(
-                    "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary pd ON pd.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE pd.path=?1 AND e.kind='references' AND dst.path=?2 AND dst.name=?3",
+                    "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary pd ON pd.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN path_dictionary target_path ON target_path.path_id=dst.path_id WHERE pd.path=?1 AND e.kind='references' AND target_path.path=?2 AND dst.name=?3",
                     [path, provider, symbol],
                     |row| row.get(0),
                 )
@@ -1559,7 +1596,7 @@ fn embedded_javascript_uses_its_owner_profile_inside_html() {
     }
     let field_edge: i64 = conn
         .query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.line=4 AND e.kind='mutates' AND dst.path=?1 AND dst.name='count' AND dst.kind='field'",
+            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN path_dictionary target_path ON target_path.path_id=dst.path_id WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.line=4 AND e.kind='mutates' AND target_path.path=?1 AND dst.name='count' AND dst.kind='field'",
             [path],
             |row| row.get(0),
         )

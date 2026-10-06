@@ -1,13 +1,13 @@
 ---
-title: "SQLite Concurrency, Generation Locking, and Reader Isolation"
+title: "SQLite Snapshot Admission, Locking, and Reader Isolation"
 doc_type: architecture
 ---
 
-# SQLite Concurrency, Generation Locking, and Reader Isolation
+# SQLite Snapshot Admission, Locking, and Reader Isolation
 
 ## Concurrency model
 
-Forge MCP operates as an embedded Rust binary executing concurrent reads from MCP JSON-RPC handlers alongside background cold builds and incremental delta indexing.
+Forge MCP accepts concurrent MCP JSON-RPC requests while background cold builds and incremental delta indexing may run in other processes.
 
 ### SQLite Pragmas & WAL Mode
 
@@ -19,12 +19,12 @@ PRAGMA mmap_size = 268435456;
 PRAGMA busy_timeout = 5000;
 ```
 
-Write transactions (`BEGIN IMMEDIATE`) are isolated to `src/db/writer.rs`. Readers open shared, read-only connections with separate transaction slots.
+Graph write transactions (`BEGIN IMMEDIATE`) are owned by `src/db/writer.rs` and `src/db/delta.rs`; task-state writes use their separate `src/db/tasks_store.rs` transaction boundary. In the current MCP server, one reusable SQLite reader connection is guarded by a mutex, so each read callback holds that slot through its query transaction and reads within one server instance are serialized. The current-thread Tokio runtime also runs synchronous tool handlers serially. A reader pool alone would not make public MCP requests execute concurrently.
 
-## Generation Locking
+## Snapshot admission and reader fencing
 
-To prevent reading a database while an active write transaction is partially applied or while the file is being rebuilt:
+The MCP server keeps one reusable SQLite reader connection behind a mutex. `call_tool` loads one adapter snapshot for the request's response policy, admission, and final response enforcement. `Server::admit` consumes that snapshot, compares the cached connection's workspace and adapter identity, and checks the database file identity. It rereads the adapter only while validating a source scan or retrying admission after a rebuild. The identity includes the main database and any non-empty WAL file. The server reuses an inventory freshness result only within its TTL; database identity checks still happen on every query.
 
-1. **Generation Counter**: A 64-bit monotonically increasing generation counter is stored in the `meta` table and memory cache.
-2. **Reader Locks**: Readers in `src/mcp/server.rs` acquire an RAII read guard against the active generation. If the generation changes during traversal, the reader invalidates its cached statements and reopens the connection to the new generation.
-3. **No Process Scans**: Cache invalidation avoids scanning `/proc/*/fd` or inspecting system file descriptors. Invalidation is purely event-driven and generation-checked.
+Before executing a query, the server acquires a shared filesystem lock for the database snapshot. Builders and delta writers use the matching exclusive lock. After the query, it checks database identity while the read transaction is still active, then rolls back; if the identity changed or could not be checked, it discards the connection and asks the caller to retry. A private verified receipt binds the canonical workspace and database paths, Merkle output root, and file identity. The graph database does not use a `meta` generation counter or event-only invalidation.
+
+A bounded read-only pool requires a matching change to request execution and proof of a material concurrent benefit without a single-request or startup regression. Milestone 030 retains the serialized reader on the measured Commerce workload.

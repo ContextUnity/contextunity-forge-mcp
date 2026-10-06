@@ -385,7 +385,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             .is_some_and(|file| matches!(file.language.as_str(), "html" | "python"))
     });
     let old_loader_roots: Vec<(String, String)> = if template_inputs_changed {
-        let mut st = admitted.prepare("SELECT path,name FROM nodes INDEXED BY idx_nodes_path_text WHERE path IN(SELECT value FROM json_each(?1)) AND kind='template_loader_root'")?;
+        let mut st = admitted.prepare("SELECT p.path,n.name FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE p.path IN(SELECT value FROM json_each(?1)) AND n.kind='template_loader_root'")?;
         let rows = st.query_map([serde_json::to_string(&modified)?], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })?;
@@ -582,7 +582,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             }
         }
         if !roots.is_empty() {
-            let mut st = admitted.prepare("SELECT DISTINCT path FROM nodes INDEXED BY idx_nodes_name WHERE name IN(SELECT value FROM json_each(?1)) AND kind='template_loader_root'")?;
+            let mut st = admitted.prepare("SELECT DISTINCT p.path FROM nodes n INDEXED BY idx_nodes_name JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name IN(SELECT value FROM json_each(?1)) AND n.kind='template_loader_root'")?;
             for row in st.query_map([serde_json::to_string(&roots)?], |row| {
                 row.get::<_, String>(0)
             })? {
@@ -757,7 +757,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let encoded = serde_json::to_string(&tokens)?;
     let suffix_ids = serde_json::to_string(&suffix_ids)?;
     {
-        let sql="SELECT n.id,n.kind,n.name,n.qualname,n.path,n.line,n.end_line,n.is_test,n.language,n.generated,n.details,EXISTS(SELECT 1 FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash WHERE s.kind_id=2 AND s.key_hash=n.node_hash AND k.key=n.id) FROM nodes n WHERE n.id IN(SELECT id FROM nodes WHERE kind='module' UNION SELECT id FROM nodes WHERE name IN(SELECT value FROM json_each(?1)) UNION SELECT id FROM nodes WHERE qualname IN(SELECT value FROM json_each(?1)) UNION SELECT n2.id FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN nodes n2 ON n2.node_hash=s.key_hash AND n2.id=k.key WHERE s.kind_id=2 UNION SELECT value FROM json_each(?2))";
+        let sql="SELECT n.id,n.kind,n.name,n.qualname,p.path,n.line,n.end_line,n.is_test,n.language,n.generated,n.details,EXISTS(SELECT 1 FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash WHERE s.kind_id=2 AND s.key_hash=n.node_hash AND k.key=n.id) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id IN(SELECT id FROM nodes WHERE kind='module' UNION SELECT id FROM nodes WHERE name IN(SELECT value FROM json_each(?1)) UNION SELECT id FROM nodes WHERE qualname IN(SELECT value FROM json_each(?1)) UNION SELECT n2.id FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN nodes n2 ON n2.node_hash=s.key_hash AND n2.id=k.key WHERE s.kind_id=2 UNION SELECT value FROM json_each(?2))";
         let mut st = admitted.prepare(sql)?;
         let nodes = st.query_map(params![encoded, suffix_ids], |r| {
             Ok(Node {

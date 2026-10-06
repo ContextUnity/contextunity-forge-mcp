@@ -10,7 +10,7 @@ Accepted decisions live here as owner-approved ADR files with stable IDs, status
 ## Accepted Decisions
 
 1. [ADR 0001: Dual-Surface Parity Between CLI and MCP](0001-dual-surface-parity.md)
-2. [ADR 0002: Generational SQLite Concurrency and Reader Isolation](0002-generational-sqlite-concurrency.md)
+2. [ADR 0002: SQLite Snapshot Admission and Reader Isolation](0002-generational-sqlite-concurrency.md)
 3. [ADR 0003: Two-Phase Staged Indexing and Atomic Publication](0003-two-phase-staged-publication.md)
 4. [ADR 0004: Deterministic Merkle Tree Commitments for Index Integrity](0004-deterministic-merkle-commitments.md)
 5. [ADR 0005: Filesystem Root Guard and Symlink Traversal Safety](0005-filesystem-root-guard-and-symlink-safety.md)
@@ -20,7 +20,7 @@ Accepted decisions live here as owner-approved ADR files with stable IDs, status
 9. [ADR 0009: Manifest-Driven External Origin Classification](0009-manifest-external-origin-classification.md)
 10. [ADR 0010: Incremental Delta Invalidation and Transitive Export Dirtying](0010-incremental-delta-transitive-dirtying.md)
 11. [ADR 0011: Bounded MCP Response Budgets and Continuation Paging](0011-bounded-mcp-response-budgets.md)
-12. [ADR 0012: Zero-Regression Serialization and Cold Build Latency Budget](0012-zero-regression-serialization-and-cold-build-latency.md)
+12. [ADR 0012: Lean Serialization and Measured Performance](0012-zero-regression-serialization-and-cold-build-latency.md)
 13. [ADR 0013: Data-Driven Framework Manifests](0013-data-driven-framework-manifests.md)
 
 Decision amendments require explicit architectural admission. A superseding ADR links the accepted decision it replaces and the affected current architecture in [Architecture](../architecture/README.md).

@@ -68,12 +68,12 @@ fn removal_diagnostics(conn: &Connection, selected_ids: &[String]) -> Result<(us
     let ids = serde_json::to_string(selected_ids)?;
     let target_unresolved = paging::count(
         conn,
-        "SELECT count(*) FROM resolution_coverage c JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN path_dictionary p ON p.path_id=c.path_id WHERE c.status IN('unresolved','ambiguous') AND (x.expression IN (SELECT n.name FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR x.expression IN (SELECT n.qualname FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR p.path IN (SELECT n.path FROM nodes n WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) OR (EXISTS(SELECT 1 FROM nodes n WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) AND p.path IN (SELECT ep.path FROM edges e JOIN path_dictionary ep ON ep.path_id=e.path_id JOIN nodes m ON m.node_hash=e.dst_hash WHERE e.kind='imports' AND m.path IN (SELECT n.path FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))))))",
+        "SELECT count(*) FROM resolution_coverage c JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN path_dictionary p ON p.path_id=c.path_id WHERE c.status IN('unresolved','ambiguous') AND (x.expression IN (SELECT n.name FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR x.expression IN (SELECT n.qualname FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1))) OR p.path IN (SELECT np.path FROM nodes n JOIN path_dictionary np ON np.path_id=n.path_id WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) OR (EXISTS(SELECT 1 FROM nodes n WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))) AND p.path IN (SELECT ep.path FROM edges e JOIN path_dictionary ep ON ep.path_id=e.path_id JOIN nodes m ON m.node_hash=e.dst_hash JOIN path_dictionary mp ON mp.path_id=m.path_id WHERE e.kind='imports' AND mp.path IN (SELECT np.path FROM nodes n JOIN path_dictionary np ON np.path_id=n.path_id WHERE n.kind='module' AND n.id IN (SELECT value FROM json_each(?1))))))",
         &[&ids],
     )?;
     let target_errors = paging::count(
         conn,
-        "SELECT count(*) FROM errors WHERE path IN (SELECT n.path FROM nodes n WHERE n.id IN (SELECT value FROM json_each(?1)))",
+        "SELECT count(*) FROM errors WHERE path IN (SELECT p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id IN (SELECT value FROM json_each(?1)))",
         &[&ids],
     )?;
     Ok((target_unresolved, target_errors))
@@ -420,9 +420,9 @@ fn slice_paged(
     let nodes = paging::query(
         conn,
         &format!(
-            "SELECT {} FROM nodes n WHERE n.path>=?1 AND n.path<?2 \
-             ORDER BY CASE WHEN n.kind IN ('module','file') THEN 0 ELSE 1 END,n.path,n.line,n.id",
-            paging::nodes("n", options.detail)
+            "SELECT {} FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path>=?1 AND p.path<?2 \
+             ORDER BY CASE WHEN n.kind IN ('module','file') THEN 0 ELSE 1 END,p.path,n.line,n.id",
+            paging::nodes_with_path("n", options.detail, "p.path")
         ),
         &[&lower, &upper],
         options,
@@ -440,22 +440,28 @@ fn slice_paged(
 
 /// Performs removal paged.
 pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) -> Result<Value> {
-    if selector.trim().ends_with(".md") {
+    let trimmed = selector.trim();
+    let unpeeled = trimmed
+        .strip_prefix("file://")
+        .or_else(|| trimmed.strip_prefix("file:"))
+        .unwrap_or(trimmed);
+    let normalized_path = unpeeled.strip_prefix("./").unwrap_or(unpeeled);
+    if normalized_path.ends_with(".md") {
         return Err(reader::SelectorError::DocLink {
-            target: selector.to_owned(),
+            target: normalized_path.to_owned(),
         }
         .into());
     }
     let generation = paging::generation(conn, options)?;
     let file_count = paging::count(
         conn,
-        "SELECT count(*) FROM nodes WHERE path=?1",
-        &[&selector],
+        "SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1",
+        &[&normalized_path],
     )?;
     let (selection, selected_id) = if file_count > 0 {
         (
-            "SELECT node_hash FROM nodes WHERE path=?1",
-            selector.to_owned(),
+            "SELECT n.node_hash FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1",
+            normalized_path.to_owned(),
         )
     } else {
         let node = reader::select_detail(conn, selector, crate::core::response::Detail::Compact)?;
@@ -467,31 +473,44 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
     if file_count > 10000 {
         bail!("removal scope exceeds 10000 nodes");
     }
-    let dependencies = format!("WITH selected(hash) AS ({selection}) SELECT e.src_hash,e.dst_hash,e.kind FROM edges e WHERE e.dst_hash IN(SELECT hash FROM selected) AND e.src_hash NOT IN(SELECT hash FROM selected) AND e.kind NOT IN('contains','references_doc',{REVERSE_DEPENDENCIES}) UNION SELECT e.src_hash,e.dst_hash,e.kind FROM edges e WHERE e.src_hash IN(SELECT hash FROM selected) AND e.dst_hash NOT IN(SELECT hash FROM selected) AND e.kind IN({REVERSE_DEPENDENCIES})");
-    let dependency_count = paging::count(
-        conn,
-        &format!("SELECT count(*) FROM ({dependencies})"),
-        &[&selected_id],
-    )?;
-    let selected = reader::rows(
-        conn,
-        &format!(
-            "SELECT id FROM nodes WHERE {}=?1 ORDER BY id",
-            if file_count > 0 { "path" } else { "id" }
-        ),
-        &[&selected_id],
-        10001,
-    )?;
-    let selected_ids: Vec<String> = selected
+    let selected = format!("selected(hash) AS ({selection})");
+    let dependency_rows = format!("SELECT e.src_hash,e.dst_hash,e.kind FROM edges e WHERE e.dst_hash IN(SELECT hash FROM selected) AND e.src_hash NOT IN(SELECT hash FROM selected) AND e.kind NOT IN('contains','references_doc',{REVERSE_DEPENDENCIES}) UNION SELECT e.src_hash,e.dst_hash,e.kind FROM edges e WHERE e.src_hash IN(SELECT hash FROM selected) AND e.dst_hash NOT IN(SELECT hash FROM selected) AND e.kind IN({REVERSE_DEPENDENCIES})");
+    let dependency_cte =
+        format!("WITH {selected}, dependencies AS MATERIALIZED ({dependency_rows})");
+    let selection_sql = if file_count > 0 {
+        "SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 ORDER BY n.id"
+    } else {
+        "SELECT id FROM nodes WHERE id=?1 ORDER BY id"
+    };
+    let diagnostic_selected = reader::rows(conn, selection_sql, &[&selected_id], 10001)?;
+    let selected_ids: Vec<String> = diagnostic_selected
         .iter()
         .filter_map(|node| node["id"].as_str().map(str::to_owned))
         .collect();
     let (target_unresolved, target_errors) = removal_diagnostics(conn, &selected_ids)?;
-    let callers = paging::query(conn, &format!("SELECT {} FROM ({dependencies}) d JOIN edges e ON e.src_hash=d.src_hash AND e.dst_hash=d.dst_hash AND e.kind=d.kind ORDER BY e.path_id,e.line,e.src_hash,e.dst_hash,e.kind", paging::edges("e", options.detail)), &[&selected_id], options)?;
+    let selected_total = selected_ids.len();
+    let selected_items = selected_ids
+        .iter()
+        .skip(options.offset)
+        .take(options.limit)
+        .map(|id| json!({"id":id}))
+        .collect();
+    let selected_page = paging::value(selected_items, selected_total, options, &generation);
+    let callers = paging::query(
+        conn,
+        &format!("{dependency_cte} SELECT {} FROM dependencies d JOIN edges e ON e.src_hash=d.src_hash AND e.dst_hash=d.dst_hash AND e.kind=d.kind ORDER BY e.path_id,e.line,e.src_hash,e.dst_hash,e.kind", paging::edges("e", options.detail)),
+        &[&selected_id],
+        options,
+    )?;
+    let dependency_count = callers["total"]
+        .as_u64()
+        .map(usize::try_from)
+        .transpose()?
+        .ok_or_else(|| anyhow::anyhow!("removal dependency total is missing"))?;
     let safe_to_remove = dependency_count == 0 && target_unresolved == 0 && target_errors == 0;
     Ok(
         json!({"assessment":removal_assessment(dependency_count,true,target_unresolved,target_errors),"selector":selector,
-        "selected_ids":paging::value(selected, file_count.max(1), options, &generation),
+        "selected_ids":selected_page,
         "incoming_dependencies":callers,"safe_to_remove":safe_to_remove,"unresolved_references":target_unresolved,"parse_errors":target_errors,
         "proof_scope":"indexed static references only; dynamic entrypoints and external callers require separate authority",
         "generation":generation}),
@@ -542,7 +561,7 @@ pub fn query_with_options(
         ),
         "slice" => slice_paged(conn, selector.unwrap_or(""), depth, options),
         "unwired" => Ok(
-            json!({"nodes":paging::query(conn, &format!("SELECT {} FROM nodes n WHERE n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind='calls') ORDER BY n.path,n.line,n.id", paging::nodes("n", options.detail)), &[], options)?, "meaning":"no indexed static caller; not a dead-code proof"}),
+            json!({"nodes":paging::query(conn, &format!("SELECT {} FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind='calls') ORDER BY p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")), &[], options)?, "meaning":"no indexed static caller; not a dead-code proof"}),
         ),
         "sql" => reader::analyze_paged(conn, sql_selector(selector)?, None, options),
         "doctor" => reader::overview_with_options(

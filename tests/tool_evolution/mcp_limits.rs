@@ -16,7 +16,7 @@ fn mcp_compact_summary_coverage_sql_and_impact_directions() {
     let conn = rusqlite::Connection::open(workspace.db()).unwrap();
     let (record_method, right_method, right_container, right_qualname): (String, String, String, String) = conn
         .query_row(
-            "SELECT (SELECT method.id FROM nodes method WHERE method.path='record.rs' AND method.name='persist' AND method.line=2), method.id, receiver.id, receiver.qualname FROM nodes method JOIN edges e ON e.dst_hash=method.node_hash AND e.kind='contains' JOIN nodes receiver ON receiver.path=method.path AND receiver.name='Item' AND receiver.kind='struct' WHERE method.path='record.rs' AND method.name='persist' AND method.kind='method' AND method.line=(SELECT max(line) FROM nodes WHERE (SELECT path FROM path_dictionary WHERE path_id=e.path_id)='record.rs' AND name='persist' AND kind='method') AND receiver.qualname LIKE '%right%'",
+            "SELECT (SELECT method.id FROM nodes method WHERE method.path_id=(SELECT path_id FROM path_dictionary WHERE path='record.rs') AND method.name='persist' AND method.line=2), method.id, receiver.id, receiver.qualname FROM nodes method JOIN edges e ON e.dst_hash=method.node_hash AND e.kind='contains' JOIN nodes receiver ON receiver.path_id=method.path_id AND receiver.name='Item' AND receiver.kind='struct' WHERE method.path_id=(SELECT path_id FROM path_dictionary WHERE path='record.rs') AND method.name='persist' AND method.kind='method' AND method.line=(SELECT max(line) FROM nodes WHERE (SELECT path FROM path_dictionary WHERE path_id=e.path_id)='record.rs' AND name='persist' AND kind='method') AND receiver.qualname LIKE '%right%'",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )

@@ -82,8 +82,8 @@ fn owner_id(conn: &Connection, path: &str) -> i64 {
 fn node(conn: &Connection, id: &str, path: &str) {
     let path_id = owner_id(conn, path);
     conn.execute(
-        "INSERT INTO nodes(id,kind,name,qualname,path_id,path,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES(?1,'function',?1,?1,?2,?3,1,1,0,'rust',0,'{}',?4,?2)",
-        params![id, path_id, path, stable_hash64(id)],
+        "INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES(?1,'function',?1,?1,?2,1,1,0,'rust',0,'{}',?3,?2)",
+        params![id, path_id, stable_hash64(id)],
     )
     .unwrap();
 }
@@ -585,4 +585,60 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
             move || commitments::verify(connection)
         })
         .unwrap();
+}
+
+fn owner_language_root_with_expression_order(order: &str) -> String {
+    let conn = connection();
+    let owner = owner_id(&conn, "src/owner_language.rs");
+    conn.execute_batch(&format!(
+        "WITH RECURSIVE n(x) AS (SELECT 0 UNION ALL SELECT x+1 FROM n WHERE x<900)
+         INSERT INTO coverage_expressions(expression)
+         SELECT 'owner_expr_'||printf('%04d',x) FROM n ORDER BY x {order};"
+    ))
+    .unwrap();
+    let inserted = conn
+        .execute(
+            "INSERT INTO coverage_owner_language(path_id,line,expression_id,status,evidence_id,language)
+             SELECT ?1,
+                    CAST(substr(expression,12) AS INTEGER)%17,
+                    expression_id,
+                    CASE CAST(substr(expression,12) AS INTEGER)%3
+                        WHEN 0 THEN 'resolved'
+                        WHEN 1 THEN 'external'
+                        ELSE 'unresolved'
+                    END,
+                    1,
+                    'javascript'
+             FROM coverage_expressions
+             WHERE expression LIKE 'owner_expr_%'",
+            [owner],
+        )
+        .unwrap();
+    assert_eq!(inserted, 901);
+    let row_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM coverage_owner_language WHERE path_id=?1",
+            [owner],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(row_count, 901);
+
+    let root = commitments::seal(&conn).unwrap();
+    assert_eq!(commitments::seal(&conn).unwrap(), root);
+    let selected = std::collections::BTreeSet::from(["src/owner_language.rs".to_owned()]);
+    assert_eq!(
+        commitments::seal_owners(&conn, Some(&selected)).unwrap(),
+        root
+    );
+    commitments::verify_owners(&conn, Some(&selected)).unwrap();
+    commitments::verify(&conn).unwrap();
+    root
+}
+
+#[test]
+fn owner_language_expression_batches_preserve_repeatable_full_and_partial_roots() {
+    let ascending = owner_language_root_with_expression_order("ASC");
+    let descending = owner_language_root_with_expression_order("DESC");
+    assert_eq!(ascending, descending);
 }

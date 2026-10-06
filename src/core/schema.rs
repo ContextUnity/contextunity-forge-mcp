@@ -35,7 +35,6 @@ CREATE TABLE IF NOT EXISTS nodes (
     name TEXT NOT NULL,
     qualname TEXT NOT NULL,
     path_id INTEGER NOT NULL REFERENCES path_dictionary(path_id),
-    path TEXT NOT NULL,
     line INTEGER NOT NULL,
     end_line INTEGER NOT NULL,
     is_test INTEGER NOT NULL,
@@ -187,7 +186,6 @@ CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_nodes_qualname ON nodes(qualname);
 CREATE INDEX IF NOT EXISTS idx_nodes_path ON nodes(path_id);
-CREATE INDEX IF NOT EXISTS idx_nodes_path_text ON nodes(path);
 CREATE INDEX IF NOT EXISTS idx_nodes_owner ON nodes(owner_path_id);
 CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_hash, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_path ON edges(path_id);

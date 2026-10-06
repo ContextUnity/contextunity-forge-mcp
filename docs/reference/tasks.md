@@ -161,9 +161,10 @@ agents should deepen the active task using **subtasks**.
   fails closed with `TASK_TERMINAL`.
 - **Digest Independence**: Contract digests exclude `spec.subtasks`. Adding, updating, or completing subtasks
   never triggers `AUTHORITY_GAP` or forces contract re-admission.
-- **Sync Preservation**: Running `task sync` updates subtask titles if modified in Markdown, but never overwrites
-  in-progress or completed `status` or `evidence` recorded in SQLite. Subtasks created via CLI or MCP are preserved
-  in SQLite and the task descriptor across sync operations.
+- **Sync behavior**: When the task contract digest is unchanged, `task sync` updates subtask titles from Markdown
+  while preserving `status` and `evidence` recorded in SQLite; subtasks created via CLI or MCP remain preserved.
+  On successful re-admission with a higher `contract_revision`, sync replaces operational subtask rows with the manifest list and
+  its declared statuses and evidence. Reassess existing evidence and restore only subtasks still proved by the new contract.
 
 ```yaml
 task_ref: language-profile

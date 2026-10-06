@@ -48,7 +48,7 @@ impl Drop for Workspace {
 fn stored_node(conn: &rusqlite::Connection, path: &str, name: &str) -> (String, Value) {
     let (kind, details): (String, String) = conn
         .query_row(
-            "SELECT kind, details FROM nodes WHERE path=?1 AND name=?2",
+            "SELECT n.kind, n.details FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.name=?2",
             [path, name],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )

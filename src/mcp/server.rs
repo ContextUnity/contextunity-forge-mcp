@@ -11,6 +11,14 @@ use std::{
 
 const INVENTORY_FRESHNESS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
+fn same_request_adapter(left: &scanner::Adapter, right: &scanner::Adapter) -> bool {
+    left.digest == right.digest
+        && left.response == right.response
+        && left.debug == right.debug
+        && left.roots == right.roots
+        && left.linked_workspaces == right.linked_workspaces
+}
+
 /// Represents cached connection data.
 pub struct CachedConnection {
     identity: Identity,
@@ -26,6 +34,15 @@ pub struct CachedConnection {
 
 /// Names the connection slot type.
 pub type ConnectionSlot = Option<CachedConnection>;
+
+#[derive(Clone)]
+pub(crate) enum RequestAdapter {
+    Loaded(Arc<scanner::Adapter>),
+    Failed {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+}
 
 #[derive(Clone, serde::Serialize)]
 struct Freshness {
@@ -47,6 +64,7 @@ pub struct Server {
     pub db: PathBuf,
     /// The connection value.
     pub connection: Arc<Mutex<ConnectionSlot>>,
+    request_adapter: Option<RequestAdapter>,
 }
 impl Server {
     /// Creates a new instance.
@@ -55,6 +73,25 @@ impl Server {
             root,
             db,
             connection: Arc::new(Mutex::new(None)),
+            request_adapter: None,
+        }
+    }
+    pub(crate) fn with_request_adapter(&self, adapter: RequestAdapter) -> Self {
+        Self {
+            root: self.root.clone(),
+            db: self.db.clone(),
+            connection: Arc::clone(&self.connection),
+            request_adapter: Some(adapter),
+        }
+    }
+
+    pub(crate) fn adapter_snapshot(&self) -> std::io::Result<Arc<scanner::Adapter>> {
+        match &self.request_adapter {
+            Some(RequestAdapter::Loaded(adapter)) => Ok(Arc::clone(adapter)),
+            Some(RequestAdapter::Failed { kind, message }) => {
+                Err(std::io::Error::new(*kind, message.clone()))
+            }
+            None => scanner::load_adapter(&self.root, None).map(Arc::new),
         }
     }
     /// Performs ensure fresh.
@@ -180,11 +217,24 @@ impl Server {
         Ok(false)
     }
 
-    fn admit(&self, slot: &mut ConnectionSlot) -> Result<Freshness> {
+    fn admit(
+        &self,
+        slot: &mut ConnectionSlot,
+        request_adapter: &scanner::Adapter,
+    ) -> Result<Freshness> {
         let root = scanner::canonical_root(&self.root)?;
         let mut refresh = "none";
-        for _ in 0..3 {
-            let adapter = scanner::load_adapter(&root, None)?;
+        let mut reloaded_adapter = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                let latest = scanner::load_adapter(&root, None)?;
+                anyhow::ensure!(
+                    same_request_adapter(&latest, request_adapter),
+                    "adapter changed during source admission; retry against the current snapshot"
+                );
+                reloaded_adapter = Some(latest);
+            }
+            let adapter = reloaded_adapter.as_ref().unwrap_or(request_adapter);
             let admitted_identity = slot
                 .as_ref()
                 .filter(|cached| {
@@ -203,7 +253,7 @@ impl Server {
                         .ok()
                         .filter(|identity| *identity == cached.identity)
                 });
-            if admitted_identity.is_none() && self.check_rebuild_needed(&adapter)? {
+            if admitted_identity.is_none() && self.check_rebuild_needed(adapter)? {
                 *slot = None;
                 crate::db::writer::build(&root, &self.db, None)?;
                 refresh = "rebuild";
@@ -256,11 +306,11 @@ impl Server {
             };
             let previous = crate::db::reader::inventory_snapshot(conn)?;
             let started = Instant::now();
-            let scan = scanner::scan_reusing(&root, &adapter, &previous)?;
+            let scan = scanner::scan_reusing(&root, adapter, &previous)?;
             let manifests =
                 crate::engine::languages::manifests::DependencyRegistry::collect_with_adapter(
                     &root,
-                    Some(&adapter),
+                    Some(adapter),
                 );
             let previous_manifest_digest = conn.query_row(
                 "SELECT value FROM metadata WHERE key='manifest_digest'",
@@ -300,9 +350,7 @@ impl Server {
                 anyhow::bail!("generation changed during source admission; retry against the current snapshot");
             }
             let latest_adapter = scanner::load_adapter(&root, None)?;
-            if latest_adapter.digest != adapter.digest
-                || latest_adapter.linked_workspaces != adapter.linked_workspaces
-            {
+            if !same_request_adapter(&latest_adapter, adapter) {
                 anyhow::bail!(
                     "adapter changed during source admission; retry against the current snapshot"
                 );
@@ -327,7 +375,7 @@ impl Server {
             let mut rebuild = false;
             for path in &changed {
                 if !current.contains_key(path)
-                    && scanner::resolve_file_path(&root, &adapter, path)?
+                    && scanner::resolve_file_path(&root, adapter, path)?
                         .symlink_metadata()
                         .is_ok()
                 {
@@ -359,11 +407,21 @@ impl Server {
         &self,
         f: impl FnOnce(&rusqlite::Connection) -> Result<serde_json::Value>,
     ) -> Result<serde_json::Value> {
+        let adapter = scanner::load_adapter(&scanner::canonical_root(&self.root)?, None)?;
+        self.read_with_adapter(&adapter, f)
+    }
+
+    /// Runs a query with the adapter snapshot used by its MCP response policy.
+    pub(crate) fn read_with_adapter(
+        &self,
+        adapter: &scanner::Adapter,
+        f: impl FnOnce(&rusqlite::Connection) -> Result<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
         let mut slot = self
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("database connection lock poisoned"))?;
-        let freshness = match self.admit(&mut slot) {
+        let freshness = match self.admit(&mut slot, adapter) {
             Ok(freshness) => freshness,
             Err(error) => {
                 *slot = None;

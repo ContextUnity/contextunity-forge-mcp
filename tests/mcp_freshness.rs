@@ -40,7 +40,7 @@ impl Drop for Workspace {
 fn snapshot(server: &Server) -> anyhow::Result<Value> {
     server.read(|conn| {
         Ok(json!({
-            "nodes": db::reader::rows(conn, "SELECT name,path,line,end_line FROM nodes WHERE kind='function' ORDER BY path,name", &[], 100)?,
+            "nodes": db::reader::rows(conn, "SELECT n.name,(SELECT path FROM path_dictionary WHERE path_id=n.path_id) AS path,n.line,n.end_line FROM nodes n WHERE n.kind='function' ORDER BY path,n.name", &[], 100)?,
             "corpus_hash": conn.query_row("SELECT value FROM metadata WHERE key='corpus_hash'", [], |row| row.get::<_, String>(0))?,
             "output_root": conn.query_row("SELECT value FROM metadata WHERE key='output_root'", [], |row| row.get::<_, String>(0))?,
         }))

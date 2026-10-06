@@ -29,7 +29,7 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
     assert_eq!(exact["nodes"]["items"][0]["name"], "admit");
     let qualified_name: String = conn
         .query_row(
-            "SELECT qualname FROM nodes WHERE name='admit' AND path='pkg/service.py'",
+            "SELECT n.qualname FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name='admit' AND p.path='pkg/service.py'",
             [],
             |row| row.get(0),
         )
@@ -65,7 +65,7 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
     );
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
     let plan = reader::rows(&conn,
-        "EXPLAIN QUERY PLAN SELECT n.id FROM node_search JOIN nodes n ON n.node_id=node_search.rowid WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR n.path=?4 OR (n.path>=?5 AND n.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY n.path,n.line,n.id",
+        "EXPLAIN QUERY PLAN SELECT n.id FROM node_search JOIN nodes n ON n.node_id=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY pd.path,n.line,n.id",
         &[&"\"admit\"", &"admit", &"method", &"pkg", &"pkg/", &"pkg0", &false], 30).unwrap();
     let plan = serde_json::to_string(&plan).unwrap();
     assert!(plan.contains("node_search"), "{plan}");
@@ -82,6 +82,8 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
 fn exact_symbol_search_handles_underscore_only_identifiers() {
     let workspace = Workspace::new();
     workspace.write("symbols.py", "def _(): pass\ndef __(): pass\n");
+    workspace.write("two.py", "def _(): pass\n");
+    workspace.write("README.md", "# _\n\nDocumentation section.\n");
     let conn = workspace.build();
 
     for name in ["_", "__"] {
@@ -97,9 +99,120 @@ fn exact_symbol_search_handles_underscore_only_identifiers() {
             },
         )
         .unwrap();
-        assert_eq!(found["nodes"]["total"], 1, "{name}: {found}");
+        assert_eq!(
+            found["nodes"]["total"],
+            if name == "_" { 2 } else { 1 },
+            "{name}: {found}"
+        );
         assert_eq!(found["nodes"]["items"][0]["name"], name);
     }
+
+    let mut query = options(1);
+    let first = symbols::search_with_options(
+        &conn,
+        "_",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: None,
+            include_docs: false,
+            exact: true,
+            page: &query,
+        },
+    )
+    .unwrap();
+    assert_eq!(first["nodes"]["total"], 2);
+    assert_eq!(first["nodes"]["items"][0]["path"], "symbols.py");
+    assert!(first["nodes"]["has_more"].as_bool().unwrap());
+    assert!(continue_page(&mut query, &first["nodes"]));
+
+    let second = symbols::search_with_options(
+        &conn,
+        "_",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: None,
+            include_docs: false,
+            exact: true,
+            page: &query,
+        },
+    )
+    .unwrap();
+    assert_eq!(second["nodes"]["total"], 2);
+    assert_eq!(second["nodes"]["items"][0]["path"], "two.py");
+    assert!(!second["nodes"]["has_more"].as_bool().unwrap());
+    assert!(!continue_page(&mut query, &second["nodes"]));
+
+    let file = symbols::search_with_options(
+        &conn,
+        "_",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: Some("file:symbols.py"),
+            include_docs: false,
+            exact: true,
+            page: &options(10),
+        },
+    )
+    .unwrap();
+    assert_eq!(file["nodes"]["total"], 1);
+    assert_eq!(file["nodes"]["items"][0]["path"], "symbols.py");
+
+    let symbols_without_docs = symbols::search_with_options(
+        &conn,
+        "_",
+        &symbols::SearchOptions {
+            kind: None,
+            path: None,
+            include_docs: false,
+            exact: true,
+            page: &options(10),
+        },
+    )
+    .unwrap();
+    assert_eq!(symbols_without_docs["nodes"]["total"], 2);
+    assert!(!symbols_without_docs["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["path"] == "README.md"));
+
+    let functions_with_docs = symbols::search_with_options(
+        &conn,
+        "_",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: None,
+            include_docs: true,
+            exact: true,
+            page: &options(10),
+        },
+    )
+    .unwrap();
+    assert_eq!(functions_with_docs["nodes"]["total"], 2);
+    assert!(!functions_with_docs["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["path"] == "README.md"));
+
+    let docs = symbols::search_with_options(
+        &conn,
+        "_",
+        &symbols::SearchOptions {
+            kind: None,
+            path: None,
+            include_docs: true,
+            exact: true,
+            page: &options(10),
+        },
+    )
+    .unwrap();
+    assert_eq!(docs["nodes"]["total"], 3);
+    assert!(docs["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["path"] == "README.md"));
 }
 
 #[cfg(feature = "lang-rust")]

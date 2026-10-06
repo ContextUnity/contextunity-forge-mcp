@@ -144,7 +144,7 @@ fn compact_summary_preserves_the_exact_nested_python_container() {
     let conn = workspace.build();
     let (method_id, receiver_type): (String, String) = conn
         .query_row(
-            "SELECT id,json_extract(details,'$.receiver_type') FROM nodes WHERE path='nested.py' AND name='handle' AND kind='method' ORDER BY line DESC LIMIT 1",
+            "SELECT n.id,json_extract(n.details,'$.receiver_type') FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='nested.py' AND n.name='handle' AND n.kind='method' ORDER BY n.line DESC LIMIT 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -189,7 +189,7 @@ fn compact_summary_call_counts_obey_vm_budget_and_reset_connection() {
     let conn = Connection::open(workspace.db()).unwrap();
     let target_id: String = conn
         .query_row(
-            "SELECT id FROM nodes WHERE path='graph.py' AND name='target'",
+            "SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='graph.py' AND n.name='target'",
             [],
             |row| row.get(0),
         )
@@ -520,4 +520,85 @@ fn search_path_scopes_file_and_descendants_without_changing_page_contract() {
             "{invalid}"
         );
     }
+}
+
+#[test]
+fn line_anchor_prefers_exact_path_and_fails_closed_for_ambiguous_suffixes() {
+    let workspace = Workspace::new();
+    workspace.write("alpha/shared.py", "def target(): return 'alpha'\n");
+    workspace.write("beta/shared.py", "def target(): return 'beta'\n");
+    workspace.write("nested/alpha/shared.py", "def target(): return 'nested'\n");
+    let conn = workspace.build();
+
+    let exact = reader::select(&conn, "alpha/shared.py#L1").unwrap();
+    assert_eq!(exact["path"], "alpha/shared.py");
+
+    let error = reader::select(&conn, "shared.py#L1").unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<reader::SelectorError>(),
+            Some(reader::SelectorError::Ambiguous { .. })
+        ),
+        "expected typed ambiguity for multiple whole-path suffix matches, got: {error}"
+    );
+}
+
+#[test]
+fn line_anchor_does_not_match_a_partial_filename_component() {
+    let workspace = Workspace::new();
+    workspace.write("notshared.py", "def target(): return 'wrong file'\n");
+    let conn = workspace.build();
+
+    let error = reader::select(&conn, "shared.py#L1").unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<reader::SelectorError>(),
+            Some(reader::SelectorError::NotFound { .. })
+        ),
+        "expected line anchor to reject a partial filename suffix, got: {error}"
+    );
+}
+
+#[test]
+fn line_anchor_does_not_fall_back_when_exact_file_has_no_node_on_the_line() {
+    let workspace = Workspace::new();
+    workspace.write("alpha/shared.py", "def target(): return 'exact'\n");
+    workspace.write(
+        "nested/alpha/shared.py",
+        "def target():\n    return 'nested'\n",
+    );
+    let conn = workspace.build();
+
+    let error = reader::select(&conn, "alpha/shared.py#L2").unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<reader::SelectorError>(),
+            Some(reader::SelectorError::NotFound { .. })
+        ),
+        "expected the exact file's missing line to remain not found, got: {error}"
+    );
+}
+
+#[test]
+fn selector_propagates_candidate_enrichment_row_budget_errors() {
+    let workspace = Workspace::new();
+    workspace.write("alpha.py", "def repeated(): return 'alpha'\n");
+    workspace.write("beta.py", "def repeated(): return 'beta'\n");
+    drop(workspace.build());
+
+    // NULs fit under SQLite's per-cell limit but expand to more than the JSON row budget.
+    let oversized_details = "\0".repeat(1_500_000);
+    let conn = Connection::open(workspace.db()).unwrap();
+    conn
+        .execute(
+            "UPDATE nodes SET details=?1 WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='alpha.py') AND name='repeated'",
+            [&oversized_details],
+        )
+        .unwrap();
+
+    let error = reader::select(&conn, "repeated").unwrap_err();
+    assert!(
+        error.to_string().contains("8 MiB row budget"),
+        "expected the candidate enrichment budget error to propagate, got: {error}"
+    );
 }
