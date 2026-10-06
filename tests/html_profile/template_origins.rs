@@ -3,7 +3,7 @@ use contextunity_forge_mcp::engine::{ast, linker};
 use std::collections::BTreeMap;
 
 #[test]
-fn django_framework_templates_require_scoped_dependencies_and_yield_to_local_files() {
+fn template_targets_require_indexed_local_providers_even_with_framework_dependencies() {
     let workspace = Workspace::new();
     workspace.write(
         "commerce/pyproject.toml",
@@ -54,11 +54,8 @@ fn django_framework_templates_require_scoped_dependencies_and_yield_to_local_fil
             graph.coverage.iter().any(|coverage| {
                 coverage.path == django_path
                     && coverage.expression == target
-                    && coverage.status == "external"
-                    && coverage.evidence
-                        == format!(
-                            "framework built-in template from django: {target}; target unindexed"
-                        )
+                    && coverage.status == "unresolved"
+                    && coverage.evidence == format!("template '{target}' not found")
             }),
             "{target}: {graph:#?}"
         );

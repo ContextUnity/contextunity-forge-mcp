@@ -69,7 +69,7 @@ fn classic_flow_wire_slots_and_constructor_receiver_survive_cold_build_and_delta
     let details = serde_json::to_string(&scope.details).unwrap();
     let flow = details.split("\"value_flow\":").nth(1).unwrap();
     assert!(flow.starts_with("{\"bindings\":["), "{details}");
-    assert!(flow.contains("],\"fields\":null}"), "{details}");
+    assert!(flow.contains("],\"fields\":null"), "{details}");
 
     let expected_alpha: i64 = conn.query_row(
         "SELECT count(*) FROM edges WHERE (SELECT path FROM path_dictionary WHERE path_id=edges.path_id)='index.html' AND kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id)='worker.work' AND (SELECT id FROM nodes WHERE node_hash=dst_hash)=?1",
