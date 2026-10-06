@@ -1,5 +1,30 @@
 use super::*;
 
+fn compare_coverage_rows(
+    left: &crate::core::models::compact_graph::Coverage,
+    right: &crate::core::models::compact_graph::Coverage,
+) -> std::cmp::Ordering {
+    left.path
+        .as_bytes()
+        .cmp(right.path.as_bytes())
+        .then_with(|| left.line.cmp(&right.line))
+        .then_with(|| left.expression.as_bytes().cmp(right.expression.as_bytes()))
+        .then_with(|| left.status.cmp(&right.status))
+        .then_with(|| left.evidence.as_bytes().cmp(right.evidence.as_bytes()))
+}
+
+fn flush_owner_language_counts<'a>(
+    path_id: i64,
+    pending: &mut Vec<(&'a str, &'a str, i64)>,
+    language_counts: &mut BTreeMap<(i64, &'a str, &'a str), i64>,
+) {
+    for (language, status, count) in pending.drain(..) {
+        *language_counts
+            .entry((path_id, language, status))
+            .or_default() += count;
+    }
+}
+
 pub(super) fn persist_files(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
@@ -484,6 +509,8 @@ pub(super) fn persist_graph(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
     graph: &CompactGraph,
+    facts: &BTreeMap<String, TypedFacts>,
+    dependency_owners: Option<&std::collections::BTreeSet<String>>,
     node_paths: &mut hashbrown::HashMap<String, Option<CachedNodePath>>,
     materialize_edges: bool,
 ) -> Result<GraphPersistenceTimings> {
@@ -492,6 +519,9 @@ pub(super) fn persist_graph(
     let evidence_dictionary_ms = phase.elapsed().as_secs_f64() * 1000.;
     let phase = Instant::now();
     let mut ordinals: hashbrown::HashMap<&str, usize> = hashbrown::HashMap::new();
+    let mut current_path: Option<&str> = None;
+    let mut current_path_id = None;
+    let mut current_ordinal = 0usize;
     let mut occurrence_batch =
         MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO edge_occurrences VALUES")?;
     let mut unique_edges = Vec::<StoredEdge<'_>>::with_capacity(if materialize_edges {
@@ -507,19 +537,74 @@ pub(super) fn persist_graph(
     let mut coverage_batch = MultiValueBatch::<5, BorrowedSqlValue<'_>>::new(tx,
         "INSERT OR IGNORE INTO resolution_coverage(path_id,line,expression_id,status,evidence_id) VALUES",
     )?;
+    let mut owner_language_batch = MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(
+        tx,
+        "INSERT OR IGNORE INTO coverage_owner_language(path_id,line,expression_id,status,evidence_id,language) VALUES",
+    )?;
     let mut dependencies = Vec::<StoredDependency<'_>>::with_capacity(
         graph.edges.len().saturating_add(graph.coverage.len()),
     );
+    #[cfg(feature = "lang-html")]
+    for (provider_path, file_facts) in facts {
+        if dependency_owners.is_some_and(|owners| !owners.contains(provider_path)) {
+            continue;
+        }
+        let mut owner_id = None;
+        for node in file_facts.nodes.iter().filter(|node| {
+            node.language == "python"
+                && matches!(node.kind.as_str(), "module" | "function" | "method")
+        }) {
+            let Some(flow) = file_facts.flows.get(node) else {
+                continue;
+            };
+            for context in &flow.template_contexts {
+                let Some(target) = crate::engine::languages::html::local_template_target(
+                    provider_path,
+                    &context.target,
+                ) else {
+                    continue;
+                };
+                if crate::engine::languages::workspace_path(provider_path).0
+                    != crate::engine::languages::workspace_path(&target).0
+                {
+                    continue;
+                }
+                let owner = match owner_id {
+                    Some(owner) => owner,
+                    None => {
+                        let owner = path_cache.get_or_insert(tx, provider_path)?;
+                        owner_id = Some(owner);
+                        owner
+                    }
+                };
+                dependencies.push(StoredDependency {
+                    owner,
+                    target: Some(stable_hash64(&target)),
+                    kind: "renders",
+                    symbol: context.target.as_str(),
+                    resolution: "resolved",
+                });
+            }
+        }
+    }
 
     for (first, e) in graph.edges.iter().enumerate() {
-        let ordinal = ordinals.entry(&e.path).or_default();
+        if current_path != Some(e.path.as_str()) {
+            if let Some(previous_path) = current_path {
+                ordinals.insert(previous_path, current_ordinal);
+            }
+            current_path = Some(e.path.as_str());
+            current_path_id = Some(path_cache.get_or_insert(tx, &e.path)?);
+            current_ordinal = ordinals.get(e.path.as_str()).copied().unwrap_or_default();
+        }
+        let owner_id = current_path_id.context("edge path ID cache is missing the current path")?;
+        let ordinal = current_ordinal;
         let evidence_id = *evidence_ids
             .get(e.evidence.as_str())
             .context("missing edge evidence")?;
         let confidence_id = *evidence_ids
             .get(e.confidence.as_str())
             .context("missing edge confidence")?;
-        let owner_id = path_cache.get_or_insert(tx, &e.path)?;
         let (src_hash, src_target) = graph_endpoint_hashes(
             node_paths,
             &mut stmt_select_path,
@@ -536,7 +621,7 @@ pub(super) fn persist_graph(
         )?;
         occurrence_batch.push([
             BorrowedSqlValue::Integer(owner_id),
-            BorrowedSqlValue::Integer(i64::try_from(*ordinal)?),
+            BorrowedSqlValue::Integer(i64::try_from(ordinal)?),
             BorrowedSqlValue::Integer(src_hash),
             BorrowedSqlValue::Integer(dst_hash),
             BorrowedSqlValue::Text(e.kind.as_str()),
@@ -544,7 +629,7 @@ pub(super) fn persist_graph(
             BorrowedSqlValue::Integer(evidence_id),
             BorrowedSqlValue::Integer(confidence_id),
         ])?;
-        *ordinal = ordinal
+        current_ordinal = current_ordinal
             .checked_add(1)
             .context("edge occurrence ordinal overflow")?;
 
@@ -618,8 +703,136 @@ pub(super) fn persist_graph(
         CoverageDictionaryCache::prefill_expressions(tx, graph, materialize_edges)?;
     let dictionaries = evidence_dictionary_ms + phase.elapsed().as_secs_f64() * 1000.;
     let phase = Instant::now();
-    for c in &graph.coverage {
-        let owner_id = path_cache.get_or_insert(tx, &c.path)?;
+    // Coverage intentionally has no source column. The extracted reference still
+    // carries its exact AST owner, so retain only rows where that owner changes
+    // the HTML file/whole-line island classification. Conflicting owners stay
+    // with the file language rather than receiving a guessed JavaScript owner.
+    let mut file_languages: hashbrown::HashMap<i64, &str> =
+        hashbrown::HashMap::with_capacity(facts.len());
+    for (path, file_facts) in facts {
+        if let Some(module) = file_facts.nodes.iter().find(|node| node.kind == "module") {
+            if !module.language.is_empty() {
+                if let Ok(owner_id) = path_cache.get_or_insert(tx, path) {
+                    file_languages.insert(owner_id, module.language.as_str());
+                }
+            }
+        }
+    }
+    let mut owned_languages: hashbrown::HashMap<i64, String> = hashbrown::HashMap::new();
+    let mut coverage_rows: Vec<_> = graph.coverage.iter().collect();
+    if !coverage_rows
+        .windows(2)
+        .all(|rows| compare_coverage_rows(rows[0], rows[1]).is_le())
+    {
+        if coverage_rows.len() >= 8192 {
+            coverage_rows.par_sort_unstable_by(|left, right| compare_coverage_rows(left, right));
+        } else {
+            coverage_rows.sort_unstable_by(|left, right| compare_coverage_rows(left, right));
+        }
+    }
+    coverage_rows.dedup_by(|later, first| compare_coverage_rows(first, later).is_eq());
+
+    let mut path_ids: hashbrown::HashMap<&str, i64> =
+        hashbrown::HashMap::with_capacity(coverage_rows.len().min(facts.len()));
+    let mut missing_owners = Vec::new();
+    let mut previous_path = None;
+    for c in &coverage_rows {
+        if previous_path != Some(c.path.as_str()) {
+            let owner_id = path_cache.get_or_insert(tx, &c.path)?;
+            path_ids.insert(c.path.as_str(), owner_id);
+            previous_path = Some(c.path.as_str());
+            if !file_languages.contains_key(&owner_id) {
+                missing_owners.push(owner_id);
+            }
+        }
+    }
+    if !missing_owners.is_empty() {
+        let encoded = serde_json::to_string(&missing_owners)?;
+        let mut statement = tx.prepare_cached(
+            "SELECT p.path_id, f.language FROM files f JOIN path_dictionary p ON p.path=f.path WHERE p.path_id IN (SELECT value FROM json_each(?1))",
+        )?;
+        let mut rows = statement.query([encoded.as_str()])?;
+        while let Some(row) = rows.next()? {
+            let owner_id: i64 = row.get(0)?;
+            let language: String = row.get(1)?;
+            if !language.is_empty() {
+                owned_languages.insert(owner_id, language);
+            }
+        }
+    }
+
+    let mut html_owners = hashbrown::HashMap::new();
+    let mut html_islands: hashbrown::HashMap<&str, Vec<(usize, usize)>> = hashbrown::HashMap::new();
+    for (path, file_facts) in facts {
+        if !file_facts
+            .nodes
+            .iter()
+            .any(|node| node.kind == "module" && node.language == "html")
+        {
+            continue;
+        }
+        let node_languages: hashbrown::HashMap<_, _> = file_facts
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node.language.as_str()))
+            .collect();
+        let full_islands: Vec<_> = file_facts
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "island_scope" && node.language == "javascript")
+            .map(|node| (node.line, node.end_line))
+            .collect();
+        let mut owners = hashbrown::HashMap::new();
+        for reference in &file_facts.references {
+            let Some(language) = node_languages.get(reference.source.as_str()).copied() else {
+                continue;
+            };
+            let entry = owners
+                .entry((reference.line, reference.expression.as_str()))
+                .or_insert(Some(language));
+            if *entry != Some(language) {
+                *entry = None;
+            }
+        }
+        owners.retain(|(line, _), language| {
+            let whole_line_js = full_islands
+                .iter()
+                .any(|(first, last)| first <= line && line <= last);
+            match language {
+                Some("javascript") => !whole_line_js,
+                Some("html") | None => whole_line_js,
+                _ => false,
+            }
+        });
+        if !owners.is_empty() {
+            html_owners.insert(path.as_str(), owners);
+        }
+        if !full_islands.is_empty() {
+            html_islands.insert(path.as_str(), full_islands);
+        }
+    }
+    let mut language_counts: BTreeMap<(i64, &str, &str), i64> = BTreeMap::new();
+    let mut current_path = None;
+    let mut current_owner_id = None;
+    let mut owner_language_counts = Vec::new();
+    for c in coverage_rows {
+        let owner_id = if current_path == Some(c.path.as_str()) {
+            current_owner_id.context("coverage path ID cache is missing the current path")?
+        } else {
+            if let Some(previous_owner_id) = current_owner_id {
+                flush_owner_language_counts(
+                    previous_owner_id,
+                    &mut owner_language_counts,
+                    &mut language_counts,
+                );
+            }
+            let owner_id = *path_ids
+                .get(c.path.as_str())
+                .context("missing preloaded coverage path ID")?;
+            current_path = Some(c.path.as_str());
+            current_owner_id = Some(owner_id);
+            owner_id
+        };
         let expression_id = *expression_ids
             .get(c.expression.as_str())
             .context("missing coverage expression")?;
@@ -633,6 +846,50 @@ pub(super) fn persist_graph(
             BorrowedSqlValue::Text(c.status.as_str()),
             BorrowedSqlValue::Integer(evidence_id),
         ])?;
+        let item_language = if let Some(language) = html_owners
+            .get(c.path.as_str())
+            .and_then(|owners| owners.get(&(c.line, c.expression.as_str())))
+        {
+            let lang = language.unwrap_or("html");
+            owner_language_batch.push([
+                BorrowedSqlValue::Integer(owner_id),
+                BorrowedSqlValue::Integer(i64::try_from(c.line)?),
+                BorrowedSqlValue::Integer(expression_id),
+                BorrowedSqlValue::Text(c.status.as_str()),
+                BorrowedSqlValue::Integer(evidence_id),
+                BorrowedSqlValue::Text(lang),
+            ])?;
+            lang
+        } else if let Some(islands) = html_islands.get(c.path.as_str()) {
+            if islands.iter().any(|(s, e)| *s <= c.line && c.line <= *e) {
+                "javascript"
+            } else if let Some(lang) = file_languages.get(&owner_id) {
+                lang
+            } else if let Some(lang) = owned_languages.get(&owner_id) {
+                lang.as_str()
+            } else {
+                "html"
+            }
+        } else if let Some(lang) = file_languages.get(&owner_id) {
+            lang
+        } else if let Some(lang) = owned_languages.get(&owner_id) {
+            lang.as_str()
+        } else {
+            ""
+        };
+        if !item_language.is_empty() {
+            if let Some((_, _, count)) =
+                owner_language_counts
+                    .iter_mut()
+                    .find(|(language, status, _)| {
+                        *language == item_language && *status == c.status.as_str()
+                    })
+            {
+                *count += 1;
+            } else {
+                owner_language_counts.push((item_language, c.status.as_str(), 1));
+            }
+        }
         if c.status != "resolved" {
             dependencies.push(StoredDependency {
                 owner: owner_id,
@@ -643,8 +900,25 @@ pub(super) fn persist_graph(
             });
         }
     }
+    if let Some(owner_id) = current_owner_id {
+        flush_owner_language_counts(owner_id, &mut owner_language_counts, &mut language_counts);
+    }
 
     coverage_batch.flush()?;
+    owner_language_batch.flush()?;
+    let mut language_count_batch = MultiValueBatch::<4, BorrowedSqlValue<'_>>::new(
+        tx,
+        "INSERT INTO coverage_language_counts(path_id,language,status,records) VALUES",
+    )?;
+    for ((path_id, language, status), count) in language_counts {
+        language_count_batch.push([
+            BorrowedSqlValue::Integer(path_id),
+            BorrowedSqlValue::Text(language),
+            BorrowedSqlValue::Text(status),
+            BorrowedSqlValue::Integer(count),
+        ])?;
+    }
+    language_count_batch.flush()?;
     if dependencies.len() >= 8192 {
         dependencies.par_sort_unstable();
     } else {

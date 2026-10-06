@@ -42,7 +42,7 @@ static NONCE: AtomicU64 = AtomicU64::new(0);
 // Bound source, parser-tree, and extracted-fact working memory per active file.
 const EXTRACTION_MEMORY_MULTIPLIER: u64 = 8;
 const MAX_EXTRACTION_BATCH_FILES: usize = 25_000;
-const MAX_MULTI_VALUE_BATCH_ROWS: usize = 250;
+const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
 
 fn sqlite_cache_size_kib(memory_budget: u64) -> u64 {
     (memory_budget / 8 / 1024).clamp(4_096, 128_000)
@@ -303,7 +303,7 @@ fn populate(
     let doc_fts_insert_ms = t_doc_fts.elapsed().as_secs_f64() * 1000.;
 
     let t_graph = Instant::now();
-    let graph_timings = persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, true)?;
+    let graph_timings = persist_graph(&tx, &mut path_cache, &graph, facts, &mut node_paths, true)?;
     let persist_graph_ms = t_graph.elapsed().as_secs_f64() * 1000.;
 
     let rows_ms = writing.elapsed().as_secs_f64() * 1000.;

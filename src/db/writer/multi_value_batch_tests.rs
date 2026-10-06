@@ -324,7 +324,7 @@ fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
         let tx = conn.transaction().unwrap();
         let mut path_cache = PathDictionaryCache::new();
         persist_files(&tx, &mut path_cache, &entries, &facts, None, true).unwrap();
-        let mut node_paths = facts
+        let mut node_paths: hashbrown::HashMap<_, _> = facts
             .values()
             .flat_map(|f| f.nodes.iter())
             .map(|n| {
@@ -334,7 +334,7 @@ fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
                 )
             })
             .collect();
-        persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, true).unwrap();
+        persist_graph(&tx, &mut path_cache, &graph, &facts, &mut node_paths, true).unwrap();
         tx.commit().unwrap();
         assert_eq!(row_count(&conn, "resolution_coverage"), 251 * 4);
         assert_eq!(row_count(&conn, "dependencies"), 251 * 4);
@@ -412,7 +412,9 @@ fn cold_file_node_and_search_inserts_respect_live_batch_boundaries() {
     let variable_limit = constrain_variable_limit(&conn) as usize;
     let rows_by_columns =
         [8, 15, 2].map(|columns| (variable_limit / columns).min(super::MAX_MULTI_VALUE_BATCH_ROWS));
-    assert!(rows_by_columns.iter().all(|rows| (1..=250).contains(rows)));
+    assert!(rows_by_columns
+        .iter()
+        .all(|rows| (1..=super::MAX_MULTI_VALUE_BATCH_ROWS).contains(rows)));
     assert_eq!(
         multi_value_batch_rows::<8>(&conn).unwrap(),
         rows_by_columns[0]

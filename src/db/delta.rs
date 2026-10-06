@@ -247,11 +247,67 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let hydrating = Instant::now();
     let mut affected = modified.clone();
     {
-        let mut st = admitted.prepare(
-            "SELECT p.path FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.target_hash IN(SELECT path_hash FROM files WHERE path IN(SELECT value FROM json_each(?1)))",
-        )?;
-        for owner in st.query_map([&encoded], |r| r.get::<_, String>(0))? {
-            affected.insert(owner?);
+        if !changed_resolution.is_empty() {
+            let mut st = admitted.prepare(
+                "SELECT p.path FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.target_hash IN(SELECT path_hash FROM files WHERE path IN(SELECT value FROM json_each(?1)))",
+            )?;
+            for owner in st.query_map([serde_json::to_string(&changed_resolution)?], |r| {
+                r.get::<_, String>(0)
+            })? {
+                affected.insert(owner?);
+            }
+        }
+        #[cfg(feature = "lang-html")]
+        {
+            let html_targets: BTreeMap<_, Vec<_>> = modified
+                .iter()
+                .filter(|path| {
+                    inventory
+                        .get(path.as_str())
+                        .or_else(|| previous.get(path.as_str()))
+                        .is_some_and(|file| file.language == "html")
+                })
+                .fold(BTreeMap::new(), |mut targets, path| {
+                    targets
+                        .entry(stable_hash64(path))
+                        .or_insert_with(Vec::new)
+                        .push(path.as_str());
+                    targets
+                });
+            if !html_targets.is_empty() {
+                let target_hashes: Vec<_> = html_targets.keys().copied().collect();
+                let mut st = admitted.prepare(
+                    "SELECT p.path,d.symbol,d.target_hash FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.kind='renders' AND d.target_hash IN(SELECT value FROM json_each(?1))",
+                )?;
+                let family = crate::engine::languages::LanguageFamily("python");
+                for row in st.query_map([serde_json::to_string(&target_hashes)?], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                })? {
+                    let (owner, symbol, hash) = row?;
+                    let Some(target) =
+                        crate::engine::languages::html::local_template_target(&owner, &symbol)
+                    else {
+                        continue;
+                    };
+                    if inventory
+                        .get(owner.as_str())
+                        .is_some_and(|file| file.language == "python")
+                        && html_targets
+                            .get(&hash)
+                            .is_some_and(|paths| paths.contains(&target.as_str()))
+                        && crate::engine::languages::workspace_path(&owner).0
+                            == crate::engine::languages::workspace_path(&target).0
+                        && dependencies.nearest_manifest_scope_for_path(family, &owner)
+                            == dependencies.nearest_manifest_scope_for_path(family, &target)
+                    {
+                        affected.insert(owner);
+                    }
+                }
+            }
         }
         let name_hashes: Vec<_> = names.iter().map(|name| stable_hash64(name)).collect();
         let encoded_names = serde_json::to_string(&names)?;
@@ -307,10 +363,276 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let mut replace_files = modified.clone();
     let component_owners = delta_components(&admitted, &modified, &facts, &mut replace_files)?;
     affected.extend(replace_files.iter().cloned());
-    let load_owners: Vec<_> = affected
+    let template_inputs_changed = modified.iter().any(|path| {
+        inventory
+            .get(path.as_str())
+            .or_else(|| previous.get(path.as_str()))
+            .is_some_and(|file| matches!(file.language.as_str(), "html" | "python"))
+    });
+    let old_loader_roots: Vec<(String, String)> = if template_inputs_changed {
+        let mut st = admitted.prepare("SELECT path,name FROM nodes INDEXED BY idx_nodes_path_text WHERE path IN(SELECT value FROM json_each(?1)) AND kind='template_loader_root'")?;
+        let rows = st.query_map([serde_json::to_string(&modified)?], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    } else {
+        Vec::new()
+    };
+    if template_inputs_changed {
+        let family = crate::engine::languages::LanguageFamily("python");
+        let mut changed_roots = Vec::new();
+        for (provider, directory) in &old_loader_roots {
+            if modified.contains(provider) {
+                changed_roots.push((provider.as_str(), directory.as_str()));
+            }
+        }
+        for (provider, file_facts) in &facts {
+            if !modified.contains(provider) || !inventory.contains_key(provider.as_str()) {
+                continue;
+            }
+            for node in file_facts
+                .nodes
+                .iter()
+                .filter(|node| node.kind == "template_loader_root")
+            {
+                changed_roots.push((provider.as_str(), node.name.as_str()));
+            }
+        }
+        for (provider, directory) in changed_roots {
+            let Some(scope) = dependencies.nearest_manifest_scope_for_path(family, provider) else {
+                continue;
+            };
+            if !dependencies.declares_for_path(family, provider, "jinja2") {
+                continue;
+            }
+            for (path, file) in &inventory {
+                if file.language == "html"
+                    && path
+                        .strip_prefix(directory)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+                    && dependencies.nearest_manifest_scope_for_path(family, path) == Some(scope)
+                {
+                    affected.insert((*path).to_owned());
+                }
+            }
+        }
+    }
+    #[cfg(feature = "lang-html")]
+    if template_inputs_changed {
+        let family = crate::engine::languages::LanguageFamily("python");
+        let modified_python: Vec<_> = modified
+            .iter()
+            .filter(|path| {
+                inventory
+                    .get(path.as_str())
+                    .or_else(|| previous.get(path.as_str()))
+                    .is_some_and(|file| file.language == "python")
+            })
+            .collect();
+        if !modified_python.is_empty() {
+            let mut old_targets = admitted.prepare(
+                "SELECT DISTINCT f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='renders' AND owner.path IN(SELECT value FROM json_each(?1))",
+            )?;
+            for row in old_targets.query_map([serde_json::to_string(&modified_python)?], |row| {
+                row.get::<_, String>(0)
+            })? {
+                let target = row?;
+                if inventory
+                    .get(target.as_str())
+                    .is_some_and(|file| file.language == "html")
+                {
+                    affected.insert(target);
+                }
+            }
+            for provider in modified_python {
+                let Some(provider_facts) = facts.get(provider.as_str()) else {
+                    continue;
+                };
+                if !dependencies.declares_for_path(family, provider, "django") {
+                    continue;
+                }
+                let scope = dependencies.nearest_manifest_scope_for_path(family, provider);
+                let workspace = crate::engine::languages::workspace_path(provider).0;
+                for node in provider_facts
+                    .nodes
+                    .iter()
+                    .filter(|node| node.language == "python")
+                {
+                    let Some(flow) = provider_facts.flows.get(node) else {
+                        continue;
+                    };
+                    for context in &flow.template_contexts {
+                        let Some(target) = crate::engine::languages::html::local_template_target(
+                            provider,
+                            &context.target,
+                        ) else {
+                            continue;
+                        };
+                        if inventory
+                            .get(target.as_str())
+                            .is_some_and(|file| file.language == "html")
+                            && crate::engine::languages::workspace_path(&target).0 == workspace
+                            && dependencies.nearest_manifest_scope_for_path(family, &target)
+                                == scope
+                        {
+                            affected.insert(target);
+                        }
+                    }
+                }
+            }
+        }
+        let mut frontier: BTreeSet<_> = affected
+            .iter()
+            .filter(|path| {
+                inventory
+                    .get(path.as_str())
+                    .is_some_and(|file| file.language == "html")
+            })
+            .cloned()
+            .collect();
+        let mut visited = frontier.clone();
+        let mut old_includes = admitted.prepare(
+            "SELECT owner.path,f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='includes' AND owner.path IN(SELECT value FROM json_each(?1))",
+        )?;
+        for _ in 0..16 {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next = BTreeSet::new();
+            for row in old_includes.query_map([serde_json::to_string(&frontier)?], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })? {
+                let (owner, target) = row?;
+                if inventory
+                    .get(target.as_str())
+                    .is_some_and(|file| file.language == "html")
+                    && crate::engine::languages::workspace_path(&owner).0
+                        == crate::engine::languages::workspace_path(&target).0
+                    && dependencies.nearest_manifest_scope_for_path(family, &owner)
+                        == dependencies.nearest_manifest_scope_for_path(family, &target)
+                    && visited.insert(target.clone())
+                {
+                    affected.insert(target.clone());
+                    next.insert(target);
+                }
+            }
+            for owner in &frontier {
+                let Some(file_facts) = facts.get(owner.as_str()) else {
+                    continue;
+                };
+                for reference in file_facts
+                    .references
+                    .iter()
+                    .filter(|reference| reference.kind == "includes")
+                {
+                    let Some(target) = crate::engine::languages::html::local_template_target(
+                        owner,
+                        &reference.expression,
+                    ) else {
+                        continue;
+                    };
+                    if inventory
+                        .get(target.as_str())
+                        .is_some_and(|file| file.language == "html")
+                        && crate::engine::languages::workspace_path(owner).0
+                            == crate::engine::languages::workspace_path(&target).0
+                        && dependencies.nearest_manifest_scope_for_path(family, owner)
+                            == dependencies.nearest_manifest_scope_for_path(family, &target)
+                        && visited.insert(target.clone())
+                    {
+                        affected.insert(target.clone());
+                        next.insert(target);
+                    }
+                }
+            }
+            frontier = next;
+        }
+    }
+    let mut load_owners: BTreeSet<_> = affected
         .difference(&modified)
         .filter(|path| inventory.contains_key(path.as_str()))
+        .cloned()
         .collect();
+    if template_inputs_changed {
+        let mut roots = BTreeSet::new();
+        for path in affected.iter().filter(|path| {
+            inventory
+                .get(path.as_str())
+                .is_some_and(|file| file.language == "html")
+        }) {
+            let mut ancestor = path.rsplit_once('/').map(|(directory, _)| directory);
+            while let Some(directory) = ancestor {
+                roots.insert(directory.to_owned());
+                ancestor = directory.rsplit_once('/').map(|(parent, _)| parent);
+            }
+        }
+        if !roots.is_empty() {
+            let mut st = admitted.prepare("SELECT DISTINCT path FROM nodes INDEXED BY idx_nodes_name WHERE name IN(SELECT value FROM json_each(?1)) AND kind='template_loader_root'")?;
+            for row in st.query_map([serde_json::to_string(&roots)?], |row| {
+                row.get::<_, String>(0)
+            })? {
+                let provider = row?;
+                if inventory.contains_key(provider.as_str()) && !modified.contains(&provider) {
+                    load_owners.insert(provider);
+                }
+            }
+        }
+    }
+    #[cfg(feature = "lang-html")]
+    if template_inputs_changed {
+        let family = crate::engine::languages::LanguageFamily("javascript");
+        let mut frontier: BTreeSet<_> = affected
+            .iter()
+            .filter(|path| {
+                inventory
+                    .get(path.as_str())
+                    .is_some_and(|file| file.language == "html")
+            })
+            .cloned()
+            .collect();
+        let mut visited = frontier.clone();
+        let mut incoming = admitted.prepare(
+            "SELECT DISTINCT d.target_hash, owner.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id WHERE d.kind='includes' AND d.target_hash IN(SELECT value FROM json_each(?1))",
+        )?;
+        for _ in 0..16 {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut targets = BTreeMap::<_, Vec<&str>>::new();
+            for path in &frontier {
+                targets.entry(stable_hash64(path)).or_default().push(path);
+            }
+            let hashes: Vec<_> = targets.keys().copied().collect();
+            let mut next = BTreeSet::new();
+            for row in incoming.query_map([serde_json::to_string(&hashes)?], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })? {
+                let (hash, owner) = row?;
+                let Some(owner_file) = inventory.get(owner.as_str()) else {
+                    continue;
+                };
+                if owner_file.language != "html"
+                    || !targets.get(&hash).is_some_and(|paths| {
+                        paths.iter().any(|target| {
+                            crate::engine::languages::workspace_path(&owner).0
+                                == crate::engine::languages::workspace_path(target).0
+                                && dependencies.nearest_manifest_scope_for_path(family, &owner)
+                                    == dependencies.nearest_manifest_scope_for_path(family, target)
+                        })
+                    })
+                {
+                    continue;
+                }
+                if visited.insert(owner.clone()) {
+                    if !modified.contains(&owner) {
+                        load_owners.insert(owner.clone());
+                    }
+                    next.insert(owner);
+                }
+            }
+            frontier = next;
+        }
+    }
     let mut loaded_fact_files = 0;
     {
         let mut st=admitted.prepare("SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT value FROM json_each(?1))")?;
@@ -521,6 +843,8 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             ("edge_occurrences", "owner_id"),
             ("dependencies", "owner_id"),
             ("resolution_coverage", "path_id"),
+            ("coverage_owner_language", "path_id"),
+            ("coverage_language_counts", "path_id"),
         ] {
             cached(
                 &tx,
@@ -557,7 +881,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     persist_files(&tx, &mut path_cache, &changed_entries, &facts, None, false)?;
     let files_ms = files_writing.elapsed().as_secs_f64() * 1000.;
     let graph_writing = Instant::now();
-    persist_graph(&tx, &mut path_cache, &graph, &mut node_paths, false)?;
+    persist_graph(&tx, &mut path_cache, &graph, &facts, &mut node_paths, false)?;
     tx.execute(
         "DELETE FROM coverage_evidence WHERE evidence_id NOT IN(SELECT evidence_id FROM resolution_coverage UNION SELECT evidence_id FROM edges UNION SELECT confidence_id FROM edges UNION SELECT evidence_id FROM edge_occurrences UNION SELECT confidence_id FROM edge_occurrences)",
         [],

@@ -127,6 +127,24 @@ CREATE TABLE IF NOT EXISTS resolution_coverage (
     PRIMARY KEY (path_id, line, expression_id, status, evidence_id)
 ) WITHOUT ROWID;
 
+CREATE TABLE IF NOT EXISTS coverage_owner_language (
+    path_id INTEGER NOT NULL REFERENCES path_dictionary(path_id),
+    line INTEGER NOT NULL,
+    expression_id INTEGER NOT NULL REFERENCES coverage_expressions(expression_id),
+    status TEXT NOT NULL,
+    evidence_id INTEGER NOT NULL REFERENCES coverage_evidence(evidence_id),
+    language TEXT NOT NULL,
+    PRIMARY KEY (path_id, line, expression_id, status, evidence_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS coverage_language_counts (
+    path_id INTEGER NOT NULL REFERENCES path_dictionary(path_id),
+    language TEXT NOT NULL,
+    status TEXT NOT NULL,
+    records INTEGER NOT NULL,
+    PRIMARY KEY (path_id, language, status)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS domain_commitments (
     domain TEXT NOT NULL,
     owner_id INTEGER NOT NULL,

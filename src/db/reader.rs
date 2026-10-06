@@ -1030,9 +1030,8 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     }
 
     if has_aspect("languages") {
-        let lang_sql = "SELECT l.language,l.files,coalesce(r.resolved,0) resolved,coalesce(r.unresolved,0) unresolved,coalesce(r.external_imports,0) external_imports,coalesce(e.parse_errors,0) parse_errors FROM (SELECT language,count(*) files FROM files GROUP BY language) l LEFT JOIN (SELECT f.language,count(CASE WHEN rc.status='resolved' THEN 1 END) resolved,count(CASE WHEN rc.status IN('unresolved','ambiguous') THEN 1 END) unresolved,count(CASE WHEN rc.status='external' THEN 1 END) external_imports FROM resolution_coverage rc JOIN path_dictionary p ON p.path_id=rc.path_id JOIN files f ON f.path=p.path GROUP BY f.language) r ON r.language=l.language LEFT JOIN (SELECT f.language,count(*) parse_errors FROM errors er JOIN files f ON f.path=er.path GROUP BY f.language) e ON e.language=l.language ORDER BY l.language";
-        let language_total =
-            paging::count(conn, "SELECT count(DISTINCT language) FROM files", &[])?;
+        let lang_sql = "SELECT l.language,coalesce(fc.files,0) files,coalesce(r.resolved,0) resolved,coalesce(r.ambiguous,0) ambiguous,coalesce(r.unresolved,0) unresolved,coalesce(r.external_imports,0) external_imports,coalesce(e.parse_errors,0) parse_errors FROM (SELECT language FROM files UNION SELECT language FROM nodes WHERE kind='island_scope' UNION SELECT language FROM coverage_owner_language) l LEFT JOIN (SELECT language,count(*) files FROM files GROUP BY language) fc ON fc.language=l.language LEFT JOIN (SELECT language,sum(CASE WHEN status='resolved' THEN records ELSE 0 END) resolved,sum(CASE WHEN status='ambiguous' THEN records ELSE 0 END) ambiguous,sum(CASE WHEN status='unresolved' THEN records ELSE 0 END) unresolved,sum(CASE WHEN status='external' THEN records ELSE 0 END) external_imports FROM coverage_language_counts GROUP BY language) r ON r.language=l.language LEFT JOIN (SELECT f.language,count(*) parse_errors FROM errors er JOIN files f ON f.path=er.path GROUP BY f.language) e ON e.language=l.language ORDER BY l.language";
+        let language_total = paging::count(conn, "SELECT count(*) FROM (SELECT language FROM files UNION SELECT language FROM nodes WHERE kind='island_scope' UNION SELECT language FROM coverage_owner_language)", &[])?;
         let limit = options.limit as i64;
         let offset = options.offset as i64;
         let languages = rows(
@@ -1403,6 +1402,26 @@ pub fn analyze_paged(
         |r| r.get(0),
     )?;
     let mut result = json!({"target":target,"total_errors":total_errors,"total_unresolved":total_unresolved,"total_external_imports":total_external_imports,"scope":if exact_file {"file"} else {"summary"}});
+    let (language_sql, language_params): (&str, &[&dyn rusqlite::ToSql]) = if path.is_empty() {
+        ("SELECT c.language,sum(CASE WHEN c.status='resolved' THEN c.records ELSE 0 END) resolved,sum(CASE WHEN c.status='ambiguous' THEN c.records ELSE 0 END) ambiguous,sum(CASE WHEN c.status='unresolved' THEN c.records ELSE 0 END) unresolved,sum(CASE WHEN c.status='external' THEN c.records ELSE 0 END) external_imports FROM coverage_language_counts c GROUP BY c.language ORDER BY c.language LIMIT 100", &[])
+    } else {
+        ("SELECT c.language,sum(CASE WHEN c.status='resolved' THEN c.records ELSE 0 END) resolved,sum(CASE WHEN c.status='ambiguous' THEN c.records ELSE 0 END) ambiguous,sum(CASE WHEN c.status='unresolved' THEN c.records ELSE 0 END) unresolved,sum(CASE WHEN c.status='external' THEN c.records ELSE 0 END) external_imports FROM (SELECT path_id FROM path_dictionary WHERE path=?1 OR (path>=?2 AND path<?3)) p JOIN coverage_language_counts c ON c.path_id=p.path_id GROUP BY c.language ORDER BY c.language LIMIT 100", params)
+    };
+    let mut resolution_languages = Map::new();
+    for row in rows(conn, language_sql, language_params, 100)? {
+        if let Some(language) = row["language"].as_str() {
+            resolution_languages.insert(
+                language.to_owned(),
+                json!({
+                    "resolved": row["resolved"],
+                    "ambiguous": row["ambiguous"],
+                    "unresolved": row["unresolved"],
+                    "external_imports": row["external_imports"]
+                }),
+            );
+        }
+    }
+    result["resolution_languages"] = Value::Object(resolution_languages);
     if exact_file {
         let error_columns = if options.detail == Detail::Full {
             "*"

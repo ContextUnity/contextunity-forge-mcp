@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// The engine schema version value.
-pub const ENGINE_SCHEMA_VERSION: &str = "10";
+pub const ENGINE_SCHEMA_VERSION: &str = "13";
 /// The index semantics version value.
 pub const INDEX_SEMANTICS_VERSION: &str = concat!(
     "9:compact-storage-v8:",
@@ -777,9 +777,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         milestones: raw
             .milestones
             .unwrap_or_else(|| vec!["docs/milestones".into()]),
-        plans: raw
-            .plans
-            .unwrap_or_else(|| vec!["docs/plans".into()]),
+        plans: raw.plans.unwrap_or_else(|| vec!["docs/plans".into()]),
         debug: raw.debug
             || std::env::var("FORGE_DEBUG")
                 .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -825,14 +823,8 @@ pub fn matches_path_pattern(rel_path: &str, pattern: &str) -> bool {
 }
 
 /// Checks if a relative path belongs to any configured milestone or plan directories.
-pub fn is_milestone_or_plan_path(
-    rel_str: &str,
-    milestones: &[String],
-    plans: &[String],
-) -> bool {
-    let check = |dirs: &[String]| {
-        dirs.iter().any(|d| matches_path_pattern(rel_str, d))
-    };
+pub fn is_milestone_or_plan_path(rel_str: &str, milestones: &[String], plans: &[String]) -> bool {
+    let check = |dirs: &[String]| dirs.iter().any(|d| matches_path_pattern(rel_str, d));
     check(milestones) || check(plans)
 }
 
@@ -1045,11 +1037,14 @@ pub fn scan_reusing(
                     }
                     if let Ok(rel) = full.strip_prefix(&lw.path) {
                         let rel_str_inner = rel.to_string_lossy().replace('\\', "/");
-                        if is_milestone_or_plan_path(&rel_str_inner, &adapter.milestones, &adapter.plans) {
+                        if is_milestone_or_plan_path(
+                            &rel_str_inner,
+                            &adapter.milestones,
+                            &adapter.plans,
+                        ) {
                             continue;
                         }
-                        let rel_str =
-                            format!("[{}]/{}", lw.name, rel_str_inner);
+                        let rel_str = format!("[{}]/{}", lw.name, rel_str_inner);
                         push_candidate(
                             &mut candidates,
                             &mut seen_rel_paths,
