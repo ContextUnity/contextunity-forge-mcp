@@ -14,10 +14,12 @@ follow the [execution runbook](../runbooks/acdd.md).
 ## Configuration and identity
 
 `tasks_db` defaults to `.forge/tasks.sqlite` when omitted from `forge-mcp.yaml`.
-Relative paths resolve from the configuration directory; absolute paths open
-directly. The default gives each worktree its own store. For coordination across
-worktrees, explicitly configure the same shared path in each local installation.
-Keep machine-specific paths out of portable tracked configuration.
+When running within a git worktree, relative paths (including the default) resolve
+against the primary worktree root discovered via `git rev-parse --git-common-dir`,
+ensuring all linked worktrees share the same central tasks database without requiring
+machine-specific absolute paths in tracked configuration. In non-git or standalone
+workspaces, relative paths resolve directly from the configuration directory.
+Absolute paths open directly.
 Connections use WAL, a 5000 ms busy timeout, NORMAL
 synchronization, foreign keys, and a 256 MiB mmap ceiling. Transactional changes
 increment the `meta` generation; requests retain no cached task connection.

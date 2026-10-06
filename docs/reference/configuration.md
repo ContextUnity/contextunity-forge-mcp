@@ -62,9 +62,10 @@ Ignore names are literal basenames, not glob patterns. Add a directory such as `
 ## Task storage
 
 Task operations read `forge-mcp.yaml`; an omitted `tasks_db` defaults to
-`.forge/tasks.sqlite`. Relative paths resolve from the configuration directory.
-For cross-worktree coordination, configure the same shared path locally;
-tracked configuration uses a portable relative path.
+`.forge/tasks.sqlite`. Relative paths automatically resolve against the primary
+worktree root in linked git worktrees (via `git rev-parse --git-common-dir`)
+or the local configuration directory in standalone workspaces, enabling zero-config
+cross-worktree task coordination without machine-specific absolute paths.
 `task_repository` and `task_project` select the
 qualified task namespace. See [repository tasks](tasks.md) for identity,
 concurrency, receipts, and administration. Code indexing works without task

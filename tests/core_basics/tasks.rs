@@ -807,6 +807,39 @@ fn task_configuration_defaults_and_crlf_preserve_operational_identity() {
     assert!(task.worker_id.is_none());
 }
 #[test]
+fn linked_worktree_resolves_tasks_db_to_primary_worktree_root() {
+    let primary = ScopedWorkspace::new("forge_primary_git");
+    let wt = ScopedWorkspace::new("forge_wt_git");
+    let run = |dir: &std::path::Path, args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap()
+    };
+    run(&primary.0, &["init", "-b", "main"]);
+    run(&primary.0, &["config", "user.name", "Test User"]);
+    run(&primary.0, &["config", "user.email", "test@example.com"]);
+    primary.write("README.md", "# test\n");
+    primary.write("forge-mcp.yaml", "roots: [src]\n");
+    run(&primary.0, &["add", "."]);
+    run(&primary.0, &["commit", "-m", "initial"]);
+    let wt_out = run(
+        &primary.0,
+        &["worktree", "add", wt.0.to_str().unwrap(), "-b", "test-wt"],
+    );
+    if wt_out.status.success() {
+        let expected = primary.0.canonicalize().unwrap().join(".forge/tasks.sqlite");
+        let resolved = tasks::database_path(&wt.0).unwrap();
+        assert_eq!(resolved, expected);
+        // Fallback when forge-mcp.yaml is absent in worktree:
+        let _ = std::fs::remove_file(wt.0.join("forge-mcp.yaml"));
+        let resolved_fallback = tasks::database_path(&wt.0).unwrap();
+        assert_eq!(resolved_fallback, expected);
+        let _ = run(&primary.0, &["worktree", "remove", "--force", wt.0.to_str().unwrap()]);
+    }
+}
+#[test]
 fn tasks_coordinate_claims_dependencies_reset_and_scope() {
     let (root, mut store, milestone) = fixture();
     let id = milestone.task_id(&milestone.tasks[0]);

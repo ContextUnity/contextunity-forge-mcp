@@ -224,9 +224,46 @@ fn default_milestones() -> Vec<String> {
 fn default_plans() -> Vec<String> {
     vec!["docs/plans".into()]
 }
+fn primary_worktree_root(root: &Path) -> Option<std::path::PathBuf> {
+    if !root.join(".git").exists() {
+        return None;
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = std::str::from_utf8(&output.stdout).ok()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let common_dir = Path::new(raw);
+    let common_dir = if common_dir.is_absolute() {
+        common_dir.to_path_buf()
+    } else {
+        root.join(common_dir)
+    };
+    let common_dir = common_dir.canonicalize().ok().unwrap_or(common_dir);
+    if common_dir.file_name() == Some(std::ffi::OsStr::new(".git")) {
+        common_dir.parent().map(Path::to_path_buf)
+    } else {
+        Some(common_dir)
+    }
+}
 impl TaskSettings {
     fn load(root: &Path) -> Result<Self> {
         let config = std::fs::read_to_string(root.join("forge-mcp.yaml"))
+            .or_else(|_| {
+                if let Some(base) = primary_worktree_root(root) {
+                    std::fs::read_to_string(base.join("forge-mcp.yaml"))
+                } else {
+                    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"))
+                }
+            })
             .context("task operations require forge-mcp.yaml")?;
         let settings: Self = serde_yaml::from_str(&config).context("invalid task configuration")?;
         crate::core::tasks::valid_identity(&settings.task_repository)?;
@@ -237,12 +274,14 @@ impl TaskSettings {
     }
     fn path(&self, root: &Path) -> Result<std::path::PathBuf> {
         let path = &self.tasks_db;
-        let path = if path.is_absolute() {
-            path.to_path_buf()
+        let (base, path) = if path.is_absolute() {
+            (root.to_path_buf(), path.to_path_buf())
         } else {
-            root.join(path)
+            let base = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+            let full_path = base.join(path);
+            (base, full_path)
         };
-        if path == crate::cli::default_db(root) {
+        if path == crate::cli::default_db(root) || path == crate::cli::default_db(&base) {
             bail!("tasks_db must be separate from code index");
         }
         Ok(path)
