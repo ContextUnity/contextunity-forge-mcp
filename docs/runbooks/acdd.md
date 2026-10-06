@@ -88,9 +88,11 @@ task to build remediation; read findings before rebuilding. See
 ### Independent review
 
 The reviewer checks the five contours against the current contract and the
-candidate diff. Findings must cite an admitted requirement or verified
-runtime defect. Route requests outside this task's scope to the owning task;
+candidate diff. Findings must cite an admitted contract requirement, a regression against baseline suites, or a verifiable defect on reference corpus code. Route requests outside this task's scope to the owning task;
 do not expand the contract during review.
+
+> [!IMPORTANT]
+> **Anti-Looping Invariant**: Reviewers are strictly prohibited from rejecting candidates on speculative, uncontracted edge cases or inventing micro-requirements outside the agreed contract. If an edge case is observed but not required by the contract, record it on `task_blackboard` for future milestones; do not block the active delivery gate.
 
 | Contour | Review question |
 | --- | --- |

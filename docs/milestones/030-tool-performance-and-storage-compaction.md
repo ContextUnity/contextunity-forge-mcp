@@ -24,7 +24,7 @@ invariants:
 
 ## Outcome and purpose
 
-Deliver sub-30ms MCP tool query response times, localize `code_map_prove_removal` to target candidate dependencies instead of globally blocking on unrelated workspace errors, enable two-tier hybrid search with native SQLite FTS5 BM25, accelerate test discovery and AST grep, maintain database storage density <= 45 KiB per file via Zstandard fact compression, and sustain cold build throughput >= 400 files/sec (<= 2.5s per 1,000 files).
+Deliver sub-30ms MCP tool query response times, localize `code_map_prove_removal` to target candidate dependencies instead of globally blocking on unrelated workspace errors, enable two-tier hybrid search with native SQLite FTS5 BM25, accelerate test discovery and AST grep, maintain database storage density <= 45 KiB per file via Zstandard fact compression, and sustain cold build throughput >= 400 files/sec (<= 2.5s per 1,000 files). After the cold-build budget is met, index deduplicated identifier and string-literal tokens from function and method bodies on those nodes' existing `node_search` documents.
 
 ## Tasks in this milestone
 
@@ -181,25 +181,90 @@ proof_policy: seam-test-first
 scope:
   - src/core/commitments.rs
   - src/core/models.rs
+  - src/db/delta.rs
+  - src/db/ingest.rs
+  - src/db/symbols.rs
   - src/db/writer.rs
+  - src/engine/ast/mod.rs
+  - src/engine/ast/routes.rs
+  - src/engine/languages/html.rs
+  - src/engine/languages/mod.rs
+  - src/engine/languages/python.rs
+  - src/engine/languages/python/lazy_exports.rs
+  - src/engine/languages/python/render_context.rs
+  - src/engine/languages/python/value_flow.rs
+  - src/engine/languages/typescript.rs
+  - src/engine/languages/vue/template.rs
+  - src/engine/linker.rs
+  - src/engine/scanner.rs
+  - tests/ast_extractors.rs
+  - tests/core_basics/tasks.rs
   - tests/commitment_integrity.rs
+  - tests/python_semantics.rs
+  - tests/query_context/search_and_paging.rs
+  - tests/scanner_guard_limits.rs
+  - tests/typescript_semantics.rs
 status: active
 receipt:
-  measured_at: "2026-10-02T01:08:51Z"
-  elapsed_ms: 10493.734431
-  rows_ms: 2878.126176
-  persist_files_ms: 1169.082527
-  persist_graph_ms: 1030.285428
-  indexes_ms: 1014.846299
-  seal_ms: 639.091697
-  acceptance: "Open: final build is 10.494s and index creation is 1.015s; targets are < 10.0s and < 900ms."
+  measured_at: "2026-10-06"
+  command: "./target/release/contextunity-forge-mcp build /home/oleksii/ContextUnity/worktrees/commerce-release-update --output /tmp/commerce-bench-final.sqlite --verbose"
+  files: 3901
+  nodes: 65551
+  edges: 302113
+  elapsed_ms: 13870.83
+  link_ms: 2542.43
+  extract_ms: 4396.47
+  persist_ms: 5841.86
+  rows_ms: 3677.92
+  bulk_paths_ms: 70.28
+  persist_files_ms: 1452.51
+  fts_insert_ms: 193.55
+  doc_fts_insert_ms: 22.72
+  persist_graph_ms: 1894.10
+  indexes_ms: 1472.77
+  index_and_seal_ms: 2096.53
+  seal_ms: 623.71
+  verify_ms: 468.86
+  database_bytes: 187498496
+  density_kib_per_file: 46.94
+  density_kib_per_node: 2.79
+  resolution_coverage: "251155 / 294460 (85.29%); unresolved=43247; ambiguous=58"
+  output_generation: "7ea6992fd332250f57b689304dd29fdf0da16ff3c636d5076a8d435e516c0828"
+  benchmark_source_state: "Before the async Future-boundary correction in ValueFlowFacts and ValueExpr; final source was not re-indexed under the per-turn profiling cap."
+  host_context: "16 CPUs; load average 6.27 at build start; no cargo/rustc jobs remained after release compilation"
+  acceptance: "Open: the pre-correction candidate's 13.871s and 281.2 files/sec miss < 10.0s and >= 400 files/sec; indexes_ms=1472.77 exceeds 900 ms and storage is 46.94 KiB/file, above 45 KiB. Its coverage was 85.29%; final-source coverage remains unmeasured. Final-source commitment_integrity passes 12/12."
   evidence:
-    - "The final fresh build contains 3,968 files, 60,263 nodes and 291,696 edges; database size is 176,717,824 bytes."
+    - "The fresh Commerce build contains 3,901 files, 65,551 nodes and 302,113 edges; database size is 187,498,496 bytes."
+    - "This pre-correction build classifies 251,155/294,460 references (85.29%) and records the Merkle root above; it is not a coverage receipt for final source. Its exact grant.get rows at lines 93,94,96,99,100 are external, while Category.add_root at line 259 remains unresolved pending normalized treebeard inheritance evidence."
+    - "After this build, the first cargo test --all-targets run exposed two regressions in the async Future boundary; the fix keeps ordinary async() calls unknown and exposes the annotation only for await. Final-source tests pass: Python semantics 25/25, typed receiver resolution 75/75, full suite 594/0/3, commitment_integrity 12/12, strict clippy 0 warnings, release build succeeds."
+    - "No cargo/rustc jobs overlapped the controlled build; the host had a 6.27 load average at its start. The single result is retained with that contention context rather than treated as a quiet-host baseline."
     - "Eliminated redundant full-source file_search FTS table and duplicate disk re-reads during cold build."
     - "Eliminated heavy HashSet 5-tuple deduplication in persist_graph."
     - "Node navigation serialization excludes value_flow, bindings, rebindings and param_types; compressed local facts retain complete analysis."
     - "Existing staged MEMORY/OFF import, final integrity verification and WAL checkpoint remain intact."
     - "tests/core_basics.rs: navigation_storage_preserves_compressed_analysis_and_delta_calls"
+subtasks:
+  - subtask_ref: ast-visitor-context-reuse
+    title: "Reuse one SyntaxContext and the borrowed shadowed-require set across each Extraction::visit node; preserve extracted imports, calls, mutations, routes, and Merkle determinism while Commerce extract_ms stays <= 4,900 ms"
+    status: pending
+  - subtask_ref: language-scope-fact-fast-paths
+    title: "Collect TypeScript DOM callback scope facts only when addEventListener, .on<event>, or require can use them; collect Python TYPE_CHECKING aliases and django.shortcuts presence during the module pass; preserve the exact status and edge-key sets with Commerce resolution coverage >= 85.2%"
+    status: pending
+  - subtask_ref: route-client-callee-fast-guard
+    title: "For AST call expressions, parse route arguments only for fetch, axios, http, client, $, jQuery, requests, or a qualified call whose immediate receiver matches those names; preserve explicit Django route and client-call results"
+    status: pending
+  - subtask_ref: thread-local-parser-pool
+    title: "Reuse one configured Tree-sitter parser per built-in LanguageProfile slot without removing and reinserting HashMap entries per file; unknown profile keys continue through the extensible fallback and every grammar keeps its own parser"
+    status: pending
+  - subtask_ref: coverage-stream-sort-and-path-cache
+    title: "Persist sorted resolution_coverage rows with parallel sorting for collections >= 8,192, reuse path_id while adjacent rows share c.path, and accumulate owner-language counts without a per-row tree insertion; preserve exact row counts and cold/delta parity while persist_ms stays <= 4,000 ms"
+    status: pending
+  - subtask_ref: owner-language-expression-prefilter
+    title: "Read the distinct expression_id set from coverage_owner_language once and filter expression commitments in memory instead of rescanning the 294k-row sidecar; cargo test --test commitment_integrity remains 12/12 and repeated cold builds produce identical Merkle roots"
+    status: pending
+  - subtask_ref: empty-exact-search-fast-path
+    title: "When exact name search produces no FTS tokens, query the existing nodes name and qualname indexes directly while retaining kind, path, documentation, and paging filters; exact search remains <= 10 ms"
+    status: pending
 ```
 
 #### Detailed Execution Plan
@@ -218,15 +283,52 @@ receipt:
 
 ---
 
+### task: function-body-search-tokens
+
+```yaml
+task_ref: function-body-search-tokens
+target: "Index deduplicated identifier and string-literal tokens from each function and method body onto that node's existing node_search document"
+proof_policy: seam-test-first
+scope:
+  - src/db/ingest.rs
+  - src/cli/ast.rs
+  - tests/
+  - benchmarks/
+status: blocked
+depends_on:
+  - cold-build-latency-and-serialization-optimization
+invariants:
+  - "INV-NO-SOURCE-MIRROR: node_search stores deduplicated tokens, not raw function source, comments, or a second full-text table."
+  - "INV-SEARCH-BUDGET: On commerce-release-update, code_map_search text p95 stays under 30 ms and storage stays <= 45 KiB per file and <= 3 KiB per node."
+  - "INV-AST-PREFILTER: ast_grep_search skips a file for absent literal tokens only when node_search indexes every syntax location that the active language profile permits the pattern to match. When the index omits a permitted location, use a bounded candidate fallback or return an explicit budget outcome; never report a false zero-match result."
+subtasks:
+  - subtask_ref: body-identifier-hit
+    title: "code_map_search({pattern: 'coverage_owner_language', path: '<file>', exact: false}) returns the function or method whose body contains that identifier, with match_reason indexed_text on that node"
+    status: pending
+  - subtask_ref: string-literal-hit
+    title: "code_map_search({pattern: 'coverage_owner_language', path: '<file>', exact: false}) returns the function or method whose body contains the string literal coverage_owner_language, with match_reason indexed_text on that node"
+    status: pending
+  - subtask_ref: prefilter-sees-body-tokens
+    title: "ast_grep_search keeps the node_search file prefilter: a file with none of the pattern literal tokens is not read, and a file whose only token hit is on a function or method body is read"
+    status: pending
+  - subtask_ref: density-latency-cold-build
+    title: "The commerce-release-update cold build stays <= 45 KiB/file, <= 3 KiB/node, code_map_search text p95 < 30 ms, and cold build within the milestone budgets; commitment_integrity stays deterministic"
+    status: pending
+```
+
+`exact: true` stays a name and qualified-name lookup. Fragment parsing for `ast_grep_search` stays outside this task. The existing underscore splitter and OR query stay; path-scoped search is the acceptance, because a workspace-wide OR of `coverage`, `owner`, and `language` is not a unique hit.
+
+---
+
 ## Verification and measurement receipt
 
-The milestone remains **active** because cold-build latency and index creation miss their budgets. Search, test discovery, indexed AST candidate selection, cached inventory admission, and storage density meet their measured budgets.
+The milestone remains **active** because the latest cold-build latency, index creation, and storage density miss their budgets. `function-body-search-tokens` stays blocked until that task is completed. Search, test discovery, indexed AST candidate selection, and cached inventory admission meet their measured budgets. The 2026-10-02 storage receipt below met its density target for that candidate; the current 2026-10-06 integrated candidate is 46.94 KiB/file and exceeds the limit.
 
-Final verification after the last production and test edit:
+Verification for the current candidate after the latest production edit:
 
 - `cargo test --test commitment_integrity`: **12 passed, 0 failed**.
 - `cargo clippy --all-targets --all-features -- -D warnings`: **0 warnings**.
-- `cargo test --all-targets`: **402 passed, 0 failed, 3 ignored**, across all test targets.
+- `cargo test --all-targets`: **594 passed, 0 failed, 3 ignored** after the async Future-boundary correction.
 - `cargo build --release`: succeeds.
 
 The [cold-build receipt](../../benchmarks/milestone030_cold_build.json) records 3,968 files, 60,263 nodes and 291,696 edges. The [runner](../../benchmarks/milestone030_benchmark.py) uses real stdio MCP requests against `/home/oleksii/ContextUnity/worktrees/commerce-release-update`; it excludes the first call and uses nearest-rank p95.
@@ -239,4 +341,4 @@ The [cold-build receipt](../../benchmarks/milestone030_cold_build.json) records 
 | Test discovery | 3.4136615 | 3.785287 | <50 ms | Met |
 | Workspace AST search | 15.4276135 | 17.794481 | <30 ms | Met |
 
-The final cold build is 10.494 seconds and the database is 168.53 MiB. When the bounded FTS count probe reaches 1,001 matches, the response sets `total` to null while `has_more` uses the `limit + 1` lookahead. The cold-build receipt remains open until the cold-build and index budgets are met.
+The earlier cold-build receipt measured 10.494 seconds and 168.53 MiB for its 3,968-file candidate. The current integrated candidate is the 2026-10-06 receipt above: 13.871 seconds, 187,498,496 bytes, and 46.94 KiB/file for 3,901 files. The earlier receipt is historical and does not satisfy the current cold-build, indexing, or density gates. When the bounded FTS count probe reaches 1,001 matches, the response sets `total` to null while `has_more` uses the `limit + 1` lookahead. The cold-build receipt remains open until the cold-build and index budgets are met.

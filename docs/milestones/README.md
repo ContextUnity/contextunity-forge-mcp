@@ -13,4 +13,4 @@ Milestone commitment files in this directory (`0XX-*.md`) define the repository'
 - **Queue Order:** Numeric filename prefixes (`010-*.md`, `020-*.md`, ...) supply the queue execution order.
 - **Archive:** Completed milestones are moved to [archive/](archive/README.md) along with their proof receipts.
 
-To find the next active commitment, discover the lowest-numbered file with `status: active` in this directory (or the earliest `status: planned` candidate).
+To find the next active commitment, discover the lowest-numbered file with `status: active` in this directory. A `planned` milestone whose `depends_on` predecessor is still active stays blocked. The current execution focus is milestone 020.

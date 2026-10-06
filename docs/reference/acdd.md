@@ -53,6 +53,15 @@ Tasks in ACDD fall into two structural categories:
 - **Feature Task**: Delivers a single coherent architectural capability. Requires exactly **one** root seam test at `contract/v1`. Subtasks represent iterative implementation steps and are strictly prohibited from authoring separate micro-unit test binaries or standalone test functions.
 - **Scope Task**: Operates across an entire architectural domain or subsystem (such as Language Semantics in Milestone 020). Replaces ad-hoc test function sprawl with a single unified, parameterized table-driven harness (`cases: [...]`), where each subtask contributes a test case row to prove red-to-green resolution.
 
+### Subtask contracts and universal Definition of Done (DoD)
+
+Subtasks deepen a parent task without inflating the root milestone task queue. Every subtask operates under these binding invariants:
+1. **Concrete Syntax-Targeted Mandate (No Abstract Formulations)**: Subtasks must never be formulated as vague goals (e.g. "improve resolution", "fix edge cases"). Every subtask contract must explicitly specify: (1) the concrete syntax, grammar construct, or API contract targeted; (2) the exact expected resolution or state transition status; (3) the verifiable production-path metric or acceptance delta.
+2. **Production-Seam Evidence (Anti-Toy-Fixture Gate)**: Passing an isolated, synthetic micro-unit test in a vacuum does not satisfy subtask completion. Verification evidence must demonstrate real production-path fulfillment on the reference corpus. A subtask cannot be marked completed if the targeted universal construct still fails on unshadowed code in the reference workload.
+3. **No Review-Repair Micro-Looping (Anti-Looping Invariant)**: Reviewers are strictly prohibited from rejecting builds on uncontracted hypothetical edge cases. A review finding is only valid if it cites an admitted contract requirement, a regression against baseline suites, or a verifiable defect on reference corpus code. Speculative micro-findings belong to future tasks or the blackboard, not blocking the active delivery pipeline.
+4. **Volume-First Prioritization**: When executing domain scope tasks, subtasks must be implemented in order of reference corpus impact volume. Never spend execution iterations on esoteric constructs (<10 occurrences) while high-volume categories (>100 occurrences) remain unhandled.
+5. **No Partial / Incomplete Commits**: Never merge or commit partial implementations into milestone branches while known standard syntactic or contract constructs remain unhandled or fail closed as unknown.
+
 Task contracts specify one of three proof policies:
 - `seam-test-first`: Greenfield contract requiring a failing red seam test (`contract/v1`) with non-zero exit code, followed by a passing green test at `build/v1`.
 - `direct-proof`: Admitted for pre-existing code reconciliation or refactoring where working production code is already in place. Validates existing seams directly, accepting exit code 0 without authoring synthetic red breakage.
