@@ -84,45 +84,14 @@ impl Server {
         self.responding(|_, _| super::tasks::manage(&self.root, p))
     }
     #[tool(
-        description = "Post or read task messages. post requires topic and payload and rejects limit. read rejects author and payload. An omitted author is the claim worker, or mcp when unclaimed."
+        description = "Post, read, or inspect milestone-, task-, and subtask-scoped messages. Omitted scope and keys resolve only from a unique active context. Reads default to 10 payload-free summaries, capped at 50; inspect by message_id returns the payload."
     )]
-    fn task_blackboard(&self, Parameters(p): Parameters<Blackboard>) -> CallToolResult {
-        self.responding(|_, _| {
-            let store = crate::engine::tasks::store_for_task(&self.root, &p.task_id)?;
-            match p.action {
-                BlackboardAction::Post => {
-                    if p.limit.is_some() {
-                        anyhow::bail!("TASK_BLACKBOARD_INVALID: limit is only valid for read");
-                    }
-                    let topic = p.topic.as_deref().ok_or_else(|| {
-                        anyhow::anyhow!("TASK_BLACKBOARD_INVALID: post requires topic")
-                    })?;
-                    let payload = p.payload.as_deref().ok_or_else(|| {
-                        anyhow::anyhow!("TASK_BLACKBOARD_INVALID: post requires payload")
-                    })?;
-                    let author = match p.author {
-                        Some(author) => author,
-                        None => store
-                            .inspect(&p.task_id)?
-                            .worker_id
-                            .unwrap_or_else(|| "mcp".into()),
-                    };
-                    Ok(serde_json::json!({
-                        "id": store.blackboard_post(&p.task_id, &author, topic, payload)?
-                    }))
-                }
-                BlackboardAction::Read => {
-                    if p.author.is_some() || p.payload.is_some() {
-                        anyhow::bail!(
-                            "TASK_BLACKBOARD_INVALID: author and payload are only valid for post"
-                        );
-                    }
-                    Ok(serde_json::json!({
-                        "messages": store.blackboard_read(&p.task_id, p.topic.as_deref(), p.limit)?
-                    }))
-                }
-            }
-        })
+    fn task_blackboard(
+        &self,
+        Parameters(p): Parameters<crate::engine::tasks::BlackboardRequest>,
+    ) -> CallToolResult {
+        self.responding(|_, _| crate::engine::tasks::blackboard(&self.root, p, "mcp"))
+    }
     }
     #[tool(
         description = "Workspace root, counts, languages, and resolution coverage. Call this first and confirm workspace_root is the active worktree before an absence claim."

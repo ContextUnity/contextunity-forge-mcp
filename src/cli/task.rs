@@ -1,6 +1,6 @@
 use crate::engine::tasks::{
-    self, Action, Claim, List, Manage, ManageAction, MilestoneStatusFilter, Stage, Status, Submit,
-    TaskListDetail,
+    self, Action, BlackboardAction, BlackboardRequest, BlackboardScope, Claim, List, Manage,
+    ManageAction, MilestoneStatusFilter, Stage, Status, Submit, TaskListDetail,
 };
 use anyhow::Result;
 use clap::Subcommand;
@@ -8,12 +8,21 @@ use serde_json::Value;
 use std::path::Path;
 
 #[derive(Debug, Subcommand)]
-/// Operations on task-scoped SQLite blackboard messages.
+/// Operations on milestone-, task-, and subtask-scoped blackboard messages.
 pub enum BlackboardCommand {
-    /// Post a message to one task.
+    /// Post a message to a resolved blackboard scope.
     Post {
+        /// Optional hierarchy scope; omitted keys resolve to one unique active context.
+        #[arg(long, value_enum)]
+        scope: Option<BlackboardScope>,
+        /// Milestone reference used by milestone scope or as a context filter.
+        #[arg(long)]
+        milestone_ref: Option<String>,
         /// Task receiving the message.
-        task_id: String,
+        task_id: Option<String>,
+        /// Subtask receiving the message.
+        #[arg(long)]
+        subtask_ref: Option<String>,
         #[arg(long)]
         /// Message category.
         topic: String,
@@ -24,16 +33,33 @@ pub enum BlackboardCommand {
         /// Posting agent identifier.
         author: Option<String>,
     },
-    /// Read messages from one task in chronological order.
+    /// Read one bounded page of message summaries from a resolved scope.
     Read {
+        /// Optional hierarchy scope; omitted keys resolve to one unique active context.
+        #[arg(long, value_enum)]
+        scope: Option<BlackboardScope>,
+        /// Milestone reference used by milestone scope or as a context filter.
+        #[arg(long)]
+        milestone_ref: Option<String>,
         /// Task whose messages are read.
-        task_id: String,
+        task_id: Option<String>,
+        /// Subtask whose messages are read.
+        #[arg(long)]
+        subtask_ref: Option<String>,
         #[arg(long)]
         /// Restrict results to this category.
         topic: Option<String>,
         #[arg(long)]
-        /// Maximum number of messages to return.
+        /// Maximum number of messages to return (default 10, maximum 50).
         limit: Option<usize>,
+        #[arg(long)]
+        /// Number of messages to skip before this page.
+        offset: Option<usize>,
+    },
+    /// Inspect one message including its payload.
+    Inspect {
+        /// Message identifier returned by post or read.
+        message_id: u64,
     },
 }
 
@@ -228,33 +254,72 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
         TaskCommand::Blackboard { command } => {
             return match command {
                 BlackboardCommand::Post {
+                    scope,
+                    milestone_ref,
                     task_id,
+                    subtask_ref,
                     topic,
                     payload,
                     author,
-                } => {
-                    let store = tasks::store_for_task(root, &task_id)?;
-                    let author = match author {
-                        Some(author) => author,
-                        None => store
-                            .inspect(&task_id)?
-                            .worker_id
-                            .unwrap_or_else(|| "cli".into()),
-                    };
-                    Ok(serde_json::json!({
-                        "id": store.blackboard_post(&task_id, &author, &topic, &payload)?
-                    }))
-                }
+                } => tasks::blackboard(
+                    root,
+                    BlackboardRequest {
+                        action: BlackboardAction::Post,
+                        scope,
+                        milestone_ref,
+                        task_id,
+                        subtask_ref,
+                        message_id: None,
+                        author,
+                        topic: Some(topic),
+                        payload: Some(payload),
+                        limit: None,
+                        offset: None,
+                    },
+                    "cli",
+                ),
                 BlackboardCommand::Read {
+                    scope,
+                    milestone_ref,
                     task_id,
+                    subtask_ref,
                     topic,
                     limit,
-                } => {
-                    let store = tasks::store_for_task(root, &task_id)?;
-                    Ok(serde_json::json!({
-                        "messages": store.blackboard_read(&task_id, topic.as_deref(), limit)?
-                    }))
-                }
+                    offset,
+                } => tasks::blackboard(
+                    root,
+                    BlackboardRequest {
+                        action: BlackboardAction::Read,
+                        scope,
+                        milestone_ref,
+                        task_id,
+                        subtask_ref,
+                        message_id: None,
+                        author: None,
+                        topic,
+                        payload: None,
+                        limit,
+                        offset,
+                    },
+                    "cli",
+                ),
+                BlackboardCommand::Inspect { message_id } => tasks::blackboard(
+                    root,
+                    BlackboardRequest {
+                        action: BlackboardAction::Inspect,
+                        scope: None,
+                        milestone_ref: None,
+                        task_id: None,
+                        subtask_ref: None,
+                        message_id: Some(message_id),
+                        author: None,
+                        topic: None,
+                        payload: None,
+                        limit: None,
+                        offset: None,
+                    },
+                    "cli",
+                ),
             };
         }
         TaskCommand::List {

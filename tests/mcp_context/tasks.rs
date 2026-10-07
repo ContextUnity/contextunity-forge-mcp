@@ -446,8 +446,8 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
         json!({"action":"read","task_id":task_id,"limit":2}),
     );
     assert_eq!(mcp_read["messages"].as_array().unwrap().len(), 2);
-    assert_eq!(mcp_read["messages"][0]["id"], mcp_post["id"]);
-    assert_eq!(mcp_read["messages"][1]["id"], cli_post["id"]);
+    assert_eq!(mcp_read["messages"][0]["id"], cli_post["id"]);
+    assert_eq!(mcp_read["messages"][1]["id"], mcp_post["id"]);
 
     let cli_read = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args([
@@ -474,10 +474,85 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     let store = TasksStore::open(&workspace.0.join("tasks.sqlite")).unwrap();
     let stored = store.blackboard_read(task_id, None, None).unwrap();
     assert_eq!(stored.len(), 2);
-    assert_eq!(stored[0].payload, "{\"red\":true}");
-    assert_eq!(stored[1].payload, "cargo test --all-targets passed");
+    assert_eq!(stored[0].payload.as_deref(), Some("{\"red\":true}"));
+    assert_eq!(
+        stored[1].payload.as_deref(),
+        Some("cargo test --all-targets passed")
+    );
     assert_eq!(stored[0].author, "mcp");
     assert_eq!(stored[1].author, "cli");
+}
+
+#[test]
+fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
+    let workspace = Workspace::new();
+    fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
+    );
+    workspace.write(
+        "docs/milestones/010-blackboard.md",
+        "---\nid: m-blackboard\ntitle: Blackboard\ndoc_type: contract\nstatus: active\n---\n",
+    );
+    let mut client = Client::new(&workspace);
+
+    let mut message_id = 0;
+    for index in 0..12 {
+        let (_, response) = client.call(
+            "task_blackboard",
+            json!({
+                "action":"post",
+                "topic":"architectural_notes",
+                "payload":format!("milestone note {index}")
+            }),
+        );
+        assert!(
+            response.get("error").is_none() && response["result"]["isError"] != true,
+            "{response}"
+        );
+        let posted: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        message_id = posted["id"].as_u64().unwrap();
+    }
+
+    let messages = client.payload("task_blackboard", json!({"action":"read"}));
+    assert_eq!(messages["messages"].as_array().unwrap().len(), 10);
+    assert_eq!(messages["pagination"]["limit"], 10);
+    assert_eq!(messages["pagination"]["offset"], 0);
+    assert_eq!(messages["pagination"]["has_more"], true);
+    assert_eq!(messages["pagination"]["next_offset"], 10);
+    assert_eq!(messages["messages"][0]["id"], message_id);
+    assert_eq!(messages["messages"][0]["task_id"], Value::Null);
+    assert!(messages["messages"][0].get("payload").is_none());
+
+    let inspected = client.payload(
+        "task_blackboard",
+        json!({"action":"inspect","message_id":message_id}),
+    );
+    assert_eq!(inspected["message"]["id"], message_id);
+    assert_eq!(inspected["message"]["payload"], "milestone note 11");
+
+    let cli_inspect = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "blackboard",
+            "inspect",
+            &message_id.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_inspect.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_inspect.stderr)
+    );
+    let cli_inspect: Value = serde_json::from_slice(&cli_inspect.stdout).unwrap();
+    assert_eq!(cli_inspect["message"]["id"], message_id);
+    assert_eq!(cli_inspect["message"]["payload"], "milestone note 11");
 }
 
 #[test]
