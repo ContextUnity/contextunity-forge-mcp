@@ -17,7 +17,6 @@ pub use inputs::{
     Analyze, Ast, Checkpoint, Explain, GetDoc, Guide, Impact, Inspect, OverviewInput, PageInput,
     Query, SearchDocs, SearchSymbols, Selector, Snippet, Tests,
 };
-use inputs::{Blackboard, BlackboardAction};
 
 fn navigation_error(error: anyhow::Error) -> anyhow::Error {
     if let Some(reader::SelectorError::Ambiguous { candidates, .. }) =
@@ -91,7 +90,6 @@ impl Server {
         Parameters(p): Parameters<crate::engine::tasks::BlackboardRequest>,
     ) -> CallToolResult {
         self.responding(|_, _| crate::engine::tasks::blackboard(&self.root, p, "mcp"))
-    }
     }
     #[tool(
         description = "Workspace root, counts, languages, and resolution coverage. Call this first and confirm workspace_root is the active worktree before an absence claim."

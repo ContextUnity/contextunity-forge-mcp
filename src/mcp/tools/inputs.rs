@@ -351,21 +351,3 @@ pub struct Checkpoint {
     /// Optional content value.
     pub content: Option<Value>,
 }
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum BlackboardAction {
-    Post,
-    Read,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Blackboard {
-    pub(super) action: BlackboardAction,
-    pub(super) task_id: String,
-    pub(super) author: Option<String>,
-    pub(super) topic: Option<String>,
-    pub(super) payload: Option<String>,
-    pub(super) limit: Option<usize>,
-}
