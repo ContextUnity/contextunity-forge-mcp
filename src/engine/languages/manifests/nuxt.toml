@@ -1,0 +1,10 @@
+receivers = []
+builtins = [
+  "computed",
+  "ref",
+  "ClientOnly",
+  "NuxtLayout",
+  "NuxtPage",
+]
+filters = []
+routes = ["components/**/*.vue"]

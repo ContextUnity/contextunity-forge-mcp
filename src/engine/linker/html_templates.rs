@@ -503,6 +503,19 @@ impl<'a> RenderContextRegistry<'a> {
             if !dependencies.declares_for_path(LanguageFamily("python"), path, "django") {
                 continue;
             }
+            let Some((render_module, render_symbol)) = languages::linker_for("python")
+                .framework_manifest(
+                    dependencies,
+                    LanguageFamily("python"),
+                    path,
+                    "django",
+                    "django",
+                )
+                .and_then(|manifest| manifest.receiver_target("template_context"))
+                .and_then(|receiver| receiver.rsplit_once('.'))
+            else {
+                continue;
+            };
             let Some(import_owner) = source
                 .as_ref()
                 .nodes
@@ -539,8 +552,8 @@ impl<'a> RenderContextRegistry<'a> {
                     if !semantic_context.exact_external_import(
                         import_owner,
                         &context.import_alias,
-                        "django.shortcuts",
-                        "render",
+                        render_module,
+                        render_symbol,
                         context.position,
                     ) {
                         continue;

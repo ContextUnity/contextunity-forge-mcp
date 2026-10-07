@@ -1,0 +1,16 @@
+receivers = [
+  "$el",
+  "$refs",
+  "$event",
+  "$dispatch",
+  "$nextTick",
+  "$watch",
+  "$store",
+  "$data",
+  "$id",
+  "$root",
+  "$parent",
+]
+builtins = []
+filters = []
+routes = []

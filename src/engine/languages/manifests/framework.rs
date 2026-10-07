@@ -41,6 +41,47 @@ pub struct FrameworkManifest {
 }
 
 impl FrameworkManifest {
+    fn contains_rule(rules: &[FrameworkManifestValue], rule: &str) -> bool {
+        rules
+            .iter()
+            .any(|value| matches!(value, FrameworkManifestValue::String(value) if value == rule))
+    }
+
+    /// Returns whether a receiver rule is present in this framework table.
+    pub(crate) fn has_receiver(&self, rule: &str) -> bool {
+        Self::contains_rule(&self.receivers, rule)
+    }
+
+    /// Returns whether a builtin rule is present in this framework table.
+    pub(crate) fn has_builtin(&self, rule: &str) -> bool {
+        Self::contains_rule(&self.builtins, rule)
+    }
+
+    /// Returns whether a template-filter rule is present in this framework table.
+    pub(crate) fn has_filter(&self, rule: &str) -> bool {
+        Self::contains_rule(&self.filters, rule)
+    }
+
+    /// Resolves a receiver rule encoded as `source=target`.
+    pub(crate) fn receiver_target(&self, source: &str) -> Option<&str> {
+        Self::mapping_target(&self.receivers, source)
+    }
+
+    /// Resolves a route rule encoded as `source=target`.
+    pub(crate) fn route_target(&self, source: &str) -> Option<&str> {
+        Self::mapping_target(&self.routes, source)
+    }
+
+    fn mapping_target<'a>(rules: &'a [FrameworkManifestValue], source: &str) -> Option<&'a str> {
+        rules.iter().find_map(|rule| {
+            let FrameworkManifestValue::String(rule) = rule else {
+                return None;
+            };
+            let (candidate, target) = rule.split_once('=')?;
+            (candidate == source).then_some(target)
+        })
+    }
+
     /// Parses one framework manifest according to its filename extension.
     ///
     /// All four rule arrays are required by the type, so missing or non-array

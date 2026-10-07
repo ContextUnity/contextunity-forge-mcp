@@ -48,6 +48,7 @@ Decouples language-specific import and receiver resolutions from the core SQLite
 - Import resolution (e.g. Python `__init__.py` re-export chains, TypeScript `tsconfig.json` path mapping, Rust `use crate::` paths).
 - Receiver inference (method binding on class instances, struct instances, or prototypes).
 - Standard library and external package classification, ensuring third-party symbols are properly marked `external_origin` rather than leaking into `unresolved`.
+- Framework receivers, builtins, filters, and routes come from typed `FrameworkManifest` data. Bundled tables are embedded in the binary; workspace adapters load from `.forge/frameworks/` and activate only for declared dependencies. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
 
 ## Documentation Invariants
 

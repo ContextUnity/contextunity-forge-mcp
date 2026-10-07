@@ -23,6 +23,7 @@ pub struct DependencyRegistry {
     scoped_packages: HashMap<LanguageFamily, HashMap<String, HashSet<String>>>,
     scoped_origins: HashMap<LanguageFamily, HashMap<String, HashMap<String, String>>>,
     framework_manifests: HashMap<(String, String), FrameworkManifest>,
+    standard_framework_manifests: HashMap<String, FrameworkManifest>,
     javascript_packages: javascript_packages::Registry,
     typescript_paths: typescript_paths::Registry,
     digest: String,
@@ -82,6 +83,7 @@ impl DependencyRegistry {
         adapter: Option<&crate::engine::scanner::Adapter>,
     ) -> Result<Self> {
         let mut registry = Self::default();
+        load_standard_framework_manifests(&mut registry)?;
         let mut roots = vec![(
             root.to_path_buf(),
             String::new(),
@@ -288,6 +290,7 @@ impl DependencyRegistry {
         let (workspace, _) = super::workspace_path(path);
         self.framework_manifests
             .get(&(workspace.to_owned(), framework.to_owned()))
+            .or_else(|| self.standard_framework_manifests.get(framework))
     }
 
     pub(crate) fn nuxt_package_scope_for_path(&self, path: &str) -> Option<&str> {
@@ -380,6 +383,22 @@ impl DependencyRegistry {
             directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
         }
     }
+}
+
+fn load_standard_framework_manifests(registry: &mut DependencyRegistry) -> Result<()> {
+    for (name, source) in [
+        ("alpinejs", include_str!("manifests/alpinejs.toml")),
+        ("django", include_str!("manifests/django.toml")),
+        ("jinja2", include_str!("manifests/jinja2.toml")),
+        ("nuxt", include_str!("manifests/nuxt.toml")),
+    ] {
+        let manifest = FrameworkManifest::parse(name.to_owned(), "toml", source)
+            .with_context(|| format!("invalid standard framework manifest {name}"))?;
+        registry
+            .standard_framework_manifests
+            .insert(name.to_owned(), manifest);
+    }
+    Ok(())
 }
 
 fn load_framework_manifests(

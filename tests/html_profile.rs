@@ -238,6 +238,49 @@ fn html_local_script_and_link_assets_resolve_and_remote_assets_stay_out() {
     assert_eq!(occurrences, 2);
 }
 
+#[test]
+fn alpine_magic_members_require_declared_alpine_dependency() {
+    let workspace = Workspace::new();
+    let script = "<script>const refs = this.$refs; this.$dispatch('shown');</script>\n";
+    workspace.write(
+        "declared/package.json",
+        r#"{"dependencies":{"alpinejs":"^3.14.0"}}"#,
+    );
+    workspace.write("declared/index.html", script);
+    workspace.write("plain/package.json", r#"{"dependencies":{"vue":"^3.5.0"}}"#);
+    workspace.write("plain/index.html", script);
+
+    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let observations = [
+        ("declared/index.html", "this.$refs", "external"),
+        ("declared/index.html", "this.$dispatch", "external"),
+        ("plain/index.html", "this.$refs", "unresolved"),
+        ("plain/index.html", "this.$dispatch", "unresolved"),
+    ]
+    .map(|(path, expression, expected)| {
+        let statuses: Vec<(String, String)> = conn
+            .prepare("SELECT rc.status,ev.evidence FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id JOIN coverage_evidence ev ON ev.evidence_id=rc.evidence_id WHERE pd.path=?1 AND ce.expression=?2 ORDER BY rc.status,ev.evidence")
+            .unwrap()
+            .query_map(rusqlite::params![path, expression], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        ((path, expression), (expected, statuses))
+    });
+    assert!(
+        observations
+            .iter()
+            .all(|(_, (expected, statuses))| {
+                statuses.len() == 1 && statuses[0].0.as_str() == *expected
+            }),
+        "Alpine magic must be external only in the package that declares alpinejs: {observations:#?}"
+    );
+    commitments::verify(&conn).unwrap();
+}
+
 #[cfg(feature = "lang-typescript")]
 #[test]
 fn root_relative_browser_assets_do_not_resolve_into_another_workspace() {
@@ -2145,8 +2188,13 @@ fn jinja_builtins_follow_imported_filesystem_loader_roots() {
         "from pathlib import Path\nfrom jinja2 import Environment, FileSystemLoader\nTEMPLATES = Path(__file__).parent / 'templates'\nenv = Environment(loader=FileSystemLoader(str(TEMPLATES)))\n",
     );
     let source = "{% set rows = [] %}\n{{ rows|selectattr('active')|list }}\n";
-    workspace.write("shop/site/templates/page.html", source);
+    let rooted_source = format!("{source}{{% include 'partials/card.html' %}}\n");
+    workspace.write("shop/site/templates/page.html", &rooted_source);
     workspace.write("shop/site/other/templates/page.html", source);
+    workspace.write(
+        "shop/site/templates/partials/card.html",
+        "<article>{{ row.name }}</article>\n",
+    );
     writer::build(&workspace.0, &workspace.db(), None).unwrap();
     let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
     let status = |conn: &rusqlite::Connection, path: &str, expression: &str| -> String {
@@ -2157,6 +2205,20 @@ fn jinja_builtins_follow_imported_filesystem_loader_roots() {
         )
         .unwrap()
     };
+    let include_targets = |conn: &rusqlite::Connection, path: &str| -> Vec<String> {
+        conn.prepare("SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='includes' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
+            .unwrap()
+            .query_map([path], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let expected_include = ["shop/site/templates/partials/card.html"];
+    assert_eq!(
+        include_targets(&conn, "shop/site/templates/page.html"),
+        expected_include,
+        "the declared FileSystemLoader keeps the exact Jinja include target"
+    );
     for expression in [
         "template.tag.set",
         "template.filter.selectattr",
@@ -2176,7 +2238,7 @@ fn jinja_builtins_follow_imported_filesystem_loader_roots() {
     drop(conn);
     workspace.write(
         "shop/site/templates/page.html",
-        "{% set rows = [] %}\n{{ rows|selectattr('active')|list }}\n<p>Changed</p>\n",
+        &format!("{rooted_source}<p>Changed</p>\n"),
     );
     writer::delta(
         &workspace.0,
@@ -2188,6 +2250,15 @@ fn jinja_builtins_follow_imported_filesystem_loader_roots() {
     writer::build(&workspace.0, &cold_db, None).unwrap();
     let delta = reader::open(&workspace.db(), &workspace.0).unwrap();
     let cold = reader::open(&cold_db, &workspace.0).unwrap();
+    assert_eq!(
+        include_targets(&delta, "shop/site/templates/page.html"),
+        expected_include,
+        "the include edge survives incremental persistence"
+    );
+    assert_eq!(
+        include_targets(&delta, "shop/site/templates/page.html"),
+        include_targets(&cold, "shop/site/templates/page.html")
+    );
     for expression in [
         "template.tag.set",
         "template.filter.selectattr",
@@ -2879,4 +2950,59 @@ fn rendered_template_with_multiple_views_stays_ambiguous() {
         edges, 0,
         "a shared template must not emit a context_provider edge"
     );
+}
+
+#[test]
+fn shared_html_template_rules_stay_external_without_framework_declarations() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "page.html",
+        r#"{% if active %}
+{% for row in rows %}
+{{ "value"|safe|urlencode }}
+{% endfor %}
+{% else %}
+{% csrf_token %}
+{% endif %}
+"#,
+    );
+    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let status = |expression: &str| -> String {
+        conn.query_row(
+            "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path='page.html' AND ce.expression=?1",
+            [expression],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let shared_expressions = [
+        "template.tag.if",
+        "template.tag.for",
+        "template.filter.safe",
+        "template.filter.urlencode",
+        "template.tag.endfor",
+        "template.tag.else",
+        "template.tag.endif",
+    ];
+    for expression in shared_expressions {
+        assert_eq!(
+            status(expression),
+            "external",
+            "shared template rule {expression} must remain profile-owned without a framework package"
+        );
+    }
+    assert_eq!(
+        status("template.tag.csrf_token"),
+        "unresolved",
+        "Django-only tags remain gated by a declared Django package"
+    );
+    let (external, unresolved): (i64, i64) = conn
+        .query_row(
+            "SELECT SUM(status='external'), SUM(status='unresolved') FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id WHERE pd.path='page.html' AND rc.expression_id IN (SELECT expression_id FROM coverage_expressions WHERE expression IN ('template.tag.if','template.tag.for','template.filter.safe','template.filter.urlencode','template.tag.endfor','template.tag.else','template.tag.endif'))",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((external, unresolved), (7, 0));
 }

@@ -2748,6 +2748,82 @@ fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
 }
 
 #[test]
+fn nuxt_components_import_links_tsx_to_vue_only_for_declared_nuxt() {
+    use contextunity_forge_mcp::db::{reader, writer};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let workspace = std::env::temp_dir().join(format!(
+        "forge_nuxt_components_import_{}_{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    for (path, source) in [
+        (
+            "nuxt/package.json",
+            r#"{"dependencies":{"nuxt":"3.21.9","vue":"3.5.0"}}"#,
+        ),
+        (
+            "nuxt/nuxt.config.ts",
+            "export default defineNuxtConfig({});",
+        ),
+        (
+            "nuxt/components/base/WidgetCard.vue",
+            "<template><article>Card</article></template>",
+        ),
+        (
+            "nuxt/src/page.tsx",
+            "import { BaseWidgetCard } from '#components';\n",
+        ),
+        ("plain/package.json", r#"{"dependencies":{"vue":"3.5.0"}}"#),
+        (
+            "plain/components/base/WidgetCard.vue",
+            "<template><article>Card</article></template>",
+        ),
+        (
+            "plain/src/page.vue",
+            "<template><BaseWidgetCard /></template>",
+        ),
+    ] {
+        let target = workspace.join(path);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, source).unwrap();
+    }
+    let database = workspace.join(".forge/code-map.sqlite");
+    writer::build(&workspace, &database, None).unwrap();
+    let conn = reader::open(&database, &workspace).unwrap();
+    let statuses = |path: &str| -> Vec<String> {
+        conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='BaseWidgetCard' ORDER BY line,status")
+            .unwrap()
+            .query_map([path], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let nuxt_import_targets: Vec<String> = conn
+        .prepare("SELECT DISTINCT target_path.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN path_dictionary owner ON owner.path_id=e.owner_id JOIN path_dictionary target_path ON target_path.path_id=dst.path_id WHERE owner.path='nuxt/src/page.tsx' AND e.kind='imports' ORDER BY target_path.path")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let nuxt_statuses = statuses("nuxt/src/page.tsx");
+    let plain_statuses = statuses("plain/src/page.vue");
+    let expected_target = ["nuxt/components/base/WidgetCard.vue"];
+    assert!(
+        nuxt_statuses.iter().any(|status| status == "resolved")
+            && nuxt_import_targets == expected_target
+            && plain_statuses == ["unresolved"],
+        "#components must resolve through the declared Nuxt linker while a plain Vue tag stays unresolved; nuxt statuses={nuxt_statuses:?}, import targets={nuxt_import_targets:?}, plain statuses={plain_statuses:?}"
+    );
+    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    drop(conn);
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
 fn browser_names_preserve_local_providers_and_unknown_parameter_boundaries() {
     assert_eq!(
         calls(

@@ -569,6 +569,7 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                 let mut targets = Vec::new();
                 languages::linker_for(profile.id()).resolve_import(&mut ImportContext {
                     path: &class.path,
+                    dependencies: dependency_registry,
                     reference: import,
                     normalized: Some(normalized),
                     selected_namespace: &normalized.namespace,
@@ -749,11 +750,22 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                 && dependency_registry
                     .nuxt_package_scope_for_path(path)
                     .is_some_and(|scope| nuxt_config_scopes.contains(scope));
+            let nuxt_autoimport = |name: &str| {
+                nuxt_autoimports
+                    && languages::linker_for("typescript").framework_builtin(
+                        dependency_registry,
+                        LanguageFamily("javascript"),
+                        path,
+                        "nuxt",
+                        "nuxt",
+                        name,
+                    )
+            };
             #[cfg(feature = "lang-vue")]
             let vue_module = profile.filter(|profile| profile.id() == "vue")
                 .and_then(|_| facts.nodes.iter().find(|node| node.kind == "module"));
             let builtin_in_scope = |expression: &str, reference: &Reference| {
-                if nuxt_autoimports && matches!(expression, "computed" | "ref") {
+                if matches!(expression, "computed" | "ref") && nuxt_autoimport(expression) {
                     return true;
                 }
                 #[cfg(feature = "lang-vue")]
@@ -766,40 +778,62 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                 if active_profile.is_some_and(|profile| profile.id() == "html") {
                     #[cfg(feature = "lang-html")]
                     {
-                        let required_library = match expression {
-                            "template.tag.static" => Some("static"),
-                            "template.tag.trans" | "template.tag.translate" => Some("i18n"),
-                            _ => None,
-                        };
-                        if let Some(library) = required_library {
+                        let html_linker = languages::linker_for("html");
+                        if let Some(library) = html_linker.framework_route_target(
+                            dependency_registry,
+                            LanguageFamily("python"),
+                            path,
+                            "django",
+                            "django",
+                            expression,
+                        ) {
                             let tag = expression.strip_prefix("template.tag.").unwrap_or("");
                             return django_templates && template_loads.iter().any(|load| {
                                 load.expression == library && load.line < reference.line
                                     && load.alias.as_deref().is_none_or(|selected| selected == tag)
                             });
                         }
-                        if matches!(expression,
-                            "template.filter.e" | "template.filter.selectattr" | "template.filter.list"
-                                | "template.filter.tojson" | "template.filter.int" | "template.filter.float"
-                                | "template.filter.round" | "template.filter.sum"
-                                | "template.tag.macro" | "template.tag.endmacro" | "template.tag.set"
-                                | "template.tag.import" | "template.tag.from"
-                        ) {
-                            return (reference.module.as_deref() == Some("jinja") && jinja_templates)
-                                || django_templates
-                                || jinja_templates;
+                        if expression.starts_with("template.filter.") {
+                            return (django_templates
+                                && html_linker.framework_filter(
+                                    dependency_registry,
+                                    LanguageFamily("python"),
+                                    path,
+                                    "django",
+                                    "django",
+                                    expression,
+                                ))
+                                || (jinja_templates
+                                    && html_linker.framework_filter(
+                                        dependency_registry,
+                                        LanguageFamily("python"),
+                                        path,
+                                        "jinja2",
+                                        "jinja2",
+                                        expression,
+                                    ))
+                                || active_profile.is_some_and(|profile| profile.builtin(expression));
                         }
-                        if matches!(expression,
-                            "template.tag.url" | "template.tag.csrf_token" | "template.tag.empty"
-                                | "template.tag.load" | "template.filter.date" | "template.filter.json_script"
-                                | "template.filter.slugify" | "template.filter.escapejs"
-                                | "template.filter.linebreaks" | "template.filter.linebreaksbr"
-                                | "template.filter.truncatechars" | "template.filter.truncatewords"
-                                | "template.filter.striptags" | "template.filter.floatformat"
-                                | "template.filter.pluralize" | "template.filter.first"
-                                | "template.filter.last" | "template.filter.join"
-                        ) {
-                            return django_templates || jinja_templates;
+                        if expression.starts_with("template.tag.") {
+                            return (django_templates
+                                && html_linker.framework_builtin(
+                                    dependency_registry,
+                                    LanguageFamily("python"),
+                                    path,
+                                    "django",
+                                    "django",
+                                    expression,
+                                ))
+                                || (jinja_templates
+                                    && html_linker.framework_builtin(
+                                        dependency_registry,
+                                        LanguageFamily("python"),
+                                        path,
+                                        "jinja2",
+                                        "jinja2",
+                                        expression,
+                                    ))
+                                || active_profile.is_some_and(|profile| profile.builtin(expression));
                         }
                     }
                     return expression.starts_with("template.")
@@ -882,6 +916,7 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                 let mut candidates=Vec::new();
                 let resolution = language_linker.resolve_import(&mut ImportContext {
                     path,
+                    dependencies: dependency_registry,
                     reference: r,
                     normalized: normalized.as_ref(),
                     selected_namespace,
@@ -1370,7 +1405,17 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
             }
             #[cfg(feature = "lang-html")]
             for load in &template_loads {
-                if django_templates && matches!(load.expression.as_str(), "i18n" | "static" | "l10n" | "tz") {
+                let library_rule = format!("template.library.{}", load.expression);
+                if django_templates
+                    && languages::linker_for("html").framework_builtin(
+                        dependency_registry,
+                        LanguageFamily("python"),
+                        path,
+                        "django",
+                        "django",
+                        &library_rule,
+                    )
+                {
                     graph.coverage.push(Coverage {
                         path: path.clone(), line: load.line, expression: load.expression.clone(),
                         status: "external".into(),
@@ -1765,8 +1810,50 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                         }
                     }
                 }
+                let expression = if r.expression.contains("::") {
+                    Cow::Owned(r.expression.replace("::", "."))
+                } else if profile
+                    .is_some_and(|profile| matches!(profile.id(), "typescript" | "vue"))
+                    && r.expression.contains("?.")
+                {
+                    Cow::Owned(r.expression.replace("?.", "."))
+                } else {
+                    Cow::Borrowed(r.expression.as_str())
+                };
+                let (first, tail) = expression.split_once('.').unwrap_or((&expression, ""));
+                let owner = by_id.get(r.source.as_str()).copied();
+                #[cfg(feature = "lang-typescript")]
+                let alpine_receiver = if first == "this" {
+                    tail
+                } else if tail.is_empty() {
+                    first
+                } else {
+                    ""
+                };
+                #[cfg(feature = "lang-typescript")]
+                if !alpine_receiver.is_empty()
+                    && active_profile.is_some_and(|profile| {
+                        matches!(profile.id(), "javascript" | "typescript" | "vue" | "html")
+                            && languages::linker_for(profile.id()).framework_receiver(
+                                dependency_registry,
+                                LanguageFamily("javascript"),
+                                path,
+                                "alpinejs",
+                                "alpinejs",
+                                alpine_receiver,
+                            )
+                    })
+                {
+                    graph.coverage.push(Coverage {
+                        path: path.clone(),
+                        line: r.line,
+                        expression: r.expression.clone(),
+                        status: "external".into(),
+                        evidence: "framework builtin: Alpine magic".into(),
+                    });
+                    continue;
+                }
                 if r.dynamic {
-                    let owner = by_id.get(r.source.as_str()).copied();
                     let mut computed = receivers::Member::Unknown;
                     let mut literal_builtin = false;
                     if profile.is_some_and(|profile| profile.id() == "python") {
@@ -1854,12 +1941,6 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                     });
                     continue;
                 }
-                let expression = if r.expression.contains("::") { Cow::Owned(r.expression.replace("::", ".")) }
-                    else if profile.is_some_and(|profile| matches!(profile.id(), "typescript" | "vue")) && r.expression.contains("?.") {
-                        Cow::Owned(r.expression.replace("?.", "."))
-                    } else { Cow::Borrowed(r.expression.as_str()) };
-                let (first, tail) = expression.split_once('.').unwrap_or((&expression, ""));
-                let owner = by_id.get(r.source.as_str()).copied();
                 #[cfg(feature = "lang-typescript")]
                 if first == "this" && matches!(r.kind.as_str(), "calls" | "references") {
                     if let Some((field_name, member_name)) = tail.split_once('.')
@@ -1954,20 +2035,6 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                         });
                         continue;
                     }
-                }
-                #[cfg(feature = "lang-typescript")]
-                if ((first == "this" && matches!(tail, "$el" | "$refs" | "$event" | "$dispatch" | "$nextTick" | "$watch" | "$store" | "$data" | "$id" | "$root" | "$parent"))
-                    || (tail.is_empty() && matches!(first, "$el" | "$refs" | "$event" | "$dispatch" | "$nextTick" | "$watch" | "$store" | "$data" | "$id" | "$root")))
-                    && active_profile.is_some_and(|p| matches!(p.id(), "javascript" | "typescript" | "vue" | "html"))
-                {
-                    graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: r.line,
-                        expression: r.expression.clone(),
-                        status: "external".into(),
-                        evidence: "framework builtin: Alpine/Vue magic".into(),
-                    });
-                    continue;
                 }
                 #[cfg(feature = "lang-typescript")]
                 if first == "this" && !tail.is_empty() && !tail.contains('.')
@@ -2749,7 +2816,7 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                     && profile.is_some_and(|profile| profile.id() == "python");
                 let js_platform_builtin = is_builtin
                     && active_profile.is_some_and(|profile| matches!(profile.id(), "typescript" | "javascript"));
-                let js_builtin_origin = js_platform_builtin.then_some(if nuxt_autoimports && matches!(first, "computed" | "ref") {
+                let js_builtin_origin = js_platform_builtin.then_some(if nuxt_autoimport(first) {
                     "builtin:nuxt_autoimport"
                 } else { match first {
                     "Buffer" | "process" => "builtin:node",
@@ -2770,7 +2837,44 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                     && expression.starts_with("template.")
                     && profile.is_some_and(|profile| profile.id() == "html");
                 #[cfg(feature = "lang-html")]
-                let html_builtin_origin = if r.module.as_deref() == Some("jinja") {
+                let html_linker = languages::linker_for("html");
+                #[cfg(feature = "lang-html")]
+                let jinja_specific_builtin = jinja_templates
+                    && if expression.starts_with("template.filter.") {
+                        html_linker.framework_filter(
+                            dependency_registry,
+                            LanguageFamily("python"),
+                            path,
+                            "jinja2",
+                            "jinja2",
+                            &expression,
+                        ) && !html_linker.framework_filter(
+                            dependency_registry,
+                            LanguageFamily("python"),
+                            path,
+                            "django",
+                            "django",
+                            &expression,
+                        )
+                    } else {
+                        html_linker.framework_builtin(
+                            dependency_registry,
+                            LanguageFamily("python"),
+                            path,
+                            "jinja2",
+                            "jinja2",
+                            &expression,
+                        ) && !html_linker.framework_builtin(
+                            dependency_registry,
+                            LanguageFamily("python"),
+                            path,
+                            "django",
+                            "django",
+                            &expression,
+                        )
+                    };
+                #[cfg(feature = "lang-html")]
+                let html_builtin_origin = if jinja_specific_builtin {
                     "builtin:jinja_template"
                 } else if django_templates {
                     "builtin:django_template"

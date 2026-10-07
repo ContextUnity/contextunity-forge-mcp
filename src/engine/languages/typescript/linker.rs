@@ -300,6 +300,89 @@ fn target<'a>(exports: &PackageExports<'a>, module: &Node, name: &str) -> Option
         .flatten()
 }
 
+fn nuxt_component_module_paths(name: &str, root: &str) -> Vec<String> {
+    if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return Vec::new();
+    }
+    let mut boundaries = vec![0];
+    boundaries.extend(
+        name.char_indices()
+            .filter_map(|(index, character)| (index > 0 && character.is_ascii_uppercase()).then_some(index)),
+    );
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    boundaries
+        .into_iter()
+        .map(|boundary| {
+            let mut path = String::with_capacity(root.len() + name.len() + 8);
+            path.push_str(root);
+            path.push('/');
+            for (index, character) in name[..boundary].char_indices() {
+                if index > 0 && character.is_ascii_uppercase() {
+                    path.push('/');
+                }
+                path.push(character.to_ascii_lowercase());
+            }
+            if boundary > 0 {
+                path.push('/');
+            }
+            path.push_str(&name[boundary..]);
+            path.push_str(".vue");
+            path
+        })
+        .collect()
+}
+
+fn nuxt_component_modules<'a>(
+    context: &ImportContext<'_, 'a, '_>,
+    name: &str,
+) -> Vec<&'a Node> {
+    let Some(manifest) = TYPESCRIPT_LINKER.framework_manifest(
+        context.dependencies,
+        LanguageFamily("javascript"),
+        context.path,
+        "nuxt",
+        "nuxt",
+    ) else {
+        return Vec::new();
+    };
+    let Some(scope) = context
+        .dependencies
+        .nearest_manifest_scope_for_path(LanguageFamily("javascript"), context.path)
+    else {
+        return Vec::new();
+    };
+    let mut modules = Vec::new();
+    for route in &manifest.routes {
+        let crate::engine::languages::manifests::FrameworkManifestValue::String(route) = route
+        else {
+            continue;
+        };
+        let Some(root) = route.strip_suffix("/**/*.vue") else {
+            continue;
+        };
+        let root = if scope.is_empty() {
+            root.to_owned()
+        } else {
+            format!("{scope}/{root}")
+        };
+        for relative in nuxt_component_module_paths(name, &root) {
+            modules.extend(
+                context
+                    .by_module
+                    .get(relative.as_str())
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|node| node.kind == "module" && node.language == "vue"),
+            );
+        }
+    }
+    modules.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+    modules.dedup_by(|left, right| left.id == right.id);
+    modules
+}
+
 impl LanguageLinker for TypeScriptLinker {
     fn tracks_external_aliases(&self) -> bool {
         true
@@ -309,6 +392,21 @@ impl LanguageLinker for TypeScriptLinker {
         context: &mut ImportContext<'ctx, 'a, 'input>,
     ) -> ImportResolution<'a> {
         let mut result = resolve_default_import(context);
+        if context.reference.module.as_deref() == Some("#components") {
+            let imported_name = context
+                .reference
+                .alias
+                .as_deref()
+                .unwrap_or(context.reference.expression.as_str());
+            let providers = nuxt_component_modules(context, imported_name);
+            if !providers.is_empty() {
+                context.modules.clear();
+                context.candidates.clear();
+                context.modules.extend(providers.iter().copied());
+                context.candidates.extend(providers);
+                return result;
+            }
+        }
         let typescript_source = context.path.rsplit_once('.').is_some_and(|(_, extension)| {
             matches!(extension, "ts" | "tsx" | "mts" | "cts" | "vue")
         });

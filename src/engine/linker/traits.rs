@@ -23,6 +23,8 @@ pub type ModulesByNamespace<'a> = HashMap<LanguageFamily, HashMap<String, Vec<&'
 pub struct ImportContext<'ctx, 'a, 'input> {
     /// Workspace-relative importing file.
     pub path: &'input str,
+    /// Dependency and framework manifests admitted for the indexed workspace.
+    pub dependencies: &'ctx DependencyRegistry,
     /// Parsed import reference.
     pub reference: &'input Reference,
     /// Normalized import path from the language profile.
@@ -108,6 +110,62 @@ pub trait LanguageLinker: Send + Sync {
         package: &str,
     ) -> Option<&'a FrameworkManifest> {
         dependencies.framework_manifest_for_path(family, path, framework, package)
+    }
+
+    /// Returns whether a declared framework owns a receiver rule.
+    fn framework_receiver(
+        &self,
+        dependencies: &DependencyRegistry,
+        family: LanguageFamily,
+        path: &str,
+        framework: &str,
+        package: &str,
+        rule: &str,
+    ) -> bool {
+        self.framework_manifest(dependencies, family, path, framework, package)
+            .is_some_and(|manifest| manifest.has_receiver(rule))
+    }
+
+    /// Returns whether a declared framework owns a builtin rule.
+    fn framework_builtin(
+        &self,
+        dependencies: &DependencyRegistry,
+        family: LanguageFamily,
+        path: &str,
+        framework: &str,
+        package: &str,
+        rule: &str,
+    ) -> bool {
+        self.framework_manifest(dependencies, family, path, framework, package)
+            .is_some_and(|manifest| manifest.has_builtin(rule))
+    }
+
+    /// Returns whether a declared framework owns a template-filter rule.
+    fn framework_filter(
+        &self,
+        dependencies: &DependencyRegistry,
+        family: LanguageFamily,
+        path: &str,
+        framework: &str,
+        package: &str,
+        rule: &str,
+    ) -> bool {
+        self.framework_manifest(dependencies, family, path, framework, package)
+            .is_some_and(|manifest| manifest.has_filter(rule))
+    }
+
+    /// Returns the target associated with a declared framework route rule.
+    fn framework_route_target<'a>(
+        &self,
+        dependencies: &'a DependencyRegistry,
+        family: LanguageFamily,
+        path: &str,
+        framework: &str,
+        package: &str,
+        source: &str,
+    ) -> Option<&'a str> {
+        self.framework_manifest(dependencies, family, path, framework, package)?
+            .route_target(source)
     }
 
     /// Resolves a member through language-specific companion declarations.

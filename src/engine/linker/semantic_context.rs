@@ -14,11 +14,36 @@ use crate::engine::languages::{self, ImportPath};
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeMap;
 
-fn nuxt_component_names(path: &str, project: &str) -> Option<(String, String)> {
+fn nuxt_component_root(
+    dependencies: &languages::manifests::DependencyRegistry,
+    path: &str,
+) -> Option<String> {
+    let manifest = languages::linker_for("vue").framework_manifest(
+        dependencies,
+        languages::LanguageFamily("javascript"),
+        path,
+        "nuxt",
+        "nuxt",
+    )?;
+    manifest.routes.iter().find_map(|route| {
+        let languages::manifests::FrameworkManifestValue::String(route) = route else {
+            return None;
+        };
+        route
+            .strip_suffix("/**/*.vue")
+            .filter(|root| !root.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn nuxt_component_names(path: &str, project: &str, root: &str) -> Option<(String, String)> {
     let relative = if project.is_empty() {
-        path.strip_prefix("components/")?
+        path.strip_prefix(root)?.strip_prefix('/')?
     } else {
-        path.strip_prefix(project)?.strip_prefix("/components/")?
+        path.strip_prefix(project)?
+            .strip_prefix('/')?
+            .strip_prefix(root)?
+            .strip_prefix('/')?
     };
     let stem = relative.strip_suffix(".vue")?;
     if stem.is_empty()
@@ -130,6 +155,7 @@ pub(super) struct Context<'a> {
     imports: HashMap<&'a str, HashMap<&'a str, Imported<'a>>>,
     python_psycopg_paths: HashSet<&'a str>,
     nuxt_runtime_projects: HashMap<&'a str, String>,
+    nuxt_component_builtins: HashMap<&'a str, HashSet<String>>,
     nuxt_consumer_projects: HashMap<&'a str, String>,
     nuxt_components: HashMap<String, HashMap<String, Vec<&'a Node>>>,
     radix_vue_projects: HashSet<String>,
@@ -165,7 +191,10 @@ impl<'a> Context<'a> {
 
     pub(super) fn nuxt_builtin_component(&self, path: &str, tag: &str) -> bool {
         self.nuxt_runtime_projects.contains_key(path)
-            && matches!(tag, "ClientOnly" | "NuxtLayout" | "NuxtPage")
+            && self
+                .nuxt_component_builtins
+                .get(path)
+                .is_some_and(|builtins| builtins.contains(tag))
     }
 
     pub(super) fn radix_vue_component(&self, path: &str, tag: &str) -> bool {
@@ -316,6 +345,7 @@ impl<'a> Context<'a> {
             imports: HashMap::new(),
             python_psycopg_paths: HashSet::new(),
             nuxt_runtime_projects: HashMap::new(),
+            nuxt_component_builtins: HashMap::new(),
             nuxt_consumer_projects: HashMap::new(),
             nuxt_components: HashMap::new(),
             radix_vue_projects: HashSet::new(),
@@ -410,18 +440,43 @@ impl<'a> Context<'a> {
                         context
                             .nuxt_runtime_projects
                             .insert(path.as_str(), project.to_owned());
+                        if let Some(manifest) = languages::linker_for("vue").framework_manifest(
+                            dependencies,
+                            languages::LanguageFamily("javascript"),
+                            path,
+                            "nuxt",
+                            "nuxt",
+                        ) {
+                            let builtins = manifest
+                                .builtins
+                                .iter()
+                                .filter_map(|value| match value {
+                                    languages::manifests::FrameworkManifestValue::String(name) => {
+                                        Some(name.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            context
+                                .nuxt_component_builtins
+                                .insert(path.as_str(), builtins);
+                        }
                     }
                     if nuxt_projects.contains(project) {
                         context
                             .nuxt_consumer_projects
                             .insert(path.as_str(), project.to_owned());
-                        if let Some((pascal, kebab)) = nuxt_component_names(path, project) {
-                            let components = context
-                                .nuxt_components
-                                .entry(project.to_owned())
-                                .or_default();
-                            components.entry(pascal).or_default().push(module);
-                            components.entry(kebab).or_default().push(module);
+                        if let Some(root) = nuxt_component_root(dependencies, path) {
+                            if let Some((pascal, kebab)) =
+                                nuxt_component_names(path, project, &root)
+                            {
+                                let components = context
+                                    .nuxt_components
+                                    .entry(project.to_owned())
+                                    .or_default();
+                                components.entry(pascal).or_default().push(module);
+                                components.entry(kebab).or_default().push(module);
+                            }
                         }
                     }
                 }
@@ -497,6 +552,7 @@ impl<'a> Context<'a> {
                 let mut lookup_key = String::new();
                 linker.resolve_import(&mut ImportContext {
                     path,
+                    dependencies,
                     reference,
                     normalized: Some(normalized),
                     selected_namespace: selected,

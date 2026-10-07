@@ -127,11 +127,25 @@ impl LanguageProfile for Html {
         }
     }
     fn builtin(&self, name: &str) -> bool {
-        if let Some(name) = name.strip_prefix("template.tag.") {
-            return template_builtin("tag", name);
+        if let Some(tag) = name.strip_prefix("template.tag.") {
+            return matches!(
+                tag,
+                "block"
+                    | "include"
+                    | "extends"
+                    | "if"
+                    | "elif"
+                    | "else"
+                    | "endif"
+                    | "for"
+                    | "endfor"
+                    | "with"
+                    | "endwith"
+                    | "endblock"
+            );
         }
-        if let Some(name) = name.strip_prefix("template.filter.") {
-            return template_builtin("filter", name);
+        if let Some(filter) = name.strip_prefix("template.filter.") {
+            return matches!(filter, "default" | "length" | "safe" | "urlencode");
         }
         by_id("javascript").is_some_and(|profile| profile.builtin(name))
     }
@@ -174,83 +188,7 @@ fn is_html_entity(slice: &str) -> bool {
     }
 }
 
-fn template_builtin(kind: &str, name: &str) -> bool {
-    match kind {
-        "tag" => matches!(
-            name,
-            "url"
-                | "static"
-                | "trans"
-                | "block"
-                | "include"
-                | "extends"
-                | "csrf_token"
-                | "load"
-                | "import"
-                | "from"
-                | "translate"
-                | "with"
-                | "endwith"
-                | "endblock"
-                | "if"
-                | "elif"
-                | "else"
-                | "endif"
-                | "for"
-                | "empty"
-                | "endfor"
-                | "macro"
-                | "endmacro"
-                | "set"
-                | "autoescape"
-                | "endautoescape"
-                | "filter"
-                | "endfilter"
-        ),
-        "filter" => matches!(
-            name,
-            "default"
-                | "date"
-                | "length"
-                | "json_script"
-                | "slugify"
-                | "escape"
-                | "escapejs"
-                | "safe"
-                | "upper"
-                | "lower"
-                | "urlencode"
-                | "e"
-                | "selectattr"
-                | "list"
-                | "first"
-                | "last"
-                | "join"
-                | "linebreaks"
-                | "linebreaksbr"
-                | "truncatechars"
-                | "truncatewords"
-                | "striptags"
-                | "floatformat"
-                | "pluralize"
-                | "tojson"
-                | "int"
-                | "float"
-                | "round"
-                | "sum"
-        ),
-        _ => false,
-    }
-}
-
-fn emit_template_builtin(
-    path: &str,
-    kind: &str,
-    name: &str,
-    line: usize,
-    jinja: bool,
-    facts: &mut Facts,
-) {
+fn emit_template_rule_reference(path: &str, kind: &str, name: &str, line: usize, facts: &mut Facts) {
     facts.references.push(Reference {
         source: format!("module:{path}"),
         dynamic: false,
@@ -259,16 +197,12 @@ fn emit_template_builtin(
         line,
         column: 0,
         alias: None,
-        module: (jinja
-            && ((kind == "filter" && matches!(name, "e" | "selectattr" | "list"))
-                || (kind == "tag"
-                    && matches!(name, "macro" | "endmacro" | "set" | "import" | "from"))))
-        .then(|| "jinja".into()),
+        module: None,
         receiver_hint: None,
     });
 }
 
-fn emit_template_filters(content: &str, path: &str, line: usize, jinja: bool, facts: &mut Facts) {
+fn emit_template_filters(content: &str, path: &str, line: usize, facts: &mut Facts) {
     let bytes = content.as_bytes();
     let mut quote = None;
     let mut offset = 0;
@@ -293,7 +227,7 @@ fn emit_template_filters(content: &str, path: &str, line: usize, jinja: bool, fa
                     .get(start..end)
                     .filter(|name| valid_template_name(name))
                 {
-                    emit_template_builtin(path, "filter", name, line, jinja, facts);
+                    emit_template_rule_reference(path, "filter", name, line, facts);
                 }
                 offset = end.saturating_sub(1);
             }
@@ -495,8 +429,6 @@ fn preprocess_template<'a>(
     module: &str,
     facts: &mut Facts,
 ) -> std::borrow::Cow<'a, str> {
-    let mut has_loaded_library = false;
-    let mut jinja_directive = false;
     let mut nested_scope = 0usize;
     TemplateMasker::mask(
         source,
@@ -507,8 +439,6 @@ fn preprocess_template<'a>(
             let content = tag.content.trim();
             if tag.kind == TemplateTagKind::Statement {
                 let directive = content.split_whitespace().next().unwrap_or("");
-                jinja_directive |=
-                    matches!(directive, "macro" | "endmacro" | "set" | "import" | "from");
                 if matches!(
                     directive,
                     "endfor"
@@ -552,11 +482,9 @@ fn preprocess_template<'a>(
                     .next()
                     .filter(|name| valid_template_name(name))
                 {
-                    if template_builtin("tag", name) || has_loaded_library {
-                        emit_template_builtin(path, "tag", name, tag.line, jinja_directive, facts);
-                    }
+                    emit_template_rule_reference(path, "tag", name, tag.line, facts);
                 }
-                has_loaded_library |= emit_template_loads(content, path, tag.line, facts);
+                emit_template_loads(content, path, tag.line, facts);
                 if let Some(rest) = content.strip_prefix("include ") {
                     if let Some(target) = extract_template_target(rest) {
                         emit_template_reference(path, target, "includes", tag.line, facts);
@@ -592,7 +520,7 @@ fn preprocess_template<'a>(
             } else if tag.kind == TemplateTagKind::Interpolation && nested_scope == 0 {
                 emit_template_expression(path, content, tag.line, facts);
             }
-            emit_template_filters(content, path, tag.line, jinja_directive, facts);
+            emit_template_filters(content, path, tag.line, facts);
         },
         Some(|slice| !is_html_entity(slice)),
     )
