@@ -23,8 +23,9 @@ pub struct Evidence {
     pub worker_id: String,
     /// The worktree value.
     pub worktree: String,
-    /// The commit value.
-    pub commit: String,
+    /// The optional commit value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
     /// The proof value.
     pub proof: serde_json::Value,
 }
@@ -138,7 +139,10 @@ fn validate_review_contours(
             .iter()
             .any(|name| !contours.contains_key(*name))
     {
-        bail!("TASK_EVIDENCE_INVALID: five admitted review contours required");
+        bail!(
+            "TASK_EVIDENCE_INVALID: review_proof requires all 5 contours: {}",
+            REVIEW_CONTOURS.join(", ")
+        );
     }
     for contour in contours.values() {
         if contour.evidence.trim().is_empty() {
@@ -186,6 +190,20 @@ impl TasksStore {
         action: &str,
         findings: Option<&serde_json::Value>,
     ) -> Result<Task> {
+        self.submit_with_pre_persist(id, stage, evidence, action, findings, || Ok(()))
+    }
+
+    /// Performs submit after running a caller-owned operation once gate evidence is valid.
+    /// The hook runs while the gate transaction is held and before its state is persisted.
+    pub fn submit_with_pre_persist(
+        &mut self,
+        id: &str,
+        stage: &str,
+        evidence: &Evidence,
+        action: &str,
+        findings: Option<&serde_json::Value>,
+        before_persist: impl FnOnce() -> Result<()>,
+    ) -> Result<Task> {
         self.assert_id(id)?;
         if evidence.stage != stage && evidence.stage.split('/').next() != Some(stage) {
             bail!("TASK_STAGE_INVALID");
@@ -212,6 +230,7 @@ impl TasksStore {
                 && accepted.findings.as_ref() == findings
                 && accepted.task.contract_revision == task.contract_revision
             {
+                before_persist()?;
                 return Ok(accepted.task);
             }
             bail!("TASK_STALE_SUBMISSION");
@@ -227,7 +246,12 @@ impl TasksStore {
         {
             bail!("TASK_STALE_SUBMISSION");
         }
-        if evidence.commit.trim().is_empty() || evidence.proof.is_null() {
+        if evidence.proof.is_null()
+            || evidence
+                .commit
+                .as_ref()
+                .is_some_and(|c| c.trim().is_empty())
+        {
             bail!("TASK_EVIDENCE_INVALID");
         }
         match task.gate {
@@ -381,6 +405,7 @@ impl TasksStore {
         if task.status == "completed" {
             clear_blackboard(&tx, id)?;
         }
+        before_persist()?;
         if let Some((path, _, written)) = &document_update {
             crate::engine::milestones::atomic_replace(path, written.as_bytes())?;
         }
@@ -449,9 +474,12 @@ pub fn validate_durable_receipt(receipt: &Receipt, revision: u64) -> Result<()> 
             bail!("TASK_RECEIPT_INVALID: malformed durable rollup");
         }
     }
-    if !matches!(receipt.commit.len(), 40 | 64)
-        || !receipt.commit.bytes().all(|c| c.is_ascii_hexdigit())
-        || receipt.contract_revision != revision
+    if let Some(commit) = &receipt.commit {
+        if !(7..=64).contains(&commit.len()) || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
+            bail!("TASK_RECEIPT_INVALID: malformed durable proof");
+        }
+    }
+    if receipt.contract_revision != revision
         || receipt.evidence.is_null()
         || receipt.review.is_null()
         || receipt.decision != "pass"

@@ -32,7 +32,7 @@ fn evidence(task: &contextunity_forge_mcp::db::tasks_store::Task) -> Evidence {
         contract_revision: task.contract_revision,
         worker_id: task.worker_id.clone().unwrap(),
         worktree: task.worktree.clone().unwrap(),
-        commit: "0123456789abcdef0123456789abcdef01234567".into(),
+        commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
         proof: match task.gate {
             0 => {
                 json!({"contract_proof":{"seam_test_ref":"tests/core_basics/tasks.rs","red_exit_code":101}})
@@ -242,7 +242,8 @@ fn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {
     let contract = store
         .claim(&task_id, "contract", "contract-author", worktree)
         .unwrap();
-    let proof = evidence(&contract);
+    let mut proof = evidence(&contract);
+    proof.commit = None;
     let raw_evidence = serde_json::to_value(&proof).unwrap();
     for invalid in [
         json!({"task_id":task_id,"stage":"contract/v1","action":"pass"}),
@@ -1292,7 +1293,7 @@ fn gates_write_receipts_and_preserve_retention_outcomes() {
             contract_revision: task.contract_revision,
             worker_id: worker.into(),
             worktree: worktree.0.to_str().unwrap().into(),
-            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
             proof: match gate {
                 0 => {
                     json!({"contract_proof":{"seam_test_ref":"tests/core_basics/tasks.rs","red_exit_code":101}})
@@ -1336,7 +1337,7 @@ fn specifications_validate_unique_identities_and_governing_digests() {
     let mut completed = first.clone();
     completed.status = Some("completed".into());
     completed.receipt = Some(Receipt {
-        commit: "candidate".into(),
+        commit: Some("candidate".into()),
         contract_revision: 1,
         passed_at: "timestamp".into(),
         evidence: json!({}),
@@ -2467,10 +2468,31 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
             .unwrap(),
         )
         .unwrap();
+        assert_eq!(
+            submitted["snapshot"]["commit"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert_eq!(
+            submitted["snapshot"]["inspect_cmd"],
+            "git show 0123456789abcdef0123456789abcdef01234567"
+        );
         if index == stages.len() - 1 {
             assert_eq!(submitted["status"], "completed");
         }
     }
+
+    let details = tasks::store(&root.0)
+        .unwrap()
+        .inspect_details(&task_id)
+        .unwrap();
+    assert_eq!(
+        details["latest_snapshot"]["commit"],
+        "0123456789abcdef0123456789abcdef01234567"
+    );
+    assert_eq!(
+        details["latest_snapshot"]["inspect_cmd"],
+        "git show 0123456789abcdef0123456789abcdef01234567"
+    );
 
     let written = std::fs::read_to_string(root.0.join(milestone_ref)).unwrap();
     let parsed = Milestone::parse(&written, "forge-mcp").unwrap();
@@ -4433,4 +4455,557 @@ fn cancelled_milestone_blackboard_pruning_is_project_scoped() {
         .unwrap();
     assert_eq!(selected_rows, 0);
     assert_eq!(linked_rows, 1);
+}
+
+#[test]
+fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_handoff() {
+    let root = ScopedWorkspace::new("forge_snapshot_test");
+    root.write("src/lib.rs", "pub fn example() {}\n");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    let spec = "---\nid: m-test\ntitle: Tasks\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Deliver second\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first]\n```\n";
+    root.write("docs/milestones/010-test.md", spec);
+    tasks::manage(
+        &root.0,
+        serde_json::from_value(
+            json!({"action": "sync", "milestone_ref": "docs/milestones/010-test.md"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Initialize git repository
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&root.0)
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(&root.0)
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Tester"])
+        .current_dir(&root.0)
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&root.0)
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(&root.0)
+        .status()
+        .unwrap();
+
+    let tasks_in_store = tasks::store(&root.0)
+        .unwrap()
+        .list(None, "ready", None)
+        .unwrap();
+    let task_id = &tasks_in_store[0].task_id;
+    root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 42 }\n");
+
+    // 1. Claim contract/v1
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "contract/v1".into(),
+            worker_id: "builder".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Submit contract/v1 with commit: None -> automatically captures snapshot
+    let stored = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
+    let mut ev = evidence(&stored);
+    ev.commit = None;
+    let snapshot_refs = root.0.join(".git/refs/forge/snapshots");
+    std::fs::create_dir_all(&snapshot_refs).unwrap();
+    let ref_blocker = snapshot_refs.join("forge-mcp");
+    std::fs::write(&ref_blocker, "block the nested snapshot ref path").unwrap();
+    let failed_pin = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "contract/v1".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&ev).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        failed_pin.contains("TASK_SNAPSHOT_REF_FAILED"),
+        "{failed_pin}"
+    );
+    let still_claimed = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
+    assert_eq!(still_claimed.status, "in_progress");
+    assert_eq!(still_claimed.gate, 0);
+    std::fs::remove_file(ref_blocker).unwrap();
+
+    let contract_res = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "contract/v1".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&ev).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+
+    let contract_snap = contract_res["snapshot"]["commit"].as_str().unwrap();
+    assert_eq!(contract_snap.len(), 40);
+    assert_eq!(
+        contract_res["snapshot"]["inspect_cmd"],
+        format!("git show {contract_snap}")
+    );
+
+    // Commit a sibling change outside the task scope while keeping scoped content fixed.
+    root.write("README.md", "# sibling change\n");
+    std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(&root.0)
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "sibling README change"])
+        .current_dir(&root.0)
+        .status()
+        .unwrap();
+
+    // Claim build/v1
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "build/v1".into(),
+            worker_id: "builder".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Submit build/v1 with commit: None -> captures snapshot with the untracked file!
+    let stored = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
+    let mut ev = evidence(&stored);
+    ev.commit = None;
+    let build_res = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "build/v1".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&ev).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+
+    let build_snap = build_res["snapshot"]["commit"].as_str().unwrap();
+    assert_eq!(build_snap.len(), 40);
+    assert_eq!(
+        build_snap, contract_snap,
+        "an unrelated sibling commit must not change the scoped candidate SHA"
+    );
+
+    // Verify git show on build snapshot includes the newly added file
+    let show_output = std::process::Command::new("git")
+        .args(["show", build_snap])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let show_text = String::from_utf8_lossy(&show_output.stdout);
+    assert!(show_text.contains("new_feature.rs"));
+    assert!(show_text.contains("pub fn new_feature() -> i32 { 42 }"));
+    assert!(
+        !show_text.contains("README.md"),
+        "snapshot must contain only scoped files"
+    );
+    let parents = std::process::Command::new("git")
+        .args(["rev-list", "--parents", "-n", "1", build_snap])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(parents.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&parents.stdout)
+            .split_whitespace()
+            .count(),
+        1,
+        "root snapshots must not include a branch parent"
+    );
+
+    // 3. Independent review
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "review/v1".into(),
+            worker_id: "reviewer".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Verify: If worktree diverges after build, review fails with TASK_CANDIDATE_MISMATCH!
+    root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 99 }\n");
+    let stored = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
+    let mut ev = evidence(&stored);
+    ev.commit = None;
+    let mismatch_err = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "review/v1".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&ev).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        mismatch_err.to_string().contains("TASK_CANDIDATE_MISMATCH"),
+        "Expected TASK_CANDIDATE_MISMATCH on diverged worktree, got: {mismatch_err}"
+    );
+
+    // Restore worktree to match candidate
+    root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 42 }\n");
+    let review_res = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "review/v1".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&ev).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+
+    // Review snapshot matches build candidate snapshot
+    assert_eq!(review_res["snapshot"]["commit"], build_snap);
+
+    // 4. Delivery
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "deliver/v1".into(),
+            worker_id: "delivery".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Verify: If worktree diverges after review, delivery fails!
+    root.write(
+        "src/new_feature.rs",
+        "pub fn new_feature() -> i32 { 999 }\n",
+    );
+    let stored = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
+    let mut ev = evidence(&stored);
+    ev.commit = None;
+    let deliver_err = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "deliver/v1".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&ev).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        deliver_err.to_string().contains("TASK_CANDIDATE_MISMATCH"),
+        "Expected TASK_CANDIDATE_MISMATCH on diverged delivery worktree, got: {deliver_err}"
+    );
+
+    // Restore worktree to match candidate
+    root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 42 }\n");
+    let deliver_res = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "deliver/v1".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&ev).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(deliver_res["status"], "completed");
+    assert_eq!(deliver_res["snapshot"]["commit"], build_snap);
+
+    // Inspect details shows gates with inspect_cmd and latest_snapshot
+    let details = tasks::store(&root.0)
+        .unwrap()
+        .inspect_details(task_id)
+        .unwrap();
+    assert_eq!(details["latest_snapshot"]["commit"], build_snap);
+    assert_eq!(
+        details["latest_snapshot"]["inspect_cmd"],
+        format!("git show {build_snap}")
+    );
+
+    // Verify snapshot refs exist in git before handoff
+    let refs_out = std::process::Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/forge/snapshots/",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let refs_text = String::from_utf8_lossy(&refs_out.stdout);
+    assert!(refs_text.contains("refs/forge/snapshots/"));
+
+    // Complete task second (which transitioned from blocked to ready upon completion of first)
+    let ready_tasks = tasks::store(&root.0)
+        .unwrap()
+        .list(None, "ready", None)
+        .unwrap();
+    let task_id_2 = ready_tasks[0].task_id.clone();
+    for (stage, worker) in [
+        ("contract/v1", "b1"),
+        ("build/v1", "b1"),
+        ("review/v1", "r1"),
+        ("deliver/v1", "d1"),
+    ] {
+        tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: task_id_2.clone(),
+                stage: (*stage).into(),
+                worker_id: (*worker).into(),
+                worktree: root.0.to_str().unwrap().into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let stored = tasks::store(&root.0).unwrap().inspect(&task_id_2).unwrap();
+        let mut proof = evidence(&stored);
+        proof.commit = None;
+        tasks::submit(
+            &root.0,
+            tasks::Submit {
+                task_id: task_id_2.clone(),
+                stage: (*stage).into(),
+                action: tasks::Action::Pass,
+                evidence: serde_json::to_value(proof).unwrap(),
+                findings: None,
+            },
+        )
+        .unwrap();
+    }
+
+    // Now handoff milestone
+    contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-test",
+        None,
+        "cargo test",
+        2,
+        0,
+    )
+    .unwrap();
+
+    // Verify snapshot refs were pruned after milestone handoff!
+    let refs_after = std::process::Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/forge/snapshots/",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let refs_after_text = String::from_utf8_lossy(&refs_after.stdout)
+        .trim()
+        .to_string();
+    assert!(
+        refs_after_text.is_empty(),
+        "Expected all snapshot refs to be pruned on handoff, got: {refs_after_text}"
+    );
+}
+
+#[test]
+fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests_and_src() {
+    let root = ScopedWorkspace::new("forge_scope_conflict");
+    root.write("src/module_a/foo.rs", "pub fn foo() {}\n");
+    root.write("src/module_b/bar.rs", "pub fn bar() {}\n");
+    root.write("tests/test_foo.rs", "// test\n");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    let spec = "---\nid: m-conflict\ntitle: Conflict Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: task_a\ntarget: Deliver A\nproof_policy: seam-test-first\nscope: [src/module_a/foo.rs]\n```\n```yaml\ntask_ref: task_b\ntarget: Deliver B\nproof_policy: seam-test-first\nscope: [src/module_b/bar.rs]\n```\n";
+    root.write("docs/010-conflict.md", spec);
+    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    store
+        .sync(&milestone, "docs/010-conflict.md", &root.0)
+        .unwrap();
+
+    let task_b_id = "forge-mcp/forge-mcp/m-conflict:task_b";
+    let task_a_id = "forge-mcp/forge-mcp/m-conflict:task_a";
+
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_b_id.into(),
+            stage: "contract/v1".into(),
+            worker_id: "worker_b".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let assert_scope_conflict = |requester: &str, path: &str, owner: &str, shape: &str| {
+        let err = tasks::manage(
+            &root.0,
+            serde_json::from_value(json!({
+                "action": "extend_scope",
+                "task_id": requester,
+                "paths": [path]
+            }))
+            .unwrap(),
+        )
+        .unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("TASK_SCOPE_CONFLICT"),
+            "Expected TASK_SCOPE_CONFLICT for {shape}, got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains(owner),
+            "Expected {shape} conflict to name owner '{owner}', got: {err_msg}"
+        );
+    };
+
+    for (path, shape) in [
+        ("src/module_a/foo.rs", "exact frozen path"),
+        ("src/module_a/foo.rs/child.rs", "child of frozen path"),
+        ("src/module_a", "parent of frozen path"),
+    ] {
+        assert_scope_conflict(task_b_id, path, task_a_id, shape);
+    }
+
+    // Unowned tests/src paths are admitted with frozen=0.
+    for path in ["tests/test_foo.rs", "src/module_b/extra.rs"] {
+        let admitted = tasks::manage(
+            &root.0,
+            serde_json::from_value(json!({
+                "action": "extend_scope",
+                "task_id": task_b_id,
+                "paths": [path]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(admitted["status"], "in_progress");
+    }
+
+    // Dynamic extension (frozen = 0) by task_b is now owned by task_b; task_a claiming it must conflict
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_a_id.into(),
+            stage: "contract/v1".into(),
+            worker_id: "worker_a".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let dynamic_count: i64 = store
+        .connection
+        .query_row(
+            "SELECT count(*) FROM task_scope_paths WHERE task_id=?1 AND frozen=0",
+            [task_b_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(dynamic_count, 2, "admitted tests/src paths stay unfrozen");
+
+    for (path, shape) in [
+        ("src/module_b/extra.rs", "exact unfrozen path"),
+        ("src/module_b/extra.rs/child.rs", "child of unfrozen path"),
+        ("src/module_b", "parent of unfrozen path"),
+        ("tests/test_foo.rs/child.rs", "child of unfrozen test path"),
+        ("tests", "parent of unfrozen test path"),
+    ] {
+        assert_scope_conflict(task_a_id, path, task_b_id, shape);
+    }
+}
+
+#[test]
+fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages() {
+    let (root, store, _) = fixture();
+    let task_id = "forge-mcp/forge-mcp/m-test:first";
+
+    // Post message to task
+    store
+        .blackboard_post(
+            task_id,
+            "agent_1",
+            "hypothesis",
+            "Initial hypothesis for task",
+        )
+        .unwrap();
+
+    // Post message from another task in same milestone
+    let task_2_id = "forge-mcp/forge-mcp/m-test:second";
+    store
+        .blackboard_post(
+            task_2_id,
+            "agent_2",
+            "architectural_notes",
+            "Milestone level finding",
+        )
+        .unwrap();
+
+    // Claim without specifying bundle (bundle defaults to true)
+    let claim_res = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "contract/v1".into(),
+            worker_id: "builder".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Response should be the full bundle by default
+    assert_eq!(claim_res["task_id"], task_id);
+    assert_eq!(claim_res["context_bundle"]["contract"]["task_id"], task_id);
+    let bb = claim_res["blackboard"]
+        .as_array()
+        .expect("blackboard array in bundle");
+    assert_eq!(
+        bb.len(),
+        2,
+        "Expected both task and milestone sibling blackboard messages"
+    );
+    assert!(claim_res["workflow_guidance"].is_object());
 }

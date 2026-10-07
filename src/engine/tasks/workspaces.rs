@@ -55,6 +55,7 @@ fn declared_projects(directory: &Path) -> Result<BTreeSet<String>> {
                 continue;
             }
             let text = std::fs::read_to_string(entry.path())?;
+            let text = text.replace("\r\n", "\n");
             let Some(header) = text
                 .strip_prefix("---\n")
                 .and_then(|body| body.split_once("\n---\n"))
@@ -105,30 +106,30 @@ impl Workspace {
             "contract/v1" => (
                 "contract_author",
                 &[
-                    "Inspect the task target, scope, ADRs, and invariants.",
-                    "Define allowed_write_scope and author/verify the public-seam test proof (or direct-proof exit code 0 for pre-existing code).",
+                    "Author or verify the public-seam test proof (or direct-proof exit code 0 for pre-existing code).",
+                    "Submit contract proof.",
                 ],
             ),
             "build/v1" => (
                 "builder",
                 &[
                     "Implement the approved contract inside the allowed write scope.",
-                    "Run the seam test and clippy, then submit passing JSON test proof.",
+                    "Run tests and clippy, then submit passing test proof.",
                 ],
             ),
             "review/v1" => (
                 "independent_reviewer",
                 &[
-                    "Review the candidate against the contract and five review contours.",
-                    "Run the required verification and submit inline JSON review proof.",
+                    "Inspect candidate diff using inspect_cmd.",
+                    "Verify the 5 review contours: paths, claims, concurrency, project_isolation, administration.",
+                    "Accept legitimate adjacent defect fixes within scope and submit review proof.",
                 ],
             ),
             "deliver/v1" => (
                 "delivery_reviewer",
                 &[
-                    "Verify accepted build and review proofs against the current milestone specification.",
-                    "Submit delivery proof for the reviewed candidate commit SHA; delivery writes the task receipt in the milestone document.",
-                    "Amend the candidate commit with the generated receipt so the task has one commit.",
+                    "Submit delivery proof first; Forge writes the durable receipt into the milestone document.",
+                    "After delivery, create one atomic commit containing scoped files, tests, and milestone document (without git add -A).",
                 ],
             ),
             "completed" => (
@@ -175,7 +176,12 @@ impl Workspace {
                 "path": self.guidance,
             })
         };
-        let workflow_guidance = json!({
+        let review_policy = if needs_independent_reviewer {
+            Some("Reviewers must accept legitimate defect fixes registered via extend-scope or reopened tasks and verify changes against the declared scope (preventing uncontracted scope creep or overengineering).")
+        } else {
+            None
+        };
+        let mut workflow_guidance = json!({
             "active_stage": stage,
             "agent_type": agent_type,
             "subagent_role": subagent_role,
@@ -186,6 +192,9 @@ impl Workspace {
             "warning": warning,
             "documentation_url": (!guidance_exists).then_some("https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/acdd.md"),
         });
+        if let Some(policy) = review_policy {
+            workflow_guidance["review_policy"] = json!(policy);
+        }
         value
             .as_object_mut()
             .context("task envelope must be an object")?

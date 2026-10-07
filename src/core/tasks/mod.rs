@@ -11,12 +11,55 @@ pub mod gates;
 /// The gates value.
 pub const GATES: [&str; 4] = ["contract/v1", "build/v1", "review/v1", "deliver/v1"];
 
+/// Format the agent-facing command for inspecting a candidate snapshot.
+/// Durable evidence and receipts retain the full commit ID.
+pub fn snapshot_inspect_cmd(commit: &str) -> String {
+    format!("git show {}", short_candidate_commit(commit))
+}
+
+/// Abbreviate a candidate SHA for task responses shown to agents.
+pub fn short_candidate_commit(commit: &str) -> String {
+    if commit.len() >= 7 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        commit[..7].to_owned()
+    } else {
+        commit.to_owned()
+    }
+}
+
+/// Shorten candidate IDs in agent-visible task responses without changing stored evidence.
+pub fn shorten_task_response_commits(value: &mut serde_json::Value) {
+    fn shorten(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(serde_json::Value::String(commit)) = object.get_mut("commit") {
+                    *commit = short_candidate_commit(commit);
+                }
+                if let Some(serde_json::Value::String(evidence)) = object.get_mut("evidence") {
+                    if let Ok(mut parsed) = serde_json::from_str(evidence) {
+                        shorten(&mut parsed);
+                        if let Ok(encoded) = serde_json::to_string(&parsed) {
+                            *evidence = encoded;
+                        }
+                    }
+                }
+                for child in object.values_mut() {
+                    shorten(child);
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(shorten),
+            _ => {}
+        }
+    }
+
+    shorten(value);
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 /// Represents receipt data.
 pub struct Receipt {
-    /// The commit value.
-    pub commit: String,
+    /// The optional commit value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
     /// The contract revision value.
     pub contract_revision: u64,
     /// The passed at value.

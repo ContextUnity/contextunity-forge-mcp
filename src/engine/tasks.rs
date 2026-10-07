@@ -8,7 +8,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     fs::{File, OpenOptions},
-    path::Path,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 mod workspaces;
 use workspaces::Registry;
@@ -207,7 +208,7 @@ pub struct Claim {
     /// Absolute or repository-relative path of the development worktree executing this stage.
     pub worktree: String,
     #[serde(default)]
-    /// Set true to return an aggregated zero-shot task context bundle (specification, guidance, blackboard history).
+    /// Return the aggregated zero-shot task context bundle (defaults to true; set false for minimal details).
     pub bundle: Option<bool>,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -218,7 +219,7 @@ pub struct Submit {
     pub task_id: String,
     /// Active lifecycle gate being submitted: 'contract/v1', 'build/v1', 'review/v1', or 'deliver/v1'.
     pub stage: String,
-    /// Claim-bound object: task_id, stage, claim_revision, contract_revision, worker_id, worktree, commit, and proof. proof has exactly one key. contract_proof: {seam_test_ref, red_exit_code}; red_exit_code must be > 0 unless proof_policy is direct-proof or deferred-final-test. test_proof: {command, exit_code, tests_passed, tests_failed, log?}; a pass needs a nonempty command, exit_code 0, tests_passed >= 1, tests_failed 0, and log <= 64 KiB. review_proof: {decision matching the action, contours}. contours must be exactly paths, claims, concurrency, project_isolation, and administration; each has boolean applicable and nonempty evidence.
+    /// Claim-bound object: task_id, stage, claim_revision, contract_revision, worker_id, worktree, optional commit (captured automatically on contract/build if omitted, or inherited from build on review/deliver), and proof. proof has exactly one key. contract_proof: {seam_test_ref, red_exit_code}; red_exit_code must be > 0 unless proof_policy is direct-proof or deferred-final-test. test_proof: {command, exit_code, tests_passed, tests_failed, log?}; a pass needs a nonempty command, exit_code 0, tests_passed >= 1, tests_failed 0, and log <= 64 KiB. review_proof: {decision matching the action, contours}. contours must be exactly paths, claims, concurrency, project_isolation, and administration; each has boolean applicable and nonempty evidence.
     #[schemars(schema_with = "evidence_schema")]
     pub evidence: Value,
     /// Gate submission action: 'pass' to advance to next gate, or 'reject' to fail the gate.
@@ -589,7 +590,7 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
     }
     let response = (|| {
         let details = workspace.guidance_envelope(store.inspect_details(&p.task_id)?)?;
-        if p.bundle.unwrap_or(false) {
+        if p.bundle.unwrap_or(true) {
             context_bundle(root, workspace, &p.task_id, details)
         } else {
             Ok(details)
@@ -1011,6 +1012,158 @@ pub fn reset(root: &Path, id: &str) -> Result<Task> {
 pub fn reopen(root: &Path, id: &str) -> Result<Task> {
     reset(root, id)
 }
+fn capture_scoped_snapshot(
+    worktree: &Path,
+    task_id: &str,
+    scope: &[String],
+) -> Result<Option<String>> {
+    let head_out = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(worktree)
+        .output();
+    let _head = match head_out {
+        Ok(out) if out.status.success() => {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if s.is_empty() {
+                return Ok(None);
+            }
+            s
+        }
+        _ => return Ok(None),
+    };
+
+    static SNAPSHOT_INDEX_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let temp_index_path = loop {
+        let sequence = SNAPSHOT_INDEX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = std::env::temp_dir().join(format!(
+            "forge-snap-{}-{}-{sequence}.index",
+            std::process::id(),
+            crate::db::tasks_store::now()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(index) => {
+                drop(index);
+                break candidate;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    };
+
+    struct TempFileGuard(PathBuf);
+    impl Drop for TempFileGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _guard = TempFileGuard(temp_index_path.clone());
+    let temp_index_str = temp_index_path.to_string_lossy().to_string();
+
+    // Keep unrelated branch content out of this task's candidate tree.
+    let read_tree = std::process::Command::new("git")
+        .args(["read-tree", "--empty"])
+        .env("GIT_INDEX_FILE", &temp_index_str)
+        .current_dir(worktree)
+        .output()?;
+    if !read_tree.status.success() {
+        bail!(
+            "TASK_SNAPSHOT_FAILED: git read-tree failed: {}",
+            String::from_utf8_lossy(&read_tree.stderr)
+        );
+    }
+
+    let is_tracked = |p: &str| -> bool {
+        std::process::Command::new("git")
+            .args(["ls-files", "--error-unmatch", "--", p])
+            .current_dir(worktree)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    let valid_paths: Vec<&str> = scope
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|p| worktree.join(p).exists() || is_tracked(p))
+        .collect();
+
+    if !valid_paths.is_empty() {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["add", "-A", "--"]);
+        cmd.args(&valid_paths);
+        cmd.env("GIT_INDEX_FILE", &temp_index_str);
+        cmd.current_dir(worktree);
+        let out = cmd.output()?;
+        if !out.status.success() {
+            bail!(
+                "TASK_SNAPSHOT_FAILED: git add failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    } else if scope.is_empty() {
+        let out = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .env("GIT_INDEX_FILE", &temp_index_str)
+            .current_dir(worktree)
+            .output()?;
+        if !out.status.success() {
+            bail!(
+                "TASK_SNAPSHOT_FAILED: git add -A failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    let write_tree_out = std::process::Command::new("git")
+        .args(["write-tree"])
+        .env("GIT_INDEX_FILE", &temp_index_str)
+        .current_dir(worktree)
+        .output()?;
+    if !write_tree_out.status.success() {
+        bail!(
+            "TASK_SNAPSHOT_FAILED: git write-tree failed: {}",
+            String::from_utf8_lossy(&write_tree_out.stderr)
+        );
+    }
+    let tree_sha = String::from_utf8_lossy(&write_tree_out.stdout)
+        .trim()
+        .to_string();
+    if tree_sha.is_empty() {
+        bail!("TASK_SNAPSHOT_FAILED: empty tree SHA from write-tree");
+    }
+
+    let commit_msg = format!("forge-snapshot: {task_id}");
+    let commit_out = std::process::Command::new("git")
+        .args(["commit-tree", &tree_sha, "-m", &commit_msg])
+        .env("GIT_INDEX_FILE", &temp_index_str)
+        .env("GIT_AUTHOR_NAME", "forge-agent")
+        .env("GIT_AUTHOR_EMAIL", "forge@contextunity.local")
+        .env("GIT_COMMITTER_NAME", "forge-agent")
+        .env("GIT_COMMITTER_EMAIL", "forge@contextunity.local")
+        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+        .current_dir(worktree)
+        .output()?;
+    if !commit_out.status.success() {
+        bail!(
+            "TASK_SNAPSHOT_FAILED: git commit-tree failed: {}",
+            String::from_utf8_lossy(&commit_out.stderr)
+        );
+    }
+    let commit_sha = String::from_utf8_lossy(&commit_out.stdout)
+        .trim()
+        .to_string();
+    if !(7..=64).contains(&commit_sha.len()) {
+        bail!("TASK_SNAPSHOT_FAILED: invalid commit SHA length: {commit_sha}");
+    }
+
+    Ok(Some(commit_sha))
+}
+
 /// Performs submit.
 pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     let registry = Registry::load(root)?;
@@ -1025,7 +1178,7 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     if !p.evidence.is_object() {
         bail!("TASK_EVIDENCE_INVALID: evidence must be a JSON object");
     }
-    let evidence: Evidence = serde_json::from_value(p.evidence)
+    let mut evidence: Evidence = serde_json::from_value(p.evidence)
         .context("TASK_EVIDENCE_INVALID: expected a structured JSON evidence object")?;
     registry.check_worktree(workspace, Path::new(&evidence.worktree))?;
     if task.status != "completed" {
@@ -1036,13 +1189,99 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
             Some(Path::new(&evidence.worktree)),
         )?;
     }
-    Ok(serde_json::to_value(store.submit(
+    let had_explicit_commit = evidence.commit.is_some();
+    if evidence.commit.is_none() {
+        if matches!(p.stage.as_str(), "review/v1" | "deliver/v1") {
+            evidence.commit = store.build_snapshot_commit(&p.task_id)?;
+        } else {
+            evidence.commit = capture_scoped_snapshot(
+                Path::new(&evidence.worktree),
+                &p.task_id,
+                &task.spec.scope,
+            )?;
+        }
+    }
+    if !had_explicit_commit && matches!(p.stage.as_str(), "review/v1" | "deliver/v1") {
+        if let Some(current_snap) =
+            capture_scoped_snapshot(Path::new(&evidence.worktree), &p.task_id, &task.spec.scope)?
+        {
+            if Some(&current_snap) != evidence.commit.as_ref() {
+                bail!("TASK_CANDIDATE_MISMATCH: worktree has diverged from accepted candidate");
+            }
+        }
+    }
+    let pin_snapshot =
+        p.action.name() == "pass" && matches!(p.stage.as_str(), "contract/v1" | "build/v1");
+    let snapshot_worktree = evidence.worktree.clone();
+    let snapshot_task_id = p.task_id.clone();
+    let snapshot_commit = evidence.commit.clone();
+    let task_result = store.submit_with_pre_persist(
         &p.task_id,
         &p.stage,
         &evidence,
         p.action.name(),
         p.findings.as_ref(),
-    )?)?)
+        || {
+            if pin_snapshot {
+                if let Some(commit_sha) = snapshot_commit.as_deref() {
+                    let worktree = Path::new(&snapshot_worktree);
+                    let repository = std::process::Command::new("git")
+                        .args(["rev-parse", "--git-dir"])
+                        .current_dir(worktree)
+                        .output()?;
+                    if !repository.status.success() {
+                        // Non-Git task workspaces have no repository ref to preserve.
+                        return Ok(());
+                    }
+                    let obj_exists = std::process::Command::new("git")
+                        .args(["cat-file", "-e", commit_sha])
+                        .current_dir(worktree)
+                        .output()?;
+                    if !obj_exists.status.success() {
+                        bail!(
+                            "TASK_SNAPSHOT_REF_FAILED: candidate object {commit_sha} is unavailable: {}",
+                            String::from_utf8_lossy(&obj_exists.stderr)
+                        );
+                    }
+                    let clean_ref_path = if let Some((prefix, task_ref)) = snapshot_task_id.split_once(':') {
+                        let clean_prefix = prefix.replace(['\\', ' ', ':'], "_");
+                        let clean_task_ref = task_ref.replace(['\\', ' ', ':'], "_");
+                        format!("{clean_prefix}/{clean_task_ref}")
+                    } else {
+                        snapshot_task_id.replace([':', '\\', ' '], "_")
+                    };
+                    let ref_name = format!("refs/forge/snapshots/{clean_ref_path}");
+                    let update_ref = std::process::Command::new("git")
+                        .args(["update-ref", &ref_name, commit_sha])
+                        .current_dir(worktree)
+                        .output()?;
+                    if !update_ref.status.success() {
+                        bail!(
+                            "TASK_SNAPSHOT_REF_FAILED: git update-ref failed: {}",
+                            String::from_utf8_lossy(&update_ref.stderr)
+                        );
+                    }
+                }
+            }
+            Ok(())
+        },
+    )?;
+    let mut response = serde_json::to_value(task_result)?;
+    if let Some(snapshot) = &evidence.commit {
+        if let Some(obj) = response.as_object_mut() {
+            let inspect_cmd = format!("git show {snapshot}");
+            obj.insert(
+                "snapshot".into(),
+                serde_json::json!({
+                    "commit": snapshot,
+                    "stage": p.stage,
+                    "scoped_files": task.spec.scope,
+                    "inspect_cmd": inspect_cmd,
+                }),
+            );
+        }
+    }
+    Ok(response)
 }
 /// Performs manage.
 pub fn manage(root: &Path, mut p: Manage) -> Result<Value> {

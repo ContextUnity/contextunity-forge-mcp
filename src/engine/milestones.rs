@@ -914,7 +914,36 @@ pub fn handoff(
         fs::remove_file(&archived)?;
         return Err(error.into());
     }
+    prune_snapshot_refs(root, &prefix);
     Ok(
         json!({"id": item.id, "status": "completed", "path": archive_ref, "handoff": meta["handoff"]}),
     )
+}
+
+fn prune_snapshot_refs(root: &Path, prefix: &str) {
+    let clean = prefix
+        .strip_suffix(':')
+        .unwrap_or(prefix)
+        .replace(['\\', ' '], "_");
+    let target_prefix = format!("refs/forge/snapshots/{clean}/");
+    if let Ok(output) = std::process::Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/forge/snapshots/",
+        ])
+        .current_dir(root)
+        .output()
+    {
+        let refs = String::from_utf8_lossy(&output.stdout);
+        for ref_line in refs.lines() {
+            let r = ref_line.trim();
+            if r.starts_with(&target_prefix) {
+                let _ = std::process::Command::new("git")
+                    .args(["update-ref", "-d", r])
+                    .current_dir(root)
+                    .status();
+            }
+        }
+    }
 }
