@@ -2,7 +2,7 @@
 id: m-framework-manifests-and-parser-modularity
 title: Framework manifests and parser modularity
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-architecture-and-modularity:completed
 - m-language-semantics-and-resolution-coverage:completed
@@ -18,6 +18,15 @@ invariants:
 - 'INV-EQUIVALENCE: A migration preserves resolution-status multisets and edge triples (src, dst, kind). commitment_integrity stays deterministic. Evidence wording may change.'
 related_plans: []
 started_at: 2026-10-07T14:55:19+00:00
+handoff:
+  completed_at: 2026-10-07T21:53:23.264208523+00:00
+  duration: 6h 58m
+  commit: c8537412bf4591bb8bfbfdb27b4d53a8d8ee7d9a
+  verification:
+    command: cargo test --all-targets
+    status: passed
+    tests_passed: 632
+    tests_failed: 0
 ---
 
 # Framework manifests and parser modularity
