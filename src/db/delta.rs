@@ -105,10 +105,10 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         return build(&root, db, adapter.adapter_path.as_deref());
     }
     let dependencies =
-        crate::engine::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
+        crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_scan_config(
             &root,
             Some(&adapter),
-        );
+        )?;
     let previous_manifest_digest = admitted
         .query_row(
             "SELECT value FROM metadata WHERE key='manifest_digest'",

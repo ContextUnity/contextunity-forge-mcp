@@ -460,3 +460,65 @@ receipt:
         paths: accepted
         project_isolation: accepted
 ```
+
+### task: delta-framework-manifest-errors-fail-closed
+
+```yaml
+task_ref: delta-framework-manifest-errors-fail-closed
+target: Through writer::delta, a malformed project framework manifest discovered while a tracked source file is being updated returns the manifest error before publication, even if the manifest path was omitted from the modified path list; the previously published SQLite index remains unchanged.
+proof_policy: seam-test-first
+contract_revision: 1
+scope:
+- src/db/delta.rs
+- tests/adapter_source_boundary.rs
+depends_on:
+- framework-manifest-schema-and-loader
+- language-registry-responsibility-renaming
+status: completed
+receipt:
+  commit: 689be765a50b10a8d0da993eba74e080779bac6c
+  contract_revision: 1
+  passed_at: 2026-10-07T21:44:40.723592880+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test adapter_source_boundary && cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo fmt --all -- --check && git diff --check
+      exit_code: 0
+      tests_passed: 17
+      tests_failed: 0
+      log: 'adapter_source_boundary: 3 passed; commitment_integrity: 14 passed; strict all-target/all-feature clippy passed; cargo fmt check passed; git diff --check passed.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Independent reviewer verified candidate 689be76 contains only src/db/delta.rs and tests/adapter_source_boundary.rs, both in task scope; the milestone contract edit is outside the candidate.
+        claims:
+          applicable: true
+          evidence: delta propagates try_collect_with_scan_config with ? before scan/source extraction; the public writer::delta test asserts manifest error precedence and unchanged DB bytes, output_root, and indexed source state.
+        concurrency:
+          applicable: true
+          evidence: Both declared dependencies are completed; Forge records the build proof at candidate 689be76 and no competing active task owner was found.
+        project_isolation:
+          applicable: true
+          evidence: The regression uses and cleans up a unique temporary workspace and its own SQLite database; no shared corpus or linked worktree is changed.
+        administration:
+          applicable: true
+          evidence: Contract rev1 uses seam-test-first; red evidence and 17 passing domain/commitment tests, strict Clippy, fmt, and diff checks are recorded.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-LANGUAGE-LINKER: Framework manifests feed existing LanguageLinker implementations. They do not add a second linker.'
+    - 'INV-GRAMMAR-BOUNDARY: Universal grammar, lexical scope, and imports stay in the language profile. Vue remains a language profile.'
+    - 'INV-DECLARED-ACTIVATION: A framework manifest applies only when DependencyRegistry reports that the project declares the framework.'
+    - 'INV-EQUIVALENCE: A migration preserves resolution-status multisets and edge triples (src, dst, kind). commitment_integrity stays deterministic. Evidence wording may change.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```

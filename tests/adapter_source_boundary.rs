@@ -124,3 +124,101 @@ fn custom_adapter_exclusion_survives_delta_and_linked_configs_remain_sources() {
     let adapter = scanner::load_adapter(&workspace.0, Some(&config)).unwrap();
     assert_eq!(adapter.adapter_path, Some(config));
 }
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn delta_framework_manifest_parse_error_fails_closed_before_publication() {
+    let workspace = Workspace::new();
+    workspace.write("forge-mcp.yaml", "roots: [src]\n");
+    workspace.write("src/main.rs", "pub fn previous() -> u32 { 1 }\n");
+    writer::build(&workspace.0, &workspace.db(), None).unwrap();
+
+    let indexed_source_state = |conn: &rusqlite::Connection| {
+        let inventory_digest: String = conn
+            .query_row(
+                "SELECT digest FROM source_inventory WHERE path='src/main.rs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let file_state: (String, Option<String>, i64) = conn
+            .query_row(
+                "SELECT digest,language,size FROM files WHERE path='src/main.rs'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let local_fact_digest: String = conn
+            .query_row(
+                "SELECT source_digest FROM local_facts WHERE path='src/main.rs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let node_names: Vec<String> = conn
+            .prepare("SELECT n.name FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='src/main.rs' ORDER BY n.name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        (inventory_digest, file_state, local_fact_digest, node_names)
+    };
+    let (before_root, before_source_state) = {
+        let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+        let output_root: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key='output_root'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let source_state = indexed_source_state(&conn);
+        assert!(source_state.3.iter().any(|name| name == "previous"));
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM files WHERE path='.forge/frameworks/acme.toml'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0,
+            "the framework manifest is outside the configured source inventory"
+        );
+        (output_root, source_state)
+    };
+    let before_bytes = fs::read(workspace.db()).unwrap();
+
+    workspace.write(".forge/frameworks/acme.toml", "receivers = [\n");
+    fs::write(workspace.0.join("src/main.rs"), b"\xff").unwrap();
+    let result = writer::delta(
+        &workspace.0,
+        &workspace.db(),
+        &[PathBuf::from("src/main.rs")],
+    );
+    let error = match result {
+        Err(error) => error,
+        Ok(summary) => panic!(
+            "delta published a changed source despite malformed .forge/frameworks/acme.toml: {summary}"
+        ),
+    };
+    let error_text = format!("{error:#}");
+    assert!(
+        error_text.contains(".forge/frameworks/acme.toml"),
+        "the error must identify the malformed framework manifest: {error_text}"
+    );
+
+    assert_eq!(fs::read(workspace.db()).unwrap(), before_bytes);
+    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let after_root: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='output_root'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after_root, before_root);
+    let after_source_state = indexed_source_state(&conn);
+    assert_eq!(after_source_state, before_source_state);
+    assert!(after_source_state.3.iter().any(|name| name == "previous"));
+}
