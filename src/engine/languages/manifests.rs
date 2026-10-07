@@ -1,11 +1,20 @@
 use super::{profiles, ImportPath, LanguageFamily, LanguageProfile};
+use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, collections::HashSet, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
+#[path = "manifests/framework.rs"]
+mod framework;
 #[path = "manifests/javascript_packages.rs"]
 mod javascript_packages;
 #[path = "manifests/typescript_paths.rs"]
 mod typescript_paths;
+
+pub use framework::{FrameworkManifest, FrameworkManifestValue};
 
 #[derive(Default)]
 /// Represents dependency registry data.
@@ -13,6 +22,7 @@ pub struct DependencyRegistry {
     packages: HashMap<LanguageFamily, HashSet<String>>,
     scoped_packages: HashMap<LanguageFamily, HashMap<String, HashSet<String>>>,
     scoped_origins: HashMap<LanguageFamily, HashMap<String, HashMap<String, String>>>,
+    framework_manifests: HashMap<(String, String), FrameworkManifest>,
     javascript_packages: javascript_packages::Registry,
     typescript_paths: typescript_paths::Registry,
     digest: String,
@@ -58,6 +68,19 @@ impl DependencyRegistry {
         root: &Path,
         adapter: Option<&crate::engine::scanner::Adapter>,
     ) -> Self {
+        Self::try_collect_with_adapter(root, adapter).unwrap_or_default()
+    }
+
+    /// Collects dependency and framework manifests, returning explicit framework errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an explicit `.forge/frameworks/*.{toml,yaml,yml}`
+    /// file cannot be read or does not satisfy the typed framework-manifest schema.
+    pub(crate) fn try_collect_with_adapter(
+        root: &Path,
+        adapter: Option<&crate::engine::scanner::Adapter>,
+    ) -> Result<Self> {
         let mut registry = Self::default();
         let mut roots = vec![(
             root.to_path_buf(),
@@ -103,7 +126,7 @@ impl DependencyRegistry {
                             )
                         )
                 });
-            for entry in walk.build().filter_map(Result::ok) {
+            for entry in walk.build().filter_map(std::result::Result::ok) {
                 if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                     continue;
                 }
@@ -208,6 +231,12 @@ impl DependencyRegistry {
                         .extend(dependencies);
                 }
             }
+            load_framework_manifests(
+                &root,
+                prefix.trim_end_matches('/'),
+                &mut registry,
+                &mut snapshots,
+            )?;
         }
         registry.javascript_packages.apply_pnpm_workspaces();
         registry.typescript_paths.resolve_all();
@@ -219,7 +248,7 @@ impl DependencyRegistry {
             hasher.update(digest);
         }
         registry.digest = hex::encode(hasher.finalize());
-        registry
+        Ok(registry)
     }
 
     /// Performs digest.
@@ -240,6 +269,25 @@ impl DependencyRegistry {
             .get(&family)
             .and_then(|scopes| scopes.get(scope))
             .is_some_and(|packages| packages.contains(package))
+    }
+
+    /// Returns a user manifest only when the declaring project owns its package.
+    ///
+    /// The manifest scope is the primary or linked-workspace root. Package
+    /// declarations remain scoped through the existing dependency registry.
+    pub fn framework_manifest_for_path(
+        &self,
+        family: LanguageFamily,
+        path: &str,
+        framework: &str,
+        package: &str,
+    ) -> Option<&FrameworkManifest> {
+        if !self.declares_for_path(family, path, package) {
+            return None;
+        }
+        let (workspace, _) = super::workspace_path(path);
+        self.framework_manifests
+            .get(&(workspace.to_owned(), framework.to_owned()))
     }
 
     pub(crate) fn nuxt_package_scope_for_path(&self, path: &str) -> Option<&str> {
@@ -332,6 +380,124 @@ impl DependencyRegistry {
             directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
         }
     }
+}
+
+fn load_framework_manifests(
+    root: &Path,
+    workspace: &str,
+    registry: &mut DependencyRegistry,
+    snapshots: &mut std::collections::BTreeMap<PathBuf, sha2::digest::Output<Sha256>>,
+) -> Result<()> {
+    let forge_directory = root.join(".forge");
+    let forge_metadata = match fs::symlink_metadata(&forge_directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect configuration directory {}",
+                    forge_directory.display()
+                )
+            })
+        }
+    };
+    if forge_metadata.file_type().is_symlink() {
+        bail!(
+            "configuration directory must not be a symlink: {}",
+            forge_directory.display()
+        );
+    }
+    if !forge_metadata.is_dir() {
+        bail!(
+            "configuration path is not a directory: {}",
+            forge_directory.display()
+        );
+    }
+    let directory = root.join(".forge/frameworks");
+    let metadata = match fs::symlink_metadata(&directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect framework manifest directory {}",
+                    directory.display()
+                )
+            })
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "framework manifest directory must not be a symlink: {}",
+            directory.display()
+        );
+    }
+    if !metadata.is_dir() {
+        bail!(
+            "framework manifest path is not a directory: {}",
+            directory.display()
+        );
+    }
+
+    for entry in fs::read_dir(&directory).with_context(|| {
+        format!(
+            "failed to read framework manifest directory {}",
+            directory.display()
+        )
+    })? {
+        let entry = entry.with_context(|| {
+            format!(
+                "failed to inspect entries in framework manifest directory {}",
+                directory.display()
+            )
+        })?;
+        let path = entry.path();
+        let Some(extension @ ("toml" | "yaml" | "yml")) =
+            path.extension().and_then(|extension| extension.to_str())
+        else {
+            continue;
+        };
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect framework manifest {}", path.display()))?;
+        if file_type.is_symlink() {
+            bail!(
+                "framework manifest must not be a symlink: {}",
+                path.display()
+            );
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .context("framework manifest filename must have a UTF-8 identifier")?
+            .to_owned();
+        let metadata = entry
+            .metadata()
+            .with_context(|| format!("failed to inspect framework manifest {}", path.display()))?;
+        if metadata.len() > 4 * 1024 * 1024 {
+            bail!(
+                "framework manifest exceeds the 4 MiB limit: {}",
+                path.display()
+            );
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read framework manifest {}", path.display()))?;
+        let manifest = FrameworkManifest::parse(name.clone(), extension, &content)
+            .with_context(|| format!("failed to load framework manifest {}", path.display()))?;
+        if registry
+            .framework_manifests
+            .insert((workspace.to_owned(), name.clone()), manifest)
+            .is_some()
+        {
+            bail!("duplicate framework manifest {name} in workspace {workspace}");
+        }
+        snapshots.insert(path, Sha256::digest(content.as_bytes()));
+    }
+    Ok(())
 }
 
 fn preferred_manifest(candidate: &str, recorded: &str) -> bool {

@@ -31,7 +31,7 @@ pub(crate) mod python_receivers;
 #[cfg(any(feature = "lang-html", feature = "lang-vue"))]
 #[path = "support/template.rs"]
 pub(crate) mod template;
-#[cfg(any(feature = "lang-python", feature = "lang-rust"))]
+#[cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-toml"))]
 pub(crate) mod toml_manifest;
 #[path = "typescript/linker_bindings.rs"]
 pub(crate) mod typescript_bindings;

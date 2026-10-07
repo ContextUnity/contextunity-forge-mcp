@@ -223,10 +223,10 @@ fn populate(
     conn.execute_batch(tables)?;
     let linking = Instant::now();
     let dependencies =
-        crate::engine::languages::manifests::DependencyRegistry::collect_with_adapter(
+        crate::engine::languages::manifests::DependencyRegistry::try_collect_with_adapter(
             root,
             Some(adapter),
-        );
+        )?;
     let graph = linker::link_compact_with_typed_registry(facts, None, Some(root), &dependencies);
     let link_ms = linking.elapsed().as_secs_f64() * 1000.;
     let writing = Instant::now();

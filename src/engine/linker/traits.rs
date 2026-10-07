@@ -2,7 +2,10 @@
 
 use crate::{
     core::models::{Facts, Node, Reference},
-    engine::languages::{ImportPath, LanguageFamily, LanguageProfile},
+    engine::languages::{
+        manifests::{DependencyRegistry, FrameworkManifest},
+        ImportPath, LanguageFamily, LanguageProfile,
+    },
 };
 use hashbrown::HashMap;
 use std::{
@@ -90,6 +93,21 @@ pub trait LanguageLinker: Send + Sync {
     /// Reports whether a receiver name is valid for its owning declaration.
     fn resolve_receiver(&self, profile: &dyn LanguageProfile, name: &str, owner: &Node) -> bool {
         profile.receiver(name, owner)
+    }
+
+    /// Returns a declared framework's user rules for the owning source path.
+    ///
+    /// Framework data stays behind the existing language-linker seam. The
+    /// dependency registry enforces package declaration and workspace scope.
+    fn framework_manifest<'a>(
+        &self,
+        dependencies: &'a DependencyRegistry,
+        family: LanguageFamily,
+        path: &str,
+        framework: &str,
+        package: &str,
+    ) -> Option<&'a FrameworkManifest> {
+        dependencies.framework_manifest_for_path(family, path, framework, package)
     }
 
     /// Resolves a member through language-specific companion declarations.

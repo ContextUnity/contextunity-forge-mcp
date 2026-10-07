@@ -1,7 +1,7 @@
 ---
 title: "ADR 0013: Data-Driven Framework Manifests"
 doc_type: adr
-status: accepted
+status: superseded
 date: 2026-10-05
 ---
 
@@ -9,7 +9,7 @@ date: 2026-10-05
 
 ## Status
 
-Accepted. Milestone 041 carries this decision after milestone 020 is completed.
+Superseded for manifest file formats and parsing by [ADR 0017](0017-serde-framework-manifest-formats.md). Decisions 1, 2, 4, and 5 remain in force.
 
 ## Context
 
@@ -19,7 +19,7 @@ Accepted. Milestone 041 carries this decision after milestone 020 is completed.
 
 1. **Language seam stays.** Framework manifests feed the existing `LanguageLinker` implementations. They do not replace `LanguageLinker` and they do not add a parallel linker.
 2. **Universal grammar stays in the language profile.** Lexical scope, imports, and AST traversal remain in the language extractor. Vue stays a language profile in `src/engine/languages/vue.rs`. Nuxt directory conventions are a framework manifest consumed by the JavaScript and TypeScript linkers.
-3. **Framework rules are data.** Receivers, builtins, filters, and route patterns that are not universal grammar live in a manifest. Standard manifests are `include_str!` tables in the binary. A file under `.forge/frameworks/*.toml` is an explicit optional read. Invalid TOML fails closed.
+3. **Framework rules are data.** Receivers, builtins, filters, and route patterns that are not universal grammar live in a manifest. Standard manifests are `include_str!` tables in the binary. User manifest formats and parser policy are defined by [ADR 0017](0017-serde-framework-manifest-formats.md).
 4. **Activation follows the dependency registry.** A manifest applies only when `DependencyRegistry` reports that the project declares that framework.
 5. **Equivalence is status and endpoints.** A manifest migration preserves the multiset of resolution statuses and the edge triples `(src, dst, kind)` on the reference corpus. `commitment_integrity` stays deterministic. Evidence text may change, so the Merkle root is not required to match a pre-migration snapshot.
 
