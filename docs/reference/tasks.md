@@ -94,11 +94,11 @@ perimeter cannot claim a foreign task.
 
 | Tool | Arguments and behavior |
 | --- | --- |
-| `task_list` | Optional `repository`, `milestone_ref`, `status`, and `stage`. Status defaults strictly to `ready`; explicit values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Stage is `contract`, `build`, `review`, `deliver`, or null. |
+| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. Stage is `contract`, `build`, `review`, `deliver`, or null. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean). Claims the current gate atomically. When `bundle: true`, returns an aggregated zero-shot task context bundle. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. Selectors follow the table below. |
-| `task_blackboard` | Required `action` (`post` or `read`) and `task_id`. Post requires `topic` and `payload`, accepts optional `author`, and returns an ID. Read accepts optional `topic` and `limit`, and returns chronological messages. |
+| `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires `topic` and `payload`, accepts `author`, and returns an ID. Read accepts `topic`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect requires `message_id` and returns that message including payload. |
 
 Unknown fields are rejected. Ready tasks are unclaimed and nonterminal, with
 satisfied local prerequisites. Missing or amended authority blocks open work.
@@ -239,14 +239,31 @@ different SHA because a commit cannot contain its own hash.
 
 ## Task blackboard
 
-`task_blackboard` stores messages with `id`, `task_id`, `author`, `topic`, `payload`,
-and `created_at` in the task SQLite store. Post requires a topic and payload.
-Read returns messages in chronological order, optionally filtered by topic or
-bounded by `limit`; no limit reads all matching messages. An omitted author is
-the current claim worker, or `mcp`/`cli` when no claim is active. Post rejects a
-read-only `limit`; read rejects `author` and `payload`. The store confines access
-to the task's configured project. Use `architectural_notes` for decisions that
-must survive task delivery; other topics are temporary collaboration context.
+`task_blackboard` stores messages in the configured task SQLite store with a
+`milestone_ref`, optional `task_id`, optional `subtask_ref`, `author`, `topic`,
+`payload`, and `created_at`. Post requires a topic and payload. An omitted author
+uses the task owner when the resolved context has one, or the current transport
+(`mcp` or `cli`). Post rejects read-only pagination fields; read rejects
+`author` and `payload`. Post and read use the resolved task project. Inspect
+searches configured task workspaces by `message_id` and returns the first match.
+
+Use `scope: "milestone"` for milestone-level messages. It resolves the explicit
+milestone or the unique active milestone and never includes task-scoped entries.
+Use `scope: "task"` or `scope: "subtask"` to select those levels. Omitted task
+and subtask keys resolve only through unique in-progress contexts; missing or
+ambiguous contexts fail closed. When scope and keys are all omitted, Forge uses
+the unique in-progress task, fails if several are in progress, and falls back to
+the unique active milestone only when no task is in progress.
+
+Read returns one page of payload-free summaries, ordered by `created_at DESC`
+and `id DESC`. The default `limit` is 10, the maximum is 50, and `offset` selects
+the next page using the returned pagination metadata. Use `action: "inspect"`
+with a `message_id` from a post or read result to retrieve the full message and
+payload. Use `architectural_notes` for decisions that must survive task delivery;
+other topics are temporary collaboration context.
+
+> [!IMPORTANT]
+> Invariant: A blackboard operation resolves to exactly one hierarchy scope; reads do not expose payloads, and only `inspect` returns payload.
 
 ## Milestone CLI lifecycle
 
@@ -255,7 +272,7 @@ contracts:
 
 ```sh
 contextunity-forge-mcp milestone init --plan docs/plans/proposal.md [--dir docs/milestones] [--num 011] [--slug short-name] [--title "Title"] [--active]
-contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|all]
+contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|cancelled|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
 contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --verification-command "cargo test --all-targets" --tests-passed <count> --tests-failed 0
 ```
@@ -267,7 +284,9 @@ sync guidance. `--active` records the creation time as `started_at`; planned
 documents gain that timestamp on the first accepted task claim.
 
 `milestone list` reports the frontmatter state and SQLite completion ratio for
-each current milestone. Archive and status options include archived contracts.
+each current milestone. Status values are `planned`, `active`, `completed`,
+`cancelled`, and `all`; `--archive` includes archived contracts, and completed
+or cancelled status filters include archived contracts.
 `milestone show` returns frontmatter, expected outcomes, and task metadata;
 `--full` includes the complete task descriptions.
 
@@ -283,14 +302,15 @@ the document to the selected directory's `archive/`, and updates the stored
 ## CLI and administration
 
 ```sh
-contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage build|review|deliver]
+contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage STAGE] [--milestone-status active|planned|completed|all] [--planned|--completed|--all] [--full]
 contextunity-forge-mcp task create MILESTONE_REF TASK_REF [--workspace NAME]
 contextunity-forge-mcp task sync [MILESTONE_REF] [--workspace NAME]
 contextunity-forge-mcp task inspect TASK_ID
 contextunity-forge-mcp task claim TASK_ID --stage STAGE --worker WORKER --worktree PATH
 contextunity-forge-mcp task submit TASK_ID --stage STAGE --action pass|reject --evidence '<JSON_OBJECT>' [--findings JSON]
-contextunity-forge-mcp task blackboard post TASK_ID --topic architectural_notes --payload "Decision and reason" [--author WORKER]
-contextunity-forge-mcp task blackboard read TASK_ID [--topic TOPIC] [--limit N]
+contextunity-forge-mcp task blackboard post [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] --topic TOPIC --payload TEXT [--author WORKER]
+contextunity-forge-mcp task blackboard read [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--topic TOPIC] [--limit N] [--offset N]
+contextunity-forge-mcp task blackboard inspect MESSAGE_ID
 contextunity-forge-mcp task extend-scope TASK_ID PATH...
 contextunity-forge-mcp task delete TASK_ID [--force]
 contextunity-forge-mcp task delete --milestone REF [--workspace NAME] [--force]
@@ -301,6 +321,18 @@ contextunity-forge-mcp migrate preview [MILESTONE_REF]
 contextunity-forge-mcp migrate apply [MILESTONE_REF]
 contextunity-forge-mcp migrate verify [MILESTONE_REF]
 ```
+
+Task list defaults to active milestones and compact subtask references/statuses.
+Use `--milestone-status planned|completed|all` or its mutually exclusive
+`--planned`, `--completed`, and `--all` shorthands to select other milestone
+sets; `--milestone REF` targets one milestone and defaults that query to all
+milestone statuses. Use `--full` to include subtask titles and evidence.
+
+Blackboard `--scope` selects milestone, task, or subtask messages. If scope and
+keys are omitted, the command resolves one in-progress task, otherwise one
+active milestone; ambiguous contexts fail closed. Read pages default to 10 and
+cap at 50, omit payload, and return pagination metadata. `inspect MESSAGE_ID`
+returns the payload for one message.
 
 Reset (or `task reopen`, also available via MCP `task_manage` with `action: "reset"` or `"reopen"`)
 abandons ownership, increments claim revision, and marks the task pending. For in-progress tasks,

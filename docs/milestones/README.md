@@ -9,11 +9,13 @@ Milestone commitment files in this directory (`0XX-*.md`) define the repository'
 
 ## Ownership and Truth
 
-- **Single Source of Truth:** Each milestone file (`docs/milestones/0XX-*.md`) owns its own status (`active`, `planned`, `deferred`, `completed`), invariants, task breakdown, and acceptance outcomes.
+- **Single Source of Truth:** Each milestone file (`docs/milestones/0XX-*.md`) owns its status (`active`, `planned`, `completed`, or `cancelled`), invariants, task breakdown, and acceptance outcomes. A cancelled milestone records a non-empty `closure.reason`.
 - **Queue Order:** Numeric filename prefixes (`010-*.md`, `020-*.md`, ...) supply the queue execution order.
-- **Archive:** Completed milestones are moved to [archive/](archive/README.md) along with their proof receipts.
+- **Archive:** Completed and cancelled milestones are retained in [archive/](archive/README.md) with their durable receipts and rationale. Sync prunes operational task state for cancelled milestones.
 
 To find the active commitment, discover the lowest-numbered file with `status: active` in this directory or run `contextunity-forge-mcp milestone list`. A `planned` milestone whose `depends_on` predecessor is still active stays blocked.
+
+Only this overview README is admitted for documentation indexing; individual milestone contracts remain separate from `doc_search`. See [ADR 0014](../adr/0014-milestone-task-subtask-hierarchy-and-visibility.md) for lifecycle, task visibility, and coordination invariants.
 
 ## Milestone Taxonomy and Naming Groups
 

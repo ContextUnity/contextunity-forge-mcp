@@ -65,6 +65,16 @@ Use [repository tasks](tasks.md) for `task list`, `create`, `sync`, `inspect`,
 typed proof. The [ACDD workflow](acdd.md) completes a task with:
 
 ```sh
+contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage STAGE] [--milestone-status active|planned|completed|all] [--planned|--completed|--all] [--full]
+```
+
+Task list defaults to tasks from active milestones and compact subtask
+references/statuses. Use `--milestone-status planned|completed|all` or the
+mutually exclusive `--planned`, `--completed`, and `--all` shorthands to select
+other milestone sets. A targeted `--milestone REF` defaults to all milestone
+statuses. Use `--full` to include subtask titles and verification evidence.
+
+```sh
 contextunity-forge-mcp task claim TASK_ID --stage deliver --worker REVIEWER --worktree PATH [--bundle]
 contextunity-forge-mcp task submit TASK_ID --stage deliver --action pass --evidence '<JSON_OBJECT>'
 contextunity-forge-mcp task context TASK_ID
@@ -78,12 +88,23 @@ These commands deliver one task. `milestone handoff` below closes the whole
 milestone. Exchange temporary task context with:
 
 ```sh
-contextunity-forge-mcp task blackboard post TASK_ID --topic architectural_notes --payload "Decision and reason" [--author WORKER]
-contextunity-forge-mcp task blackboard read TASK_ID [--topic TOPIC] [--limit N]
+contextunity-forge-mcp task blackboard post [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] --topic TOPIC --payload TEXT [--author WORKER]
+contextunity-forge-mcp task blackboard read [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--topic TOPIC] [--limit N] [--offset N]
+contextunity-forge-mcp task blackboard inspect MESSAGE_ID
 ```
 
-Post returns a message ID. Read returns chronological messages. An omitted
-author uses the current claim worker or `cli` if the task is unclaimed.
+Post accepts a task ID as a positional argument or resolves context from
+`--scope`, `--milestone-ref`, and `--subtask-ref`; it returns a message ID. An
+omitted author uses the resolved task owner or `cli`. Read resolves the same
+three levels and returns newest-first, payload-free summaries with pagination
+metadata. The default page contains 10 messages and the maximum is 50.
+`inspect MESSAGE_ID` searches configured task workspaces and returns the first
+matching message including its payload.
+
+With scope and keys omitted, blackboard commands select the unique in-progress
+task; multiple in-progress tasks fail closed. If none is in progress, they fall
+back to the unique active milestone and fail closed if it is missing or
+ambiguous. Explicit milestone scope includes only milestone-level messages.
 
 Manage iterative subtasks within an admitted task:
 
@@ -105,7 +126,7 @@ history so new work and audits can proceed.
 ## Repository milestones
 
 ```sh
-contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|all]
+contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|cancelled|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
 contextunity-forge-mcp milestone init [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
 contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --verification-command "cargo test --all-targets" --tests-passed <count> --tests-failed 0
@@ -113,9 +134,10 @@ contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --
 
 `milestone list` returns a table and structured rows containing ID, title,
 status, `started_at`, task states, and the SQLite completion ratio. The default
-list reads current milestone files; `--archive` and `--status all|completed`
-include archived files. `milestone show` resolves a full ID or numeric file
-prefix and returns frontmatter, outcomes, and task metadata. `--full` includes
+list reads current milestone files; `--archive` includes archived files, and
+`--status completed|cancelled` includes matching archived files. Status values
+are `planned`, `active`, `completed`, `cancelled`, and `all`. `milestone show`
+resolves a full ID or numeric file prefix and returns frontmatter, outcomes, and task metadata. `--full` includes
 the complete Markdown document.
 
 `milestone init` creates a numbered file in a configured milestone directory.

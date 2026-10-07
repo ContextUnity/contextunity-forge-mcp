@@ -22,5 +22,6 @@ Accepted decisions live here as owner-approved ADR files with stable IDs, status
 11. [ADR 0011: Bounded MCP Response Budgets and Continuation Paging](0011-bounded-mcp-response-budgets.md)
 12. [ADR 0012: Lean Serialization and Measured Performance](0012-zero-regression-serialization-and-cold-build-latency.md)
 13. [ADR 0013: Data-Driven Framework Manifests](0013-data-driven-framework-manifests.md)
+14. [ADR 0014: Task Hierarchy, Visibility, and Blackboard Coordination](0014-milestone-task-subtask-hierarchy-and-visibility.md)
 
 Decision amendments require explicit architectural admission. A superseding ADR links the accepted decision it replaces and the affected current architecture in [Architecture](../architecture/README.md).

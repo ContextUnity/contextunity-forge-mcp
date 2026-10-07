@@ -38,11 +38,11 @@ Selector grammar, SQL shape, proof objects, and examples stay in this page and i
 | `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`. |
 | `session_checkpoint` | `list` checkpoint names and serialized byte sizes; `save`, `get`, or `delete` a named local JSON checkpoint. |
 | `forge_guide` | Return the built-in usage guide. |
-| `task_list` | List ready tasks in the primary repository by default; select repository/all, status, milestone, or stage explicitly. |
+| `task_list` | List ready tasks in the primary repository by default; select repository/all, task `status`, `milestone_ref`, `milestone_status`, or stage explicitly. Milestone status defaults to `active`, except a targeted milestone reference defaults to all statuses. Subtasks are compact by default; request `detail: "full"` for titles and evidence. |
 | `task_claim` | Atomically claim the current task gate for a worker and worktree. |
 | `task_submit` | Submit a revision-bound JSON `evidence` object. Passing `deliver/v1` writes the validated task receipt and context rollup. |
 | `task_manage` | Create, sync, inspect, delete, or extend task scope; workspace selects linked specification sync. |
-| `task_blackboard` | Post or read task-scoped SQLite messages. `post` requires `task_id`, `topic`, and `payload`, accepts optional `author`, and returns `{id}`; `read` accepts optional `topic` and `limit`, and returns `{messages}`. |
+| `task_blackboard` | Post, read, or inspect milestone-, task-, and subtask-scoped SQLite messages. `scope` selects the hierarchy level; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain it, with fail-closed resolution for omitted ambiguous context. `post` requires `topic` and `payload`, accepts optional `author`, and returns `{id}`. `read` accepts `topic`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first payload-free `{messages}` and `{pagination}` from the resolved context. `inspect` requires `message_id`, searches configured task workspaces, and returns the first matching message including its payload. |
 
 See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI parity, and [ACDD](acdd.md) for the task lifecycle.
 
