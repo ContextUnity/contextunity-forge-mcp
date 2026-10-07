@@ -596,7 +596,31 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
         if p.bundle.unwrap_or(true) {
             context_bundle(root, workspace, &p.task_id, details)
         } else {
-            Ok(details)
+            let mut minimal = details;
+            if let Some(obj) = minimal.as_object_mut() {
+                let depends_on = obj
+                    .get("spec")
+                    .and_then(|s| s.get("depends_on"))
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
+                let subtasks = obj
+                    .get("subtasks")
+                    .cloned()
+                    .or_else(|| {
+                        obj.get("spec")
+                            .and_then(|s| s.get("subtasks"))
+                            .cloned()
+                    })
+                    .unwrap_or_else(|| serde_json::json!([]));
+                obj.remove("gates");
+                obj.remove("attempts");
+                obj.remove("findings");
+                obj.remove("receipt");
+                obj.remove("spec");
+                obj.insert("depends_on".into(), depends_on);
+                obj.insert("subtasks".into(), subtasks);
+            }
+            Ok(minimal)
         }
     })();
     if response.is_err() {

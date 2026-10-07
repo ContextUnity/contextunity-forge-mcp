@@ -3,6 +3,16 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::{collections::BTreeSet, fs, path::Path};
 
+/// Truncate string by Unicode scalar count without slicing invalid byte boundaries.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let prefix: String = s.chars().take(max_chars).collect();
+        format!("{prefix}... [truncated]")
+    }
+}
+
 /// Extract alphanumeric tokens of length >= 3 from paths, ignoring common folder/file extensions.
 fn extract_scope_tokens(scope: &[String]) -> BTreeSet<String> {
     let mut tokens = BTreeSet::new();
@@ -169,7 +179,7 @@ fn query_scope_symbols(workspace_root: &Path, root: &Path, scope: &[String]) -> 
                     .and_then(|v| {
                         v.get("signature")
                             .and_then(|s| s.as_str())
-                            .map(str::to_owned)
+                            .map(|s| truncate_chars(s, 200))
                     });
                 Ok(json!({
                     "name": name,
@@ -273,27 +283,168 @@ pub(super) fn context_bundle(
     // 3. Covering test seams
     let covering_tests = find_covering_tests(&workspace.root, root, &scope);
 
-    // 4. Active blackboard messages
+    // Extract stage-specific context before details is pruned
+    let contract_seam_test = details
+        .get("gates")
+        .and_then(|g| g.as_array())
+        .and_then(|gates| {
+            gates.iter().rev().find(|g| {
+                g.get("stage").and_then(|s| s.as_str()) == Some("contract/v1")
+                    && g.get("state").and_then(|s| s.as_str()) == Some("passed")
+            })
+        })
+        .and_then(|g| g.get("evidence").and_then(|e| e.as_str()))
+        .and_then(|ev_str| serde_json::from_str::<Value>(ev_str).ok())
+        .and_then(|ev| {
+            if let Some(proof) = ev.get("contract_proof") {
+                proof.get("seam_test_ref").cloned()
+            } else if let Some(proof) = ev.get("proof").and_then(|p| p.get("contract_proof")) {
+                proof.get("seam_test_ref").cloned()
+            } else {
+                ev.get("seam_test_ref").cloned()
+            }
+        });
+
+    let unresolved_review_findings = if details.get("stage").and_then(|s| s.as_str()) == Some("build/v1") {
+        let latest_rejected_gate = details
+            .get("gates")
+            .and_then(|g| g.as_array())
+            .and_then(|gates| {
+                gates.iter().rev().find(|g| {
+                    matches!(g.get("stage").and_then(|s| s.as_str()), Some("review/v1") | Some("deliver/v1"))
+                        && g.get("state").and_then(|s| s.as_str()) == Some("rejected")
+                })
+            });
+        if let Some(rejected_gate) = latest_rejected_gate {
+            let rejected_rev = rejected_gate.get("claim_revision").and_then(|r| r.as_u64());
+            details
+                .get("findings")
+                .and_then(|f| f.as_array())
+                .and_then(|arr| {
+                    arr.iter().rev().find(|finding| {
+                        finding.get("claim_revision").and_then(|r| r.as_u64()) == rejected_rev
+                    })
+                })
+                .and_then(|finding| {
+                    finding.get("findings").and_then(|s| {
+                        if let Some(text) = s.as_str() {
+                            serde_json::from_str::<Value>(text)
+                                .ok()
+                                .or_else(|| Some(json!(text)))
+                        } else {
+                            Some(s.clone())
+                        }
+                    })
+                })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let candidate_snapshot = details
+        .get("gates")
+        .and_then(|g| g.as_array())
+        .and_then(|gates| {
+            gates.iter().rev().find_map(|g| {
+                if g.get("stage").and_then(|s| s.as_str()) == Some("build/v1")
+                    && g.get("state").and_then(|s| s.as_str()) == Some("passed")
+                {
+                    g.get("commit").and_then(|c| c.as_str()).map(|commit| {
+                        json!({
+                            "commit": commit,
+                            "inspect_cmd": crate::core::tasks::snapshot_inspect_cmd(commit),
+                        })
+                    })
+                } else {
+                    None
+                }
+            })
+        });
+
+    let latest_delivery_snapshot = details
+        .get("gates")
+        .and_then(|g| g.as_array())
+        .and_then(|gates| {
+            gates.iter().rev().find_map(|g| {
+                let stage_name = g.get("stage").and_then(|s| s.as_str())?;
+                let state = g.get("state").and_then(|s| s.as_str())?;
+                if state == "passed" && matches!(stage_name, "review/v1" | "build/v1" | "deliver/v1") {
+                    let commit = g.get("commit").and_then(|c| c.as_str())?;
+                    Some(json!({
+                        "commit": commit,
+                        "inspect_cmd": crate::core::tasks::snapshot_inspect_cmd(commit),
+                    }))
+                } else {
+                    None
+                }
+            })
+        });
+
+    let milestone_ref = details.get("milestone_ref").cloned();
+    let depends_on = details
+        .get("spec")
+        .and_then(|s| s.get("depends_on"))
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let receipt = details.get("receipt").cloned();
+
+    // 4. Active blackboard messages (bounded to 15 recent messages, with max 500-char payload and source tags)
     let blackboard_messages: Vec<Value> = {
         let registry = super::workspaces::Registry::load(root)?;
         let store = workspace.open(&registry.database)?;
+        let milestone_ref_str = details
+            .get("milestone_ref")
+            .and_then(|v| v.as_str())
+            .and_then(|m| store.milestone_scope_ref(m).ok());
         let milestone_prefix = task_id.split_once(':').map(|(p, _)| format!("{p}:"));
         let mut stmt = store.connection.prepare(
-            "SELECT id, author, topic, payload, created_at FROM task_blackboard \
-             WHERE task_id = ?1 OR (?2 IS NOT NULL AND substr(task_id, 1, length(?2)) = ?2) \
-             ORDER BY created_at, id LIMIT 50",
+            "SELECT id, task_id, subtask_ref, author, topic, payload, created_at FROM task_blackboard \
+             WHERE task_id = ?1 \
+                OR (?2 IS NOT NULL AND milestone_ref = ?2 AND task_id IS NULL) \
+                OR (?3 IS NOT NULL AND substr(task_id, 1, length(?3)) = ?3) \
+             ORDER BY created_at DESC, id DESC LIMIT 15",
         )?;
-        let msgs = stmt
-            .query_map(rusqlite::params![task_id, milestone_prefix], |row| {
-                Ok(json!({
-                    "id": row.get::<_, u64>(0)?,
-                    "author": row.get::<_, String>(1)?,
-                    "topic": row.get::<_, String>(2)?,
-                    "payload": row.get::<_, String>(3)?,
-                    "created_at": row.get::<_, i64>(4)?,
-                }))
-            })?
+        let mut msgs = stmt
+            .query_map(
+                rusqlite::params![task_id, milestone_ref_str, milestone_prefix],
+                |row| {
+                    let id = row.get::<_, u64>(0)?;
+                    let msg_task_id = row.get::<_, Option<String>>(1)?;
+                    let msg_subtask_ref = row.get::<_, Option<String>>(2)?;
+                    let author = row.get::<_, String>(3)?;
+                    let topic = row.get::<_, String>(4)?;
+                    let raw_payload: String = row.get(5)?;
+                    let created_at = row.get::<_, i64>(6)?;
+                    let payload = truncate_chars(&raw_payload, 500);
+
+                    let scope = match msg_task_id.as_deref() {
+                        None => "milestone",
+                        Some(t) if t == task_id => {
+                            if msg_subtask_ref.is_some() {
+                                "subtask"
+                            } else {
+                                "task"
+                            }
+                        }
+                        Some(_) => "sibling",
+                    };
+
+                    Ok(json!({
+                        "id": id,
+                        "scope": scope,
+                        "task_id": msg_task_id,
+                        "subtask_ref": msg_subtask_ref,
+                        "author": author,
+                        "topic": topic,
+                        "payload": payload,
+                        "created_at": created_at,
+                    }))
+                },
+            )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        msgs.reverse();
         msgs
     };
 
@@ -369,8 +520,10 @@ pub(super) fn context_bundle(
         }
     }
 
-    let bundle = json!({
-        "contract": {
+    let mut bundle_map = serde_json::Map::new();
+    bundle_map.insert(
+        "contract".into(),
+        json!({
             "task_id": task_id,
             "target": details["goal"],
             "stage": stage,
@@ -378,27 +531,71 @@ pub(super) fn context_bundle(
             "proof_policy": details["proof_policy"],
             "allowed_scope": scope,
             "subtasks": details["subtasks"],
+            "depends_on": depends_on.clone(),
             "invariants": details["applicable_invariants"].as_array().cloned().unwrap_or_default(),
             "contract_revision": details["contract_revision"],
             "claim_revision": details["claim_revision"],
             "worker_id": details["worker_id"],
             "worktree": details["worktree"],
-        },
-        "guidance": guidance,
-        "adrs": adrs,
-        "scope_symbols": scope_symbols,
-        "covering_tests": covering_tests,
-        "blackboard": blackboard_messages,
-    });
+        }),
+    );
+    bundle_map.insert("guidance".into(), guidance);
+
+    if matches!(stage, "contract/v1" | "build/v1" | "review/v1") {
+        bundle_map.insert("adrs".into(), json!(adrs));
+    }
+    if matches!(stage, "contract/v1" | "build/v1") {
+        bundle_map.insert("scope_symbols".into(), json!(scope_symbols));
+        bundle_map.insert("covering_tests".into(), json!(covering_tests));
+    }
+    if stage == "build/v1" {
+        if let Some(seam) = contract_seam_test {
+            bundle_map.insert("contract_seam_test".into(), seam);
+        }
+        if let Some(findings) = unresolved_review_findings {
+            bundle_map.insert("unresolved_review_findings".into(), findings);
+        }
+    }
+    if stage == "review/v1" {
+        if let Some(snapshot) = candidate_snapshot.as_ref() {
+            bundle_map.insert("candidate_snapshot".into(), snapshot.clone());
+        }
+    }
+    if stage == "deliver/v1" || details.get("status").and_then(|s| s.as_str()) == Some("completed") {
+        if let Some(snapshot) = latest_delivery_snapshot.as_ref() {
+            bundle_map.insert("latest_snapshot".into(), snapshot.clone());
+        }
+        if let Some(m_ref) = milestone_ref.as_ref() {
+            bundle_map.insert("milestone_ref".into(), m_ref.clone());
+        }
+        if details.get("status").and_then(|s| s.as_str()) == Some("completed") {
+            if let Some(r) = receipt.as_ref() {
+                bundle_map.insert("receipt".into(), r.clone());
+            }
+        }
+    }
+    bundle_map.insert("blackboard".into(), json!(blackboard_messages));
+
+    let bundle = Value::Object(bundle_map);
 
     let obj = details
         .as_object_mut()
         .context("details must be an object")?;
-    obj.insert("context_bundle".into(), bundle);
-    obj.insert("adrs".into(), json!(adrs));
-    obj.insert("scope_symbols".into(), json!(scope_symbols));
-    obj.insert("covering_tests".into(), json!(covering_tests));
+
+    // Prune raw historical archives and table dumps from the response
+    obj.remove("gates");
+    obj.remove("attempts");
+    obj.remove("findings");
+    obj.remove("spec");
+    obj.remove("receipt");
+    obj.remove("adrs");
+    obj.remove("scope_symbols");
+    obj.remove("covering_tests");
+
+    // Retain bounded blackboard and contract essentials at root
+    obj.insert("depends_on".into(), depends_on);
     obj.insert("blackboard".into(), json!(blackboard_messages));
+    obj.insert("context_bundle".into(), bundle);
 
     Ok(details)
 }

@@ -65,7 +65,7 @@ impl Server {
         self.responding(|_, _| super::tasks::list(&self.root, p))
     }
     #[tool(
-        description = "Atomically claim one gate in a worktree. Returns the zero-shot context bundle (specification, guidance, blackboard history) by default (bundle=false returns minimal details)."
+        description = "Atomically claim one gate in a worktree. Returns the zero-shot context bundle (contract, guidance, scoped ADRs, covering tests, blackboard history) by default (bundle=false returns minimal details)."
     )]
     fn task_claim(&self, Parameters(p): Parameters<super::tasks::Claim>) -> CallToolResult {
         self.responding(|_, _| super::tasks::claim(&self.root, p))

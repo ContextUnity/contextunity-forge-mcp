@@ -385,14 +385,30 @@ Without a reference, migration selects numbered Markdown milestones under
 
 To achieve zero-shot agent orientation and eliminate exploratory tool-call loops, Forge aggregates task context by default upon MCP `task_claim` and CLI `task claim`, as well as through `task_manage(action: "context")` and CLI `task context <task-id>`. The MCP `task_claim` argument `bundle: false` returns minimal details; CLI `task claim` always returns the context bundle.
 
-The returned payload contains:
+### Stage-Differentiated Bundle Generation
 
-1. **`contract`**: Complete task contract, goal, active stage, status, proof policy, allowed write scope, invariants, subtasks, and revision counters.
-2. **`guidance`**: Dynamic gate-aware guidance presets tailored to the active ACDD gate (`contract/v1`, `build/v1`, `review/v1`, `deliver/v1`) with:
+Per [ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md), the bundle is tailored dynamically to provide strictly what the claiming agent requires for the active stage, protecting LLM context windows:
+
+1. **`contract`** (All stages): Complete task contract, goal, active stage, status, proof policy, allowed write scope, invariants, subtasks, task dependencies (`depends_on`), worker identity, and revision counters.
+2. **`guidance`** (All stages): Dynamic gate-aware guidance presets tailored to the active ACDD gate (`contract/v1`, `build/v1`, `review/v1`, `deliver/v1`) with:
    - `recommended_tools`: Stage-specific tool recommendations (e.g. `code_map_overview` and ADR reads at contract, `ast_grep_search` and `code_map_inspect` at build, `code_map_impact` and `code_map_prove_removal` at review).
    - `actionable_steps`: Concrete operational steps to advance the gate.
    - `subtask_dod`: Universal Subtask Definition of Done (DoD) reminders.
-3. **`adrs`**: Scope-to-ADR mapping querying `docs/adr/` and `docs/architecture/`. Documents are included when their path or content matches scope tokens; unrelated documents are omitted.
-4. **`scope_symbols`**: High-value symbol skeleton (structs, enums, traits, functions) within the task's declared scope from the code map index.
-5. **`covering_tests`**: Test suites covering the scope files or domain boundaries.
-6. **`blackboard`**: Active task-scoped collaboration messages and architectural notes.
+   - `review_policy`: Scope-extension and adjacent defect resolution policies (present at `review/v1` and `deliver/v1`).
+3. **`adrs`** (`contract/v1`, `build/v1`, `review/v1`): Scope-to-ADR mapping querying `docs/adr/` and `docs/architecture/`. Documents are included when their path or content matches scope tokens; unrelated documents are omitted.
+4. **`scope_symbols`** (`contract/v1`, `build/v1`): High-value symbol skeleton (structs, enums, traits, functions) within the task's declared scope from the code map index. Signatures are safely truncated along Unicode character boundaries at 200 characters. Omitted during review and delivery.
+5. **`covering_tests`** (`contract/v1`, `build/v1`): Test suites covering declared scope files or domain boundaries. Omitted during review and delivery.
+6. **`contract_seam_test`** (`build/v1`): Reference or command of the approved failing red seam test submitted during the passed `contract/v1` gate.
+7. **`unresolved_review_findings`** (`build/v1`): Structured JSON review findings present strictly when the most recent `review/v1` or `deliver/v1` gate attempt was rejected.
+8. **`candidate_snapshot`** (`review/v1`): The build candidate commit SHA and `inspect_cmd` (`git show <commit>`) from the latest passed `build/v1` gate (omitted if build passed without an explicit commit) to inspect diffs against the five review contours.
+9. **`latest_snapshot` and `milestone_ref`** (`deliver/v1`, `completed`), and **`receipt`** (`completed`): Pinned commit SHA, inspect command, and milestone file path for atomic delivery and receipt verification, plus durable completion receipt inside `context_bundle` for completed tasks.
+10. **`blackboard`** (All stages): Active collaboration messages and architectural notes from the full milestone hierarchy: task-scoped (`task_id`), parent milestone-level (`milestone_ref` where `task_id IS NULL`), and milestone sibling tasks. Every message is explicitly annotated with origin metadata (`scope: "milestone" | "task" | "subtask" | "sibling"`), `task_id`, and `subtask_ref`.
+
+### Response Bounding and Anti-Bloat Invariants
+
+To guarantee responses remain well below the 64 KiB ceiling of [ADR 0011](../adr/0011-bounded-mcp-response-budgets.md):
+- **Raw table pruning**: Raw SQLite dumps (`gates` test logs, `attempts`, `findings`, raw `spec`, and root `receipt`) are pruned from context responses, while `depends_on` is preserved in `contract` and at envelope root, and completion `receipt` is preserved inside `context_bundle` for completed tasks. Detailed historical archives remain accessible on demand via `task_manage(action: "inspect")` or CLI `task inspect <id>`.
+- **Minimal claim mode (`bundle: false`)**: Delivers lean task metadata (`task_id`, `stage`, `status`, `allowed_write_scope`, `subtasks`, `depends_on`, `workflow_guidance`) strictly pruned of heavy `gates`, `attempts`, `findings`, `receipt`, and raw `spec` archives, ensuring minimal claim mode never exhausts response budgets.
+- **Zero root duplication**: Substructures are scoped to `context_bundle` without duplicating `adrs`, `scope_symbols`, or `covering_tests` at root.
+- **Bounded blackboard**: Aggregates the 15 most recent chronological messages; payloads exceeding 500 Unicode characters are safely truncated along character boundaries (use `task_blackboard(action: "inspect", message_id: <id>)` for full text).
+- **Size budget**: Bounded context bundles typically range between 6 KiB and 20 KiB, eliminating response limit exhaustion.

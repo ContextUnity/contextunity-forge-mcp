@@ -24,5 +24,6 @@ Accepted decisions live here as owner-approved ADR files with stable IDs, status
 13. [ADR 0013: Data-Driven Framework Manifests](0013-data-driven-framework-manifests.md)
 14. [ADR 0014: Task Hierarchy, Visibility, and Blackboard Coordination](0014-milestone-task-subtask-hierarchy-and-visibility.md)
 15. [ADR 0015: ACDD Lifecycle Snapshots and Proactive Defect Resolution](0015-acdd-lifecycle-snapshots-and-proactive-defect-resolution.md)
+16. [ADR 0016: Lean Stage-Tailored Task Context Bundles and Response Bounding](0016-lean-stage-tailored-task-context-bundles.md)
 
 Decision amendments require explicit architectural admission. A superseding ADR links the accepted decision it replaces and the affected current architecture in [Architecture](../architecture/README.md).

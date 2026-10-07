@@ -328,7 +328,7 @@ scope: [src/]
         client.payload("task_list", json!({"status":"completed"}))["tasks"][0]["task_id"],
         id
     );
-    let written = fs::read_to_string(builder.0.join("010-tasks.md")).unwrap();
+    let written = fs::read_to_string(builder.0.join("docs/milestones/010-tasks.md")).unwrap();
     let milestone =
         contextunity_forge_mcp::core::tasks::Milestone::parse(&written, "contextunity").unwrap();
     assert_eq!(
@@ -759,7 +759,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         "#[test]\nfn test_cli_routing() {}\n",
     );
 
-    let manifest = "---\nid: m-context\ntitle: Context Milestone\ndoc_type: contract\ninvariants: [routing-invariant]\n---\n```yaml\ntask_ref: routing-task\ntarget: Deliver unified routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n  - tests/test_routing.rs\n```\n```yaml\ntask_ref: cli-routing-task\ntarget: Deliver CLI unified routing\nproof_policy: seam-test-first\nscope:\n  - src/cli_routing.rs\n  - tests/test_cli_routing.rs\n```\n";
+    let manifest = "---\nid: m-context\ntitle: Context Milestone\ndoc_type: contract\ninvariants: [routing-invariant]\n---\n```yaml\ntask_ref: routing-task\ntarget: Deliver unified routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n  - tests/test_routing.rs\n```\n```yaml\ntask_ref: cli-routing-task\ntarget: Deliver CLI unified routing\nproof_policy: seam-test-first\nscope:\n  - src/cli_routing.rs\n  - tests/test_cli_routing.rs\n```\n```yaml\ntask_ref: minimal-routing-task\ntarget: Deliver minimal routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n```\n";
     workspace.write("docs/milestones/010-context.md", manifest);
     workspace.write(
         "forge-mcp.yaml",
@@ -779,6 +779,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     );
     let task_id = sync_res["tasks"][0]["task_id"].as_str().unwrap();
     let cli_task_id = sync_res["tasks"][1]["task_id"].as_str().unwrap();
+    let minimal_task_id = sync_res["tasks"][2]["task_id"].as_str().unwrap();
 
     // Post blackboard message
     client.payload(
@@ -963,6 +964,64 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     let cli_json: Value = serde_json::from_slice(&cli_context.stdout).unwrap();
     assert!(cli_json["context_bundle"].is_object());
     assert_eq!(cli_json["context_bundle"]["contract"]["task_id"], task_id);
+    assert_eq!(cli_json["context_bundle"]["contract"]["depends_on"], json!([]));
+
+    // 5. Minimal claim (bundle: false) prunes gates, attempts, findings, receipt, and spec
+    let minimal_claim = client.payload(
+        "task_claim",
+        json!({
+            "task_id": minimal_task_id,
+            "stage": "contract",
+            "worker_id": "author-minimal",
+            "worktree": workspace.0,
+            "bundle": false
+        }),
+    );
+    assert!(minimal_claim.get("context_bundle").is_none());
+    assert!(minimal_claim.get("gates").is_none());
+    assert!(minimal_claim.get("attempts").is_none());
+    assert!(minimal_claim.get("findings").is_none());
+    assert!(minimal_claim.get("receipt").is_none());
+    assert!(minimal_claim.get("spec").is_none());
+    assert_eq!(minimal_claim["depends_on"], json!([]));
+    assert!(minimal_claim["subtasks"].is_array());
+    assert!(minimal_claim["workflow_guidance"].is_object());
+    assert!(minimal_claim["allowed_write_scope"].is_array());
+    assert_eq!(minimal_claim["task_id"], minimal_task_id);
+
+    // 6. Milestone-scoped blackboard message (task_id IS NULL) with multi-byte Ukrainian text > 500 chars
+    let ukr_payload = "Тестовий запис архітектури українською мовою для перевірки безпечного обрізання символів UTF-8. ".repeat(10);
+    client.payload(
+        "task_blackboard",
+        json!({
+            "action": "post",
+            "milestone_ref": "docs/milestones/010-context.md",
+            "topic": "hypothesis",
+            "payload": ukr_payload,
+            "author": "ukr-architect"
+        }),
+    );
+    let context_after = client.payload(
+        "task_manage",
+        json!({"action": "context", "task_id": task_id}),
+    );
+    let bb_after = context_after["context_bundle"]["blackboard"].as_array().unwrap();
+    assert_eq!(bb_after.len(), 3, "milestone-scoped message with task_id IS NULL must be included");
+    let ukr_msg = bb_after.iter().find(|m| m["author"] == "ukr-architect").unwrap();
+    assert_eq!(ukr_msg["scope"], "milestone");
+    assert!(ukr_msg["task_id"].is_null());
+    assert!(ukr_msg["subtask_ref"].is_null());
+    let ukr_text = ukr_msg["payload"].as_str().unwrap();
+    assert!(ukr_text.ends_with("... [truncated]"));
+    assert!(ukr_text.chars().count() <= 520);
+
+    let task_msg = bb_after.iter().find(|m| m["author"] == "architect").unwrap();
+    assert_eq!(task_msg["scope"], "task");
+    assert_eq!(task_msg["task_id"], task_id);
+
+    let sibling_msg = bb_after.iter().find(|m| m["author"] == "cli-author").unwrap();
+    assert_eq!(sibling_msg["scope"], "sibling");
+    assert_eq!(sibling_msg["task_id"], cli_task_id);
 }
 
 #[test]
@@ -1177,4 +1236,288 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
             .unwrap();
         assert!(!conflict.status.success());
     }
+}
+
+#[test]
+fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
+    use contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS;
+    let workspace = Workspace::new();
+    let reviewer = Workspace::new();
+    fs::create_dir_all(workspace.0.join("src")).unwrap();
+    fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
+    fs::create_dir_all(reviewer.0.join("src")).unwrap();
+    fs::create_dir_all(reviewer.0.join("docs/milestones")).unwrap();
+
+    let manifest = "---\nid: m-snapshots\ntitle: Snapshots and Rejections\ndoc_type: contract\nstatus: active\ninvariants: [review-contour-check]\n---\n```yaml\ntask_ref: candidate-task\ntarget: Deliver candidate\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    workspace.write("docs/milestones/010-snap.md", manifest);
+    reviewer.write("docs/milestones/010-snap.md", manifest);
+    workspace.write("forge-mcp.yaml", "roots: []\ndocs: []\ntasks_db: .forge/tasks.sqlite\n");
+    reviewer.write("forge-mcp.yaml", "roots: []\ndocs: []\ntasks_db: .forge/tasks.sqlite\n");
+
+    let mut client = Client::new(&workspace);
+    let sync_res = client.payload(
+        "task_manage",
+        json!({"action": "sync", "milestone_ref": "docs/milestones/010-snap.md"}),
+    );
+    let task_id = sync_res["tasks"][0]["task_id"].as_str().unwrap();
+
+    // 1. Pass contract with an explicit contract commit
+    let contract_claim = client.payload(
+        "task_claim",
+        json!({"task_id": task_id, "stage": "contract/v1", "worker_id": "author", "worktree": workspace.0}),
+    );
+    let contract_commit = "1111111111111111111111111111111111111111";
+    client.payload(
+        "task_submit",
+        json!({
+            "task_id": task_id,
+            "stage": "contract/v1",
+            "action": "pass",
+            "evidence": {
+                "task_id": task_id,
+                "stage": "contract/v1",
+                "claim_revision": contract_claim["claim_revision"],
+                "contract_revision": 1,
+                "worker_id": "author",
+                "worktree": workspace.0,
+                "commit": contract_commit,
+                "proof": {"contract_proof": {"seam_test_ref": "tests/test.rs", "red_exit_code": 0}}
+            }
+        }),
+    );
+
+    // 2. Pass build/v1 WITHOUT a commit in evidence
+    let build_claim = client.payload(
+        "task_claim",
+        json!({"task_id": task_id, "stage": "build/v1", "worker_id": "builder", "worktree": workspace.0}),
+    );
+    client.payload(
+        "task_submit",
+        json!({
+            "task_id": task_id,
+            "stage": "build/v1",
+            "action": "pass",
+            "evidence": {
+                "task_id": task_id,
+                "stage": "build/v1",
+                "claim_revision": build_claim["claim_revision"],
+                "contract_revision": 1,
+                "worker_id": "builder",
+                "worktree": workspace.0,
+                "proof": {"test_proof": {"command": "cargo test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}}
+            }
+        }),
+    );
+
+    // 3. Claim review/v1: candidate_snapshot MUST be None because build/v1 had no commit
+    // (must NOT fall back to contract_commit!)
+    let review_claim = client.payload(
+        "task_claim",
+        json!({"task_id": task_id, "stage": "review/v1", "worker_id": "reviewer", "worktree": reviewer.0}),
+    );
+    assert!(
+        review_claim["context_bundle"].get("candidate_snapshot").is_none(),
+        "candidate_snapshot must be omitted when build/v1 has no commit (must not fall back to contract commit)"
+    );
+
+    // Reject review with findings -> task bounces back to build/v1
+    let contours: serde_json::Map<String, Value> = REVIEW_CONTOURS
+        .iter()
+        .map(|name| ((*name).into(), json!({"applicable": true, "evidence": "verified"})))
+        .collect();
+    let review_reject_proof = json!({"review_proof": {"decision": "reject", "contours": contours.clone()}});
+    let review_findings = json!({"decision": "reject", "notes": "Need build commit"});
+    client.payload(
+        "task_submit",
+        json!({
+            "task_id": task_id,
+            "stage": "review/v1",
+            "action": "reject",
+            "evidence": {
+                "task_id": task_id,
+                "stage": "review/v1",
+                "claim_revision": review_claim["claim_revision"],
+                "contract_revision": 1,
+                "worker_id": "reviewer",
+                "worktree": reviewer.0,
+                "proof": review_reject_proof
+            },
+            "findings": review_findings
+        }),
+    );
+
+    // Build claim after review reject: verify unresolved_review_findings contains review_findings
+    let build_claim2 = client.payload(
+        "task_claim",
+        json!({"task_id": task_id, "stage": "build/v1", "worker_id": "builder", "worktree": workspace.0}),
+    );
+    assert_eq!(
+        build_claim2["context_bundle"]["unresolved_review_findings"],
+        review_findings
+    );
+
+    let build_commit = "2222222222222222222222222222222222222222";
+    client.payload(
+        "task_submit",
+        json!({
+            "task_id": task_id,
+            "stage": "build/v1",
+            "action": "pass",
+            "evidence": {
+                "task_id": task_id,
+                "stage": "build/v1",
+                "claim_revision": build_claim2["claim_revision"],
+                "contract_revision": 1,
+                "worker_id": "builder",
+                "worktree": workspace.0,
+                "commit": build_commit,
+                "proof": {"test_proof": {"command": "cargo test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}}
+            }
+        }),
+    );
+
+    // Now claim review/v1: candidate_snapshot MUST match build_commit
+    let review_claim2 = client.payload(
+        "task_claim",
+        json!({"task_id": task_id, "stage": "review/v1", "worker_id": "reviewer", "worktree": reviewer.0}),
+    );
+    assert_eq!(
+        review_claim2["context_bundle"]["candidate_snapshot"]["commit"],
+        &build_commit[..7]
+    );
+
+    // Pass review/v1
+    client.payload(
+        "task_submit",
+        json!({
+            "task_id": task_id,
+            "stage": "review/v1",
+            "action": "pass",
+            "evidence": {
+                "task_id": task_id,
+                "stage": "review/v1",
+                "claim_revision": review_claim2["claim_revision"],
+                "contract_revision": 1,
+                "worker_id": "reviewer",
+                "worktree": reviewer.0,
+                "commit": build_commit,
+                "proof": {"review_proof": {"decision": "pass", "contours": contours.clone()}}
+            }
+        }),
+    );
+
+    // 4. Claim deliver/v1 and REJECT delivery with findings
+    let deliver_claim = client.payload(
+        "task_claim",
+        json!({"task_id": task_id, "stage": "deliver/v1", "worker_id": "delivery-lead", "worktree": workspace.0}),
+    );
+    // At deliver/v1 before completion, receipt must be None
+    assert!(deliver_claim["context_bundle"].get("receipt").is_none());
+
+    let delivery_findings = json!({"decision": "reject", "notes": "Missing changelog entry"});
+    client.payload(
+        "task_submit",
+        json!({
+            "task_id": task_id,
+            "stage": "deliver/v1",
+            "action": "reject",
+            "evidence": {
+                "task_id": task_id,
+                "stage": "deliver/v1",
+                "claim_revision": deliver_claim["claim_revision"],
+                "contract_revision": 1,
+                "worker_id": "delivery-lead",
+                "worktree": workspace.0,
+                "commit": build_commit,
+                "proof": {"delivery_proof": {"status": "rejected"}}
+            },
+            "findings": delivery_findings
+        }),
+    );
+
+    // Task bounced back to build/v1: claim build/v1 and verify unresolved_review_findings contains delivery findings
+    let rebounce_build_claim = client.payload(
+        "task_claim",
+        json!({"task_id": task_id, "stage": "build/v1", "worker_id": "builder", "worktree": workspace.0}),
+    );
+    assert_eq!(
+        rebounce_build_claim["context_bundle"]["unresolved_review_findings"],
+        delivery_findings
+    );
+
+    // 5. Complete build, review, deliver and verify receipt in context_bundle
+    client.payload(
+        "task_submit",
+        json!({
+            "task_id": task_id,
+            "stage": "build/v1",
+            "action": "pass",
+            "evidence": {
+                "task_id": task_id,
+                "stage": "build/v1",
+                "claim_revision": rebounce_build_claim["claim_revision"],
+                "contract_revision": 1,
+                "worker_id": "builder",
+                "worktree": workspace.0,
+                "commit": build_commit,
+                "proof": {"test_proof": {"command": "cargo test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}}
+            }
+        }),
+    );
+
+    let review_claim3 = client.payload(
+        "task_claim",
+        json!({"task_id": task_id, "stage": "review/v1", "worker_id": "reviewer", "worktree": reviewer.0}),
+    );
+    client.payload(
+        "task_submit",
+        json!({
+            "task_id": task_id,
+            "stage": "review/v1",
+            "action": "pass",
+            "evidence": {
+                "task_id": task_id,
+                "stage": "review/v1",
+                "claim_revision": review_claim3["claim_revision"],
+                "contract_revision": 1,
+                "worker_id": "reviewer",
+                "worktree": reviewer.0,
+                "commit": build_commit,
+                "proof": {"review_proof": {"decision": "pass", "contours": contours}}
+            }
+        }),
+    );
+
+    let deliver_claim2 = client.payload(
+        "task_claim",
+        json!({"task_id": task_id, "stage": "deliver/v1", "worker_id": "delivery-lead", "worktree": workspace.0}),
+    );
+    assert!(deliver_claim2["context_bundle"].get("receipt").is_none());
+
+    client.payload(
+        "task_submit",
+        json!({
+            "task_id": task_id,
+            "stage": "deliver/v1",
+            "action": "pass",
+            "evidence": {
+                "task_id": task_id,
+                "stage": "deliver/v1",
+                "claim_revision": deliver_claim2["claim_revision"],
+                "contract_revision": 1,
+                "worker_id": "delivery-lead",
+                "worktree": workspace.0,
+                "commit": build_commit,
+                "proof": {"delivery_proof": {"status": "passed"}}
+            }
+        }),
+    );
+
+    // Completed task: context_bundle contains receipt, root envelope does not
+    let completed_context = client.payload(
+        "task_manage",
+        json!({"action": "context", "task_id": task_id}),
+    );
+    assert!(completed_context.get("receipt").is_none(), "root envelope must prune receipt");
+    assert!(completed_context["context_bundle"]["receipt"].is_object(), "context_bundle must contain receipt for completed task");
 }
