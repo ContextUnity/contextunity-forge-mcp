@@ -24,10 +24,14 @@ use std::{
 use tree_sitter::{Node as Syntax, Parser};
 #[cfg(any(feature = "lang-java", feature = "lang-kotlin"))]
 pub(crate) mod build_manifest;
-/// Implements manifests support.
+/// Workspace dependency discovery and classification.
+pub mod dependency_registry;
+/// Typed framework manifests consumed by existing language linkers.
 pub mod manifests;
 #[path = "python/receivers.rs"]
 pub(crate) mod python_receivers;
+/// Package and TypeScript path registries.
+pub(crate) mod registries;
 #[cfg(any(feature = "lang-html", feature = "lang-vue"))]
 #[path = "support/template.rs"]
 pub(crate) mod template;

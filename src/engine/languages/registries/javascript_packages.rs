@@ -3,7 +3,7 @@ use super::{javascript_namespace, joined_scope, match_mapping, ImportPath};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
-pub(super) struct Registry {
+pub(crate) struct JavascriptPackageRegistry {
     packages: HashMap<String, HashMap<String, Vec<JavascriptPackage>>>,
     workspaces: HashMap<String, Vec<String>>,
     pnpm_workspaces: HashMap<String, Vec<String>>,
@@ -16,8 +16,8 @@ struct JavascriptPackage {
     exports: serde_json::Value,
 }
 
-impl Registry {
-    pub(super) fn record_manifest(&mut self, scope: &str, content: &str) {
+impl JavascriptPackageRegistry {
+    pub(crate) fn record_manifest(&mut self, scope: &str, content: &str) {
         self.package_scopes.insert(scope.to_owned());
         let Ok(manifest) = serde_json::from_str::<serde_json::Value>(content) else {
             return;
@@ -64,19 +64,19 @@ impl Registry {
             });
     }
 
-    pub(super) fn record_pnpm_workspace(&mut self, scope: &str, content: &str) {
+    pub(crate) fn record_pnpm_workspace(&mut self, scope: &str, content: &str) {
         self.pnpm_workspaces.insert(
             scope.to_owned(),
             pnpm_workspace_patterns(content).unwrap_or_default(),
         );
     }
 
-    pub(super) fn apply_pnpm_workspaces(&mut self) {
+    pub(crate) fn apply_pnpm_workspaces(&mut self) {
         self.workspaces
             .extend(std::mem::take(&mut self.pnpm_workspaces));
     }
 
-    pub(super) fn nuxt_package_scope_for_path(&self, path: &str) -> Option<&str> {
+    pub(crate) fn nuxt_package_scope_for_path(&self, path: &str) -> Option<&str> {
         let workspace = workspace_path(path).0;
         let mut directory = path.rsplit_once('/').map_or("", |(directory, _)| directory);
         loop {
@@ -90,7 +90,7 @@ impl Registry {
         }
     }
 
-    pub(super) fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
+    pub(crate) fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
         let (package_name, subpath) = split_javascript_package(module)?;
         let workspace = workspace_path(owner).0;
         let packages = self.packages.get(workspace)?.get(package_name)?;

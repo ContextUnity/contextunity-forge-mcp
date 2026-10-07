@@ -162,7 +162,7 @@ pub fn link_with_root(
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&Path>,
 ) -> PublicGraph {
-    let dependency_registry = languages::manifests::DependencyRegistry::collect(root);
+    let dependency_registry = languages::dependency_registry::DependencyRegistry::collect(root);
     link_with_registry(all, owners, root, &dependency_registry)
 }
 
@@ -171,7 +171,7 @@ pub fn link_with_registry(
     all: &BTreeMap<String, Facts>,
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&Path>,
-    dependency_registry: &languages::manifests::DependencyRegistry,
+    dependency_registry: &languages::dependency_registry::DependencyRegistry,
 ) -> PublicGraph {
     link_compact_with_registry(all, owners, root, dependency_registry).into()
 }
@@ -180,7 +180,7 @@ pub(crate) fn link_compact_with_registry(
     all: &BTreeMap<String, Facts>,
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&Path>,
-    dependency_registry: &languages::manifests::DependencyRegistry,
+    dependency_registry: &languages::dependency_registry::DependencyRegistry,
 ) -> Graph {
     link_compact_impl(all, Some(all), owners, root, dependency_registry, None)
 }
@@ -189,7 +189,7 @@ pub(crate) fn link_compact_with_typed_registry(
     all: &BTreeMap<String, crate::core::typed_facts::TypedFacts>,
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&Path>,
-    dependency_registry: &languages::manifests::DependencyRegistry,
+    dependency_registry: &languages::dependency_registry::DependencyRegistry,
 ) -> Graph {
     let flows: HashMap<_, _> = all
         .values()
@@ -209,7 +209,7 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
     public_all: Option<&'a BTreeMap<String, Facts>>,
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&Path>,
-    dependency_registry: &languages::manifests::DependencyRegistry,
+    dependency_registry: &languages::dependency_registry::DependencyRegistry,
     flows: Option<&'a HashMap<&'a str, &'a crate::core::typed_facts::FlowState>>,
 ) -> Graph {
     let profiling = std::env::var_os("FORGE_PROFILE_LINKER").is_some();
@@ -3326,7 +3326,7 @@ pub(crate) fn python_has_proven_type_checking(
     path: &str,
     facts: &crate::core::models::Facts,
     modules_by_namespace: &crate::engine::linker::traits::ModulesByNamespace<'_>,
-    dependency_registry: &crate::engine::languages::manifests::DependencyRegistry,
+    dependency_registry: &crate::engine::languages::dependency_registry::DependencyRegistry,
     family: crate::engine::languages::LanguageFamily,
 ) -> bool {
     let module_node = facts

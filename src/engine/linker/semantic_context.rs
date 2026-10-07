@@ -15,7 +15,7 @@ use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeMap;
 
 fn nuxt_component_root(
-    dependencies: &languages::manifests::DependencyRegistry,
+    dependencies: &languages::dependency_registry::DependencyRegistry,
     path: &str,
 ) -> Option<String> {
     let manifest = languages::linker_for("vue").framework_manifest(
@@ -336,7 +336,7 @@ impl<'a> Context<'a> {
         by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
         exports: &'a HashMap<&'a str, PackageExports<'a>>,
         normalized_imports: &HashMap<(&str, &str), Option<ImportPath>>,
-        dependencies: &languages::manifests::DependencyRegistry,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let mut context = Self {
             flows: None,

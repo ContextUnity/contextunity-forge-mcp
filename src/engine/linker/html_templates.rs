@@ -9,7 +9,7 @@ pub(super) struct JinjaRootRegistry<'a> {
 impl<'a> JinjaRootRegistry<'a> {
     pub(super) fn build<F: AsRef<Facts> + Sync>(
         all: &'a BTreeMap<String, F>,
-        dependencies: &languages::manifests::DependencyRegistry,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let mut by_root: HashMap<&str, Vec<&Node>> = HashMap::new();
         for (path, source) in all {
@@ -33,7 +33,7 @@ impl<'a> JinjaRootRegistry<'a> {
     pub(super) fn admits(
         &self,
         path: &str,
-        dependencies: &languages::manifests::DependencyRegistry,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> bool {
         if !dependencies.declares_for_path(LanguageFamily("python"), path, "jinja2") {
             return false;
@@ -66,7 +66,7 @@ fn source_imports_are_external<F: AsRef<Facts> + Sync>(
     owner: &str,
     node: &Node,
     all: &BTreeMap<String, F>,
-    dependencies: &languages::manifests::DependencyRegistry,
+    dependencies: &languages::dependency_registry::DependencyRegistry,
 ) -> bool {
     let Some(profile) = languages::by_id("python") else {
         return false;
@@ -145,7 +145,7 @@ impl<'a> Registry<'a> {
     pub(super) fn build<F: AsRef<Facts> + Sync>(
         all: &'a BTreeMap<String, F>,
         flows: Option<&HashMap<&str, &FlowState>>,
-        dependencies: &languages::manifests::DependencyRegistry,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let mut by_scope: HashMap<String, HashMap<String, Vec<Library<'a>>>> = HashMap::new();
         for (path, source) in all {
@@ -229,7 +229,7 @@ impl<'a> Registry<'a> {
         &self,
         owner: &str,
         name: &str,
-        dependencies: &languages::manifests::DependencyRegistry,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Match<'a> {
         let Some(libraries) = self.libraries(owner, name, dependencies) else {
             return Match::Missing;
@@ -250,7 +250,7 @@ impl<'a> Registry<'a> {
         reference: &Reference,
         kind: &str,
         name: &str,
-        dependencies: &languages::manifests::DependencyRegistry,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Match<'a> {
         let mut selected = None;
         for load in loads.iter().copied().filter(|load| {
@@ -293,7 +293,7 @@ impl<'a> Registry<'a> {
         &self,
         owner: &str,
         name: &str,
-        dependencies: &languages::manifests::DependencyRegistry,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Option<&[Library<'a>]> {
         if !dependencies.declares_for_path(LanguageFamily("python"), owner, "django") {
             return None;
@@ -463,7 +463,7 @@ impl<'a> RenderContextRegistry<'a> {
         all: &'a BTreeMap<String, F>,
         flows: Option<&HashMap<&str, &FlowState>>,
         semantic_context: &semantic_context::Context<'a>,
-        dependencies: &languages::manifests::DependencyRegistry,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let modules: HashMap<&str, &Node> = all
             .iter()

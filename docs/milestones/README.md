@@ -29,5 +29,5 @@ Admitted milestones use decade prefixes `01x`–`05x`:
 - `01x` — Task lifecycle, ACDD gates, worktree automation, and agent coordination.
 - `02x` — Language semantics, Tree-sitter parsers, AST extractors, and linker resolution.
 - `03x` — Performance hardening, cold-build throughput, SQLite compaction, and latency budgets.
-- `04x` — Engine architecture, modularity traits (`LanguageLinker`), framework manifests, and universal AST search.
+- `04x` — Engine architecture, modularity traits (`LanguageLinker`), framework manifests and responsibility-named registries, and universal AST search.
 - `05x` — Agent ergonomics, MCP response compaction, token efficiency, and optical context hypotheses.

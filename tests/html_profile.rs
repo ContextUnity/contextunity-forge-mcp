@@ -9,7 +9,7 @@ use contextunity_forge_mcp::{
     engine::{
         ast,
         languages::{
-            manifests::{DependencyRegistry, FrameworkManifestValue},
+            dependency_registry::DependencyRegistry, manifests::FrameworkManifestValue,
             LanguageFamily,
         },
         scanner,
@@ -1517,7 +1517,7 @@ fn framework_manifest_requires_all_rule_tables_and_accepts_complete_manifest() {
             continue;
         }
 
-        let dependencies = DependencyRegistry::collect_with_adapter(&workspace.0, None);
+        let dependencies = DependencyRegistry::collect_with_scan_config(&workspace.0, None);
         let Some(loaded) = dependencies.framework_manifest_for_path(
             LanguageFamily("python"),
             "index.html",
@@ -1665,7 +1665,7 @@ fn framework_manifest_requires_all_rule_tables_and_accepts_complete_manifest() {
     let undeclared = Workspace::new();
     undeclared.write("index.html", "<p>No framework declaration</p>\n");
     undeclared.write(".forge/frameworks/django.toml", complete_toml);
-    let undeclared_dependencies = DependencyRegistry::collect_with_adapter(&undeclared.0, None);
+    let undeclared_dependencies = DependencyRegistry::collect_with_scan_config(&undeclared.0, None);
     if undeclared_dependencies
         .framework_manifest_for_path(LanguageFamily("python"), "index.html", "django", "django")
         .is_some()

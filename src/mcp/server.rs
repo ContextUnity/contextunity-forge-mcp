@@ -308,7 +308,7 @@ impl Server {
             let started = Instant::now();
             let scan = scanner::scan_reusing(&root, adapter, &previous)?;
             let manifests =
-                crate::engine::languages::manifests::DependencyRegistry::collect_with_adapter(
+                crate::engine::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
                     &root,
                     Some(adapter),
                 );

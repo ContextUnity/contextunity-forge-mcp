@@ -12,7 +12,7 @@ doc_type: guide
 - [ACDD](acdd.md): task gates, independent review, guidance, and context retention.
 - [MCP setup](mcp-setup.md): client installation and workspace selection.
 - [Languages](languages.md): compiled profiles and extraction coverage.
-- [Framework manifests](framework-manifests.md): built-in rules, project adapters, validation, and language-extension boundaries.
+- [Framework manifests](framework-manifests.md): bundled rules, project manifest files, validation, and language-extension boundaries.
 
 Verify interface changes against the owning Rust implementation before updating
 these contracts.

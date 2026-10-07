@@ -17,6 +17,10 @@ src/engine/
 │   ├── support/template.rs # Byte-preserving TemplateMasker
 │   ├── html.rs, vue.rs      # HTML islands and Vue template extraction
 │   ├── python/             # Python linker and C3 receivers
+│   ├── python/dependencies.rs # Python package dependency extraction
+│   ├── manifests/          # Typed framework rule data
+│   ├── dependency_registry.rs # Workspace dependencies and framework rules
+│   ├── registries/         # JavaScript package and TypeScript path registries
 │   ├── rust/               # Rust linker and value-flow facts
 │   ├── typescript/         # TS/JS linker and CommonJS bindings
 │   └── toml_manifest.rs    # TOML AST traversal shared by manifests
@@ -48,7 +52,8 @@ Decouples language-specific import and receiver resolutions from the core SQLite
 - Import resolution (e.g. Python `__init__.py` re-export chains, TypeScript `tsconfig.json` path mapping, Rust `use crate::` paths).
 - Receiver inference (method binding on class instances, struct instances, or prototypes).
 - Standard library and external package classification, ensuring third-party symbols are properly marked `external_origin` rather than leaking into `unresolved`.
-- Framework receivers, builtins, filters, and routes come from typed `FrameworkManifest` data. Bundled tables are embedded in the binary; workspace adapters load from `.forge/frameworks/` and activate only for declared dependencies. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
+- Framework receivers, builtins, filters, and routes come from typed `FrameworkManifest` data. Bundled tables live under `src/engine/languages/manifests/` and are embedded in the binary; workspace manifests load from `.forge/frameworks/` and activate only for declared dependencies. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
+- `DependencyRegistry` owns workspace dependency discovery and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs.
 
 ## Documentation Invariants
 

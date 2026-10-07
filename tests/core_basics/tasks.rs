@@ -4977,6 +4977,103 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
 }
 
 #[test]
+fn scoped_snapshot_omits_deleted_exact_path_during_contract_submit() {
+    let root = ScopedWorkspace::new("forge_snapshot_deleted_exact_path");
+    root.write("src/deleted.rs", "pub fn removed() {}\n");
+    root.write("src/kept.rs", "pub fn kept() -> i32 { 1 }\n");
+    root.write("src/unscoped.rs", "pub fn sibling() -> i32 { 2 }\n");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    let spec = "---\nid: m-snapshot\ntitle: Snapshot Tasks\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\ninvariants: [isolated]\n---\n# Snapshot Tasks\n```yaml\ntask_ref: exact-path\ntarget: Capture a scoped candidate with a deleted exact path\nproof_policy: seam-test-first\nscope: [src/deleted.rs, src/kept.rs]\n```\n";
+    root.write("docs/milestones/010-snapshot.md", spec);
+    tasks::manage(
+        &root.0,
+        serde_json::from_value(
+            json!({"action": "sync", "milestone_ref": "docs/milestones/010-snapshot.md"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let run_git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root.0)
+            .output()
+            .unwrap()
+    };
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Tester"],
+        vec!["add", "-A"],
+        vec!["commit", "-q", "-m", "initial"],
+    ] {
+        let output = run_git(&args);
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let ready = tasks::store(&root.0)
+        .unwrap()
+        .list(None, "ready", None)
+        .unwrap();
+    let task_id = ready[0].task_id.clone();
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.clone(),
+            stage: "contract/v1".into(),
+            worker_id: "builder".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    std::fs::remove_file(root.0.join("src/deleted.rs")).unwrap();
+    root.write("src/kept.rs", "pub fn kept() -> i32 { 42 }\n");
+    root.write("src/unscoped.rs", "pub fn sibling() -> i32 { 99 }\n");
+
+    let stored = tasks::store(&root.0).unwrap().inspect(&task_id).unwrap();
+    let mut proof = evidence(&stored);
+    proof.commit = None;
+    tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.clone(),
+            stage: "contract/v1".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(proof).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+
+    let snapshot = pinned_candidate(&root.0, &task_id);
+    let task_tree = run_git(&["ls-tree", "-r", "--name-only", &snapshot]);
+    assert!(task_tree.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&task_tree.stdout).trim(),
+        "src/kept.rs"
+    );
+    let kept = run_git(&["show", &format!("{snapshot}:src/kept.rs")]);
+    assert!(kept.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&kept.stdout),
+        "pub fn kept() -> i32 { 42 }\n"
+    );
+    let submitted = tasks::store(&root.0).unwrap().inspect(&task_id).unwrap();
+    assert_eq!(submitted.gate, 1);
+    assert_eq!(submitted.status, "ready");
+}
+
+#[test]
 fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests_and_src() {
     let root = ScopedWorkspace::new("forge_scope_conflict");
     root.write("src/module_a/foo.rs", "pub fn foo() {}\n");

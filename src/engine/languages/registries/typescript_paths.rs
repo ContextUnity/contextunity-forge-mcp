@@ -3,7 +3,7 @@ use super::{javascript_namespace, joined_scope, match_mapping, ImportPath};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
-pub(super) struct Registry {
+pub(crate) struct TypeScriptPathsRegistry {
     configs: HashMap<String, TypescriptConfig>,
     paths: HashMap<String, TypescriptPaths>,
 }
@@ -20,8 +20,8 @@ struct TypescriptConfig {
     paths: Option<TypescriptPaths>,
 }
 
-impl Registry {
-    pub(super) fn record_config(&mut self, scope: &str, filename: &str, content: &str) {
+impl TypeScriptPathsRegistry {
+    pub(crate) fn record_config(&mut self, scope: &str, filename: &str, content: &str) {
         if let Some(config) = parse_typescript_config(scope, content) {
             let path = if scope.is_empty() {
                 filename.to_owned()
@@ -32,7 +32,7 @@ impl Registry {
         }
     }
 
-    pub(super) fn resolve_all(&mut self) {
+    pub(crate) fn resolve_all(&mut self) {
         let configs = std::mem::take(&mut self.configs);
         let mut resolved_configs = HashMap::new();
         for (path, config) in &configs {
@@ -49,7 +49,7 @@ impl Registry {
         }
     }
 
-    pub(super) fn resolve_import(
+    pub(crate) fn resolve_import(
         &self,
         owner: &str,
         module: &str,

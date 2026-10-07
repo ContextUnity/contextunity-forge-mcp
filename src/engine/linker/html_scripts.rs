@@ -21,7 +21,7 @@ impl<'a> Registry<'a> {
         all: &'a BTreeMap<String, F>,
         normalized_imports: &HashMap<(&str, &str), Option<ImportPath>>,
         modules_by_namespace: &HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>,
-        dependencies: &languages::manifests::DependencyRegistry,
+        dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let mut by_owner: HashMap<&str, HashMap<&str, Vec<Provider<'a>>>> = HashMap::new();
         let mut incoming: HashMap<&str, Vec<Include<'a>>> = HashMap::new();

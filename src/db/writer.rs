@@ -223,7 +223,7 @@ fn populate(
     conn.execute_batch(tables)?;
     let linking = Instant::now();
     let dependencies =
-        crate::engine::languages::manifests::DependencyRegistry::try_collect_with_adapter(
+        crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_scan_config(
             root,
             Some(adapter),
         )?;

@@ -3,8 +3,8 @@
 use crate::{
     core::models::{Facts, Node, Reference},
     engine::languages::{
-        manifests::{DependencyRegistry, FrameworkManifest},
-        ImportPath, LanguageFamily, LanguageProfile,
+        dependency_registry::DependencyRegistry, manifests::FrameworkManifest, ImportPath,
+        LanguageFamily, LanguageProfile,
     },
 };
 use hashbrown::HashMap;
@@ -23,7 +23,7 @@ pub type ModulesByNamespace<'a> = HashMap<LanguageFamily, HashMap<String, Vec<&'
 pub struct ImportContext<'ctx, 'a, 'input> {
     /// Workspace-relative importing file.
     pub path: &'input str,
-    /// Dependency and framework manifests admitted for the indexed workspace.
+    /// Dependency data and framework manifests admitted for the indexed workspace.
     pub dependencies: &'ctx DependencyRegistry,
     /// Parsed import reference.
     pub reference: &'input Reference,

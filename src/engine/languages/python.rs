@@ -20,8 +20,8 @@ pub(crate) fn logging_factories(root: Syntax<'_>, source: &str, offset: usize) -
 }
 #[path = "python/linker.rs"]
 pub(crate) mod linker;
-#[path = "python/manifest.rs"]
-mod manifest;
+#[path = "python/dependencies.rs"]
+mod dependencies;
 #[path = "python/value_flow.rs"]
 mod value_flow;
 /// Performs language.
@@ -493,7 +493,7 @@ impl LanguageProfile for Python {
         ]
     }
     fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
-        manifest::dependencies(filename, content)
+        dependencies::dependencies(filename, content)
     }
     fn is_stdlib(&self, module: &str) -> bool {
         is_python_stdlib(module.split('.').next().unwrap_or(module))

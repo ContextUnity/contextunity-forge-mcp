@@ -2,7 +2,7 @@ use contextunity_forge_mcp::{
     db::{reader, writer},
     engine::{
         ast,
-        languages::{self, manifests::DependencyRegistry},
+        languages::{self, dependency_registry::DependencyRegistry},
         linker,
     },
 };
@@ -405,7 +405,7 @@ fn custom_adapter_collects_enabled_linked_manifests_and_respects_ignored_names()
         Some(&workspace.0.join("custom-adapter.yaml")),
     )
     .unwrap();
-    let registry = DependencyRegistry::collect_with_adapter(&workspace.0, Some(&adapter));
+    let registry = DependencyRegistry::collect_with_scan_config(&workspace.0, Some(&adapter));
     let profile = languages::require("python").unwrap();
     assert_eq!(
         registry.classification(profile, "linked_package.client"),
@@ -458,7 +458,7 @@ fn npm_lockfile_discovery_respects_workspace_and_ignored_directories() {
         Some(&workspace.0.join("custom-adapter.yaml")),
     )
     .unwrap();
-    let registry = DependencyRegistry::collect_with_adapter(&workspace.0, Some(&adapter));
+    let registry = DependencyRegistry::collect_with_scan_config(&workspace.0, Some(&adapter));
     let profile = languages::require("typescript").unwrap();
     for module in ["axios", "@vue/runtime-core/jsx-runtime"] {
         assert_eq!(

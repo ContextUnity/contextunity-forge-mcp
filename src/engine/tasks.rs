@@ -1103,20 +1103,21 @@ fn capture_scoped_snapshot(
         );
     }
 
-    let is_tracked = |p: &str| -> bool {
-        std::process::Command::new("git")
-            .args(["ls-files", "--error-unmatch", "--", p])
-            .current_dir(worktree)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-
-    let valid_paths: Vec<&str> = scope
-        .iter()
-        .map(|s| s.as_str())
-        .filter(|p| worktree.join(p).exists() || is_tracked(p))
-        .collect();
+    let mut valid_paths = Vec::with_capacity(scope.len());
+    for path in scope {
+        match std::fs::symlink_metadata(worktree.join(path)) {
+            Ok(_) => valid_paths.push(path.as_str()),
+            // The temporary index is empty, so a deleted scoped path is
+            // already absent from the candidate tree and must not be passed
+            // to `git add` as a pathspec.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("TASK_SNAPSHOT_FAILED: could not inspect scoped path {path}")
+                });
+            }
+        }
+    }
 
     if !valid_paths.is_empty() {
         let mut cmd = std::process::Command::new("git");

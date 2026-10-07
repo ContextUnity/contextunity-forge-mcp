@@ -92,9 +92,9 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         scanner::checked_child(&root, path)?;
     }
     let manifests_changed = modified.iter().any(|path| {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(crate::engine::languages::manifests::is_manifest_filename)
+        path.file_name().and_then(|name| name.to_str()).is_some_and(
+            crate::engine::languages::dependency_registry::is_dependency_manifest_filename,
+        )
     });
     if current_adapter.digest != adapter.digest
         || current_adapter.linked_workspaces != adapter.linked_workspaces
@@ -105,7 +105,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         return build(&root, db, adapter.adapter_path.as_deref());
     }
     let dependencies =
-        crate::engine::languages::manifests::DependencyRegistry::collect_with_adapter(
+        crate::engine::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
             &root,
             Some(&adapter),
         );

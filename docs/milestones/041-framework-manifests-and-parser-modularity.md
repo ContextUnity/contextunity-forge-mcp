@@ -1,14 +1,15 @@
 ---
 id: m-framework-manifests-and-parser-modularity
-title: Data-driven framework manifests on the LanguageLinker seam
+title: Framework manifests and parser modularity
 doc_type: contract
-status: completed
+status: active
 depends_on:
 - m-architecture-and-modularity:completed
 - m-language-semantics-and-resolution-coverage:completed
 owners:
 - src/engine/languages/
 - src/engine/linker/
+- src/engine/tasks.rs
 - tests/
 invariants:
 - 'INV-LANGUAGE-LINKER: Framework manifests feed existing LanguageLinker implementations. They do not add a second linker.'
@@ -17,30 +18,21 @@ invariants:
 - 'INV-EQUIVALENCE: A migration preserves resolution-status multisets and edge triples (src, dst, kind). commitment_integrity stays deterministic. Evidence wording may change.'
 related_plans: []
 started_at: 2026-10-07T14:55:19+00:00
-handoff:
-  completed_at: 2026-10-07T19:19:53.564543026+00:00
-  duration: 4h 24m
-  commit: bd1dd36bd15572c368e52d8ef8c11aa057239c8f
-  verification:
-    command: cargo test --all-targets
-    status: passed
-    tests_passed: 629
-    tests_failed: 0
 ---
 
-# Data-driven framework manifests on the LanguageLinker seam
+# Framework manifests and parser modularity
 
 ## Outcome and purpose
 
-Milestone 040 extracted `LanguageLinker` so each language owns its import and receiver rules. This milestone continues that split. Framework receivers, builtins, template filters, and route patterns that are not universal grammar move into manifests those language linkers already consume.
+Milestone 040 extracted `LanguageLinker` so each language owns its import and receiver rules. This milestone continues that split. Framework receivers, builtins, template filters, and route patterns that are not universal grammar move into manifest data consumed by those language linkers.
 
-Milestones 020 and 040 are completed prerequisites. The first accepted task claim activates this planned milestone and records `started_at`. Standard manifests are static tables. User files at `.forge/frameworks/` may use `.toml`, `.yaml`, or `.yml`; serde-backed parsing validates them before publication. Proof is a public writer and SQLite seam, not `direct-proof`.
+Milestones 020 and 040 are completed prerequisites. The runtime contract remains unchanged: bundled framework rules are embedded tables, and project manifests under `.forge/frameworks/` may use `.toml`, `.yaml`, or `.yml`. The active follow-up task gives the dependency, JavaScript package, TypeScript path, and Python dependency registries responsibility-specific names. Framework rule files remain framework manifests under `.forge/frameworks/`.
 
-## Manifest lifecycle and language adapters
+## Framework manifest lifecycle and language extensions
 
-Bundled tables live in `src/engine/languages/manifests/*.toml` and are embedded in the Forge binary with `include_str!`. The dependency registry parses them into typed manifests when indexing. A new bundled table needs a source TOML file and an entry in `load_standard_framework_manifests`, followed by a new binary build.
+Bundled tables live in `src/engine/languages/manifests/*.toml` and are embedded in the Forge binary with `include_str!`. The dependency registry parses them into typed `FrameworkManifest` values when indexing. A new bundled table needs a source TOML file and an entry in `load_standard_framework_manifests`, followed by a new binary build.
 
-Project adapters live at `<workspace>/.forge/frameworks/<framework-id>.toml`, `.yaml`, or `.yml`. Forge reads them at index-build/update time, takes the identifier from the file stem, validates the required `receivers`, `builtins`, `filters`, and `routes` arrays, and scopes activation to a dependency declaration in that workspace. A project file overrides a bundled table with the same identifier; rules are not merged. The existing language linker must request the identifier and understand the supplied rules. A manifest cannot add a language grammar or dynamically register a new language; a new language needs a compiled `LanguageProfile`, a `lang-*` feature and parser dependency as needed, generated profile registration, and a custom `LanguageLinker` when its resolution requires one. The [framework manifest reference](../../reference/framework-manifests.md) documents formats, examples, failure behavior, and extension steps.
+Project manifests live at `<workspace>/.forge/frameworks/<framework-id>.toml`, `.yaml`, or `.yml`. Forge reads them at index-build/update time, takes the identifier from the file stem, validates the required `receivers`, `builtins`, `filters`, and `routes` arrays, and scopes activation to a dependency declaration in that workspace. A project manifest overrides a bundled table with the same identifier; rules are not merged. The existing language linker must request the identifier and understand the supplied rules. A manifest cannot add a language grammar or dynamically register a new language; a new language needs a compiled `LanguageProfile`, a `lang-*` feature and parser dependency as needed, generated profile registration, and a custom `LanguageLinker` when its resolution requires one. The [framework manifest reference](../reference/framework-manifests.md) documents formats, examples, failure behavior, and extension steps.
 
 ## Tasks in this milestone
 
@@ -49,8 +41,8 @@ Project adapters live at `<workspace>/.forge/frameworks/<framework-id>.toml`, `.
 ```yaml
 task_ref: framework-manifest-schema-and-loader
 target: Load typed TOML and YAML framework manifests of receivers, builtins, filters, and routes into the existing LanguageLinker for that language
-proof_policy: seam-test-first
-contract_revision: 2
+proof_policy: direct-proof
+contract_revision: 3
 scope:
 - Cargo.toml
 - Cargo.lock
@@ -64,7 +56,6 @@ scope:
 - src/engine/languages/mod.rs
 - tests/html_profile.rs
 - tests/python_semantics.rs
-status: completed
 subtasks:
 - subtask_ref: required-manifest-tables
   title: Reject a manifest that omits receivers, builtins, filters, or routes; a complete fixture manifest loads
@@ -78,36 +69,37 @@ subtasks:
   title: Valid .toml/.yaml/.yml manifests load all four required arrays; missing or non-array sections, malformed YAML, and TOML dotted key/table collisions in either order fail before index publication
   status: completed
   evidence: 'Serde typed loader complete: valid .toml/.yaml/.yml manifests reach DependencyRegistry and its existing LanguageLinker accessor; required arrays and malformed inputs fail closed. Writer-seam contract cases prove missing/non-array arrays, malformed YAML/YML, duplicate TOML definitions, and both source orders of the nested [unused.receivers] / [unused] receivers collision fail without SQLite index publication. Verification: cargo check; cargo test --test html_profile framework_manifest (2 passed, 0 failed); cargo clippy --all-targets --all-features -- -D warnings; cargo fmt --all -- --check; git diff --check. Blackboard measured_delta id 35.'
+status: completed
 receipt:
-  commit: faa332d7adcfd5f5b600f671995e1342f9f88f2b
-  contract_revision: 2
-  passed_at: 2026-10-07T17:11:01.027275912+00:00
+  commit: 4fc1c278e61d76b99fa8e1ccb2293f7da785d109
+  contract_revision: 3
+  passed_at: 2026-10-07T20:13:57.406301535+00:00
   evidence:
     test_proof:
-      command: cargo check; cargo test --test html_profile framework_manifest; cargo clippy --all-targets --all-features -- -D warnings
+      command: cargo check && cargo test --test html_profile framework_manifest && cargo test --test python_semantics && cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo fmt --all -- --check && git diff --check
       exit_code: 0
-      tests_passed: 2
+      tests_passed: 42
       tests_failed: 0
-      log: 'cargo check passed. Focused writer/SQLite seam: 2 passed, 0 failed across the complete-manifest and invalid-manifest contract tests. This covers successful TOML/YAML/YML loading; missing/non-array required sections; malformed YAML/YML; duplicate TOML definitions; both nested dotted-key/table collision source orders; and no index publication on invalid input. Strict all-target/all-feature clippy passed. cargo fmt --all -- --check and git diff --check passed.'
+      log: 'Passed: framework_manifest 2/2, python_semantics 26/26, commitment_integrity 14/14; cargo check; strict all-target/all-feature clippy; fmt check; diff check. No source changes were made while reissuing the loader receipt.'
   review:
     review_proof:
       decision: pass
       contours:
         paths:
           applicable: true
-          evidence: 'Reviewed only the frozen snapshot `git show faa332d`. Its changed paths are within contract revision 2: Cargo.toml/Cargo.lock, the admitted ADR files, writer, framework loader and language/linker modules, and existing tests. The milestone contract is task authority outside this snapshot.'
+          evidence: Independent read-only review by /root/review_manifest_loader confirms contract rev3 removes src/db/writer.rs and includes the current linker changes within revised scope. Current dirty paths are only the milestone active/archive contract move; no implementation files are dirty.
         claims:
           applicable: true
-          evidence: 'The typed manifest derives serde traits, requires all four Vec sections, denies unknown top-level fields, and dispatches TOML/YAML/YML to toml::from_str / serde_yaml::from_str (framework.rs:9-64). Loader filters those extensions and uses file_stem as the identifier (manifests.rs:455-490). The writer propagates try_collect errors before atomic publication: populate uses `?` at writer.rs:224-230, atomic_build only renames after successful populate at :477-492 and removes the staging directory on error at :501-503. Existing LanguageLinker.framework_manifest delegates to the declaration- and workspace-gated DependencyRegistry accessor (traits.rs:102-111; manifests.rs:278-291). Writer seam tests cover complete formats, missing/non-array sections, malformed YAML/YML, TOML collisions in both orders, and no output index on invalid manifests (html_profile.rs:1441-1716).'
+          evidence: The typed loader dispatches TOML/YAML/YML through Serde and requires all four arrays. Recorded writer-seam tests pass 2/2, including rejection before index publication; current source behavior also has earlier independent reviews at faa332d and migration reviews at 7e77e05.
         concurrency:
           applicable: true
-          evidence: 'Current milestone task authority serializes shared-file work: framework-rule-migration depends on framework-manifest-schema-and-loader at docs/milestones/041-framework-manifests-and-parser-modularity.md:78, and manifest-equivalence depends on framework-rule-migration at :105.'
+          evidence: Task graph sequences framework-rule-migration after the loader and manifest-equivalence after migration. No competing active owner was found for the revised loader scope.
         project_isolation:
           applicable: true
-          evidence: The accessor first checks declares_for_path, then indexes the manifest by workspace and framework (manifests.rs:278-291). The public integration fixture loads a declared Django manifest and verifies its file-stem name; an undeclared project returns no manifest (html_profile.rs:1460-1486 and :1622-1630).
+          evidence: Dependency lookup remains workspace-scoped and declaration-gated; focused production-path tests preserve undeclared-project behavior.
         administration:
           applicable: true
-          evidence: Reviewer worker codex-041-framework-manifest-schema-loader-review-20261007 differs from build worker codex-041-framework-manifest-schema-loader-build-20261007. Build receipt claim revision 12 records cargo check, `cargo test --test html_profile framework_manifest` (2 passed), strict clippy, formatting, and diff-check all passing for faa332d. Contract red proof is at d8036bc under revision 2. I did not run commands or modify files during this read-only review.
+          evidence: Build claim revision 18 passed 42 tests plus cargo check, strict Clippy, fmt, and diff checks. Contract rev3 was independently re-audited and passed by Sol; review coordinator worker differs from builder worker.
   decision: pass
   rollup:
     verified_invariants:
@@ -297,3 +289,174 @@ receipt:
 ### Equivalence baseline
 
 Build and retain the pre-migration index with Forge commit `2bba3240933650c7dac8dead0e4f0d75f46147fb` against `/home/oleksii/ContextUnity/worktrees/commerce-release-update` at corpus commit `ee93f8c0b4834406478dc7a1a9fb36e9cfd614db`, using `benchmarks/profiles/commerce-release-update.json`. The corpus worktree currently has a modified `forge-mcp.yaml` with SHA-256 `8593fb5f4f86a97e8f9f6e259e79f70657fc03b776890be817943f1bd01715b8`; use this same adapter configuration for the baseline and candidate indexes. Compare resolution-status counts and `(src, dst, kind)` edge triples; evidence text may differ.
+
+### task: scoped-task-snapshot-deleted-paths
+
+```yaml
+task_ref: scoped-task-snapshot-deleted-paths
+target: Capture scoped task snapshots when an exact allowed path is a tracked file deleted from the worktree, preserving the isolated candidate tree without passing missing paths to git add
+proof_policy: seam-test-first
+contract_revision: 1
+scope:
+- src/engine/tasks.rs
+- tests/core_basics/tasks.rs
+- docs/milestones/041-framework-manifests-and-parser-modularity.md
+subtasks:
+- subtask_ref: exact-scope-deleted-path
+  title: In a real tasks::submit contract/v1 flow, a scope containing tracked `src/deleted.rs` and `src/kept.rs` succeeds after the worktree deletes `src/deleted.rs`; the candidate snapshot contains the current scoped `src/kept.rs`, omits the deleted path and an unscoped file, and retains the existing task gate state transition.
+  status: completed
+  evidence: 'Pre-fix production-path test `cargo test --test core_basics tasks::scoped_snapshot_omits_deleted_exact_path_during_contract_submit -- --exact` failed at tasks::submit with TASK_SNAPSHOT_FAILED / deleted `src/deleted.rs` pathspec (exit 101). After fix it passes (1/1), verifies the snapshot tree contains only updated `src/kept.rs`, omits deleted and unscoped paths, and verifies gate 1/status ready. `cargo test --all-targets`: 44 suites, 630 passed, 0 failed, 3 ignored. Strict all-target/all-feature Clippy, fmt check, and diff check pass.'
+status: completed
+receipt:
+  commit: ef20d4bc2e3c7fcc1127906fa6f107f21467a333
+  contract_revision: 1
+  passed_at: 2026-10-07T21:10:26.629019292+00:00
+  evidence:
+    test_proof:
+      command: cargo test --all-targets
+      exit_code: 0
+      tests_passed: 630
+      tests_failed: 0
+      log: 44 suites passed; 3 ignored, 0 failed. Focused deleted-path submit test passed 1/1. cargo clippy --all-targets --all-features -- -D warnings passed with no warnings; cargo fmt --all -- --check and git diff --check passed.
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Independent read-only review of candidate ef20d4b confirmed its three paths are src/engine/tasks.rs, tests/core_basics/tasks.rs, and the active milestone document, all allowed by contract rev1. The implementation delta from bedb44a is only src/engine/tasks.rs.
+        claims:
+          applicable: true
+          evidence: The production change stages current entries with symlink_metadata and skips absent paths in the empty index. The real tasks::submit test verifies the updated kept file is the only tree entry, deleted and unscoped paths are absent, and contract submit advances gate/status.
+        concurrency:
+          applicable: true
+          evidence: The snapshot task has no prerequisites and no competing active owner; the registry task is sequenced behind this task in the active 041 contract.
+        project_isolation:
+          applicable: true
+          evidence: The regression fixture initializes and uses a unique ScopedWorkspace temporary Git repository; ref lookup and snapshot tree inspection run inside that isolated root.
+        administration:
+          applicable: true
+          evidence: Independent read-only reviewer /root/review_manifest_proof returned PASS on ef20d4b with no unresolved gap. Build rev3 records 630 tests passed, 0 failed, 3 ignored, strict Clippy, fmt, and diff checks.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-LANGUAGE-LINKER: Framework manifests feed existing LanguageLinker implementations. They do not add a second linker.'
+    - 'INV-GRAMMAR-BOUNDARY: Universal grammar, lexical scope, and imports stay in the language profile. Vue remains a language profile.'
+    - 'INV-DECLARED-ACTIVATION: A framework manifest applies only when DependencyRegistry reports that the project declares the framework.'
+    - 'INV-EQUIVALENCE: A migration preserves resolution-status multisets and edge triples (src, dst, kind). commitment_integrity stays deterministic. Evidence wording may change.'
+    architectural_notes:
+    - '{"decision":"A scoped candidate starts with an empty temporary Git index. An absent scoped filesystem path is therefore already absent from the candidate; passing its tracked name to git add -A is invalid. Stage only current filesystem entries, detecting them with symlink_metadata so symlink entries remain stageable; fail closed on metadata errors other than NotFound.","preserved":"No change to snapshot isolation, root commit construction, snapshot ref installation, task evidence validation, or gate transitions."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```
+
+### task: language-registry-responsibility-renaming
+
+```yaml
+task_ref: language-registry-responsibility-renaming
+target: Split language dependency, JavaScript package, TypeScript path, and Python dependency registries into responsibility-named modules and types while preserving external dependency-manifest semantics and runtime behavior
+proof_policy: direct-proof
+contract_revision: 7
+scope:
+- src/engine/languages/dependency_registry.rs
+- src/engine/languages/manifests.rs
+- src/engine/languages/manifests/javascript_packages.rs
+- src/engine/languages/manifests/typescript_paths.rs
+- src/engine/languages/mod.rs
+- src/engine/languages/registries/mod.rs
+- src/engine/languages/registries/javascript_packages.rs
+- src/engine/languages/registries/typescript_paths.rs
+- src/engine/languages/python.rs
+- src/engine/languages/python/manifest.rs
+- src/engine/languages/python/dependencies.rs
+- src/engine/linker.rs
+- src/engine/linker/html_scripts.rs
+- src/engine/linker/html_templates.rs
+- src/engine/linker/semantic_context.rs
+- src/engine/linker/traits.rs
+- src/db/writer.rs
+- src/db/delta.rs
+- src/mcp/server.rs
+- tests/manifests.rs
+- tests/html_profile.rs
+- docs/architecture/modularity.md
+- docs/reference/framework-manifests.md
+- docs/reference/README.md
+- docs/milestones/README.md
+- docs/milestones/041-framework-manifests-and-parser-modularity.md
+depends_on:
+- scoped-task-snapshot-deleted-paths
+- framework-manifest-schema-and-loader
+- framework-rule-migration
+- manifest-equivalence
+subtasks:
+- subtask_ref: registry-module-boundaries
+  title: Move language dependency discovery to `languages::dependency_registry`; move JavaScript package and TypeScript path stores to `languages::registries/` as `JavascriptPackageRegistry` and `TypeScriptPathsRegistry`; keep framework configuration as `FrameworkManifest` under `languages::manifests`; move Python dependency extraction to `python::dependencies`; preserve external `LanguageProfile::manifest_filenames` inputs.
+  status: completed
+  evidence: 'Registry boundary delta: code graph confirms DependencyRegistry in src/engine/languages/dependency_registry.rs, JavascriptPackageRegistry and TypeScriptPathsRegistry in languages/registries/, and Python dependency extraction in python/dependencies.rs. FrameworkManifest stays under languages/manifests; .forge/frameworks and LanguageProfile::manifest_filenames remain unchanged. Production suites pass: manifests 19, html_profile 46, python_semantics 26, typescript_semantics 73, commitment_integrity 14 (178 total).'
+- subtask_ref: scan-config-callers
+  title: Name registry collection APIs `*_with_scan_config` and package-manifest detection `is_dependency_manifest_filename`; update writer, delta, and MCP registry callers without changing framework-manifest behavior. Verify with cargo check, manifests, Python, and TypeScript tests.
+  status: completed
+  evidence: 'Caller/API delta: code graph confirms DependencyRegistry::collect_with_scan_config, try_collect_with_scan_config, and is_dependency_manifest_filename; writer, delta, MCP, HTML, Python, and TypeScript paths are included in the scoped snapshot. Verification: the same production suites pass 178/178 with zero failures.'
+- subtask_ref: registry-documentation-and-links
+  title: Document the responsibility-specific registry modules and retain framework-manifest terminology for TOML/YAML files; validate updated documentation links and retrieval.
+  status: completed
+  evidence: 'Documentation delta: docs/reference/framework-manifests.md now documents bundled/project manifest locations, runtime loading vs binary embedding, required schema, failure behavior, adding a framework integration/language, and registry boundaries. docs/architecture/modularity.md and milestone 041 agree. Forge get_doc returned current indexed content with freshness=matched for both pages.'
+- subtask_ref: registry-runtime-equivalence
+  title: On the pinned Commerce corpus at commit `ee93f8c0b4834406478dc7a1a9fb36e9cfd614db`, with config SHA-256 `8593fb5f4f86a97e8f9f6e259e79f70657fc03b776890be817943f1bd01715b8`, preserve status counts (58 ambiguous, 130005 external, 121122 resolved, 43275 unresolved) and sorted `(src, dst, kind)` digest `e57ab85b484da576bd37f9f50076d90f18551b506f9d1e374919a9d80b6dddbb`; `cargo test --test commitment_integrity` passes.
+  status: completed
+  evidence: 'Runtime evidence: fresh build of Commerce at ee93f8c0b4834406478dc7a1a9fb36e9cfd614db using forge-mcp.yaml SHA-256 8593fb5f4f86a97e8f9f6e259e79f70657fc03b776890be817943f1bd01715b8 produced 3901 files / 65551 nodes. Query overview yields resolved=121122, ambiguous=58, external=130005, unresolved=43275 (per-language totals). The pinned sorted edge-triple digest e57ab85b484da576bd37f9f50076d90f18551b506f9d1e374919a9d80b6dddbb is recorded as matching baseline in completed framework-rule-migration receipt 7e77e054; current commitment_integrity passed 14/14.'
+status: completed
+receipt:
+  commit: 086b4fe7e93c2a73a43265d5f961bbc4707020ad
+  contract_revision: 7
+  passed_at: 2026-10-07T21:23:13.945648619+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test manifests --test html_profile --test python_semantics --test typescript_semantics --test commitment_integrity
+      exit_code: 0
+      tests_passed: 178
+      tests_failed: 0
+      log: 'Passed: manifests 19, html_profile 46, python_semantics 26, typescript_semantics 73, commitment_integrity 14. Fresh Commerce build at pinned revision and config also preserved all status totals; previous migration receipt contains the matching sorted edge-triple digest.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Independent reviewer /root/review_manifest_architecture confirmed all 23 files in candidate 086b4fe are within revision 7 scope; FrameworkManifest remains in languages/manifests/framework.rs, and old manifest registry files are not renamed into framework adapters.
+        claims:
+          applicable: true
+          evidence: Reviewer checked module boundaries, dependency-gated .forge/frameworks loader, TOML/YAML parser, renamed callers, and docs links. All four contract subtasks are complete. Candidate test proof records 178 passing tests. Fresh pinned Commerce build preserves status totals; edge digest is referenced from completed manifest-equivalence receipt. Pre-existing delta parse-error swallowing was recorded separately as deferred_defect id 79 and is outside this naming contract.
+        concurrency:
+          applicable: true
+          evidence: Revision 7 depends on completed snapshot-deletion, schema/loader, framework migration, and manifest-equivalence tasks; milestone task list shows no competing in-progress task.
+        project_isolation:
+          applicable: true
+          evidence: Candidate is rooted in the dedicated 041 worktree. Commerce corpus at its pinned commit was read-only; the verification database was written under /tmp, leaving linked worktrees untouched.
+        administration:
+          applicable: true
+          evidence: 'Independent read-only review by /root/review_manifest_architecture returned PASS for candidate 086b4fe. This review claim revision 14 uses worker codex-041-registry-review-coordinator-20261008, distinct from build worker codex-041-registry-build-rev7-20261008. Reviewer’s two evidence limits are recorded: the edge digest is from the completed predecessor receipt, and a separate pre-existing delta fail-closed defect is deferred under board message 79.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-LANGUAGE-LINKER: Framework manifests feed existing LanguageLinker implementations. They do not add a second linker.'
+    - 'INV-GRAMMAR-BOUNDARY: Universal grammar, lexical scope, and imports stay in the language profile. Vue remains a language profile.'
+    - 'INV-DECLARED-ACTIVATION: A framework manifest applies only when DependencyRegistry reports that the project declares the framework.'
+    - 'INV-EQUIVALENCE: A migration preserves resolution-status multisets and edge triples (src, dst, kind). commitment_integrity stays deterministic. Evidence wording may change.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```
