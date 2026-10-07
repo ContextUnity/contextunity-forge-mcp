@@ -1600,6 +1600,12 @@ fn milestone_init_scaffolds_numbered_planned_and_active_documents() {
     assert!(text.contains("status: planned"));
     assert!(!text.contains("started_at:"));
     assert!(text.contains("A concrete outcome."));
+    assert!(text.contains("## Deferred and out-of-scope defects"));
+    assert!(text.contains("deferred_defects: []"));
+    assert!(Milestone::parse(&text, "forge-mcp")
+        .unwrap()
+        .deferred_defects
+        .is_empty());
     let note = text.find("Task notes: preserve this detail.").unwrap();
     assert!(text.find("task_ref: first").unwrap() < note);
     assert!(note < text.find("task_ref: second").unwrap());
@@ -1710,6 +1716,86 @@ fn milestone_init_imports_plan_metadata_and_rejects_duplicate_number() {
     );
     let overflow = milestone_cli(&root, &["init", "--slug", "later", "--title", "Later"]);
     assert!(!overflow.status.success());
+}
+#[test]
+fn milestone_specification_parses_typed_deferred_defects_block() {
+    let spec = r#"---
+id: m-defects
+title: Defects test
+doc_type: contract
+deferred_defects:
+  - id: DEFECT-FRONTMATTER
+    source: task_blackboard
+    title: "Frontmatter defect stays typed"
+    path: src/engine/tasks.rs
+    disposition: subsequent_milestone
+    notes: "Imported from contract metadata"
+---
+# Defects test
+
+### task: task-a
+```yaml
+task_ref: task-a
+target: Task A target
+proof_policy: direct-proof
+scope: [src/]
+```
+
+## Deferred and out-of-scope defects
+
+```yaml
+deferred_defects:
+  - id: DEFECT-001
+    source: review_findings
+    title: "Unshadowed function resolution bug in edge case"
+    path: src/engine/languages/python.rs
+    disposition: deferred
+    notes: "Follow up in next milestone"
+  - id: DEFECT-002
+    source: task_blackboard
+    title: "Minor syntax warning"
+```
+"#;
+    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    assert_eq!(milestone.deferred_defects.len(), 3);
+    assert_eq!(milestone.deferred_defects[0].id, "DEFECT-FRONTMATTER");
+    assert_eq!(milestone.deferred_defects[0].source, "task_blackboard");
+    assert_eq!(
+        milestone.deferred_defects[0].title,
+        "Frontmatter defect stays typed"
+    );
+    assert_eq!(
+        milestone.deferred_defects[0].path.as_deref(),
+        Some("src/engine/tasks.rs")
+    );
+    assert_eq!(
+        milestone.deferred_defects[0].disposition,
+        "subsequent_milestone"
+    );
+    assert_eq!(
+        milestone.deferred_defects[0].notes.as_deref(),
+        Some("Imported from contract metadata")
+    );
+    assert_eq!(milestone.deferred_defects[1].id, "DEFECT-001");
+    assert_eq!(milestone.deferred_defects[1].source, "review_findings");
+    assert_eq!(
+        milestone.deferred_defects[1].title,
+        "Unshadowed function resolution bug in edge case"
+    );
+    assert_eq!(
+        milestone.deferred_defects[1].path.as_deref(),
+        Some("src/engine/languages/python.rs")
+    );
+    assert_eq!(milestone.deferred_defects[1].disposition, "deferred");
+    assert_eq!(
+        milestone.deferred_defects[1].notes.as_deref(),
+        Some("Follow up in next milestone")
+    );
+    assert_eq!(milestone.deferred_defects[2].id, "DEFECT-002");
+    assert_eq!(milestone.deferred_defects[2].source, "task_blackboard");
+    assert_eq!(milestone.deferred_defects[2].disposition, "deferred");
+    assert!(milestone.deferred_defects[2].path.is_none());
+    assert!(milestone.deferred_defects[2].notes.is_none());
 }
 #[test]
 fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
@@ -2102,10 +2188,15 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
         "forge-mcp.yaml",
         "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
-    let source = SPEC.replace(
-        "task_ref: first\n",
-        "task_ref: first\ninvariants: [first-rule]\n",
-    );
+    let source = SPEC
+        .replace(
+            "task_ref: first\n",
+            "task_ref: first\ninvariants: [first-rule]\n",
+        )
+        .replace(
+            "invariants: [isolated]\n",
+            "invariants: [isolated]\ndeferred_defects:\n  - id: DEFECT-RECEIPT\n    source: task_blackboard\n    title: Keep this typed finding across receipt writes\n    path: src/engine/tasks.rs\n    disposition: deferred\n    notes: Persist milestone-level defect metadata.\n",
+        );
     let milestone_ref = "docs/milestones/010-test.md";
     root.write(milestone_ref, &source);
     let milestone = Milestone::parse(&source, "forge-mcp").unwrap();
@@ -2180,6 +2271,16 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     }
     let written = std::fs::read_to_string(root.0.join(milestone_ref)).unwrap();
     let parsed = Milestone::parse(&written, "forge-mcp").unwrap();
+    assert_eq!(parsed.deferred_defects.len(), 1);
+    assert_eq!(parsed.deferred_defects[0].id, "DEFECT-RECEIPT");
+    assert_eq!(
+        parsed.deferred_defects[0].title,
+        "Keep this typed finding across receipt writes"
+    );
+    assert_eq!(
+        parsed.deferred_defects[0].notes.as_deref(),
+        Some("Persist milestone-level defect metadata.")
+    );
     let persisted = parsed
         .tasks
         .iter()

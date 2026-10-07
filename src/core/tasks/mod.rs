@@ -117,6 +117,31 @@ fn default_subtask_status() -> String {
     "pending".into()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+/// Represents an out-of-scope defect or deferred review finding recorded under tasks.
+pub struct DeferredDefect {
+    /// Unique defect or finding reference slug (e.g. 'DEFECT-001' or 'parser-multiline-attr').
+    pub id: String,
+    /// Source of discovery: e.g. 'review_findings', 'task_blackboard', or worker identifier.
+    pub source: String,
+    /// Summary of the defect or uncovered edge case.
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Targeted path or module boundary.
+    pub path: Option<String>,
+    #[serde(default = "default_defect_disposition")]
+    /// Disposition: 'deferred', 'subsequent_milestone', or 'rejected'.
+    pub disposition: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Additional context, reproduction notes, or rationale.
+    pub notes: Option<String>,
+}
+
+fn default_defect_disposition() -> String {
+    "deferred".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Represents task spec data.
@@ -171,10 +196,12 @@ pub struct Milestone {
     /// The depends on value.
     pub depends_on: Vec<String>,
     /// The tasks value.
-    pub tasks: Vec<TaskSpec>,
     /// Optional milestone status (active, planned, completed, cancelled).
     #[serde(default)]
     pub status: Option<String>,
+    #[serde(default)]
+    /// Optional deferred out-of-scope defects or review findings recorded under tasks.
+    pub deferred_defects: Vec<DeferredDefect>,
 }
 
 impl Milestone {
@@ -244,6 +271,20 @@ impl Milestone {
             .map(|v| serde_yaml::from_value(v.clone()))
             .transpose()?
             .unwrap_or_default();
+        let mut deferred_defects: Vec<DeferredDefect> = meta
+            .get("deferred_defects")
+            .map(|v| serde_yaml::from_value(v.clone()))
+            .transpose()?
+            .unwrap_or_default();
+        for defect in &deferred_defects {
+            valid_identity(&defect.id)?;
+            if defect.title.trim().is_empty() {
+                bail!("deferred defect requires a non-empty title");
+            }
+            if let Some(path) = &defect.path {
+                relative_path(path)?;
+            }
+        }
         let mut tasks = Vec::new();
         let mut ids = BTreeSet::new();
         let mut lines = body.lines();
@@ -265,6 +306,20 @@ impl Milestone {
                 bail!("unterminated YAML block");
             }
             let value: serde_yaml::Value = serde_yaml::from_str(&yaml)?;
+            if let Some(defects_val) = value.get("deferred_defects") {
+                let parsed: Vec<DeferredDefect> = serde_yaml::from_value(defects_val.clone())?;
+                for defect in &parsed {
+                    valid_identity(&defect.id)?;
+                    if defect.title.trim().is_empty() {
+                        bail!("deferred defect requires a non-empty title");
+                    }
+                    if let Some(path) = &defect.path {
+                        relative_path(path)?;
+                    }
+                }
+                deferred_defects.extend(parsed);
+                continue;
+            }
             if value.get("task_ref").is_none() {
                 continue;
             }
@@ -347,6 +402,7 @@ impl Milestone {
             owners,
             depends_on,
             tasks,
+            deferred_defects,
         })
     }
     /// Performs task id.

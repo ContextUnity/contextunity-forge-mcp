@@ -277,6 +277,7 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
     let (plan_meta, plan_body) = if let Some(plan) = &options.plan {
         let plan = crate::core::tasks::confined_path(root, &plan.to_string_lossy())?;
         let text = fs::read_to_string(plan)?;
+        let text = text.replace("\r\n", "\n");
         let body = text
             .strip_prefix("---\n")
             .context("plan requires YAML frontmatter")?;
@@ -396,7 +397,7 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
         stdin_tasks.to_string()
     };
     let body = format!(
-        "# {title}\n\n## Outcome and purpose\n\n{}\n\n{}## Tasks in this milestone\n\n{}",
+        "# {title}\n\n## Outcome and purpose\n\n{}\n\n{}## Tasks in this milestone\n\n{}\n## Deferred and out-of-scope defects\n\n```yaml\ndeferred_defects: []\n```\n",
         description.trim(),
         notes,
         tasks
@@ -433,6 +434,7 @@ struct Snapshot {
 
 fn snapshot(root: &Path, path: PathBuf, repository: &str, project: &str) -> Result<Snapshot> {
     let text = fs::read_to_string(&path)?;
+    let text = text.replace("\r\n", "\n");
     let status = Milestone::status_from_frontmatter(&text, is_archived_path(&path))?.to_owned();
     let header = text
         .strip_prefix("---\n")
@@ -659,11 +661,11 @@ pub fn show(root: &Path, selector: &str, full: bool) -> Result<Value> {
 pub fn activate_on_claim(worktree: &Path, reference: &str, claimed_at: i64) -> Result<()> {
     let path = crate::core::tasks::confined_path(worktree, reference)?;
     let text = fs::read_to_string(&path)?;
+    let text = text.replace("\r\n", "\n");
     let status = Milestone::status_from_frontmatter(&text, is_archived_path(Path::new(reference)))?;
-    let frontmatter = text
-        .strip_prefix("---\r\n")
-        .or_else(|| text.strip_prefix("---\n"))
-        .context("milestone requires YAML frontmatter")?;
+    let Some(frontmatter) = text.strip_prefix("---\n") else {
+        return Ok(());
+    };
     let (header, body) = frontmatter
         .split_once("\r\n---\r\n")
         .or_else(|| frontmatter.split_once("\n---\n"))
@@ -888,8 +890,8 @@ pub fn handoff(
     );
     let archive_ref = archived.strip_prefix(root)?.to_string_lossy().into_owned();
     fs::create_dir_all(&archive_dir)?;
-    let (_, body) = item
-        .text
+    let normalized_text = item.text.replace("\r\n", "\n");
+    let (_, body) = normalized_text
         .strip_prefix("---\n")
         .context("milestone frontmatter missing")?
         .split_once("\n---\n")
