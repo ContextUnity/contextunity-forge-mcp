@@ -637,6 +637,10 @@ pub fn manage(root: &Path, mut p: Manage) -> Result<Value> {
                     }
                     bail!("TASK_PROJECT_MISMATCH");
                 }
+                if parsed.status.as_deref() == Some("cancelled") {
+                    store.prune_cancelled(&reference)?;
+                    continue;
+                }
                 if task_ref.is_some_and(|r| !parsed.tasks.iter().any(|t| t.task_ref == r)) {
                     bail!("TASK_NOT_FOUND");
                 }

@@ -3540,3 +3540,433 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
         "error must be descriptive: {err}"
     );
 }
+
+#[test]
+fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subtask_state() {
+    let root = ScopedWorkspace::new("forge_milestone_lifecycle_sync");
+    root.write("src/lib.rs", "pub fn lifecycle() {}\n");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    let database_path = tasks::database_path(&root.0).unwrap();
+    std::fs::create_dir_all(database_path.parent().unwrap()).unwrap();
+    let db = rusqlite::Connection::open(&database_path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE task_store_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO task_store_metadata VALUES('schema_version', '1');
+         CREATE TABLE task_blackboard(
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             milestone_ref TEXT NOT NULL,
+             task_id TEXT REFERENCES tasks ON DELETE CASCADE,
+             subtask_ref TEXT,
+             author TEXT NOT NULL,
+             topic TEXT NOT NULL,
+             payload TEXT NOT NULL,
+             created_at INTEGER NOT NULL
+         );
+         CREATE INDEX idx_task_blackboard_task_created ON task_blackboard(task_id, created_at);",
+    )
+    .unwrap();
+    drop(db);
+
+    let manifest = |id: &str,
+                    status: Option<&str>,
+                    closure_reason: Option<&str>,
+                    task_ref: &str,
+                    revision: u64,
+                    target: &str,
+                    subtask_ref: &str| {
+        let status = status
+            .map(|value| format!("status: {value}\n"))
+            .unwrap_or_default();
+        let closure = match (status.as_str(), closure_reason) {
+            (_, Some(reason)) => format!("closure:\n  reason: \"{reason}\"\n"),
+            ("status: cancelled\n", None) => "closure:\n  owner: platform\n".into(),
+            _ => String::new(),
+        };
+        format!(
+            "---\nid: {id}\ntitle: {id}\ndoc_type: contract\n{status}{closure}---\n# Tasks\n```yaml\ntask_ref: {task_ref}\ntarget: {target}\nproof_policy: seam-test-first\ncontract_revision: {revision}\nscope: [src/]\nsubtasks:\n  - subtask_ref: {subtask_ref}\n    title: {subtask_ref}\n    status: pending\n```\n"
+        )
+    };
+    let sync = |path: &str| {
+        tasks::manage(
+            &root.0,
+            tasks::Manage {
+                action: tasks::ManageAction::Sync,
+                milestone_ref: Some(path.to_owned()),
+                ..Default::default()
+            },
+        )
+    };
+
+    let crlf_path = "docs/milestones/015-crlf-activation.md";
+    let crlf_id = "forge-mcp/forge-mcp/m-crlf-activation:activate";
+    let crlf_manifest = manifest(
+        "m-crlf-activation",
+        Some("planned"),
+        None,
+        "activate",
+        1,
+        "Activate CRLF milestone on claim",
+        "activate-subtask",
+    )
+    .replace('\n', "\r\n");
+    root.write(crlf_path, &crlf_manifest);
+    sync(crlf_path).unwrap();
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: crlf_id.into(),
+            stage: "contract/v1".into(),
+            worker_id: "crlf-lifecycle-test".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            bundle: None,
+        },
+    )
+    .unwrap();
+    let crlf_activated =
+        contextunity_forge_mcp::engine::milestones::show(&root.0, "m-crlf-activation", true)
+            .unwrap();
+    assert_eq!(crlf_activated["status"], "active");
+    assert!(crlf_activated["started_at"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+
+    let default_path = "docs/milestones/010-default.md";
+    let default_spec = manifest(
+        "m-default",
+        None,
+        None,
+        "remaining",
+        1,
+        "Keep remaining work",
+        "preserve-progress",
+    );
+    root.write(default_path, &default_spec);
+    let default_sync = sync(default_path).unwrap();
+    assert_eq!(default_sync["tasks"].as_array().unwrap().len(), 1);
+    let default_view =
+        contextunity_forge_mcp::engine::milestones::show(&root.0, "m-default", false).unwrap();
+    assert_eq!(default_view["status"], "planned");
+
+    let invalid_path = "docs/milestones/001-invalid-status.md";
+    root.write(
+        invalid_path,
+        &manifest(
+            "m-invalid-status",
+            Some("deferred"),
+            None,
+            "invalid",
+            1,
+            "Reject invalid lifecycle status",
+            "invalid-subtask",
+        ),
+    );
+    let invalid_status = sync(invalid_path);
+    assert!(
+        invalid_status.is_err(),
+        "milestone sync must reject statuses outside active, planned, completed, and cancelled: {invalid_status:?}"
+    );
+
+    let archived_default_path = "docs/milestones/archive/011-archived-default.md";
+    root.write(
+        archived_default_path,
+        &manifest(
+            "m-archived-default",
+            None,
+            None,
+            "archived-default",
+            1,
+            "Default archived milestone",
+            "archived-subtask",
+        ),
+    );
+    sync(archived_default_path).unwrap();
+    let archived_default_view =
+        contextunity_forge_mcp::engine::milestones::show(&root.0, "m-archived-default", true)
+            .unwrap();
+    assert_eq!(archived_default_view["status"], "completed");
+
+    for (id, status, path) in [
+        ("m-planned", "planned", "docs/milestones/020-planned.md"),
+        (
+            "m-completed",
+            "completed",
+            "docs/milestones/archive/030-completed.md",
+        ),
+    ] {
+        root.write(
+            path,
+            &manifest(
+                id,
+                Some(status),
+                None,
+                status,
+                1,
+                "Accept a supported lifecycle status",
+                "status-subtask",
+            ),
+        );
+        assert_eq!(sync(path).unwrap()["tasks"].as_array().unwrap().len(), 1);
+    }
+
+    let cancelled_path = "docs/milestones/040-cancelled.md";
+    let cancelled_id = "forge-mcp/forge-mcp/m-cancelled:retired";
+    root.write(
+        cancelled_path,
+        &manifest(
+            "m-cancelled",
+            Some("active"),
+            None,
+            "retired",
+            1,
+            "Retire this task",
+            "retired-subtask",
+        ),
+    );
+    assert_eq!(
+        sync(cancelled_path).unwrap()["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let remaining_id = "forge-mcp/forge-mcp/m-default:remaining";
+    let store = TasksStore::open(&database_path).unwrap();
+    let progress = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::SubtaskUpdate,
+            task_id: Some(remaining_id.into()),
+            subtask_ref: Some("preserve-progress".into()),
+            subtask_status: Some("in_progress".into()),
+            evidence: Some("verified retained work".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(progress["subtask"]["status"], "in_progress");
+
+    root.write(
+        default_path,
+        &manifest(
+            "m-default",
+            None,
+            None,
+            "remaining",
+            2,
+            "Keep remaining work after revision",
+            "preserve-progress",
+        ),
+    );
+    sync(default_path).unwrap();
+    let retained = store
+        .subtask_list(remaining_id)
+        .unwrap()
+        .into_iter()
+        .find(|subtask| subtask.subtask_ref == "preserve-progress")
+        .unwrap();
+    assert_eq!(retained.status, "in_progress");
+    assert_eq!(retained.evidence.as_deref(), Some("verified retained work"));
+
+    store
+        .connection
+        .execute(
+            "INSERT INTO task_dependencies(task_id, dependency_id, satisfied) VALUES (?1, ?2, 0)",
+            rusqlite::params![remaining_id, cancelled_id],
+        )
+        .unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO task_dependencies(task_id, dependency_id, satisfied) VALUES (?1, ?2, 0)",
+            rusqlite::params![cancelled_id, remaining_id],
+        )
+        .unwrap();
+    let cancelled_scope_ref = store.milestone_scope_ref(cancelled_path).unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO task_blackboard(milestone_ref, task_id, subtask_ref, author, topic, payload, created_at) \
+             VALUES(?1, ?2, NULL, 'reviewer', 'architectural_notes', 'task context', 1)",
+            rusqlite::params![cancelled_scope_ref, cancelled_id],
+        )
+        .unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO task_blackboard(milestone_ref, task_id, subtask_ref, author, topic, payload, created_at) \
+             VALUES(?1, NULL, NULL, 'reviewer', 'architectural_notes', 'milestone context', 2)",
+            [&cancelled_scope_ref],
+        )
+        .unwrap();
+
+    root.write(
+        cancelled_path,
+        &manifest(
+            "m-cancelled",
+            Some("cancelled"),
+            None,
+            "retired",
+            1,
+            "Retire this task",
+            "retired-subtask",
+        ),
+    );
+    let missing_reason = sync(cancelled_path);
+    assert!(
+        missing_reason.is_err(),
+        "cancelled milestone sync must require closure.reason: {missing_reason:?}"
+    );
+    assert!(store.inspect(cancelled_id).is_ok());
+    assert_eq!(
+        store
+            .blackboard_read(cancelled_id, None, None)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    root.write(
+        cancelled_path,
+        &manifest(
+            "m-cancelled",
+            Some("cancelled"),
+            Some("   "),
+            "retired",
+            1,
+            "Retire this task",
+            "retired-subtask",
+        ),
+    );
+    let blank_reason = sync(cancelled_path);
+    assert!(
+        blank_reason.is_err(),
+        "cancelled milestone sync must reject a blank closure.reason: {blank_reason:?}"
+    );
+    assert!(store.inspect(cancelled_id).is_ok());
+
+    root.write(
+        cancelled_path,
+        &manifest(
+            "m-cancelled",
+            Some("cancelled"),
+            Some("Replaced by the remaining milestone"),
+            "retired",
+            1,
+            "Retire this task",
+            "retired-subtask",
+        ),
+    );
+    let cancelled_sync = sync(cancelled_path).unwrap();
+    assert!(cancelled_sync["tasks"].as_array().unwrap().is_empty());
+    assert!(store.inspect(cancelled_id).is_err());
+    assert!(store
+        .blackboard_read(cancelled_id, None, None)
+        .unwrap()
+        .is_empty());
+
+    let incoming_satisfied: i64 = store
+        .connection
+        .query_row(
+            "SELECT satisfied FROM task_dependencies WHERE task_id=?1 AND dependency_id=?2",
+            rusqlite::params![remaining_id, cancelled_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(incoming_satisfied, 0);
+    let cancelled_blackboard_rows: i64 = store
+        .connection
+        .query_row(
+            "SELECT count(*) FROM task_blackboard WHERE milestone_ref=?1",
+            [&cancelled_scope_ref],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(cancelled_blackboard_rows, 0);
+    let outgoing_count: i64 = store
+        .connection
+        .query_row(
+            "SELECT count(*) FROM task_dependencies WHERE task_id=?1",
+            [cancelled_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(outgoing_count, 0);
+    let remaining = store
+        .list(None, "all", None)
+        .unwrap()
+        .into_iter()
+        .find(|task| task.task_id == remaining_id)
+        .unwrap();
+    assert_eq!(remaining.status, "blocked");
+}
+
+#[test]
+fn cancelled_milestone_blackboard_pruning_is_project_scoped() {
+    let root = ScopedWorkspace::new("forge_cancelled_milestone_project_isolation");
+    let database_path = root.0.join(".forge/tasks.sqlite");
+    let initialized = TasksStore::open_project(&database_path, "primary", "app").unwrap();
+    drop(initialized);
+    let db = rusqlite::Connection::open(&database_path).unwrap();
+    db.execute_batch(
+        "ALTER TABLE task_blackboard RENAME TO task_blackboard_tasks;
+         CREATE TABLE task_blackboard(
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             milestone_ref TEXT NOT NULL,
+             task_id TEXT REFERENCES tasks ON DELETE CASCADE,
+             subtask_ref TEXT,
+             author TEXT NOT NULL,
+             topic TEXT NOT NULL,
+             payload TEXT NOT NULL,
+             created_at INTEGER NOT NULL
+         );
+         DROP TABLE task_blackboard_tasks;",
+    )
+    .unwrap();
+    drop(db);
+
+    let path = "docs/milestones/040-cancelled.md";
+    let primary = TasksStore::open_project(&database_path, "primary", "app").unwrap();
+    let linked = TasksStore::open_project(&database_path, "linked", "app").unwrap();
+    let primary_ref = primary.milestone_scope_ref(path).unwrap();
+    let linked_ref = linked.milestone_scope_ref(path).unwrap();
+    assert_ne!(primary_ref, linked_ref);
+    primary
+        .connection
+        .execute(
+            "INSERT INTO task_blackboard(milestone_ref,author,topic,payload,created_at) VALUES(?1,'a','note','primary',1)",
+            [&primary_ref],
+        )
+        .unwrap();
+    primary
+        .connection
+        .execute(
+            "INSERT INTO task_blackboard(milestone_ref,author,topic,payload,created_at) VALUES(?1,'b','note','linked',2)",
+            [&linked_ref],
+        )
+        .unwrap();
+
+    let mut selected = TasksStore::open_project(&database_path, "primary", "app").unwrap();
+    assert_eq!(selected.prune_cancelled(path).unwrap(), 0);
+    let selected_rows: i64 = primary
+        .connection
+        .query_row(
+            "SELECT count(*) FROM task_blackboard WHERE milestone_ref=?1",
+            [&primary_ref],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let linked_rows: i64 = primary
+        .connection
+        .query_row(
+            "SELECT count(*) FROM task_blackboard WHERE milestone_ref=?1",
+            [&linked_ref],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(selected_rows, 0);
+    assert_eq!(linked_rows, 1);
+}

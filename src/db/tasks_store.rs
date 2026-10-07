@@ -155,6 +155,11 @@ impl TasksStore {
         }
         Ok(())
     }
+    /// Qualify a relative milestone path for use as a shared-database blackboard key.
+    pub fn milestone_scope_ref(&self, reference: &str) -> Result<String> {
+        let reference = crate::core::tasks::relative_path(reference)?;
+        Ok(format!("{}{}", self.namespace, reference.to_string_lossy()))
+    }
     /// Persist a message for one task and return its SQLite identifier.
     pub fn blackboard_post(
         &self,
@@ -406,6 +411,41 @@ impl TasksStore {
     ) -> Result<Vec<Task>> {
         self.sync_selected(milestone, reference, root, Some(task_ref))
     }
+    /// Remove all persisted state for a cancelled milestone while retaining incoming blockers.
+    pub fn prune_cancelled(&mut self, reference: &str) -> Result<usize> {
+        let reference = crate::core::tasks::relative_path(reference)?;
+        let relative_reference = reference.to_string_lossy();
+        let milestone_scope_ref = self.milestone_scope_ref(&relative_reference)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let columns = {
+            let mut statement = tx.prepare("PRAGMA table_info(task_blackboard)")?;
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            columns
+        };
+        if columns.iter().any(|column| column == "milestone_ref") {
+            tx.execute(
+                "DELETE FROM task_blackboard WHERE milestone_ref=?1",
+                [&milestone_scope_ref],
+            )?;
+        }
+
+        tx.execute(
+            "DELETE FROM task_dependencies WHERE task_id IN \
+             (SELECT task_id FROM tasks WHERE milestone_ref=?1 AND substr(task_id,1,length(?2))=?2)",
+            params![relative_reference.as_ref(), self.namespace],
+        )?;
+        let deleted = tx.execute(
+            "DELETE FROM tasks WHERE milestone_ref=?1 AND substr(task_id,1,length(?2))=?2",
+            params![relative_reference.as_ref(), self.namespace],
+        )?;
+        tx.commit()?;
+        Ok(deleted)
+    }
     fn sync_selected(
         &mut self,
         milestone: &Milestone,
@@ -415,6 +455,15 @@ impl TasksStore {
     ) -> Result<Vec<Task>> {
         if format!("{}/{}/", milestone.repository, milestone.project) != self.namespace {
             bail!("TASK_PROJECT_MISMATCH");
+        }
+        if milestone.status.as_deref().is_some_and(|status| {
+            !matches!(status, "active" | "planned" | "completed" | "cancelled")
+        }) {
+            bail!("MILESTONE_STATUS_INVALID: expected active, planned, completed, or cancelled");
+        }
+        if milestone.status.as_deref() == Some("cancelled") {
+            self.prune_cancelled(reference)?;
+            return Ok(Vec::new());
         }
         let tx = self
             .connection
@@ -470,7 +519,44 @@ impl TasksStore {
                 end_claim(&tx, &id)?;
                 tx.execute("DELETE FROM task_scope_paths WHERE task_id=?1", [&id])?;
                 tx.execute("DELETE FROM task_dependencies WHERE task_id=?1", [&id])?;
-                tx.execute("DELETE FROM task_subtasks WHERE task_id=?1", [&id])?;
+                let mut existing_subtasks = {
+                    let mut stmt = tx.prepare(
+                        "SELECT subtask_ref FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
+                    )?;
+                    let existing = stmt
+                        .query_map([&id], |row| row.get::<_, String>(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    existing
+                };
+                if existing_subtasks.is_empty() {
+                    for subtask in &existing.spec.subtasks {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO task_subtasks(task_id, subtask_ref, title, status, evidence, updated_at) \
+                             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                            params![
+                                id,
+                                subtask.subtask_ref,
+                                subtask.title,
+                                subtask.status,
+                                subtask.evidence,
+                                now()
+                            ],
+                        )?;
+                        existing_subtasks.push(subtask.subtask_ref.clone());
+                    }
+                }
+                for subtask_ref in existing_subtasks {
+                    if !spec
+                        .subtasks
+                        .iter()
+                        .any(|subtask| subtask.subtask_ref == subtask_ref)
+                    {
+                        tx.execute(
+                            "DELETE FROM task_subtasks WHERE task_id=?1 AND subtask_ref=?2",
+                            params![id, subtask_ref],
+                        )?;
+                    }
+                }
             }
             let completed = spec.status.as_deref() == Some("completed");
             if completed {
@@ -512,7 +598,7 @@ impl TasksStore {
                 continue;
             }
             let revision = next_revision(&tx, &id)?;
-            let task = Task {
+            let mut task = Task {
                 task_id: id.clone(),
                 milestone_ref: reference.into(),
                 spec: spec.clone(),
@@ -537,10 +623,26 @@ impl TasksStore {
                 tx.execute(
                     "INSERT INTO task_subtasks(task_id, subtask_ref, title, status, evidence, updated_at) \
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
-                     ON CONFLICT(task_id, subtask_ref) DO UPDATE SET title=excluded.title, status=excluded.status, evidence=COALESCE(excluded.evidence, task_subtasks.evidence), updated_at=excluded.updated_at",
+                     ON CONFLICT(task_id, subtask_ref) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
                     params![id, sub.subtask_ref, sub.title, sub.status, sub.evidence, now()],
                 )?;
             }
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
+                )?;
+                task.spec.subtasks = stmt
+                    .query_map([&id], |row| {
+                        Ok(SubtaskSpec {
+                            subtask_ref: row.get(0)?,
+                            title: row.get(1)?,
+                            status: row.get(2)?,
+                            evidence: row.get(3)?,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+            }
+            save(&tx, &task)?;
             for scope in &spec.scope {
                 let path = crate::core::tasks::relative_path(scope)?;
                 crate::core::tasks::confined_path(root, scope)?;

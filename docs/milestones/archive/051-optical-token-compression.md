@@ -2,7 +2,7 @@
 id: m-optical-token-compression
 title: Optical token-compression hypotheses
 doc_type: contract
-status: completed
+status: cancelled
 depends_on:
 - m-language-semantics-and-resolution-coverage:completed
 - m-mcp-output-compaction-and-agent-ergonomics:completed

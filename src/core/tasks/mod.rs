@@ -129,9 +129,38 @@ pub struct Milestone {
     pub depends_on: Vec<String>,
     /// The tasks value.
     pub tasks: Vec<TaskSpec>,
+    /// Optional milestone status (active, planned, completed, cancelled).
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 impl Milestone {
+    /// Resolves a manifest's lifecycle status, applying the location-based default.
+    pub fn status_from_frontmatter(text: &str, archived: bool) -> Result<&'static str> {
+        let text = text.replace("\r\n", "\n");
+        let body = text
+            .strip_prefix("---\n")
+            .context("milestone requires YAML frontmatter")?;
+        let (header, _) = body
+            .split_once("\n---\n")
+            .context("unterminated frontmatter")?;
+        let meta: serde_yaml::Value = serde_yaml::from_str(header)?;
+        meta.as_mapping()
+            .context("milestone frontmatter must be a mapping")?;
+        let id = meta
+            .get("id")
+            .and_then(serde_yaml::Value::as_str)
+            .context("milestone requires id")?;
+        valid_identity(id)?;
+        Ok(
+            parse_lifecycle_status(&meta)?.unwrap_or(if archived {
+                "completed"
+            } else {
+                "planned"
+            }),
+        )
+    }
+
     /// Performs parse.
     pub fn parse(text: &str, repository: &str) -> Result<Self> {
         Self::parse_specification(text, repository, None)
@@ -151,6 +180,7 @@ impl Milestone {
         let meta: serde_yaml::Value = serde_yaml::from_str(header)?;
         let field = |key: &str| meta[key].as_str().map(str::to_owned);
         let id = field("id").context("milestone requires id")?;
+        let status = parse_lifecycle_status(&meta)?.map(str::to_owned);
         let repository = field("repository").unwrap_or_else(|| repository.into());
         let project = field("project").unwrap_or_else(|| project.unwrap_or(&repository).into());
         for value in [&id, &repository, &project] {
@@ -267,6 +297,7 @@ impl Milestone {
         }
         Ok(Self {
             id,
+            status,
             repository,
             project,
             invariants,
@@ -298,6 +329,35 @@ impl Milestone {
             spec,
         ))?)))
     }
+}
+
+fn parse_lifecycle_status(meta: &serde_yaml::Value) -> Result<Option<&'static str>> {
+    let Some(value) = meta.get("status") else {
+        return Ok(None);
+    };
+    let value = value
+        .as_str()
+        .context("MILESTONE_STATUS_INVALID: status must be a string")?;
+    let status = match value {
+        "active" => "active",
+        "planned" => "planned",
+        "completed" => "completed",
+        "cancelled" => "cancelled",
+        _ => bail!("MILESTONE_STATUS_INVALID: expected active, planned, completed, or cancelled"),
+    };
+    if status == "cancelled" {
+        let reason = meta
+            .get("closure")
+            .and_then(|closure| closure.get("reason"))
+            .and_then(serde_yaml::Value::as_str)
+            .context(
+                "MILESTONE_CLOSURE_REASON_REQUIRED: cancelled milestones require closure.reason",
+            )?;
+        if reason.trim().is_empty() {
+            bail!("MILESTONE_CLOSURE_REASON_REQUIRED: closure.reason cannot be empty");
+        }
+    }
+    Ok(Some(status))
 }
 
 pub(crate) fn valid_identity(value: &str) -> Result<()> {

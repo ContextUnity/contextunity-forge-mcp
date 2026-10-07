@@ -1,5 +1,5 @@
 use crate::{
-    core::tasks::Receipt,
+    core::tasks::{Milestone, Receipt},
     db::tasks_store::{Task, TasksStore},
     engine::tasks,
 };
@@ -425,6 +425,7 @@ struct Snapshot {
     id: String,
     repository: String,
     project: String,
+    status: String,
     depends_on: Vec<String>,
     invariants: Vec<String>,
     tasks: Vec<serde_yaml::Value>,
@@ -432,6 +433,7 @@ struct Snapshot {
 
 fn snapshot(root: &Path, path: PathBuf, repository: &str, project: &str) -> Result<Snapshot> {
     let text = fs::read_to_string(&path)?;
+    let status = Milestone::status_from_frontmatter(&text, is_archived_path(&path))?.to_owned();
     let header = text
         .strip_prefix("---\n")
         .context("milestone requires YAML frontmatter")?
@@ -493,6 +495,7 @@ fn snapshot(root: &Path, path: PathBuf, repository: &str, project: &str) -> Resu
         id,
         repository,
         project,
+        status,
         depends_on,
         invariants,
         tasks,
@@ -596,7 +599,7 @@ fn view(snapshot: &Snapshot, stored: &[Task]) -> Result<Value> {
         .unwrap_or("");
     Ok(json!({"id":snapshot.id,
         "title":meta["title"].as_str().unwrap_or(""),
-        "status":meta["status"].as_str().unwrap_or("planned"),
+        "status":snapshot.status,
         "started_at":meta["started_at"].as_str().unwrap_or("-"),
         "completion":format!("{completed}/{}", tasks.len()),
         "tasks":tasks,"frontmatter":serde_json::to_value(meta)?,
@@ -606,13 +609,15 @@ fn view(snapshot: &Snapshot, stored: &[Task]) -> Result<Value> {
 
 /// Lists milestone metadata and completion ratios from the task store.
 pub fn list(root: &Path, archive: bool, status: Option<&str>) -> Result<Value> {
-    if status.is_some_and(|s| !matches!(s, "all" | "planned" | "active" | "completed")) {
+    if status
+        .is_some_and(|s| !matches!(s, "all" | "planned" | "active" | "completed" | "cancelled"))
+    {
         bail!("invalid milestone status");
     }
     let mut rows = Vec::new();
     for item in snapshots(
         root,
-        archive || matches!(status, Some("all" | "completed")),
+        archive || matches!(status, Some("all" | "completed" | "cancelled")),
         None,
     )? {
         let row = view(&item, &stored_tasks(root, &item)?)?;
@@ -654,19 +659,19 @@ pub fn show(root: &Path, selector: &str, full: bool) -> Result<Value> {
 pub fn activate_on_claim(worktree: &Path, reference: &str, claimed_at: i64) -> Result<()> {
     let path = crate::core::tasks::confined_path(worktree, reference)?;
     let text = fs::read_to_string(&path)?;
-    let Some(frontmatter) = text.strip_prefix("---\n") else {
-        return Ok(());
-    };
+    let status = Milestone::status_from_frontmatter(&text, is_archived_path(Path::new(reference)))?;
+    let frontmatter = text
+        .strip_prefix("---\r\n")
+        .or_else(|| text.strip_prefix("---\n"))
+        .context("milestone requires YAML frontmatter")?;
     let (header, body) = frontmatter
-        .split_once("\n---\n")
+        .split_once("\r\n---\r\n")
+        .or_else(|| frontmatter.split_once("\n---\n"))
         .context("unterminated milestone frontmatter")?;
     let mut meta: serde_yaml::Value = serde_yaml::from_str(header)?;
     if meta["started_at"].as_str().is_some() {
         return Ok(());
     }
-    let Some(status) = meta["status"].as_str() else {
-        return Ok(());
-    };
     if !matches!(status, "planned" | "active") {
         return Ok(());
     }
@@ -791,10 +796,7 @@ pub fn handoff(
         bail!("milestone selector must resolve to exactly one active document: {selector}");
     }
     let item = found.pop().context("milestone missing")?;
-    if !matches!(
-        item.frontmatter["status"].as_str(),
-        Some("planned" | "active")
-    ) {
+    if !matches!(item.status.as_str(), "planned" | "active") {
         bail!("milestone is not ready for handoff");
     }
     let db = tasks::database_path(root)?;
