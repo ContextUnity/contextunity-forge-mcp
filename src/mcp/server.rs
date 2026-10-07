@@ -393,15 +393,45 @@ impl Server {
         Ok(result)
     }
 }
+const MCP_SESSION_ENV: &str = "CONTEXTUNITY_FORGE_MCP_SESSION";
+
+fn resumed_initialize_params(server: &Server) -> Option<rmcp::model::InitializeRequestParams> {
+    let raw = std::env::var(MCP_SESSION_ENV).ok()?;
+    std::env::remove_var(MCP_SESSION_ENV);
+    let params = serde_json::from_str::<rmcp::model::InitializeRequestParams>(&raw).ok()?;
+    let supported = rmcp::Service::supported_protocol_versions(server);
+    supported
+        .iter()
+        .any(|version| version == &params.protocol_version)
+        .then_some(params)
+}
+
+fn preserved_session(
+    service: &rmcp::service::RunningService<rmcp::RoleServer, Server>,
+) -> Option<String> {
+    let info = service.peer_info()?;
+    match serde_json::to_string(info.as_ref()) {
+        Ok(json) => Some(json),
+        Err(error) => {
+            eprintln!("SIGHUP session preserve failed: {error}");
+            None
+        }
+    }
+}
+
 /// Performs serve.
 pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
-    let service = Server::new(root, db)
-        .serve(super::response::stdio())
-        .await?;
+    let server = Server::new(root, db);
+    let service = if let Some(params) = resumed_initialize_params(&server) {
+        rmcp::service::serve_directly(server, super::response::stdio(), Some(params))
+    } else {
+        server.serve(super::response::stdio()).await?
+    };
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+        let preserved = preserved_session(&service);
         let waiting = service.waiting();
         tokio::pin!(waiting);
         loop {
@@ -411,6 +441,10 @@ pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
                     break;
                 }
                 Some(()) = hangup.recv() => {
+                    match &preserved {
+                        Some(json) => std::env::set_var(MCP_SESSION_ENV, json),
+                        None => std::env::remove_var(MCP_SESSION_ENV),
+                    }
                     let result = (|| -> std::io::Result<()> {
                         let mut exe = std::env::current_exe()?;
                         #[cfg(target_os = "linux")]

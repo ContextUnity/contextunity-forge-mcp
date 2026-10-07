@@ -34,17 +34,13 @@ fn sighup_reloads_replaced_binary_in_same_pid_with_stdio_connected() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    let init = client.request("initialize", json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"reload-test","version":"1"}}));
-    assert!(init.get("error").is_none(), "{init}");
-    writeln!(
-        client.input,
-        "{}",
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
-    )
-    .unwrap();
-    client.input.flush().unwrap();
-    let response = client.request("ping", json!({}));
-    assert!(response.get("error").is_none(), "{response}");
+    let listed = client.request("tools/list", json!({}));
+    assert!(listed.get("error").is_none(), "{listed}");
+    let tools = listed["result"]["tools"].as_array().expect("{listed}");
+    assert!(
+        tools.iter().any(|tool| tool["name"] == "task_blackboard"),
+        "{listed}"
+    );
     assert_eq!(client.child.id(), pid);
 }
 
