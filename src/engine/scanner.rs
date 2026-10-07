@@ -546,6 +546,26 @@ pub fn is_milestone_or_plan_path(rel_str: &str, milestones: &[String], plans: &[
     check(milestones) || check(plans)
 }
 
+/// Checks whether a path is the overview README directly inside a configured milestone or plan directory.
+fn is_milestone_or_plan_readme(rel_str: &str, milestones: &[String], plans: &[String]) -> bool {
+    if rel_str.rsplit('/').next() != Some("README.md") {
+        return false;
+    }
+    let Some((parent, _)) = rel_str.rsplit_once('/') else {
+        return false;
+    };
+    let parent = parent.trim_matches('/').replace('\\', "/");
+    let parent_depth = parent.split('/').count();
+    let is_direct_overview = |dirs: &[String]| {
+        dirs.iter().any(|dir| {
+            let normalized_dir = dir.trim_matches('/').replace('\\', "/");
+            normalized_dir.split('/').count() == parent_depth
+                && matches_path_pattern(&parent, &normalized_dir)
+        })
+    };
+    is_direct_overview(milestones) || is_direct_overview(plans)
+}
+
 /// Performs language.
 pub fn language(path: &Path) -> Option<(&'static str, bool)> {
     if matches!(
@@ -708,7 +728,13 @@ pub fn scan_reusing(
                 }
                 if let Ok(rel) = full.strip_prefix(root) {
                     let rel_str = rel.to_string_lossy().replace('\\', "/");
-                    if is_milestone_or_plan_path(&rel_str, &adapter.milestones, &adapter.plans) {
+                    if is_milestone_or_plan_path(&rel_str, &adapter.milestones, &adapter.plans)
+                        && !is_milestone_or_plan_readme(
+                            &rel_str,
+                            &adapter.milestones,
+                            &adapter.plans,
+                        )
+                    {
                         continue;
                     }
                     push_candidate(
@@ -756,6 +782,10 @@ pub fn scan_reusing(
                     if let Ok(rel) = full.strip_prefix(&lw.path) {
                         let rel_str_inner = rel.to_string_lossy().replace('\\', "/");
                         if is_milestone_or_plan_path(
+                            &rel_str_inner,
+                            &adapter.milestones,
+                            &adapter.plans,
+                        ) && !is_milestone_or_plan_readme(
                             &rel_str_inner,
                             &adapter.milestones,
                             &adapter.plans,

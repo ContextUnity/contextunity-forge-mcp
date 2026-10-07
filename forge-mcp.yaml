@@ -10,6 +10,8 @@ docs:
   - docs/roadmap.md
   - docs/adr
   - docs/architecture
+  - docs/milestones
+  - docs/plans
   - docs/reference
   - docs/runbooks
   - docs/testing

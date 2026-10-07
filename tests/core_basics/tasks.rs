@@ -3058,15 +3058,36 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
         "docs/architecture.md",
         "# Platform Architecture\nGeneral documentation.\n",
     );
-    root.write("docs/plans/platform_plan.md", "---\nid: p-platform\ntitle: Platform Plan\ndoc_type: plan\npurpose: Platform\n---\n# Platform Plan\n");
-    root.write("docs/milestones/010-platform.md", "---\nid: m-platform\ntitle: Platform Milestone\ndoc_type: contract\nstatus: active\n---\n# Platform Milestone\n### task: ptask\n```yaml\ntask_ref: ptask\ntarget: Deliver ptask\nproof_policy: direct-proof\nscope: [src/]\n```\n");
+    root.write(
+        "docs/milestones/README.md",
+        "# Milestone Index\nrootmilestoneoverviewtoken\n",
+    );
+    root.write(
+        "docs/milestones/archive/README.md",
+        "archivemilestoneoverviewtoken\n",
+    );
+    root.write(
+        "docs/plans/README.md",
+        "# Plan Index\nrootplanoverviewtoken\n",
+    );
+    root.write("docs/plans/archive/README.md", "archiveplanoverviewtoken\n");
+    root.write("docs/plans/platform_plan.md", "---\nid: p-platform\ntitle: Platform Plan\ndoc_type: plan\npurpose: Platform\n---\n# Platform Plan\nrootplancontractisolationtoken\n");
+    root.write("docs/milestones/010-platform.md", "---\nid: m-platform\ntitle: Platform Milestone\ndoc_type: contract\nstatus: active\n---\n# Platform Milestone\nrootmilestonecontractisolationtoken\n### task: ptask\n```yaml\ntask_ref: ptask\ntarget: Deliver ptask\nproof_policy: direct-proof\nscope: [src/]\n```\n");
     root.write("extensions/commerce/src/models.py", "# Commerce models\n");
     root.write(
         "extensions/commerce/docs/README.md",
         "# Commerce Readme\nDocumentation for commerce.\n",
     );
-    root.write("extensions/commerce/docs/plans/commerce_plan.md", "---\nid: p-commerce\ntitle: Commerce Plan\ndoc_type: plan\npurpose: Commerce\n---\n# Commerce Plan\n");
-    root.write("extensions/commerce/docs/milestones/010-commerce.md", "---\nid: m-commerce\ntitle: Commerce Milestone\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Commerce Milestone\n### task: ctask\n```yaml\ntask_ref: ctask\ntarget: Deliver ctask\nproof_policy: direct-proof\nscope: [extensions/commerce/]\n```\n");
+    root.write(
+        "extensions/commerce/docs/milestones/README.md",
+        "# Commerce Milestones\ncommercemilestoneoverviewtoken\n",
+    );
+    root.write(
+        "extensions/commerce/docs/plans/README.md",
+        "# Commerce Plans\ncommerceplanoverviewtoken\n",
+    );
+    root.write("extensions/commerce/docs/plans/commerce_plan.md", "---\nid: p-commerce\ntitle: Commerce Plan\ndoc_type: plan\npurpose: Commerce\n---\n# Commerce Plan\ncommerceplancontractisolationtoken\n");
+    root.write("extensions/commerce/docs/milestones/010-commerce.md", "---\nid: m-commerce\ntitle: Commerce Milestone\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Commerce Milestone\ncommercemilestonecontractisolationtoken\n### task: ctask\n```yaml\ntask_ref: ctask\ntarget: Deliver ctask\nproof_policy: direct-proof\nscope: [extensions/commerce/]\n```\n");
 
     root.write(
         "forge-mcp.yaml",
@@ -3081,11 +3102,63 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
     assert!(scanned_paths.contains(&"docs/architecture.md"));
     assert!(scanned_paths.contains(&"extensions/commerce/src/models.py"));
     assert!(scanned_paths.contains(&"extensions/commerce/docs/README.md"));
+    assert!(scanned_paths.contains(&"docs/milestones/README.md"));
+    assert!(scanned_paths.contains(&"docs/plans/README.md"));
+    assert!(scanned_paths.contains(&"extensions/commerce/docs/milestones/README.md"));
+    assert!(scanned_paths.contains(&"extensions/commerce/docs/plans/README.md"));
 
     assert!(!scanned_paths.contains(&"docs/plans/platform_plan.md"));
     assert!(!scanned_paths.contains(&"docs/milestones/010-platform.md"));
+    assert!(!scanned_paths.contains(&"docs/plans/archive/README.md"));
+    assert!(!scanned_paths.contains(&"docs/milestones/archive/README.md"));
     assert!(!scanned_paths.contains(&"extensions/commerce/docs/plans/commerce_plan.md"));
     assert!(!scanned_paths.contains(&"extensions/commerce/docs/milestones/010-commerce.md"));
+
+    // Overview README files reach doc_search through the public cold-build and reader path,
+    // while individual contracts and nested archive content remain isolated.
+    let db_path = root.0.join("code_map.sqlite");
+    writer::build(&root.0, &db_path, None).expect("cold build failed");
+    let conn =
+        contextunity_forge_mcp::db::reader::open(&db_path, &root.0).expect("reader open failed");
+    let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
+        &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
+        Some(10),
+        0,
+        None,
+        None,
+    )
+    .unwrap();
+    let search_doc_paths = |query: &str| {
+        contextunity_forge_mcp::db::reader::search_docs_with_options(
+            &conn,
+            query,
+            &contextunity_forge_mcp::db::reader::DocSearchOptions {
+                doc_type: None,
+                component: None,
+                include_excerpt: false,
+                page: &page,
+            },
+        )
+        .unwrap()["sections"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["path"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert!(search_doc_paths("rootmilestoneoverviewtoken")
+        .contains(&"docs/milestones/README.md".to_owned()));
+    assert!(search_doc_paths("rootplanoverviewtoken").contains(&"docs/plans/README.md".to_owned()));
+    assert!(search_doc_paths("commercemilestoneoverviewtoken")
+        .contains(&"extensions/commerce/docs/milestones/README.md".to_owned()));
+    assert!(search_doc_paths("commerceplanoverviewtoken")
+        .contains(&"extensions/commerce/docs/plans/README.md".to_owned()));
+    assert!(search_doc_paths("rootmilestonecontractisolationtoken").is_empty());
+    assert!(search_doc_paths("rootplancontractisolationtoken").is_empty());
+    assert!(search_doc_paths("commercemilestonecontractisolationtoken").is_empty());
+    assert!(search_doc_paths("commerceplancontractisolationtoken").is_empty());
+    assert!(search_doc_paths("archivemilestoneoverviewtoken").is_empty());
+    assert!(search_doc_paths("archiveplanoverviewtoken").is_empty());
 
     // 2. Verify milestones::list discovers milestones across all configured milestone directories
     let listed = contextunity_forge_mcp::engine::milestones::list(&root.0, false, None).unwrap();
