@@ -2608,7 +2608,10 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
     assert_eq!(completed.status.as_deref(), Some("completed"));
     assert_eq!(completed.agent_type.as_deref(), Some("gpt-6-sol"));
     let receipt = completed.receipt.as_ref().unwrap();
-    assert_eq!(receipt.commit, "0123456789abcdef0123456789abcdef01234567");
+    assert_eq!(
+        receipt.commit.as_deref(),
+        Some("0123456789abcdef0123456789abcdef01234567")
+    );
     assert!(receipt.evidence.get("test_proof").is_some());
     assert!(receipt.review.get("review_proof").is_some());
     let rollup = receipt.rollup.as_ref().unwrap();

@@ -196,6 +196,7 @@ pub struct Milestone {
     /// The depends on value.
     pub depends_on: Vec<String>,
     /// The tasks value.
+    pub tasks: Vec<TaskSpec>,
     /// Optional milestone status (active, planned, completed, cancelled).
     #[serde(default)]
     pub status: Option<String>,

@@ -2,7 +2,7 @@
 id: m-acdd-lifecycle-snapshots-and-proactive-defect-resolution
 title: ACDD lifecycle snapshots, hierarchical scope conflict governance, and proactive defect resolution
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-unified-agent-context-and-task-lifecycle:completed
 owners:
@@ -21,6 +21,15 @@ invariants:
 - 'INV-TYPED-DEFERRED-DEFECTS: Milestone contracts maintain a typed block under tasks for out-of-scope defects and deferred review findings, ingested into milestone metadata and preserved across receipt writes.'
 - 'INV-UNIFIED-CONTEXT-DEFAULT: Task claim provides the full context bundle by default (ADRs, symbols, tests, blackboard), eliminating procedural instruction overhead.'
 started_at: 2026-10-07T07:35:00+00:00
+handoff:
+  completed_at: 2026-10-07T08:47:45.825346295+00:00
+  duration: 1h 12m
+  commit: fb5776a332fa2e54ce9beb0d2c984fc17b3ab224
+  verification:
+    command: cargo test --all-targets && cargo clippy --all-targets --all-features -- -D warnings && cargo test --test commitment_integrity
+    status: passed
+    tests_passed: 600
+    tests_failed: 0
 ---
 
 # ACDD lifecycle snapshots, hierarchical scope conflict governance, and proactive defect resolution
