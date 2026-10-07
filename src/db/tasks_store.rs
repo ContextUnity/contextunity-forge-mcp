@@ -2,7 +2,7 @@ use crate::core::tasks::{Milestone, Receipt, SubtaskSpec, TaskSpec, GATES};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The retention seconds value.
 pub const RETENTION_SECONDS: i64 = 14 * 24 * 60 * 60;
@@ -501,6 +501,22 @@ impl TasksStore {
         self.assert_id(task_id)?;
         clear_blackboard(&self.connection, task_id)
     }
+    /// Read the commit SHA recorded for the build/v1 gate evidence.
+    pub fn build_snapshot_commit(&self, task_id: &str) -> Result<Option<String>> {
+        self.assert_id(task_id)?;
+        let evidence: Option<String> = self
+            .connection
+            .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='build/v1' AND state='passed' ORDER BY revision DESC LIMIT 1")?
+            .query_row([task_id], |r| r.get(0))
+            .optional()?;
+        Ok(evidence.and_then(|ev| {
+            serde_json::from_str::<serde_json::Value>(&ev)
+                .ok()?
+                .get("commit")?
+                .as_str()
+                .map(str::to_owned)
+        }))
+    }
     /// Performs inspect.
     pub fn inspect(&self, id: &str) -> Result<Task> {
         self.assert_id(id)?;
@@ -511,7 +527,34 @@ impl TasksStore {
         let _snapshot = self.connection.unchecked_transaction()?;
         let task = self.inspect(id)?;
         let attempts:Vec<serde_json::Value>=self.connection.prepare("SELECT revision,worker_id,worktree,claimed_at,ended FROM task_claims WHERE task_id=?1 ORDER BY revision")?.query_map([id],|r|Ok(serde_json::json!({"claim_revision":r.get::<_,u64>(0)?,"worker_id":r.get::<_,String>(1)?,"worktree":r.get::<_,String>(2)?,"claimed_at":r.get::<_,i64>(3)?,"ended":r.get::<_,bool>(4)?})))?.collect::<std::result::Result<_,_>>()?;
-        let gates:Vec<serde_json::Value>=self.connection.prepare("SELECT gate,revision,state,evidence FROM task_gates WHERE task_id=?1 ORDER BY revision,gate")?.query_map([id],|r|Ok(serde_json::json!({"stage":r.get::<_,String>(0)?,"claim_revision":r.get::<_,u64>(1)?,"state":r.get::<_,String>(2)?,"evidence":r.get::<_,Option<String>>(3)?})))?.collect::<std::result::Result<_,_>>()?;
+        let gates: Vec<serde_json::Value> = self
+            .connection
+            .prepare(
+                "SELECT gate,revision,state,evidence FROM task_gates WHERE task_id=?1 ORDER BY revision,gate",
+            )?
+            .query_map([id], |r| {
+                let gate_name: String = r.get(0)?;
+                let revision: u64 = r.get(1)?;
+                let state: String = r.get(2)?;
+                let evidence_str: Option<String> = r.get(3)?;
+                let commit = evidence_str.as_deref().and_then(|s| {
+                    serde_json::from_str::<serde_json::Value>(s)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("commit").and_then(|c| c.as_str().map(String::from))
+                        })
+                });
+                let inspect_cmd = commit.as_ref().map(|c| format!("git show {c}"));
+                Ok(serde_json::json!({
+                    "stage": gate_name,
+                    "claim_revision": revision,
+                    "state": state,
+                    "evidence": evidence_str,
+                    "commit": commit,
+                    "inspect_cmd": inspect_cmd,
+                }))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
         let findings:Vec<serde_json::Value>=self.connection.prepare("SELECT revision,findings FROM task_findings WHERE task_id=?1 ORDER BY revision")?.query_map([id],|r|Ok(serde_json::json!({"claim_revision":r.get::<_,u64>(0)?,"findings":r.get::<_,String>(1)?})))?.collect::<std::result::Result<_,_>>()?;
         let mut value = serde_json::to_value(&task)?;
         let object = value
@@ -529,6 +572,17 @@ impl TasksStore {
         object.insert("stage".into(), serde_json::json!(GATES[task.gate]));
         object.insert("attempts".into(), serde_json::json!(attempts));
         object.insert("gates".into(), serde_json::json!(gates));
+        let latest_snapshot = gates.iter().rev().find_map(|g| {
+            g.get("commit").and_then(|c| c.as_str()).map(|commit| {
+                serde_json::json!({
+                    "commit": commit,
+                    "inspect_cmd": format!("git show {commit}"),
+                })
+            })
+        });
+        if let Some(snapshot) = latest_snapshot {
+            object.insert("latest_snapshot".into(), snapshot);
+        }
         object.insert("findings".into(), serde_json::json!(findings));
         object.insert("gate_states".into(),serde_json::json!(GATES.iter().enumerate().map(|(i,name)|serde_json::json!({"stage":name,"state":if i<task.gate || task.status=="completed" {"passed"} else if i==task.gate && task.status=="in_progress" {"in_progress"} else {"pending"}})).collect::<Vec<_>>()));
         object.insert("subtasks".into(), serde_json::json!(task.spec.subtasks));
@@ -1123,18 +1177,67 @@ impl TasksStore {
             )?
             .query_map([id], |r| r.get(0))?
             .collect::<std::result::Result<_, _>>()?;
+        let my_paths: Vec<PathBuf> = tx
+            .prepare("SELECT path FROM task_scope_paths WHERE task_id=?1")?
+            .query_map([id], |r| {
+                let p: String = r.get(0)?;
+                Ok(PathBuf::from(p))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        let other_scopes: Vec<(String, PathBuf)> = tx
+            .prepare(
+                "SELECT p.task_id, p.path FROM task_scope_paths p \
+                 JOIN tasks t ON t.task_id = p.task_id \
+                 WHERE p.task_id != ?1 AND t.milestone_ref = ?2",
+            )?
+            .query_map(params![id, task.milestone_ref], |r| {
+                let owner: String = r.get(0)?;
+                let p: String = r.get(1)?;
+                Ok((owner, PathBuf::from(p)))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
         for value in paths {
             let path = crate::core::tasks::relative_path(value)?;
-            let base = bases
+            for (owner, other_path) in &other_scopes {
+                let is_conflict = if path == *other_path {
+                    true
+                } else if path.starts_with(other_path) {
+                    !my_paths.iter().any(|my| {
+                        path.starts_with(my) && (my == other_path || my.starts_with(other_path))
+                    })
+                } else if other_path.starts_with(&path) {
+                    !my_paths.iter().any(|my| other_path.starts_with(my))
+                } else {
+                    false
+                };
+                if is_conflict {
+                    bail!("TASK_SCOPE_CONFLICT: path '{value}' belongs to task '{owner}'; reopen that task instead");
+                }
+            }
+            let matched_base = bases
                 .iter()
                 .find(|base| path.starts_with(Path::new(base)))
-                .context("TASK_SCOPE_INVALID: outside frozen roots")?;
+                .cloned();
+            let base = match matched_base {
+                Some(b) => b,
+                None => {
+                    if path.starts_with("tests") {
+                        "tests".to_string()
+                    } else if path.starts_with("src") {
+                        "src".to_string()
+                    } else {
+                        bail!(
+                            "TASK_SCOPE_INVALID: path '{value}' is outside source roots and tests"
+                        );
+                    }
+                }
+            };
             for root in [root, worktree] {
                 let resolved = crate::core::tasks::confined_path(root, value)?;
                 let resolved_base = if base.is_empty() {
                     root.canonicalize()?
                 } else {
-                    crate::core::tasks::confined_path(root, base)?
+                    crate::core::tasks::confined_path(root, &base)?
                 };
                 if !resolved.starts_with(&resolved_base) {
                     bail!("TASK_SCOPE_INVALID: symlink leaves frozen module root");

@@ -1254,9 +1254,14 @@ fn tasks_coordinate_claims_dependencies_reset_and_scope() {
     assert!(reset.claim_revision > before.claim_revision);
     assert_eq!(reset.status, "ready");
     let extended = store
-        .extend_scope(&id, &["src/next.rs".into()], &root.0)
+        .extend_scope(
+            &id,
+            &["src/next.rs".into(), "tests/fixture.rs".into()],
+            &root.0,
+        )
         .unwrap();
     assert!(extended.spec.scope.contains(&"src/next.rs".into()));
+    assert!(extended.spec.scope.contains(&"tests/fixture.rs".into()));
     for path in ["../escape", "docs/outside.rs"] {
         assert!(store.extend_scope(&id, &[path.into()], &root.0).is_err());
     }
