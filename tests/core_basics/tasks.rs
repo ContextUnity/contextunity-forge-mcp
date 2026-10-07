@@ -666,6 +666,15 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
     assert!(id.starts_with("traverse-library/tooling/"));
     let list =
         |arguments| tasks::list(&root.0, serde_json::from_value(arguments).unwrap()).unwrap();
+    let linked_by_milestone = list(json!({"milestone_ref":"m-linked","status":"all"}));
+    let linked_by_milestone_tasks = linked_by_milestone["tasks"].as_array().unwrap();
+    assert_eq!(linked_by_milestone_tasks.len(), 2);
+    assert!(linked_by_milestone_tasks.iter().all(|task| {
+        task["task_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("traverse-library/tooling/")
+    }));
     assert_eq!(list(json!({}))["tasks"].as_array().unwrap().len(), 1);
     assert_eq!(
         list(json!({"repository":"all"}))["tasks"]
@@ -687,6 +696,29 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
             .unwrap()
             .len(),
         4
+    );
+    linked.write(
+        "contracts/020-linked.md",
+        &SPEC.replace("m-test", "m-linked-020"),
+    );
+    root.write(
+        "docs/milestones/020-primary-alpha.md",
+        &SPEC.replace("m-test", "m-primary-alpha"),
+    );
+    root.write(
+        "docs/milestones/020-primary-beta.md",
+        &SPEC.replace("m-test", "m-primary-beta"),
+    );
+    let ambiguous_primary = tasks::list(
+        &root.0,
+        serde_json::from_value(json!({"milestone_ref":"020","status":"all"})).unwrap(),
+    )
+    .unwrap_err();
+    assert!(
+        ambiguous_primary
+            .to_string()
+            .contains("multiple active documents"),
+        "a primary ambiguity must not fall through to a unique linked match: {ambiguous_primary}"
     );
     let inspect = tasks::manage(
         &root.0,
@@ -1599,6 +1631,8 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
         .as_str()
         .unwrap()
         .contains("Delivery notes for second."));
+    let by_path = run(&["show", "docs/milestones/011-live.md"]);
+    assert_eq!(by_path["id"], shown["id"]);
     assert_eq!(run(&["show", "020"])["status"], "completed");
     let override_source = "---\nid: m-override\ntitle: Override work\ndoc_type: contract\nstatus: active\nrepository: alternate\nproject: special\n---\n# Override work\n### task: delivered\n```yaml\ntask_ref: delivered\ntarget: Delivered override\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     root.write("docs/milestones/025-override.md", override_source);
@@ -1636,6 +1670,37 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
     root.write("docs/milestones/archive/030-broken.md", "---\nid: m-broken\ntitle: Broken archive\ndoc_type: contract\nstatus: completed\n---\n# Broken archive\n```yaml\ntask_ref: [invalid\n```\n");
     assert_eq!(run(&["list"])["milestones"].as_array().unwrap().len(), 3);
     assert_eq!(run(&["show", "011"])["id"], "m-live");
+    root.write(
+        "docs/milestones/032-duplicate.md",
+        &active
+            .replace("m-live", "m-duplicate")
+            .replace("Live work", "Duplicate active"),
+    );
+    root.write(
+        "docs/milestones/archive/032-duplicate.md",
+        &archived
+            .replace("m-prior", "m-duplicate-archived")
+            .replace("Prior work", "Duplicate archived"),
+    );
+    assert_eq!(run(&["show", "032"])["id"], "m-duplicate");
+    assert_eq!(
+        run(&["show", "docs/milestones/archive/032-duplicate.md"])["id"],
+        "m-duplicate-archived"
+    );
+    root.write(
+        "docs/milestones/031-malformed-frontmatter.md",
+        "---\nid: m-invalid\ntitle: Invalid frontmatter\ndoc_type: contract\nbroken: [\n---\n",
+    );
+    let invalid_id = milestone_cli(&root, &["show", "m-does-not-exist"]);
+    let invalid_id_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&invalid_id.stdout),
+        String::from_utf8_lossy(&invalid_id.stderr)
+    );
+    assert!(
+        invalid_id_output.contains("failed to read milestone id from"),
+        "milestone ID lookup must preserve frontmatter parse errors: {invalid_id_output}"
+    );
 }
 #[test]
 fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
@@ -3207,4 +3272,271 @@ fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
     )
     .unwrap();
     assert_eq!(reset_res["status"], "ready");
+}
+
+#[test]
+fn milestone_resolution_prefers_active_path_components_and_propagates_list_errors() {
+    let root = ScopedWorkspace::new("forge_milestone_archive_precedence");
+    root.write("AGENTS.md", "# Rules\n");
+    root.write(
+        "forge-mcp.yaml",
+        "task_repository: test\ntask_project: test\nroots: []\n",
+    );
+
+    let active_spec = "---\nid: m-active-archive-fix\ntitle: Active Archive Fix\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: active-match\ntarget: Active manifest\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    let archived_spec = "---\nid: m-archived-archive-fix\ntitle: Archived Archive Fix\ndoc_type: contract\nstatus: completed\n---\n```yaml\ntask_ref: archived-match\ntarget: Archived manifest\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    root.write("docs/milestones/051-archive-fix.md", active_spec);
+    root.write("docs/milestones/archive/051-archive-fix.md", archived_spec);
+
+    let by_stem = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some("051-archive-fix".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let by_stem_tasks = by_stem["tasks"].as_array().unwrap();
+    assert_eq!(by_stem_tasks.len(), 1);
+    assert_eq!(
+        by_stem_tasks[0]["milestone_ref"],
+        "docs/milestones/051-archive-fix.md"
+    );
+
+    let by_archive_path = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some("docs/milestones/archive/051-archive-fix.md".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let by_archive_tasks = by_archive_path["tasks"].as_array().unwrap();
+    assert_eq!(by_archive_tasks.len(), 1);
+    assert_eq!(
+        by_archive_tasks[0]["milestone_ref"],
+        "docs/milestones/archive/051-archive-fix.md"
+    );
+
+    let unscoped_sync = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            ..Default::default()
+        },
+    );
+    assert!(
+        unscoped_sync.is_err(),
+        "sync requires a workspace or milestone selector"
+    );
+
+    root.write("docs/milestones/README.md", "# Milestone index\n");
+    let non_manifest_params = serde_json::from_value(serde_json::json!({
+        "repository": "test",
+        "milestone_ref": "docs/milestones/README.md",
+        "status": "all"
+    }))
+    .unwrap();
+    assert!(tasks::list(&root.0, non_manifest_params).is_err());
+
+    let outside = ScopedWorkspace::new("forge_milestone_outside");
+    outside.write("010-outside.md", active_spec);
+    std::os::unix::fs::symlink(
+        outside.0.join("010-outside.md"),
+        root.0.join("docs/milestones/053-symlink.md"),
+    )
+    .unwrap();
+    for reference in ["../outside.md", "docs/milestones/053-symlink.md"] {
+        let params = serde_json::from_value(serde_json::json!({
+            "repository": "test",
+            "milestone_ref": reference,
+            "status": "all"
+        }))
+        .unwrap();
+        assert!(
+            tasks::list(&root.0, params).is_err(),
+            "milestone path must remain confined to the workspace: {reference}"
+        );
+    }
+
+    let list_params = serde_json::from_value(serde_json::json!({
+        "repository": "test",
+        "milestone_ref": "m-does-not-exist",
+        "status": "all",
+        "stage": null
+    }))
+    .unwrap();
+    let list_error = tasks::list(&root.0, list_params).unwrap_err();
+    assert!(
+        list_error.to_string().contains("not found in workspace"),
+        "task_list must propagate milestone resolution errors: {list_error}"
+    );
+
+    let malformed_spec = "---\nid: m-invalid-frontmatter\ntitle: Invalid frontmatter\ndoc_type: contract\nbroken: [\n---\n";
+    let malformed_path = "docs/milestones/nested/052-invalid-frontmatter.md";
+    root.write(malformed_path, malformed_spec);
+
+    let malformed_id_params = serde_json::from_value(serde_json::json!({
+        "repository": "test",
+        "milestone_ref": "m-does-not-exist",
+        "status": "all"
+    }))
+    .unwrap();
+    let malformed_id_error = tasks::list(&root.0, malformed_id_params).unwrap_err();
+    assert!(
+        malformed_id_error.to_string().contains(
+            "failed to read milestone id from 'docs/milestones/nested/052-invalid-frontmatter.md'"
+        ),
+        "ID lookup must preserve manifest parse errors: {malformed_id_error}"
+    );
+
+    let malformed_list_params = serde_json::from_value(serde_json::json!({
+        "repository": "test",
+        "milestone_ref": malformed_path,
+        "status": "all"
+    }))
+    .unwrap();
+    let malformed_list_error = tasks::list(&root.0, malformed_list_params).unwrap_err();
+    assert!(
+        malformed_list_error
+            .to_string()
+            .contains(&format!("invalid milestone manifest '{malformed_path}'")),
+        "task_list must propagate malformed milestone frontmatter: {malformed_list_error}"
+    );
+
+    let malformed_sync = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some(malformed_path.into()),
+            ..Default::default()
+        },
+    );
+    assert!(
+        malformed_sync
+            .unwrap_err()
+            .to_string()
+            .contains(&format!("invalid milestone manifest '{malformed_path}'")),
+        "task_manage sync must reject malformed milestone frontmatter"
+    );
+}
+
+#[test]
+fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_path() {
+    let root = ScopedWorkspace::new("forge_milestone_ref_resolution");
+    root.write("AGENTS.md", "# Rules\n");
+    root.write(
+        "forge-mcp.yaml",
+        "task_repository: test\ntask_project: test\nroots: []\n",
+    );
+    let milestone_content = "---\nid: m-tool-performance-and-storage-compaction\ntitle: Performance\ndoc_type: contract\ninvariants: []\n---\n```yaml\ntask_ref: compaction\ntarget: Compact storage\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    root.write(
+        "docs/milestones/030-tool-performance-and-storage-compaction.md",
+        milestone_content,
+    );
+
+    // 1. Sync by milestone ID ("m-tool-performance-and-storage-compaction")
+    let sync_by_id = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some("m-tool-performance-and-storage-compaction".into()),
+            workspace: Some("test".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(sync_by_id["tasks"].as_array().unwrap().len(), 1);
+
+    // List by milestone ID
+    let list_by_id = tasks::list(
+        &root.0,
+        tasks::List {
+            repository: Some("test".into()),
+            milestone_ref: Some("m-tool-performance-and-storage-compaction".into()),
+            status: Some(tasks::Status::All),
+            stage: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(list_by_id["tasks"].as_array().unwrap().len(), 1);
+
+    // 2. Sync by numeric prefix ("030" and "30")
+    let sync_by_prefix = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some("030".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(sync_by_prefix["tasks"].as_array().unwrap().len(), 1);
+
+    let list_by_prefix = tasks::list(
+        &root.0,
+        tasks::List {
+            repository: None,
+            milestone_ref: Some("30".into()),
+            status: Some(tasks::Status::All),
+            stage: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(list_by_prefix["tasks"].as_array().unwrap().len(), 1);
+
+    // 3. Sync by filename stem ("030-tool-performance-and-storage-compaction")
+    let sync_by_stem = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some("030-tool-performance-and-storage-compaction".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(sync_by_stem["tasks"].as_array().unwrap().len(), 1);
+
+    // 4. Sync by full relative file path
+    let sync_by_path = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some(
+                "docs/milestones/030-tool-performance-and-storage-compaction.md".into(),
+            ),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(sync_by_path["tasks"].as_array().unwrap().len(), 1);
+
+    // 5. Sync with a workspace selector imports all workspace manifests
+    let sync_all = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            workspace: Some("test".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(sync_all["tasks"].as_array().unwrap().len(), 1);
+
+    // 6. Non-existent milestone reference produces descriptive error instead of raw os error 2
+    let err = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some("m-non-existent".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("not found in workspace"),
+        "error must be descriptive: {err}"
+    );
 }

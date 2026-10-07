@@ -91,7 +91,7 @@ impl Action {
 pub struct List {
     /// Repository or workspace name filter (e.g. 'forge-mcp', a linked workspace name, or 'all').
     pub repository: Option<String>,
-    /// Filter tasks by milestone ID, prefix, or slug (e.g. '030' or 'm-tool-performance').
+    /// Filter tasks by milestone: relative file path (e.g. 'docs/milestones/030-*.md'), numeric prefix ('030'), milestone ID ('m-...'), or slug.
     pub milestone_ref: Option<String>,
     /// Filter by task status: ready (default), in_progress, blocked, completed, or all.
     pub status: Option<Status>,
@@ -183,7 +183,7 @@ pub struct Manage {
     pub action: ManageAction,
     /// Task identifier for inspect, delete, subtask operations, reset, or reopen.
     pub task_id: Option<String>,
-    /// Milestone reference or file path for sync or milestone-scoped operations.
+    /// Milestone reference for sync, create, or milestone-scoped delete: relative file path (e.g. 'docs/milestones/030-*.md'), numeric prefix ('030'), milestone ID ('m-...'), or slug.
     pub milestone_ref: Option<String>,
     /// Task reference slug for task creation.
     pub task_ref: Option<String>,
@@ -323,13 +323,22 @@ pub fn store(root: &Path) -> Result<TasksStore> {
     )
 }
 /// Performs list.
-pub fn list(root: &Path, p: List) -> Result<Value> {
+pub fn list(root: &Path, mut p: List) -> Result<Value> {
     let registry = Registry::load(root)?;
+    let mut resolved_workspace = None;
+    if let Some(m) = p.milestone_ref.as_deref() {
+        let (workspace, resolved) = registry.resolve_milestone(p.repository.as_deref(), m)?;
+        resolved_workspace = Some(workspace);
+        p.milestone_ref = Some(resolved);
+    }
     let status = p.status.unwrap_or(Status::Ready).name();
     let mut tasks = Vec::new();
-    let all_workspaces = p.repository.as_deref() == Some("all");
+    let all_workspaces = p.repository.as_deref() == Some("all") && p.milestone_ref.is_none();
     let mut workspaces = serde_json::Map::new();
-    let mut selected = registry.selected(p.repository.as_deref())?;
+    let mut selected = match resolved_workspace {
+        Some(workspace) => vec![workspace],
+        None => registry.selected(p.repository.as_deref())?,
+    };
     for workspace in &selected {
         let mut store = workspace.open(&registry.database)?;
         store.cleanup(crate::db::tasks_store::now())?;
@@ -535,7 +544,7 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     )?)?)
 }
 /// Performs manage.
-pub fn manage(root: &Path, p: Manage) -> Result<Value> {
+pub fn manage(root: &Path, mut p: Manage) -> Result<Value> {
     let id = p.task_id.as_deref();
     let milestone = p.milestone_ref.as_deref();
     let task_ref = p.task_ref.as_deref();
@@ -547,10 +556,10 @@ pub fn manage(root: &Path, p: Manage) -> Result<Value> {
         }
         ManageAction::Sync => {
             id.is_none()
-                && (milestone.is_some() || workspace.is_some())
                 && task_ref.is_none()
                 && paths.is_none()
                 && !p.force
+                && (milestone.is_some() || workspace.is_some())
         }
         ManageAction::Inspect | ManageAction::Context => {
             id.is_some()
@@ -592,26 +601,18 @@ pub fn manage(root: &Path, p: Manage) -> Result<Value> {
         bail!("TASK_SELECTOR_INVALID");
     }
     let registry = Registry::load(root)?;
-    let workspace = match id {
-        Some(id) => registry.owner(id)?,
-        None => {
-            if let Some(ws) = workspace {
-                registry.select(Some(ws))?
-            } else if let Some(m) = milestone {
-                let primary = registry.select(None)?;
-                let inferred = crate::core::tasks::infer_project_from_path(Path::new(m));
-                let text = std::fs::read_to_string(confined_path(&primary.root, m)?)?;
-                let parsed = Milestone::parse_with_identity(
-                    &text,
-                    &primary.repository,
-                    inferred.as_deref().unwrap_or(&primary.project),
-                )?;
-                registry.select(Some(&parsed.project))?
-            } else {
-                registry.select(None)?
-            }
-        }
+    let (workspace, resolved_milestone) = if let Some(id) = id {
+        (registry.owner(id)?, None)
+    } else if let Some(m) = milestone {
+        let (ws, resolved) = registry.resolve_milestone(workspace, m)?;
+        (ws, Some(resolved))
+    } else {
+        (registry.select(workspace)?, None)
     };
+    if let Some(resolved) = resolved_milestone {
+        p.milestone_ref = Some(resolved);
+    }
+    let milestone = p.milestone_ref.as_deref();
     let mut store = workspace.open(&registry.database)?;
     match p.action {
         ManageAction::Create | ManageAction::Sync => {

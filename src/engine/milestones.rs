@@ -178,8 +178,9 @@ fn prefix(path: &Path) -> Result<Option<u64>> {
     })?))
 }
 
-fn file_id(path: &Path) -> Result<Option<String>> {
+pub(crate) fn file_id(path: &Path) -> Result<Option<String>> {
     let text = fs::read_to_string(path)?;
+    let text = text.replace("\r\n", "\n");
     let Some(body) = text.strip_prefix("---\n") else {
         return Ok(None);
     };
@@ -498,25 +499,59 @@ fn snapshot(root: &Path, path: PathBuf, repository: &str, project: &str) -> Resu
     })
 }
 
+fn is_archived_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "archive")
+}
+
 fn snapshots(root: &Path, include_archive: bool, selector: Option<&str>) -> Result<Vec<Snapshot>> {
     let (repository, project) = tasks::project_identity(root)?;
     let mut files = milestone_paths(root)?;
     if !include_archive {
-        files.retain(|path| !path.parent().is_some_and(|p| p.ends_with("archive")));
+        files.retain(|path| !is_archived_path(path));
     }
     if let Some(selector) = selector {
-        let numeric = !selector.is_empty() && selector.bytes().all(|b| b.is_ascii_digit());
         let mut selected = Vec::new();
-        for path in files {
-            let number = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.split_once('-'))
-                .map(|(number, _)| number);
-            if (numeric && number == Some(selector))
-                || (!numeric && file_id(&path)?.as_deref() == Some(selector))
-            {
-                selected.push(path);
+        let mut components = Path::new(selector).components();
+        let is_path_reference = !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some();
+        if is_path_reference {
+            selected.extend(files.into_iter().filter(|path| path.ends_with(selector)));
+        } else {
+            let numeric = !selector.is_empty() && selector.bytes().all(|b| b.is_ascii_digit());
+            let selector_u64 = if numeric {
+                selector.parse::<u64>().ok()
+            } else {
+                None
+            };
+            for path in files {
+                let number = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.split_once('-'))
+                    .map(|(number, _)| number);
+                let number_u64 = number.and_then(|n| n.parse::<u64>().ok());
+                let stem = path.file_stem().and_then(|s| s.to_str());
+                let file_name = path.file_name().and_then(|s| s.to_str());
+                let id = file_id(&path).with_context(|| {
+                    format!("failed to read milestone id from '{}'", path.display())
+                })?;
+
+                if (numeric && (number == Some(selector) || number_u64 == selector_u64))
+                    || id.as_deref() == Some(selector)
+                    || stem == Some(selector)
+                    || file_name == Some(selector)
+                {
+                    selected.push(path);
+                }
+            }
+            let active: Vec<_> = selected
+                .iter()
+                .filter(|path| !is_archived_path(path))
+                .cloned()
+                .collect();
+            if !active.is_empty() {
+                selected = active;
             }
         }
         files = selected;
@@ -601,7 +636,7 @@ pub fn list(root: &Path, archive: bool, status: Option<&str>) -> Result<Value> {
     Ok(json!({"table":table,"milestones":rows}))
 }
 
-/// Shows one milestone by ID or numeric prefix.
+/// Shows one milestone by ID, prefix, stem, or path.
 pub fn show(root: &Path, selector: &str, full: bool) -> Result<Value> {
     let mut found = snapshots(root, true, Some(selector))?;
     if found.len() != 1 {

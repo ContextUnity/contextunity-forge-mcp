@@ -111,11 +111,17 @@ impl Workspace {
             ),
             "build/v1" => (
                 "builder",
-                &["Implement the approved contract inside the allowed write scope.", "Run the seam test and clippy, then submit passing JSON test proof."],
+                &[
+                    "Implement the approved contract inside the allowed write scope.",
+                    "Run the seam test and clippy, then submit passing JSON test proof.",
+                ],
             ),
             "review/v1" => (
                 "independent_reviewer",
-                &["Review the candidate against the contract and five review contours.", "Run the required verification and submit inline JSON review proof."],
+                &[
+                    "Review the candidate against the contract and five review contours.",
+                    "Run the required verification and submit inline JSON review proof.",
+                ],
             ),
             "deliver/v1" => (
                 "delivery_reviewer",
@@ -125,7 +131,10 @@ impl Workspace {
                     "Amend the candidate commit with the generated receipt so the task has one commit.",
                 ],
             ),
-            "completed" => ("completed", &["Read the durable task receipt for completed work."]),
+            "completed" => (
+                "completed",
+                &["Read the durable task receipt for completed work."],
+            ),
             _ => bail!("TASK_STAGE_INVALID"),
         };
         let guidance_exists = self.guidance.is_file();
@@ -213,6 +222,138 @@ impl Workspace {
         }
         manifests.sort();
         Ok(manifests)
+    }
+    pub fn resolve_manifest(&self, reference: &str) -> Result<Option<String>> {
+        let reference = reference.trim();
+        if reference.is_empty() {
+            bail!("milestone reference cannot be empty");
+        }
+        let mut reference_components = Path::new(reference).components();
+        let is_path_reference = !matches!(
+            reference_components.next(),
+            Some(std::path::Component::Normal(_))
+        ) || reference_components.next().is_some();
+        if is_path_reference {
+            let direct = confined_path(&self.root, reference)?;
+            if !direct.is_file() {
+                return Ok(None);
+            }
+            let relative = direct
+                .strip_prefix(&self.root)
+                .context("resolved milestone path escaped workspace root")?;
+            let selected = relative.to_string_lossy().into_owned();
+            if direct
+                .extension()
+                .is_some_and(|extension| extension == "md")
+            {
+                // Explicit paths are validated as milestone manifests by the
+                // registry after resolution. Keep path references compatible
+                // with workspaces whose manifests live outside the numbered
+                // directories used by implicit discovery.
+                return Ok(Some(selected));
+            }
+            bail!(
+                "milestone path '{}' is not a Markdown manifest in workspace '{}'",
+                reference,
+                self.name
+            );
+        }
+        let manifests = self.manifests()?;
+        if manifests.is_empty() {
+            return Ok(None);
+        }
+
+        let mut exact_matches = Vec::new();
+        let mut fuzzy_matches = Vec::new();
+
+        let numeric_ref = if !reference.is_empty() && reference.bytes().all(|b| b.is_ascii_digit())
+        {
+            reference.parse::<u64>().ok()
+        } else {
+            None
+        };
+
+        for manifest in &manifests {
+            let path = self.root.join(manifest);
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let stem = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+            let (prefix_str, slug) = stem.split_once('-').unwrap_or(("", stem));
+            let prefix_num = prefix_str.parse::<u64>().ok();
+            let id = crate::engine::milestones::file_id(&path)
+                .with_context(|| format!("failed to read milestone id from '{manifest}'"))?;
+
+            if id.as_deref() == Some(reference) || stem == reference || file_name == reference {
+                exact_matches.push(manifest.clone());
+                continue;
+            }
+
+            if let Some(target_num) = numeric_ref {
+                if prefix_num == Some(target_num) || prefix_str == reference {
+                    exact_matches.push(manifest.clone());
+                    continue;
+                }
+            }
+
+            if slug == reference
+                || reference.strip_prefix("m-").is_some_and(|r| r == slug)
+                || id
+                    .as_deref()
+                    .and_then(|i| i.strip_prefix("m-"))
+                    .is_some_and(|i| i == reference)
+            {
+                fuzzy_matches.push(manifest.clone());
+            }
+        }
+
+        let is_archived_manifest = |m: &str| {
+            Path::new(m)
+                .components()
+                .any(|c| c.as_os_str() == "archive")
+        };
+        let select_preferred = |matches: Vec<String>| -> Result<Option<String>> {
+            if matches.is_empty() {
+                return Ok(None);
+            }
+            if matches.len() == 1 {
+                return Ok(Some(matches.into_iter().next().unwrap()));
+            }
+            let archive_scoped_reference = Path::new(reference)
+                .components()
+                .any(|component| component.as_os_str() == "archive");
+            if !archive_scoped_reference {
+                let active: Vec<String> = matches
+                    .iter()
+                    .filter(|m| !is_archived_manifest(m))
+                    .cloned()
+                    .collect();
+                if active.len() == 1 {
+                    return Ok(Some(active.into_iter().next().unwrap()));
+                }
+                if active.len() > 1 {
+                    bail!(
+                        "ambiguous milestone reference '{}' matches multiple active documents in workspace '{}': {:?}",
+                        reference,
+                        self.name,
+                        active
+                    );
+                }
+            }
+            bail!(
+                "ambiguous milestone reference '{}' matches multiple documents in workspace '{}': {:?}",
+                reference,
+                self.name,
+                matches
+            );
+        };
+
+        if let Some(matched) = select_preferred(exact_matches)? {
+            return Ok(Some(matched));
+        }
+        if let Some(matched) = select_preferred(fuzzy_matches)? {
+            return Ok(Some(matched));
+        }
+
+        Ok(None)
     }
 }
 
@@ -416,5 +557,82 @@ impl Registry {
             }
         }
         Ok(())
+    }
+    pub fn resolve_milestone(
+        &self,
+        workspace: Option<&str>,
+        reference: &str,
+    ) -> Result<(&Workspace, String)> {
+        let primary = self.select(None)?;
+        let mut found = match workspace {
+            Some("all") => {
+                let mut matches = Vec::new();
+                for candidate in &self.workspaces {
+                    if let Some(path) = candidate.resolve_manifest(reference)? {
+                        matches.push((candidate, path));
+                    }
+                }
+                matches
+            }
+            Some(name) => {
+                let candidate = self.select(Some(name))?;
+                candidate
+                    .resolve_manifest(reference)?
+                    .map(|path| vec![(candidate, path)])
+                    .unwrap_or_default()
+            }
+            None => primary
+                .resolve_manifest(reference)?
+                .map(|path| vec![(primary, path)])
+                .unwrap_or_default(),
+        };
+
+        if workspace.is_none() && found.is_empty() {
+            for candidate in &self.workspaces {
+                if candidate.name == primary.name {
+                    continue;
+                }
+                if let Some(path) = candidate.resolve_manifest(reference)? {
+                    found.push((candidate, path));
+                }
+            }
+        }
+
+        let (resolved_ws, path) = match found.len() {
+            0 => {
+                if let Some(name) = workspace.filter(|name| *name != "all") {
+                    bail!(
+                        "milestone reference '{}' not found in workspace '{}'",
+                        reference,
+                        name
+                    );
+                }
+                bail!(
+                    "milestone reference '{}' not found in workspace selection",
+                    reference
+                );
+            }
+            1 => found.pop().context("resolved milestone missing")?,
+            _ => {
+                let matched_ws: Vec<&str> = found.iter().map(|(w, _)| w.name.as_str()).collect();
+                bail!(
+                    "ambiguous milestone reference '{}' found across multiple workspaces: {:?}",
+                    reference,
+                    matched_ws
+                );
+            }
+        };
+
+        let inferred = crate::core::tasks::infer_project_from_path(Path::new(&path));
+        let full_path = confined_path(&resolved_ws.root, &path)?;
+        let text = std::fs::read_to_string(full_path)?;
+        let parsed = crate::core::tasks::Milestone::parse_with_identity(
+            &text,
+            &resolved_ws.repository,
+            inferred.as_deref().unwrap_or(&resolved_ws.project),
+        )
+        .with_context(|| format!("invalid milestone manifest '{path}'"))?;
+        let owner = self.owner(&format!("{}/{}", parsed.repository, parsed.project))?;
+        Ok((owner, path))
     }
 }

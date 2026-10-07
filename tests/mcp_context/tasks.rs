@@ -4,10 +4,11 @@ use super::*;
 fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     let main = Workspace::new();
     let linked = Workspace::new();
+    fs::create_dir_all(main.0.join("docs/milestones")).unwrap();
     fs::create_dir_all(linked.0.join("src")).unwrap();
     fs::create_dir_all(linked.0.join("docs/milestones")).unwrap();
     let manifest = "---\nid: m-linked\ntitle: Linked\ndoc_type: contract\ninvariants: [local-rules]\n---\n```yaml\ntask_ref: first\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
-    main.write("010-main.md", manifest);
+    main.write("docs/milestones/010-main.md", manifest);
     main.write("AGENTS.md", "# Main rules\n");
     linked.write("src/lib.rs", "pub fn library() {}\n");
     linked.write("AGENTS.md", "# Library rules\n");
@@ -19,7 +20,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     let mut client = Client::new(&main);
     client.payload(
         "task_manage",
-        json!({"action":"sync","milestone_ref":"010-main.md"}),
+        json!({"action":"sync","milestone_ref":"docs/milestones/010-main.md"}),
     );
     let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args([
@@ -167,7 +168,11 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
     let reviewer = Workspace::new();
     let source = "---\nid: m-handoff\ntitle: Handoff\ndoc_type: contract\n---\n```yaml\ntask_ref: delivery\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     for workspace in [&builder, &reviewer] {
-        workspace.write("010-tasks.md", &source.replace('\n', "\r\n"));
+        fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
+        workspace.write(
+            "docs/milestones/010-tasks.md",
+            &source.replace('\n', "\r\n"),
+        );
     }
     builder.write(
         "forge-mcp.yaml",
@@ -176,7 +181,7 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
     let mut client = Client::new(&builder);
     let synced = client.payload(
         "task_manage",
-        json!({"action":"sync","milestone_ref":"010-tasks.md"}),
+        json!({"action":"sync","milestone_ref":"docs/milestones/010-tasks.md"}),
     );
     let id = synced["tasks"][0]["task_id"].as_str().unwrap();
     assert_eq!(id, "contextunity/tooling/m-handoff:delivery");
@@ -187,7 +192,7 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
                 builder.0.to_str().unwrap(),
                 "migrate",
                 action,
-                "010-tasks.md",
+                "docs/milestones/010-tasks.md",
             ])
             .output()
             .unwrap();
@@ -241,14 +246,17 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
         let args = json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"});
         if gate == 3 {
             builder.write(
-                "010-tasks.md",
+                "docs/milestones/010-tasks.md",
                 &source
                     .replace("target: Deliver", "target: Unadmitted change")
                     .replace('\n', "\r\n"),
             );
             let (_, unadmitted) = client.call("task_submit", args.clone());
             assert_eq!(unadmitted["result"]["isError"], true);
-            builder.write("010-tasks.md", &source.replace('\n', "\r\n"));
+            builder.write(
+                "docs/milestones/010-tasks.md",
+                &source.replace('\n', "\r\n"),
+            );
         }
         let submitted = client.payload("task_submit", args.clone());
         assert_eq!(
@@ -326,11 +334,12 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
         "forge-mcp.yaml",
         "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
     );
-    workspace.write("010-tasks.md","---\nid: m-pilot\ntitle: Pilot\ndoc_type: contract\n---\n```yaml\ntask_ref: first\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n");
+    fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
+    workspace.write("docs/milestones/010-tasks.md","---\nid: m-pilot\ntitle: Pilot\ndoc_type: contract\n---\n```yaml\ntask_ref: first\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n");
     let mut client = Client::new(&workspace);
     let synced = client.payload(
         "task_manage",
-        json!({"action":"sync","milestone_ref":"010-tasks.md"}),
+        json!({"action":"sync","milestone_ref":"docs/milestones/010-tasks.md"}),
     );
     let id = synced["tasks"][0]["task_id"].as_str().unwrap();
     let ready = client.payload("task_list", json!({}));
@@ -369,7 +378,7 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
     );
     for args in [
         json!({"action":"inspect","task_id":id,"force":true}),
-        json!({"action":"sync","milestone_ref":"010-tasks.md","paths":["src/new.rs"]}),
+        json!({"action":"sync","milestone_ref":"docs/milestones/010-tasks.md","paths":["src/new.rs"]}),
         json!({"unexpected":true}),
     ] {
         let name = if args.get("action").is_some() {
@@ -387,18 +396,19 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     use contextunity_forge_mcp::db::tasks_store::TasksStore;
 
     let workspace = Workspace::new();
+    fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
     workspace.write(
         "forge-mcp.yaml",
         "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
     );
     workspace.write(
-        "010-blackboard.md",
+        "docs/milestones/010-blackboard.md",
         "---\nid: m-blackboard\ntitle: Blackboard\ndoc_type: contract\n---\n```yaml\ntask_ref: first\ntarget: Coordinate agents\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
     );
     let mut client = Client::new(&workspace);
     let synced = client.payload(
         "task_manage",
-        json!({"action":"sync","milestone_ref":"010-blackboard.md"}),
+        json!({"action":"sync","milestone_ref":"docs/milestones/010-blackboard.md"}),
     );
     let task_id = synced["tasks"][0]["task_id"].as_str().unwrap();
 
@@ -473,8 +483,9 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
 #[test]
 fn subtask_mcp_and_cli_operations() {
     let workspace = Workspace::new();
+    fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
     let manifest = "---\nid: m-mcp-subtasks\ntitle: MCP Subtasks\ndoc_type: contract\ninvariants: [local-rules]\n---\n```yaml\ntask_ref: sub-demo\ntarget: Subtask demonstration\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
-    workspace.write("010-subtasks.md", manifest);
+    workspace.write("docs/milestones/010-subtasks.md", manifest);
     workspace.write("AGENTS.md", "# Agent Rules\n");
     workspace.write(
         "forge-mcp.yaml",
@@ -483,7 +494,7 @@ fn subtask_mcp_and_cli_operations() {
     let mut client = Client::new(&workspace);
     client.payload(
         "task_manage",
-        json!({"action": "sync", "milestone_ref": "010-subtasks.md"}),
+        json!({"action": "sync", "milestone_ref": "docs/milestones/010-subtasks.md"}),
     );
     let task_id = "forge-mcp/forge-mcp/m-mcp-subtasks:sub-demo";
 
