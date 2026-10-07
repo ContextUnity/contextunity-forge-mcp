@@ -1,5 +1,6 @@
 use crate::engine::tasks::{
-    self, Action, Claim, List, Manage, ManageAction, Stage, Status, Submit,
+    self, Action, Claim, List, Manage, ManageAction, MilestoneStatusFilter, Stage, Status, Submit,
+    TaskListDetail,
 };
 use anyhow::Result;
 use clap::Subcommand;
@@ -106,6 +107,21 @@ pub enum TaskCommand {
         #[arg(long, value_enum)]
         /// Optional stage value.
         stage: Option<Stage>,
+        #[arg(long, value_enum, conflicts_with_all = ["planned", "completed", "all"])]
+        /// Filter by milestone lifecycle status: active, planned, completed, or all.
+        milestone_status: Option<MilestoneStatusFilter>,
+        #[arg(long, conflicts_with_all = ["milestone_status", "completed", "all"])]
+        /// Show tasks from planned milestones.
+        planned: bool,
+        #[arg(long, conflicts_with_all = ["milestone_status", "planned", "all"])]
+        /// Show tasks from completed milestones.
+        completed: bool,
+        #[arg(long, conflicts_with_all = ["milestone_status", "planned", "completed"])]
+        /// Show tasks from all statuses, including cancelled tasks pending sync pruning.
+        all: bool,
+        #[arg(long)]
+        /// Include subtask titles and verification evidence.
+        full: bool,
     },
     /// Represents the inspect case.
     Inspect {
@@ -246,16 +262,34 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             milestone,
             status,
             stage,
+            milestone_status,
+            planned,
+            completed,
+            all,
+            full,
         } => {
+            let milestone_status = milestone_status.or({
+                if planned {
+                    Some(MilestoneStatusFilter::Planned)
+                } else if completed {
+                    Some(MilestoneStatusFilter::Completed)
+                } else if all {
+                    Some(MilestoneStatusFilter::All)
+                } else {
+                    None
+                }
+            });
             return tasks::list(
                 root,
                 List {
                     repository,
                     milestone_ref: milestone,
+                    milestone_status,
                     status,
                     stage,
+                    detail: full.then_some(TaskListDetail::Full),
                 },
-            )
+            );
         }
         TaskCommand::Claim {
             task_id,

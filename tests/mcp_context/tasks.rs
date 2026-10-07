@@ -7,7 +7,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     fs::create_dir_all(main.0.join("docs/milestones")).unwrap();
     fs::create_dir_all(linked.0.join("src")).unwrap();
     fs::create_dir_all(linked.0.join("docs/milestones")).unwrap();
-    let manifest = "---\nid: m-linked\ntitle: Linked\ndoc_type: contract\ninvariants: [local-rules]\n---\n```yaml\ntask_ref: first\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    let manifest = "---\nid: m-linked\ntitle: Linked\ndoc_type: contract\nstatus: active\ninvariants: [local-rules]\n---\n```yaml\ntask_ref: first\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     main.write("docs/milestones/010-main.md", manifest);
     main.write("AGENTS.md", "# Main rules\n");
     linked.write("src/lib.rs", "pub fn library() {}\n");
@@ -166,7 +166,7 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
     use contextunity_forge_mcp::core::tasks::{gates::REVIEW_CONTOURS, GATES};
     let builder = Workspace::new();
     let reviewer = Workspace::new();
-    let source = "---\nid: m-handoff\ntitle: Handoff\ndoc_type: contract\n---\n```yaml\ntask_ref: delivery\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    let source = "---\nid: m-handoff\ntitle: Handoff\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: delivery\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     for workspace in [&builder, &reviewer] {
         fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
         workspace.write(
@@ -335,7 +335,7 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
         "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
     );
     fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
-    workspace.write("docs/milestones/010-tasks.md","---\nid: m-pilot\ntitle: Pilot\ndoc_type: contract\n---\n```yaml\ntask_ref: first\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n");
+    workspace.write("docs/milestones/010-tasks.md","---\nid: m-pilot\ntitle: Pilot\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n");
     let mut client = Client::new(&workspace);
     let synced = client.payload(
         "task_manage",
@@ -749,4 +749,218 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     let cli_json: Value = serde_json::from_slice(&cli_context.stdout).unwrap();
     assert!(cli_json["context_bundle"].is_object());
     assert_eq!(cli_json["context_bundle"]["contract"]["task_id"], task_id);
+}
+
+#[test]
+fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
+    );
+    fs::create_dir_all(workspace.0.join("src")).unwrap();
+    fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
+    fs::create_dir_all(workspace.0.join("docs/milestones/archive")).unwrap();
+    workspace.write("src/lib.rs", "pub fn task_list_fixture() {}\n");
+    workspace.write(
+        "docs/milestones/010-active.md",
+        "---\nid: m-task-list\ntitle: Task list\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: visible\ntarget: Visible task\nproof_policy: direct-proof\nscope: [src/]\nsubtasks:\n  - subtask_ref: explain\n    title: Detailed subtask\n    status: completed\n    evidence: Verified through the listing seam\n```\n",
+    );
+    workspace.write(
+        "docs/milestones/011-planned.md",
+        "---\nid: m-planned-list\ntitle: Planned task list\ndoc_type: contract\n---\n# Tasks\n```yaml\ntask_ref: planned\ntarget: Planned task\nproof_policy: direct-proof\nscope: [src/]\n```\n",
+    );
+    workspace.write(
+        "docs/milestones/archive/009-completed.md",
+        "---\nid: m-completed-list\ntitle: Completed task list\ndoc_type: contract\nstatus: completed\n---\n# Tasks\n```yaml\ntask_ref: completed\ntarget: Completed task\nproof_policy: direct-proof\nscope: [src/]\n```\n",
+    );
+    let mut client = Client::new(&workspace);
+    let synced = client.payload(
+        "task_manage",
+        json!({"action":"sync","milestone_ref":"010-active"}),
+    );
+    let task_id = synced["tasks"][0]["task_id"].as_str().unwrap();
+    let planned = client.payload(
+        "task_manage",
+        json!({"action":"sync","milestone_ref":"011-planned"}),
+    );
+    let planned_task_id = planned["tasks"][0]["task_id"].as_str().unwrap();
+    let completed = client.payload(
+        "task_manage",
+        json!({"action":"sync","milestone_ref":"009-completed"}),
+    );
+    let completed_task_id = completed["tasks"][0]["task_id"].as_str().unwrap();
+
+    let (_, catalog) = client.request("tools/list", json!({}));
+    let task_list = catalog["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "task_list")
+        .unwrap();
+    let status_schema =
+        serde_json::to_string(&task_list["inputSchema"]["properties"]["milestone_status"]).unwrap();
+    for status in ["active", "planned", "completed", "all"] {
+        assert!(status_schema.contains(status));
+    }
+    assert!(!status_schema.contains("cancelled"));
+    assert!(task_list["inputSchema"]["properties"]
+        .get("include_archived")
+        .is_none());
+    let detail_schema =
+        serde_json::to_string(&task_list["inputSchema"]["properties"]["detail"]).unwrap();
+    assert!(detail_schema.contains("compact"));
+    assert!(detail_schema.contains("full"));
+
+    let (_, invalid_status) = client.call("task_list", json!({"milestone_status":"cancelled"}));
+    assert!(invalid_status.get("error").is_some() || invalid_status["result"]["isError"] == true);
+    assert_eq!(
+        client.payload("task_list", json!({"milestone_status":"active"}))["tasks"][0]["task_id"],
+        task_id
+    );
+    assert_eq!(
+        client.payload("task_list", json!({"milestone_status":"planned"}))["tasks"][0]["task_id"],
+        planned_task_id
+    );
+    assert_eq!(
+        client.payload("task_list", json!({"milestone_status":"completed"}))["tasks"][0]["task_id"],
+        completed_task_id
+    );
+    let mut mcp_all: Vec<_> = client.payload("task_list", json!({"milestone_status":"all"}))
+        ["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| task["task_id"].as_str().unwrap().to_owned())
+        .collect();
+    mcp_all.sort();
+    let mut expected_all = vec![
+        task_id.to_owned(),
+        planned_task_id.to_owned(),
+        completed_task_id.to_owned(),
+    ];
+    expected_all.sort();
+    assert_eq!(mcp_all, expected_all);
+
+    let cli_filter = |flags: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args(["--root", workspace.0.to_str().unwrap(), "task", "list"])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let payload: Value = serde_json::from_slice(&output.stdout).unwrap();
+        payload["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["task_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(cli_filter(&["--milestone-status", "active"]), [task_id]);
+    assert_eq!(
+        cli_filter(&["--milestone-status", "planned"]),
+        [planned_task_id]
+    );
+    assert_eq!(
+        cli_filter(&["--milestone-status", "completed"]),
+        [completed_task_id]
+    );
+    let mut cli_all = cli_filter(&["--milestone-status", "all"]);
+    cli_all.sort();
+    assert_eq!(cli_all, expected_all);
+    assert_eq!(cli_filter(&["--planned"]), [planned_task_id]);
+    assert_eq!(cli_filter(&["--completed"]), [completed_task_id]);
+    let mut cli_shorthand_all = cli_filter(&["--all"]);
+    cli_shorthand_all.sort();
+    assert_eq!(cli_shorthand_all, expected_all);
+
+    let cli_help = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--help",
+        ])
+        .output()
+        .unwrap();
+    assert!(cli_help.status.success());
+    let cli_help = String::from_utf8(cli_help.stdout).unwrap();
+    assert!(cli_help.contains("--all"));
+    assert!(cli_help.contains("cancelled tasks pending sync pruning"));
+
+    assert_eq!(cli_filter(&["--full"]), [task_id]);
+
+    let compact = client.payload("task_list", json!({}));
+    assert_eq!(compact["tasks"].as_array().unwrap().len(), 1);
+    let compact_subtask = &compact["tasks"][0]["subtasks"][0];
+    assert_eq!(compact_subtask["subtask_ref"], "explain");
+    assert_eq!(compact_subtask["status"], "completed");
+    assert!(compact_subtask.get("title").is_none());
+    assert!(compact_subtask.get("evidence").is_none());
+
+    let full = client.payload("task_list", json!({"detail":"full"}));
+    assert_eq!(full["tasks"][0]["subtasks"][0]["title"], "Detailed subtask");
+    assert_eq!(
+        full["tasks"][0]["subtasks"][0]["evidence"],
+        "Verified through the listing seam"
+    );
+    let subtask_details = client.payload(
+        "task_manage",
+        json!({"action":"subtask_list","task_id":task_id}),
+    );
+    assert_eq!(subtask_details["subtasks"][0]["title"], "Detailed subtask");
+    assert_eq!(
+        subtask_details["subtasks"][0]["evidence"],
+        "Verified through the listing seam"
+    );
+    let inspected = client.payload("task_manage", json!({"action":"inspect","task_id":task_id}));
+    assert_eq!(inspected["subtasks"][0]["title"], "Detailed subtask");
+    assert_eq!(
+        inspected["subtasks"][0]["evidence"],
+        "Verified through the listing seam"
+    );
+
+    let cli_full = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--milestone-status",
+            "active",
+            "--full",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_full.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_full.stderr)
+    );
+    let cli_full_json: Value = serde_json::from_slice(&cli_full.stdout).unwrap();
+    assert_eq!(
+        cli_full_json["tasks"][0]["subtasks"][0]["evidence"],
+        "Verified through the listing seam"
+    );
+
+    for conflicting_flags in [
+        vec!["--planned", "--completed"],
+        vec!["--planned", "--all"],
+        vec!["--completed", "--all"],
+        vec!["--milestone-status", "active", "--planned"],
+        vec!["--milestone-status", "all", "--all"],
+    ] {
+        let conflict = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args(["--root", workspace.0.to_str().unwrap(), "task", "list"])
+            .args(conflicting_flags)
+            .output()
+            .unwrap();
+        assert!(!conflict.status.success());
+    }
 }

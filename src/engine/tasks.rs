@@ -85,7 +85,45 @@ impl Action {
         }
     }
 }
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[value(rename_all = "snake_case")]
+/// Milestone lifecycle status filter for task queries.
+pub enum MilestoneStatusFilter {
+    /// Show tasks belonging to active milestones only (default).
+    Active,
+    /// Show tasks belonging to planned milestones.
+    Planned,
+    /// Show tasks belonging to completed milestones.
+    Completed,
+    /// Show tasks across all milestones regardless of status.
+    All,
+}
+
+impl MilestoneStatusFilter {
+    /// Checks if a given status string matches this filter.
+    pub fn matches(&self, status: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Active => status == "active",
+            Self::Planned => status == "planned",
+            Self::Completed => status == "completed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Controls how much subtask information task listings return.
+pub enum TaskListDetail {
+    /// Return subtask references and statuses only.
+    #[default]
+    Compact,
+    /// Include subtask titles and verification evidence.
+    Full,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 /// Parameters for listing tasks in .forge/tasks.sqlite.
 pub struct List {
@@ -93,10 +131,14 @@ pub struct List {
     pub repository: Option<String>,
     /// Filter tasks by milestone: relative file path (e.g. 'docs/milestones/030-*.md'), numeric prefix ('030'), milestone ID ('m-...'), or slug.
     pub milestone_ref: Option<String>,
+    /// Filter by milestone lifecycle status: 'active' (default), 'planned', 'completed', or 'all'. A milestone_ref without this filter selects all statuses.
+    pub milestone_status: Option<MilestoneStatusFilter>,
     /// Filter by task status: ready (default), in_progress, blocked, completed, or all.
     pub status: Option<Status>,
     /// Filter by lifecycle stage: contract, build, review, or deliver.
     pub stage: Option<Stage>,
+    /// Subtask detail level: compact by default or full to include titles and evidence.
+    pub detail: Option<TaskListDetail>,
 }
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
@@ -322,6 +364,15 @@ pub fn store(root: &Path) -> Result<TasksStore> {
             .unwrap_or(&settings.task_repository),
     )
 }
+fn resolve_manifest_status(root: &Path, milestone_ref: &str) -> Result<String> {
+    let path = confined_path(root, milestone_ref)?;
+    let text = std::fs::read_to_string(&path)?;
+    let archived = path
+        .components()
+        .any(|component| component.as_os_str() == "archive");
+    Ok(Milestone::status_from_frontmatter(&text, archived)?.to_owned())
+}
+
 /// Performs list.
 pub fn list(root: &Path, mut p: List) -> Result<Value> {
     let registry = Registry::load(root)?;
@@ -332,6 +383,13 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
         p.milestone_ref = Some(resolved);
     }
     let status = p.status.unwrap_or(Status::Ready).name();
+    let default_milestone_filter = if p.milestone_ref.is_some() {
+        MilestoneStatusFilter::All
+    } else {
+        MilestoneStatusFilter::Active
+    };
+    let effective_milestone_filter = p.milestone_status.unwrap_or(default_milestone_filter);
+    let detail = p.detail.unwrap_or_default();
     let mut tasks = Vec::new();
     let all_workspaces = p.repository.as_deref() == Some("all") && p.milestone_ref.is_none();
     let mut workspaces = serde_json::Map::new();
@@ -342,7 +400,20 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
     for workspace in &selected {
         let mut store = workspace.open(&registry.database)?;
         store.cleanup(crate::db::tasks_store::now())?;
+        let mut milestone_status_cache: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for mut task in store.list(p.milestone_ref.as_deref(), "all", p.stage.map(Stage::name))? {
+            let milestone_status = match milestone_status_cache.get(&task.milestone_ref) {
+                Some(status) => status.clone(),
+                None => {
+                    let status = resolve_manifest_status(&workspace.root, &task.milestone_ref)?;
+                    milestone_status_cache.insert(task.milestone_ref.clone(), status.clone());
+                    status
+                }
+            };
+            if !effective_milestone_filter.matches(&milestone_status) {
+                continue;
+            }
             if task.status != "completed"
                 && (validate_authority(
                     &task,
@@ -378,7 +449,23 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
                     "rev": task.contract_revision,
                 });
                 if !task.spec.subtasks.is_empty() {
-                    item["subtasks"] = json!(task.spec.subtasks);
+                    item["subtasks"] = match detail {
+                        TaskListDetail::Compact => {
+                            let compact: Vec<_> = task
+                                .spec
+                                .subtasks
+                                .iter()
+                                .map(|subtask| {
+                                    json!({
+                                        "subtask_ref": subtask.subtask_ref,
+                                        "status": subtask.status,
+                                    })
+                                })
+                                .collect();
+                            json!(compact)
+                        }
+                        TaskListDetail::Full => serde_json::to_value(&task.spec.subtasks)?,
+                    };
                 }
                 tasks.push(item);
             }

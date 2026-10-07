@@ -60,7 +60,7 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "List tasks. The default is ready, unclaimed tasks with satisfied dependencies in the primary workspace."
+        description = "List tasks. The default is ready, unclaimed tasks with satisfied dependencies in the primary workspace. milestone_status defaults to active and accepts active, planned, completed, or all; a targeted milestone_ref defaults to all statuses. Subtask listings are compact by default; set detail=full to include titles and verification evidence."
     )]
     fn task_list(&self, Parameters(p): Parameters<super::tasks::List>) -> CallToolResult {
         self.responding(|_, _| super::tasks::list(&self.root, p))

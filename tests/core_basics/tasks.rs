@@ -45,7 +45,7 @@ fn evidence(task: &contextunity_forge_mcp::db::tasks_store::Task) -> Evidence {
         },
     }
 }
-const SPEC: &str = "---\nid: m-test\ntitle: Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Deliver second\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first]\n```\n";
+const SPEC: &str = "---\nid: m-test\ntitle: Tasks\ndoc_type: contract\nstatus: active\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Deliver second\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first]\n```\n";
 fn fixture() -> (ScopedWorkspace, TasksStore, Milestone) {
     let root = ScopedWorkspace::new("forge_tasks");
     root.write("src/lib.rs", "pub fn example() {}\n");
@@ -697,6 +697,7 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
             .len(),
         4
     );
+
     linked.write(
         "contracts/020-linked.md",
         &SPEC.replace("m-test", "m-linked-020"),
@@ -990,8 +991,10 @@ fn tasks_coordinate_claims_dependencies_reset_and_scope() {
         tasks::List {
             repository: None,
             milestone_ref: None,
+            milestone_status: None,
             status: None,
             stage: None,
+            detail: None,
         },
     )
     .unwrap();
@@ -2275,7 +2278,7 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
 
 #[test]
 fn task_subtasks_lifecycle_management_and_digest_independence() {
-    let spec = "---\nid: m-subtasks\ntitle: Subtasks Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: core-feature\ntarget: Deliver core feature\nproof_policy: seam-test-first\nscope: [src/]\nsubtasks:\n  - subtask_ref: sub-1\n    title: Initial discovery\n    status: in_progress\n    evidence: Found relevant files\n```\n";
+    let spec = "---\nid: m-subtasks\ntitle: Subtasks Test\ndoc_type: contract\nstatus: active\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: core-feature\ntarget: Deliver core feature\nproof_policy: seam-test-first\nscope: [src/]\nsubtasks:\n  - subtask_ref: sub-1\n    title: Initial discovery\n    status: in_progress\n    evidence: Found relevant files\n```\n";
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
     let task = &milestone.tasks[0];
     assert_eq!(task.subtasks.len(), 1);
@@ -3456,8 +3459,10 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
         tasks::List {
             repository: Some("test".into()),
             milestone_ref: Some("m-tool-performance-and-storage-compaction".into()),
+            milestone_status: None,
             status: Some(tasks::Status::All),
             stage: None,
+            detail: None,
         },
     )
     .unwrap();
@@ -3480,8 +3485,10 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
         tasks::List {
             repository: None,
             milestone_ref: Some("30".into()),
+            milestone_status: None,
             status: Some(tasks::Status::All),
             stage: None,
+            detail: None,
         },
     )
     .unwrap();
@@ -3538,6 +3545,164 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
     assert!(
         err.to_string().contains("not found in workspace"),
         "error must be descriptive: {err}"
+    );
+}
+
+#[test]
+fn task_list_filters_milestone_status_and_controls_subtask_details() {
+    let root = ScopedWorkspace::new("forge_task_list_archive_and_evidence");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    let active_spec = "---\nid: m-active\ntitle: Active Milestone\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: active-task\ntarget: Active task target\nproof_policy: seam-test-first\nscope: [src/]\nsubtasks:\n  - subtask_ref: sub-1\n    title: Active subtask\n    status: in_progress\n    evidence: Secret heavy evidence blob\n```\n";
+    root.write("docs/milestones/010-active.md", active_spec);
+
+    let archived_spec = "---\nid: m-archived\ntitle: Archived Milestone\ndoc_type: contract\nstatus: completed\n---\n# Tasks\n```yaml\ntask_ref: archived-task\ntarget: Archived task target\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    root.write("docs/milestones/archive/009-archived.md", archived_spec);
+
+    let planned_spec = "---\nid: m-planned\ntitle: Planned Milestone\ndoc_type: contract\n---\n# Tasks\n```yaml\ntask_ref: planned-task\ntarget: Planned task target\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    root.write("docs/milestones/008-planned.md", planned_spec);
+
+    let cancelled_active_spec = "---\nid: m-cancelled\ntitle: Cancelled Milestone\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: cancelled-task\ntarget: Cancelled task target\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    root.write(
+        "docs/milestones/archive/007-cancelled.md",
+        cancelled_active_spec,
+    );
+    let cancelled_spec = "---\nid: m-cancelled\ntitle: Cancelled Milestone\ndoc_type: contract\nstatus: cancelled\nclosure:\n  reason: Replaced by a later milestone\n---\n# Tasks\n```yaml\ntask_ref: cancelled-task\ntarget: Cancelled task target\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    for (spec, path) in [
+        (active_spec, "docs/milestones/010-active.md"),
+        (archived_spec, "docs/milestones/archive/009-archived.md"),
+        (planned_spec, "docs/milestones/008-planned.md"),
+        (
+            cancelled_active_spec,
+            "docs/milestones/archive/007-cancelled.md",
+        ),
+    ] {
+        store
+            .sync(&Milestone::parse(spec, "forge-mcp").unwrap(), path, &root.0)
+            .unwrap();
+    }
+    // Simulate the pre-sync window: the manifest is cancelled, but its stored task has not been pruned.
+    root.write("docs/milestones/archive/007-cancelled.md", cancelled_spec);
+
+    // Active milestones are the default, regardless of task status selection.
+    let active_only = tasks::list(
+        &root.0,
+        tasks::List {
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let tasks_arr = active_only["tasks"].as_array().unwrap();
+    assert_eq!(tasks_arr.len(), 1);
+    assert_eq!(
+        tasks_arr[0]["task_id"],
+        "forge-mcp/forge-mcp/m-active:active-task"
+    );
+
+    // Compact listings retain the subtask reference and status, omitting details.
+    let subtasks = tasks_arr[0]["subtasks"].as_array().unwrap();
+    assert_eq!(subtasks.len(), 1);
+    assert_eq!(subtasks[0]["subtask_ref"], "sub-1");
+    assert!(subtasks[0].get("title").is_none());
+    assert_eq!(subtasks[0]["status"], "in_progress");
+    assert!(
+        subtasks[0].get("evidence").is_none(),
+        "subtask evidence must be stripped in task_list"
+    );
+
+    let full_detail = tasks::list(
+        &root.0,
+        tasks::List {
+            status: Some(tasks::Status::All),
+            detail: Some(tasks::TaskListDetail::Full),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let full_subtask = &full_detail["tasks"][0]["subtasks"][0];
+    assert_eq!(full_subtask["title"], "Active subtask");
+    assert_eq!(full_subtask["evidence"], "Secret heavy evidence blob");
+
+    // The only explicit milestone filters are active, planned, completed, and all.
+    for (filter, expected_id) in [
+        (
+            tasks::MilestoneStatusFilter::Active,
+            "forge-mcp/forge-mcp/m-active:active-task",
+        ),
+        (
+            tasks::MilestoneStatusFilter::Planned,
+            "forge-mcp/forge-mcp/m-planned:planned-task",
+        ),
+        (
+            tasks::MilestoneStatusFilter::Completed,
+            "forge-mcp/forge-mcp/m-archived:archived-task",
+        ),
+    ] {
+        let filtered = tasks::list(
+            &root.0,
+            tasks::List {
+                milestone_status: Some(filter),
+                status: Some(tasks::Status::All),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(filtered["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(filtered["tasks"][0]["task_id"], expected_id);
+    }
+
+    let all_statuses = tasks::list(
+        &root.0,
+        tasks::List {
+            milestone_status: Some(tasks::MilestoneStatusFilter::All),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let all_ids: Vec<_> = all_statuses["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| task["task_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(all_ids.len(), 4);
+    assert!(all_ids.contains(&"forge-mcp/forge-mcp/m-cancelled:cancelled-task"));
+
+    // A targeted milestone reference exposes its tasks by default, including a pre-sync cancellation.
+    let direct_archived = tasks::list(
+        &root.0,
+        tasks::List {
+            milestone_ref: Some("009".into()),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let direct_arr = direct_archived["tasks"].as_array().unwrap();
+    assert_eq!(direct_arr.len(), 1);
+    assert_eq!(
+        direct_arr[0]["task_id"],
+        "forge-mcp/forge-mcp/m-archived:archived-task"
+    );
+    let direct_cancelled = tasks::list(
+        &root.0,
+        tasks::List {
+            milestone_ref: Some("007".into()),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(direct_cancelled["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        direct_cancelled["tasks"][0]["task_id"],
+        "forge-mcp/forge-mcp/m-cancelled:cancelled-task"
     );
 }
 
