@@ -95,7 +95,7 @@ perimeter cannot claim a foreign task.
 | Tool | Arguments and behavior |
 | --- | --- |
 | `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. Stage is `contract`, `build`, `review`, `deliver`, or null. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
-| `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean). Claims the current gate atomically. When `bundle: true`, returns an aggregated zero-shot task context bundle. Collisions return typed `TASK_ALREADY_CLAIMED`. |
+| `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning the zero-shot task context bundle (specification, guidance, symbols, tests, blackboard). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. Selectors follow the table below. |
 | `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires `topic` and `payload`, accepts `author`, and returns an ID. Read accepts `topic`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect requires `message_id` and returns that message including payload. |
@@ -191,8 +191,7 @@ submission releases ownership. Review requires a worker different from the
 accepted builder and the same candidate commit. Review/delivery rejection records
 findings and returns the task to build remediation.
 
-`evidence` is a direct JSON object bound to the active claim. For example, a
-passing build submission contains:
+`evidence` is a direct JSON object bound to the active claim. The `commit` field can be omitted; Forge automatically captures the scoped candidate snapshot SHA on `contract/v1` and `build/v1`, and inherits it on `review/v1` and `deliver/v1`. For example, a passing build submission contains:
 
 ```json
 {
@@ -202,7 +201,6 @@ passing build submission contains:
   "contract_revision": 1,
   "worker_id": "builder",
   "worktree": "/absolute/claimed/worktree",
-  "commit": "0123456789abcdef0123456789abcdef01234567",
   "proof": {
     "test_proof": {
       "command": "cargo test --test core_basics",
@@ -228,14 +226,18 @@ is retained in `task_gates.evidence` without reading an evidence file.
 At passing task delivery (`deliver/v1`), Forge validates the current task
 specification and accepted build and review proof, then writes
 `status: completed` and a receipt into the
-milestone task block. The receipt carries the accepted commit, contract revision,
+milestone task block. The receipt carries the candidate snapshot commit (the SHA
+captured from scoped changes during build), contract revision,
 RFC3339 `passed_at`, build proof, review proof, and decision. Its rollup retains
 verified invariants, review summary, and task blackboard `architectural_notes`.
 The task becomes completed in SQLite and its blackboard messages are cleared.
-The milestone document is the durable context after task delivery. The
-receipt records the reviewed candidate SHA; amend the task commit with it so
-the final history contains one commit for the task. The amended commit has a
-different SHA because a commit cannot contain its own hash.
+The milestone document is the durable context after task delivery. Immediately
+after `deliver/v1` writes the task receipt into the milestone document, create
+one clean atomic Git commit on the branch containing source code, tests, and the updated
+milestone file (staging strictly scoped files; avoid `git add -A` in shared worktrees).
+Do not amend this branch commit or rewrite the snapshot SHA stored in the receipt.
+Prior to final milestone handoff, completed tasks can be reopened if necessary using
+`contextunity-forge-mcp task reopen <task-id>`.
 
 ## Task blackboard
 
@@ -299,6 +301,28 @@ older active document. The command sets frontmatter `status: completed`, moves
 the document to the selected directory's `archive/`, and updates the stored
 `milestone_ref` of its tasks. The [CLI reference](cli.md) lists every flag.
 
+### Deferred and out-of-scope defects
+
+Milestone documents maintain a typed block for out-of-scope defects, uncovered edge cases, or deferred review findings directly below the tasks:
+
+```yaml
+deferred_defects:
+  - id: DEFECT-001
+    source: review_findings
+    title: "Unshadowed function resolution in edge case"
+    path: src/engine/languages/python.rs
+    disposition: deferred
+    notes: "Follow up in subsequent milestone"
+```
+
+Fields:
+- `id`: Unique identifier slug (checked via `valid_identity`).
+- `source`: Discovery source (`review_findings`, `task_blackboard`, worker ID).
+- `title`: Non-empty description of the defect.
+- `path`: (Optional) Targeted relative file or directory path.
+- `disposition`: `deferred`, `subsequent_milestone`, or `rejected` (defaults to `deferred`).
+- `notes`: (Optional) Reproduction steps, context, or deferred milestone reference.
+
 ## CLI and administration
 
 ```sh
@@ -359,7 +383,7 @@ Without a reference, migration selects numbered Markdown milestones under
 
 ## Unified Task Context Bundle
 
-To achieve zero-shot agent orientation and eliminate exploratory tool-call loops, Forge aggregates task context through `task_claim` (with `bundle: true` or CLI `--bundle`), `task_manage(action: "context")`, and CLI `task context <task-id>`.
+To achieve zero-shot agent orientation and eliminate exploratory tool-call loops, Forge aggregates task context by default upon MCP `task_claim` and CLI `task claim`, as well as through `task_manage(action: "context")` and CLI `task context <task-id>`. The MCP `task_claim` argument `bundle: false` returns minimal details; CLI `task claim` always returns the context bundle.
 
 The returned payload contains:
 

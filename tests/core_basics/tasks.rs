@@ -45,6 +45,16 @@ fn evidence(task: &contextunity_forge_mcp::db::tasks_store::Task) -> Evidence {
         },
     }
 }
+fn pinned_candidate(root: &std::path::Path, task_id: &str) -> String {
+    let reference = format!("refs/forge/snapshots/{}", task_id.replace(':', "/"));
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", &reference])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
 const SPEC: &str = "---\nid: m-test\ntitle: Tasks\ndoc_type: contract\nstatus: active\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Deliver second\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first]\n```\n";
 fn fixture() -> (ScopedWorkspace, TasksStore, Milestone) {
     let root = ScopedWorkspace::new("forge_tasks");
@@ -2574,16 +2584,11 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            submitted["snapshot"]["commit"],
-            "0123456789abcdef0123456789abcdef01234567"
-        );
-        assert_eq!(
-            submitted["snapshot"]["inspect_cmd"],
-            "git show 0123456789abcdef0123456789abcdef01234567"
-        );
+        assert_eq!(submitted["snapshot"]["commit"], "0123456");
+        assert_eq!(submitted["snapshot"]["inspect_cmd"], "git show 0123456");
         if index == stages.len() - 1 {
             assert_eq!(submitted["status"], "completed");
+            assert_eq!(submitted["receipt"]["commit"], "0123456");
         }
     }
 
@@ -2591,13 +2596,10 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
         .unwrap()
         .inspect_details(&task_id)
         .unwrap();
-    assert_eq!(
-        details["latest_snapshot"]["commit"],
-        "0123456789abcdef0123456789abcdef01234567"
-    );
+    assert_eq!(details["latest_snapshot"]["commit"], "0123456");
     assert_eq!(
         details["latest_snapshot"]["inspect_cmd"],
-        "git show 0123456789abcdef0123456789abcdef01234567"
+        "git show 0123456"
     );
 
     let written = std::fs::read_to_string(root.0.join(milestone_ref)).unwrap();
@@ -4670,11 +4672,12 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     )
     .unwrap();
 
-    let contract_snap = contract_res["snapshot"]["commit"].as_str().unwrap();
+    let contract_snap = pinned_candidate(&root.0, task_id);
     assert_eq!(contract_snap.len(), 40);
+    assert_eq!(contract_res["snapshot"]["commit"], &contract_snap[..7]);
     assert_eq!(
         contract_res["snapshot"]["inspect_cmd"],
-        format!("git show {contract_snap}")
+        format!("git show {}", &contract_snap[..7])
     );
 
     // Commit a sibling change outside the task scope while keeping scoped content fixed.
@@ -4719,8 +4722,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     )
     .unwrap();
 
-    let build_snap = build_res["snapshot"]["commit"].as_str().unwrap();
+    let build_snap = pinned_candidate(&root.0, task_id);
     assert_eq!(build_snap.len(), 40);
+    assert_eq!(build_res["snapshot"]["commit"], &build_snap[..7]);
     assert_eq!(
         build_snap, contract_snap,
         "an unrelated sibling commit must not change the scoped candidate SHA"
@@ -4728,7 +4732,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
 
     // Verify git show on build snapshot includes the newly added file
     let show_output = std::process::Command::new("git")
-        .args(["show", build_snap])
+        .args(["show", &build_snap])
         .current_dir(&root.0)
         .output()
         .unwrap();
@@ -4740,7 +4744,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         "snapshot must contain only scoped files"
     );
     let parents = std::process::Command::new("git")
-        .args(["rev-list", "--parents", "-n", "1", build_snap])
+        .args(["rev-list", "--parents", "-n", "1", &build_snap])
         .current_dir(&root.0)
         .output()
         .unwrap();
@@ -4802,7 +4806,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     .unwrap();
 
     // Review snapshot matches build candidate snapshot
-    assert_eq!(review_res["snapshot"]["commit"], build_snap);
+    assert_eq!(review_res["snapshot"]["commit"], &build_snap[..7]);
 
     // 4. Delivery
     tasks::claim(
@@ -4856,18 +4860,36 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     .unwrap();
 
     assert_eq!(deliver_res["status"], "completed");
-    assert_eq!(deliver_res["snapshot"]["commit"], build_snap);
+    assert_eq!(deliver_res["snapshot"]["commit"], &build_snap[..7]);
+    assert_eq!(deliver_res["receipt"]["commit"], &build_snap[..7]);
+
+    let written = std::fs::read_to_string(root.0.join("docs/milestones/010-test.md")).unwrap();
+    let milestone = Milestone::parse(&written, "forge-mcp").unwrap();
+    assert_eq!(
+        milestone.tasks[0]
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.commit.as_deref()),
+        Some(build_snap.as_str())
+    );
 
     // Inspect details shows gates with inspect_cmd and latest_snapshot
     let details = tasks::store(&root.0)
         .unwrap()
         .inspect_details(task_id)
         .unwrap();
-    assert_eq!(details["latest_snapshot"]["commit"], build_snap);
+    assert_eq!(details["receipt"]["commit"], &build_snap[..7]);
+    assert_eq!(details["latest_snapshot"]["commit"], &build_snap[..7]);
     assert_eq!(
         details["latest_snapshot"]["inspect_cmd"],
-        format!("git show {build_snap}")
+        format!("git show {}", &build_snap[..7])
     );
+    for gate in details["gates"].as_array().unwrap() {
+        assert_eq!(gate["commit"], &build_snap[..7]);
+        let evidence: serde_json::Value =
+            serde_json::from_str(gate["evidence"].as_str().unwrap()).unwrap();
+        assert_eq!(evidence["commit"], &build_snap[..7]);
+    }
 
     // Verify snapshot refs exist in git before handoff
     let refs_out = std::process::Command::new("git")

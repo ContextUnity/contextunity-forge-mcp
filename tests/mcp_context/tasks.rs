@@ -145,6 +145,14 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             "task_submit",
             json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"}),
         );
+        assert_eq!(result["snapshot"]["commit"], &commit[..7]);
+        assert_eq!(
+            result["snapshot"]["inspect_cmd"],
+            format!("git show {}", &commit[..7])
+        );
+        if gate == 3 {
+            assert_eq!(result["receipt"]["commit"], &commit[..7]);
+        }
         assert_eq!(
             result["status"],
             if gate == 3 { "completed" } else { "ready" }
@@ -154,6 +162,17 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     let mut client = Client::new(&main);
     let restored = client.payload("task_manage", json!({"action":"inspect","task_id":id}));
     assert_eq!(restored["status"], "completed");
+    assert_eq!(restored["receipt"]["commit"], &commit[..7]);
+    assert_eq!(restored["latest_snapshot"]["commit"], &commit[..7]);
+    assert_eq!(
+        restored["latest_snapshot"]["inspect_cmd"],
+        format!("git show {}", &commit[..7])
+    );
+    for gate in restored["gates"].as_array().unwrap() {
+        assert_eq!(gate["commit"], &commit[..7]);
+        let evidence: Value = serde_json::from_str(gate["evidence"].as_str().unwrap()).unwrap();
+        assert_eq!(evidence["commit"], &commit[..7]);
+    }
     assert_eq!(restored["agents_guidance"], inspected["agents_guidance"]);
     assert_eq!(
         client.payload("task_list", json!({"repository":"traverse"}))["tasks"],
@@ -166,7 +185,26 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
     use contextunity_forge_mcp::core::tasks::{gates::REVIEW_CONTOURS, GATES};
     let builder = Workspace::new();
     let reviewer = Workspace::new();
-    let source = "---\nid: m-handoff\ntitle: Handoff\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: delivery\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    let source = r#"---
+id: m-handoff
+title: Handoff
+doc_type: contract
+status: active
+deferred_defects:
+  - id: DEFECT-E2E-001
+    source: review_findings
+    title: Typed defect survives the MCP task lifecycle
+    path: src/engine/tasks.rs
+    disposition: subsequent_milestone
+    notes: Preserved through receipt rewriting
+---
+```yaml
+task_ref: delivery
+target: Deliver
+proof_policy: seam-test-first
+scope: [src/]
+```
+"#;
     for workspace in [&builder, &reviewer] {
         fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
         workspace.write(
@@ -226,6 +264,18 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
             "task_claim",
             json!({"task_id":id,"stage":stage,"worker_id":worker,"worktree":workspace.0}),
         );
+        if gate == 0 {
+            let bundle = &claim["context_bundle"];
+            assert!(
+                bundle.is_object(),
+                "omitted MCP bundle option returns context"
+            );
+            assert_eq!(bundle["contract"]["task_id"], id);
+            assert_eq!(bundle["contract"]["stage"], *stage);
+            assert!(bundle["guidance"]["actionable_steps"]
+                .as_array()
+                .is_some_and(|steps| !steps.is_empty()));
+        }
         let proof = if gate == 2 {
             &review_proof
         } else if gate == 0 {
@@ -259,6 +309,14 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
             );
         }
         let submitted = client.payload("task_submit", args.clone());
+        assert_eq!(submitted["snapshot"]["commit"], &commit[..7]);
+        assert_eq!(
+            submitted["snapshot"]["inspect_cmd"],
+            format!("git show {}", &commit[..7])
+        );
+        if gate == 3 {
+            assert_eq!(submitted["receipt"]["commit"], &commit[..7]);
+        }
         assert_eq!(
             submitted["status"],
             if gate == 3 { "completed" } else { "ready" }
@@ -270,6 +328,28 @@ fn task_stdio_lifecycle_submits_inline_evidence_in_independent_worktrees() {
         client.payload("task_list", json!({"status":"completed"}))["tasks"][0]["task_id"],
         id
     );
+    let written = fs::read_to_string(builder.0.join("010-tasks.md")).unwrap();
+    let milestone =
+        contextunity_forge_mcp::core::tasks::Milestone::parse(&written, "contextunity").unwrap();
+    assert_eq!(
+        milestone.tasks[0]
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.commit.as_deref()),
+        Some(commit)
+    );
+    assert_eq!(milestone.deferred_defects.len(), 1);
+    let defect = &milestone.deferred_defects[0];
+    assert_eq!(defect.id, "DEFECT-E2E-001");
+    assert_eq!(defect.source, "review_findings");
+    assert_eq!(defect.title, "Typed defect survives the MCP task lifecycle");
+    assert_eq!(defect.path.as_deref(), Some("src/engine/tasks.rs"));
+    assert_eq!(defect.disposition, "subsequent_milestone");
+    assert_eq!(
+        defect.notes.as_deref(),
+        Some("Preserved through receipt rewriting")
+    );
+    assert_eq!(milestone.tasks[0].status.as_deref(), Some("completed"));
 }
 
 #[test]
@@ -659,9 +739,10 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
 
     workspace.write("AGENTS.md", "# Test guidance\n");
+    let routing_adr = "---\ntitle: Task Routing Invariants\nstatus: accepted\n---\n# Task Routing Invariants\nContext and rules for routing.";
     workspace.write(
         "docs/adr/001-task-routing.md",
-        "---\ntitle: Task Routing Invariants\nstatus: accepted\n---\n# Task Routing Invariants\nContext and rules for routing.",
+        &routing_adr.replace('\n', "\r\n"),
     );
     workspace.write(
         "docs/adr/002-unrelated.md",
@@ -672,8 +753,13 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         "pub struct Router;\npub fn route_task() {}\n",
     );
     workspace.write("tests/test_routing.rs", "#[test]\nfn test_routing() {}\n");
+    workspace.write("src/cli_routing.rs", "pub fn route_cli_task() {}\n");
+    workspace.write(
+        "tests/test_cli_routing.rs",
+        "#[test]\nfn test_cli_routing() {}\n",
+    );
 
-    let manifest = "---\nid: m-context\ntitle: Context Milestone\ndoc_type: contract\ninvariants: [routing-invariant]\n---\n```yaml\ntask_ref: routing-task\ntarget: Deliver unified routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n  - tests/test_routing.rs\n```\n";
+    let manifest = "---\nid: m-context\ntitle: Context Milestone\ndoc_type: contract\ninvariants: [routing-invariant]\n---\n```yaml\ntask_ref: routing-task\ntarget: Deliver unified routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n  - tests/test_routing.rs\n```\n```yaml\ntask_ref: cli-routing-task\ntarget: Deliver CLI unified routing\nproof_policy: seam-test-first\nscope:\n  - src/cli_routing.rs\n  - tests/test_cli_routing.rs\n```\n";
     workspace.write("docs/milestones/010-context.md", manifest);
     workspace.write(
         "forge-mcp.yaml",
@@ -692,6 +778,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         json!({"action": "sync", "milestone_ref": "docs/milestones/010-context.md"}),
     );
     let task_id = sync_res["tasks"][0]["task_id"].as_str().unwrap();
+    let cli_task_id = sync_res["tasks"][1]["task_id"].as_str().unwrap();
 
     // Post blackboard message
     client.payload(
@@ -702,6 +789,16 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
             "topic": "architectural_notes",
             "payload": "Route tasks through unified zero-shot context bundle",
             "author": "architect"
+        }),
+    );
+    client.payload(
+        "task_blackboard",
+        json!({
+            "action": "post",
+            "task_id": cli_task_id,
+            "topic": "hypothesis",
+            "payload": "Sibling task context is milestone scoped",
+            "author": "cli-author"
         }),
     );
 
@@ -769,23 +866,25 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
 
     // Check blackboard
     let bb = bundle["blackboard"].as_array().unwrap();
-    assert_eq!(bb.len(), 1);
+    assert_eq!(bb.len(), 2);
     assert_eq!(bb[0]["topic"], "architectural_notes");
     assert_eq!(bb[0]["author"], "architect");
     assert_eq!(
         bb[0]["payload"],
         "Route tasks through unified zero-shot context bundle"
     );
+    assert!(bb
+        .iter()
+        .any(|message| { message["payload"] == "Sibling task context is milestone scoped" }));
 
-    // 2. MCP task_claim with bundle: true
+    // 2. MCP task_claim returns the full bundle when the optional flag is omitted
     let claim_res = client.payload(
         "task_claim",
         json!({
             "task_id": task_id,
             "stage": "contract",
             "worker_id": "author-1",
-            "worktree": workspace.0,
-            "bundle": true
+            "worktree": workspace.0
         }),
     );
     assert!(claim_res["context_bundle"].is_object());
@@ -802,10 +901,50 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
             .as_array()
             .unwrap()
             .len(),
-        1
+        2
     );
 
-    // 3. CLI task context command
+    // 3. CLI task claim returns the same bundle by default without --bundle
+    let cli_claim = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "claim",
+            cli_task_id,
+            "--stage",
+            "contract",
+            "--worker",
+            "cli-author",
+            "--worktree",
+            workspace.0.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_claim.stderr)
+    );
+    let cli_claim_json: Value = serde_json::from_slice(&cli_claim.stdout).unwrap();
+    assert!(cli_claim_json["context_bundle"].is_object());
+    assert_eq!(
+        cli_claim_json["context_bundle"]["contract"]["task_id"],
+        cli_task_id
+    );
+    assert_eq!(
+        cli_claim_json["context_bundle"]["contract"]["allowed_scope"],
+        json!(["src/cli_routing.rs", "tests/test_cli_routing.rs"])
+    );
+    assert_eq!(
+        cli_claim_json["context_bundle"]["blackboard"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // 4. CLI task context command
     let cli_context = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args([
             "--root",

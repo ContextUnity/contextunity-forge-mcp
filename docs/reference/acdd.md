@@ -15,28 +15,31 @@ The [task operations reference](tasks.md) defines API and proof shapes. The
 [execution runbook](../runbooks/acdd.md) gives the delivery sequence, agent
 handover protocol, and verification cadence.
 
-## Completion and authority
+## Completion levels: Delivery vs Handoff
 
-Task **delivery** uses `deliver/v1` to complete one task and write its receipt
-into the milestone. `milestone handoff` is a separate CLI operation after every
-task is complete and the deferred final test has passed; it archives the
-milestone.
+ACDD maintains a strict separation between individual task delivery and milestone handoff:
+- **Task Delivery (`deliver/v1`)**: Completes a single task within an active milestone branch. During intermediate gates (`contract/v1`, `build/v1`), developers do not make Git commits on the branch; Forge automatically captures a deterministic Git snapshot of scoped changes under `refs/forge/snapshots/` and binds its SHA to the gate. On `review/v1`, the reviewer inspects this candidate snapshot (via `inspect_cmd`). At `deliver/v1`, delivery proof is submitted first; Forge marks the task completed in SQLite and writes its typed receipt—carrying this candidate snapshot SHA—into the milestone document. Immediately after delivery, all changes for the task (scoped source, tests, milestone doc) are committed in **one clean Git commit** on the branch (staging strictly scoped files; avoid `git add -A` in shared worktrees; do not amend or rewrite the receipt snapshot SHA). Tasks remain mutable in the branch: if fixes or adjustments are needed prior to handoff, any completed task can be reopened back to `contract/v1` via `contextunity-forge-mcp task reopen <task-id>` (or `task reset <task-id>`).
+- **Milestone Handoff (`milestone handoff`)**: The definitive, immutable seal of the entire milestone. Executes only after every task reaches `completed` in SQLite. Runs the final repository-wide verification suite (`cargo test --all-targets`), records the final Git HEAD commit and duration into `handoff:`, and archives the completed milestone into `docs/milestones/archive/`.
 
 The admitted milestone specification defines what the task must prove. A
 reviewer checks the stable candidate against that contract and verified
-runtime behavior. Findings outside the task's scope go to the owning task or
-milestone decision process; they do not silently expand the frozen contract.
+runtime behavior. When adjacent defects or parser bugs are identified:
+- If the defect lies within the scope of another task in the milestone, reopen that task via `contextunity-forge-mcp task reopen <task-id>` (extending into another task's scope fails with `TASK_SCOPE_CONFLICT`).
+- If unowned, extend scope via `task_manage extend_scope` (or CLI `task extend-scope <task_id> <path>`) with reviewer approval on the `paths` contour, or record it in `## Deferred and out-of-scope defects` under the milestone tasks (via typed `deferred_defects: [...]` block) or on `task_blackboard` for subsequent milestones.
+- "Do not silently expand" prohibits unrecorded code changes outside registered scope paths; it does not authorize bystander inaction on obvious defects.
 
 ## Task lifecycle
 
 Each task moves through `contract/v1`, `build/v1`, `review/v1`, and
 `deliver/v1`. A worker claims the current gate before submitting evidence for
-that claim. Contract records a failing test through a public seam for greenfield
+that claim. Neither contract nor build create commits on the branch; evidence
+`commit` can be omitted, and Forge records the SHA of the scoped snapshot.
+Contract records a failing test through a public seam for greenfield
 tasks, or proves existing seams directly via `proof_policy: direct-proof` (with exit code 0)
 without synthetic breakage. Build records passing tests. Review checks the candidate against
-the contract and five review contours. The accepted reviewer and delivery worker must have a
-different `worker_id` from the accepted builder; review and delivery use the
-accepted build commit.
+the contract and five review contours using `inspect_cmd` from the build gate.
+The accepted reviewer and delivery worker must have a different `worker_id` from
+the accepted builder; review and delivery use the accepted build snapshot SHA.
 
 `agent_type` in a task specification identifies the requested agent
 specialization. Claim and inspect return `workflow_guidance` for the active
@@ -71,7 +74,10 @@ Task contracts specify one of three proof policies:
 
 `task_submit` accepts a JSON `evidence` object directly. It binds `task_id`,
 stage, claim and contract revisions, worker, worktree, commit, and non-null
-`proof` to the active claim. Contract, build, and review use typed proof.
+`proof` to the active claim. For `contract/v1` and `build/v1`, `commit` can be omitted
+and Forge populates it with the captured scoped snapshot SHA; for `review/v1` and
+`deliver/v1`, `commit` must match the accepted build snapshot SHA. Contract, build,
+and review use typed proof.
 Contract proof names the public seam test and its nonzero failure exit code (or
 exit code 0 when `proof_policy: direct-proof` or `proof_policy: deferred-final-test` is used);
 build proof records the command, exit code, and test counts; review proof records a
@@ -90,8 +96,8 @@ build proof, and `architectural_notes`; they do not replace gate evidence.
 
 At successful task delivery, Forge verifies the accepted build and review
 proof and the current milestone specification. It writes the task receipt into
-the milestone document, carrying the commit, verified invariants, review
-summary, and `architectural_notes`. It then clears that task's blackboard.
+the milestone document, carrying the candidate snapshot commit, verified invariants,
+review summary, and `architectural_notes`. It then clears that task's blackboard.
 The milestone document retains the durable outcome; the blackboard remains a
 temporary coordination surface.
 

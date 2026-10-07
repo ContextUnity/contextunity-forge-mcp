@@ -1,5 +1,8 @@
 use crate::{
-    core::tasks::{confined_path, gates::Evidence, Milestone},
+    core::tasks::{
+        confined_path, gates::Evidence, shorten_task_response_commits, snapshot_inspect_cmd,
+        Milestone,
+    },
     db::tasks_store::{Task, TasksStore},
 };
 use anyhow::{bail, Context, Result};
@@ -1269,7 +1272,7 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     let mut response = serde_json::to_value(task_result)?;
     if let Some(snapshot) = &evidence.commit {
         if let Some(obj) = response.as_object_mut() {
-            let inspect_cmd = format!("git show {snapshot}");
+            let inspect_cmd = snapshot_inspect_cmd(snapshot);
             obj.insert(
                 "snapshot".into(),
                 serde_json::json!({
@@ -1281,6 +1284,7 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
             );
         }
     }
+    shorten_task_response_commits(&mut response);
     Ok(response)
 }
 /// Performs manage.

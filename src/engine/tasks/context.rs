@@ -59,6 +59,7 @@ fn scan_adrs(workspace_root: &Path, root: &Path, tokens: &BTreeSet<String>) -> V
             seen_paths.insert(rel_path.clone());
 
             let text = fs::read_to_string(&path).unwrap_or_default();
+            let text = text.replace("\r\n", "\n");
             let mut title = String::new();
             let mut status = "accepted".to_string();
 
@@ -276,19 +277,24 @@ pub(super) fn context_bundle(
     let blackboard_messages: Vec<Value> = {
         let registry = super::workspaces::Registry::load(root)?;
         let store = workspace.open(&registry.database)?;
-        store
-            .blackboard_read(task_id, None, Some(50))?
-            .into_iter()
-            .map(|msg| {
-                json!({
-                    "id": msg.id,
-                    "author": msg.author,
-                    "topic": msg.topic,
-                    "payload": msg.payload,
-                    "created_at": msg.created_at
-                })
-            })
-            .collect()
+        let milestone_prefix = task_id.split_once(':').map(|(p, _)| format!("{p}:"));
+        let mut stmt = store.connection.prepare(
+            "SELECT id, author, topic, payload, created_at FROM task_blackboard \
+             WHERE task_id = ?1 OR (?2 IS NOT NULL AND substr(task_id, 1, length(?2)) = ?2) \
+             ORDER BY created_at, id LIMIT 50",
+        )?;
+        let msgs = stmt
+            .query_map(rusqlite::params![task_id, milestone_prefix], |row| {
+                Ok(json!({
+                    "id": row.get::<_, u64>(0)?,
+                    "author": row.get::<_, String>(1)?,
+                    "topic": row.get::<_, String>(2)?,
+                    "payload": row.get::<_, String>(3)?,
+                    "created_at": row.get::<_, i64>(4)?,
+                }))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        msgs
     };
 
     // 5. Gate-aware workflow guidance and subtask DoD
@@ -302,8 +308,6 @@ pub(super) fn context_bundle(
         "contract/v1" => (
             &["code_map_overview", "get_doc", "search_docs", "code_map_inspect"],
             &[
-                "Inspect task target, scope, governing ADRs, and invariants.",
-                "Review existing code symbols in scope to identify extension seams.",
                 "Author a sensitive failing seam test in the designated test suite (or verify existing seam directly with exit code 0 if proof_policy: direct-proof or deferred-final-test).",
                 "Submit contract proof with seam test and red_exit_code.",
             ],
@@ -312,9 +316,7 @@ pub(super) fn context_bundle(
             &["ast_grep_search", "code_map_inspect", "code_map_explain", "task_manage"],
             &[
                 "Implement approved contract inside the declared allowed_write_scope.",
-                "Decompose non-trivial implementation into iterative subtasks satisfying Universal Subtask DoD.",
-                "Turn the red seam test green; verify targeted domain test suite.",
-                "Run linter (cargo clippy --all-targets --all-features -- -D warnings).",
+                "Turn the red seam test green; verify targeted domain test suite and clippy.",
                 "Submit passing test proof with test command, exit code 0, and passed counts.",
             ],
         ),
@@ -322,17 +324,17 @@ pub(super) fn context_bundle(
             &["code_map_impact", "code_map_prove_removal", "code_map_tests"],
             &[
                 "Verify reviewer is distinct from builder (different worker_id).",
-                "Review candidate diff across the five contours: paths, claims, concurrency, project_isolation, administration.",
-                "Confirm no invented requirements or scope leaks.",
-                "Submit review proof with decision: pass.",
+                "Inspect candidate diff using inspect_cmd.",
+                "Verify the 5 review contours: paths (scope), claims (contract requirements), concurrency, project_isolation, administration.",
+                "Accept legitimate adjacent defect fixes within scope and submit review proof.",
             ],
         ),
         "deliver/v1" => (
             &["task_submit", "milestone show"],
             &[
                 "Verify delivery worker is distinct from builder.",
-                "Submit delivery proof; Forge verifies proofs, writes typed receipt into milestone Markdown, and clears blackboard.",
-                "Amend candidate commit with the generated milestone receipt.",
+                "Submit delivery proof first; Forge verifies proofs, writes typed receipt into milestone Markdown, and clears blackboard.",
+                "After successful delivery, create one atomic commit for completed task containing scoped files, tests, and updated milestone (without git add -A in shared worktrees).",
             ],
         ),
         _ => (
@@ -349,12 +351,22 @@ pub(super) fn context_bundle(
         "Anti-looping invariant: If an approach fails after 2 iterations, halt, post blockers to task_blackboard, retain fail-closed behavior, and escalate.",
     ];
 
+    let review_policy = [
+        "When adjacent defects or missing helpers are uncovered, resolve them via extend-scope or task reopen.",
+        "Reviewers must accept legitimate defect fixes and verify changes against the declared scope (preventing uncontracted scope creep or overengineering).",
+    ];
+
     let mut guidance = details["workflow_guidance"].clone();
     if let Some(guidance_map) = guidance.as_object_mut() {
         guidance_map.insert("stage".into(), json!(stage));
         guidance_map.insert("recommended_tools".into(), json!(recommended_tools));
         guidance_map.insert("actionable_steps".into(), json!(actionable_steps));
         guidance_map.insert("subtask_dod".into(), json!(subtask_dod));
+        if matches!(stage, "review/v1" | "deliver/v1") {
+            guidance_map.insert("review_policy".into(), json!(review_policy));
+        } else {
+            guidance_map.remove("review_policy");
+        }
     }
 
     let bundle = json!({
@@ -382,7 +394,6 @@ pub(super) fn context_bundle(
     let obj = details
         .as_object_mut()
         .context("details must be an object")?;
-    obj.insert("workflow_guidance".into(), guidance);
     obj.insert("context_bundle".into(), bundle);
     obj.insert("adrs".into(), json!(adrs));
     obj.insert("scope_symbols".into(), json!(scope_symbols));

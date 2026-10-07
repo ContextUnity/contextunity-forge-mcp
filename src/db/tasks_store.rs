@@ -1,4 +1,7 @@
-use crate::core::tasks::{Milestone, Receipt, SubtaskSpec, TaskSpec, GATES};
+use crate::core::tasks::{
+    shorten_task_response_commits, snapshot_inspect_cmd, Milestone, Receipt, SubtaskSpec, TaskSpec,
+    GATES,
+};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -544,7 +547,7 @@ impl TasksStore {
                             v.get("commit").and_then(|c| c.as_str().map(String::from))
                         })
                 });
-                let inspect_cmd = commit.as_ref().map(|c| format!("git show {c}"));
+                let inspect_cmd = commit.as_ref().map(|c| snapshot_inspect_cmd(c));
                 Ok(serde_json::json!({
                     "stage": gate_name,
                     "claim_revision": revision,
@@ -576,7 +579,7 @@ impl TasksStore {
             g.get("commit").and_then(|c| c.as_str()).map(|commit| {
                 serde_json::json!({
                     "commit": commit,
-                    "inspect_cmd": format!("git show {commit}"),
+                    "inspect_cmd": snapshot_inspect_cmd(commit),
                 })
             })
         });
@@ -586,6 +589,7 @@ impl TasksStore {
         object.insert("findings".into(), serde_json::json!(findings));
         object.insert("gate_states".into(),serde_json::json!(GATES.iter().enumerate().map(|(i,name)|serde_json::json!({"stage":name,"state":if i<task.gate || task.status=="completed" {"passed"} else if i==task.gate && task.status=="in_progress" {"in_progress"} else {"pending"}})).collect::<Vec<_>>()));
         object.insert("subtasks".into(), serde_json::json!(task.spec.subtasks));
+        shorten_task_response_commits(&mut value);
         Ok(value)
     }
     /// Add a subtask to an existing task.

@@ -1,6 +1,6 @@
 use super::TaskSettings;
 use crate::{
-    core::tasks::{confined_path, valid_identity},
+    core::tasks::{confined_path, shorten_task_response_commits, valid_identity},
     db::tasks_store::TasksStore,
 };
 use anyhow::{bail, Context, Result};
@@ -92,6 +92,7 @@ impl Workspace {
         object.insert("workspace_root".into(), json!(self.root));
         object.insert("agents_guidance".into(), json!(self.guidance));
         object.insert("workspace".into(), json!(self.name));
+        shorten_task_response_commits(&mut value);
         Ok(value)
     }
     pub fn guidance_envelope(&self, value: Value) -> Result<Value> {
