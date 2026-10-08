@@ -430,7 +430,7 @@ def benchmark(
 ) -> None:
     rows: list[dict[str, Any]] = []
     examples: dict[str, Any] = {}
-    temp_root = pathlib.Path(tempfile.mkdtemp(prefix="forge-codebase-mcp-bench-", dir="/tmp/kilo"))
+    temp_root = pathlib.Path(tempfile.mkdtemp(prefix="forge-codebase-mcp-bench-"))
     try:
         forge_db, codebase_cache, codebase_env, codebase_source, index_builds = prepare_indexes(temp_root, profile)
     except Exception:
@@ -545,7 +545,7 @@ def benchmark(
             "warm_definition": "same MCP process and SQLite connection after one discarded warm-up call",
             "rss_definition": "summed process-tree VmRSS sampled every 5ms during the request; VmHWM is summed process-lifetime high water",
             "cpu_definition": "summed process-tree scheduled runtime delta from /proc/<pid>/schedstat",
-            "index_mutations": "only disposable Forge DB and CBM_CACHE_DIR under /tmp/kilo were built; existing .forge and Codebase indexes/config were not modified",
+            "index_mutations": "only disposable Forge DB and CBM_CACHE_DIR under disposable temp root were built; existing .forge and Codebase indexes/config were not modified",
             "index_builds": index_builds,
             "forge_index_bytes": forge_db.stat().st_size,
             "codebase_index_cache_bytes": directory_bytes(codebase_cache),

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import pathlib
+import tempfile
 
 import mcp_tool_comparison_benchmark as comparison
 import mcp_tool_quality_benchmark as quality
@@ -32,7 +33,7 @@ def main() -> int:
         parser.error(f"unknown scenario {args.scenario!r} in profile")
 
     run_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output_dir = args.output_dir or pathlib.Path("/tmp/kilo/benchmark-runs") / profile.name / run_id
+    output_dir = args.output_dir or pathlib.Path(tempfile.gettempdir()) / "benchmark-runs" / profile.name / run_id
     output_dir = output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 

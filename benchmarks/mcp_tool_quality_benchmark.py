@@ -130,7 +130,7 @@ def run(
     profile: BenchmarkProfile,
     scenario_id: str | None = None,
 ) -> None:
-    temp_root = pathlib.Path(tempfile.mkdtemp(prefix="forge-codebase-quality-", dir="/tmp/kilo"))
+    temp_root = pathlib.Path(tempfile.mkdtemp(prefix="forge-codebase-quality-"))
     try:
         forge_db = temp_root / "forge-code-map.sqlite"
         codebase_cache = temp_root / "codebase-cache"

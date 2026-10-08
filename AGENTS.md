@@ -70,8 +70,8 @@ All performance measurements, tool comparisons, and quality benchmarks live in `
 - **Runner**: `python3 benchmarks/run_benchmarks.py --profile benchmarks/profiles/commerce-release-update.json`
 - **MCP Quality Benchmark**: `python3 benchmarks/mcp_tool_quality_benchmark.py` (assesses answer completeness and agent usability against Codebase Memory)
 - **MCP Latency & Cold Build Benchmark**: `python3 benchmarks/mcp_tool_comparison_benchmark.py`
-- **Reference Workspace**: `/home/oleksii/ContextUnity/worktrees/commerce-release-update`
-- **Policy**: Never commit manual profiling harnesses or `#[ignore]` benchmark tests into `tests/`. Use `benchmarks/` scripts.
+- **Reference Workspace**: `../../worktrees/commerce-release-update` (relative to Forge repository root)
+- **Policy**: Never run benchmarks autonomously without explicit user approval. Never commit manual profiling harnesses or `#[ignore]` benchmark tests into `tests/`. See [`benchmarks/AGENTS.md`](benchmarks/AGENTS.md).
 
 ### Benchmarking & Performance Gate Lifecycle
 1. **Staged Gate Order**:

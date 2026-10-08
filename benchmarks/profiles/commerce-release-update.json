@@ -2,6 +2,7 @@
   "schema_version": 1,
   "name": "commerce-release-update",
   "project": "commerce-release-update",
+  "workspace_root": "../../worktrees/commerce-release-update",
   "scope_note": "The adapter enables linked traverse and gridviewspec workspaces; Codebase indexes only the selected Commerce monorepo root.",
   "scenarios": [
     {

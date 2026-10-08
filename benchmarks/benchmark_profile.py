@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 
 
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
 DEFAULT_EXCLUDED_DIRECTORIES = {
     ".agents",
     ".benchmarks",
@@ -38,12 +40,9 @@ DEFAULT_EXCLUDED_DIRECTORIES = {
 
 BENCHMARK_FILES = {
     "benchmark_profile.py",
+    "mcp_adapter_single_load.py",
     "mcp_tool_comparison_benchmark.py",
-    "mcp_tool_comparison_report.md",
-    "mcp_tool_comparison_results.json",
     "mcp_tool_quality_benchmark.py",
-    "mcp_tool_quality_report.md",
-    "mcp_tool_quality_results.json",
     "run_benchmarks.py",
 }
 
@@ -117,7 +116,7 @@ def load_profile(
         raise ValueError("workspace_root must be a path string")
     workspace_root = pathlib.Path(configured_workspace).expanduser()
     if not workspace_root.is_absolute():
-        base = pathlib.Path.cwd() if workspace_override is not None else path.parent
+        base = pathlib.Path.cwd() if workspace_override is not None else ROOT
         workspace_root = base / workspace_root
     workspace_root = workspace_root.resolve()
     if not workspace_root.is_dir():
