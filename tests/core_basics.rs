@@ -1,3 +1,7 @@
+#[path = "common/mod.rs"]
+#[allow(dead_code)]
+mod common;
+
 use contextunity_forge_mcp::{
     core::{
         models::{Edge, Facts},
@@ -10,28 +14,17 @@ use contextunity_forge_mcp::{
 use rusqlite::{limits::Limit, Connection};
 use std::{
     collections::BTreeMap,
-    fs,
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
-struct ScopedWorkspace(PathBuf);
-#[path = "core_basics/tasks.rs"]
-mod tasks;
+struct ScopedWorkspace(PathBuf, common::Workspace);
 impl ScopedWorkspace {
-    fn new(prefix: &str) -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("{prefix}_{}_{nonce}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        Self(root)
+    fn new(_prefix: &str) -> Self {
+        let workspace = common::Workspace::new();
+        Self(workspace.root().to_path_buf(), workspace)
     }
     fn write(&self, path: &str, content: &str) {
-        let path = self.0.join(path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, content).unwrap();
+        self.1.write(path, content);
     }
 }
 
@@ -71,12 +64,6 @@ fn public_linker_preserves_arbitrary_edge_tags_and_orders_edges_stably() {
         serde_json::to_vec(&unusual).unwrap()
     );
 }
-impl Drop for ScopedWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
 fn test_markdown_doc_extractor() {
     let source = r#"# Architecture Overview

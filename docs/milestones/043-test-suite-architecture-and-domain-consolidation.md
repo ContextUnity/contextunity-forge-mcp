@@ -103,22 +103,78 @@ receipt:
 
 ```yaml
 task_ref: acdd-suite-extraction-and-consolidation
-target: "Extract and consolidate the complete ACDD and task lifecycle layer into tests/acdd.rs and tests/acdd/"
+target: Extract and consolidate the complete ACDD and task lifecycle layer into tests/acdd.rs and tests/acdd/
 proof_policy: seam-test-first
+contract_revision: 2
 scope:
-  - tests/acdd/
-  - tests/acdd.rs
-status: planned
+- tests/acdd/
+- tests/acdd.rs
+- tests/core_basics.rs
+- tests/core_basics/
+- tests/mcp_context/tasks.rs
+status: completed
 subtasks:
-  - subtask_ref: extract-task-lifecycle
-    title: "Relocate and modularize task lifecycle tests from core_basics/tasks.rs into tests/acdd/tasks.rs"
-    status: pending
-  - subtask_ref: extract-subtask-and-blackboard-tests
-    title: "Modularize subtask deepening and blackboard tests into tests/acdd/subtasks.rs and tests/acdd/blackboard.rs"
-    status: pending
-  - subtask_ref: extract-milestone-and-mcp-task-tests
-    title: "Relocate milestone CLI tests and MCP task tool tests (mcp_context/tasks.rs) into tests/acdd/milestones.rs and tests/acdd/mcp.rs"
-    status: pending
+- subtask_ref: extract-task-lifecycle
+  title: Relocate and modularize task lifecycle tests from core_basics/tasks.rs into tests/acdd/tasks.rs
+  status: completed
+  evidence: Relocated task lifecycle suite from tests/core_basics/tasks.rs to tests/acdd/tasks.rs; `cargo test --test acdd` passed (61 tests), and baseline identity comparison found no missing or extra task tests.
+- subtask_ref: extract-subtask-and-blackboard-tests
+  title: Modularize subtask deepening and blackboard tests into tests/acdd/subtasks.rs and tests/acdd/blackboard.rs
+  status: completed
+  evidence: Consolidated subtask and blackboard lifecycle tests into tests/acdd/subtasks.rs and tests/acdd/blackboard.rs; `cargo test --test acdd` passed (61 tests).
+- subtask_ref: extract-milestone-and-mcp-task-tests
+  title: Relocate milestone CLI tests and MCP task tool tests (mcp_context/tasks.rs) into tests/acdd/milestones.rs and tests/acdd/mcp.rs
+  status: completed
+  evidence: Moved milestone and MCP task tests into tests/acdd/milestones.rs and tests/acdd/mcp.rs; `cargo test --test acdd` passed (61 tests), with all 61 legacy task test names preserved.
+receipt:
+  commit: dea036b97a6f314562eb9906d985a50621e8a650
+  contract_revision: 2
+  passed_at: 2026-10-08T06:59:04.140056090+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test acdd
+      exit_code: 0
+      tests_passed: 61
+      tests_failed: 0
+      log: 'cargo test: 61 passed [1.81s]; git diff --check d7ddf7b -- tests/acdd.rs tests/acdd tests/core_basics.rs passed.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Inspected snapshot dea036b and its diff from d7ddf7b. Changed paths are tests/acdd.rs, tests/acdd/*.rs, tests/core_basics.rs, and removal of tests/core_basics/tasks.rs; all are in the task allowlist.
+        claims:
+          applicable: true
+          evidence: 'Collect-only comparison against /tmp/043-test-ids-baseline.txt yields 61 identities on both sides, with no missing, extra, or duplicate names. The 812 legacy assertion macro lines match the candidate assertion-line multiset exactly. Accepted build proof for dea036b records cargo test --test acdd: 61 passed, 0 failed.'
+        concurrency:
+          applicable: true
+          evidence: Retained blackboard concurrency coverage uses two independent SQLite connections and verifies all 40 writes and delete cascade. Concurrent subtask coverage joins two writers and verifies all 20 subtasks in the listing and stored descriptor.
+        project_isolation:
+          applicable: true
+          evidence: ACDD fixtures delegate temp-root creation and cleanup to tests/common::Workspace; each root is unique by process, timestamp, and atomic sequence and is removed on Drop. Tests retain independent builder/reviewer roots and nested repository/project write-perimeter cases.
+        administration:
+          applicable: true
+          evidence: Reviewer codex-043-acdd-review-v2 differs from build worker codex-043-acdd-builder-v3. The required `git diff --check d7ddf7b dea036b -- tests/acdd.rs tests/acdd tests/core_basics.rs` is clean. Snapshot dea036b differs from rejected snapshot 73187f4 only by removing the trailing blank line in tests/acdd/subtasks.rs.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CENTRAL-VS-LANGUAGE-ISOLATION: Central subsystem suites (acdd, core, linker, incremental, mcp, commitment_integrity) reside at tests/; all language extraction and semantic tests are strictly isolated inside tests/languages/.'
+    - 'INV-ACDD-SUITE-COHESION: All ACDD state machines, task lifecycles, subtasks, blackboard messages, and milestone operations reside in tests/acdd/ rather than core storage or MCP symbol modules.'
+    - 'INV-SHARED-HARNESS: Common workspace setup, file writing, database building, and MCP client lifecycle are managed through canonical shared helpers in tests/common/ rather than duplicated struct Workspace per test file.'
+    - 'INV-DOMAIN-DECOMPOSITION: Test modules are organized by cohesive architectural and contractual purpose. Monolithic files are split along natural architectural sub-boundaries.'
+    - 'INV-FORWARD-COMPAT-041-042: Language suites cleanly decouple pure grammar from framework manifests (frameworks.rs / manifests.rs) for milestone 041, and isolate universal AST patterns and path-scoped selectors (ast_patterns.rs, selectors.rs, navigation.rs) for milestone 042.'
+    - 'INV-CONTRACT-PARITY: Refactoring preserves 100% of observable positive contract assertions, fail-closed boundaries, and Merkle tree determinism (commitment_integrity).'
+    - 'INV-TABLE-DRIVEN-PERMUTATIONS: Multiple assertions over syntax permutations, keyword tables, or builtins use table-driven loops instead of copy-pasted test functions.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: central-engine-suites-consolidation

@@ -1,4 +1,29 @@
-use super::*;
+use crate::common::{mcp_client::StdioClient, Workspace as SharedWorkspace};
+use serde_json::{json, Value};
+use std::{fs, path::PathBuf, process::Command};
+
+struct Workspace(PathBuf, SharedWorkspace);
+
+impl std::ops::Deref for Workspace {
+    type Target = SharedWorkspace;
+
+    fn deref(&self) -> &Self::Target {
+        &self.1
+    }
+}
+
+impl Workspace {
+    fn new() -> Self {
+        let workspace = SharedWorkspace::new();
+        Self(workspace.root().to_path_buf(), workspace)
+    }
+
+    fn write(&self, path: &str, content: &str) {
+        self.1.write(path, content);
+    }
+}
+
+type Client = StdioClient;
 
 #[test]
 fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
@@ -104,7 +129,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert_eq!(synced["tasks"][0]["status"], "in_progress");
     let commit = "0123456789abcdef0123456789abcdef01234567";
     let build_proof = json!({"test_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
-    let contract_proof = json!({"contract_proof":{"seam_test_ref":"tests/mcp_context/tasks.rs","red_exit_code":101}});
+    let contract_proof = json!({"contract_proof":{"seam_test_ref":"tests/acdd/mcp.rs","red_exit_code":101}});
     let contours: serde_json::Map<String, Value> =
         contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
             .iter()
@@ -242,7 +267,7 @@ scope: [src/]
     }
     let commit = "0123456789abcdef0123456789abcdef01234567";
     let build_proof = json!({"test_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
-    let contract_proof = json!({"contract_proof":{"seam_test_ref":"tests/mcp_context/tasks.rs","red_exit_code":101}});
+    let contract_proof = json!({"contract_proof":{"seam_test_ref":"tests/acdd/mcp.rs","red_exit_code":101}});
     let contours: serde_json::Map<String, Value> = REVIEW_CONTOURS
         .iter()
         .map(|name| {
