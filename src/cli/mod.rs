@@ -144,6 +144,9 @@ pub enum QueryCommand {
     Inspect {
         /// The selector value.
         selector: String,
+        /// Restrict selector resolution to a workspace-relative file or directory.
+        #[arg(long)]
+        path: Option<String>,
         #[arg(long,default_value_t=true,action=clap::ArgAction::Set,num_args=0..=1,default_missing_value="true")]
         /// Whether show doc applies.
         show_doc: bool,
@@ -166,6 +169,9 @@ pub enum QueryCommand {
     Tests {
         /// The selector value.
         selector: String,
+        /// Restrict selector resolution to a workspace-relative file or directory.
+        #[arg(long)]
+        path: Option<String>,
         #[arg(long, default_value = "inbound")]
         /// The direction value.
         direction: String,
@@ -177,19 +183,28 @@ pub enum QueryCommand {
     Impact {
         /// The selector value.
         selector: String,
-        #[arg(long, default_value_t = 2)]
-        /// The depth value.
+        /// Restrict selector resolution to a workspace-relative file or directory.
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long, default_value_t = 1)]
+        /// Maximum impact depth; defaults to one edge.
         depth: u32,
     },
     /// Represents the explain case.
     Explain {
         /// The selector value.
         selector: String,
+        /// Restrict selector resolution to a workspace-relative file or directory.
+        #[arg(long)]
+        path: Option<String>,
     },
     /// Represents the remove case.
     Remove {
         /// The selector value.
         selector: String,
+        /// Restrict selector resolution to a workspace-relative file or directory.
+        #[arg(long)]
+        path: Option<String>,
     },
     /// Represents the analyze case.
     Analyze {
@@ -203,8 +218,11 @@ pub enum QueryCommand {
         operation: String,
         /// Optional selector value.
         selector: Option<String>,
+        /// Restrict selector resolution to a workspace-relative file or directory.
+        #[arg(long)]
+        path: Option<String>,
         #[arg(long, default_value_t = 2)]
-        /// The depth value.
+        /// Maximum graph depth for generic query operations; impact defaults to two.
         depth: u32,
         #[arg(long, default_value_t = 100)]
         /// The limit value.
@@ -390,12 +408,14 @@ impl Cli {
                     )?,
                     QueryCommand::Inspect {
                         selector,
+                        path,
                         show_doc,
                         show_source,
-                    } => symbols::inspect_with_options(
+                    } => symbols::inspect_with_path_options(
                         &conn,
                         &root,
                         &selector,
+                        path.as_deref(),
                         &symbols::InspectOptions {
                             show_doc,
                             source: &cli_source(show_source)?,
@@ -422,12 +442,24 @@ impl Cli {
                     )?,
                     QueryCommand::Tests {
                         selector,
+                        path,
                         direction,
                         limit,
-                    } => symbols::tests_paged(&conn, &selector, &direction, &cli_page(limit)?)?,
-                    QueryCommand::Impact { selector, depth } => traversal::traverse_with_options(
+                    } => symbols::tests_paged_with_path(
                         &conn,
                         &selector,
+                        path.as_deref(),
+                        &direction,
+                        &cli_page(limit)?,
+                    )?,
+                    QueryCommand::Impact {
+                        selector,
+                        path,
+                        depth,
+                    } => traversal::traverse_with_path_options(
+                        &conn,
+                        &selector,
+                        path.as_deref(),
                         &traversal::TraversalOptions {
                             depth,
                             inbound: true,
@@ -436,10 +468,11 @@ impl Cli {
                             page: &cli_page(100)?,
                         },
                     )?,
-                    QueryCommand::Explain { selector } => symbols::explain_with_options(
+                    QueryCommand::Explain { selector, path } => symbols::explain_with_path_options(
                         &conn,
                         &root,
                         &selector,
+                        path.as_deref(),
                         &symbols::ExplainOptions {
                             direction: None,
                             show_doc: true,
@@ -450,21 +483,26 @@ impl Cli {
                             page: &cli_page(100)?,
                         },
                     )?,
-                    QueryCommand::Remove { selector } => {
-                        traversal::removal_paged(&conn, &selector, &cli_page(100)?)?
-                    }
+                    QueryCommand::Remove { selector, path } => traversal::removal_paged_with_path(
+                        &conn,
+                        &selector,
+                        path.as_deref(),
+                        &cli_page(100)?,
+                    )?,
                     QueryCommand::Analyze { target } => {
                         reader::analyze_paged(&conn, &target, None, &cli_page(100)?)?
                     }
                     QueryCommand::Run {
                         operation,
                         selector,
+                        path,
                         depth,
                         limit,
-                    } => traversal::query_with_options(
+                    } => traversal::query_with_path_options(
                         &conn,
                         &operation,
                         selector.as_deref(),
+                        path.as_deref(),
                         &traversal::GraphQueryOptions {
                             depth,
                             direction: None,

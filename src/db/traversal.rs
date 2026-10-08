@@ -217,6 +217,15 @@ pub fn traverse_with_options(
     selector: &str,
     request: &TraversalOptions<'_>,
 ) -> Result<Value> {
+    traverse_with_path_options(conn, selector, None, request)
+}
+
+pub(crate) fn traverse_with_path_options(
+    conn: &Connection,
+    selector: &str,
+    path: Option<&str>,
+    request: &TraversalOptions<'_>,
+) -> Result<Value> {
     let depth = request.depth;
     let inbound = request.inbound;
     let mode = request.mode;
@@ -226,7 +235,7 @@ pub fn traverse_with_options(
         bail!("depth must be <=16");
     }
     let generation = paging::generation(conn, options)?;
-    let node = reader::select_detail(conn, selector, options.detail)?;
+    let node = reader::select_detail_with_path(conn, selector, path, options.detail)?;
     let id = node["id"].as_str().context("selected node has no id")?;
     let id_hash = stable_hash64(id);
     let immediate = admit_traversal(conn, id, depth, inbound)?;
@@ -383,12 +392,14 @@ pub fn traverse_with_options(
 fn slice_paged(
     conn: &Connection,
     selector: &str,
+    path: Option<&str>,
     depth: u32,
     options: &QueryOptions,
 ) -> Result<Value> {
-    match traverse_with_options(
+    match traverse_with_path_options(
         conn,
         selector,
+        path,
         &TraversalOptions {
             depth,
             inbound: false,
@@ -440,6 +451,15 @@ fn slice_paged(
 
 /// Performs removal paged.
 pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) -> Result<Value> {
+    removal_paged_with_path(conn, selector, None, options)
+}
+
+pub(crate) fn removal_paged_with_path(
+    conn: &Connection,
+    selector: &str,
+    path: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
     let trimmed = selector.trim();
     let unpeeled = trimmed
         .strip_prefix("file://")
@@ -453,6 +473,12 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
         .into());
     }
     let generation = paging::generation(conn, options)?;
+    let selected_node = reader::select_detail_with_path(
+        conn,
+        selector,
+        path,
+        crate::core::response::Detail::Compact,
+    )?;
     let file_count = paging::count(
         conn,
         "SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1",
@@ -464,10 +490,9 @@ pub fn removal_paged(conn: &Connection, selector: &str, options: &QueryOptions) 
             normalized_path.to_owned(),
         )
     } else {
-        let node = reader::select_detail(conn, selector, crate::core::response::Detail::Compact)?;
         (
             "SELECT node_hash FROM nodes WHERE id=?1",
-            node["id"].as_str().unwrap_or("").to_owned(),
+            selected_node["id"].as_str().unwrap_or("").to_owned(),
         )
     };
     if file_count > 10000 {
@@ -524,6 +549,16 @@ pub fn query_with_options(
     selector: Option<&str>,
     request: &GraphQueryOptions<'_>,
 ) -> Result<Value> {
+    query_with_path_options(conn, operation, selector, None, request)
+}
+
+pub(crate) fn query_with_path_options(
+    conn: &Connection,
+    operation: &str,
+    selector: Option<&str>,
+    path: Option<&str>,
+    request: &GraphQueryOptions<'_>,
+) -> Result<Value> {
     let depth = request.depth;
     let direction = request.direction;
     let coverage = request.coverage;
@@ -537,20 +572,27 @@ pub fn query_with_options(
                 page: options,
             },
         ),
-        "inspect" => {
-            symbols::inspect_paged_response(conn, selector.unwrap_or(""), true, options, coverage)
-        }
+        "inspect" => symbols::inspect_paged_response(
+            conn,
+            selector.unwrap_or(""),
+            path,
+            true,
+            options,
+            coverage,
+        ),
         "explain" => symbols::explain_paged_response(
             conn,
             selector.unwrap_or(""),
+            path,
             None,
             true,
             options,
             coverage,
         ),
-        "impact" => traverse_with_options(
+        "impact" => traverse_with_path_options(
             conn,
             selector.unwrap_or(""),
+            path,
             &TraversalOptions {
                 depth,
                 inbound: impact_inbound(direction)?,
@@ -559,7 +601,7 @@ pub fn query_with_options(
                 page: options,
             },
         ),
-        "slice" => slice_paged(conn, selector.unwrap_or(""), depth, options),
+        "slice" => slice_paged(conn, selector.unwrap_or(""), path, depth, options),
         "unwired" => Ok(
             json!({"nodes":paging::query(conn, &format!("SELECT {} FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind IN('function','method') AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind='calls') ORDER BY p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")), &[], options)?, "meaning":"no indexed static caller; not a dead-code proof"}),
         ),
@@ -576,7 +618,7 @@ pub fn query_with_options(
             selector.unwrap_or(""),
             &symbols::SearchOptions {
                 kind: None,
-                path: None,
+                path,
                 include_docs: false,
                 exact: false,
                 page: options,

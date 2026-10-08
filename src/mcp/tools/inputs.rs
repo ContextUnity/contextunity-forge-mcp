@@ -54,8 +54,10 @@ pub struct OverviewInput {
 #[derive(Deserialize, JsonSchema)]
 /// Represents selector data.
 pub struct Selector {
-    /// The selector value.
+    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
     pub selector: String,
+    /// Restrict selector resolution to a workspace-relative file or directory.
+    pub path: Option<String>,
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
@@ -63,8 +65,10 @@ pub struct Selector {
 #[derive(Deserialize, JsonSchema)]
 /// Represents inspect data.
 pub struct Inspect {
-    /// The selector value.
+    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
     pub selector: String,
+    /// Restrict selector resolution to a workspace-relative file or directory.
+    pub path: Option<String>,
     #[serde(default = "yes")]
     /// Whether show doc applies.
     pub show_doc: bool,
@@ -105,8 +109,10 @@ impl Inspect {
 #[derive(Deserialize, JsonSchema)]
 /// Represents snippet data.
 pub struct Snippet {
-    /// The selector value.
+    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
     pub selector: String,
+    /// Restrict selector resolution to a workspace-relative file or directory.
+    pub path: Option<String>,
     /// Optional show source value.
     pub show_source: Option<bool>,
     /// Optional leading lines value.
@@ -158,8 +164,10 @@ fn source_options(
 #[derive(Deserialize, JsonSchema)]
 /// Represents explain data.
 pub struct Explain {
-    /// The selector value.
+    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
     pub selector: String,
+    /// Restrict selector resolution to a workspace-relative file or directory.
+    pub path: Option<String>,
     /// Optional direction value.
     pub direction: Option<String>,
     #[serde(default = "yes")]
@@ -229,8 +237,10 @@ pub struct SearchSymbols {
 #[derive(Deserialize, JsonSchema)]
 /// Represents tests data.
 pub struct Tests {
-    /// The selector value.
+    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
     pub selector: String,
+    /// Restrict selector resolution to a workspace-relative file or directory.
+    pub path: Option<String>,
     #[serde(default = "inbound")]
     /// The direction value.
     pub direction: String,
@@ -241,8 +251,10 @@ pub struct Tests {
 #[derive(Deserialize, JsonSchema)]
 /// Represents impact data.
 pub struct Impact {
-    /// The selector value.
+    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
     pub selector: String,
+    /// Restrict selector resolution to a workspace-relative file or directory.
+    pub path: Option<String>,
     /// Impact direction: 'inbound' (default) or 'outbound'.
     #[serde(default = "inbound")]
     pub direction: String,
@@ -262,15 +274,17 @@ pub struct Impact {
 pub struct Query {
     /// The operation value.
     pub operation: String,
-    /// Optional selector value.
+    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
     pub selector: Option<String>,
+    /// Restrict selector resolution to a workspace-relative file or directory.
+    pub path: Option<String>,
     /// Impact direction: 'inbound' (default) or 'outbound'.
     pub direction: Option<String>,
     /// Include paged resolution coverage for inspect and explain operations.
     #[serde(default)]
     pub include_coverage: bool,
     #[serde(default = "depth")]
-    /// The depth value.
+    /// Maximum graph depth for generic query operations; impact defaults to two.
     pub depth: u32,
     #[serde(flatten)]
     /// The page value.

@@ -28,13 +28,23 @@ pub fn tests_paged(
     direction: &str,
     options: &QueryOptions,
 ) -> Result<Value> {
+    tests_paged_with_path(conn, selector, None, direction, options)
+}
+
+pub(crate) fn tests_paged_with_path(
+    conn: &Connection,
+    selector: &str,
+    path: Option<&str>,
+    direction: &str,
+    options: &QueryOptions,
+) -> Result<Value> {
     let (inbound, is_test) = match direction {
         "inbound" => (true, 1),
         "outbound" => (false, 0),
         _ => bail!("direction must be inbound or outbound"),
     };
     paging::generation(conn, options)?;
-    let node = reader::select_detail(conn, selector, options.detail)?;
+    let node = reader::select_detail_with_path(conn, selector, path, options.detail)?;
     let id = node["id"].as_str().context("invalid node id")?;
     let id_hash = stable_hash64(id);
     admit_test_mapping(conn, id, inbound)?;

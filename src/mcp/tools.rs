@@ -18,18 +18,126 @@ pub use inputs::{
     Query, SearchDocs, SearchSymbols, Selector, Snippet, Tests,
 };
 
-fn navigation_error(error: anyhow::Error) -> anyhow::Error {
-    if let Some(reader::SelectorError::Ambiguous { candidates, .. }) =
-        error.downcast_ref::<reader::SelectorError>()
-    {
-        let calls = candidates
-            .iter()
-            .map(|id| format!("code_map_inspect({})", serde_json::json!({"selector":id})))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return anyhow::anyhow!("{error}\n{calls}");
-    }
-    error
+fn rejected_selector_fields(
+    tool_name: &str,
+    arguments: Option<&serde_json::Map<String, Value>>,
+) -> Vec<String> {
+    let Some(arguments) = arguments else {
+        return Vec::new();
+    };
+    let allowed: &[&str] = match tool_name {
+        "code_map_inspect" => &[
+            "selector",
+            "path",
+            "show_doc",
+            "include_coverage",
+            "show_source",
+            "leading_lines",
+            "max_body_lines",
+            "source_offset",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+        ],
+        "get_code_snippet" => &[
+            "selector",
+            "path",
+            "show_source",
+            "leading_lines",
+            "max_body_lines",
+            "source_offset",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+        ],
+        "code_map_tests" => &[
+            "selector",
+            "path",
+            "direction",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+        ],
+        "code_map_impact" => &[
+            "selector",
+            "path",
+            "direction",
+            "depth",
+            "mode",
+            "edge_types",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+        ],
+        "code_map_explain" => &[
+            "selector",
+            "path",
+            "direction",
+            "show_doc",
+            "include_coverage",
+            "show_source",
+            "leading_lines",
+            "max_body_lines",
+            "source_offset",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+        ],
+        "code_map_query" => &[
+            "operation",
+            "selector",
+            "path",
+            "direction",
+            "include_coverage",
+            "depth",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+        ],
+        "code_map_prove_removal" => &[
+            "selector",
+            "path",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+        ],
+        "code_map_search" => &[
+            "pattern",
+            "exact",
+            "kind",
+            "path",
+            "group_by_file",
+            "include_docs",
+            "include_preview",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+        ],
+        "ast_grep_search" => &[
+            "pattern",
+            "language",
+            "path",
+            "limit",
+            "offset",
+            "detail",
+            "generation",
+        ],
+        _ => return Vec::new(),
+    };
+    arguments
+        .keys()
+        .filter(|field| !allowed.contains(&field.as_str()))
+        .take(16)
+        .cloned()
+        .collect()
 }
 
 impl Server {
@@ -47,7 +155,7 @@ impl Server {
     ) -> CallToolResult {
         match self.adapter_snapshot() {
             Ok(adapter) => response::result_with_symbol(
-                run(&adapter, &adapter.response).map_err(navigation_error),
+                run(&adapter, &adapter.response),
                 &adapter.response,
                 explain,
             ),
@@ -120,10 +228,11 @@ impl Server {
                     include_coverage: p.include_coverage,
                 };
                 self.read_with_adapter(adapter, |c| {
-                    symbols::inspect_with_options(
+                    symbols::inspect_with_path_options(
                         c,
                         &self.root,
                         &p.selector,
+                        p.path.as_deref(),
                         &symbols::InspectOptions {
                             show_doc: p.show_doc,
                             source: &source,
@@ -144,7 +253,14 @@ impl Server {
             let page = p.page.resolve(policy)?;
             let source = p.source(policy)?;
             self.read_with_adapter(adapter, |c| {
-                let mut value = symbols::snippet_paged(c, &self.root, &p.selector, &source, &page)?;
+                let mut value = symbols::snippet_paged_with_path(
+                    c,
+                    &self.root,
+                    &p.selector,
+                    p.path.as_deref(),
+                    &source,
+                    &page,
+                )?;
                 if let (Some(path), Some(start), Some(end)) = (
                     value["node"]["path"].as_str(),
                     value["source_preview"]["start_line"].as_u64(),
@@ -210,7 +326,13 @@ impl Server {
     fn code_map_tests(&self, Parameters(p): Parameters<Tests>) -> CallToolResult {
         self.responding(|adapter, policy| {
             self.read_with_adapter(adapter, |c| {
-                symbols::tests_paged(c, &p.selector, &p.direction, &p.page.resolve(policy)?)
+                symbols::tests_paged_with_path(
+                    c,
+                    &p.selector,
+                    p.path.as_deref(),
+                    &p.direction,
+                    &p.page.resolve(policy)?,
+                )
             })
         })
     }
@@ -221,9 +343,10 @@ impl Server {
         self.responding(|adapter, policy| {
             let page = p.page.resolve(policy)?;
             self.read_with_adapter(adapter, |c| {
-                traversal::traverse_with_options(
+                traversal::traverse_with_path_options(
                     c,
                     &p.selector,
+                    p.path.as_deref(),
                     &traversal::TraversalOptions {
                         depth: p.depth,
                         inbound: traversal::impact_inbound(Some(p.direction.as_str()))?,
@@ -247,10 +370,11 @@ impl Server {
                     include_coverage: p.include_coverage,
                 };
                 self.read_with_adapter(adapter, |c| {
-                    symbols::explain_with_options(
+                    symbols::explain_with_path_options(
                         c,
                         &self.root,
                         &p.selector,
+                        p.path.as_deref(),
                         &symbols::ExplainOptions {
                             direction: p.direction.as_deref(),
                             show_doc: p.show_doc,
@@ -270,10 +394,11 @@ impl Server {
     fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
         self.responding(|adapter, policy| {
             self.read_with_adapter(adapter, |c| {
-                traversal::query_with_options(
+                traversal::query_with_path_options(
                     c,
                     &p.operation,
                     p.selector.as_deref(),
+                    p.path.as_deref(),
                     &traversal::GraphQueryOptions {
                         depth: p.depth,
                         direction: p.direction.as_deref(),
@@ -311,7 +436,12 @@ impl Server {
     fn code_map_prove_removal(&self, Parameters(p): Parameters<Selector>) -> CallToolResult {
         self.responding(|adapter, policy| {
             self.read_with_adapter(adapter, |c| {
-                traversal::removal_paged(c, &p.selector, &p.page.resolve(policy)?)
+                traversal::removal_paged_with_path(
+                    c,
+                    &p.selector,
+                    p.path.as_deref(),
+                    &p.page.resolve(policy)?,
+                )
             })
         })
     }
@@ -410,6 +540,10 @@ impl ServerHandler for Server {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let rejected = rejected_selector_fields(&request.name, request.arguments.as_ref());
+        if !rejected.is_empty() {
+            return Ok(response::rejected_arguments(&rejected).into());
+        }
         let tool_name = request.name.clone();
         let tool_args = serde_json::to_string_pretty(&request.arguments).unwrap_or_default();
         let adapter = match scanner::load_adapter(&self.root, None) {

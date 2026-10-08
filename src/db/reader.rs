@@ -17,7 +17,7 @@ use std::{
 
 #[path = "reader/selectors.rs"]
 mod selectors;
-pub(crate) use selectors::select_detail;
+pub(crate) use selectors::{select_detail, select_detail_with_path};
 
 const MAX_SQLITE_VALUE_BYTES: i32 = 8 * 1024 * 1024;
 const MAX_QUERY_RESULT_BYTES: usize = MAX_SQLITE_VALUE_BYTES as usize;
@@ -37,7 +37,14 @@ pub enum SelectorError {
     Ambiguous {
         /// The requested selector.
         selector: String,
-        /// Exact IDs or paths that disambiguate the target.
+        /// Bounded indexed candidates that can disambiguate the target.
+        candidates: Vec<AmbiguousCandidate>,
+    },
+    /// More than one indexed directory path matched a path alias.
+    AmbiguousPaths {
+        /// The requested path alias.
+        selector: String,
+        /// Matching workspace-relative paths.
         candidates: Vec<String>,
     },
     /// The selector cannot be interpreted safely.
@@ -54,6 +61,21 @@ pub enum SelectorError {
     },
 }
 
+/// Indexed metadata for one ambiguous selector candidate.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AmbiguousCandidate {
+    /// Exact indexed node ID.
+    pub id: String,
+    /// Workspace-relative file path.
+    pub path: String,
+    /// Source start line.
+    pub line: i64,
+    /// Qualified symbol name.
+    pub qualname: String,
+    /// Indexed declaration signature.
+    pub signature: String,
+}
+
 impl std::fmt::Display for SelectorError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -68,7 +90,11 @@ impl std::fmt::Display for SelectorError {
             Self::Ambiguous {
                 selector,
                 candidates,
-            } => write!(formatter, "ambiguous selector {selector}; use an exact node id or workspace-relative path; candidates: {}", serde_json::to_string(candidates).map_err(|_| std::fmt::Error)?),
+            } => write!(formatter, "ambiguous selector {selector}; use an exact node id or workspace-relative path; candidates: {}", serde_json::to_string(&candidates.iter().map(|candidate| candidate.id.as_str()).collect::<Vec<_>>()).map_err(|_| std::fmt::Error)?),
+            Self::AmbiguousPaths {
+                selector,
+                candidates,
+            } => write!(formatter, "ambiguous selector path {selector}; use a workspace-relative path; candidates: {}", serde_json::to_string(candidates).map_err(|_| std::fmt::Error)?),
             Self::InvalidSyntax { selector, reason } if selector.trim().is_empty() => write!(formatter, "selector is empty; {reason}"),
             Self::InvalidSyntax { selector, reason } => write!(formatter, "invalid selector {selector}: {reason}"),
             Self::DocLink { target } => write!(formatter, "'{target}' is a Markdown file; use get_doc or search_docs to inspect documentation"),
@@ -464,7 +490,7 @@ pub(crate) fn directory_path(conn: &Connection, selector: &str) -> Result<Option
     match candidates.as_slice() {
         [] => Ok(None),
         [path] => Ok(Some(path.clone())),
-        _ => Err(SelectorError::Ambiguous {
+        _ => Err(SelectorError::AmbiguousPaths {
             selector: selector.to_owned(),
             candidates,
         }
@@ -717,8 +743,18 @@ pub fn inspect_paged(
     show_doc: bool,
     options: &QueryOptions,
 ) -> Result<Value> {
+    inspect_paged_with_path(conn, selector, None, show_doc, options)
+}
+
+pub(crate) fn inspect_paged_with_path(
+    conn: &Connection,
+    selector: &str,
+    path: Option<&str>,
+    show_doc: bool,
+    options: &QueryOptions,
+) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
-    let node = select_detail(conn, selector, options.detail)?;
+    let node = select_detail_with_path(conn, selector, path, options.detail)?;
     let id = node["id"].as_str().context("invalid node id")?;
     let mut documents = if show_doc {
         paging::query(conn, &format!("SELECT {} FROM doc_sections d JOIN nodes dn ON dn.id=d.doc_id JOIN edges e ON e.dst_hash=dn.node_hash WHERE e.src_hash=?1 AND e.kind='references_doc' ORDER BY d.is_invariant DESC,d.path,d.doc_id", paging::docs("d", options.detail)), &[&crate::core::models::stable_hash64(id)], options)?
@@ -748,10 +784,19 @@ pub fn explain_with_options(
     selector: &str,
     request: &ExplainOptions<'_>,
 ) -> Result<Value> {
+    explain_with_path_options(conn, selector, None, request)
+}
+
+pub(crate) fn explain_with_path_options(
+    conn: &Connection,
+    selector: &str,
+    path: Option<&str>,
+    request: &ExplainOptions<'_>,
+) -> Result<Value> {
     let direction = request.direction;
     let show_doc = request.show_doc;
     let options = request.page;
-    let mut result = inspect_paged(conn, selector, show_doc, options)?;
+    let mut result = inspect_paged_with_path(conn, selector, path, show_doc, options)?;
     let id = result["node"]["id"]
         .as_str()
         .context("invalid node id")?

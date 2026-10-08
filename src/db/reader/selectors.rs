@@ -4,7 +4,99 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde_json::Value;
 
+fn is_known_kind_name(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function"
+            | "fn"
+            | "class"
+            | "module"
+            | "struct"
+            | "method"
+            | "trait"
+            | "interface"
+            | "type"
+            | "component"
+    )
+}
+
+fn normalize_scope_path(path: Option<&str>, selector: &str) -> Result<String> {
+    let Some(path) = path else {
+        return Ok(String::new());
+    };
+    let raw_path = path.trim();
+    let path = raw_path.replace('\\', "/");
+    let invalid = raw_path.is_empty()
+        || path.starts_with('/')
+        || path.as_bytes().contains(&0)
+        || path.split('/').any(|part| part == "..")
+        || path.split_once(':').is_some_and(|(drive, _)| {
+            drive.len() == 1 && drive.as_bytes()[0].is_ascii_alphabetic()
+        });
+    if invalid {
+        return Err(SelectorError::InvalidSyntax {
+            selector: selector.to_owned(),
+            reason: "path must be workspace-relative and cannot contain parent traversal".into(),
+        }
+        .into());
+    }
+    Ok(path
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
+fn bounded_chars(value: &str, maximum: usize) -> String {
+    value.chars().take(maximum).collect()
+}
+
+fn ambiguous_candidates(
+    conn: &Connection,
+    ids: &[String],
+) -> Result<Vec<super::AmbiguousCandidate>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids = serde_json::to_string(ids)?;
+    rows(
+        conn,
+        "SELECT n.id,n.qualname,p.path,n.line,n.details FROM json_each(?1) requested JOIN nodes n ON n.id=requested.value JOIN path_dictionary p ON p.path_id=n.path_id ORDER BY n.id LIMIT 101",
+        &[&ids],
+        101,
+    )?
+    .into_iter()
+    .map(|row| {
+        let details = match &row["details"] {
+            Value::String(text) => serde_json::from_str::<Value>(text).unwrap_or(Value::Null),
+            other => other.clone(),
+        };
+        Ok(super::AmbiguousCandidate {
+            id: row["id"].as_str().context("candidate id is missing")?.to_owned(),
+            path: row["path"].as_str().context("candidate path is missing")?.to_owned(),
+            line: row["line"].as_i64().unwrap_or(0),
+            qualname: row["qualname"].as_str().unwrap_or_default().to_owned(),
+            signature: details
+                .get("signature")
+                .and_then(Value::as_str)
+                .map(|signature| bounded_chars(signature, 512))
+                .unwrap_or_default(),
+        })
+    })
+    .collect()
+}
+
 pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -> Result<Value> {
+    select_detail_with_path(conn, selector, None, detail)
+}
+
+pub(crate) fn select_detail_with_path(
+    conn: &Connection,
+    selector: &str,
+    path: Option<&str>,
+    detail: Detail,
+) -> Result<Value> {
+    let scope = normalize_scope_path(path, selector)?;
     let trimmed = selector.trim();
     if trimmed.is_empty() {
         return Err(SelectorError::InvalidSyntax {
@@ -60,14 +152,14 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
 
     // 1d. If a specific line number was targeted, find the enclosing node
     if let Some(line) = target_line {
-        return select_line_anchor(conn, selector, normalized, line, detail);
+        return select_line_anchor(conn, selector, normalized, line, &scope, detail);
     }
 
     // 2. Exact match by id
     let exact_id = rows(
         conn,
-        "SELECT id, kind FROM nodes WHERE id=?1 LIMIT 1",
-        &[&normalized],
+        "SELECT n.id, n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id=?1 AND (?2='' OR p.path=?2 OR substr(p.path,1,length(?2)+1)=?2||'/') LIMIT 1",
+        &[&normalized, &scope],
         1,
     )?;
     if !exact_id.is_empty() {
@@ -92,8 +184,20 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
         (None, normalized)
     };
 
+    let mut path_qualified = false;
     let mut result = if let Some(prefix) = prefix_part {
-        let is_path = prefix.contains('/') || prefix.contains('\\') || is_code_path(prefix);
+        let path_lower = format!("{prefix}/");
+        let path_upper = format!("{prefix}0");
+        let path_params: [&dyn rusqlite::ToSql; 3] = [&prefix, &path_lower, &path_upper];
+        let indexed_path = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM path_dictionary WHERE path=?1 OR (path>=?2 AND path<?3))",
+                path_params,
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        let is_path =
+            prefix.contains('/') || prefix.contains('\\') || is_code_path(prefix) || indexed_path;
         let is_known_kind = matches!(
             prefix,
             "function"
@@ -108,25 +212,31 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
                 | "component"
         );
         if is_path {
+            path_qualified = true;
+            let (path_kind, symbol) = symbol_part
+                .split_once(':')
+                .filter(|(kind, _)| is_known_kind_name(kind))
+                .map(|(kind, symbol)| (if kind == "fn" { "function" } else { kind }, symbol))
+                .unwrap_or(("", symbol_part));
             let mut candidates = rows(
                 conn,
-                "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE p.path=?1 AND ((n.name=?2 COLLATE NOCASE AND n.name=?2 COLLATE BINARY) OR (n.qualname=?2 COLLATE NOCASE AND n.qualname=?2 COLLATE BINARY)) ORDER BY n.id LIMIT 101",
-                &[&prefix, &symbol_part],
+                "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE (p.path=?1 OR substr(p.path,1,length(?1)+1)=?1||'/') AND ((n.name=?2 COLLATE NOCASE AND n.name=?2 COLLATE BINARY) OR (n.qualname=?2 COLLATE NOCASE AND n.qualname=?2 COLLATE BINARY)) AND (?3='' OR n.kind=?3) AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY n.id LIMIT 101",
+                &[&prefix, &symbol, &path_kind, &scope],
                 101,
             )?;
             if candidates.is_empty() {
                 candidates = rows(
                     conn,
-                    "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE substr(p.path,-length(?1))=?1 AND ((n.name=?2 COLLATE NOCASE AND n.name=?2 COLLATE BINARY) OR (n.qualname=?2 COLLATE NOCASE AND n.qualname=?2 COLLATE BINARY)) ORDER BY n.id LIMIT 101",
-                    &[&prefix, &symbol_part],
+                    "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE substr(p.path,-length(?1))=?1 AND (length(p.path)=length(?1) OR substr(p.path,-length(?1)-1,1)='/') AND ((n.name=?2 COLLATE NOCASE AND n.name=?2 COLLATE BINARY) OR (n.qualname=?2 COLLATE NOCASE AND n.qualname=?2 COLLATE BINARY)) AND (?3='' OR n.kind=?3) AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY n.id LIMIT 101",
+                    &[&prefix, &symbol, &path_kind, &scope],
                     101,
                 )?;
             }
             if candidates.is_empty() {
                 candidates = rows(
                     conn,
-                    "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE (p.path=?1 OR substr(p.path,-length(?1))=?1) AND substr(n.qualname,-length(?2))=?2 ORDER BY n.id LIMIT 101",
-                    &[&prefix, &symbol_part],
+                    "SELECT n.id,n.kind FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE (p.path=?1 OR substr(p.path,1,length(?1)+1)=?1||'/' OR (substr(p.path,-length(?1))=?1 AND (length(p.path)=length(?1) OR substr(p.path,-length(?1)-1,1)='/'))) AND substr(n.qualname,-length(?2))=?2 AND (?3='' OR n.kind=?3) AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY n.id LIMIT 101",
+                    &[&prefix, &symbol, &path_kind, &scope],
                     101,
                 )?;
             }
@@ -149,16 +259,16 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
             let kind = if prefix == "fn" { "function" } else { prefix };
             rows(
                 conn,
-                "SELECT id, kind FROM nodes WHERE name=?1 COLLATE NOCASE AND name=?1 COLLATE BINARY AND kind=?2 UNION SELECT id, kind FROM nodes WHERE qualname=?1 COLLATE NOCASE AND qualname=?1 COLLATE BINARY AND kind=?2 ORDER BY id LIMIT 101",
-                &[&symbol_part, &kind],
+                "SELECT n.id, n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name=?1 COLLATE NOCASE AND n.name=?1 COLLATE BINARY AND n.kind=?2 AND (?3='' OR p.path=?3 OR substr(p.path,1,length(?3)+1)=?3||'/') UNION SELECT n.id, n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.qualname=?1 COLLATE NOCASE AND n.qualname=?1 COLLATE BINARY AND n.kind=?2 AND (?3='' OR p.path=?3 OR substr(p.path,1,length(?3)+1)=?3||'/') ORDER BY id LIMIT 101",
+                &[&symbol_part, &kind, &scope],
                 101,
             )?
         } else {
             let base_name = symbol_part.strip_prefix("./").unwrap_or(symbol_part);
             rows(
                 conn,
-                "SELECT id,kind FROM nodes WHERE name=?1 COLLATE NOCASE AND name=?1 COLLATE BINARY AND (?2='' OR kind=?2) UNION SELECT id,kind FROM nodes WHERE qualname=?1 COLLATE NOCASE AND qualname=?1 COLLATE BINARY AND (?2='' OR kind=?2) UNION SELECT id,kind FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path=?3) UNION SELECT id,kind FROM nodes WHERE id=?4 ORDER BY id LIMIT 101",
-                &[&base_name, &prefix, &normalized, &format!("module:{normalized}")],
+                "SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name=?1 COLLATE NOCASE AND n.name=?1 COLLATE BINARY AND (?2='' OR n.kind=?2) AND (?5='' OR p.path=?5 OR substr(p.path,1,length(?5)+1)=?5||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.qualname=?1 COLLATE NOCASE AND n.qualname=?1 COLLATE BINARY AND (?2='' OR n.kind=?2) AND (?5='' OR p.path=?5 OR substr(p.path,1,length(?5)+1)=?5||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?3 AND (?5='' OR p.path=?5 OR substr(p.path,1,length(?5)+1)=?5||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id=?4 AND (?5='' OR p.path=?5 OR substr(p.path,1,length(?5)+1)=?5||'/') ORDER BY id LIMIT 101",
+                &[&base_name, &prefix, &normalized, &format!("module:{normalized}"), &scope],
                 101,
             )?
         }
@@ -166,22 +276,22 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
         let base_name = normalized.strip_prefix("./").unwrap_or(normalized);
         rows(
             conn,
-            "SELECT id,kind FROM nodes WHERE name=?1 COLLATE NOCASE AND name=?1 COLLATE BINARY UNION SELECT id,kind FROM nodes WHERE qualname=?1 COLLATE NOCASE AND qualname=?1 COLLATE BINARY UNION SELECT id,kind FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path=?2) UNION SELECT id,kind FROM nodes WHERE id=?3 ORDER BY id LIMIT 101",
-            &[&base_name, &normalized, &format!("module:{normalized}")],
+            "SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name=?1 COLLATE NOCASE AND n.name=?1 COLLATE BINARY AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.qualname=?1 COLLATE NOCASE AND n.qualname=?1 COLLATE BINARY AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?2 AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') UNION SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id=?3 AND (?4='' OR p.path=?4 OR substr(p.path,1,length(?4)+1)=?4||'/') ORDER BY id LIMIT 101",
+            &[&base_name, &normalized, &format!("module:{normalized}"), &scope],
             101,
         )?
     };
 
     // 4. Smart suffix fallback (for import paths like contextunity.shield.cli or Class.method like FormLoginFetcher.fetch)
-    if result.is_empty() {
+    if result.is_empty() && !path_qualified && scope.is_empty() {
         let clean_target = normalized
             .trim_start_matches("module:")
             .trim_start_matches("function:")
             .trim_start_matches("class:");
         let suffix_matches = rows(
             conn,
-            "SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE substr(n.qualname,-length(?1))=?1 OR substr(p.path,-length(?1))=?1 ORDER BY n.id LIMIT 101",
-            &[&clean_target],
+            "SELECT n.id,n.kind FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE (substr(n.qualname,-length(?1))=?1 OR substr(p.path,-length(?1))=?1) AND (?2='' OR p.path=?2 OR substr(p.path,1,length(?2)+1)=?2||'/') ORDER BY n.id LIMIT 101",
+            &[&clean_target, &scope],
             101,
         )?;
         if suffix_matches.len() == 1 {
@@ -351,14 +461,17 @@ pub(crate) fn select_detail(conn: &Connection, selector: &str, detail: Detail) -
             1,
         )?
         .remove(0)),
-        _ => Err(SelectorError::Ambiguous {
-            selector: selector.to_owned(),
-            candidates: result
+        _ => {
+            let ids = result
                 .iter()
                 .filter_map(|value| value["id"].as_str().map(str::to_owned))
-                .collect(),
+                .collect::<Vec<_>>();
+            Err(SelectorError::Ambiguous {
+                selector: selector.to_owned(),
+                candidates: ambiguous_candidates(conn, &ids)?,
+            }
+            .into())
         }
-        .into()),
     }
 }
 
@@ -367,12 +480,13 @@ fn select_line_anchor(
     selector: &str,
     normalized_path: &str,
     line: i64,
+    scope: &str,
     detail: Detail,
 ) -> Result<Value> {
     let exact_path_match = rows(
         conn,
-        "SELECT n.id FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE p.path=?1 AND n.line<=?2 AND n.end_line>=?2 ORDER BY CASE WHEN n.kind IN ('module', 'file', 'component') THEN 1 ELSE 0 END ASC, (n.end_line - n.line) ASC, n.id LIMIT 1",
-        &[&normalized_path, &line],
+        "SELECT n.id FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE p.path=?1 AND (?3='' OR p.path=?3 OR substr(p.path,1,length(?3)+1)=?3||'/') AND n.line<=?2 AND n.end_line>=?2 ORDER BY CASE WHEN n.kind IN ('module', 'file', 'component') THEN 1 ELSE 0 END ASC, (n.end_line - n.line) ASC, n.id LIMIT 1",
+        &[&normalized_path, &line, &scope],
         1,
     )?;
     if let Some(candidate) = exact_path_match.first() {
@@ -382,8 +496,8 @@ fn select_line_anchor(
 
     let exact_file_exists = !rows(
         conn,
-        "SELECT path FROM files WHERE path=?1 LIMIT 1",
-        &[&normalized_path],
+        "SELECT path FROM files WHERE path=?1 AND (?2='' OR path=?2 OR substr(path,1,length(?2)+1)=?2||'/') LIMIT 1",
+        &[&normalized_path, &scope],
         1,
     )?
     .is_empty();
@@ -398,8 +512,8 @@ fn select_line_anchor(
     // Suffix matching is a fallback only and must start at a path-component boundary.
     let suffix_paths = rows(
         conn,
-        "SELECT DISTINCT p.path FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE substr(p.path,-length(?1))=?1 AND (length(p.path)=length(?1) OR substr(p.path,-length(?1)-1,1)='/') AND n.line<=?2 AND n.end_line>=?2 ORDER BY p.path LIMIT 2",
-        &[&normalized_path, &line],
+        "SELECT DISTINCT p.path FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE substr(p.path,-length(?1))=?1 AND (length(p.path)=length(?1) OR substr(p.path,-length(?1)-1,1)='/') AND (?3='' OR p.path=?3 OR substr(p.path,1,length(?3)+1)=?3||'/') AND n.line<=?2 AND n.end_line>=?2 ORDER BY p.path LIMIT 2",
+        &[&normalized_path, &line, &scope],
         2,
     )?;
     if suffix_paths.is_empty() {
@@ -433,7 +547,7 @@ fn select_line_anchor(
     if candidates.len() > 1 {
         return Err(SelectorError::Ambiguous {
             selector: selector.to_owned(),
-            candidates,
+            candidates: ambiguous_candidates(conn, &candidates)?,
         }
         .into());
     }

@@ -16,6 +16,7 @@ pub use search::search_with_options;
 #[path = "symbols/test_discovery.rs"]
 mod test_discovery;
 pub use test_discovery::tests_paged;
+pub(crate) use test_discovery::tests_paged_with_path;
 
 /// Filters and paging for a symbol search.
 pub struct SearchOptions<'a> {
@@ -86,9 +87,20 @@ pub fn inspect_with_options(
     selector: &str,
     options: &InspectOptions<'_>,
 ) -> Result<Value> {
+    inspect_with_path_options(conn, root, selector, None, options)
+}
+
+pub(crate) fn inspect_with_path_options(
+    conn: &Connection,
+    root: &Path,
+    selector: &str,
+    path: Option<&str>,
+    options: &InspectOptions<'_>,
+) -> Result<Value> {
     let result = inspect_paged_response(
         conn,
         selector,
+        path,
         options.show_doc,
         options.page,
         options.coverage,
@@ -104,8 +116,19 @@ pub fn snippet_paged(
     source: &SourceOptions,
     options: &QueryOptions,
 ) -> Result<Value> {
+    snippet_paged_with_path(conn, root, selector, None, source, options)
+}
+
+pub(crate) fn snippet_paged_with_path(
+    conn: &Connection,
+    root: &Path,
+    selector: &str,
+    path: Option<&str>,
+    source: &SourceOptions,
+    options: &QueryOptions,
+) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
-    let node = reader::select_detail(conn, selector, options.detail)?;
+    let node = reader::select_detail_with_path(conn, selector, path, options.detail)?;
     with_source(
         conn,
         root,
@@ -122,9 +145,20 @@ pub fn explain_with_options(
     selector: &str,
     options: &ExplainOptions<'_>,
 ) -> Result<Value> {
+    explain_with_path_options(conn, root, selector, None, options)
+}
+
+pub(crate) fn explain_with_path_options(
+    conn: &Connection,
+    root: &Path,
+    selector: &str,
+    path: Option<&str>,
+    options: &ExplainOptions<'_>,
+) -> Result<Value> {
     let result = explain_paged_response(
         conn,
         selector,
+        path,
         options.direction,
         options.show_doc,
         options.page,
@@ -136,14 +170,15 @@ pub fn explain_with_options(
 pub(crate) fn inspect_paged_response(
     conn: &Connection,
     selector: &str,
+    path: Option<&str>,
     show_doc: bool,
     options: &QueryOptions,
     coverage: CoverageOptions,
 ) -> Result<Value> {
     let result = if coverage.include_coverage {
-        reader::inspect_paged(conn, selector, show_doc, options)?
+        reader::inspect_paged_with_path(conn, selector, path, show_doc, options)?
     } else {
-        inspect_without_coverage(conn, selector, show_doc, options)?
+        inspect_without_coverage(conn, selector, path, show_doc, options)?
     };
     summarize_symbol(conn, result, coverage.include_coverage, options.detail)
 }
@@ -151,15 +186,17 @@ pub(crate) fn inspect_paged_response(
 pub(crate) fn explain_paged_response(
     conn: &Connection,
     selector: &str,
+    path: Option<&str>,
     direction: Option<&str>,
     show_doc: bool,
     options: &QueryOptions,
     coverage: CoverageOptions,
 ) -> Result<Value> {
     let result = if coverage.include_coverage {
-        reader::explain_with_options(
+        reader::explain_with_path_options(
             conn,
             selector,
+            path,
             &reader::ExplainOptions {
                 direction,
                 show_doc,
@@ -167,7 +204,7 @@ pub(crate) fn explain_paged_response(
             },
         )?
     } else {
-        explain_without_coverage(conn, selector, direction, show_doc, options)?
+        explain_without_coverage(conn, selector, path, direction, show_doc, options)?
     };
     summarize_symbol(conn, result, coverage.include_coverage, options.detail)
 }
@@ -175,11 +212,12 @@ pub(crate) fn explain_paged_response(
 fn inspect_without_coverage(
     conn: &Connection,
     selector: &str,
+    path: Option<&str>,
     show_doc: bool,
     options: &QueryOptions,
 ) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
-    let node = reader::select_detail(conn, selector, options.detail)?;
+    let node = reader::select_detail_with_path(conn, selector, path, options.detail)?;
     let id = node["id"].as_str().context("invalid node id")?;
     let mut documents = if show_doc {
         paging::query(
@@ -203,11 +241,12 @@ fn inspect_without_coverage(
 fn explain_without_coverage(
     conn: &Connection,
     selector: &str,
+    path: Option<&str>,
     direction: Option<&str>,
     show_doc: bool,
     options: &QueryOptions,
 ) -> Result<Value> {
-    let mut result = inspect_without_coverage(conn, selector, show_doc, options)?;
+    let mut result = inspect_without_coverage(conn, selector, path, show_doc, options)?;
     let id = result["node"]["id"]
         .as_str()
         .context("invalid node id")?

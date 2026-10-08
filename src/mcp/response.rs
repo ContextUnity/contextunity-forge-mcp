@@ -42,6 +42,35 @@ pub(crate) fn result_with_symbol(
             CallToolResult::success(vec![ContentBlock::text(value.to_string())])
         }
         Err(error) => {
+            if let Some(crate::db::reader::SelectorError::Ambiguous {
+                selector,
+                candidates,
+            }) = error.downcast_ref::<crate::db::reader::SelectorError>()
+            {
+                let bounded =
+                    |text: &str, maximum: usize| text.chars().take(maximum).collect::<String>();
+                let candidate_values = candidates
+                    .iter()
+                    .take(8)
+                    .map(|candidate| {
+                        json!({
+                            "id": bounded(&candidate.id, 256),
+                            "path": bounded(&candidate.path, 256),
+                            "line": candidate.line,
+                            "qualname": bounded(&candidate.qualname, 256),
+                            "signature": bounded(&candidate.signature, 512),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let envelope = json!({
+                    "outcome":"ambiguous",
+                    "selector":bounded(selector, 512),
+                    "message":format!("ambiguous selector {}; use an exact node id or workspace-relative path", bounded(selector, 512)),
+                    "total":candidates.len(),
+                    "candidates":candidate_values,
+                });
+                return CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]);
+            }
             if error.is::<crate::db::tasks_store::TaskAlreadyClaimed>() {
                 return CallToolResult::error(vec![ContentBlock::text(serde_json::json!({"error":{"code":"TASK_ALREADY_CLAIMED","message":"Task already has an active claim"}}).to_string())]);
             }
@@ -62,6 +91,17 @@ pub(crate) fn result_with_symbol(
             }
         }
     }
+}
+
+pub(crate) fn rejected_arguments(fields: &[String]) -> CallToolResult {
+    let fields = fields
+        .iter()
+        .take(16)
+        .map(|field| field.chars().take(128).collect::<String>())
+        .collect::<Vec<_>>();
+    CallToolResult::error(vec![ContentBlock::text(
+        json!({"error":{"code":"rejected_arguments","fields":fields}}).to_string(),
+    )])
 }
 
 /// Performs compact mcp metadata.
