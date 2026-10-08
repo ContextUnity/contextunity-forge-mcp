@@ -7,7 +7,7 @@ use crate::engine::scanner;
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::{fs::File, io::Read, path::Path};
+use std::{collections::HashMap, fs::File, io::Read, path::Path};
 
 #[path = "symbols/search.rs"]
 mod search;
@@ -56,6 +56,110 @@ pub struct ExplainOptions<'a> {
     pub coverage: CoverageOptions,
     /// Bounded page and generation contract.
     pub page: &'a QueryOptions,
+}
+
+/// Adds indexed signatures and bounded navigation previews to one search page.
+pub(crate) fn search_results_with_navigation(
+    conn: &Connection,
+    root: &Path,
+    mut result: Value,
+    include_preview: bool,
+) -> Result<Value> {
+    const SIGNATURE_CHAR_LIMIT: usize = 512;
+    const PREVIEW_HIT_LIMIT: usize = 3;
+    const PREVIEW_BYTES_PER_HIT: usize = 4096;
+
+    let has_small_total = result["nodes"]["total"]
+        .as_u64()
+        .is_some_and(|total| total <= PREVIEW_HIT_LIMIT as u64);
+    let Some(items) = result["nodes"]["items"].as_array_mut() else {
+        return Ok(result);
+    };
+    if items.is_empty() {
+        return Ok(result);
+    }
+
+    let ids = items
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect::<Vec<_>>();
+    let serialized_ids = serde_json::to_string(&ids)?;
+    let signature_rows = reader::rows(
+        conn,
+        "SELECT n.id,json_extract(n.details,'$.signature') AS signature FROM nodes n JOIN json_each(?1) requested ON requested.value=n.id",
+        &[&serialized_ids],
+        ids.len(),
+    )?;
+    let signatures = signature_rows
+        .into_iter()
+        .filter_map(|row| {
+            Some((
+                row["id"].as_str()?.to_owned(),
+                row["signature"].as_str().map(str::to_owned),
+            ))
+        })
+        .collect::<HashMap<_, _>>();
+
+    let previews_enabled = include_preview || has_small_total;
+    for (index, item) in items.iter_mut().enumerate() {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .context("search result has no symbol id")?
+            .to_owned();
+        let signature = signatures.get(&id).and_then(Option::as_deref);
+        object.insert(
+            "signature".into(),
+            signature
+                .map(|value| {
+                    let mut bounded = value.chars().take(SIGNATURE_CHAR_LIMIT).collect::<String>();
+                    if value.chars().count() > SIGNATURE_CHAR_LIMIT {
+                        bounded.push('…');
+                    }
+                    json!(bounded)
+                })
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "inspect_selector".into(),
+            json!({"selector":id,"show_source":true}),
+        );
+
+        if !previews_enabled
+            || index >= PREVIEW_HIT_LIMIT
+            || object.get("language").and_then(Value::as_str) == Some("markdown")
+        {
+            continue;
+        }
+        let path = object
+            .get("path")
+            .and_then(Value::as_str)
+            .context("search result has no path")?;
+        let text = verified_source(conn, root, path)?;
+        let node = json!({
+            "id": id,
+            "kind": object.get("kind"),
+            "name": object.get("name"),
+            "path": path,
+            "line": object.get("line"),
+            "end_line": object.get("end_line"),
+            "language": object.get("language")
+        });
+        let options = SourceOptions {
+            enabled: true,
+            leading_lines: 5,
+            max_body_lines: 15,
+            offset: 0,
+        };
+        let (source, preview) =
+            source_preview(conn, &node, &text, &options, PREVIEW_BYTES_PER_HIT)?;
+        object.insert("source".into(), json!(source));
+        object.insert("source_preview".into(), preview);
+    }
+    Ok(result)
 }
 
 fn verified_source(conn: &Connection, root: &Path, path: &str) -> Result<String> {
@@ -540,7 +644,7 @@ fn with_source(
     let node = &result["node"];
     let path = node["path"].as_str().context("invalid node path")?;
     let text = verified_source(conn, root, path)?;
-    let (snippet, preview) = source_preview(conn, node, &text, source)?;
+    let (snippet, preview) = source_preview(conn, node, &text, source, 8192)?;
     let gen = result.as_object_mut().and_then(|m| m.remove("generation"));
     result["source"] = json!(snippet);
     result["source_preview"] = preview;
@@ -557,8 +661,8 @@ fn source_preview(
     node: &Value,
     text: &str,
     options: &SourceOptions,
+    source_bytes: usize,
 ) -> Result<(String, Value)> {
-    const SOURCE_BYTES: usize = 8192;
     let path = node["path"].as_str().context("invalid node path")?;
     let start = node["line"].as_u64().context("invalid start line")? as usize;
     let end = node["end_line"].as_u64().context("invalid end line")? as usize;
@@ -603,7 +707,7 @@ fn source_preview(
     let mut leading_count = 0;
     if options.offset == 0 && starts_on_clean_line {
         for line in lines[leading_start..start - 1].iter().rev() {
-            if escaped_cost(line) + escaped_cost(&leading) > SOURCE_BYTES / 4 {
+            if escaped_cost(line) + escaped_cost(&leading) > source_bytes / 4 {
                 break;
             }
             leading.insert_str(0, line);
@@ -620,9 +724,9 @@ fn source_preview(
         .take(options.max_body_lines)
     {
         let line_cost = escaped_cost(line);
-        if cost + line_cost > SOURCE_BYTES - 2 {
+        if cost + line_cost > source_bytes.saturating_sub(2) {
             if emitted == 0 {
-                let available = SOURCE_BYTES - 2 - cost;
+                let available = source_bytes.saturating_sub(2).saturating_sub(cost);
                 let mut used = 0;
                 for ch in line.chars() {
                     let next = escaped_char_cost(ch);

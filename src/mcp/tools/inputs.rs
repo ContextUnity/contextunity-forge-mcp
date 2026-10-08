@@ -9,6 +9,9 @@ fn yes() -> bool {
 fn depth() -> u32 {
     2
 }
+fn impact_depth() -> u32 {
+    1
+}
 fn inbound() -> String {
     "inbound".into()
 }
@@ -230,6 +233,9 @@ pub struct SearchSymbols {
     /// Include Markdown documentation nodes in the code symbol search.
     #[serde(default)]
     pub include_docs: bool,
+    /// Include source previews for up to three hits when the total exceeds three; totals at most three include previews automatically.
+    #[serde(default)]
+    pub include_preview: bool,
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
@@ -258,8 +264,8 @@ pub struct Impact {
     /// Impact direction: 'inbound' (default) or 'outbound'.
     #[serde(default = "inbound")]
     pub direction: String,
-    #[serde(default = "depth")]
-    /// The depth value.
+    #[serde(default = "impact_depth")]
+    /// Maximum graph depth; omitted depth defaults to one edge.
     pub depth: u32,
     /// Traversal mode: 'calls' (default, invocation/call graph), 'data-flow' (parameter/assignment flow), 'all' (all dependency edges).
     pub mode: Option<String>,
@@ -348,7 +354,7 @@ pub struct GetDoc {
 /// Represents guide data.
 pub struct Guide {
     #[serde(default)]
-    /// Optional topic value.
+    /// Optional topic: init, adapter, docs, acdd, query, ast, or validate.
     pub topic: Option<String>,
     #[serde(default)]
     /// Whether force applies.

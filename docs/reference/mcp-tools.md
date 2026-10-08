@@ -24,11 +24,11 @@ Selector grammar, SQL shape, proof objects, and examples stay in this page and i
 | Tool | Purpose and main input |
 | --- | --- |
 | `code_map_overview` | Workspace, index, language and documentation summary. |
-| `code_map_search` | Search symbols by `pattern`; exact names and direct prefixes rank first, exact qualified names follow, and natural-language terms use FTS5 BM25. Set `exact:true` for indexed, case-insensitive name or qualified-name equality without FTS. Supports `include_docs`, `group_by_file`, prefix patterns such as `parse*`, and optional file or directory `path` scope. |
+| `code_map_search` | Search symbols by `pattern`; exact names and direct prefixes rank first, exact qualified names follow, and natural-language terms use FTS5 BM25. Hits include an indexed `signature` and `inspect_selector` arguments for `code_map_inspect` with `show_source:true`. Previews appear automatically when the total is at most three; set `include_preview:true` for larger result sets. Supports `include_docs`, `group_by_file`, prefix patterns such as `parse*`, and optional file or directory `path` scope. |
 | `code_map_inspect` | Resolve a `selector` and return a compact signature, docstring, receiver-aware container, call counts, and direct caller/callee preview. Set `include_coverage=true` for paged resolution evidence. |
 | `get_code_snippet` | Read indexed source around a `selector` with `leading_lines` and `max_body_lines` bounds. |
 | `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; set `direction` if needed. |
-| `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`; set `depth`. Each reached node identifies one shortest predecessor edge. |
+| `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`; depth defaults to one edge. Each reached node identifies one shortest predecessor edge. |
 | `code_map_tests` | Find test relationships for a `selector`; `direction` accepts `inbound` or `outbound`. Results distinguish graph evidence from the bounded lexical fallback for inbound searches. |
 | `code_map_prove_removal` | Estimate what a `selector` removal could affect; structural evidence, not a proof of runtime safety. |
 | `code_map_query` | Route an `operation` to graph queries or paged read-only SQL. |
@@ -48,9 +48,9 @@ See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI p
 
 ## Selectors and graph queries
 
-Use a symbol identifier returned by search whenever possible. A file path selects a module or file. `path:symbol` and `path::symbol` select a symbol in that path; `path:12` and `path#L12` select the narrowest symbol covering line 12. Relative paths may use `./`, `file:`, or `file://` prefixes. A bare name can be ambiguous when a module and symbol share that name; specify the path. Markdown belongs in `get_doc` and `search_docs`.
+Use a symbol identifier returned by search whenever possible. A file path selects a module or file. Selectors accept an exact ID, `path:name` or `path::name`, `path:known_kind:name` when the middle token is a registered node kind, and `path:line` or `path#Lline` for the narrowest symbol covering that line. Relative paths may use `./`, `file:`, or `file://` prefixes. A bare name can be ambiguous when a module and symbol share that name; specify the path. Markdown belongs in `get_doc` and `search_docs`.
 
-`code_map_query` supports `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, and `sql`. Aliases: `doctor` for overview, and `search`, `discover`, or `find` for symbol search. `unwired` lists functions and methods with no indexed static caller and is not a dead-code proof. Compact `inspect` and `explain` operations return the same symbol summary as their dedicated tools; set `include_coverage=true` to add resolution coverage. For `operation="sql"`, put exactly one read-only `SELECT` or `WITH` statement in `selector`; the same secure SQL validation, query budget, and paged `QueryOptions` used by `code_map_analyze` apply. Pass `limit`, `offset`, and `generation` as tool arguments. Impact direction defaults to `inbound`; `outbound` traverses dependencies used by the selected symbol. See [CLI reference](cli.md) for equivalent command forms.
+`code_map_query` supports `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, and `sql`. Its `impact` operation keeps the depth 2 default; the dedicated `code_map_impact` tool defaults to depth 1. Aliases: `doctor` for overview, and `search`, `discover`, or `find` for symbol search. `unwired` lists functions and methods with no indexed static caller and is not a dead-code proof. Compact `inspect` and `explain` operations return the same symbol summary as their dedicated tools; set `include_coverage=true` to add resolution coverage. For `operation="sql"`, put exactly one read-only `SELECT` or `WITH` statement in `selector`; the same secure SQL validation, query budget, and paged `QueryOptions` used by `code_map_analyze` apply. Pass `limit`, `offset`, and `generation` as tool arguments. Impact direction defaults to `inbound`; `outbound` traverses dependencies used by the selected symbol. See [CLI reference](cli.md) for equivalent command forms.
 
 Depth is limited to 16. A deep traversal whose first frontier exceeds 1,000 links is rejected; retry with depth 1 or a narrower selector. Removal analysis rejects scopes above 10,000 nodes. Graph results describe indexed, statically resolved relationships.
 
@@ -68,7 +68,20 @@ Compact `code_map_explain` edge rows identify the other endpoint relative to the
 
 Paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 65,536 bytes.
 
-Code source previews are off by default. Request them explicitly, or call `get_code_snippet`. Snippets check that the on-disk source still matches the indexed digest. `leading_lines` ranges from 0 to 20; `max_body_lines` ranges from 1 to 100. If source changed, refresh the index before relying on the result.
+Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `get_code_snippet` supports `leading_lines` from 0 to 20 and `max_body_lines` from 1 to 100. If source changed, refresh the index before relying on the result.
+
+## AST pattern capabilities
+
+Call `forge_guide` with `topic:"ast"` for the profile matrix and syntax examples. Profiles declare these independent capabilities:
+
+| Capability | Behavior |
+| --- | --- |
+| `complete_syntax` | Parses a standalone pattern accepted at the grammar root; every profile supports this. |
+| `declaration_without_body` | Matches declarations after removing profile-declared function, type, class, interface, or implementation bodies. |
+| `fragment_probe` | Wraps root-rejected expressions, calls, macros, or assignments in a profile-provided probe container and unwraps the target syntax node. |
+| `attribute` | Matches declared decorators or annotations layered over declarations. |
+
+The registered matrix is: Rust supports all four capabilities; Python and TypeScript/JavaScript support `complete_syntax`, `declaration_without_body`, and `attribute`; HTML and Vue support `complete_syntax`. `$NAME` captures one syntax node. `$$$SEQ` captures a sequence of zero or more syntax nodes. Unsupported fragments and invalid syntax return a structured diagnostic with the profile language, error span, hint, and valid examples.
 
 ## SQL and checkpoints
 

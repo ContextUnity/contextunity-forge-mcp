@@ -280,13 +280,13 @@ impl Server {
         })
     }
     #[tool(
-        description = "Search names, qualified names, and tokens. A trailing * is a prefix. exact=true matches an indexed name or qualname without full text. Results include selectors for inspect."
+        description = "Search names, qualified names, and tokens. A trailing * is a prefix. exact=true matches an indexed name or qualname without full text. Hits include indexed signatures and inspect_selector arguments for code_map_inspect; previews appear automatically for at most three total hits or on request, capped at three hits, 20 lines, and 12 KiB combined."
     )]
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         self.responding(|adapter, policy| {
             self.read_with_adapter(adapter, |c| {
                 let page = p.page.resolve(policy)?;
-                let mut res = symbols::search_with_options(
+                let res = symbols::search_with_options(
                     c,
                     &p.pattern,
                     &symbols::SearchOptions {
@@ -297,6 +297,8 @@ impl Server {
                         page: &page,
                     },
                 )?;
+                let mut res =
+                    symbols::search_results_with_navigation(c, &self.root, res, p.include_preview)?;
                 if p.group_by_file {
                     if let Some(items) = res
                         .get_mut("nodes")

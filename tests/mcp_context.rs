@@ -131,6 +131,8 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         "def entry():\n    return target()\ndef target():\n    return 1\n",
     );
     workspace.write("other.py", "def target():\n    return 2\n");
+    fs::create_dir_all(workspace.0.join("nested")).unwrap();
+    workspace.write("nested/helper.py", "def unique_nested():\n    return 3\n");
     let mut client = Client::new(&workspace);
     let first = client.payload(
         "code_map_search",
@@ -140,7 +142,15 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     assert_eq!(page["has_more"], true);
     assert!(page.get("continuation_hint").is_none());
     let selector = page["items"][0]["id"].as_str().unwrap();
-    assert!(page["items"][0].get("inspect_selector").is_none());
+    assert!(page["items"][0]["signature"]
+        .as_str()
+        .is_some_and(|s| !s.is_empty()));
+    assert_eq!(
+        page["items"][0]["inspect_selector"],
+        json!({"selector":selector,"show_source":true})
+    );
+    assert!(page["items"][0]["source"].as_str().is_some());
+    assert!(page["items"][0]["source_preview"].is_object());
     assert!(page["items"][0].get("is_test").is_none());
     assert!(page["items"][0].get("generated").is_none());
     let second = client.payload("code_map_search", json!({"pattern":"target","exact":true,"limit":1,"offset":page["next_offset"],"generation":page["generation"]}));
@@ -166,15 +176,279 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         .as_array()
         .unwrap()
         .contains(&json!("outgoing")));
-    let isolated = client.payload("code_map_explain", json!({"selector":"other.py:target"}));
+    let isolated = client.payload(
+        "code_map_explain",
+        json!({"selector":"target","path":"other.py"}),
+    );
+    assert_eq!(isolated["node"]["path"], "other.py");
     assert!(isolated.get("outgoing").is_none());
     let (_, ambiguous) = client.call("code_map_inspect", json!({"selector":"target"}));
-    assert_eq!(ambiguous["result"]["isError"], true);
-    assert!(ambiguous["result"]["content"][0]["text"]
+    let ambiguous_text = ambiguous["result"]["content"][0]["text"].as_str().unwrap();
+    let outcome: serde_json::Value = serde_json::from_str(ambiguous_text)
+        .unwrap_or_else(|_| panic!("ambiguity response is not a JSON envelope: {ambiguous_text}"));
+    assert_eq!(outcome["outcome"], "ambiguous");
+    assert_eq!(outcome["total"], 2);
+    let candidates = outcome["candidates"].as_array().unwrap();
+    for candidate in candidates {
+        for field in ["id", "path", "line", "qualname", "signature"] {
+            assert!(
+                candidate.get(field).is_some(),
+                "missing {field}: {candidate}"
+            );
+        }
+    }
+    let scoped = client.payload(
+        "code_map_inspect",
+        json!({"selector":"target","path":"other.py"}),
+    );
+    assert_eq!(scoped["node"]["path"], "other.py");
+    let scoped_search = client.payload(
+        "code_map_search",
+        json!({"pattern":"target","exact":true,"path":"other.py"}),
+    );
+    assert_eq!(scoped_search["nodes"]["total"], 1);
+    assert_eq!(scoped_search["nodes"]["items"][0]["path"], "other.py");
+    let directory_scoped = client.payload(
+        "code_map_inspect",
+        json!({"selector":"unique_nested","path":"nested"}),
+    );
+    assert_eq!(directory_scoped["node"]["path"], "nested/helper.py");
+    let snippet_scoped = client.payload(
+        "get_code_snippet",
+        json!({"selector":"target","path":"other.py"}),
+    );
+    assert_eq!(snippet_scoped["node"]["path"], "other.py");
+    let tests_scoped = client.payload(
+        "code_map_tests",
+        json!({"selector":"target","path":"other.py"}),
+    );
+    assert_eq!(tests_scoped["selector"]["path"], "other.py");
+    let impact_scoped = client.payload(
+        "code_map_impact",
+        json!({"selector":"target","path":"other.py","depth":0}),
+    );
+    assert_eq!(impact_scoped["selector"]["path"], "other.py");
+    let removal_scoped = client.payload(
+        "code_map_prove_removal",
+        json!({"selector":"target","path":"other.py"}),
+    );
+    assert_eq!(removal_scoped["selected_ids"]["total"], 1);
+    let query_scoped = client.payload(
+        "code_map_query",
+        json!({"operation":"inspect","selector":"target","path":"other.py"}),
+    );
+    assert_eq!(query_scoped["node"]["path"], "other.py");
+    for selector in [
+        "service.py:function:entry",
+        "service.py::entry",
+        "service.py:2",
+        "service.py#L2",
+    ] {
+        let selected = client.payload("code_map_inspect", json!({"selector":selector}));
+        assert_eq!(selected["node"]["path"], "service.py", "{selector}");
+    }
+    let (_, rejected) = client.call(
+        "code_map_inspect",
+        json!({"selector":"target","pah":"other.py"}),
+    );
+    assert_eq!(rejected["result"]["isError"], true);
+    let rejected: Value =
+        serde_json::from_str(rejected["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(rejected["error"]["code"], "rejected_arguments");
+    assert_eq!(rejected["error"]["fields"], json!(["pah"]));
+    let (_, rejected_search) = client.call(
+        "code_map_search",
+        json!({"pattern":"target","pah":"other.py"}),
+    );
+    assert_eq!(rejected_search["result"]["isError"], true);
+    let rejected_search: Value = serde_json::from_str(
+        rejected_search["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rejected_search["error"]["code"], "rejected_arguments");
+}
+
+#[test]
+fn stdio_search_previews_and_impact_depth_defaults_are_bounded() {
+    let workspace = Workspace::new();
+    let body_lines = (0..24)
+        .map(|line| format!("    value_{line} = {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let long_line = "x".repeat(6000);
+    for index in 0..4 {
+        workspace.write(
+            &format!("hit_{index}.py"),
+            &format!("def hit_{index}():\n{body_lines}\n    return \"{long_line}\"\n"),
+        );
+    }
+    workspace.write(
+        "calls.py",
+        "def target():\n    return 1\ndef middle():\n    return target()\ndef outer():\n    return middle()\n",
+    );
+
+    let mut client = Client::new(&workspace);
+    let ast_guide = client.payload("forge_guide", json!({"topic":"ast"}));
+    for capability in [
+        "complete_syntax",
+        "declaration_without_body",
+        "fragment_probe",
+        "attribute",
+    ] {
+        assert!(ast_guide["capabilities"].get(capability).is_some());
+    }
+    assert!(ast_guide["wildcards"].get("$NAME").is_some());
+    assert!(ast_guide["wildcards"].get("$$$SEQ").is_some());
+    let (_, tool_list) = client.request("tools/list", json!({}));
+    let tools = tool_list["result"]["tools"].as_array().unwrap();
+    let ast_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "ast_grep_search")
+        .unwrap();
+    assert!(ast_tool["description"]
         .as_str()
         .unwrap()
-        .contains("code_map_inspect({\"selector\":"));
+        .contains("fragment_probe"));
+    let inspect_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "code_map_inspect")
+        .unwrap();
+    let selector_description = inspect_tool["inputSchema"]["properties"]["selector"]["description"]
+        .as_str()
+        .unwrap();
+    for selector_form in [
+        "path:name",
+        "path:known_kind:name",
+        "path:line",
+        "path#Lline",
+    ] {
+        assert!(
+            selector_description.contains(selector_form),
+            "{selector_description}"
+        );
+    }
+
+    let without_previews = client.payload(
+        "code_map_search",
+        json!({"pattern":"hit_*","kind":"function"}),
+    );
+    assert_eq!(without_previews["nodes"]["total"], 4);
+    for hit in without_previews["nodes"]["items"].as_array().unwrap() {
+        assert!(hit["signature"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert_eq!(
+            hit["inspect_selector"],
+            json!({"selector":hit["id"],"show_source":true})
+        );
+        assert!(hit.get("source").is_none());
+    }
+
+    let with_previews = client.payload(
+        "code_map_search",
+        json!({"pattern":"hit_*","kind":"function","include_preview":true,"limit":100}),
+    );
+    assert_eq!(with_previews["nodes"]["total"], 4);
+    let mut preview_count = 0;
+    let mut preview_bytes = 0;
+    for hit in with_previews["nodes"]["items"].as_array().unwrap() {
+        if let Some(source) = hit["source"].as_str() {
+            preview_count += 1;
+            preview_bytes += source.len();
+            assert!(source.lines().count() <= 20);
+            assert!(hit["source_preview"].is_object());
+        }
+    }
+    assert_eq!(preview_count, 3);
+    assert!(preview_bytes <= 12 * 1024, "{preview_bytes} preview bytes");
+
+    let impact = client.payload("code_map_impact", json!({"selector":"calls.py:target"}));
+    let generic_impact = client.payload(
+        "code_map_query",
+        json!({"operation":"impact","selector":"calls.py:target"}),
+    );
+    assert_eq!(impact["depth"], 1);
+    assert_eq!(generic_impact["depth"], 2);
+    let names = |value: &Value| {
+        value["nodes"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    assert!(!names(&impact).iter().any(|name| name == "outer"));
+    assert!(names(&generic_impact).iter().any(|name| name == "outer"));
+
+    let db = workspace.0.join(".forge/cli.sqlite");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let run_cli = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .arg("--root")
+            .arg(&workspace.0)
+            .arg("--db")
+            .arg(&db)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let cli_impact = run_cli(&["query", "impact", "calls.py:target"]);
+    let cli_generic_impact = run_cli(&["query", "run", "impact", "calls.py:target"]);
+    assert_eq!(cli_impact["depth"], 1);
+    assert_eq!(cli_generic_impact["depth"], 2);
+    assert!(!names(&cli_impact).iter().any(|name| name == "outer"));
+    assert!(names(&cli_generic_impact)
+        .iter()
+        .any(|name| name == "outer"));
 }
+
+#[test]
+fn cli_selector_commands_apply_workspace_path_scope() {
+    let workspace = Workspace::new();
+    workspace.write("service.py", "def target():\n    return 1\n");
+    workspace.write("other.py", "def target():\n    return 2\n");
+    let forge_dir = workspace.0.join(".forge");
+    fs::create_dir_all(&forge_dir).unwrap();
+    let db = forge_dir.join("cli.sqlite");
+    let run_cli = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .arg("--root")
+            .arg(&workspace.0)
+            .arg("--db")
+            .arg(&db)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "CLI failed for {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+
+    let inspected = run_cli(&["query", "inspect", "target", "--path", "other.py"]);
+    assert_eq!(inspected["node"]["path"], "other.py");
+    let explained = run_cli(&["query", "explain", "target", "--path", "other.py"]);
+    assert_eq!(explained["node"]["path"], "other.py");
+    let impacted = run_cli(&[
+        "query", "impact", "target", "--depth", "0", "--path", "other.py",
+    ]);
+    assert_eq!(impacted["selector"]["path"], "other.py");
+    let tested = run_cli(&["query", "tests", "target", "--path", "other.py"]);
+    assert_eq!(tested["selector"]["path"], "other.py");
+    let removed = run_cli(&["query", "remove", "target", "--path", "other.py"]);
+    assert_eq!(removed["selected_ids"]["total"], 1);
+}
+
 #[test]
 fn compact_symbol_page_has_stable_lean_serialization() {
     let items: Vec<Value> = (0..30)
