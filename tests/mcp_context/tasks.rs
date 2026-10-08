@@ -964,7 +964,10 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     let cli_json: Value = serde_json::from_slice(&cli_context.stdout).unwrap();
     assert!(cli_json["context_bundle"].is_object());
     assert_eq!(cli_json["context_bundle"]["contract"]["task_id"], task_id);
-    assert_eq!(cli_json["context_bundle"]["contract"]["depends_on"], json!([]));
+    assert_eq!(
+        cli_json["context_bundle"]["contract"]["depends_on"],
+        json!([])
+    );
 
     // 5. Minimal claim (bundle: false) prunes gates, attempts, findings, receipt, and spec
     let minimal_claim = client.payload(
@@ -1005,9 +1008,18 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         "task_manage",
         json!({"action": "context", "task_id": task_id}),
     );
-    let bb_after = context_after["context_bundle"]["blackboard"].as_array().unwrap();
-    assert_eq!(bb_after.len(), 3, "milestone-scoped message with task_id IS NULL must be included");
-    let ukr_msg = bb_after.iter().find(|m| m["author"] == "ukr-architect").unwrap();
+    let bb_after = context_after["context_bundle"]["blackboard"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        bb_after.len(),
+        3,
+        "milestone-scoped message with task_id IS NULL must be included"
+    );
+    let ukr_msg = bb_after
+        .iter()
+        .find(|m| m["author"] == "ukr-architect")
+        .unwrap();
     assert_eq!(ukr_msg["scope"], "milestone");
     assert!(ukr_msg["task_id"].is_null());
     assert!(ukr_msg["subtask_ref"].is_null());
@@ -1015,11 +1027,17 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     assert!(ukr_text.ends_with("... [truncated]"));
     assert!(ukr_text.chars().count() <= 520);
 
-    let task_msg = bb_after.iter().find(|m| m["author"] == "architect").unwrap();
+    let task_msg = bb_after
+        .iter()
+        .find(|m| m["author"] == "architect")
+        .unwrap();
     assert_eq!(task_msg["scope"], "task");
     assert_eq!(task_msg["task_id"], task_id);
 
-    let sibling_msg = bb_after.iter().find(|m| m["author"] == "cli-author").unwrap();
+    let sibling_msg = bb_after
+        .iter()
+        .find(|m| m["author"] == "cli-author")
+        .unwrap();
     assert_eq!(sibling_msg["scope"], "sibling");
     assert_eq!(sibling_msg["task_id"], cli_task_id);
 }
@@ -1251,8 +1269,14 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     let manifest = "---\nid: m-snapshots\ntitle: Snapshots and Rejections\ndoc_type: contract\nstatus: active\ninvariants: [review-contour-check]\n---\n```yaml\ntask_ref: candidate-task\ntarget: Deliver candidate\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     workspace.write("docs/milestones/010-snap.md", manifest);
     reviewer.write("docs/milestones/010-snap.md", manifest);
-    workspace.write("forge-mcp.yaml", "roots: []\ndocs: []\ntasks_db: .forge/tasks.sqlite\n");
-    reviewer.write("forge-mcp.yaml", "roots: []\ndocs: []\ntasks_db: .forge/tasks.sqlite\n");
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: []\ndocs: []\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    reviewer.write(
+        "forge-mcp.yaml",
+        "roots: []\ndocs: []\ntasks_db: .forge/tasks.sqlite\n",
+    );
 
     let mut client = Client::new(&workspace);
     let sync_res = client.payload(
@@ -1323,9 +1347,15 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     // Reject review with findings -> task bounces back to build/v1
     let contours: serde_json::Map<String, Value> = REVIEW_CONTOURS
         .iter()
-        .map(|name| ((*name).into(), json!({"applicable": true, "evidence": "verified"})))
+        .map(|name| {
+            (
+                (*name).into(),
+                json!({"applicable": true, "evidence": "verified"}),
+            )
+        })
         .collect();
-    let review_reject_proof = json!({"review_proof": {"decision": "reject", "contours": contours.clone()}});
+    let review_reject_proof =
+        json!({"review_proof": {"decision": "reject", "contours": contours.clone()}});
     let review_findings = json!({"decision": "reject", "notes": "Need build commit"});
     client.payload(
         "task_submit",
@@ -1518,6 +1548,12 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         "task_manage",
         json!({"action": "context", "task_id": task_id}),
     );
-    assert!(completed_context.get("receipt").is_none(), "root envelope must prune receipt");
-    assert!(completed_context["context_bundle"]["receipt"].is_object(), "context_bundle must contain receipt for completed task");
+    assert!(
+        completed_context.get("receipt").is_none(),
+        "root envelope must prune receipt"
+    );
+    assert!(
+        completed_context["context_bundle"]["receipt"].is_object(),
+        "context_bundle must contain receipt for completed task"
+    );
 }

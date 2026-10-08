@@ -305,43 +305,47 @@ pub(super) fn context_bundle(
             }
         });
 
-    let unresolved_review_findings = if details.get("stage").and_then(|s| s.as_str()) == Some("build/v1") {
-        let latest_rejected_gate = details
-            .get("gates")
-            .and_then(|g| g.as_array())
-            .and_then(|gates| {
-                gates.iter().rev().find(|g| {
-                    matches!(g.get("stage").and_then(|s| s.as_str()), Some("review/v1") | Some("deliver/v1"))
-                        && g.get("state").and_then(|s| s.as_str()) == Some("rejected")
-                })
-            });
-        if let Some(rejected_gate) = latest_rejected_gate {
-            let rejected_rev = rejected_gate.get("claim_revision").and_then(|r| r.as_u64());
-            details
-                .get("findings")
-                .and_then(|f| f.as_array())
-                .and_then(|arr| {
-                    arr.iter().rev().find(|finding| {
-                        finding.get("claim_revision").and_then(|r| r.as_u64()) == rejected_rev
+    let unresolved_review_findings =
+        if details.get("stage").and_then(|s| s.as_str()) == Some("build/v1") {
+            let latest_rejected_gate =
+                details
+                    .get("gates")
+                    .and_then(|g| g.as_array())
+                    .and_then(|gates| {
+                        gates.iter().rev().find(|g| {
+                            matches!(
+                                g.get("stage").and_then(|s| s.as_str()),
+                                Some("review/v1") | Some("deliver/v1")
+                            ) && g.get("state").and_then(|s| s.as_str()) == Some("rejected")
+                        })
+                    });
+            if let Some(rejected_gate) = latest_rejected_gate {
+                let rejected_rev = rejected_gate.get("claim_revision").and_then(|r| r.as_u64());
+                details
+                    .get("findings")
+                    .and_then(|f| f.as_array())
+                    .and_then(|arr| {
+                        arr.iter().rev().find(|finding| {
+                            finding.get("claim_revision").and_then(|r| r.as_u64()) == rejected_rev
+                        })
                     })
-                })
-                .and_then(|finding| {
-                    finding.get("findings").and_then(|s| {
-                        if let Some(text) = s.as_str() {
-                            serde_json::from_str::<Value>(text)
-                                .ok()
-                                .or_else(|| Some(json!(text)))
-                        } else {
-                            Some(s.clone())
-                        }
+                    .and_then(|finding| {
+                        finding.get("findings").and_then(|s| {
+                            if let Some(text) = s.as_str() {
+                                serde_json::from_str::<Value>(text)
+                                    .ok()
+                                    .or_else(|| Some(json!(text)))
+                            } else {
+                                Some(s.clone())
+                            }
+                        })
                     })
-                })
+            } else {
+                None
+            }
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
 
     let candidate_snapshot = details
         .get("gates")
@@ -363,24 +367,27 @@ pub(super) fn context_bundle(
             })
         });
 
-    let latest_delivery_snapshot = details
-        .get("gates")
-        .and_then(|g| g.as_array())
-        .and_then(|gates| {
-            gates.iter().rev().find_map(|g| {
-                let stage_name = g.get("stage").and_then(|s| s.as_str())?;
-                let state = g.get("state").and_then(|s| s.as_str())?;
-                if state == "passed" && matches!(stage_name, "review/v1" | "build/v1" | "deliver/v1") {
-                    let commit = g.get("commit").and_then(|c| c.as_str())?;
-                    Some(json!({
-                        "commit": commit,
-                        "inspect_cmd": crate::core::tasks::snapshot_inspect_cmd(commit),
-                    }))
-                } else {
-                    None
-                }
-            })
-        });
+    let latest_delivery_snapshot =
+        details
+            .get("gates")
+            .and_then(|g| g.as_array())
+            .and_then(|gates| {
+                gates.iter().rev().find_map(|g| {
+                    let stage_name = g.get("stage").and_then(|s| s.as_str())?;
+                    let state = g.get("state").and_then(|s| s.as_str())?;
+                    if state == "passed"
+                        && matches!(stage_name, "review/v1" | "build/v1" | "deliver/v1")
+                    {
+                        let commit = g.get("commit").and_then(|c| c.as_str())?;
+                        Some(json!({
+                            "commit": commit,
+                            "inspect_cmd": crate::core::tasks::snapshot_inspect_cmd(commit),
+                        }))
+                    } else {
+                        None
+                    }
+                })
+            });
 
     let milestone_ref = details.get("milestone_ref").cloned();
     let depends_on = details
@@ -561,7 +568,8 @@ pub(super) fn context_bundle(
             bundle_map.insert("candidate_snapshot".into(), snapshot.clone());
         }
     }
-    if stage == "deliver/v1" || details.get("status").and_then(|s| s.as_str()) == Some("completed") {
+    if stage == "deliver/v1" || details.get("status").and_then(|s| s.as_str()) == Some("completed")
+    {
         if let Some(snapshot) = latest_delivery_snapshot.as_ref() {
             bundle_map.insert("latest_snapshot".into(), snapshot.clone());
         }

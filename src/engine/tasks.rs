@@ -606,11 +606,7 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
                 let subtasks = obj
                     .get("subtasks")
                     .cloned()
-                    .or_else(|| {
-                        obj.get("spec")
-                            .and_then(|s| s.get("subtasks"))
-                            .cloned()
-                    })
+                    .or_else(|| obj.get("spec").and_then(|s| s.get("subtasks")).cloned())
                     .unwrap_or_else(|| serde_json::json!([]));
                 obj.remove("gates");
                 obj.remove("attempts");
