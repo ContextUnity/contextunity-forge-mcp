@@ -1,66 +1,12 @@
-#![cfg(all(feature = "lang-yaml", feature = "lang-toml"))]
-
 use contextunity_forge_mcp::{
-    core::{
-        commitments,
-        response::{QueryOptions, ResponsePolicy, SourceOptions},
-    },
-    db::{reader, symbols, writer},
+    core::response::{QueryOptions, ResponsePolicy, SourceOptions},
+    db::{reader, symbols},
     engine::{ast, scanner},
 };
 use rusqlite::Connection;
-use std::{
-    collections::BTreeSet,
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use super::support::Workspace;
+use std::collections::BTreeSet;
 
-struct Workspace(PathBuf);
-impl Workspace {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "forge_config_profiles_{}_{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-    fn write(&self, path: &str, source: &str) {
-        let path = self.0.join(path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, source).unwrap();
-    }
-    fn db(&self) -> PathBuf {
-        self.0.join(".forge/code-map.sqlite")
-    }
-    fn build(&self) {
-        writer::build(&self.0, &self.db(), None).unwrap();
-    }
-    fn cold_parity(&self, path: &str) {
-        writer::delta(&self.0, &self.db(), &[PathBuf::from(path)]).unwrap();
-        let incremental = reader::open(&self.db(), &self.0).unwrap();
-        commitments::verify(&incremental).unwrap();
-        let cold = self.0.join(".forge/cold.sqlite");
-        writer::build(&self.0, &cold, None).unwrap();
-        let cold = reader::open(&cold, &self.0).unwrap();
-        commitments::verify(&cold).unwrap();
-        for sql in [
-            "SELECT id||'|'||kind||'|'||qualname||'|'||line||'|'||end_line||'|'||details FROM nodes ORDER BY id",
-            "SELECT (SELECT id FROM nodes WHERE node_hash=src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=dst_hash)||'|'||kind||'|'||(SELECT path FROM path_dictionary WHERE path_id=edges.path_id)||'|'||line FROM edges ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind",
-            "SELECT path||'|'||line||'|'||message FROM errors ORDER BY path,line,message",
-        ] { assert_eq!(rows(&incremental, sql), rows(&cold, sql), "{sql}"); }
-    }
-}
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 fn rows(conn: &Connection, sql: &str) -> Vec<String> {
     conn.prepare(sql)
         .unwrap()

@@ -2,7 +2,7 @@ use contextunity_forge_mcp::{
     db::{reader, writer},
     engine::{ast, languages, scanner},
 };
-use std::{collections::BTreeSet, fs, path::PathBuf, time::SystemTime};
+use std::{collections::BTreeSet, fs};
 
 struct Fixture {
     id: &'static str,
@@ -134,28 +134,8 @@ const FIXTURES: &[Fixture] = &[
     },
 ];
 
-struct Workspace(PathBuf);
+use super::support::Workspace;
 
-impl Workspace {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "forge_feature_contract_{}_{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 #[test]
 fn registry_and_extraction_match_the_compiled_feature_contract() {

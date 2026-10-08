@@ -2,7 +2,7 @@ use contextunity_forge_mcp::{
     db::{reader, writer},
     engine::{
         ast,
-        languages::{self, dependency_registry::DependencyRegistry},
+        languages::{self, dependency_registry::DependencyRegistry, manifests::FrameworkManifestValue, LanguageFamily},
         linker,
     },
 };
@@ -10,32 +10,10 @@ use std::{
     collections::BTreeMap,
     fs,
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
-struct Workspace(PathBuf);
-impl Workspace {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("forge_manifests_{}_{nonce}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-    fn write(&self, path: &str, content: &str) {
-        let path = self.0.join(path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, content).unwrap();
-    }
-}
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use super::support::Workspace;
+
 
 // ---------------------------------------------------------------------------
 // Language Manifest Profile Tests
@@ -268,10 +246,6 @@ fn gradle_and_maven_dependencies_include_configurations_and_group_ids() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Python Manifest Parsing Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(feature = "lang-python")]
 #[test]
 fn pyproject_and_pipfile_dependencies_include_optional_and_poetry_groups() {
@@ -349,10 +323,6 @@ fn requirements_reject_bare_urls_and_local_artifacts() {
         vec!["valid_package"]
     );
 }
-
-// ---------------------------------------------------------------------------
-// Workspace Manifest Discovery and Linker Integration
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "lang-python")]
 #[test]
@@ -799,4 +769,284 @@ fn commonjs_provider_body_edits_preserve_unchanged_consumer_contracts() {
     let cold = workspace.0.join(".forge/commonjs-body-cold.db");
     writer::build(&workspace.0, &cold, None).unwrap();
     assert_eq!(snapshot(&db), snapshot(&cold));
+}
+
+#[cfg(feature = "lang-html")]
+#[test]
+fn framework_manifest_requires_all_rule_tables_and_accepts_complete_manifest() {
+    let tables = ["receivers", "builtins", "filters", "routes"];
+    let mut failures = Vec::new();
+    let complete_toml = "receivers = [{ name = 'render', receiver = 'request' }]\n\
+        builtins = ['$refs', '$dispatch']\n\
+        filters = ['escape']\n\
+        [[routes]]\n\
+        pattern = '/users/{id}'\n\
+        method = 'GET'\n\
+        [[routes]]\n\
+        pattern = '/teams/{id}'\n\
+        method = 'POST'\n";
+    let complete_yaml = "receivers:\n  - name: render\n    receiver: request\nbuiltins: [\"$refs\", \"$dispatch\"]\nfilters: [escape]\nroutes:\n  - pattern: \"/users/{id}\"\n    method: GET\n  - pattern: \"/teams/{id}\"\n    method: POST\n";
+
+    for (extension, complete_manifest) in [
+        ("toml", complete_toml),
+        ("yaml", complete_yaml),
+        ("yml", complete_yaml),
+    ] {
+        let workspace = Workspace::new();
+        workspace.write(
+            "pyproject.toml",
+            "[project]\nname = 'sample'\ndependencies = ['django>=5']\n",
+        );
+        workspace.write("index.html", "<p>Manifest-backed project</p>\n");
+        workspace.write(
+            format!(".forge/frameworks/django.{extension}"),
+            complete_manifest,
+        );
+        if let Err(error) = writer::build(&workspace.0, &workspace.db(), None) {
+            failures.push(format!(
+                "valid .{extension} manifest failed to build: {error:#}"
+            ));
+            continue;
+        }
+
+        let dependencies = DependencyRegistry::collect_with_scan_config(&workspace.0, None);
+        let Some(loaded) = dependencies.framework_manifest_for_path(
+            LanguageFamily("python"),
+            "index.html",
+            "django",
+            "django",
+        ) else {
+            failures.push(format!(
+                "complete .{extension} manifest did not reach its linker"
+            ));
+            continue;
+        };
+        if loaded.name != "django" {
+            failures.push(format!(
+                ".{extension} manifest name was {:?}, expected django",
+                loaded.name
+            ));
+        }
+        if !matches!(
+            loaded.receivers.as_slice(),
+            [FrameworkManifestValue::Table(fields)]
+                if fields.get("name") == Some(&FrameworkManifestValue::String("render".into()))
+                    && fields.get("receiver") == Some(&FrameworkManifestValue::String("request".into()))
+        ) {
+            failures.push(format!(
+                ".{extension} receiver array did not retain its typed table value"
+            ));
+        }
+        if loaded.builtins
+            != vec![
+                FrameworkManifestValue::String("$refs".into()),
+                FrameworkManifestValue::String("$dispatch".into()),
+            ]
+        {
+            failures.push(format!(
+                ".{extension} builtins did not deserialize as a typed string array"
+            ));
+        }
+        if loaded.filters != vec![FrameworkManifestValue::String("escape".into())] {
+            failures.push(format!(
+                ".{extension} filters did not deserialize as a typed string array"
+            ));
+        }
+        if !matches!(
+            loaded.routes.as_slice(),
+            [FrameworkManifestValue::Table(first), FrameworkManifestValue::Table(second)]
+                if first.get("pattern") == Some(&FrameworkManifestValue::String("/users/{id}".into()))
+                    && first.get("method") == Some(&FrameworkManifestValue::String("GET".into()))
+                    && second.get("pattern") == Some(&FrameworkManifestValue::String("/teams/{id}".into()))
+                    && second.get("method") == Some(&FrameworkManifestValue::String("POST".into()))
+        ) {
+            failures.push(format!(
+                ".{extension} route array did not retain both typed table values"
+            ));
+        }
+        let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+        let indexed_file: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM path_dictionary WHERE path='index.html'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if indexed_file != 1 {
+            failures.push(format!(
+                "complete .{extension} manifest published {indexed_file} index rows"
+            ));
+        }
+    }
+
+    for extension in ["toml", "yaml", "yml"] {
+        for missing in tables {
+            let manifest = tables
+                .iter()
+                .filter(|table| **table != missing)
+                .map(|table| {
+                    if extension == "toml" {
+                        format!("{table} = []\n")
+                    } else {
+                        format!("{table}: []\n")
+                    }
+                })
+                .collect::<String>();
+            let workspace = Workspace::new();
+            workspace.write(
+                "pyproject.toml",
+                "[project]\nname = 'sample'\ndependencies = ['django>=5']\n",
+            );
+            workspace.write("index.html", "<p>Missing required manifest table</p>\n");
+            workspace.write(format!(".forge/frameworks/django.{extension}"), &manifest);
+
+            let result = writer::build(&workspace.0, &workspace.db(), None);
+            if result.is_ok() {
+                failures.push(format!(
+                    ".{extension} manifest missing {missing} was accepted"
+                ));
+            }
+            if workspace.db().exists() {
+                failures.push(format!(
+                    "rejected .{extension} manifest missing {missing} published an index"
+                ));
+            }
+        }
+    }
+
+    for extension in ["toml", "yaml", "yml"] {
+        for non_array in tables {
+            let manifest = tables
+                .iter()
+                .map(|table| {
+                    if *table == non_array {
+                        if extension == "toml" {
+                            format!("{table} = 'not-an-array'\n")
+                        } else {
+                            format!("{table}: not-an-array\n")
+                        }
+                    } else if extension == "toml" {
+                        format!("{table} = []\n")
+                    } else {
+                        format!("{table}: []\n")
+                    }
+                })
+                .collect::<String>();
+            let workspace = Workspace::new();
+            workspace.write(
+                "pyproject.toml",
+                "[project]\nname = 'sample'\ndependencies = ['django>=5']\n",
+            );
+            workspace.write("index.html", "<p>Non-array manifest table</p>\n");
+            workspace.write(format!(".forge/frameworks/django.{extension}"), &manifest);
+
+            let result = writer::build(&workspace.0, &workspace.db(), None);
+            if result.is_ok() {
+                failures.push(format!(
+                    ".{extension} manifest with non-array {non_array} was accepted"
+                ));
+            }
+            if workspace.db().exists() {
+                failures.push(format!(
+                    "rejected .{extension} manifest with non-array {non_array} published an index"
+                ));
+            }
+        }
+    }
+
+    let undeclared = Workspace::new();
+    undeclared.write("index.html", "<p>No framework declaration</p>\n");
+    undeclared.write(".forge/frameworks/django.toml", complete_toml);
+    let undeclared_dependencies = DependencyRegistry::collect_with_scan_config(&undeclared.0, None);
+    if undeclared_dependencies
+        .framework_manifest_for_path(LanguageFamily("python"), "index.html", "django", "django")
+        .is_some()
+    {
+        failures.push("an undeclared project received the Django manifest".to_owned());
+    }
+    assert!(
+        failures.is_empty(),
+        "manifest contract failures:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[cfg(feature = "lang-html")]
+#[test]
+fn invalid_user_framework_manifest_fails_before_index_publication() {
+    let complete = "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\n";
+    let mut failures = Vec::new();
+    let invalid_manifests = [
+        ("malformed TOML syntax", "toml", "receivers = [\n".to_owned()),
+        (
+            "duplicate table headers",
+            "toml",
+            format!("{complete}[unused]\nfirst = 1\n[unused]\nsecond = 2\n"),
+        ),
+        (
+            "duplicate keys",
+            "toml",
+            format!("{complete}[unused]\nfirst = 1\nfirst = 2\n"),
+        ),
+        (
+            "required array redeclared as a table",
+            "toml",
+            format!("{complete}[receivers]\nname = 'duplicate-shape'\n"),
+        ),
+        (
+            "nested table before dotted key",
+            "toml",
+            format!(
+                "{complete}[unused.receivers]\nname = 'declared-as-table'\n[unused]\nreceivers = []\n"
+            ),
+        ),
+        (
+            "dotted key before nested table",
+            "toml",
+            format!(
+                "{complete}[unused]\nreceivers = []\n[unused.receivers]\nname = 'declared-as-table'\n"
+            ),
+        ),
+        (
+            "malformed YAML syntax",
+            "yaml",
+            "receivers: [\nbuiltins: []\nfilters: []\nroutes: []\n".to_owned(),
+        ),
+        (
+            "malformed YAML syntax",
+            "yml",
+            "receivers: [\nbuiltins: []\nfilters: []\nroutes: []\n".to_owned(),
+        ),
+    ];
+
+    for (invalid_kind, extension, manifest) in invalid_manifests {
+        let workspace = Workspace::new();
+        workspace.write(
+            "pyproject.toml",
+            "[project]\nname = 'sample'\ndependencies = ['django>=5']\n",
+        );
+        workspace.write(format!(".forge/frameworks/django.{extension}"), &manifest);
+        workspace.write(
+            "shop/views.py",
+            "from django.shortcuts import render\ndef page(request):\n    return render(request, 'templates/page.html', {'title': 'Welcome'})\n",
+        );
+        workspace.write("shop/templates/page.html", "<h1>{{ title }}</h1>\n");
+
+        let result = writer::build(&workspace.0, &workspace.db(), None);
+        if result.is_ok() {
+            failures.push(format!(
+                "a declared Django project with {invalid_kind} in its .{extension} manifest was accepted"
+            ));
+        }
+        if workspace.db().exists() {
+            failures.push(format!(
+                "rejected .{extension} manifest with {invalid_kind} published an index containing framework edges"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "invalid manifest contract failures:\n{}",
+        failures.join("\n")
+    );
 }

@@ -1,461 +1,249 @@
-#[cfg(any(
-    feature = "lang-go",
-    feature = "lang-typescript",
-    feature = "lang-vue",
-    feature = "lang-rust",
-    feature = "lang-proto"
-))]
-use contextunity_forge_mcp::{
-    db::{reader, writer},
-    engine::ast,
-};
-#[cfg(any(
-    feature = "lang-go",
-    feature = "lang-typescript",
-    feature = "lang-vue",
-    feature = "lang-rust",
-    feature = "lang-proto"
-))]
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use super::*;
+use super::super::support::Workspace;
+use std::fs;
 
-#[cfg(any(
-    feature = "lang-go",
-    feature = "lang-typescript",
-    feature = "lang-vue",
-    feature = "lang-rust",
-    feature = "lang-proto"
-))]
-struct Workspace(PathBuf);
-
-#[cfg(any(
-    feature = "lang-go",
-    feature = "lang-typescript",
-    feature = "lang-vue",
-    feature = "lang-rust",
-    feature = "lang-proto"
-))]
-impl Workspace {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "forge_lang_boundaries_{}_{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-    fn write(&self, path: &str, contents: &str) {
-        let path = self.0.join(path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, contents).unwrap();
-    }
-    fn db(&self) -> PathBuf {
-        self.0.join(".forge/code-map.sqlite")
-    }
-    fn build(&self) -> rusqlite::Connection {
-        writer::build(&self.0, &self.db(), None).unwrap();
-        reader::open(&self.db(), &self.0).unwrap()
-    }
-}
-
-#[cfg(any(
-    feature = "lang-go",
-    feature = "lang-typescript",
-    feature = "lang-vue",
-    feature = "lang-rust",
-    feature = "lang-proto"
-))]
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-#[cfg(feature = "lang-typescript")]
 #[test]
-fn javascript_web_factory_results_keep_proven_receivers() {
-    let w = Workspace::new();
+fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
+    use contextunity_forge_mcp::db::{reader, writer};
+
+    let workspace = Workspace::new();
     for (path, source) in [
-        ("dom.js", "function run() { const element = document.querySelector('#root'); element.addEventListener('click', () => {}); const child = element.querySelector('.child'); child.getAttribute('id'); }"),
-        ("fetch.js", "async function run() { const response = await fetch('/api'); response.json(); response.text(); }"),
-        ("fetch_bad_property_call.js", "async function run() { const response = await fetch('/api'); response.status(); }"),
-        ("dom_shadow.js", "function run(document) { const element = document.querySelector('#root'); element.addEventListener('click', () => {}); }"),
-        ("dom_reassigned.js", "function run() { document = {}; const element = document.querySelector('#root'); element.addEventListener('click', () => {}); }"),
-        ("fetch_shadow.js", "async function run(fetch) { const response = await fetch('/api'); response.json(); }"),
-        ("fetch_local_function.js", "async function fetch() { return {}; } async function run() { const response = await fetch('/api'); response.json(); }"),
-        ("fetch_import.js", "import { fetch } from './transport.js'; async function run() { const response = await fetch('/api'); response.json(); }"),
-        ("transport.js", "export async function fetch() { return {}; }"),
-        ("fetch_rebound.js", "async function run() { fetch = async () => ({}); const response = await fetch('/api'); response.json(); }"),
-        ("fetch_plain.js", "function run() { const pending = fetch('/api'); pending.json(); }"),
-        ("fetch_reassigned.js", "async function run() { let response = await fetch('/api'); response = {}; response.json(); }"),
-        ("fetch_unknown.js", "async function run() { const response = await fetch('/api'); response.unsupported(); }"),
-        ("fetch_local.js", "class Response { json() {} } async function run() { const response = new Response(); response.json(); }"),
-        ("nested_page.js", "function outer() { const page = {}; function inner() { page.locator('button'); } inner(); }"),
-        ("nested_page_late.js", "function outer() { function inner() { page.locator('button'); } const page = {}; inner(); }"),
+        (
+            "nuxt/package.json",
+            r#"{"dependencies":{"nuxt":"3.21.9","vue":"3.5.0"}}"#,
+        ),
+        (
+            "nuxt/nuxt.config.ts",
+            "export default defineNuxtConfig({});",
+        ),
+        (
+            "nuxt/src/auto.ts",
+            "const value = computed(() => 1); const state = ref(0);",
+        ),
+        (
+            "nuxt/src/local.ts",
+            "function computed() {} function ref() {} computed(); ref();",
+        ),
+        ("plain/package.json", r#"{"dependencies":{"vue":"3.5.0"}}"#),
+        (
+            "plain/src/plain.ts",
+            "const value = computed(() => 1); const state = ref(0);",
+        ),
     ] {
-        w.write(path, source);
+        let target = workspace.join(path);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, source).unwrap();
     }
-    let conn = w.build();
-    let coverage = |path: &str, expression: &str| -> (String, String) {
-        conn.query_row(
-            "SELECT status, (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
-            rusqlite::params![path, expression],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap_or_else(|error| panic!("missing {path}:{expression}: {error}"))
+    let database = workspace.join(".forge/code-map.sqlite");
+    writer::build(&workspace, &database, None).unwrap();
+    let conn = reader::open(&database, &workspace).unwrap();
+    let coverage = |path: &str, expression: &str| -> Vec<(String, String)> {
+        let mut stmt = conn.prepare("SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2").unwrap();
+        let rows = stmt
+            .query_map(rusqlite::params![path, expression], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        rows.map(Result::unwrap).collect()
     };
-    for (path, expression) in [
-        ("dom.js", "element.addEventListener"),
-        ("dom.js", "child.getAttribute"),
-        ("fetch.js", "response.json"),
-        ("fetch.js", "response.text"),
-    ] {
-        let row = coverage(path, expression);
-        assert_eq!(row.0, "external", "{path}:{expression}: {row:?}");
+    for expression in ["computed", "ref"] {
+        let auto = coverage("nuxt/src/auto.ts", expression);
         assert!(
-            row.1.contains("builtin:web_api"),
-            "{path}:{expression}: {row:?}"
+            auto.iter().any(|(status, evidence)| status == "external"
+                && evidence.contains("builtin:nuxt_autoimport")),
+            "Nuxt {expression}: {auto:?}"
+        );
+        assert!(
+            coverage("nuxt/src/local.ts", expression)
+                .iter()
+                .any(|(status, _)| status == "resolved"),
+            "local {expression}"
+        );
+        let plain = coverage("plain/src/plain.ts", expression);
+        assert!(
+            !plain.is_empty() && plain.iter().all(|(status, _)| status == "unresolved"),
+            "plain {expression}: {plain:?}"
         );
     }
-    for (path, expression) in [
-        ("dom_shadow.js", "element.addEventListener"),
-        ("dom_reassigned.js", "element.addEventListener"),
-        ("fetch_shadow.js", "response.json"),
-        ("fetch_local_function.js", "response.json"),
-        ("fetch_import.js", "response.json"),
-        ("fetch_rebound.js", "response.json"),
-        ("fetch_plain.js", "pending.json"),
-        ("fetch_reassigned.js", "response.json"),
-        ("fetch_unknown.js", "response.unsupported"),
-        ("fetch_bad_property_call.js", "response.status"),
-        ("nested_page.js", "page.locator"),
-        ("nested_page_late.js", "page.locator"),
-    ] {
-        let row = coverage(path, expression);
-        assert_eq!(row.0, "unresolved", "{path}:{expression}: {row:?}");
-    }
-    assert_eq!(coverage("fetch_local.js", "response.json").0, "resolved");
+    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    drop(conn);
 }
 
-#[cfg(feature = "lang-go")]
 #[test]
-fn go_sibling_functions_in_same_package_link() {
-    let w = Workspace::new();
-    w.write(
-        "pkg/helper.go",
-        r#"package mypkg
+fn nuxt_components_import_links_tsx_to_vue_only_for_declared_nuxt() {
+    use contextunity_forge_mcp::db::{reader, writer};
 
-func Helper() int {
-    return 42
-}
-"#,
-    );
-    w.write(
-        "pkg/main.go",
-        r#"package mypkg
-
-func Main() int {
-    return Helper()
-}
-"#,
-    );
-    let conn = w.build();
-
-    let nodes: Vec<(String, String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT id, name, qualname FROM nodes")
-            .unwrap();
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))
-            })
-            .unwrap();
-        rows.map(Result::unwrap).collect()
-    };
-    println!("NODES: {:?}", nodes);
-    let cov: Vec<(String, String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id), status, (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage")
-            .unwrap();
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))
-            })
-            .unwrap();
-        rows.map(Result::unwrap).collect()
-    };
-    println!("COVERAGE: {:?}", cov);
-
-    let calls: Vec<(String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT (SELECT id FROM nodes WHERE node_hash=src_hash), (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='calls'")
-            .unwrap();
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
-            .unwrap();
-        rows.map(Result::unwrap).collect()
-    };
-    assert_eq!(
-        calls.len(),
-        1,
-        "expected 1 call edge between sibling files in same package: {:?}",
-        calls
-    );
-    assert!(calls[0].0.contains("Main"));
-    assert!(calls[0].1.contains("Helper"));
-
-    let resolved: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE status='resolved' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='Helper'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(resolved, 1, "expected Helper to be resolved");
-}
-
-#[cfg(feature = "lang-typescript")]
-#[test]
-fn typescript_lexical_this_nested_arrows() {
-    let w = Workspace::new();
-    w.write(
-        "counter.ts",
-        r#"class Counter {
-  ready = false;
-  static active = true;
-  mark() {}
-  static reset() {}
-  run() {
-    const read = () => this.ready;
-    const call = () => this.mark();
-    const ordinary = function() { return this.ready; };
-    const unknown = () => this.missing;
-    read(); call(); ordinary(); unknown();
-  }
-  static check() {
-    const read = () => this.active;
-    const call = () => this.reset();
-    const bad = () => this.ready;
-    read(); call(); bad();
-  }
-  constructor() {
-    const initialize = () => this.ready;
-    initialize();
-  }
-  nested() {
-    const outer = () => () => this.mark();
-    outer()();
-  }
-  paired() {
-    const both = () => { this.mark(); const handler = this.mark; };
-    both();
-  }
-}
-function outside() { const arrow = () => this.mark(); arrow(); }"#,
-    );
-    w.write(
-        "other.ts",
-        "class Counter { ready = true; missing = 1; mark() {} }",
-    );
-    w.write(
-        "counter.js",
-        "class Counter { ready = false; run() { const read = () => this.ready; read(); } }",
-    );
-    let conn = w.build();
-    let coverage = |path: &str, line: i64, expression: &str| -> String {
-        conn.query_row(
-            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=?2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?3",
-            rusqlite::params![path, line, expression],
-            |row| row.get(0),
-        ).unwrap()
-    };
-    let cov_ev = |path: &str, line: i64, expression: &str| -> (String, String) {
-        conn.query_row(
-            "SELECT status, (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=?2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?3",
-            rusqlite::params![path, line, expression],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap()
-    };
-    for (path, line, expression) in [
-        ("counter.ts", 7, "this.ready"),
-        ("counter.ts", 8, "this.mark"),
-        ("counter.ts", 14, "this.active"),
-        ("counter.ts", 15, "this.reset"),
-        ("counter.ts", 20, "this.ready"),
-        ("counter.ts", 24, "this.mark"),
-        ("counter.js", 1, "this.ready"),
+    let workspace = Workspace::new();
+    for (path, source) in [
+        (
+            "nuxt/package.json",
+            r#"{"dependencies":{"nuxt":"3.21.9","vue":"3.5.0"}}"#,
+        ),
+        (
+            "nuxt/nuxt.config.ts",
+            "export default defineNuxtConfig({});",
+        ),
+        (
+            "nuxt/components/base/WidgetCard.vue",
+            "<template><article>Card</article></template>",
+        ),
+        (
+            "nuxt/src/page.tsx",
+            "import { BaseWidgetCard } from '#components';\n",
+        ),
+        ("plain/package.json", r#"{"dependencies":{"vue":"3.5.0"}}"#),
+        (
+            "plain/components/base/WidgetCard.vue",
+            "<template><article>Card</article></template>",
+        ),
+        (
+            "plain/src/page.vue",
+            "<template><BaseWidgetCard /></template>",
+        ),
     ] {
-        let (st, ev) = cov_ev(path, line, expression);
-        assert_eq!(
-            st, "resolved",
-            "{path}:{line} {expression} (evidence: {ev})"
-        );
+        let target = workspace.join(path);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, source).unwrap();
     }
-    for (line, expression) in [
-        (9, "this.ready"),
-        (10, "this.missing"),
-        (16, "this.ready"),
-        (32, "this.mark"),
-    ] {
-        assert_eq!(
-            coverage("counter.ts", line, expression),
-            "unresolved",
-            "counter.ts:{line} {expression}"
-        );
-    }
-    for (path, line, target, kind) in [
-        ("counter.ts", 7, "ready", "field"),
-        ("counter.ts", 8, "mark", "method"),
-        ("counter.ts", 14, "active", "field"),
-        ("counter.ts", 15, "reset", "method"),
-        ("counter.ts", 20, "ready", "field"),
-        ("counter.ts", 24, "mark", "method"),
-        ("counter.js", 1, "ready", "field"),
-    ] {
-        let edges: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.line=?2 AND e.kind IN ('references','calls') AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.name=?3 AND dst.kind=?4",
-            rusqlite::params![path, line, target, kind],
-            |row| row.get(0),
-        ).unwrap();
-        assert_eq!(
-            edges, 1,
-            "arrow must link to exact same-file {kind} {path}:{line} {target}"
-        );
-    }
-    for kind in ["calls", "references"] {
-        let edges: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='counter.ts' AND e.line=28 AND e.kind=?1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='counter.ts' AND dst.kind='method' AND dst.name='mark'",
-            [kind], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(
-            edges, 1,
-            "same-line captured arrow needs an exact {kind} edge to Counter.mark"
-        );
-    }
-    let sibling_edges: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='counter.ts' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='other.ts'",
-        [], |row| row.get(0),
-    ).unwrap();
-    assert_eq!(
-        sibling_edges, 0,
-        "same-name Counter in sibling file cannot provide this members"
-    );
-}
-
-#[cfg(feature = "lang-typescript")]
-#[test]
-fn javascript_typescript_mjs_cjs_and_package_exports() {
-    let w = Workspace::new();
-    w.write(
-        "packages/math/package.json",
-        r#"{
-  "name": "@acme/math",
-  "exports": {
-    ".": "./src/index.mjs",
-    "./calculator": "./src/calc.cjs"
-  }
-}
-"#,
-    );
-    w.write(
-        "packages/math/src/index.mjs",
-        r#"export function add(a, b) {
-    return a + b;
-}
-"#,
-    );
-    w.write(
-        "packages/math/src/calc.cjs",
-        r#"exports.multiply = function(a, b) {
-    return a * b;
-};
-"#,
-    );
-    w.write(
-        "packages/app/src/main.ts",
-        r#"import { add } from "@acme/math";
-import { multiply } from "@acme/math/calculator";
-
-export function run() {
-    return add(2, 3);
-}
-"#,
-    );
-
-    let conn = w.build();
-
-    let modules: Vec<(String, String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT n.id, n.qualname, p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='module'")
-            .unwrap();
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))
-            })
-            .unwrap();
-        rows.map(Result::unwrap).collect()
+    let database = workspace.join(".forge/code-map.sqlite");
+    writer::build(&workspace, &database, None).unwrap();
+    let conn = reader::open(&database, &workspace).unwrap();
+    let statuses = |path: &str| -> Vec<String> {
+        conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='BaseWidgetCard' ORDER BY line,status")
+            .unwrap()
+            .query_map([path], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
     };
-    println!("MODULES: {:?}", modules);
-    let cov: Vec<(String, String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id), status, (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage")
-            .unwrap();
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))
-            })
-            .unwrap();
-        rows.map(Result::unwrap).collect()
-    };
-    println!("COVERAGE: {:?}", cov);
-
-    // Verify .mjs and .cjs were scanned and extracted
-    let mjs_count: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM files WHERE path LIKE '%.mjs'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(mjs_count, 1);
-
-    let cjs_count: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM files WHERE path LIKE '%.cjs'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(cjs_count, 1);
-
-    // Verify import edges resolved via package.json exports
-    let import_edges: Vec<(String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT (SELECT id FROM nodes WHERE node_hash=src_hash), (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='imports'")
-            .unwrap();
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
-            .unwrap();
-        rows.map(Result::unwrap).collect()
-    };
+    let nuxt_import_targets: Vec<String> = conn
+        .prepare("SELECT DISTINCT target_path.path FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN path_dictionary owner ON owner.path_id=e.owner_id JOIN path_dictionary target_path ON target_path.path_id=dst.path_id WHERE owner.path='nuxt/src/page.tsx' AND e.kind='imports' ORDER BY target_path.path")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let nuxt_statuses = statuses("nuxt/src/page.tsx");
+    let plain_statuses = statuses("plain/src/page.vue");
+    let expected_target = ["nuxt/components/base/WidgetCard.vue"];
     assert!(
-        import_edges
+        nuxt_statuses.iter().any(|status| status == "resolved")
+            && nuxt_import_targets == expected_target
+            && plain_statuses == ["unresolved"],
+        "#components must resolve through the declared Nuxt linker while a plain Vue tag stays unresolved; nuxt statuses={nuxt_statuses:?}, import targets={nuxt_import_targets:?}, plain statuses={plain_statuses:?}"
+    );
+    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    drop(conn);
+}
+
+#[cfg(feature = "lang-vue")]
+#[test]
+fn vue_profile_parser_reuse_tracks_the_selected_grammar() {
+    let profile =
+        contextunity_forge_mcp::engine::languages::by_id("vue").expect("Vue profile is compiled");
+    for (path, source, expected_name) in [
+        (
+            "First.vue",
+            "export function First() { return 1; }",
+            "First",
+        ),
+        (
+            "Second.tsx",
+            "export function Second() { return <button />; }",
+            "Second",
+        ),
+        ("Third.js", "export function Third() { return 1; }", "Third"),
+    ] {
+        let mut facts = contextunity_forge_mcp::core::models::Facts::default();
+        contextunity_forge_mcp::engine::languages::parse_file(
+            profile, path, source, path, &mut facts,
+        )
+        .expect("Vue profile parse failed");
+        assert!(facts.errors.is_empty(), "{path}: {:?}", facts.errors);
+        assert!(facts
+            .nodes
             .iter()
-            .any(|(_, dst)| dst.contains("index.mjs")),
-        "expected import edge to index.mjs: {:?}",
-        import_edges
+            .any(|node| node.name == expected_name && node.kind == "function"));
+    }
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn javascript_routes_preserve_middleware_and_framework_decorators_with_finite_receivers() {
+    let source = "function auth() {}\nfunction view() {}\napp.get('/items', auth, view);\nserver.put('^items$', view);\napi.delete('/items', view);\nblueprint.patch('/items', view);\nroute.options('/items', view);\nrouter.head('/items', view);\napp.get('/asserted', view as Handler);\napp.get('/non-null', (view!));\napp.get('/type-assertion', <Handler>view);\napp.get('/string-as', 'view' as unknown as Handler);\nconst routes = [{path: 'settings', component: view}];\nclass Controller { @Get('/box') show() {} }\ncache.get('/setting', view);\napp.get('setting', view);\nget('/setting', view);\napp.get('/number', 0);\napp.get('/negative', -1);\napp.get('/boolean', true);\napp.get('/null', null);\napp.get('/string', 'view');\napp.get('/template', `view`);\napp.get('/array', [view]);\napp.get('/object', {view});\nconst values = [{path: '/primitive', component: false}];\nfunction configure(options) {}\nconfigure({path: '/settings', component: view});\naxios . get('/users');\nclient .post('/api/orders');\n";
+    let facts = ast::extract("routes.ts", "typescript", source).unwrap();
+    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+    let mut routes: Vec<_> = facts
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "route")
+        .map(|node| node.name.as_str())
+        .collect();
+    routes.sort_unstable();
+    assert!(routes.contains(&"ANY settings"));
+    assert!(facts
+        .references
+        .iter()
+        .any(|reference| reference.kind == "calls" && reference.expression == "configure"));
+    for expression in ["GET /users", "POST /api/orders"] {
+        assert!(
+            facts.references.iter().any(|reference| {
+                reference.kind == "calls_endpoint" && reference.expression == expression
+            }),
+            "missing endpoint reference {expression}: {:?}",
+            facts.references
+        );
+    }
+    assert_eq!(
+        routes,
+        [
+            "ANY settings",
+            "DELETE /items",
+            "GET /asserted",
+            "GET /box",
+            "GET /items",
+            "GET /non-null",
+            "GET /type-assertion",
+            "HEAD /items",
+            "OPTIONS /items",
+            "PATCH /items",
+            "PUT ^items$"
+        ]
     );
-    assert!(
-        import_edges.iter().any(|(_, dst)| dst.contains("calc.cjs")),
-        "expected import edge to calc.cjs: {:?}",
-        import_edges
+    let items = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "GET /items")
+        .unwrap();
+    assert_eq!(
+        items.details["handlers"],
+        serde_json::json!(["auth", "view"])
     );
+    assert!(facts
+        .references
+        .iter()
+        .any(|reference| reference.kind == "calls"
+            && reference.expression == "cache.get"
+            && reference.line == 15));
+    let decorated = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "GET /box")
+        .unwrap();
+    let handler = facts.nodes.iter().find(|node| node.name == "show").unwrap();
+    assert!(facts
+        .edges
+        .iter()
+        .any(|edge| edge.src == decorated.id && edge.dst == handler.id && edge.kind == "handles"));
+    let graph = linker::link(&BTreeMap::from([("routes.ts".to_owned(), facts.clone())]));
+    let view = facts.nodes.iter().find(|node| node.name == "view").unwrap();
+    for name in ["GET /asserted", "GET /non-null", "GET /type-assertion"] {
+        let route = facts.nodes.iter().find(|node| node.name == name).unwrap();
+        assert!(graph
+            .edges
+            .iter()
+            .any(|edge| edge.src == route.id && edge.dst == view.id && edge.kind == "handles"));
+    }
 }
 
 #[cfg(feature = "lang-vue")]
@@ -1706,184 +1494,6 @@ const target = { title: "World" };
     assert!(
         !expressions.contains(&"World"),
         "must NOT contain 'World': {expressions:?}"
-    );
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn rust_macros_and_cargo_workspace() {
-    let w = Workspace::new();
-    w.write(
-        "crates/core/src/macros.rs",
-        r#"#[macro_export]
-macro_rules! log_info {
-    ($msg:expr) => {
-        println!("{}", $msg)
-    };
-}
-
-"#,
-    );
-    w.write(
-        "crates/core/src/lib.rs",
-        r#"pub mod macros;
-
-use crate::macros::log_info;
-
-pub fn execute() {
-    log_info!("running");
-    println!("standard macro");
-}
-"#,
-    );
-
-    let conn = w.build();
-
-    // Verify macro node is indexed
-    let macro_count: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM nodes WHERE kind='macro' AND name='log_info'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        macro_count, 1,
-        "expected log_info macro to be extracted as kind='macro'"
-    );
-
-    // Verify standard-library println retains external provenance.
-    let println_external: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='println' AND status='external'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        println_external, 1,
-        "expected println macro to retain standard-library provenance"
-    );
-
-    // Verify crate:: import resolved to crates.core.src prefix
-    let import_resolved: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM resolution_coverage WHERE (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id) LIKE '%log_info%' AND status='resolved'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(
-        import_resolved >= 1,
-        "expected crate:: import of log_info to be resolved"
-    );
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn rust_manifest_types_preserve_receiver_origin_for_aliases_and_qualified_names() {
-    let w = Workspace::new();
-    w.write("Cargo.toml", "[package]\nname = \"receiver-provenance\"\nversion = \"0.1.0\"\n[dependencies]\nstorage-api = \"1\"\n");
-    w.write("src/lib.rs", "use storage_api::Connection as DbConnection;\nfn imported(conn: &DbConnection) { conn.query(); }\nfn qualified(conn: &storage_api::Connection) { conn.query(); }\nfn generic(conn: &storage_api::Connection<u8>) { conn.query(); }\nfn associated(conn: &storage_api::Connection<u8>::Item<u8>) { conn.query(); }\nstruct Local;\nfn local(value: &Local) { value.query(); }\nfn undeclared(value: &missing_api::Connection) { value.query(); }\n");
-    let conn = w.build();
-    let mut statement = conn.prepare("SELECT c.line, e.expression, c.status, v.evidence FROM resolution_coverage c JOIN coverage_expressions e ON e.expression_id = c.expression_id JOIN coverage_evidence v ON v.evidence_id = c.evidence_id WHERE e.expression IN ('conn.query', 'value.query') ORDER BY c.line").unwrap();
-    let rows: Vec<(i64, String, String, String)> = statement
-        .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    for line in [2, 3, 4] {
-        assert!(
-            rows.iter()
-                .any(|(at, expression, status, evidence)| *at == line
-                    && expression == "conn.query"
-                    && status == "external"
-                    && evidence.contains("storage_api")),
-            "{rows:#?}"
-        );
-    }
-    assert!(
-        rows.iter().any(|(at, expression, status, _)| *at == 5
-            && expression == "conn.query"
-            && status == "unresolved"),
-        "{rows:#?}"
-    );
-    for line in [7, 8] {
-        assert!(
-            rows.iter().any(|(at, expression, status, _)| *at == line
-                && expression == "value.query"
-                && status == "unresolved"),
-            "{rows:#?}"
-        );
-    }
-}
-
-#[cfg(feature = "lang-proto")]
-#[test]
-fn proto_package_qualified_types_and_fields() {
-    let w = Workspace::new();
-    w.write(
-        "protos/auth.proto",
-        r#"syntax = "proto3";
-
-package mycompany.auth;
-
-message Credentials {
-    string username = 1;
-    string token = 2;
-}
-
-message Session {
-    mycompany.auth.Credentials creds = 1;
-}
-
-service AuthService {
-    rpc Login(mycompany.auth.Credentials) returns (Session);
-}
-"#,
-    );
-
-    let facts = ast::extract(
-        "protos/auth.proto",
-        "proto",
-        &fs::read_to_string(w.0.join("protos/auth.proto")).unwrap(),
-    )
-    .unwrap();
-
-    // Verify module qualname is package
-    let module_node = facts.nodes.iter().find(|n| n.kind == "module").unwrap();
-    assert_eq!(module_node.qualname, "mycompany.auth");
-
-    // Verify field references was extracted
-    let field_refs: Vec<&str> = facts
-        .references
-        .iter()
-        .filter(|r| r.kind == "references")
-        .map(|r| r.expression.as_str())
-        .collect();
-    assert!(
-        field_refs.contains(&"mycompany.auth.Credentials"),
-        "expected field reference to mycompany.auth.Credentials: {:?}",
-        field_refs
-    );
-
-    // Verify build & link
-    let conn = w.build();
-    let ref_edges: Vec<(String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT (SELECT id FROM nodes WHERE node_hash=src_hash), (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='references'")
-            .unwrap();
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
-            .unwrap();
-        rows.map(Result::unwrap).collect()
-    };
-    assert!(
-        ref_edges.iter().any(|(_, dst)| dst.contains("Credentials")),
-        "expected reference edge to Credentials: {:?}",
-        ref_edges
     );
 }
 

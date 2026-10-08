@@ -1,75 +1,10 @@
-#![cfg(feature = "lang-python")]
-
+use super::*;
+use super::PythonWorkspace as Workspace;
 use contextunity_forge_mcp::{
-    core::{
-        commitments,
-        response::{CoverageOptions, QueryOptions, ResponsePolicy},
-    },
-    db::{reader, traversal, writer},
+    core::response::{CoverageOptions, QueryOptions, ResponsePolicy},
+    db::{reader, traversal},
 };
 use rusqlite::Connection;
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
-
-struct Workspace(PathBuf);
-
-impl Workspace {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "forge_external_calls_{}_{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-
-    fn write(&self, path: &str, source: &str) {
-        let path = self.0.join(path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, source).unwrap();
-    }
-
-    fn db(&self) -> PathBuf {
-        self.0.join(".forge/code-map.sqlite")
-    }
-    fn build(&self) {
-        writer::build(&self.0, &self.db(), None).unwrap();
-    }
-    fn delta(&self, path: &str) {
-        writer::delta(&self.0, &self.db(), &[PathBuf::from(path)]).unwrap();
-    }
-    fn open(&self) -> Connection {
-        reader::open(&self.db(), &self.0).unwrap()
-    }
-
-    fn assert_cold_equivalent(&self) {
-        let incremental = self.open();
-        commitments::verify(&incremental).unwrap();
-        let cold_path = self.0.join(".forge/cold.sqlite");
-        writer::build(&self.0, &cold_path, None).unwrap();
-        let cold = reader::open(&cold_path, &self.0).unwrap();
-        commitments::verify(&cold).unwrap();
-        for sql in [
-            "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
-            "SELECT (SELECT id FROM nodes WHERE node_hash=src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=dst_hash)||'|'||kind FROM edges ORDER BY (SELECT id FROM nodes WHERE node_hash=src_hash),(SELECT id FROM nodes WHERE node_hash=dst_hash),kind",
-        ] {
-            assert_eq!(rows(&incremental, sql), rows(&cold, sql), "{sql}");
-        }
-    }
-}
-
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 fn coverage(conn: &Connection, line: i64, expression: &str) -> (String, String) {
     coverage_at(conn, "consumer.py", line, expression)
@@ -565,4 +500,59 @@ fn module_qualified_framework_call_requires_an_earlier_import_position() {
     let (status, evidence) = coverage_at(&conn, "after.py", 1, "models.Record.model_validate");
     assert_eq!(status, "external", "{evidence}");
     assert!(evidence.contains("pydantic"), "{evidence}");
+}
+
+#[cfg(feature = "lang-python")]
+#[test]
+fn python_routes_preserve_http_decorators_and_django_patterns_as_mapping_calls_remain_calls() {
+    let source = "def auth(): pass\ndef handler(): pass\napp.get('/items', auth, handler)\nrouter.post('^item$', handler)\npath('items/', handler)\nre_path('^items/', handler)\ndjango.urls.path('', handler)\n@bp.route('/multi', methods=['GET', 'PATCH'])\ndef decorated(): pass\n@mapping.get('/lookup')\ndef mapped(): pass\nconfig.get('section', handler)\napp.get('setting', handler)\nconfig.get('/setting', handler)\napp.get('/number', 0)\napp.get('/negative', -1)\napp.get('/boolean', True)\napp.get('/none', None)\napp.get('/string', 'handler')\napp.get('/list', [handler])\napp.get('/tuple', (handler,))\napp.get('/mapping', {'handler': handler})\n";
+    let facts = ast::extract("routes.py", "python", source).unwrap();
+    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+    let mut routes: Vec<_> = facts
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "route")
+        .map(|node| node.name.as_str())
+        .collect();
+    routes.sort_unstable();
+    assert_eq!(
+        routes,
+        [
+            "ANY ",
+            "ANY ^items/",
+            "ANY items/",
+            "GET /items",
+            "GET /multi",
+            "PATCH /multi",
+            "POST ^item$"
+        ]
+    );
+    let items = facts
+        .nodes
+        .iter()
+        .find(|node| node.name == "GET /items")
+        .unwrap();
+    assert_eq!(
+        items.details["handlers"],
+        serde_json::json!(["auth", "handler"])
+    );
+    let ordinary_calls: Vec<_> = facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == "calls" && reference.expression == "config.get")
+        .map(|reference| reference.line)
+        .collect();
+    assert_eq!(ordinary_calls, [12, 14]);
+    for name in ["GET /multi", "PATCH /multi"] {
+        let route = facts.nodes.iter().find(|node| node.name == name).unwrap();
+        let handler = facts
+            .nodes
+            .iter()
+            .find(|node| node.name == "decorated")
+            .unwrap();
+        assert!(facts
+            .edges
+            .iter()
+            .any(|edge| edge.src == route.id && edge.dst == handler.id && edge.kind == "handles"));
+    }
 }

@@ -1,6 +1,75 @@
 #![cfg(feature = "lang-proto")]
 
 use contextunity_forge_mcp::engine::ast;
+use super::support::Workspace;
+use std::fs;
+
+#[cfg(feature = "lang-proto")]
+#[test]
+fn proto_package_qualified_types_and_fields() {
+    let w = Workspace::new();
+    w.write(
+        "protos/auth.proto",
+        r#"syntax = "proto3";
+
+package mycompany.auth;
+
+message Credentials {
+    string username = 1;
+    string token = 2;
+}
+
+message Session {
+    mycompany.auth.Credentials creds = 1;
+}
+
+service AuthService {
+    rpc Login(mycompany.auth.Credentials) returns (Session);
+}
+"#,
+    );
+
+    let facts = ast::extract(
+        "protos/auth.proto",
+        "proto",
+        &fs::read_to_string(w.0.join("protos/auth.proto")).unwrap(),
+    )
+    .unwrap();
+
+    // Verify module qualname is package
+    let module_node = facts.nodes.iter().find(|n| n.kind == "module").unwrap();
+    assert_eq!(module_node.qualname, "mycompany.auth");
+
+    // Verify field references was extracted
+    let field_refs: Vec<&str> = facts
+        .references
+        .iter()
+        .filter(|r| r.kind == "references")
+        .map(|r| r.expression.as_str())
+        .collect();
+    assert!(
+        field_refs.contains(&"mycompany.auth.Credentials"),
+        "expected field reference to mycompany.auth.Credentials: {:?}",
+        field_refs
+    );
+
+    // Verify build & link
+    let conn = w.build();
+    let ref_edges: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT (SELECT id FROM nodes WHERE node_hash=src_hash), (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='references'")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
+            .unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+    assert!(
+        ref_edges.iter().any(|(_, dst)| dst.contains("Credentials")),
+        "expected reference edge to Credentials: {:?}",
+        ref_edges
+    );
+}
 
 #[test]
 fn test_proto_ast_extractor() {

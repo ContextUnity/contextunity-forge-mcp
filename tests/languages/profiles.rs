@@ -1,199 +1,205 @@
-#[cfg(any(
-    feature = "lang-python",
-    feature = "lang-rust",
-    feature = "lang-java",
-    feature = "lang-csharp",
-    feature = "lang-kotlin",
-    feature = "lang-php",
-    feature = "lang-ruby",
-    feature = "lang-c",
-    feature = "lang-cpp"
-))]
 use contextunity_forge_mcp::db::{reader, writer};
-#[cfg(any(
-    feature = "lang-python",
-    feature = "lang-rust",
-    feature = "lang-typescript",
-    feature = "lang-java",
-    feature = "lang-csharp",
-    feature = "lang-kotlin",
-    feature = "lang-php",
-    feature = "lang-ruby",
-    feature = "lang-c",
-    feature = "lang-cpp"
-))]
 use contextunity_forge_mcp::engine::ast;
-#[cfg(feature = "lang-rust")]
-use contextunity_forge_mcp::{
-    cli,
-    core::response::{Detail, QueryOptions, ResponsePolicy},
-};
-#[cfg(any(
-    feature = "lang-python",
-    feature = "lang-rust",
-    feature = "lang-java",
-    feature = "lang-csharp",
-    feature = "lang-kotlin",
-    feature = "lang-php",
-    feature = "lang-ruby",
-    feature = "lang-c",
-    feature = "lang-cpp"
-))]
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use super::support::Workspace;
+use std::{fs, path::PathBuf};
 
-#[cfg(any(
-    feature = "lang-python",
-    feature = "lang-rust",
-    feature = "lang-java",
-    feature = "lang-csharp",
-    feature = "lang-kotlin",
-    feature = "lang-php",
-    feature = "lang-ruby",
-    feature = "lang-c",
-    feature = "lang-cpp"
-))]
-struct Workspace(PathBuf);
-#[cfg(any(
-    feature = "lang-python",
-    feature = "lang-rust",
-    feature = "lang-java",
-    feature = "lang-csharp",
-    feature = "lang-kotlin",
-    feature = "lang-php",
-    feature = "lang-ruby",
-    feature = "lang-c",
-    feature = "lang-cpp"
-))]
-impl Workspace {
-    fn new() -> Self {
-        let n = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("forge_profiles_{}_{n}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-    fn write(&self, name: &str, source: &str) {
-        let path = self.0.join(name);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, source).unwrap();
-    }
-    fn db(&self) -> PathBuf {
-        self.0.join(".forge/code-map.sqlite")
-    }
-    fn build(&self) {
-        writer::build(&self.0, &self.db(), None).unwrap();
-    }
-}
-#[cfg(any(
-    feature = "lang-python",
-    feature = "lang-rust",
-    feature = "lang-java",
-    feature = "lang-csharp",
-    feature = "lang-kotlin",
-    feature = "lang-php",
-    feature = "lang-ruby",
-    feature = "lang-c",
-    feature = "lang-cpp"
-))]
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+fn persisted_graph(w: &Workspace) -> Vec<Vec<String>> {
+    let conn = reader::open(&w.db(), &w.0).unwrap();
+    [
+        "SELECT id||'|'||qualname||'|'||details FROM nodes ORDER BY id",
+        "SELECT (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash)||'|'||kind||'|'||(SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)||'|'||line||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=edge_occurrences.confidence_id) FROM edge_occurrences ORDER BY (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash),kind,line",
+        "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
+    ].iter().map(|sql| {
+        conn.prepare(sql).unwrap().query_map([], |r|r.get(0)).unwrap().collect::<Result<Vec<String>,_>>().unwrap()
+    }).collect()
 }
 
-#[cfg(feature = "lang-rust")]
+#[cfg(feature = "lang-go")]
 #[test]
-fn public_ast_search_keeps_rust_body_only_literal_candidates() {
-    let workspace = Workspace::new();
-    workspace.write("src/a_candidate.rs", "fn coverage_owner_language() {}\n");
-    workspace.write(
-        "src/z_body.rs",
-        "fn other() { let value = \"coverage_owner_language\"; }\n",
+fn go_sibling_functions_in_same_package_link() {
+    let w = Workspace::new();
+    w.write(
+        "pkg/helper.go",
+        r#"package mypkg
+
+func Helper() int {
+    return 42
+}
+"#,
     );
-    workspace.build();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let options = QueryOptions::resolve(
-        &ResponsePolicy::default(),
-        Some(10),
-        0,
-        Some(Detail::Compact),
-        None,
-    )
-    .unwrap();
+    w.write(
+        "pkg/main.go",
+        r#"package mypkg
 
-    let result = cli::ast::search_paged(
-        &conn,
-        &workspace.0,
-        "\"coverage_owner_language\"",
-        "rust",
-        None,
-        &options,
-    )
-    .unwrap();
-    let items = result["matches"]["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "{result}");
-    assert_eq!(items[0]["path"], "src/z_body.rs");
-    assert_eq!(items[0]["text"], "\"coverage_owner_language\"");
+func Main() int {
+    return Helper()
+}
+"#,
+    );
+    let conn = w.build();
+
+    let nodes: Vec<(String, String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, name, qualname FROM nodes")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))
+            })
+            .unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+    println!("NODES: {:?}", nodes);
+    let cov: Vec<(String, String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id), status, (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0).unwrap(), r.get(1).unwrap(), r.get(2).unwrap()))
+            })
+            .unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+    println!("COVERAGE: {:?}", cov);
+
+    let calls: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT (SELECT id FROM nodes WHERE node_hash=src_hash), (SELECT id FROM nodes WHERE node_hash=dst_hash) FROM edges WHERE kind='calls'")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
+            .unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+    assert_eq!(
+        calls.len(),
+        1,
+        "expected 1 call edge between sibling files in same package: {:?}",
+        calls
+    );
+    assert!(calls[0].0.contains("Main"));
+    assert!(calls[0].1.contains("Helper"));
+
+    let resolved: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM resolution_coverage WHERE status='resolved' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='Helper'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(resolved, 1, "expected Helper to be resolved");
 }
 
 #[cfg(feature = "lang-rust")]
 #[test]
-fn public_ast_search_reports_structured_tree_sitter_pattern_diagnostics() {
-    fn smallest_error(root: tree_sitter::Node<'_>) -> Option<std::ops::Range<usize>> {
-        let mut stack = vec![root];
-        let mut smallest = None;
-        while let Some(node) = stack.pop() {
-            if node.is_error() && node.start_byte() < node.end_byte() {
-                let range = node.start_byte()..node.end_byte();
-                if smallest
-                    .as_ref()
-                    .is_none_or(|current: &std::ops::Range<usize>| range.len() < current.len())
-                {
-                    smallest = Some(range);
-                }
-            }
-            let mut cursor = node.walk();
-            stack.extend(node.children(&mut cursor));
-        }
-        smallest
-    }
+fn rust_macros_and_cargo_workspace() {
+    let w = Workspace::new();
+    w.write(
+        "crates/core/src/macros.rs",
+        r#"#[macro_export]
+macro_rules! log_info {
+    ($msg:expr) => {
+        println!("{}", $msg)
+    };
+}
 
-    let workspace = Workspace::new();
-    workspace.write("src/lib.rs", "fn valid() {}\n");
-    workspace.build();
-    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
-    let options = QueryOptions::resolve(
-        &ResponsePolicy::default(),
-        Some(10),
-        0,
-        Some(Detail::Compact),
-        None,
-    )
-    .unwrap();
-    let pattern = "let = ;";
-    let result =
-        cli::ast::search_paged(&conn, &workspace.0, pattern, "rust", None, &options).unwrap();
-    let mut parser = contextunity_forge_mcp::engine::ast::parser("rust", "src/lib.rs").unwrap();
-    let tree = parser.parse(pattern, None).unwrap();
-    let expected = smallest_error(tree.root_node()).expect("pattern has a nonempty ERROR node");
-    let diagnostic = &result["diagnostic"];
+"#,
+    );
+    w.write(
+        "crates/core/src/lib.rs",
+        r#"pub mod macros;
 
-    assert_eq!(diagnostic["code"], "unsupported_ast_pattern");
-    assert_eq!(diagnostic["language"], "rust");
-    assert_eq!(diagnostic["span"]["start_byte"], expected.start);
-    assert_eq!(diagnostic["span"]["end_byte"], expected.end);
+use crate::macros::log_info;
+
+pub fn execute() {
+    log_info!("running");
+    println!("standard macro");
+}
+"#,
+    );
+
+    let conn = w.build();
+
+    // Verify macro node is indexed
+    let macro_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM nodes WHERE kind='macro' AND name='log_info'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        macro_count, 1,
+        "expected log_info macro to be extracted as kind='macro'"
+    );
+
+    // Verify standard-library println retains external provenance.
+    let println_external: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM resolution_coverage WHERE (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='println' AND status='external'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        println_external, 1,
+        "expected println macro to retain standard-library provenance"
+    );
+
+    // Verify crate:: import resolved to crates.core.src prefix
+    let import_resolved: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM resolution_coverage WHERE (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id) LIKE '%log_info%' AND status='resolved'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert!(
-        diagnostic["span"]["end_byte"].as_u64().unwrap()
-            > diagnostic["span"]["start_byte"].as_u64().unwrap()
+        import_resolved >= 1,
+        "expected crate:: import of log_info to be resolved"
     );
-    assert!(!diagnostic["hint"].as_str().unwrap().is_empty());
-    assert!(!diagnostic["examples"].as_array().unwrap().is_empty());
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn rust_manifest_types_preserve_receiver_origin_for_aliases_and_qualified_names() {
+    let w = Workspace::new();
+    w.write("Cargo.toml", "[package]\nname = \"receiver-provenance\"\nversion = \"0.1.0\"\n[dependencies]\nstorage-api = \"1\"\n");
+    w.write("src/lib.rs", "use storage_api::Connection as DbConnection;\nfn imported(conn: &DbConnection) { conn.query(); }\nfn qualified(conn: &storage_api::Connection) { conn.query(); }\nfn generic(conn: &storage_api::Connection<u8>) { conn.query(); }\nfn associated(conn: &storage_api::Connection<u8>::Item<u8>) { conn.query(); }\nstruct Local;\nfn local(value: &Local) { value.query(); }\nfn undeclared(value: &missing_api::Connection) { value.query(); }\n");
+    let conn = w.build();
+    let mut statement = conn.prepare("SELECT c.line, e.expression, c.status, v.evidence FROM resolution_coverage c JOIN coverage_expressions e ON e.expression_id = c.expression_id JOIN coverage_evidence v ON v.evidence_id = c.evidence_id WHERE e.expression IN ('conn.query', 'value.query') ORDER BY c.line").unwrap();
+    let rows: Vec<(i64, String, String, String)> = statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    for line in [2, 3, 4] {
+        assert!(
+            rows.iter()
+                .any(|(at, expression, status, evidence)| *at == line
+                    && expression == "conn.query"
+                    && status == "external"
+                    && evidence.contains("storage_api")),
+            "{rows:#?}"
+        );
+    }
+    assert!(
+        rows.iter().any(|(at, expression, status, _)| *at == 5
+            && expression == "conn.query"
+            && status == "unresolved"),
+        "{rows:#?}"
+    );
+    for line in [7, 8] {
+        assert!(
+            rows.iter().any(|(at, expression, status, _)| *at == line
+                && expression == "value.query"
+                && status == "unresolved"),
+            "{rows:#?}"
+        );
+    }
 }
 
 #[cfg(feature = "lang-python")]
@@ -300,27 +306,6 @@ fn module_conventions_are_language_specific() {
         let f = ast::extract(path, language, "").unwrap();
         assert_eq!(f.nodes[0].qualname, expected, "{path}");
     }
-}
-
-#[cfg(any(
-    feature = "lang-python",
-    feature = "lang-java",
-    feature = "lang-csharp",
-    feature = "lang-kotlin",
-    feature = "lang-php",
-    feature = "lang-ruby",
-    feature = "lang-c",
-    feature = "lang-cpp"
-))]
-fn persisted_graph(w: &Workspace) -> Vec<Vec<String>> {
-    let conn = reader::open(&w.db(), &w.0).unwrap();
-    [
-        "SELECT id||'|'||qualname||'|'||details FROM nodes ORDER BY id",
-        "SELECT (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash)||'|'||kind||'|'||(SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)||'|'||line||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=edge_occurrences.confidence_id) FROM edge_occurrences ORDER BY (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash),kind,line",
-        "SELECT (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)||'|'||line||'|'||(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)||'|'||status||'|'||(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage ORDER BY (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id),line,(SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id),status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)",
-    ].iter().map(|sql| {
-        conn.prepare(sql).unwrap().query_map([], |r|r.get(0)).unwrap().collect::<Result<Vec<String>,_>>().unwrap()
-    }).collect()
 }
 
 #[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
@@ -452,7 +437,7 @@ fn automatic_registry_has_unique_languages_and_extensions() {
 ))]
 #[test]
 fn popular_languages_persist_calls_relations_diagnostics_and_delta() {
-    let fixtures = [
+    let fixtures: &[(&str, &str, &str, i64)] = &[
         #[cfg(feature = "lang-java")]
         (
             "sample.java",
@@ -577,7 +562,7 @@ class Worker : public Base {
             1,
         ),
     ];
-    for (path, language, source, relations) in fixtures {
+    for (path, language, source, relations) in fixtures.iter().copied() {
         let w = Workspace::new();
         w.write(path, source);
         w.build();

@@ -1,114 +1,39 @@
-#![cfg(feature = "lang-python")]
+use super::*;
+use super::PythonWorkspace as Workspace;
+use rusqlite::Connection;
+use std::path::PathBuf;
 
-use contextunity_forge_mcp::{
-    core::models::ReceiverHint,
-    engine::{ast, linker},
-};
-use serde_json::json;
-use std::collections::BTreeMap;
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
-
-struct PythonWorkspace(PathBuf);
-
-impl PythonWorkspace {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "forge_python_semantics_{}_{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-
-    fn write(&self, path: &str, source: &str) {
-        let target = self.0.join(path);
-        fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(target, source).unwrap();
-    }
-
-    fn build(&self) -> rusqlite::Connection {
-        let db = self.0.join(".forge/code-map.sqlite");
-        contextunity_forge_mcp::db::writer::build(&self.0, &db, None).unwrap();
-        contextunity_forge_mcp::db::reader::open(&db, &self.0).unwrap()
-    }
+fn rows(conn: &Connection, sql: &str) -> Vec<String> {
+    conn.prepare(sql)
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
 }
 
-impl Drop for PythonWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn linked_python_roots() -> (PythonWorkspace, PythonWorkspace) {
-    let primary = PythonWorkspace::new();
-    let second = PythonWorkspace::new();
-    primary.write(
-        "forge-mcp.yaml",
-        &format!(
-        "roots: [src]\nlinked_workspaces:\n  - name: second\n    path: '{}'\n    roots: [src]\n",
-        second.0.display()
-    ),
-    );
-    (primary, second)
-}
-
-fn persisted_import(
-    conn: &rusqlite::Connection,
-    path: &str,
-    line: i64,
-    name: &str,
-) -> (String, Vec<String>) {
-    let status = conn.query_row(
-        "SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND c.line=?2 AND x.expression=?3",
-        rusqlite::params![path, line, name], |row| row.get(0),
-    ).unwrap_or_else(|_| panic!("missing import coverage {path}:{line} {name}"));
-    let targets = conn.prepare(
-        "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) || ':' || dst.name FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE p.path=?1 AND e.line=?2 AND e.kind='imports' AND v.evidence=?3 ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id),dst.name",
-    ).unwrap().query_map(rusqlite::params![path, line, name], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
-    (status, targets)
-}
-
-fn persisted_status(
-    conn: &rusqlite::Connection,
-    path: &str,
-    line: i64,
-    expression: &str,
-) -> String {
+fn status(conn: &Connection, expression: &str) -> String {
     conn.query_row(
-        "SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND c.line=?2 AND x.expression=?3",
-        rusqlite::params![path, line, expression], |row| row.get(0),
-    ).unwrap_or_else(|_| panic!("missing coverage {path}:{line} {expression}"))
+        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1 AND line=1",
+        [expression],
+        |row| row.get(0),
+    ).unwrap()
 }
 
-fn persisted_coverage(
-    conn: &rusqlite::Connection,
-    path: &str,
-    line: i64,
-    expression: &str,
-) -> (String, String) {
-    conn.query_row(
-        "SELECT c.status,e.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE p.path=?1 AND c.line=?2 AND x.expression=?3",
-        rusqlite::params![path, line, expression], |row| Ok((row.get(0)?, row.get(1)?)),
-    ).unwrap_or_else(|_| panic!("missing coverage {path}:{line} {expression}"))
+fn call_targets(conn: &Connection) -> Vec<String> {
+    rows(conn, "SELECT dst.qualname FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer.consume' AND e.kind='calls' ORDER BY dst.qualname")
 }
 
-fn persisted_status_rows(
-    conn: &rusqlite::Connection,
-    path: &str,
-    line: i64,
-    expression: &str,
-) -> Vec<String> {
-    conn.prepare(
-        "SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND c.line=?2 AND x.expression=?3 ORDER BY c.status",
-    ).unwrap().query_map(rusqlite::params![path, line, expression], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
+fn call_target_paths(conn: &Connection) -> Vec<String> {
+    rows(conn, "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer.consume' AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
+}
+
+fn import_targets(conn: &Connection) -> Vec<String> {
+    rows(conn, "SELECT dst.qualname FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer' AND e.kind='imports' ORDER BY dst.qualname")
+}
+
+fn import_target_paths(conn: &Connection) -> Vec<String> {
+    rows(conn, "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.qualname='consumer' AND e.kind='imports' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
 }
 
 #[test]
@@ -767,288 +692,6 @@ def __getattr__(name):
 }
 
 #[test]
-fn typed_parameters_preserve_forward_qualified_and_default_types_in_their_scope() {
-    let source = "class Service:\n    def execute(self): pass\ndef run(service: Service, forward: 'pkg.Service', default: pkg.Service = None, *items: Service, **options: 'pkg.Service'):\n    def nested(service: Other): pass\n    return service.execute()\nclass Client:\n    def call(self, service: Service): return service.execute()\ndef untyped(service): return service.execute()\n";
-    let facts = ast::extract("parameters.py", "python", source).unwrap();
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    let node = |name| facts.nodes.iter().find(|node| node.name == name).unwrap();
-    assert_eq!(
-        node("run").details["param_types"],
-        json!({"service":"Service", "forward":"pkg.Service", "default":"pkg.Service"})
-    );
-    assert_eq!(
-        node("nested").details["param_types"],
-        json!({"service":"Other"})
-    );
-    assert_eq!(
-        node("call").details["param_types"],
-        json!({"service":"Service"})
-    );
-    assert!(node("untyped").details.get("param_types").is_none());
-}
-
-#[test]
-fn class_assignments_are_bindings_without_leaking_nested_callable_assignments() {
-    let facts = ast::extract("class_bindings.py", "python", "class Model:\n    objects = factory()\n    execute: object = custom\n    def method(self):\n        local = 1\n    class Nested:\n        nested = 1\n").unwrap();
-    let model = facts
-        .nodes
-        .iter()
-        .find(|node| node.name == "Model")
-        .unwrap();
-    assert_eq!(model.details["bindings"], json!(["execute", "objects"]));
-}
-
-#[test]
-fn computed_receiver_hints_are_structural_and_preserve_original_expression() {
-    let source = "def run():\n    'value'.upper()\n    r'value'.strip()\n    b'value'.upper()\n    f'{value}'.upper()\n    Widget().execute()\n    package.Widget().execute()\n    super().execute()\n    super(Widget, self).execute()\n    response.request().consume()\n    factory().request().consume()\n";
-    let facts = ast::extract("computed.py", "python", source).unwrap();
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    let hint = |expression| {
-        &facts
-            .references
-            .iter()
-            .find(|reference| reference.expression == expression)
-            .unwrap()
-            .receiver_hint
-    };
-    assert!(
-        matches!(hint("'value'.upper"), Some(ReceiverHint::StringLiteral { member }) if member == "upper")
-    );
-    assert!(
-        matches!(hint("r'value'.strip"), Some(ReceiverHint::StringLiteral { member }) if member == "strip")
-    );
-    assert!(hint("b'value'.upper").is_none());
-    assert!(hint("f'{value}'.upper").is_none());
-    assert!(
-        matches!(hint("Widget().execute"), Some(ReceiverHint::CallResult { callee, member }) if callee == "Widget" && member == "execute")
-    );
-    assert!(
-        matches!(hint("package.Widget().execute"), Some(ReceiverHint::CallResult { callee, .. }) if callee == "package.Widget")
-    );
-    assert!(
-        matches!(hint("super().execute"), Some(ReceiverHint::Super { member }) if member == "execute")
-    );
-    assert!(hint("super(Widget, self).execute").is_none());
-    assert!(
-        matches!(hint("response.request().consume"), Some(ReceiverHint::CallResult { callee, .. }) if callee == "response.request")
-    );
-    assert!(hint("factory().request().consume").is_none());
-}
-
-#[test]
-fn verified_constructor_super_and_known_string_methods_resolve_at_the_linker() {
-    let source = "class Base:\n    def execute(self): pass\nclass Child(Base):\n    def execute(self): pass\n    def run(self): return super().execute()\ndef direct(): return Base().execute()\ndef literal(): return 'value'.upper()\ndef invalid(): return 'value'.invented_method()\n";
-    let facts = ast::extract("resolved.py", "python", source).unwrap();
-    let base_method = facts
-        .nodes
-        .iter()
-        .find(|node| node.qualname == "resolved.Base.execute")
-        .unwrap()
-        .id
-        .clone();
-    let graph = linker::link(&BTreeMap::from([("resolved.py".to_owned(), facts)]));
-    for expression in ["super().execute", "Base().execute", "'value'.upper"] {
-        assert_eq!(
-            graph
-                .coverage
-                .iter()
-                .find(|coverage| coverage.expression == expression)
-                .unwrap()
-                .status,
-            "resolved",
-            "{expression}"
-        );
-    }
-    assert_eq!(
-        graph
-            .coverage
-            .iter()
-            .find(|coverage| coverage.expression == "'value'.invented_method")
-            .unwrap()
-            .status,
-        "unresolved"
-    );
-    assert_eq!(
-        graph
-            .edges
-            .iter()
-            .filter(|edge| edge.kind == "calls" && edge.dst == base_method)
-            .count(),
-        2
-    );
-}
-
-#[test]
-fn local_receiver_dictionary_and_logger_methods_resolve_in_function_scope() {
-    let source = r#"
-from typing import Mapping
-import logging
-
-def decode(raw: Mapping[str, object], logger: logging.LoggerAdapter):
-    val = raw.get("field")
-    items = raw.items()
-    keys = raw.keys()
-    values = raw.values()
-    logger.info("decoded")
-    logger.warning("retry")
-    logger.debug("details")
-    logger.error("failed")
-
-def helper():
-    row = {"id": 1}
-    row.get("id")
-    row.keys()
-    row.values()
-    row.update({"next": 2})
-    return row.pop("id")
-
-class LocalMapping:
-    def get(self, key): return key
-
-def local(mapping: LocalMapping):
-    return mapping.get("field")
-
-def conventional(logger, log):
-    logger.exception("failed")
-    log.debug("details")
-"#;
-    let facts = ast::extract("decode.py", "python", source).unwrap();
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    let local_get = facts
-        .nodes
-        .iter()
-        .find(|node| node.qualname == "decode.LocalMapping.get")
-        .unwrap()
-        .id
-        .clone();
-    let graph = linker::link(&BTreeMap::from([("decode.py".to_owned(), facts)]));
-    let local = graph
-        .coverage
-        .iter()
-        .find(|coverage| coverage.expression == "mapping.get")
-        .unwrap();
-    assert_eq!(local.status, "resolved", "{local:#?}");
-    assert!(graph.edges.iter().any(|edge| edge.kind == "calls"
-        && edge.evidence == "mapping.get"
-        && edge.dst == local_get));
-    for expression in [
-        "raw.get",
-        "raw.items",
-        "raw.keys",
-        "raw.values",
-        "row.get",
-        "row.keys",
-        "row.values",
-        "row.update",
-        "row.pop",
-    ] {
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|c| c.expression == expression)
-            .unwrap_or_else(|| panic!("missing coverage for {expression}"));
-        assert_eq!(
-            coverage.status, "external",
-            "expression {expression} should be external, evidence: {}",
-            coverage.evidence
-        );
-        assert!(
-            coverage.evidence.contains("Python standard library"),
-            "{expression}: {}",
-            coverage.evidence
-        );
-    }
-    for expression in [
-        "logger.info",
-        "logger.warning",
-        "logger.debug",
-        "logger.error",
-    ] {
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|c| c.expression == expression)
-            .unwrap_or_else(|| panic!("missing coverage for {expression}"));
-        assert_eq!(
-            coverage.status, "external",
-            "expression {expression} should be external, evidence: {}",
-            coverage.evidence
-        );
-        assert!(coverage.evidence.contains("logging.LoggerAdapter"));
-        assert!(
-            coverage.evidence.contains("line 3"),
-            "{}",
-            coverage.evidence
-        );
-    }
-    for expression in ["logger.exception", "log.debug"] {
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|coverage| coverage.expression == expression)
-            .unwrap();
-        assert_eq!(coverage.status, "unresolved", "{expression}: {coverage:#?}");
-    }
-}
-
-#[test]
-fn untyped_logger_parameters_remain_unresolved_in_persisted_coverage() {
-    let w = PythonWorkspace::new();
-    w.write("untyped.py", "def conventional(logger, log):\n    logger.exception('failed')\n    log.debug('details')\n");
-    let conn = w.build();
-    for (line, expression) in [(2, "logger.exception"), (3, "log.debug")] {
-        assert_eq!(
-            persisted_status(&conn, "untyped.py", line, expression),
-            "unresolved",
-            "{expression}"
-        );
-    }
-}
-
-#[test]
-fn logging_factory_methods_have_verified_builtin_origin_after_persistence() {
-    let w = PythonWorkspace::new();
-    let source = "import logging\nlogging.basicConfig(level=logging.INFO)\nlogger = logging.getLogger(__name__)\nlogger.info('i')\nlogger.warning('w')\nlogger.error('e')\nlogger.debug('d')\nlogger.exception('x')\ndef unknown(logger):\n    logger.info('x')\n";
-    w.write("src/factory.py", source);
-    w.write("src/rebound.py", "import logging\nlogging = object()\nlogger = logging.getLogger(__name__)\nlogger.info('x')\n");
-    let db = w.0.join(".forge/code-map.sqlite");
-    let check = |conn: &rusqlite::Connection| {
-        for (line, method) in [
-            (4, "info"),
-            (5, "warning"),
-            (6, "error"),
-            (7, "debug"),
-            (8, "exception"),
-        ] {
-            let expression = format!("logger.{method}");
-            let (status, evidence) = persisted_coverage(conn, "src/factory.py", line, &expression);
-            assert_eq!(status, "external", "{expression}: {evidence}");
-            assert_eq!(
-                evidence,
-                format!("builtin:logging.Logger built-in: {expression}")
-            );
-        }
-        assert_eq!(
-            persisted_status(conn, "src/factory.py", 10, "logger.info"),
-            "unresolved"
-        );
-        assert_eq!(
-            persisted_status(conn, "src/rebound.py", 4, "logger.info"),
-            "unresolved"
-        );
-    };
-    contextunity_forge_mcp::db::writer::build(&w.0, &db, None).unwrap();
-    let cold = contextunity_forge_mcp::db::reader::open(&db, &w.0).unwrap();
-    check(&cold);
-    drop(cold);
-    w.write("src/factory.py", &format!("{source}# index delta\n"));
-    contextunity_forge_mcp::db::writer::delta(&w.0, &db, &[PathBuf::from("src/factory.py")])
-        .unwrap();
-    let delta = contextunity_forge_mcp::db::reader::open(&db, &w.0).unwrap();
-    check(&delta);
-}
-
-#[test]
 fn package_reexports_and_monorepo_hubs_resolve_overloads_type_aliases_and_runtime_implementations()
 {
     let types_src = r#"
@@ -1234,377 +877,424 @@ def admin():
 }
 
 #[test]
-fn with_statement_as_target_uses_the_context_value() {
-    let source = "class Conn:\n    def execute(self):\n        return 1\n\ndef use():\n    with Conn() as db:\n        db.execute()\n    db.execute()\n";
-    let facts = ast::extract("ctx.py", "python", source).unwrap();
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    let execute = facts
-        .nodes
-        .iter()
-        .find(|node| node.qualname == "ctx.Conn.execute")
-        .unwrap()
-        .id
-        .clone();
-    let graph = linker::link(&BTreeMap::from([("ctx.py".to_owned(), facts)]));
-    let rows: Vec<_> = graph
-        .coverage
-        .iter()
-        .filter(|coverage| coverage.expression == "db.execute")
-        .collect();
-    assert_eq!(rows.len(), 2, "{rows:#?}");
-    assert!(
-        rows.iter().all(|coverage| coverage.status == "resolved"),
-        "{rows:#?}"
+fn unique_child_module_is_imported_and_its_calls_resolve() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def value(): return 1\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child.value()\n",
     );
-    let calls = graph
-        .edges
-        .iter()
-        .filter(|edge| edge.kind == "calls" && edge.evidence == "db.execute" && edge.dst == execute)
-        .count();
-    assert_eq!(calls, 2);
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "child"), "resolved");
+    assert_eq!(import_targets(&conn), ["pkg", "pkg.child"]);
+    assert_eq!(call_targets(&conn), ["pkg.child.value"]);
 }
 
 #[test]
-fn stdlib_sqlite_and_logger_adapter_receivers_resolve_persisted_coverage() {
-    let w = PythonWorkspace::new();
-    let source = "import sqlite3\nimport logging\n\ndef run(conn: sqlite3.Connection, adapter: logging.LoggerAdapter):\n    conn.execute('SELECT 1')\n    conn.commit()\n    conn.rollback()\n    conn.cursor()\n    conn.close()\n    conn.unknown_method()\n    adapter.info('i')\n    adapter.warning('w')\n    adapter.error('e')\n    adapter.debug('d')\n    adapter.critical('c')\n    adapter.exception('x')\n    adapter.unknown_call()\n";
-    w.write("src/service.py", source);
-    let db = w.0.join(".forge/code-map.sqlite");
-    contextunity_forge_mcp::db::writer::build(&w.0, &db, None).unwrap();
-    let reader = contextunity_forge_mcp::db::reader::open(&db, &w.0).unwrap();
-
-    for (line, method) in [
-        (5, "execute"),
-        (6, "commit"),
-        (7, "rollback"),
-        (8, "cursor"),
-        (9, "close"),
-    ] {
-        let expression = format!("conn.{method}");
-        let (status, evidence) = persisted_coverage(&reader, "src/service.py", line, &expression);
-        assert_eq!(status, "external", "{expression}: {evidence}");
-        assert!(
-            evidence.contains("builtin:sqlite3"),
-            "{expression}: {evidence}"
-        );
-    }
-    assert_eq!(
-        persisted_status(&reader, "src/service.py", 10, "conn.unknown_method"),
-        "unresolved"
+fn ordinary_module_and_transitive_reexports_preserve_delta_resolution() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "from .api import Config\n");
+    w.write("pkg/api.py", "from .models import Config\n");
+    w.write("pkg/models.py", "class Config: pass\n");
+    w.write("pkg/alternate.py", "class Config: pass\n");
+    w.write(
+        "consumer.py",
+        "from pkg import Config\ndef consume(): return Config()\n",
     );
-
-    for (line, method) in [
-        (11, "info"),
-        (12, "warning"),
-        (13, "error"),
-        (14, "debug"),
-        (15, "critical"),
-        (16, "exception"),
-    ] {
-        let expression = format!("adapter.{method}");
-        let (status, evidence) = persisted_coverage(&reader, "src/service.py", line, &expression);
-        assert_eq!(status, "external", "{expression}: {evidence}");
-        assert!(
-            evidence.contains("builtin:logging.LoggerAdapter"),
-            "{expression}: {evidence}"
-        );
-    }
-    assert_eq!(
-        persisted_status(&reader, "src/service.py", 17, "adapter.unknown_call"),
-        "unresolved"
+    w.build();
+    assert_eq!(status(&w.open(), "Config"), "resolved");
+    assert_eq!(call_target_paths(&w.open()), ["pkg/models.py"]);
+    w.write("pkg/api.py", "from .alternate import Config\n");
+    w.delta("pkg/api.py");
+    assert_eq!(call_target_paths(&w.open()), ["pkg/alternate.py"]);
+    w.assert_cold_equivalent();
+    w.write(
+        "consumer.py",
+        "import pkg.api as api\ndef consume(): return api.Config()\n",
     );
+    w.delta("consumer.py");
+    assert_eq!(call_target_paths(&w.open()), ["pkg/alternate.py"]);
+    w.assert_cold_equivalent();
 }
 
 #[test]
-fn inherited_self_member_resolves_cross_file_mixin_methods() {
-    let w = PythonWorkspace::new();
-    w.write("src/pkg/__init__.py", "");
+fn cyclic_reexports_and_missing_providers_remain_unresolved() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "from .a import Config\n");
+    w.write("pkg/a.py", "from .b import Config\n");
+    w.write("pkg/b.py", "from .a import Config\n");
     w.write(
-        "src/pkg/connection.py",
-        "class SqliteConnectionMixin:\n    def _get_connection(self):\n        return self\n",
+        "consumer.py",
+        "from pkg import Config\ndef consume(): return Config()\n",
     );
-    w.write(
-        "src/pkg/projection.py",
-        "from .connection import SqliteConnectionMixin\nclass SqliteCellEdgeProjectionLayer(SqliteConnectionMixin):\n    pass\n",
-    );
-    w.write(
-        "src/pkg/validation.py",
-        "from .projection import SqliteCellEdgeProjectionLayer\nclass SqliteCellEdgeValidationLayer(SqliteCellEdgeProjectionLayer):\n    pass\n",
-    );
-    w.write(
-        "src/pkg/mutations.py",
-        "from .validation import SqliteCellEdgeValidationLayer\nclass SqliteCellEdgeMutationLayer(SqliteCellEdgeValidationLayer, UnindexedBase):\n    def execute(self):\n        self._get_connection()\n        self._missing_method()\n",
-    );
-    let db = w.0.join(".forge/code-map.sqlite");
-    contextunity_forge_mcp::db::writer::build(&w.0, &db, None).unwrap();
-    let reader = contextunity_forge_mcp::db::reader::open(&db, &w.0).unwrap();
-
-    let (status, evidence) =
-        persisted_coverage(&reader, "src/pkg/mutations.py", 4, "self._get_connection");
-    assert_eq!(status, "resolved", "{evidence}");
-    assert_eq!(
-        persisted_status(&reader, "src/pkg/mutations.py", 5, "self._missing_method"),
-        "unresolved"
-    );
+    w.build();
+    assert_eq!(status(&w.open(), "Config"), "unresolved");
+    assert!(call_target_paths(&w.open()).is_empty());
+    w.write("pkg/a.py", "from .missing import Config\n");
+    w.delta("pkg/a.py");
+    assert_eq!(status(&w.open(), "Config"), "unresolved");
+    w.assert_cold_equivalent();
 }
 
 #[test]
-fn call_return_type_and_context_manager_propagation_resolves_persisted_coverage() {
-    let w = PythonWorkspace::new();
+fn literal_lazy_exports_resolve_existing_providers_and_track_delta() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/models.py", "class Config: pass\n");
+    w.write("pkg/api.py", "_EXPORTS = frozenset({'Config'})\ndef __getattr__(name):\n    if name in _EXPORTS:\n        from . import models\n        return getattr(models, name)\n    raise AttributeError(name)\n");
     w.write(
-        "src/db_factory.py",
-        "import sqlite3\n\ndef get_db() -> sqlite3.Connection:\n    return sqlite3.connect(':memory:')\n\ndef unannotated_db():\n    return sqlite3.connect(':memory:')\n",
+        "consumer.py",
+        "from pkg.api import Config\ndef consume(): return Config()\n",
     );
+    w.build();
+    assert_eq!(status(&w.open(), "Config"), "resolved");
+    assert_eq!(call_target_paths(&w.open()), ["pkg/models.py"]);
+    w.write("pkg/api.py", "_EXPORTS = frozenset({'Config'})\ndef __getattr__(name):\n    if name in _EXPORTS:\n        from . import missing\n        return getattr(missing, name)\n    raise AttributeError(name)\n");
+    w.delta("pkg/api.py");
+    assert_eq!(status(&w.open(), "Config"), "unresolved");
+    assert!(call_target_paths(&w.open()).is_empty());
+    w.assert_cold_equivalent();
+}
+
+#[test]
+fn lazy_importlib_module_relative_namespace_is_preserved_in_delta() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "class Config: pass\n");
+    w.write("child.py", "class Config: pass\n");
+    w.write("pkg/service.py", "import importlib\ndef __getattr__(name):\n    if name == 'child':\n        return importlib.import_module('..child', __name__)\n    raise AttributeError(name)\n");
+    w.write(
+        "consumer.py",
+        "from pkg.service import child\ndef consume(): return child.Config()\n",
+    );
+    w.build();
+    assert_eq!(call_target_paths(&w.open()), ["pkg/child.py"]);
+    w.write(
+        "consumer.py",
+        "from pkg.service import child\ndef consume():\n    return child.Config()\n",
+    );
+    w.delta("consumer.py");
+    assert_eq!(call_target_paths(&w.open()), ["pkg/child.py"]);
+    w.assert_cold_equivalent();
+    w.write("pkg/service.py", "import importlib\ndef __getattr__(name):\n    if name == 'child':\n        return importlib.import_module('.child', __name__)\n    raise AttributeError(name)\n");
+    w.delta("pkg/service.py");
+    assert!(call_target_paths(&w.open()).is_empty());
+    w.assert_cold_equivalent();
+}
+
+#[test]
+fn src_layout_linked_reexports_preserve_owner_workspace_priority() {
+    let w = Workspace::new();
+    let linked = Workspace::new();
+    linked.write("src/catalogue/__init__.py", "from .api import Config\n");
+    linked.write("src/catalogue/api.py", "from .models import Config\n");
+    linked.write("src/catalogue/models.py", "class Config: pass\n");
+    w.write("forge-mcp.yaml", &format!("roots: [src]\nlinked_workspaces:\n  - name: catalogue\n    path: '{}'\n    roots: [src]\n", linked.0.display()));
     w.write(
         "src/consumer.py",
-        "import sqlite3\nfrom db_factory import get_db, unannotated_db\n\ndef run():\n    with get_db() as db:\n        db.execute('SELECT 1')\n    with unannotated_db() as raw:\n        raw.execute('SELECT 2')\n    conn = get_db()\n    conn.execute('SELECT 3')\n",
+        "from catalogue.api import Config\ndef consume(): return Config()\n",
     );
-    w.write(
-        "src/mixin_consumer.py",
-        "import sqlite3\nclass BaseRepo:\n    def get_conn(self) -> sqlite3.Connection:\n        return sqlite3.connect(':memory:')\n\nclass ChildRepo(BaseRepo):\n    def perform(self):\n        with self.get_conn() as db:\n            db.execute('SELECT 4')\n",
-    );
-    let db = w.0.join(".forge/code-map.sqlite");
-    contextunity_forge_mcp::db::writer::build(&w.0, &db, None).unwrap();
-    let reader = contextunity_forge_mcp::db::reader::open(&db, &w.0).unwrap();
-
-    // 1. with get_db() as db: db.execute(...) -> external builtin:sqlite3
-    let (status, evidence) = persisted_coverage(&reader, "src/consumer.py", 6, "db.execute");
-    assert_eq!(status, "external", "db.execute: {evidence}");
-    assert!(
-        evidence.contains("builtin:sqlite3"),
-        "db.execute evidence: {evidence}"
-    );
-
-    // 2. with unannotated_db() as raw: raw.execute(...) -> stays unresolved
-    assert_eq!(
-        persisted_status(&reader, "src/consumer.py", 8, "raw.execute"),
-        "unresolved"
-    );
-
-    // 3. conn = get_db(); conn.execute(...) -> external builtin:sqlite3
-    let (status, evidence) = persisted_coverage(&reader, "src/consumer.py", 10, "conn.execute");
-    assert_eq!(status, "external", "conn.execute: {evidence}");
-    assert!(
-        evidence.contains("builtin:sqlite3"),
-        "conn.execute evidence: {evidence}"
-    );
-
-    // 4. with self.get_conn() as db: db.execute(...) in subclass -> external builtin:sqlite3
-    let (status, evidence) = persisted_coverage(&reader, "src/mixin_consumer.py", 9, "db.execute");
-    assert_eq!(status, "external", "self.get_conn() db.execute: {evidence}");
-    assert!(
-        evidence.contains("builtin:sqlite3"),
-        "self.get_conn() db.execute evidence: {evidence}"
-    );
+    w.build();
+    let targets = |conn: &Connection| {
+        rows(conn, "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.path_id=(SELECT path_id FROM path_dictionary WHERE path='src/consumer.py') AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
+    };
+    assert_eq!(targets(&w.open()), ["[catalogue]/src/catalogue/models.py"]);
+    w.write("src/catalogue/__init__.py", "from .api import Config\n");
+    w.write("src/catalogue/api.py", "from .models import Config\n");
+    w.write("src/catalogue/models.py", "class Config: pass\n");
+    w.build();
+    assert_eq!(targets(&w.open()), ["src/catalogue/models.py"]);
+    w.write("src/catalogue/api.py", "from .missing import Config\n");
+    w.delta("src/catalogue/api.py");
+    assert!(targets(&w.open()).is_empty());
+    w.assert_cold_equivalent();
 }
 
 #[test]
-fn loop_iterable_annotation_element_inference_resolves_persisted_coverage() {
-    let w = PythonWorkspace::new();
+fn bare_dotted_import_does_not_export_child_under_package_binding() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def value(): return 1\n");
+    w.write("api.py", "import pkg.child\n");
     w.write(
-        "src/loop_service.py",
-        "from typing import Sequence, Mapping, Iterable\n\ndef process_list(items: list[dict]):\n    for row in items:\n        row.get('key')\n\ndef process_seq(items: Sequence[Mapping]):\n    for row in items:\n        row.get('key')\n\ndef process_iter(items: Iterable[dict]):\n    for row in items:\n        row.get('key')\n\ndef process_untyped(items):\n    for row in items:\n        row.get('key')\n",
+        "consumer.py",
+        "from api import pkg\ndef consume(): return pkg.value()\n",
     );
-    let db = w.0.join(".forge/code-map.sqlite");
-    contextunity_forge_mcp::db::writer::build(&w.0, &db, None).unwrap();
-    let reader = contextunity_forge_mcp::db::reader::open(&db, &w.0).unwrap();
-
-    // 1. list[dict] -> row.get is external builtin:dict
-    let (status, evidence) = persisted_coverage(&reader, "src/loop_service.py", 5, "row.get");
-    assert_eq!(status, "external", "process_list row.get: {evidence}");
-    assert!(
-        evidence.contains("Python standard library"),
-        "process_list evidence: {evidence}"
+    w.build();
+    assert!(call_target_paths(&w.open()).is_empty());
+    w.write("api.py", "import pkg.child as alias\n");
+    w.write(
+        "consumer.py",
+        "from api import alias\ndef consume(): return alias.value()\n",
     );
-
-    // 2. Sequence[Mapping] -> row.get is external builtin:Mapping
-    let (status, evidence) = persisted_coverage(&reader, "src/loop_service.py", 9, "row.get");
-    assert_eq!(status, "external", "process_seq row.get: {evidence}");
-    assert!(
-        evidence.contains("Python standard library"),
-        "process_seq evidence: {evidence}"
-    );
-
-    // 3. Iterable[dict] -> row.get is external builtin:dict
-    let (status, evidence) = persisted_coverage(&reader, "src/loop_service.py", 13, "row.get");
-    assert_eq!(status, "external", "process_iter row.get: {evidence}");
-    assert!(
-        evidence.contains("Python standard library"),
-        "process_iter evidence: {evidence}"
-    );
-
-    // 4. untyped -> row.get stays unresolved
-    assert_eq!(
-        persisted_status(&reader, "src/loop_service.py", 17, "row.get"),
-        "unresolved"
-    );
+    w.build();
+    assert_eq!(call_target_paths(&w.open()), ["pkg/child.py"]);
 }
 
 #[test]
-fn loop_element_types_stop_at_rebind_and_shadowed_sequence() {
-    let w = PythonWorkspace::new();
+fn reassigned_module_export_does_not_retain_original_transitive_target() {
+    let w = Workspace::new();
+    w.write("provider.py", "class Config: pass\n");
+    w.write("api.py", "from provider import Config\n");
+    w.write("outer.py", "from api import Config\n");
     w.write(
-        "src/loop_guard.py",
-        "class Sequence:\n    pass\n\ndef rebound(items: list[dict]):\n    items = None\n    for row in items:\n        row.get('key')\n\ndef shadowed(items: Sequence[dict]):\n    for row in items:\n        row.get('key')\n",
+        "consumer.py",
+        "from outer import Config\ndef consume(): return Config()\n",
     );
-    let db = w.0.join(".forge/code-map.sqlite");
-    contextunity_forge_mcp::db::writer::build(&w.0, &db, None).unwrap();
-    let reader = contextunity_forge_mcp::db::reader::open(&db, &w.0).unwrap();
-    assert_eq!(
-        persisted_status(&reader, "src/loop_guard.py", 7, "row.get"),
-        "unresolved"
+    w.build();
+    assert_eq!(call_target_paths(&w.open()), ["provider.py"]);
+    w.write(
+        "api.py",
+        "from provider import Config\ndef factory(): return None\nConfig = factory()\n",
     );
-    assert_eq!(
-        persisted_status(&reader, "src/loop_guard.py", 11, "row.get"),
-        "unresolved"
-    );
+    w.delta("api.py");
+    assert!(call_target_paths(&w.open()).is_empty());
+    w.assert_cold_equivalent();
+    w.write("api.py", "from provider import Config\n");
+    w.delta("api.py");
+    assert_eq!(call_target_paths(&w.open()), ["provider.py"]);
+    w.assert_cold_equivalent();
 }
 
 #[test]
-fn nested_self_and_unbound_cls_do_not_take_the_enclosing_class() {
-    let w = PythonWorkspace::new();
+fn explicit_package_reexport_resolves_import_and_call() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "from .logging import get_log\n");
+    w.write("pkg/logging.py", "def get_log(): return 1\n");
+    w.write("other.py", "def helper(): return 2\n");
     w.write(
-        "src/repo.py",
-        "import sqlite3\n\nclass Repo:\n    def connect(cls) -> sqlite3.Connection:\n        return sqlite3.connect(':memory:')\n\n    def save(self) -> sqlite3.Connection:\n        return sqlite3.connect(':memory:')\n\n    def run(self):\n        def helper(self):\n            nested = self.save()\n            nested.execute('SELECT 1')\n        borrowed = cls.connect()\n        borrowed.execute('SELECT 2')\n\n    def make(cls):\n        owned = cls.connect()\n        owned.execute('SELECT 3')\n",
+        "consumer.py",
+        "from pkg import get_log\ndef consume(): return get_log()\n",
     );
-    let db = w.0.join(".forge/code-map.sqlite");
-    contextunity_forge_mcp::db::writer::build(&w.0, &db, None).unwrap();
-    let reader = contextunity_forge_mcp::db::reader::open(&db, &w.0).unwrap();
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "get_log"), "resolved");
     assert_eq!(
-        persisted_status(&reader, "src/repo.py", 13, "nested.execute"),
-        "unresolved"
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/logging.py"]
     );
-    assert_eq!(
-        persisted_status(&reader, "src/repo.py", 15, "borrowed.execute"),
-        "unresolved"
-    );
-    let (status, evidence) = persisted_coverage(&reader, "src/repo.py", 19, "owned.execute");
-    assert_eq!(status, "external", "{evidence}");
-    assert!(evidence.contains("builtin:sqlite3"), "{evidence}");
+    assert_eq!(call_targets(&conn), ["pkg.logging.get_log"]);
+    drop(conn);
+
+    w.write("pkg/__init__.py", "# export removed\n");
+    w.delta("pkg/__init__.py");
+    assert_eq!(status(&w.open(), "get_log"), "unresolved");
+    w.assert_cold_equivalent();
+    w.write("pkg/__init__.py", "from .logging import get_log\n");
+    w.delta("pkg/__init__.py");
+    assert_eq!(status(&w.open(), "get_log"), "resolved");
+    w.assert_cold_equivalent();
+    w.write("other.py", "def get_log(): return 2\n");
+    w.delta("other.py");
+    assert_eq!(status(&w.open(), "get_log"), "resolved");
+    w.assert_cold_equivalent();
 }
 
 #[test]
-fn logger_process_is_not_a_logger_method() {
-    let w = PythonWorkspace::new();
+fn duplicate_package_reexports_do_not_choose_a_target() {
+    let w = Workspace::new();
     w.write(
-        "src/log_service.py",
-        "import logging\n\ndef run():\n    log = logging.getLogger('app')\n    log.info('ok')\n    log.process('no')\n",
+        "pkg/__init__.py",
+        "from .a import get_log\nfrom .b import get_log\n",
     );
-    let db = w.0.join(".forge/code-map.sqlite");
-    contextunity_forge_mcp::db::writer::build(&w.0, &db, None).unwrap();
-    let reader = contextunity_forge_mcp::db::reader::open(&db, &w.0).unwrap();
-    let (status, evidence) = persisted_coverage(&reader, "src/log_service.py", 5, "log.info");
-    assert_eq!(status, "external", "{evidence}");
-    assert!(evidence.contains("builtin:logging.Logger"), "{evidence}");
-    assert_eq!(
-        persisted_status(&reader, "src/log_service.py", 6, "log.process"),
-        "unresolved"
+    w.write("pkg/a.py", "def get_log(): return 1\n");
+    w.write("pkg/b.py", "def get_log(): return 2\n");
+    w.write(
+        "consumer.py",
+        "from pkg import get_log\ndef consume(): return get_log()\n",
     );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "get_log"), "unresolved");
+    assert!(call_targets(&conn).is_empty());
 }
 
 #[test]
-fn global_name_declaration_does_not_mask_same_named_instance_field() {
-    let workspace = PythonWorkspace::new();
-    workspace.write(
-        "src/fields.py",
-        "class Client:\n    def run(self):\n        pass\n\nclass Box:\n    def __init__(self):\n        global client\n        self.client = Client()\n\ndef invoke(box: Box):\n    box.client.run()\n",
+fn paired_runtime_and_stub_choose_runtime_child() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def value(): return 1\n");
+    w.write("pkg/child.pyi", "def value() -> int: ...\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child.value()\n",
     );
-    workspace.write(
-        "src/nonlocal_fields.py",
-        "class LocalClient:\n    def run(self):\n        pass\n\ndef outer():\n    client = None\n    class Box:\n        def __init__(self):\n            nonlocal client\n            self.client = LocalClient()\n        def invoke(self):\n            self.client.run()\n",
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "child"), "resolved");
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/child.py"]
     );
-    let reader = workspace.build();
-
-    let (status, evidence) = persisted_coverage(&reader, "src/fields.py", 11, "box.client.run");
-    assert_eq!(status, "resolved", "{evidence}");
-    let targets: Vec<String> = reader
-        .prepare(
-            "SELECT dst.qualname FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE p.path=?1 AND e.line=?2 AND e.kind='calls' ORDER BY dst.qualname",
+    assert_eq!(call_targets(&conn), ["pkg.child.value"]);
+    let stub: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='pkg/child.pyi')",
+            [],
+            |row| row.get(0),
         )
-        .unwrap()
-        .query_map(rusqlite::params!["src/fields.py", 11], |row| row.get(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    assert!(
-        targets
-            .iter()
-            .any(|target| target == "src.fields.Client.run"),
-        "{targets:#?}"
-    );
-    assert_eq!(
-        persisted_status(&reader, "src/nonlocal_fields.py", 12, "self.client.run"),
-        "resolved"
-    );
+        .unwrap();
+    assert!(stub > 0);
 }
 
 #[test]
-fn awaited_generic_returns_provide_only_proven_loop_element_types() {
-    let workspace = PythonWorkspace::new();
-    workspace.write(
-        "src/providers.py",
-        "def passthrough(fn):\n    return fn\n\nasync def typed_rows() -> list[dict[str, object]]:\n    return []\n\nasync def untyped_rows():\n    return []\n\n@passthrough\nasync def decorated_rows() -> list[dict[str, object]]:\n    return []\n",
+fn paired_runtime_and_stub_choose_runtime_for_direct_module_import() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def value(): return 1\n");
+    w.write("pkg/child.pyi", "def value() -> int: ...\n");
+    w.write(
+        "consumer.py",
+        "import pkg.child as child\ndef consume(): return child.value()\n",
     );
-    workspace.write(
-        "src/consumer.py",
-        "from providers import typed_rows, untyped_rows, decorated_rows\n\nasync def run():\n    typed_items = await typed_rows()\n    for item in typed_items:\n        item.get('typed')\n    untyped_items = await untyped_rows()\n    for unknown in untyped_items:\n        unknown.get('unknown')\n    decorated_items = await decorated_rows()\n    for decorated in decorated_items:\n        decorated.get('decorated')\n",
-    );
-    let reader = workspace.build();
-
-    let (status, evidence) = persisted_coverage(&reader, "src/consumer.py", 6, "item.get");
-    assert_eq!(status, "external", "{evidence}");
-    assert!(evidence.contains("Python standard library"), "{evidence}");
-    assert_eq!(
-        persisted_status(&reader, "src/consumer.py", 9, "unknown.get"),
-        "unresolved"
-    );
-    assert_eq!(
-        persisted_status(&reader, "src/consumer.py", 12, "decorated.get"),
-        "unresolved"
-    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "pkg.child"), "resolved");
+    assert_eq!(import_target_paths(&conn), ["pkg/child.py"]);
+    assert_eq!(call_targets(&conn), ["pkg.child.value"]);
 }
 
 #[test]
-fn awaited_typed_receiver_methods_preserve_async_return_types() {
-    let workspace = PythonWorkspace::new();
-    workspace.write(
-        "src/models.py",
-        "class Worker:\n    def work(self) -> None:\n        pass\n\nclass Client:\n    async def fetch(self) -> Worker:\n        return Worker()\n\n    async def fetch_all(self) -> list[Worker]:\n        return []\n",
+fn paired_stub_supplies_declaration_missing_from_generated_runtime() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def __getattr__(name): return None\n");
+    w.write(
+        "pkg/child.pyi",
+        "class ContextUnit:\n    def value(self) -> int: ...\n",
     );
-    workspace.write(
-        "src/consumer.py",
-        "from models import Client\n\nasync def typed(client: Client):\n    result = await client.fetch()\n    result.work()\n\nasync def untyped(client):\n    result = await client.fetch()\n    result.work()\n\nasync def shadowed(client: Client):\n    client = object()\n    result = await client.fetch()\n    result.work()\n\nasync def spaced(client: Client):\n    result = await client . fetch()\n    result.work()\n\nasync def typed_collection(client: Client):\n    results = await client.fetch_all()\n    for worker in results:\n        worker.work()\n",
+    w.write(
+        "consumer.py",
+        "from pkg.child import ContextUnit\ndef consume(): return ContextUnit()\n",
     );
-    let reader = workspace.build();
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "ContextUnit"), "resolved");
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/child.py", "pkg/child.pyi"]
+    );
+    assert_eq!(call_target_paths(&conn), ["pkg/child.pyi"]);
+    let evidence: String = conn.query_row("SELECT (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.py' AND line=1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='ContextUnit'", [], |row| row.get(0)).unwrap();
+    assert!(evidence.contains("type stub"), "{evidence}");
+    drop(conn);
+    w.write("pkg/child.py", "def __getattr__(name): return name\n");
+    w.delta("pkg/child.py");
+    w.assert_cold_equivalent();
+    w.write("pkg/child.py", "def __getattr__(name): return None\n");
+    w.delta("pkg/child.py");
+    w.assert_cold_equivalent();
+}
 
-    let (status, evidence) = persisted_coverage(&reader, "src/consumer.py", 5, "result.work");
-    assert_eq!(status, "resolved", "{evidence}");
-    assert!(
-        evidence.contains("src.models.Worker.work"),
-        "expected exact Worker.work provider evidence, got {evidence}"
+#[test]
+fn child_module_call_uses_stub_only_member() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def __getattr__(name): return None\n");
+    w.write("pkg/child.pyi", "class ContextUnit: ...\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child.ContextUnit()\n",
     );
-    let (spaced_status, spaced_evidence) =
-        persisted_coverage(&reader, "src/consumer.py", 18, "result.work");
-    assert_eq!(spaced_status, "resolved", "{spaced_evidence}");
-    assert!(
-        spaced_evidence.contains("src.models.Worker.work"),
-        "expected exact Worker.work provider evidence after whitespace normalization, got {spaced_evidence}"
-    );
-    let (collection_status, collection_evidence) =
-        persisted_coverage(&reader, "src/consumer.py", 23, "worker.work");
-    assert_eq!(collection_status, "resolved", "{collection_evidence}");
-    assert!(
-        collection_evidence.contains("src.models.Worker.work"),
-        "expected list element type from the typed async receiver, got {collection_evidence}"
-    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "child"), "resolved");
     assert_eq!(
-        persisted_status(&reader, "src/consumer.py", 9, "result.work"),
-        "unresolved",
-        "an untyped async receiver must remain unknown"
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/child.py"]
     );
+    assert_eq!(call_target_paths(&conn), ["pkg/child.pyi"]);
+}
+
+#[test]
+fn stub_only_module_remains_navigable() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.pyi", "def value() -> int: ...\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child.value()\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "child"), "resolved");
     assert_eq!(
-        persisted_status(&reader, "src/consumer.py", 14, "result.work"),
-        "unresolved",
-        "a rebound async receiver must remain unknown"
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/child.pyi"]
     );
+    assert_eq!(call_targets(&conn), ["pkg.child.value"]);
+}
+
+#[test]
+fn multiple_runtime_modules_remain_ambiguous() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def value(): return 1\n");
+    w.write("src/pkg/child.py", "def value(): return 2\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child.value()\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "child"), "ambiguous");
+    assert_eq!(import_target_paths(&conn), ["pkg/__init__.py"]);
+    assert!(call_targets(&conn).is_empty());
+}
+
+#[test]
+fn package_symbol_takes_precedence_over_same_named_child_module() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "def child(): return 1\n");
+    w.write("pkg/child.py", "def value(): return 2\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child()\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "child"), "resolved");
+    assert_eq!(import_targets(&conn), ["pkg", "pkg.child"]);
+    assert_eq!(
+        import_target_paths(&conn),
+        ["pkg/__init__.py", "pkg/__init__.py"]
+    );
+    assert_eq!(call_targets(&conn), ["pkg.child"]);
+}
+
+#[test]
+fn unrelated_child_module_is_not_a_provider() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("other/child.py", "def value(): return 1\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child.value()\n",
+    );
+    w.build();
+    let conn = w.open();
+    assert_eq!(status(&conn, "child"), "unresolved");
+    assert_eq!(import_targets(&conn), ["pkg"]);
+    assert!(call_targets(&conn).is_empty());
+}
+
+#[test]
+fn child_edit_and_restore_match_cold_graph() {
+    let w = Workspace::new();
+    w.write("pkg/__init__.py", "# package\n");
+    w.write("pkg/child.py", "def value(): return 1\n");
+    w.write("pkg/child.pyi", "def value() -> int: ...\n");
+    w.write(
+        "consumer.py",
+        "from pkg import child\ndef consume(): return child.value()\n",
+    );
+    w.build();
+    w.write("pkg/child.py", "def value(arg=1): return arg\n");
+    w.delta("pkg/child.py");
+    w.assert_cold_equivalent();
+    w.write("pkg/child.py", "def value(): return 1\n");
+    w.delta("pkg/child.py");
+    w.assert_cold_equivalent();
 }

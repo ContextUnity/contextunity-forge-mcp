@@ -294,25 +294,95 @@ receipt:
 
 ```yaml
 task_ref: language-tests-isolation-and-monolith-decomposition
-target: "Isolate all language tests into tests/languages/ and decompose monolithic files along architectural seams"
+target: Isolate all language tests into tests/languages/ and decompose monolithic files along architectural seams
 proof_policy: seam-test-first
+contract_revision: 2
 scope:
-  - tests/languages/
-status: planned
+- tests/languages.rs
+- tests/languages/
+- tests/ast_extractors.rs
+- tests/builtin_call_coverage.rs
+- tests/config_language_profiles.rs
+- tests/html_profile.rs
+- tests/html_profile/
+- tests/language_boundaries.rs
+- tests/language_features.rs
+- tests/language_profiles.rs
+- tests/manifests.rs
+- tests/proto_ast.rs
+- tests/python_child_module_links.rs
+- tests/python_external_call_evidence.rs
+- tests/python_semantics.rs
+- tests/typescript_semantics.rs
+status: completed
 subtasks:
-  - subtask_ref: isolate-python-tests
-    title: "Consolidate python tests under tests/languages/python/ separating pure grammar (grammar.rs, modules.rs) from framework rules (frameworks.rs) for milestone 041"
-    status: pending
-  - subtask_ref: isolate-and-decompose-typescript-tests
-    title: "Decompose monolithic typescript_semantics into focused submodules under tests/languages/typescript/ (grammar.rs, dom.rs, modules.rs, frameworks.rs)"
-    status: pending
-  - subtask_ref: isolate-html-tests
-    title: "Consolidate html_profile tests under tests/languages/html/ separating syntax.rs from templates.rs"
-    status: pending
-  - subtask_ref: isolate-ast-patterns-and-manifest-schemas
-    title: "Establish tests/languages/ast_patterns.rs for universal AST fragments (042) and tests/languages/manifests.rs for framework TOML schema validation (041)"
-    status: pending
-  - subtask_ref: isolate-other-language-profiles
-    title: "Relocate remaining language tests (language_boundaries, language_features, language_profiles, config_language_profiles, ast_extractors, proto_ast, builtin_call_coverage) into tests/languages/"
-    status: pending
+- subtask_ref: isolate-python-tests
+  title: Consolidate python tests under tests/languages/python/ separating pure grammar (grammar.rs, modules.rs) from framework rules (frameworks.rs) for milestone 041
+  status: completed
+  evidence: 'Python suite consolidated and split across tests/languages/python/{grammar,modules,frameworks,semantics}.rs. `cargo test --test languages --quiet`: 255 passed; `cargo test --all-targets`: 643 passed, 0 failed.'
+- subtask_ref: isolate-and-decompose-typescript-tests
+  title: Decompose monolithic typescript_semantics into focused submodules under tests/languages/typescript/ (grammar.rs, dom.rs, modules.rs, frameworks.rs)
+  status: completed
+  evidence: 'TypeScript monolith decomposed into tests/languages/typescript/{grammar,dom,modules,frameworks}.rs with shared module entry. Test identity inventory remains 255/255; full `cargo test --all-targets`: 643 passed, 0 failed.'
+- subtask_ref: isolate-html-tests
+  title: Consolidate html_profile tests under tests/languages/html/ separating syntax.rs from templates.rs
+  status: completed
+  evidence: 'HTML profile consolidated under tests/languages/html/{syntax,templates}.rs and focused child modules classic_wire.rs, template_origins.rs, template_masking.rs. Full `cargo test --all-targets`: 643 passed, 0 failed.'
+- subtask_ref: isolate-ast-patterns-and-manifest-schemas
+  title: Establish tests/languages/ast_patterns.rs for universal AST fragments (042) and tests/languages/manifests.rs for framework TOML schema validation (041)
+  status: completed
+  evidence: 'Universal AST and manifest suites live in tests/languages/ast_patterns.rs and tests/languages/manifests.rs. Full `cargo test --all-targets`: 643 passed, 0 failed.'
+- subtask_ref: isolate-other-language-profiles
+  title: Relocate remaining language tests (language_boundaries, language_features, language_profiles, config_language_profiles, ast_extractors, proto_ast, builtin_call_coverage) into tests/languages/
+  status: completed
+  evidence: 'Remaining extractor, builtin, config, feature, profile, and proto suites live under tests/languages/. Full `cargo test --all-targets`: 643 passed, 0 failed.'
+receipt:
+  commit: 54294023a6e1b21c4159eab995314e8a5069ec62
+  contract_revision: 2
+  passed_at: 2026-10-08T07:45:45.314879946+00:00
+  evidence:
+    test_proof:
+      command: cargo test --all-targets
+      exit_code: 0
+      tests_passed: 643
+      tests_failed: 0
+      log: 'Final candidate: cargo test --all-targets: 643 passed, 0 failed, 3 ignored. cargo clippy --all-targets --all-features -- -D warnings: passed. Scoped git diff --check: clean.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: The 5429402 candidate changes only allowlisted language-test paths. `git diff --check 3f4fd88 5429402 -- <language scope>` is clean. The delta from 734e568 is one deletion in tests/languages/typescript/modules.rs.
+        claims:
+          applicable: true
+          evidence: The baseline inventory and final `cargo test --test languages -- --list` both contain 255 tests; comparison shows no missing or extra identities. Assertion source-line inventory is 1169 baseline versus 1168 final; the sole repeated cold-parity assertion line is deduplicated into tests/languages/support.rs, and the shared helper remains called by all prior suites (4 cold_parity calls and 19 assert_cold_equivalent calls).
+        concurrency:
+          applicable: true
+          evidence: Language Workspace delegates to tests/common::Workspace, which creates a unique temp root and removes it on Drop. The redundant common-root create at modules.rs:539 is gone; no manual remove_dir_all remains in tests/languages. Remaining create_dir_all calls make nested file/project fixtures or the required base/linked subworkspace.
+        project_isolation:
+          applicable: true
+          evidence: The linked-project fixtures create separate first/second project roots under one uniquely allocated common Workspace and a nested linked/ config root. Assertions retain per-project provider and target checks; the only explicit linked root creation is for that nested fixture.
+        administration:
+          applicable: true
+          evidence: Review worker codex-043-language-review-final-v3 is independent from builder codex-043-language-builder-final-v3. Accepted build snapshot is 54294023a6e1b21c4159eab995314e8a5069ec62 with cargo test --all-targets at 643 passed, 0 failed, 3 ignored; strict Clippy and scoped diff-check passed in build evidence.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CENTRAL-VS-LANGUAGE-ISOLATION: Central subsystem suites (acdd, core, linker, incremental, mcp, commitment_integrity) reside at tests/; all language extraction and semantic tests are strictly isolated inside tests/languages/.'
+    - 'INV-ACDD-SUITE-COHESION: All ACDD state machines, task lifecycles, subtasks, blackboard messages, and milestone operations reside in tests/acdd/ rather than core storage or MCP symbol modules.'
+    - 'INV-SHARED-HARNESS: Common workspace setup, file writing, database building, and MCP client lifecycle are managed through canonical shared helpers in tests/common/ rather than duplicated struct Workspace per test file.'
+    - 'INV-DOMAIN-DECOMPOSITION: Test modules are organized by cohesive architectural and contractual purpose. Monolithic files are split along natural architectural sub-boundaries.'
+    - 'INV-FORWARD-COMPAT-041-042: Language suites cleanly decouple pure grammar from framework manifests (frameworks.rs / manifests.rs) for milestone 041, and isolate universal AST patterns and path-scoped selectors (ast_patterns.rs, selectors.rs, navigation.rs) for milestone 042.'
+    - 'INV-CONTRACT-PARITY: Refactoring preserves 100% of observable positive contract assertions, fail-closed boundaries, and Merkle tree determinism (commitment_integrity).'
+    - 'INV-TABLE-DRIVEN-PERMUTATIONS: Multiple assertions over syntax permutations, keyword tables, or builtins use table-driven loops instead of copy-pasted test functions.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
