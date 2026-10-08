@@ -1,48 +1,20 @@
 #![cfg(feature = "lang-python")]
 use contextunity_forge_mcp::{
     core::semantic::{TypeExpr, ValueExpr, ValueFlowFacts},
-    db::{reader, writer},
     engine::{ast, linker},
 };
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::collections::BTreeMap;
 
-static WORKSPACE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+use crate::common::Workspace;
 
-struct PythonWorkspace(PathBuf);
-
-impl PythonWorkspace {
-    fn build(files: &[(&str, &str)]) -> (Self, rusqlite::Connection) {
-        let sequence = WORKSPACE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "forge_python_value_flow_{}_{}_{sequence}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let workspace = Self(root);
-        for (path, source) in files {
-            let file = workspace.0.join(path);
-            fs::create_dir_all(file.parent().unwrap()).unwrap();
-            fs::write(file, source).unwrap();
-        }
-        let db = workspace.0.join(".forge/code-map.sqlite");
-        writer::build(&workspace.0, &db, None).unwrap();
-        let connection = reader::open(&db, &workspace.0).unwrap();
-        (workspace, connection)
+fn build_workspace(files: &[(&str, &str)]) -> (Workspace, rusqlite::Connection) {
+    let workspace = Workspace::new();
+    for (path, source) in files {
+        workspace.write(path, source);
     }
-}
-
-impl Drop for PythonWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+    workspace.build();
+    let connection = workspace.open();
+    (workspace, connection)
 }
 
 fn persisted_coverage(
@@ -92,7 +64,7 @@ fn persisted_edge(
 
 #[test]
 fn loop_rebinding_keeps_the_prior_receiver_from_leaking_past_the_loop() {
-    let (_workspace, db) = PythonWorkspace::build(&[(
+    let (_workspace, db) = build_workspace(&[(
         "loop.py",
         "class Worker:\n    def work(self): pass\ndef run(values):\n    current = Worker()\n    current.work()\n    for current in values:\n        pass\n    current.work()\n",
     )]);
@@ -127,7 +99,7 @@ class Worker:
         logger = unknown_factory()
         logger.error('unknown')
 "#;
-    let (_workspace, db) = PythonWorkspace::build(&[
+    let (_workspace, db) = build_workspace(&[
         ("app.py", source),
         ("provider.py", "class Service:\n    def other(self): pass\n"),
     ]);
@@ -166,7 +138,7 @@ fn persisted_imported_typed_dict_returns_keep_finite_mapping_members() {
         let schema = format!("from typing import TypedDict\nclass {root}Node(TypedDict, total=False):\n    name: str\n");
         let provider = format!("from . import schema as types\ndef load() -> types.{root}Node:\n    return {{'name': 'Ada'}}\n");
         let consumer = "from .provider import load\nfrom .fake import load_fake\nnode = load()\nnode.get('name')\nload().get('name')\nnode.unsupported_method()\nfake = load_fake()\nfake.get('name')\n";
-        let (_workspace, db) = PythonWorkspace::build(&[
+        let (_workspace, db) = build_workspace(&[
             ("pkg/__init__.py", ""),
             ("pkg/schema.py", &schema),
             ("pkg/provider.py", &provider),
@@ -194,7 +166,7 @@ fn persisted_imported_typed_dict_returns_keep_finite_mapping_members() {
 
 #[test]
 fn persisted_untyped_logger_parameters_without_provider_stay_unresolved() {
-    let (_workspace, db) = PythonWorkspace::build(&[(
+    let (_workspace, db) = build_workspace(&[(
         "unproven.py",
         "def run(logger, log):\n    logger.info('unknown')\n    log.warning('unknown')\n",
     )]);
@@ -245,7 +217,7 @@ class Runner:
         service.execute()
 "#;
     let (_workspace, db) =
-        PythonWorkspace::build(&[("provider.py", provider), ("consumer.py", consumer)]);
+        build_workspace(&[("provider.py", provider), ("consumer.py", consumer)]);
     assert!(persisted_edge(
         &db,
         "consumer.py",
@@ -912,7 +884,7 @@ fn inferred_python_members_require_a_unique_class_provider() {
 #[test]
 fn later_unconditional_python_method_overrides_conditional_providers() {
     let source = "flag = bool(input())\nclass Dynamic:\n    if flag:\n        def render(self): return 'first'\n    else:\n        def render(self): return 'second'\nclass Replaced:\n    if flag:\n        def render(self): return 'first'\n    else:\n        def render(self): return 'second'\n    def render(self): return 'final'\nclass FieldOverridden:\n    def render(self): return 'callable'\n    render = None\ndef use():\n    dynamic = Dynamic()\n    dynamic.render()\n    replaced = Replaced()\n    replaced.render()\n    field = FieldOverridden()\n    field.render()\n";
-    let (_workspace, db) = PythonWorkspace::build(&[("override.py", source)]);
+    let (_workspace, db) = build_workspace(&[("override.py", source)]);
     assert_eq!(
         persisted_coverage(&db, "override.py", "dynamic.render")[0].0,
         "ambiguous"
@@ -1052,7 +1024,7 @@ fn annotated_python_receivers_follow_declared_inheritance_and_protocol_members()
         && edge.line == 9
         && edge.evidence == "conn.execute"
         && edge.dst == execute));
-    let (_workspace, db) = PythonWorkspace::build(&[("typed_members.py", source)]);
+    let (_workspace, db) = build_workspace(&[("typed_members.py", source)]);
     for (expression, expected) in [
         ("request.GET.get", "external"),
         ("conn.execute", "resolved"),
@@ -1087,7 +1059,7 @@ fn psycopg_alias_members_require_declared_dependency_and_finite_api() {
         if declared {
             files.push(("pyproject.toml", manifest));
         }
-        let (_workspace, db) = PythonWorkspace::build(&files);
+        let (_workspace, db) = build_workspace(&files);
         for expression in ["conn.execute", "conn.cursor"] {
             let coverage = persisted_coverage(&db, "src/storage.py", expression);
             assert_eq!(coverage.len(), 1, "{declared} {expression}: {coverage:?}");

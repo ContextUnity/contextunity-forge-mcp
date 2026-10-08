@@ -1,0 +1,989 @@
+use crate::common::{
+    assertions,
+    mcp_client::{run_cli, StdioClient as Client},
+    Workspace,
+};
+use contextunity_forge_mcp::{
+    core::response::{ResponsePolicy, MAX_OUTPUT_BYTES},
+    engine::scanner,
+    mcp::response,
+};
+use serde_json::{json, Value};
+use std::{fs, time::Duration};
+
+fn query_cli_with_database(
+    workspace: &Workspace,
+    database: &std::path::Path,
+    args: &[&str],
+) -> Value {
+    let database = database.to_str().expect("database path should be UTF-8");
+    let mut full_args = Vec::with_capacity(args.len() + 2);
+    full_args.extend(["--db", database]);
+    full_args.extend_from_slice(args);
+    let output = run_cli(workspace, &full_args);
+    assertions::assert_command_succeeded(&output);
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn wait_for_source_inventory_ttl() {
+    std::thread::sleep(Duration::from_millis(5100));
+}
+#[test]
+fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "service.py",
+        "def entry():\n    return target()\ndef target():\n    return 1\n",
+    );
+    workspace.write("other.py", "def target():\n    return 2\n");
+    fs::create_dir_all(workspace.path("nested")).unwrap();
+    workspace.write("nested/helper.py", "def unique_nested():\n    return 3\n");
+    let mut client = Client::new(&workspace);
+    let first = client.payload(
+        "code_map_search",
+        json!({"pattern":"target","exact":true,"limit":1,"detail":"full"}),
+    );
+    let page = &first["nodes"];
+    assert_eq!(page["has_more"], true);
+    assert!(page.get("continuation_hint").is_none());
+    let selector = page["items"][0]["id"].as_str().unwrap();
+    assert!(page["items"][0]["signature"]
+        .as_str()
+        .is_some_and(|s| !s.is_empty()));
+    assert_eq!(
+        page["items"][0]["inspect_selector"],
+        json!({"selector":selector,"show_source":true})
+    );
+    assert!(page["items"][0]["source"].as_str().is_some());
+    assert!(page["items"][0]["source_preview"].is_object());
+    assert!(page["items"][0].get("is_test").is_none());
+    assert!(page["items"][0].get("generated").is_none());
+    let second = client.payload("code_map_search", json!({"pattern":"target","exact":true,"limit":1,"offset":page["next_offset"],"generation":page["generation"]}));
+    assert_eq!(second["nodes"]["has_more"], false);
+    assert!(second["nodes"].get("next_offset").is_none());
+    assert!(second["nodes"].get("continuation_hint").is_none());
+    assert_eq!(
+        second["freshness"],
+        json!({"status":"matched","generation":page["generation"]})
+    );
+    let inspected = client.payload("code_map_inspect", json!({"selector":selector}));
+    assert_eq!(inspected["node"]["id"], selector);
+    assert!(inspected.get("documents").is_none());
+    let snippet = client.payload("get_code_snippet", json!({"selector":selector}));
+    assert!(snippet["header"].as_str().unwrap().contains(&format!(
+        "{}:{}-{}",
+        snippet["node"]["path"].as_str().unwrap(),
+        snippet["source_preview"]["start_line"],
+        snippet["source_preview"]["end_line"]
+    )));
+    let explained = client.payload("code_map_explain", json!({"selector":"service.py:entry"}));
+    assert!(explained["relations"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("outgoing")));
+    let isolated = client.payload(
+        "code_map_explain",
+        json!({"selector":"target","path":"other.py"}),
+    );
+    assert_eq!(isolated["node"]["path"], "other.py");
+    assert!(isolated.get("outgoing").is_none());
+    let (_, ambiguous) = client.call("code_map_inspect", json!({"selector":"target"}));
+    let ambiguous_text = ambiguous["result"]["content"][0]["text"].as_str().unwrap();
+    let outcome: serde_json::Value = serde_json::from_str(ambiguous_text)
+        .unwrap_or_else(|_| panic!("ambiguity response is not a JSON envelope: {ambiguous_text}"));
+    assert_eq!(outcome["outcome"], "ambiguous");
+    assert_eq!(outcome["total"], 2);
+    let candidates = outcome["candidates"].as_array().unwrap();
+    for candidate in candidates {
+        for field in ["id", "path", "line", "qualname", "signature"] {
+            assert!(
+                candidate.get(field).is_some(),
+                "missing {field}: {candidate}"
+            );
+        }
+    }
+    let scoped = client.payload(
+        "code_map_inspect",
+        json!({"selector":"target","path":"other.py"}),
+    );
+    assert_eq!(scoped["node"]["path"], "other.py");
+    let scoped_search = client.payload(
+        "code_map_search",
+        json!({"pattern":"target","exact":true,"path":"other.py"}),
+    );
+    assert_eq!(scoped_search["nodes"]["total"], 1);
+    assert_eq!(scoped_search["nodes"]["items"][0]["path"], "other.py");
+    let directory_scoped = client.payload(
+        "code_map_inspect",
+        json!({"selector":"unique_nested","path":"nested"}),
+    );
+    assert_eq!(directory_scoped["node"]["path"], "nested/helper.py");
+    let snippet_scoped = client.payload(
+        "get_code_snippet",
+        json!({"selector":"target","path":"other.py"}),
+    );
+    assert_eq!(snippet_scoped["node"]["path"], "other.py");
+    let tests_scoped = client.payload(
+        "code_map_tests",
+        json!({"selector":"target","path":"other.py"}),
+    );
+    assert_eq!(tests_scoped["selector"]["path"], "other.py");
+    let impact_scoped = client.payload(
+        "code_map_impact",
+        json!({"selector":"target","path":"other.py","depth":0}),
+    );
+    assert_eq!(impact_scoped["selector"]["path"], "other.py");
+    let removal_scoped = client.payload(
+        "code_map_prove_removal",
+        json!({"selector":"target","path":"other.py"}),
+    );
+    assert_eq!(removal_scoped["selected_ids"]["total"], 1);
+    let query_scoped = client.payload(
+        "code_map_query",
+        json!({"operation":"inspect","selector":"target","path":"other.py"}),
+    );
+    assert_eq!(query_scoped["node"]["path"], "other.py");
+    for selector in [
+        "service.py:function:entry",
+        "service.py::entry",
+        "service.py:2",
+        "service.py#L2",
+    ] {
+        let selected = client.payload("code_map_inspect", json!({"selector":selector}));
+        assert_eq!(selected["node"]["path"], "service.py", "{selector}");
+    }
+    let (_, rejected) = client.call(
+        "code_map_inspect",
+        json!({"selector":"target","pah":"other.py"}),
+    );
+    assert_eq!(rejected["result"]["isError"], true);
+    let rejected: Value =
+        serde_json::from_str(rejected["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(rejected["error"]["code"], "rejected_arguments");
+    assert_eq!(rejected["error"]["fields"], json!(["pah"]));
+    let (_, rejected_search) = client.call(
+        "code_map_search",
+        json!({"pattern":"target","pah":"other.py"}),
+    );
+    assert_eq!(rejected_search["result"]["isError"], true);
+    let rejected_search: Value = serde_json::from_str(
+        rejected_search["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rejected_search["error"]["code"], "rejected_arguments");
+}
+
+#[test]
+fn stdio_search_previews_and_impact_depth_defaults_are_bounded() {
+    let workspace = Workspace::new();
+    let body_lines = (0..24)
+        .map(|line| format!("    value_{line} = {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let long_line = "x".repeat(6000);
+    for index in 0..4 {
+        workspace.write(
+            format!("hit_{index}.py"),
+            &format!("def hit_{index}():\n{body_lines}\n    return \"{long_line}\"\n"),
+        );
+    }
+    workspace.write(
+        "calls.py",
+        "def target():\n    return 1\ndef middle():\n    return target()\ndef outer():\n    return middle()\n",
+    );
+
+    let mut client = Client::new(&workspace);
+    let ast_guide = client.payload("forge_guide", json!({"topic":"ast"}));
+    for capability in [
+        "complete_syntax",
+        "declaration_without_body",
+        "fragment_probe",
+        "attribute",
+    ] {
+        assert!(ast_guide["capabilities"].get(capability).is_some());
+    }
+    assert!(ast_guide["wildcards"].get("$NAME").is_some());
+    assert!(ast_guide["wildcards"].get("$$$SEQ").is_some());
+    let (_, tool_list) = client.request("tools/list", json!({}));
+    let tools = tool_list["result"]["tools"].as_array().unwrap();
+    let ast_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "ast_grep_search")
+        .unwrap();
+    assert!(ast_tool["description"]
+        .as_str()
+        .unwrap()
+        .contains("fragment_probe"));
+    let inspect_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "code_map_inspect")
+        .unwrap();
+    let selector_description = inspect_tool["inputSchema"]["properties"]["selector"]["description"]
+        .as_str()
+        .unwrap();
+    for selector_form in [
+        "path:name",
+        "path:known_kind:name",
+        "path:line",
+        "path#Lline",
+    ] {
+        assert!(
+            selector_description.contains(selector_form),
+            "{selector_description}"
+        );
+    }
+
+    let without_previews = client.payload(
+        "code_map_search",
+        json!({"pattern":"hit_*","kind":"function"}),
+    );
+    assert_eq!(without_previews["nodes"]["total"], 4);
+    for hit in without_previews["nodes"]["items"].as_array().unwrap() {
+        assert!(hit["signature"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert_eq!(
+            hit["inspect_selector"],
+            json!({"selector":hit["id"],"show_source":true})
+        );
+        assert!(hit.get("source").is_none());
+    }
+
+    let with_previews = client.payload(
+        "code_map_search",
+        json!({"pattern":"hit_*","kind":"function","include_preview":true,"limit":100}),
+    );
+    assert_eq!(with_previews["nodes"]["total"], 4);
+    let mut preview_count = 0;
+    let mut preview_bytes = 0;
+    for hit in with_previews["nodes"]["items"].as_array().unwrap() {
+        if let Some(source) = hit["source"].as_str() {
+            preview_count += 1;
+            preview_bytes += source.len();
+            assert!(source.lines().count() <= 20);
+            assert!(hit["source_preview"].is_object());
+        }
+    }
+    assert_eq!(preview_count, 3);
+    assert!(preview_bytes <= 12 * 1024, "{preview_bytes} preview bytes");
+
+    let impact = client.payload("code_map_impact", json!({"selector":"calls.py:target"}));
+    let generic_impact = client.payload(
+        "code_map_query",
+        json!({"operation":"impact","selector":"calls.py:target"}),
+    );
+    assert_eq!(impact["depth"], 1);
+    assert_eq!(generic_impact["depth"], 2);
+    let names = |value: &Value| {
+        value["nodes"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    assert!(!names(&impact).iter().any(|name| name == "outer"));
+    assert!(names(&generic_impact).iter().any(|name| name == "outer"));
+
+    let db = workspace.path(".forge/cli.sqlite");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let run_cli = |args: &[&str]| query_cli_with_database(&workspace, &db, args);
+    let cli_impact = run_cli(&["query", "impact", "calls.py:target"]);
+    let cli_generic_impact = run_cli(&["query", "run", "impact", "calls.py:target"]);
+    assert_eq!(cli_impact["depth"], 1);
+    assert_eq!(cli_generic_impact["depth"], 2);
+    assert!(!names(&cli_impact).iter().any(|name| name == "outer"));
+    assert!(names(&cli_generic_impact)
+        .iter()
+        .any(|name| name == "outer"));
+}
+
+#[test]
+fn cli_selector_commands_apply_workspace_path_scope() {
+    let workspace = Workspace::new();
+    workspace.write("service.py", "def target():\n    return 1\n");
+    workspace.write("other.py", "def target():\n    return 2\n");
+    let forge_dir = workspace.path(".forge");
+    fs::create_dir_all(&forge_dir).unwrap();
+    let db = forge_dir.join("cli.sqlite");
+    let run_cli = |args: &[&str]| query_cli_with_database(&workspace, &db, args);
+
+    let inspected = run_cli(&["query", "inspect", "target", "--path", "other.py"]);
+    assert_eq!(inspected["node"]["path"], "other.py");
+    let explained = run_cli(&["query", "explain", "target", "--path", "other.py"]);
+    assert_eq!(explained["node"]["path"], "other.py");
+    let impacted = run_cli(&[
+        "query", "impact", "target", "--depth", "0", "--path", "other.py",
+    ]);
+    assert_eq!(impacted["selector"]["path"], "other.py");
+    let tested = run_cli(&["query", "tests", "target", "--path", "other.py"]);
+    assert_eq!(tested["selector"]["path"], "other.py");
+    let removed = run_cli(&["query", "remove", "target", "--path", "other.py"]);
+    assert_eq!(removed["selected_ids"]["total"], 1);
+}
+
+#[test]
+fn compact_symbol_page_has_stable_lean_serialization() {
+    let items: Vec<Value> = (0..30)
+        .map(|i| {
+            let name = format!("public_application_entrypoint_{i}");
+            json!({"id":format!("function:{i}"),"kind":"function","name":name,"qualname":name,"path":"a.py","is_test":0,"generated":false})
+        })
+        .collect();
+    let mut payload = json!({"generation":"a".repeat(64),"nodes":{"items":items,"total":30,"offset":0,"limit":30,"has_more":false,"generation":"a".repeat(64),"next_offset":null,"continuation_hint":null}});
+    let original_bytes = payload.to_string().len();
+    response::compact_mcp_metadata(&mut payload);
+    assert!(payload.to_string().len() * 100 <= original_bytes * 65);
+    assert_eq!(payload["nodes"]["items"].as_array().unwrap().len(), 30);
+    assert_eq!(payload["nodes"]["generation"], "aaaaaaaa");
+    assert!(payload.get("generation").is_none());
+    let stable = payload.clone();
+    response::compact_mcp_metadata(&mut payload);
+    assert_eq!(payload, stable);
+    let mut flagged = json!({"nodes":{"items":[{"id":"test:1","kind":"function","name":"test","qualname":"suite.test","path":"test.py","is_test":1,"generated":true}]}});
+    response::compact_mcp_metadata(&mut flagged);
+    assert_eq!(flagged["nodes"]["items"][0]["is_test"], true);
+    assert_eq!(flagged["nodes"]["items"][0]["generated"], true);
+    assert_eq!(flagged["nodes"]["items"][0]["qualname"], "suite.test");
+}
+
+#[test]
+fn stdio_zero_match_search_has_compact_page() {
+    let workspace = Workspace::new();
+    workspace.write("service.py", "def useful_symbol():\n    return 1\n");
+    let mut client = Client::new(&workspace);
+    let query = json!({"pattern":"*noise*","path":"service.py"});
+    client.payload("code_map_search", query.clone());
+    let payload = client.payload("code_map_search", query);
+    assert_eq!(
+        payload,
+        json!({"pattern":"*noise*","nodes":{"total":0,"items":[]}})
+    );
+}
+
+#[test]
+fn compact_incomplete_page_keeps_limit_evidence() {
+    for flag in ["computation_truncated", "byte_limited"] {
+        let mut payload = json!({"matches":{
+            "total":null,"offset":0,"limit":30,"has_more":false,
+            "generation":"123456789abcdef","items":[],
+            "continuation_hint":"Narrow the pattern"
+        }});
+        payload["matches"][flag] = json!(true);
+        response::compact_mcp_metadata(&mut payload);
+        assert_eq!(payload["matches"][flag], true);
+        assert_eq!(payload["matches"]["generation"], "12345678");
+        assert_eq!(
+            payload["matches"]["continuation_hint"],
+            "Narrow the pattern"
+        );
+    }
+}
+#[cfg(feature = "lang-rust")]
+#[test]
+fn stdio_distinguishes_known_external_imports_from_missing_sources() {
+    let workspace = Workspace::new();
+    workspace.write("main.rs", "use std::fmt::Debug;\nuse missing::Thing;\n");
+    let mut client = Client::new(&workspace);
+    let overview = client.payload("code_map_overview", json!({}));
+    assert_eq!(overview["counts"]["external_imports"], 2);
+    assert_eq!(overview["counts"]["unresolved"], 0);
+    let analysis = client.payload("code_map_analyze", json!({"target":"main.rs"}));
+    assert_eq!(analysis["total_external_imports"], 2);
+    assert_eq!(analysis["total_unresolved"], 0);
+    assert_eq!(
+        analysis["external_imports"]["items"][0]["expression"],
+        "std::fmt::Debug"
+    );
+    assert_eq!(
+        analysis["external_imports"]["items"][1]["expression"],
+        "missing::Thing"
+    );
+    assert!(analysis["resolution"]["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+#[test]
+fn stdio_budget_and_query_errors_explain_how_to_retry() {
+    let workspace = Workspace::new();
+    workspace.write("README.md", "# Indexed document\n");
+    let mut client = Client::new(&workspace);
+    for (name, arguments, expected) in [
+        (
+            "code_map_analyze",
+            json!({"target":"SELECT hex(zeroblob(3000000)) AS a, hex(zeroblob(3000000)) AS b"}),
+            "select fewer and smaller SQL columns",
+        ),
+        (
+            "code_map_analyze",
+            json!({"target":"diagnostics"}),
+            "Use target='' for workspace diagnostics",
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"cypher","selector":"MATCH (n) RETURN n"}),
+            "supported: overview,inspect,explain,impact,slice,unwired,sql",
+        ),
+        (
+            "code_map_inspect",
+            json!({"selector":"file:nonexistent.rs"}),
+            "File paths are passed without a file: prefix",
+        ),
+    ] {
+        let (_, response) = client.call(name, arguments);
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let message = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(message.contains(expected), "{name}: {message}");
+    }
+}
+#[test]
+fn stdio_analyze_preserves_sql_columns_named_like_metadata() {
+    let workspace = Workspace::new();
+    workspace.write("main.py", "def main(): pass\n");
+    let mut client = Client::new(&workspace);
+    let details = json!({
+        "nodes": {"items": [{"output_root": "node-root-12345", "corpus_hash": "node-hash-123456"}]},
+        "symbols": [{"output_root": "symbol-root-123", "corpus_hash": "symbol-hash-1234"}],
+        "doc_sections": [{"output_root": "section-root-12", "corpus_hash": "section-hash-123"}],
+        "freshness": {"output_root": "nested-root-1234", "corpus_hash": "nested-hash-12345"},
+        "metadata": {"output_root": "nested-meta-1234", "corpus_hash": "nested-meta-12345"}
+    })
+    .to_string()
+    .replace('\'', "''");
+    let result = client.payload(
+        "code_map_analyze",
+        json!({"target":format!("SELECT '1234567é' AS generation, '0123456789' AS output_root, 'abcdef0123456789' AS corpus_hash, '{details}' AS details")}),
+    );
+    assert_eq!(result["rows"]["items"][0]["generation"], "1234567é");
+    assert_eq!(result["rows"]["items"][0]["output_root"], "0123456789");
+    assert_eq!(
+        result["rows"]["items"][0]["corpus_hash"],
+        "abcdef0123456789"
+    );
+    assert_eq!(
+        result["rows"]["items"][0]["details"]["nodes"]["items"][0]["output_root"],
+        "node-root-12345"
+    );
+    assert_eq!(
+        result["rows"]["items"][0]["details"]["symbols"][0]["corpus_hash"],
+        "symbol-hash-1234"
+    );
+    assert_eq!(
+        result["rows"]["items"][0]["details"]["doc_sections"][0]["output_root"],
+        "section-root-12"
+    );
+    assert_eq!(
+        result["rows"]["items"][0]["details"]["freshness"]["corpus_hash"],
+        "nested-hash-12345"
+    );
+    assert_eq!(
+        result["rows"]["items"][0]["details"]["metadata"]["output_root"],
+        "nested-meta-1234"
+    );
+}
+#[test]
+fn stdio_analyze_rejects_oversized_intermediate_sql_values() {
+    let workspace = Workspace::new();
+    workspace.write("main.py", "def main(): pass\n");
+    let mut client = Client::new(&workspace);
+    let exact = client.payload(
+        "code_map_analyze",
+        json!({"target":"SELECT length(randomblob(8388608)) AS payload"}),
+    );
+    assert_eq!(exact["rows"]["items"][0]["payload"], 8388608);
+    let (_, response) = client.call(
+        "code_map_analyze",
+        json!({"target":"SELECT length(randomblob(8388609)) AS payload"}),
+    );
+    assert_eq!(response["result"]["isError"], true, "{response}");
+}
+#[test]
+fn cold_build_populates_document_fts_search() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "guide.md",
+        "# Guide\nThis document contains quasarneedle for search.\n",
+    );
+    let mut client = Client::new(&workspace);
+    let result = client.payload(
+        "code_map_analyze",
+        json!({"target":"SELECT count(*) AS matches FROM doc_search WHERE doc_search MATCH 'quasarneedle'"}),
+    );
+    assert_eq!(result["rows"]["items"][0]["matches"], 1);
+}
+#[test]
+fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "README.md",
+        &format!("# Huge document\n{}", "\"\\Привіт\t".repeat(30_000)),
+    );
+    let mut client = Client::new(&workspace);
+    let (_, tools) = client.request("tools/list", json!({}));
+    assert!(tools["result"]["tools"].as_array().unwrap().len() >= 15);
+    let cases = [
+        ("get_doc", json!({"path_or_id":"README.md","detail":"full"})),
+        (
+            "code_map_analyze",
+            json!({"target":"SELECT replace(hex(zeroblob(200000)), '0', char(34)) AS giant"}),
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"\"\\Привіт".repeat(30_000)}),
+        ),
+        (
+            "code_map_search",
+            json!({"pattern":"*","detail":"\"\\Привіт".repeat(30_000)}),
+        ),
+    ];
+    for (name, arguments) in cases {
+        let (_, response) = client.call(name, arguments);
+        assert!(
+            response["result"]["isError"] == true || response.get("error").is_some(),
+            "{name}: {response}"
+        );
+    }
+    let (_, unknown) = client.call(&"\"\\Привіт".repeat(30_000), json!({}));
+    assert!(unknown["result"]["isError"] == true || unknown.get("error").is_some());
+    client.payload(
+        "session_checkpoint",
+        json!({"action":"save","name":"large","content":"\"\\Привіт".repeat(20_000)}),
+    );
+    let (_, response) = client.call("session_checkpoint", json!({"action":"get","name":"large"}));
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    assert_eq!(
+        client.payload("session_checkpoint", json!({"action":"list"})),
+        json!({"large":{"bytes":320002}})
+    );
+    let (_, response) = client.call("get_doc", json!({"path_or_id":"README.md","limit":101}));
+    assert_eq!(response["result"]["isError"], true);
+}
+#[test]
+fn stdio_byte_pruning_continues_after_exactly_the_emitted_rows() {
+    let workspace = Workspace::new();
+    workspace.write("README.md", "# Small\nindexed\n");
+    let mut client = Client::new(&workspace);
+    let sql = "WITH RECURSIVE t(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM t WHERE n<16) SELECT n,replace(hex(zeroblob(1800)), '0', char(34)) AS escaped FROM t ORDER BY n";
+    let mut offset = 0;
+    let mut generation = Value::Null;
+    let mut seen = Vec::new();
+    loop {
+        let payload = client.payload(
+            "code_map_analyze",
+            json!({"target":sql,"limit":30,"offset":offset,"generation":generation}),
+        );
+        let page = &payload["rows"];
+        assert_eq!(page["total"], 17);
+        let items = page["items"].as_array().unwrap();
+        assert!(!items.is_empty(), "zero progress page: {page}");
+        seen.extend(items.iter().map(|item| item["n"].as_u64().unwrap()));
+        if page["has_more"] == false {
+            break;
+        }
+        assert_eq!(
+            page["next_offset"].as_u64().unwrap(),
+            offset + items.len() as u64
+        );
+        offset = page["next_offset"].as_u64().unwrap();
+        generation = page["generation"].clone();
+    }
+    assert_eq!(seen, (0..17).collect::<Vec<_>>());
+}
+#[test]
+fn adapter_policy_applies_without_changing_fact_identity_and_rejects_invalid_bounds() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: [.]\nresponse:\n  page_size: 2\n  max_output_bytes: 4096\n",
+    );
+    workspace.write("README.md", "# A\none\n# B\ntwo\n# C\nthree\n# D\nfour\n");
+    let first = scanner::load_adapter(workspace.root(), None).unwrap();
+    let mut client = Client::new(&workspace);
+    let payload = client.payload("get_doc", json!({"path_or_id":"README.md"}));
+    assert_eq!(payload["sections"]["items"].as_array().unwrap().len(), 2);
+    let database = workspace.db();
+    let before = fs::metadata(&database).unwrap().modified().unwrap();
+    workspace.write("forge-mcp.yaml", "roots: [.]\nresponse:\n  detail: full\n  page_size: 3\n  max_output_bytes: 2048\n  source_context:\n    max_body_lines: 10\n");
+    let second = scanner::load_adapter(workspace.root(), None).unwrap();
+    assert_eq!(first.digest, second.digest);
+    let (bytes, response) = client.call("get_doc", json!({"path_or_id":"README.md"}));
+    assert!(bytes <= 2048, "{bytes}");
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    assert_eq!(fs::metadata(database).unwrap().modified().unwrap(), before);
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: [.]\nresponse:\n  max_output_bytes: 1024\n",
+    );
+    let (bytes, response) = client.call(
+        "code_map_search",
+        json!({"pattern":"*","detail":"A".repeat(10_000)}),
+    );
+    assert!(bytes <= 1024, "parameter error frame was {bytes} bytes");
+    assert_eq!(response["result"]["isError"], true);
+    for settings in [
+        "page_size: 0",
+        "page_size: 101",
+        "max_output_bytes: 65537",
+        "max_output_bytes: 1023",
+        "source_context: {leading_lines: 21}",
+        "source_context: {max_body_lines: 101}",
+        "source_context: {max_body_lines: 0}",
+        "detail: enormous",
+    ] {
+        workspace.write("forge-mcp.yaml", &format!("response:\n  {settings}\n"));
+        assert!(
+            scanner::load_adapter(workspace.root(), None).is_err(),
+            "{settings}"
+        );
+    }
+}
+#[cfg(feature = "lang-python")]
+#[test]
+fn stdio_default_pages_and_stale_continuation_are_explicit() {
+    let workspace = Workspace::new();
+    let source = (0..125)
+        .map(|i| format!("def symbol_{i:03}():\n    return {i}\n"))
+        .collect::<String>();
+    workspace.write("service.py", &source);
+    let mut client = Client::new(&workspace);
+    let initial = client.payload(
+        "code_map_search",
+        json!({"pattern":"symbol_*","kind":"function"}),
+    );
+    let generation = initial["nodes"]["generation"].as_str().unwrap();
+    assert_eq!(generation.len(), 8);
+    assert_eq!(initial["nodes"]["limit"], 30);
+    assert_eq!(initial["nodes"]["items"].as_array().unwrap().len(), 30);
+    assert_eq!(initial["nodes"]["total"], 125);
+    let next = client.payload("code_map_search", json!({"pattern":"symbol_*","kind":"function","limit":100,"offset":30,"generation":initial["nodes"]["generation"]}));
+    assert_eq!(next["nodes"]["items"].as_array().unwrap().len(), 95);
+    assert_eq!(next["nodes"]["has_more"], false);
+    let mut colliding_prefix = generation.to_owned();
+    colliding_prefix.replace_range(0..1, if &generation[0..1] == "0" { "1" } else { "0" });
+    let (_, stale_prefix) = client.call(
+        "code_map_search",
+        json!({"pattern":"symbol_*","limit":100,"offset":30,"generation":colliding_prefix}),
+    );
+    assert_eq!(stale_prefix["result"]["isError"], true);
+    let (_, missing) = client.call("code_map_search", json!({"pattern":"symbol_*","offset":30}));
+    assert_eq!(missing["result"]["isError"], true);
+    workspace.write("service.py", &format!("{source}\ndef added(): return 0\n"));
+    wait_for_source_inventory_ttl();
+    let (_, stale) = client.call(
+        "code_map_search",
+        json!({"pattern":"symbol_*","offset":30,"generation":initial["nodes"]["generation"]}),
+    );
+    assert_eq!(stale["result"]["isError"], true);
+}
+#[cfg(feature = "lang-python")]
+#[test]
+fn stdio_symbol_search_groups_the_current_page_by_file() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "service.py",
+        "def target(): return 1\ndef target_helper(): return target()\n",
+    );
+    let mut client = Client::new(&workspace);
+    let response = client.payload(
+        "code_map_search",
+        json!({"pattern":"target","kind":"function","group_by_file":true}),
+    );
+    assert_eq!(response["nodes"]["total"], 2);
+    assert_eq!(response["nodes"]["items"], json!([]));
+    assert_eq!(
+        response["nodes"]["grouped_by_file"]["service.py"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+#[cfg(feature = "lang-python")]
+#[test]
+fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
+    let workspace = Workspace::new();
+    let body = (0..90)
+        .map(|i| format!("    value_{i} = 'Привіт'\r\n"))
+        .collect::<String>();
+    let source = format!("def previous():\r\n    return 'secret'\r\n\r\n# selected\r\ndef selected():\r\n{body}    return value_0\r\ndef following(): return 'hidden'\r\n");
+    workspace.write("service.py", &source);
+    let mut client = Client::new(&workspace);
+    let default = client.payload("code_map_inspect", json!({"selector":"selected"}));
+    assert!(default.get("source").is_none());
+    let explanation = client.payload(
+        "code_map_explain",
+        json!({"selector":"selected","show_source":true}),
+    );
+    assert!(explanation["source"]
+        .as_str()
+        .unwrap()
+        .contains("def selected"));
+    assert!(explanation.get("incoming").is_some());
+    assert_eq!(explanation["relations"], json!(["incoming"]));
+    let first = client.payload("get_code_snippet", json!({"selector":"selected"}));
+    let text = first["source"].as_str().unwrap();
+    assert!(text.contains("Привіт\r\n") || text.contains("Привіт'\r\n"));
+    assert!(!text.contains("previous"));
+    assert!(!text.contains("following"));
+    assert_eq!(first["source_preview"]["body_lines"], 35);
+    let second = client.payload("get_code_snippet", json!({"selector":"selected","source_offset":first["source_preview"]["next_source_offset"],"generation":first["generation"]}));
+    assert_eq!(second["source_preview"]["body_offset"], 35);
+    assert!(!second["source"].as_str().unwrap().contains("def selected"));
+    workspace.write(
+        "huge.py",
+        &format!("def enormous(): return '{}'\n", "Привіт".repeat(50_000)),
+    );
+    wait_for_source_inventory_ttl();
+    let enormous = client.payload("get_code_snippet", json!({"selector":"enormous"}));
+    assert_eq!(enormous["source_preview"]["truncated_line"], true);
+    assert!(enormous["source_preview"]["next_source_offset"].is_null());
+    assert!(enormous["source_preview"]["continuation_hint"]
+        .as_str()
+        .unwrap()
+        .contains("huge.py"));
+}
+#[cfg(feature = "lang-python")]
+#[path = "../mcp_context/ast_search.rs"]
+mod ast_search;
+#[cfg(feature = "lang-python")]
+#[test]
+fn repair_ast_horizon_has_no_unusable_cursor() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "service.py",
+        &(0..10_001)
+            .map(|i| format!("print({i})\n"))
+            .collect::<String>(),
+    );
+    let mut client = Client::new(&workspace);
+    let first = client.payload(
+        "ast_grep_search",
+        json!({"pattern":"print($VALUE)","language":"python","limit":100}),
+    );
+    let last = client.payload("ast_grep_search", json!({"pattern":"print($VALUE)","language":"python","offset":9900,"limit":100,"generation":first["matches"]["generation"]}));
+    let page = &last["matches"];
+    assert_eq!(page["items"].as_array().unwrap().len(), 100);
+    assert_eq!(page["has_more"], true);
+    assert_eq!(page["computation_truncated"], true);
+    assert!(
+        page["next_offset"].is_null(),
+        "unusable cursor: {}",
+        page["next_offset"]
+    );
+    assert!(page["total"].is_null());
+    assert!(page["continuation_hint"]
+        .as_str()
+        .unwrap()
+        .contains("narrow"));
+}
+#[cfg(feature = "lang-python")]
+#[test]
+fn repair_ast_byte_pruning_keeps_earlier_horizon_continuation_usable() {
+    let workspace = Workspace::new();
+    workspace.write("forge-mcp.yaml", "response:\n  max_output_bytes: 4096\n");
+    workspace.write(
+        "service.py",
+        &(0..10_001)
+            .map(|i| format!("print({i})\n"))
+            .collect::<String>(),
+    );
+    let mut client = Client::new(&workspace);
+    let first = client.payload(
+        "ast_grep_search",
+        json!({"pattern":"print($VALUE)","language":"python","limit":100}),
+    );
+    let mut offset = 9900;
+    let mut lines = Vec::new();
+    loop {
+        let payload = client.payload("ast_grep_search", json!({"pattern":"print($VALUE)","language":"python","offset":offset,"limit":100,"generation":first["matches"]["generation"]}));
+        let page = &payload["matches"];
+        let items = page["items"].as_array().unwrap();
+        assert!(!items.is_empty());
+        lines.extend(items.iter().map(|item| item["line"].as_u64().unwrap()));
+        if page["next_offset"].is_null() {
+            assert_eq!(page["computation_truncated"], true);
+            assert_eq!(lines.last(), Some(&10_000));
+            break;
+        }
+        let next = page["next_offset"].as_u64().unwrap();
+        assert_eq!(next, offset + items.len() as u64);
+        assert!(next > offset && next < 10_000);
+        offset = next;
+    }
+    assert_eq!(lines, (9901..=10_000).collect::<Vec<_>>());
+}
+#[cfg(feature = "lang-python")]
+#[test]
+fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "service.py",
+        &format!("f({})\nmissing = 0\n", vec!["0"; 400].join(",")),
+    );
+    let mut client = Client::new(&workspace);
+    let started = std::time::Instant::now();
+    let payload = client.payload(
+        "ast_grep_search",
+        json!({"pattern":"f($$$A, $$$B, $$$C, missing)","language":"python","limit":1}),
+    );
+    let elapsed = started.elapsed();
+    eprintln!("MCP-02: variadic missing-terminal stdio response completed in {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "recursive matcher exceeded cooperative2s budget plus2s margin: {elapsed:?}"
+    );
+    assert_eq!(payload["matches"]["computation_truncated"], true);
+    assert!(payload["matches"]["total"].is_null());
+    assert!(payload["matches"]["next_offset"].is_null());
+    assert_eq!(payload["matches"]["has_more"], true);
+    assert!(payload["matches"]["generation"].is_string());
+    assert!(payload["matches"]["continuation_hint"]
+        .as_str()
+        .unwrap()
+        .contains("narrow path or pattern"));
+    let source = "f(1, 2, missing)\nf(1, 1)\nf(1, 2)\n";
+    workspace.write("service.py", source);
+    wait_for_source_inventory_ttl();
+    for pattern in ["f($$$A, $$$B, missing)", "f($VALUE, $VALUE)"] {
+        let ordinary = client.payload(
+            "ast_grep_search",
+            json!({"pattern":pattern,"language":"python","limit":100}),
+        );
+        let legacy = contextunity_forge_mcp::engine::ast::search(
+            source,
+            "service.py",
+            "python",
+            pattern,
+            100,
+        )
+        .unwrap();
+        assert!(!legacy.is_empty());
+        assert_eq!(ordinary["matches"]["items"], json!(legacy));
+        assert_eq!(ordinary["matches"]["computation_truncated"], false);
+    }
+    let late_source = (0..25_001)
+        .map(|i| format!("print({i})\n"))
+        .collect::<String>();
+    let legacy = contextunity_forge_mcp::engine::ast::search(
+        &late_source,
+        "late.py",
+        "python",
+        "print(25000)",
+        1,
+    )
+    .unwrap();
+    assert_eq!(legacy.len(), 1);
+    assert_eq!(legacy[0]["line"], 25_001);
+}
+#[test]
+fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
+    let workspace = Workspace::new();
+    let mut client = Client::new(&workspace);
+    let page = json!({"total":2,"offset":0,"limit":2,"generation":"saved-snapshot","next_offset":null,"has_more":false,"items":[{"text":"x".repeat(40_000)},{"text":"y".repeat(40_000)}]});
+    for (name, value) in [
+        ("page", page.clone()),
+        ("nested", json!({"snapshot":{"matches":page}})),
+    ] {
+        client.payload(
+            "session_checkpoint",
+            json!({"action":"save","name":name,"content":value}),
+        );
+        let stored = fs::read(workspace.path(".forge/checkpoints.json")).unwrap();
+        let persisted: Value = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(persisted["entries"][name], value);
+        let (_, response) = client.call("session_checkpoint", json!({"action":"get","name":name}));
+        assert_eq!(
+            response["result"]["isError"], true,
+            "oversized {name} get created a fabricated page"
+        );
+        assert!(response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(".forge/checkpoints.json"));
+        let listed = client.payload("session_checkpoint", json!({"action":"list"}));
+        assert_eq!(
+            listed[name]["bytes"],
+            serde_json::to_vec(&value).unwrap().len()
+        );
+        assert_eq!(
+            fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
+            stored
+        );
+    }
+    let small = json!({"total":2,"offset":0,"limit":2,"generation":"saved","next_offset":null,"items":[1,2]});
+    client.payload(
+        "session_checkpoint",
+        json!({"action":"save","name":"small","content":small}),
+    );
+    assert_eq!(
+        client.payload("session_checkpoint", json!({"action":"get","name":"small"})),
+        small
+    );
+}
+#[tokio::test]
+async fn transport_accepts_exact_bound_and_replaces_oversized_frames() {
+    use tokio::io::AsyncWriteExt;
+    for size in [MAX_OUTPUT_BYTES - 1, MAX_OUTPUT_BYTES] {
+        let mut writer = response::BoundedWriter::new(tokio::io::sink());
+        let mut frame = vec![b'x'; size - 1];
+        frame.push(b'\n');
+        writer.write_all(&frame).await.unwrap();
+        writer.flush().await.unwrap();
+    }
+    let mut output = Vec::new();
+    let mut writer = response::BoundedWriter::new(&mut output);
+    writer
+        .write_all(&vec![b'x'; MAX_OUTPUT_BYTES])
+        .await
+        .unwrap();
+    writer.write_all(b"\n").await.unwrap();
+    writer.flush().await.unwrap();
+    assert!(output.len() < MAX_OUTPUT_BYTES);
+    let error: Value = serde_json::from_slice(&output).unwrap();
+    assert!(error.get("error").is_some());
+}
+#[test]
+fn serialization_counts_second_escaping_and_bounds_a_single_item() {
+    let policy = ResponsePolicy::default();
+    let result = response::result(
+        Ok(
+            json!({"nodes":{"total":2,"offset":0,"limit":30,"items":[{"id":"first","text":"\"\\\n".repeat(4000)},{"id":"second","text":"\"\\\n".repeat(4000)}],"has_more":false,"next_offset":null,"generation":"snapshot"}}),
+        ),
+        &policy,
+    );
+    assert!(response::serialized_bytes(&result) <= MAX_OUTPUT_BYTES - 256);
+    assert_ne!(result.is_error, Some(true));
+    let wire = serde_json::to_value(result).unwrap();
+    let payload: Value =
+        serde_json::from_str(wire["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["nodes"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["nodes"]["next_offset"], 1);
+    let result = response::result(Ok(json!({"scalar":"\"\\Привіт".repeat(30_000)})), &policy);
+    assert_eq!(result.is_error, Some(true));
+    assert!(response::serialized_bytes(&result) <= MAX_OUTPUT_BYTES - 256);
+}
+#[test]
+fn stdio_symbol_search_matches_methods_and_functions_interchangeably() {
+    let workspace = Workspace::new();
+    std::fs::create_dir_all(workspace.path("src")).unwrap();
+    workspace.write(
+        "src/lib.rs",
+        "pub struct Server;\nimpl Server {\n    pub fn admit(&self) {}\n}\n",
+    );
+    let mut client = Client::new(&workspace);
+    let result = client.payload(
+        "code_map_search",
+        json!({"pattern":"admit*","kind":"method","path":"src/lib.rs"}),
+    );
+    assert_eq!(result["nodes"]["total"], 1);
+    assert_eq!(result["nodes"]["items"][0]["name"], "admit");
+    let result_fn = client.payload(
+        "code_map_search",
+        json!({"pattern":"admit*","kind":"function","path":"src/lib.rs"}),
+    );
+    assert_eq!(result_fn["nodes"]["total"], 1);
+    assert_eq!(result_fn["nodes"]["items"][0]["name"], "admit");
+}

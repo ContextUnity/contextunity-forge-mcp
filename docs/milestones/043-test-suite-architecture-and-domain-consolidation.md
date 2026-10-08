@@ -181,24 +181,113 @@ receipt:
 
 ```yaml
 task_ref: central-engine-suites-consolidation
-target: "Consolidate remaining engine micro-binaries into coherent central suites (core, linker, incremental, mcp)"
+target: Consolidate remaining engine micro-binaries into coherent central suites (core, linker, incremental, mcp)
 proof_policy: seam-test-first
+contract_revision: 2
 scope:
-  - tests/
-status: planned
+- tests/adapter_source_boundary.rs
+- tests/compact_schema.rs
+- tests/coverage_diagnostics.rs
+- tests/debug_logging.rs
+- tests/delta_doc_parity.rs
+- tests/delta_module_scope.rs
+- tests/delta_resolution_identity.rs
+- tests/directory_slice.rs
+- tests/edge_aggregation.rs
+- tests/fastmcp_registration.rs
+- tests/incremental_scope.rs
+- tests/inherited_receiver_resolution.rs
+- tests/linker_optimizations.rs
+- tests/lint_tools.rs
+- tests/mcp_context.rs
+- tests/mcp_context/ast_search.rs
+- tests/mcp_freshness.rs
+- tests/mcp_freshness/
+- tests/method_semantics.rs
+- tests/overload_disambiguation.rs
+- tests/receivers/persistence.rs
+- tests/scanner_guard_limits.rs
+- tests/source_only_adapter.rs
+- tests/tool_evolution.rs
+- tests/tool_evolution/
+- tests/typed_receiver_resolution.rs
+- tests/core.rs
+- tests/core/
+- tests/incremental.rs
+- tests/incremental/
+- tests/linker.rs
+- tests/linker/
+- tests/mcp.rs
+- tests/mcp/
+- tests/receivers/python_value_flow.rs
+- tests/receivers/rust_value_flow.rs
 subtasks:
-  - subtask_ref: consolidate-core-suite
-    title: "Unify pure engine storage tests (compact_schema, coverage_diagnostics, edge_aggregation, debug_logging, scanner_guard_limits, adapters) into tests/core.rs and tests/core/"
-    status: pending
-  - subtask_ref: consolidate-linker-suite
-    title: "Merge typed_receiver_resolution, inherited_receiver_resolution, method_semantics, overload_disambiguation, and linker_optimizations into tests/linker.rs and tests/linker/"
-    status: pending
-  - subtask_ref: consolidate-incremental-suite
-    title: "Merge incremental_scope, delta_module_scope, delta_resolution_identity, delta_doc_parity, and directory_slice into tests/incremental.rs and tests/incremental/"
-    status: pending
-  - subtask_ref: consolidate-mcp-suite
-    title: "Consolidate code navigation MCP tools (mcp_context, mcp_freshness, fastmcp_registration, tool_evolution, lint_tools) into tests/mcp.rs, isolating selectors.rs and navigation.rs for milestone 042"
-    status: pending
+- subtask_ref: consolidate-core-suite
+  title: Unify pure engine storage tests (compact_schema, coverage_diagnostics, edge_aggregation, debug_logging, scanner_guard_limits, adapters) into tests/core.rs and tests/core/
+  status: completed
+  evidence: 'Moved compact_schema, coverage_diagnostics, edge_aggregation, debug_logging, scanner_guard_limits, and adapter suites into tests/core.rs and tests/core/. cargo test --test core: 26 passed, 0 failed, 1 pre-existing ignored; cargo clippy --test core -- -D warnings passed.'
+- subtask_ref: consolidate-linker-suite
+  title: Merge typed_receiver_resolution, inherited_receiver_resolution, method_semantics, overload_disambiguation, and linker_optimizations into tests/linker.rs and tests/linker/
+  status: completed
+  evidence: 'Merged typed receiver resolution, inherited receiver resolution, persistence delta checks, method semantics, overload disambiguation, and linker optimization tests under tests/linker.rs and tests/linker/. Kept Python/Rust value-flow source modules in tests/receivers and imported them from the typed receiver module. cargo test --test linker: 92 passed; cargo clippy --test linker -- -D warnings passed.'
+- subtask_ref: consolidate-incremental-suite
+  title: Merge incremental_scope, delta_module_scope, delta_resolution_identity, delta_doc_parity, and directory_slice into tests/incremental.rs and tests/incremental/
+  status: completed
+  evidence: 'Merged incremental_scope, delta_module_scope, delta_resolution_identity, delta_doc_parity, and directory_slice under tests/incremental.rs and tests/incremental/. Replaced their duplicate temporary Workspace lifecycle helpers with tests/common::Workspace while preserving cold-versus-delta assertions and the existing ignored paired-profile test. cargo test --test incremental: 23 passed, 1 ignored; cargo clippy --test incremental -- -D warnings passed.'
+- subtask_ref: consolidate-mcp-suite
+  title: Consolidate code navigation MCP tools (mcp_context, mcp_freshness, fastmcp_registration, tool_evolution, lint_tools) into tests/mcp.rs, isolating selectors.rs and navigation.rs for milestone 042
+  status: completed
+  evidence: 'Consolidated MCP domain suites and migrated remaining freshness, context, and tool-evolution CLI/stdio subprocess setup to tests/common::mcp_client::{in_process_server, StdioClient, run_cli}. Retained only MCP-specific payload/error assertions locally; reload still targets a replacement binary. cargo test --test core --test linker --test incremental --test mcp: 216 passed, 0 failed, 2 ignored; strict Clippy passed.'
+status: completed
+receipt:
+  commit: b3c26af2ffbbf2db5c285dd5ec35c07cace00788
+  contract_revision: 2
+  passed_at: 2026-10-08T08:06:15.695158982+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test core --test linker --test incremental --test mcp
+      exit_code: 0
+      tests_passed: 216
+      tests_failed: 0
+      log: core 26 passed + 1 ignored; incremental 23 passed + 1 ignored; linker 92 passed; mcp 75 passed. Total 216 passed, 0 failed, 2 ignored. cargo clippy --test core --test linker --test incremental --test mcp -- -D warnings passed. Scoped rustfmt --check, source-architecture guard for duplicate MCP/CLI lifecycle wrappers, and git diff --check passed.
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'The b3c26af snapshot contains only the central suite paths admitted by this contract: tests/core.rs and tests/core/, tests/linker.rs and tests/linker/, tests/incremental.rs and tests/incremental/, tests/mcp.rs and tests/mcp/, and the admitted receiver source fixtures. Snapshot paths were checked against the allowlist; git diff --check a0d1ffd b3c26af -- tests passed.'
+        claims:
+          applicable: true
+          evidence: The MCP migration uses tests/common::mcp_client::{in_process_server, StdioClient, run_cli}; freshness.rs no longer defines a local stdio lifecycle, and tool_evolution.rs aliases the common client and delegates CLI execution. The Linux SIGHUP test still copies/replaces the binary, invokes reload, checks the signaled PID, waits for the replacement inode, and verifies the same PID can serve tools/list. Direct Server::new calls remain only for behavior requiring an explicit DB path or a deliberately foreign workspace root. The accepted build evidence is 216 passed, 0 failed, 2 ignored, with strict Clippy passing.
+        concurrency:
+          applicable: true
+          evidence: Workspace uses an atomic sequence plus PID and timestamp with exclusive directory creation; each test owns its workspace. MCP subprocess output is read on a channel with a bounded response timeout. Reader/rebuild concurrency tests retain explicit entry/release channel coordination.
+        project_isolation:
+          applicable: true
+          evidence: The shared Workspace rejects absolute and parent-traversal paths and removes its unique root on Drop. Foreign database admission tests intentionally allocate a second Workspace and assert rejection without changing the original database identity.
+        administration:
+          applicable: true
+          evidence: Review worker codex-043-central-wrapper-review-v1 is independent of builder codex-043-central-wrapper-builder-v3. I verified every file in snapshot b3c26af matches its worktree blob and made no edits. Build proof is bound to b3c26af.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CENTRAL-VS-LANGUAGE-ISOLATION: Central subsystem suites (acdd, core, linker, incremental, mcp, commitment_integrity) reside at tests/; all language extraction and semantic tests are strictly isolated inside tests/languages/.'
+    - 'INV-ACDD-SUITE-COHESION: All ACDD state machines, task lifecycles, subtasks, blackboard messages, and milestone operations reside in tests/acdd/ rather than core storage or MCP symbol modules.'
+    - 'INV-SHARED-HARNESS: Common workspace setup, file writing, database building, and MCP client lifecycle are managed through canonical shared helpers in tests/common/ rather than duplicated struct Workspace per test file.'
+    - 'INV-DOMAIN-DECOMPOSITION: Test modules are organized by cohesive architectural and contractual purpose. Monolithic files are split along natural architectural sub-boundaries.'
+    - 'INV-FORWARD-COMPAT-041-042: Language suites cleanly decouple pure grammar from framework manifests (frameworks.rs / manifests.rs) for milestone 041, and isolate universal AST patterns and path-scoped selectors (ast_patterns.rs, selectors.rs, navigation.rs) for milestone 042.'
+    - 'INV-CONTRACT-PARITY: Refactoring preserves 100% of observable positive contract assertions, fail-closed boundaries, and Merkle tree determinism (commitment_integrity).'
+    - 'INV-TABLE-DRIVEN-PERMUTATIONS: Multiple assertions over syntax permutations, keyword tables, or builtins use table-driven loops instead of copy-pasted test functions.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: language-tests-isolation-and-monolith-decomposition

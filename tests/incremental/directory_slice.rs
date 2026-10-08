@@ -1,0 +1,191 @@
+#![cfg(feature = "lang-python")]
+
+use contextunity_forge_mcp::{
+    core::response::{CoverageOptions, QueryOptions, ResponsePolicy},
+    db::traversal,
+};
+use std::time::Instant;
+
+use crate::common::Workspace;
+
+fn options(limit: usize) -> QueryOptions {
+    QueryOptions::resolve(&ResponsePolicy::default(), Some(limit), 0, None, None).unwrap()
+}
+
+#[test]
+fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
+    let ws = Workspace::new();
+    let file = "extensions/commerce/src/contextunity/commerce/ingestion/worker.py";
+    ws.write(file, "def publish():\n    return 1\n");
+    ws.write(
+        "extensions/commerce/src/contextunity/commerce/connectors/horoshop/client.py",
+        "def fetch(): pass\n",
+    );
+    ws.write(
+        "extensions/commerce/src/contextunity/commerce/pim/views/products/editor/views.py",
+        "def edit(): pass\n",
+    );
+    ws.build();
+    let conn = ws.open();
+    let result = traversal::query_with_options(
+        &conn,
+        "slice",
+        Some("contextunity/commerce/ingestion"),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
+    )
+    .unwrap();
+    assert_eq!(result["scope"], "directory_members");
+    assert_eq!(
+        result["selector"]["path"],
+        "extensions/commerce/src/contextunity/commerce/ingestion"
+    );
+    assert_eq!(result["requested_depth"], 1);
+    assert_eq!(result["graph_depth_applied"], 0);
+    assert!(result["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["path"] == file));
+    for (selector, expected) in [
+        (
+            "contextunity/commerce/connectors/horoshop",
+            "extensions/commerce/src/contextunity/commerce/connectors/horoshop",
+        ),
+        (
+            "contextunity/commerce/pim/views/products/editor",
+            "extensions/commerce/src/contextunity/commerce/pim/views/products/editor",
+        ),
+    ] {
+        let scoped = traversal::query_with_options(
+            &conn,
+            "slice",
+            Some(selector),
+            &traversal::GraphQueryOptions {
+                depth: 1,
+                direction: None,
+                coverage: CoverageOptions::default(),
+                page: &options(20),
+            },
+        )
+        .unwrap();
+        assert_eq!(scoped["selector"]["path"], expected);
+        assert_eq!(scoped["nodes"]["total"], 2);
+    }
+    let exact = traversal::query_with_options(
+        &conn,
+        "slice",
+        Some(file),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
+    )
+    .unwrap();
+    assert_eq!(exact["depth"], 1);
+    assert!(exact.get("scope").is_none());
+}
+
+#[test]
+fn duplicate_directory_suffix_requires_full_path_and_unknown_path_suggests_indexed_file() {
+    let ws = Workspace::new();
+    ws.write(
+        "extensions/commerce/src/contextunity/commerce/ingestion/a.py",
+        "def a(): pass\n",
+    );
+    ws.write(
+        "services/api/src/contextunity/commerce/ingestion/b.py",
+        "def b(): pass\n",
+    );
+    ws.build();
+    let conn = ws.open();
+    let error = traversal::query_with_options(
+        &conn,
+        "slice",
+        Some("contextunity/commerce/ingestion"),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("ambiguous selector"), "{error}");
+    assert!(
+        error.contains("extensions/commerce/src/contextunity/commerce/ingestion"),
+        "{error}"
+    );
+    assert!(
+        error.contains("services/api/src/contextunity/commerce/ingestion"),
+        "{error}"
+    );
+    let exact = traversal::query_with_options(
+        &conn,
+        "slice",
+        Some("extensions/commerce/src/contextunity/commerce/ingestion"),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
+    )
+    .unwrap();
+    assert_eq!(exact["nodes"]["total"], 2);
+    let unknown = traversal::query_with_options(
+        &conn,
+        "slice",
+        Some("contextunity/commerce/ingest"),
+        &traversal::GraphQueryOptions {
+            depth: 1,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(unknown.contains("indexed path suggestions"), "{unknown}");
+    assert!(unknown.contains("ingestion/a.py"), "{unknown}");
+}
+
+#[test]
+fn large_directory_is_paged_without_graph_expansion() {
+    let ws = Workspace::new();
+    let mut code = String::new();
+    for index in 0..1100 {
+        code.push_str(&format!("def item_{index:04}(): pass\n"));
+    }
+    ws.write("pkg/large/items.py", &code);
+    ws.build();
+    let conn = ws.open();
+    let started = Instant::now();
+    let first = traversal::query_with_options(
+        &conn,
+        "slice",
+        Some("pkg/large"),
+        &traversal::GraphQueryOptions {
+            depth: 16,
+            direction: None,
+            coverage: CoverageOptions::default(),
+            page: &options(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(first["nodes"]["total"], 1101);
+    assert_eq!(first["nodes"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(first["nodes"]["has_more"], true);
+    assert_eq!(first["graph_depth_applied"], 0);
+    println!(
+        "directory_slice_large_query_ms={:.3}",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+}

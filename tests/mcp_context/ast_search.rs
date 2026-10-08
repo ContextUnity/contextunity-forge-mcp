@@ -7,7 +7,7 @@ fn stdio_ast_pages_do_not_repeat_or_skip_matches() {
         "service.py",
         &(0..75).map(|i| format!("print({i})\n")).collect::<String>(),
     );
-    std::fs::create_dir_all(workspace.0.join("scope")).unwrap();
+    std::fs::create_dir_all(workspace.path("scope")).unwrap();
     workspace.write("scope/a.py", "def target():\n    return 1\n");
     workspace.write(
         "scope/b.py",

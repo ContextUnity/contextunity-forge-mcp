@@ -972,36 +972,20 @@ fn rust_lifetime_only_nominals_preserve_imported_receiver_contracts() {
 fn rust_lifetime_nominal_factory_contracts_survive_cache_and_delta() {
     use contextunity_forge_mcp::{
         core::commitments,
-        db::{reader, writer},
+        db::reader,
     };
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-    struct Workspace(PathBuf);
-    impl Drop for Workspace {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let workspace = Workspace(
-        std::env::temp_dir().join(format!("forge_rust_nominal_{}_{nonce}", std::process::id())),
-    );
-    fs::create_dir_all(workspace.0.join("src")).unwrap();
-    let provider = workspace.0.join("src/provider.rs");
-    fs::write(
-        &provider,
+    use crate::common::Workspace;
+
+    let workspace = Workspace::new();
+    workspace.write(
+        "src/provider.rs",
         "use tree_sitter::Node;\npub fn identity<'a>(node: Node<'a>) -> Node<'a> { node }",
-    )
-    .unwrap();
-    fs::write(workspace.0.join("src/client.rs"), "use crate::provider::identity;\nuse tree_sitter::Node;\nfn run(node: Node<'_>) { let returned = identity(node); returned.kind(); }").unwrap();
-    let db = workspace.0.join(".forge/code-map.sqlite");
-    writer::build(&workspace.0, &db, None).unwrap();
+    );
+    workspace.write(
+        "src/client.rs",
+        "use crate::provider::identity;\nuse tree_sitter::Node;\nfn run(node: Node<'_>) { let returned = identity(node); returned.kind(); }",
+    );
+    workspace.build();
     let coverage = |conn: &rusqlite::Connection| -> Vec<(String, String)> {
         let mut statement = conn.prepare("SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='src/client.rs' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='returned.kind' ORDER BY status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id)").unwrap();
         statement
@@ -1010,7 +994,7 @@ fn rust_lifetime_nominal_factory_contracts_survive_cache_and_delta() {
             .map(Result::unwrap)
             .collect()
     };
-    let initial = reader::open(&db, &workspace.0).unwrap();
+    let initial = workspace.open();
     let expected = coverage(&initial);
     assert_eq!(expected.len(), 1);
     assert_eq!(expected[0].0, "external");
@@ -1020,14 +1004,17 @@ fn rust_lifetime_nominal_factory_contracts_survive_cache_and_delta() {
     );
     commitments::verify(&initial).unwrap();
     drop(initial);
-    fs::write(&provider, "use tree_sitter::Node as Syntax;\npub fn identity<'a>(node: Syntax<'a>) -> Syntax<'a> { node }").unwrap();
-    writer::delta(&workspace.0, &db, &[PathBuf::from("src/provider.rs")]).unwrap();
-    let delta = reader::open(&db, &workspace.0).unwrap();
+    workspace.write(
+        "src/provider.rs",
+        "use tree_sitter::Node as Syntax;\npub fn identity<'a>(node: Syntax<'a>) -> Syntax<'a> { node }",
+    );
+    workspace.delta(&["src/provider.rs"]);
+    let delta = workspace.open();
     commitments::verify(&delta).unwrap();
     assert_eq!(coverage(&delta), expected);
-    let cold_db = workspace.0.join(".forge/cold.sqlite");
-    writer::build(&workspace.0, &cold_db, None).unwrap();
-    let cold = reader::open(&cold_db, &workspace.0).unwrap();
+    let cold_db = workspace.path(".forge/cold.sqlite");
+    workspace.build_to(&cold_db);
+    let cold = reader::open(&cold_db, workspace.root()).unwrap();
     commitments::verify(&cold).unwrap();
     assert_eq!(coverage(&delta), coverage(&cold));
 }
@@ -1175,34 +1162,13 @@ fn rust_str_receivers_resolve_core_inherent_members_without_prelude_imports() {
 
 #[test]
 fn rust_smart_pointer_deref_dispatch_persists_exact_providers_and_boundaries() {
-    use contextunity_forge_mcp::db::{reader, writer};
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use crate::common::Workspace;
 
-    struct Workspace(PathBuf);
-    impl Drop for Workspace {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let workspace = Workspace(std::env::temp_dir().join(format!(
-        "forge_rust_smart_pointers_{}_{nonce}",
-        std::process::id()
-    )));
-    fs::create_dir_all(workspace.0.join("src")).unwrap();
-    fs::write(
-        workspace.0.join("Cargo.toml"),
+    let workspace = Workspace::new();
+    workspace.write(
+        "Cargo.toml",
         "[package]\nname = \"smart-pointer-provenance\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-    )
-    .unwrap();
+    );
     let sources = [
         (
             "lib.rs",
@@ -1244,12 +1210,11 @@ fn rust_smart_pointer_deref_dispatch_persists_exact_providers_and_boundaries() {
         ),
     ];
     for (name, source) in sources {
-        fs::write(workspace.0.join("src").join(name), source).unwrap();
+        workspace.write(format!("src/{name}"), source);
     }
 
-    let db = workspace.0.join(".forge/code-map.sqlite");
-    writer::build(&workspace.0, &db, None).unwrap();
-    let conn = reader::open(&db, &workspace.0).unwrap();
+    workspace.build();
+    let conn = workspace.open();
     let mut coverage = conn
         .prepare("SELECT c.status,v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path=?1 AND x.expression=?2 ORDER BY c.status,v.evidence")
         .unwrap();
