@@ -1256,9 +1256,7 @@ impl TasksStore {
             let base = match matched_base {
                 Some(b) => b,
                 None => {
-                    bail!(
-                        "TASK_SCOPE_INVALID: path '{value}' is outside admitted scope roots"
-                    );
+                    bail!("TASK_SCOPE_INVALID: path '{value}' is outside admitted scope roots");
                 }
             };
             for root in [root, worktree] {

@@ -2,22 +2,32 @@
 id: m-test-suite-architecture-and-domain-consolidation
 title: Test suite architecture, domain consolidation, and harness standardization
 doc_type: contract
-status: planned
+status: completed
 depends_on:
-  - m-framework-manifests-and-parser-modularity
-  - m-tool-performance-and-storage-compaction
-  - m-universal-ast-search-and-tool-navigation
+- m-framework-manifests-and-parser-modularity
+- m-tool-performance-and-storage-compaction
+- m-universal-ast-search-and-tool-navigation
 owners:
-  - tests/
+- tests/
 invariants:
-  - 'INV-CENTRAL-VS-LANGUAGE-ISOLATION: Central subsystem suites (acdd, core, linker, incremental, mcp, commitment_integrity) reside at tests/; all language extraction and semantic tests are strictly isolated inside tests/languages/.'
-  - 'INV-ACDD-SUITE-COHESION: All ACDD state machines, task lifecycles, subtasks, blackboard messages, and milestone operations reside in tests/acdd/ rather than core storage or MCP symbol modules.'
-  - 'INV-SHARED-HARNESS: Common workspace setup, file writing, database building, and MCP client lifecycle are managed through canonical shared helpers in tests/common/ rather than duplicated struct Workspace per test file.'
-  - 'INV-DOMAIN-DECOMPOSITION: Test modules are organized by cohesive architectural and contractual purpose. Monolithic files are split along natural architectural sub-boundaries.'
-  - 'INV-FORWARD-COMPAT-041-042: Language suites cleanly decouple pure grammar from framework manifests (frameworks.rs / manifests.rs) for milestone 041, and isolate universal AST patterns and path-scoped selectors (ast_patterns.rs, selectors.rs, navigation.rs) for milestone 042.'
-  - 'INV-CONTRACT-PARITY: Refactoring preserves 100% of observable positive contract assertions, fail-closed boundaries, and Merkle tree determinism (commitment_integrity).'
-  - 'INV-TABLE-DRIVEN-PERMUTATIONS: Multiple assertions over syntax permutations, keyword tables, or builtins use table-driven loops instead of copy-pasted test functions.'
+- 'INV-CENTRAL-VS-LANGUAGE-ISOLATION: Central subsystem suites (acdd, core, linker, incremental, mcp, commitment_integrity) reside at tests/; all language extraction and semantic tests are strictly isolated inside tests/languages/.'
+- 'INV-ACDD-SUITE-COHESION: All ACDD state machines, task lifecycles, subtasks, blackboard messages, and milestone operations reside in tests/acdd/ rather than core storage or MCP symbol modules.'
+- 'INV-SHARED-HARNESS: Common workspace setup, file writing, database building, and MCP client lifecycle are managed through canonical shared helpers in tests/common/ rather than duplicated struct Workspace per test file.'
+- 'INV-DOMAIN-DECOMPOSITION: Test modules are organized by cohesive architectural and contractual purpose. Monolithic files are split along natural architectural sub-boundaries.'
+- 'INV-FORWARD-COMPAT-041-042: Language suites cleanly decouple pure grammar from framework manifests (frameworks.rs / manifests.rs) for milestone 041, and isolate universal AST patterns and path-scoped selectors (ast_patterns.rs, selectors.rs, navigation.rs) for milestone 042.'
+- 'INV-CONTRACT-PARITY: Refactoring preserves 100% of observable positive contract assertions, fail-closed boundaries, and Merkle tree determinism (commitment_integrity).'
+- 'INV-TABLE-DRIVEN-PERMUTATIONS: Multiple assertions over syntax permutations, keyword tables, or builtins use table-driven loops instead of copy-pasted test functions.'
 related_plans: []
+started_at: 2026-10-08T06:01:25+00:00
+handoff:
+  completed_at: 2026-10-08T18:51:09.941220240+00:00
+  duration: 12h 49m
+  commit: 022e2102b80e0b38c1576f7df1d73c43ebeb6f0c
+  verification:
+    command: cargo test --all-targets
+    status: passed
+    tests_passed: 637
+    tests_failed: 0
 ---
 
 # Test suite architecture, domain consolidation, and harness standardization
@@ -98,6 +108,14 @@ receipt:
         paths: accepted
         project_isolation: accepted
 ```
+
+## Task commits
+
+- `common-test-harness-and-workspace`: `4953bf5c760549683df3abca9bb78a9c8c345a33`
+- `acdd-suite-extraction-and-consolidation`: `77cd21e498b25f6487067c2763b3b64e63e8eb88`
+- `central-engine-suites-consolidation`: `a09d8a916fda1a6c506ab6761d9e909da04a7865`
+- `language-tests-isolation-and-monolith-decomposition`: `cccfb51e18475cc00d4e83b1b19b665ea9182ecc`
+- `full-test-suite-quality-refactor`: `022e2102b80e0b38c1576f7df1d73c43ebeb6f0c`
 
 ### task: full-test-suite-quality-refactor
 
@@ -207,8 +225,6 @@ receipt:
         paths: accepted
         project_isolation: accepted
 ```
-
-
 
 ### task: acdd-suite-extraction-and-consolidation
 
