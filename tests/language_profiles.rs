@@ -1,5 +1,6 @@
 #[cfg(any(
     feature = "lang-python",
+    feature = "lang-rust",
     feature = "lang-java",
     feature = "lang-csharp",
     feature = "lang-kotlin",
@@ -22,8 +23,14 @@ use contextunity_forge_mcp::db::{reader, writer};
     feature = "lang-cpp"
 ))]
 use contextunity_forge_mcp::engine::ast;
+#[cfg(feature = "lang-rust")]
+use contextunity_forge_mcp::{
+    cli,
+    core::response::{Detail, QueryOptions, ResponsePolicy},
+};
 #[cfg(any(
     feature = "lang-python",
+    feature = "lang-rust",
     feature = "lang-java",
     feature = "lang-csharp",
     feature = "lang-kotlin",
@@ -40,6 +47,7 @@ use std::{
 
 #[cfg(any(
     feature = "lang-python",
+    feature = "lang-rust",
     feature = "lang-java",
     feature = "lang-csharp",
     feature = "lang-kotlin",
@@ -51,6 +59,7 @@ use std::{
 struct Workspace(PathBuf);
 #[cfg(any(
     feature = "lang-python",
+    feature = "lang-rust",
     feature = "lang-java",
     feature = "lang-csharp",
     feature = "lang-kotlin",
@@ -83,6 +92,7 @@ impl Workspace {
 }
 #[cfg(any(
     feature = "lang-python",
+    feature = "lang-rust",
     feature = "lang-java",
     feature = "lang-csharp",
     feature = "lang-kotlin",
@@ -95,6 +105,95 @@ impl Drop for Workspace {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn public_ast_search_keeps_rust_body_only_literal_candidates() {
+    let workspace = Workspace::new();
+    workspace.write("src/a_candidate.rs", "fn coverage_owner_language() {}\n");
+    workspace.write(
+        "src/z_body.rs",
+        "fn other() { let value = \"coverage_owner_language\"; }\n",
+    );
+    workspace.build();
+    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        0,
+        Some(Detail::Compact),
+        None,
+    )
+    .unwrap();
+
+    let result = cli::ast::search_paged(
+        &conn,
+        &workspace.0,
+        "\"coverage_owner_language\"",
+        "rust",
+        None,
+        &options,
+    )
+    .unwrap();
+    let items = result["matches"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{result}");
+    assert_eq!(items[0]["path"], "src/z_body.rs");
+    assert_eq!(items[0]["text"], "\"coverage_owner_language\"");
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn public_ast_search_reports_structured_tree_sitter_pattern_diagnostics() {
+    fn smallest_error(root: tree_sitter::Node<'_>) -> Option<std::ops::Range<usize>> {
+        let mut stack = vec![root];
+        let mut smallest = None;
+        while let Some(node) = stack.pop() {
+            if node.is_error() && node.start_byte() < node.end_byte() {
+                let range = node.start_byte()..node.end_byte();
+                if smallest
+                    .as_ref()
+                    .is_none_or(|current: &std::ops::Range<usize>| range.len() < current.len())
+                {
+                    smallest = Some(range);
+                }
+            }
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+        smallest
+    }
+
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn valid() {}\n");
+    workspace.build();
+    let conn = reader::open(&workspace.db(), &workspace.0).unwrap();
+    let options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        0,
+        Some(Detail::Compact),
+        None,
+    )
+    .unwrap();
+    let pattern = "let = ;";
+    let result =
+        cli::ast::search_paged(&conn, &workspace.0, pattern, "rust", None, &options).unwrap();
+    let mut parser = contextunity_forge_mcp::engine::ast::parser("rust", "src/lib.rs").unwrap();
+    let tree = parser.parse(pattern, None).unwrap();
+    let expected = smallest_error(tree.root_node()).expect("pattern has a nonempty ERROR node");
+    let diagnostic = &result["diagnostic"];
+
+    assert_eq!(diagnostic["code"], "unsupported_ast_pattern");
+    assert_eq!(diagnostic["language"], "rust");
+    assert_eq!(diagnostic["span"]["start_byte"], expected.start);
+    assert_eq!(diagnostic["span"]["end_byte"], expected.end);
+    assert!(
+        diagnostic["span"]["end_byte"].as_u64().unwrap()
+            > diagnostic["span"]["start_byte"].as_u64().unwrap()
+    );
+    assert!(!diagnostic["hint"].as_str().unwrap().is_empty());
+    assert!(!diagnostic["examples"].as_array().unwrap().is_empty());
 }
 
 #[cfg(feature = "lang-python")]

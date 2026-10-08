@@ -2228,6 +2228,35 @@ impl LanguageProfile for TypeScript {
             "typescript"
         }
     }
+    fn ast_search_capabilities(&self) -> AstSearchCapabilities {
+        AstSearchCapabilities {
+            declaration_kinds: &[
+                "function_declaration",
+                "generator_function_declaration",
+                "function_signature",
+                "class_declaration",
+                "class",
+                "interface_declaration",
+                "method_signature",
+                "enum_declaration",
+            ],
+            declaration_body_kinds: &[
+                "statement_block",
+                "class_body",
+                "interface_body",
+                "enum_body",
+            ],
+            declaration_completions: &[" {}"],
+            attribute_kinds: &["decorator"],
+            valid_examples: &[
+                "function example() {}",
+                "client.fetch($VALUE)",
+                "@sealed class Example {}",
+            ],
+            diagnostic_hint: "Use a complete TypeScript or JavaScript declaration or expression.",
+            ..AstSearchCapabilities::default()
+        }
+    }
     fn receiver(&self, name: &str, owner: &Node) -> bool {
         name == "this" && owner.details["receiver_name"].as_str() == Some("this")
     }

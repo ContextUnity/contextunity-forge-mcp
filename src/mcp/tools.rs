@@ -316,19 +316,23 @@ impl Server {
         })
     }
     #[tool(
-        description = "Tree-sitter structural search over admitted source. $NAME captures one node and $$$ARGS captures a sequence. language must be a compiled profile id."
+        description = "Tree-sitter structural search over admitted source. Language profiles declare complete_syntax, declaration_without_body, fragment_probe, and attribute capabilities. $NAME captures one syntax node; $$$SEQ captures a syntax-node sequence. language must be a compiled profile id. Call forge_guide with topic=ast for the profile capability matrix and examples."
     )]
     fn ast_grep_search(&self, Parameters(p): Parameters<Ast>) -> CallToolResult {
         self.responding(|adapter, policy| {
             self.read_with_adapter(adapter, |conn| {
-                cli::ast::search_paged(
+                let result = cli::ast::search_paged(
                     conn,
                     &self.root,
                     &p.pattern,
                     &p.language,
                     p.path.as_deref(),
                     &p.page.resolve(policy)?,
-                )
+                )?;
+                if result.get("diagnostic").is_some() {
+                    return Err(anyhow::anyhow!(result.to_string()));
+                }
+                Ok(result)
             })
         })
     }

@@ -52,6 +52,26 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
             "pages": "Start with compact detail and a small limit. Continue with the returned next_offset and generation for the same selector and filters. For tighter agent context, set adapter response.page_size=10 and response.max_output_bytes=16384.",
             "recovery": "On a computation budget error, narrow the selector or path and reduce depth; lowering limit alone may not reduce count or traversal work. On a byte limit error, use compact detail, a smaller limit, or fewer SQL columns."
         })),
+        "ast" => Ok(json!({
+            "capabilities": {
+                "complete_syntax": "Patterns that form valid standalone syntax at the grammar root; every profile supports this capability.",
+                "declaration_without_body": "Declaration patterns omit profile-declared body nodes, including function, type, class, interface, and implementation bodies where supported.",
+                "fragment_probe": "A profile may wrap root-rejected expressions, calls, macros, or assignments in a probe container, then unwrap only the matched target node.",
+                "attribute": "A profile may match its declared decorators or annotations layered over declarations."
+            },
+            "profile_matrix": {
+                "rust": ["complete_syntax", "declaration_without_body", "fragment_probe", "attribute"],
+                "python": ["complete_syntax", "declaration_without_body", "attribute"],
+                "typescript_javascript": ["complete_syntax", "declaration_without_body", "attribute"],
+                "html_vue": ["complete_syntax"]
+            },
+            "wildcards": {
+                "$NAME": "Capture one syntax node.",
+                "$$$SEQ": "Capture a sequence of zero or more syntax nodes."
+            },
+            "examples": ["fn $NAME($$$ARGS) {}", "client.fetch($ARG)", "@$DEC\\ndef $NAME($$$ARGS):", "<div id=\"$ID\">$$$CHILDREN</div>"],
+            "diagnostics": "Unsupported fragments and invalid syntax return a structured diagnostic with language, error span, actionable hint, and profile examples."
+        })),
         "validate" => {
             let adapter = scanner::load_adapter(&root, None)?;
             let scan = scanner::scan_with_adapter(&root, &adapter)?;
@@ -59,7 +79,7 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
                 json!({"valid":true,"root":root,"roots":adapter.roots,"files":scan.files,"bytes":scan.bytes}),
             )
         }
-        _ => bail!("unknown guide topic; expected init,adapter,docs,acdd,query,validate"),
+        _ => bail!("unknown guide topic; expected init,adapter,docs,acdd,query,ast,validate"),
     }
 }
 #[derive(serde::Deserialize, serde::Serialize, Default)]

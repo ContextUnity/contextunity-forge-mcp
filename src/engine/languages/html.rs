@@ -1,9 +1,9 @@
-use super::*;
 use super::template::{TemplateMasker, TemplateTagKind};
-#[path = "html/javascript.rs"]
-mod javascript;
+use super::*;
 #[path = "html/htmx.rs"]
 mod htmx;
+#[path = "html/javascript.rs"]
+mod javascript;
 use htmx::{extract_htmx, htmx_url_status};
 use serde_json::{json, Map, Value};
 
@@ -49,6 +49,17 @@ impl LanguageProfile for Html {
     }
     fn pattern_wrapper(&self, kind: &str) -> bool {
         kind == "document"
+    }
+    fn ast_search_capabilities(&self) -> AstSearchCapabilities {
+        AstSearchCapabilities {
+            attribute_kinds: &["attribute"],
+            valid_examples: &[
+                "<main><button disabled></button></main>",
+                "<a href=\"#\">link</a>",
+            ],
+            diagnostic_hint: "Use a complete HTML element or document pattern.",
+            ..AstSearchCapabilities::default()
+        }
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() != "start_tag" && ctx.node.kind() != "self_closing_tag" {
@@ -188,7 +199,13 @@ fn is_html_entity(slice: &str) -> bool {
     }
 }
 
-fn emit_template_rule_reference(path: &str, kind: &str, name: &str, line: usize, facts: &mut Facts) {
+fn emit_template_rule_reference(
+    path: &str,
+    kind: &str,
+    name: &str,
+    line: usize,
+    facts: &mut Facts,
+) {
     facts.references.push(Reference {
         source: format!("module:{path}"),
         dynamic: false,
@@ -602,10 +619,14 @@ fn attribute_value<'a>(tag: Syntax<'_>, source: &'a str, name: &str) -> Option<&
 
 fn has_attribute(tag: Syntax<'_>, source: &str, name: &str) -> bool {
     let mut cursor = tag.walk();
-    let present = tag.named_children(&mut cursor)
+    let present = tag
+        .named_children(&mut cursor)
         .filter(|node| node.kind() == "attribute")
-        .any(|attribute| attribute.named_child(0)
-            .is_some_and(|node| text(node, source).eq_ignore_ascii_case(name)));
+        .any(|attribute| {
+            attribute
+                .named_child(0)
+                .is_some_and(|node| text(node, source).eq_ignore_ascii_case(name))
+        });
     present
 }
 
@@ -779,17 +800,24 @@ fn extract_file_impl(
                             flows.as_deref_mut(),
                         )?;
                         let first_full_line = body.start_position().row
-                            + if body.start_position().column == 0 { 1 } else { 2 };
+                            + if body.start_position().column == 0 {
+                                1
+                            } else {
+                                2
+                            };
                         let last_full_line = body.end_position().row;
-                        let exclusive_inline = if node.start_position().row == node.end_position().row {
-                            let line_start = source[..node.start_byte()].rfind('\n').map_or(0, |index| index + 1);
-                            let line_end = source[node.end_byte()..]
-                                .find('\n')
-                                .map_or(source.len(), |index| node.end_byte() + index);
-                            source[line_start..line_end].trim() == text(node, source).trim()
-                        } else {
-                            false
-                        };
+                        let exclusive_inline =
+                            if node.start_position().row == node.end_position().row {
+                                let line_start = source[..node.start_byte()]
+                                    .rfind('\n')
+                                    .map_or(0, |index| index + 1);
+                                let line_end = source[node.end_byte()..]
+                                    .find('\n')
+                                    .map_or(source.len(), |index| node.end_byte() + index);
+                                source[line_start..line_end].trim() == text(node, source).trim()
+                            } else {
+                                false
+                            };
                         if first_full_line <= last_full_line || exclusive_inline {
                             let island_id = format!("html-js-island:{path}:{}", body.start_byte());
                             facts.nodes.push(Node {
@@ -798,8 +826,16 @@ fn extract_file_impl(
                                 name: "JavaScript script island".into(),
                                 qualname: format!("{module}.script@{}", body.start_byte()),
                                 path: path.into(),
-                                line: if exclusive_inline { node.start_position().row + 1 } else { first_full_line },
-                                end_line: if exclusive_inline { node.end_position().row + 1 } else { last_full_line },
+                                line: if exclusive_inline {
+                                    node.start_position().row + 1
+                                } else {
+                                    first_full_line
+                                },
+                                end_line: if exclusive_inline {
+                                    node.end_position().row + 1
+                                } else {
+                                    last_full_line
+                                },
                                 is_test: crate::core::models::is_test(path),
                                 language: "javascript".into(),
                                 generated: false,

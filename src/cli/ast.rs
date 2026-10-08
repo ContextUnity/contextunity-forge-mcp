@@ -29,6 +29,9 @@ pub fn search(
             generation.clone(),
         )?;
         let page = search_paged(conn, root, pattern, language, path, &options)?;
+        if page.get("diagnostic").is_some() {
+            return Ok(page);
+        }
         let payload = &page["matches"];
         if let Some(items) = payload["items"].as_array() {
             matches.extend(items.iter().cloned());
@@ -123,7 +126,7 @@ pub fn search_paged(
             complete = false;
             break;
         }
-        let page = ast::search_page(
+        let page = match ast::search_page(
             &source,
             file_path,
             language,
@@ -131,7 +134,15 @@ pub fn search_paged(
             options.offset.saturating_sub(matched),
             remaining,
             deadline,
-        )?;
+        ) {
+            Ok(page) => page,
+            Err(error) => {
+                if let Some(diagnostic) = error.downcast_ref::<ast::PatternSearchDiagnostic>() {
+                    return Ok(json!({"diagnostic":diagnostic}));
+                }
+                return Err(error);
+            }
+        };
         matched += page.matched;
         items.extend(page.items);
         if !page.complete {

@@ -349,6 +349,48 @@ impl SyntaxContext<'_, '_> {
     }
 }
 
+/// AST pattern-search capabilities declared by a language profile.
+#[derive(Clone, Copy, Debug)]
+pub struct AstSearchCapabilities {
+    /// Grammar node kinds that may omit their bodies in declaration patterns.
+    pub declaration_kinds: &'static [&'static str],
+    /// Grammar node kinds treated as declaration bodies when the pattern omits them.
+    pub declaration_body_kinds: &'static [&'static str],
+    /// Suffixes the shared adapter may append to complete a bodyless declaration.
+    pub declaration_completions: &'static [&'static str],
+    /// Optional isolated syntax wrapper for root-rejected fragment forms.
+    pub fragment_probe: Option<AstSearchProbe>,
+    /// Grammar node kinds used for profile-specific attribute patterns.
+    pub attribute_kinds: &'static [&'static str],
+    /// Valid patterns included with unsupported-pattern diagnostics.
+    pub valid_examples: &'static [&'static str],
+    /// Actionable guidance included with unsupported-pattern diagnostics.
+    pub diagnostic_hint: &'static str,
+}
+
+impl Default for AstSearchCapabilities {
+    fn default() -> Self {
+        Self {
+            declaration_kinds: &[],
+            declaration_body_kinds: &[],
+            declaration_completions: &[],
+            fragment_probe: None,
+            attribute_kinds: &[],
+            valid_examples: &["name"],
+            diagnostic_hint: "Use complete syntax accepted by this language profile, or one of its declared fragment forms.",
+        }
+    }
+}
+
+/// Synthetic wrapper used to parse an isolated AST fragment.
+#[derive(Clone, Copy, Debug)]
+pub struct AstSearchProbe {
+    /// Text inserted before the user pattern.
+    pub prefix: &'static str,
+    /// Text inserted after the user pattern.
+    pub suffix: &'static str,
+}
+
 /// Supplies syntax extraction and normalization rules for one language.
 ///
 /// Profiles are shared as `Send + Sync` statics. Default hooks keep extraction
@@ -531,9 +573,11 @@ pub trait LanguageProfile: Send + Sync {
     }
     /// Finalizes extracted facts after the syntax walk.
     fn finish(&self, _facts: &mut Facts) {}
-    /// Rewrites a search pattern before language-specific matching.
-    fn prepare_pattern(&self, _pattern: &mut String) -> bool {
-        false
+    /// Describes AST search syntax supported by this profile.
+    ///
+    /// New profiles support complete grammar syntax without overriding this method.
+    fn ast_search_capabilities(&self) -> AstSearchCapabilities {
+        AstSearchCapabilities::default()
     }
     /// Reports whether a syntax kind only wraps a searchable pattern.
     fn pattern_wrapper(&self, kind: &str) -> bool {

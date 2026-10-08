@@ -71,7 +71,9 @@ fn uniform_generic_impl(node: Syntax<'_>, source: &str) -> bool {
     if names.is_empty()
         || names.iter().any(|name| {
             !name.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
-                || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                || !name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         })
     {
         return false;
@@ -80,7 +82,10 @@ fn uniform_generic_impl(node: Syntax<'_>, source: &str) -> bool {
         if argument.kind() != "type_identifier" {
             return false;
         }
-        let Some(index) = names.iter().position(|name| *name == text(argument, source)) else {
+        let Some(index) = names
+            .iter()
+            .position(|name| *name == text(argument, source))
+        else {
             return false;
         };
         names.swap_remove(index);
@@ -120,6 +125,35 @@ pub static RUST: Rust = Rust;
 impl LanguageProfile for Rust {
     fn id(&self) -> &'static str {
         "rust"
+    }
+    fn ast_search_capabilities(&self) -> AstSearchCapabilities {
+        AstSearchCapabilities {
+            declaration_kinds: &[
+                "function_item",
+                "struct_item",
+                "enum_item",
+                "impl_item",
+                "trait_item",
+            ],
+            declaration_body_kinds: &[
+                "block",
+                "field_declaration_list",
+                "enum_variant_list",
+                "declaration_list",
+            ],
+            declaration_completions: &[" {}"],
+            fragment_probe: Some(AstSearchProbe {
+                prefix: "fn __forge_ast_pattern_probe() { ",
+                suffix: " }",
+            }),
+            attribute_kinds: &["attribute_item"],
+            valid_examples: &[
+                "fn example() {}",
+                "client.fetch($VALUE)",
+                "#[derive(Debug)] struct Item {}",
+            ],
+            diagnostic_hint: "Use a complete Rust item or expression, or a supported expression or macro fragment.",
+        }
     }
     fn manifest_filenames(&self) -> &'static [&'static str] {
         &["Cargo.toml"]
@@ -266,7 +300,18 @@ impl LanguageProfile for Rust {
         } else {
             (symbol, "")
         };
-        if matches!(receiver, "Self" | "Path" | "PathBuf" | "Rc" | "Arc" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet") {
+        if matches!(
+            receiver,
+            "Self"
+                | "Path"
+                | "PathBuf"
+                | "Rc"
+                | "Arc"
+                | "HashMap"
+                | "HashSet"
+                | "BTreeMap"
+                | "BTreeSet"
+        ) {
             return false;
         }
         if !member.is_empty() {
@@ -426,19 +471,44 @@ impl LanguageProfile for Rust {
             ),
             "Path" | "PathBuf" => matches!(
                 member,
-                "new" | "from" | "join" | "parent" | "file_name" | "file_stem" | "extension" | "exists" | "is_file" | "is_dir" | "to_str" | "to_string_lossy" | "display" | "as_path"
+                "new"
+                    | "from"
+                    | "join"
+                    | "parent"
+                    | "file_name"
+                    | "file_stem"
+                    | "extension"
+                    | "exists"
+                    | "is_file"
+                    | "is_dir"
+                    | "to_str"
+                    | "to_string_lossy"
+                    | "display"
+                    | "as_path"
             ),
             "Box" => matches!(
                 member,
                 "new" | "from" | "clone" | "default" | "as_ref" | "as_mut"
             ),
-            "Rc" | "Arc" => matches!(
-                member,
-                "new" | "from" | "clone" | "default" | "as_ref"
-            ),
+            "Rc" | "Arc" => matches!(member, "new" | "from" | "clone" | "default" | "as_ref"),
             "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet" => matches!(
                 member,
-                "new" | "with_capacity" | "default" | "insert" | "get" | "get_mut" | "contains_key" | "contains" | "remove" | "iter" | "keys" | "values" | "len" | "is_empty" | "clear" | "entry"
+                "new"
+                    | "with_capacity"
+                    | "default"
+                    | "insert"
+                    | "get"
+                    | "get_mut"
+                    | "contains_key"
+                    | "contains"
+                    | "remove"
+                    | "iter"
+                    | "keys"
+                    | "values"
+                    | "len"
+                    | "is_empty"
+                    | "clear"
+                    | "entry"
             ),
             "Option" => matches!(
                 member,
@@ -486,7 +556,19 @@ impl LanguageProfile for Rust {
         }
     }
     fn builtin_generic(&self, receiver: &str) -> bool {
-        matches!(receiver, "Vec" | "Option" | "Result" | "Box" | "Rc" | "Arc" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet")
+        matches!(
+            receiver,
+            "Vec"
+                | "Option"
+                | "Result"
+                | "Box"
+                | "Rc"
+                | "Arc"
+                | "HashMap"
+                | "HashSet"
+                | "BTreeMap"
+                | "BTreeSet"
+        )
     }
 
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {

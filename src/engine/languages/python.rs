@@ -6,22 +6,26 @@ mod computed_receivers;
 mod fastmcp;
 #[path = "python/lazy_exports.rs"]
 mod lazy_exports;
-#[path = "python/module_exports.rs"]
-mod module_exports;
 #[path = "python/logging_factories.rs"]
 mod logging_factories;
+#[path = "python/module_exports.rs"]
+mod module_exports;
 #[path = "python/render_context.rs"]
 mod render_context;
 #[path = "python/template_loaders.rs"]
 mod template_loaders;
 
-pub(crate) fn logging_factories(root: Syntax<'_>, source: &str, offset: usize) -> serde_json::Value {
+pub(crate) fn logging_factories(
+    root: Syntax<'_>,
+    source: &str,
+    offset: usize,
+) -> serde_json::Value {
     logging_factories::collect(root, source, offset)
 }
-#[path = "python/linker.rs"]
-pub(crate) mod linker;
 #[path = "python/dependencies.rs"]
 mod dependencies;
+#[path = "python/linker.rs"]
+pub(crate) mod linker;
 #[path = "python/value_flow.rs"]
 mod value_flow;
 /// Performs language.
@@ -422,7 +426,8 @@ impl LanguageProfile for Python {
             ctx.import(facts, expression, alias, module);
             if is_type_only {
                 if let Some(reference) = facts.references.last_mut() {
-                    reference.receiver_hint = Some(crate::core::models::ReceiverHint::TypeOnlyImport);
+                    reference.receiver_hint =
+                        Some(crate::core::models::ReceiverHint::TypeOnlyImport);
                 }
             }
         };
@@ -888,12 +893,20 @@ impl LanguageProfile for Python {
         relations::implicit_fields(facts);
         fastmcp::registrations(facts);
     }
-    fn prepare_pattern(&self, pattern: &mut String) -> bool {
-        let partial = pattern.trim_end().ends_with(':');
-        if partial {
-            pattern.push_str("\n    __FORGE_META_BODY\n");
+    fn ast_search_capabilities(&self) -> AstSearchCapabilities {
+        AstSearchCapabilities {
+            declaration_kinds: &["function_definition", "class_definition"],
+            declaration_body_kinds: &["block"],
+            declaration_completions: &["\n    __FORGE_META_BODY\n"],
+            attribute_kinds: &["decorator"],
+            valid_examples: &[
+                "def example():\n    pass",
+                "client.fetch($VALUE)",
+                "@property\ndef value(self):\n    return 1",
+            ],
+            diagnostic_hint: "Use a complete Python statement or expression, or a supported bodyless function or class declaration.",
+            ..AstSearchCapabilities::default()
         }
-        partial
     }
 }
 

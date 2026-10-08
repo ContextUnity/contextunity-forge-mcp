@@ -6,7 +6,10 @@ use crate::core::typed_facts::{FlowStore, TypedFacts};
 use crate::engine::languages::{self, FileContext, LanguageProfile, SyntaxContext};
 use anyhow::Result;
 pub(crate) use search::pattern_symbol_name;
-pub use search::{search, search_page, SearchPage, SEARCH_MATCH_HORIZON};
+pub use search::{
+    search, search_page, PatternErrorSpan, PatternSearchDiagnostic, SearchPage,
+    SEARCH_MATCH_HORIZON,
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};

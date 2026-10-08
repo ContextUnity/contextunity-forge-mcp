@@ -1,10 +1,10 @@
 use super::*;
 use crate::core::models::ReceiverHint;
 use crate::core::semantic::{SourcePosition, TypeExpr, ValueFlowFacts, VueSlotFact};
-#[path = "vue/template.rs"]
-mod template;
 #[path = "vue/setup_facts.rs"]
 mod setup_facts;
+#[path = "vue/template.rs"]
+mod template;
 use setup_facts::{
     collect_registered_components, collect_setup_callables, collect_setup_reassignments,
     collect_shadowed_producers, collect_typed_iterables, collect_typed_props, collect_typed_slots,
@@ -17,6 +17,9 @@ pub static VUE: Vue = Vue;
 impl LanguageProfile for Vue {
     fn id(&self) -> &'static str {
         "vue"
+    }
+    fn ast_search_capabilities(&self) -> AstSearchCapabilities {
+        typescript::TYPESCRIPT.ast_search_capabilities()
     }
     fn manifest_filenames(&self) -> &'static [&'static str] {
         typescript::TYPESCRIPT.manifest_filenames()
@@ -183,12 +186,32 @@ fn extract_file_impl(
         .context("Tree-sitter parse cancelled")?;
         if setup_script {
             script_setup_bindings.extend(profile.bindings(tree.root_node(), source).all);
-            collect_setup_callables(tree.root_node(), source, &mut setup_callables, &mut duplicate_callables);
-            collect_typed_props(tree.root_node(), source, &mut typed_props, &mut duplicate_typed_props);
+            collect_setup_callables(
+                tree.root_node(),
+                source,
+                &mut setup_callables,
+                &mut duplicate_callables,
+            );
+            collect_typed_props(
+                tree.root_node(),
+                source,
+                &mut typed_props,
+                &mut duplicate_typed_props,
+            );
             if lang == "typescript" {
-                collect_typed_iterables(tree.root_node(), source, &mut typed_iterables, &mut duplicate_typed_iterables);
+                collect_typed_iterables(
+                    tree.root_node(),
+                    source,
+                    &mut typed_iterables,
+                    &mut duplicate_typed_iterables,
+                );
                 if !typed_slots_invalid {
-                    typed_slots_invalid = collect_typed_slots(tree.root_node(), source, &mut typed_slots, &mut typed_slot_calls);
+                    typed_slots_invalid = collect_typed_slots(
+                        tree.root_node(),
+                        source,
+                        &mut typed_slots,
+                        &mut typed_slot_calls,
+                    );
                 }
             }
             collect_shadowed_producers(tree.root_node(), source, &mut shadowed_producers);
@@ -221,33 +244,46 @@ fn extract_file_impl(
         .iter_mut()
         .find(|node| node.kind == "module" && node.path == path)
     {
-        module_node.details["vue_script_setup"] = serde_json::Value::Array(
-            if script_setup_ranges_overflowed {
+        module_node.details["vue_script_setup"] =
+            serde_json::Value::Array(if script_setup_ranges_overflowed {
                 Vec::new()
             } else {
                 script_setup_ranges
-            },
-        );
-        if !script_setup_ranges_overflowed && !typed_slots_invalid
-            && !shadowed_producers.contains("defineSlots") && !typed_slots.is_empty() {
+            });
+        if !script_setup_ranges_overflowed
+            && !typed_slots_invalid
+            && !shadowed_producers.contains("defineSlots")
+            && !typed_slots.is_empty()
+        {
             if let Some(store) = flows.as_deref_mut() {
                 if let Some(flow) = store.get_mut(&module_node.id) {
                     flow.vue_slots.append(&mut typed_slots);
                 } else {
-                    store.insert(module_node.id.clone(), ValueFlowFacts { vue_slots: typed_slots, ..ValueFlowFacts::default() });
+                    store.insert(
+                        module_node.id.clone(),
+                        ValueFlowFacts {
+                            vue_slots: typed_slots,
+                            ..ValueFlowFacts::default()
+                        },
+                    );
                 }
             } else {
-                let flow = module_node.details.get("value_flow")
+                let flow = module_node
+                    .details
+                    .get("value_flow")
                     .and_then(|value| serde_json::from_value::<ValueFlowFacts>(value.clone()).ok())
                     .unwrap_or_default();
                 let mut flow = flow;
                 flow.vue_slots.append(&mut typed_slots);
-                module_node.details["value_flow"] = serde_json::to_value(flow).expect("valid Vue slot flow");
+                module_node.details["value_flow"] =
+                    serde_json::to_value(flow).expect("valid Vue slot flow");
             }
         }
     }
 
-    let imported_aliases: HashSet<String> = facts.references.iter()
+    let imported_aliases: HashSet<String> = facts
+        .references
+        .iter()
         .filter(|reference| reference.kind == "imports" && reference.module.is_some())
         .filter_map(|reference| reference.alias.clone())
         .collect();
@@ -270,16 +306,27 @@ fn extract_file_impl(
     typed_iterables.retain(|name, _| {
         !duplicate_typed_iterables.contains(name) && !setup_reassignments.contains(name)
     });
-    template::extract(path, source, module, template::TemplateBindings {
-        setup_positions: &setup_positions,
-        registered_components: &component_aliases,
-        typed_iterables: &typed_iterables,
-    }, facts, flows)?;
+    template::extract(
+        path,
+        source,
+        module,
+        template::TemplateBindings {
+            setup_positions: &setup_positions,
+            registered_components: &component_aliases,
+            typed_iterables: &typed_iterables,
+        },
+        facts,
+        flows,
+    )?;
     if !script_setup_ranges_overflowed {
-        let nodes_by_id: HashMap<&str, &Node> = facts.nodes.iter()
+        let nodes_by_id: HashMap<&str, &Node> = facts
+            .nodes
+            .iter()
             .map(|node| (node.id.as_str(), node))
             .collect();
-        let template_scopes: HashSet<&str> = facts.nodes.iter()
+        let template_scopes: HashSet<&str> = facts
+            .nodes
+            .iter()
             .filter(|node| node.kind == "template_scope")
             .map(|node| node.id.as_str())
             .collect();
@@ -290,7 +337,9 @@ fn extract_file_impl(
         for properties in typed_props.values() {
             for (member_path, position) in properties {
                 if let Some(member) = member_path.rsplit('.').next() {
-                    *field_path_counts.entry((position.line, member)).or_default() += 1;
+                    *field_path_counts
+                        .entry((position.line, member))
+                        .or_default() += 1;
                 }
             }
         }
@@ -299,40 +348,58 @@ fn extract_file_impl(
             if duplicate_typed_props.contains(binding)
                 || setup_reassignments.contains(binding)
                 || shadowed_producers.contains("defineProps")
-            { continue; }
+            {
+                continue;
+            }
             for (member_path, position) in properties {
-                let Some(member) = member_path.rsplit('.').next() else { continue; };
-                if field_path_counts.get(&(position.line, member)) != Some(&1) { continue; }
+                let Some(member) = member_path.rsplit('.').next() else {
+                    continue;
+                };
+                if field_path_counts.get(&(position.line, member)) != Some(&1) {
+                    continue;
+                }
                 let mut matches = facts.nodes.iter().filter(|node| {
-                    node.path == path && node.kind == "field" && node.name == member
+                    node.path == path
+                        && node.kind == "field"
+                        && node.name == member
                         && node.line == position.line
                 });
                 if let Some(field) = matches.next() {
                     if matches.next().is_none() {
-                        typed_prop_fields.insert((binding.clone(), member_path.clone()), field.id.clone());
+                        typed_prop_fields
+                            .insert((binding.clone(), member_path.clone()), field.id.clone());
                     }
                 }
             }
         }
         for reference in &mut facts.references {
             if reference.kind == "calls" {
-                let at = Position { line: reference.line, column: reference.column };
+                let at = Position {
+                    line: reference.line,
+                    column: reference.column,
+                };
                 let owner = nodes_by_id.get(reference.source.as_str()).copied();
                 let in_template = owner.is_some_and(|node| node.kind == "template_scope");
-                let in_setup = setup_positions.iter().any(|(start, end)| *start <= at && at < *end);
+                let in_setup = setup_positions
+                    .iter()
+                    .any(|(start, end)| *start <= at && at < *end);
                 if (in_template || in_setup)
-                    && setup_callables.get(reference.expression.as_str()).is_some_and(|(hint, declaration)| {
-                        !setup_reassignments.contains(reference.expression.as_str())
-                            && !duplicate_callables.contains(reference.expression.as_str())
-                            && !shadowed_producers.contains(match hint {
-                                ReceiverHint::VueSetupMacroCallable => "defineEmits",
-                                _ => return false,
-                            })
-                            && (in_template || *declaration < at)
-                    })
+                    && setup_callables
+                        .get(reference.expression.as_str())
+                        .is_some_and(|(hint, declaration)| {
+                            !setup_reassignments.contains(reference.expression.as_str())
+                                && !duplicate_callables.contains(reference.expression.as_str())
+                                && !shadowed_producers.contains(match hint {
+                                    ReceiverHint::VueSetupMacroCallable => "defineEmits",
+                                    _ => return false,
+                                })
+                                && (in_template || *declaration < at)
+                        })
                     && !setup_callable_shadowed(owner, reference.expression.as_str(), &facts.nodes)
                 {
-                    reference.receiver_hint = setup_callables.get(reference.expression.as_str()).map(|(hint, _)| hint.clone());
+                    reference.receiver_hint = setup_callables
+                        .get(reference.expression.as_str())
+                        .map(|(hint, _)| hint.clone());
                 }
             }
             if reference.kind == "references"
@@ -341,8 +408,7 @@ fn extract_file_impl(
             {
                 reference.receiver_hint = Some(ReceiverHint::VueSetupBinding);
             }
-            if reference.kind == "references"
-                && template_scopes.contains(reference.source.as_str())
+            if reference.kind == "references" && template_scopes.contains(reference.source.as_str())
             {
                 let expression = if reference.expression.contains("?.") {
                     std::borrow::Cow::Owned(reference.expression.replace("?.", "."))
@@ -354,8 +420,12 @@ fn extract_file_impl(
                     if !member_path.is_empty()
                         && !setup_callable_shadowed(owner, binding, &facts.nodes)
                     {
-                        if let Some(field_id) = typed_prop_fields.get(&(binding.to_owned(), member_path.to_owned())) {
-                            reference.receiver_hint = Some(ReceiverHint::VueTypedPropMember { field_id: field_id.clone() });
+                        if let Some(field_id) =
+                            typed_prop_fields.get(&(binding.to_owned(), member_path.to_owned()))
+                        {
+                            reference.receiver_hint = Some(ReceiverHint::VueTypedPropMember {
+                                field_id: field_id.clone(),
+                            });
                         }
                     }
                 }
@@ -366,13 +436,19 @@ fn extract_file_impl(
 }
 
 fn setup_callable_shadowed(owner: Option<&Node>, name: &str, nodes: &[Node]) -> bool {
-    let Some(owner) = owner else { return true; };
+    let Some(owner) = owner else {
+        return true;
+    };
     let mut scope = owner.qualname.as_str();
     while !scope.is_empty() {
         if nodes.iter().any(|node| {
-            node.path == owner.path && node.kind != "module" && node.qualname == scope
+            node.path == owner.path
+                && node.kind != "module"
+                && node.qualname == scope
                 && node.details["bindings"].as_array().is_some_and(|bindings| {
-                    bindings.iter().any(|binding| binding.as_str() == Some(name))
+                    bindings
+                        .iter()
+                        .any(|binding| binding.as_str() == Some(name))
                 })
         }) {
             return true;
@@ -536,7 +612,10 @@ pub(crate) fn admits_macro(
     if module.kind != "module" || module.language != "vue" {
         return false;
     }
-    let Some(ranges) = module.details.get("vue_script_setup").and_then(|value| value.as_array())
+    let Some(ranges) = module
+        .details
+        .get("vue_script_setup")
+        .and_then(|value| value.as_array())
     else {
         return false;
     };
