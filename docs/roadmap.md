@@ -11,6 +11,6 @@ quality, predictable query latency, compact storage, and reproducible cold and
 incremental builds through measured production seams.
 
 Repository-owned documentation and planning connect design intent to those
-code relationships. The next planning capability links admitted milestone
-specifications to a lightweight local task lifecycle while preserving isolated
-worktree delivery and durable completion receipts.
+code relationships. Development strengthens the existing milestone/task
+lifecycle, repository onboarding, isolated worktree delivery, and durable
+completion receipts across projects.

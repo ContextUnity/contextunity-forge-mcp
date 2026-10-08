@@ -984,13 +984,34 @@ impl TasksStore {
                     .collect::<rusqlite::Result<Vec<_>>>()?;
             }
             save(&tx, &task)?;
+            for scope_root in &spec.scope_roots {
+                crate::core::tasks::confined_path(root, scope_root)?;
+            }
             for scope in &spec.scope {
                 let path = crate::core::tasks::relative_path(scope)?;
                 crate::core::tasks::confined_path(root, scope)?;
-                let base = if scope.ends_with('/') || root.join(&path).is_dir() {
+                let base = if !spec.scope_roots.is_empty() {
+                    let matched = spec.scope_roots.iter().find(|sr| {
+                        if let Ok(sr_rel) = crate::core::tasks::relative_path(sr) {
+                            path.starts_with(&sr_rel)
+                        } else {
+                            false
+                        }
+                    });
+                    if let Some(sr) = matched {
+                        crate::core::tasks::relative_path(sr)?
+                    } else {
+                        bail!("TASK_SCOPE_INVALID: path '{scope}' is outside scope_roots");
+                    }
+                } else if scope.ends_with('/') || root.join(&path).is_dir() {
                     path.clone()
                 } else {
-                    path.parent().context("scope needs parent")?.to_path_buf()
+                    let parent = path.parent().context("scope needs parent")?;
+                    if parent.as_os_str().is_empty() {
+                        path.clone()
+                    } else {
+                        parent.to_path_buf()
+                    }
                 };
                 tx.execute(
                     "INSERT OR IGNORE INTO task_scope_paths VALUES(?1,?2,?3,1)",
@@ -1175,12 +1196,22 @@ impl TasksStore {
             bail!("TASK_TERMINAL: cannot extend scope of completed task; reopen or reset the task first (e.g. `task reset <task-id>`)");
         }
         let worktree = task.worktree.as_deref().map(Path::new).unwrap_or(root);
-        let bases: Vec<String> = tx
-            .prepare(
+        let bases: Vec<String> = if !task.spec.scope_roots.is_empty() {
+            task.spec
+                .scope_roots
+                .iter()
+                .map(|r| {
+                    let rel = crate::core::tasks::relative_path(r)?;
+                    Ok(rel.to_string_lossy().into_owned())
+                })
+                .collect::<Result<Vec<String>>>()?
+        } else {
+            tx.prepare(
                 "SELECT DISTINCT base_root FROM task_scope_paths WHERE task_id=?1 AND frozen=1",
             )?
             .query_map([id], |r| r.get(0))?
-            .collect::<std::result::Result<_, _>>()?;
+            .collect::<std::result::Result<_, _>>()?
+        };
         let my_paths: Vec<PathBuf> = tx
             .prepare("SELECT path FROM task_scope_paths WHERE task_id=?1")?
             .query_map([id], |r| {
@@ -1220,20 +1251,14 @@ impl TasksStore {
             }
             let matched_base = bases
                 .iter()
-                .find(|base| path.starts_with(Path::new(base)))
+                .find(|base| !base.is_empty() && path.starts_with(Path::new(base)))
                 .cloned();
             let base = match matched_base {
                 Some(b) => b,
                 None => {
-                    if path.starts_with("tests") {
-                        "tests".to_string()
-                    } else if path.starts_with("src") {
-                        "src".to_string()
-                    } else {
-                        bail!(
-                            "TASK_SCOPE_INVALID: path '{value}' is outside source roots and tests"
-                        );
-                    }
+                    bail!(
+                        "TASK_SCOPE_INVALID: path '{value}' is outside admitted scope roots"
+                    );
                 }
             };
             for root in [root, worktree] {

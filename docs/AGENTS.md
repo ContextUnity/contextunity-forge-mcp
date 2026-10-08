@@ -53,7 +53,7 @@ to code symbols in the SQLite code map. Follow these structural standards:
 
 3. **Symbol linkage**:
    Enclose code symbols in backticks matching `[a-zA-Z_][a-zA-Z0-9_.:]*`:
-   - Examples: ` `LanguageProfile` `, ` `source_inventory` `, ` `crate::engine::scanner` `, ` `SessionCheckpoint.save` `.
+   - Examples: `LanguageProfile`, `source_inventory`, `crate::engine::scanner`, `SessionCheckpoint.save`.
    - Forge automatically extracts backticked symbols and creates bidirectional
      graph edges between documentation sections and code entities.
    - Code inspections (`code_map_inspect`, `code_map_explain`) return linked
@@ -63,7 +63,7 @@ to code symbols in the SQLite code map. Follow these structural standards:
    Declare architectural invariants within GitHub alert callouts containing `Invariant:`:
    ```markdown
    > [!IMPORTANT]
-    > Invariant: Every reader holds the shared database snapshot lock while reading and rejects a result if the snapshot identity changes.
+   > Invariant: Every reader holds the shared database snapshot lock while reading and rejects a result if the snapshot identity changes.
    ```
    Supported alert tags: `[!IMPORTANT]`, `[!WARNING]`, `[!NOTE]`.
    Forge marks matching sections with `is_invariant: true`, indexing them for
@@ -89,12 +89,9 @@ Preserve source-plan requirements until reconciliation proves their destination.
 Validate metadata, relative links, scan admission, and documentation retrieval.
 Obtain explicit approval for commits and publication under the root instructions.
 
-## Worktree merge and milestone reconciliation
+## Delivery documentation
 
-When merging a development worktree or branch into `main` after completing feature slices:
-1. **Inspect milestone authority**: Run `contextunity-forge-mcp milestone list` and `contextunity-forge-mcp milestone show <id-or-prefix> --full` to select the governing contract.
-2. **Close completed tasks**: Submit each task's `deliver/v1` gate and confirm its generated receipt in the milestone YAML block. Confirm completion with `contextunity-forge-mcp task list --status all`.
-3. **Verify milestone delivery**: Run `cargo test --all-targets`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --test commitment_integrity`; record the command and test counts for the milestone receipt.
-4. **Review project documentation**: Compare the completed change with the project's current reference, architecture, and runbook documentation. Update a suitable existing page, or add and index a canonical page when none exists; keep each contract in one source of truth and validate changed relative links before handoff.
-5. **Archive the milestone**: Run `contextunity-forge-mcp milestone handoff <id-or-prefix> --verification-command <command> --tests-passed <count> --tests-failed 0`. The CLI validates SQLite completion, writes the handoff receipt, updates task references, and moves the document into `docs/milestones/archive/`.
-6. **Reconcile before pruning**: Commit the milestone, task, and updated project documentation with the verified implementation, then remove the completed worktree with `git worktree remove`.
+Follow [milestone closure](runbooks/acdd.md#close-the-milestone) for verification,
+archival, integration, and worktree cleanup. Include changed reference,
+architecture, runbook, and navigation pages in the reviewed delivery scope.
+Verify generated receipts and relative links before authorized publication.

@@ -474,7 +474,7 @@ pub(super) fn context_bundle(
             &["ast_grep_search", "code_map_inspect", "code_map_explain", "task_manage"],
             &[
                 "Implement approved contract inside the declared allowed_write_scope.",
-                "Turn the red seam test green; verify targeted domain test suite and clippy.",
+                "Verify the seam and run the owning repository's focused tests and lint checks.",
                 "Submit passing test proof with test command, exit code 0, and passed counts.",
             ],
         ),
@@ -492,7 +492,7 @@ pub(super) fn context_bundle(
             &[
                 "Verify delivery worker is distinct from builder.",
                 "Submit delivery proof first; Forge verifies proofs, writes typed receipt into milestone Markdown, and clears blackboard.",
-                "After successful delivery, create one atomic commit for completed task containing scoped files, tests, and updated milestone (without git add -A in shared worktrees).",
+                "After successful delivery, commit scoped files, tests, and the milestone receipt under the repository's Git permissions.",
             ],
         ),
         _ => (
@@ -510,7 +510,7 @@ pub(super) fn context_bundle(
     ];
 
     let review_policy = [
-        "When adjacent defects or missing helpers are uncovered, resolve them via extend-scope or task reopen.",
+        "Route adjacent defects to their owning task or admit scope before edits; record deferred findings durably before delivery.",
         "Reviewers must accept legitimate defect fixes and verify changes against the declared scope (preventing uncontracted scope creep or overengineering).",
     ];
 

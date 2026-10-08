@@ -42,6 +42,7 @@ Read [documentation instructions](AGENTS.md) before editing these pages.
 
 Current contracts and milestones are configured through `milestones` in
 forge-mcp.yaml. Plans remain in `docs/plans/` (configured in `plans`) for research and proposal authoring
-prior to milestone admission. Both are automatically excluded from the code/documentation search index.
+prior to milestone admission. Individual plans and milestone contracts are
+excluded from documentation search; their root README pages remain indexed.
 
 For a code change, start with the workspace overview, select an exact symbol, inspect direct relationships, and verify the relevant source. Missing edges are bounded by the indexed languages, roots, and unresolved-reference coverage.

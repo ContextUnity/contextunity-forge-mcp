@@ -13,7 +13,9 @@ Milestone commitment files in this directory (`0XX-*.md`) define the repository'
 - **Queue Order:** Numeric filename prefixes (`010-*.md`, `020-*.md`, ...) supply the queue execution order.
 - **Archive:** Completed and cancelled milestones are retained in [archive/](archive/README.md) with their durable receipts and rationale. Sync prunes operational task state for cancelled milestones.
 
-To find the active commitment, discover the lowest-numbered file with `status: active` in this directory or run `contextunity-forge-mcp milestone list`. A `planned` milestone whose `depends_on` predecessor is still active stays blocked.
+Use `contextunity-forge-mcp milestone list` to inspect queue order and dependencies.
+Continue an active commitment; admit the next planned commitment when its
+dependencies are satisfied. Its first accepted task claim activates it.
 
 Only this overview README is admitted for documentation indexing; individual milestone contracts remain separate from `doc_search`. See [ADR 0014](../adr/0014-milestone-task-subtask-hierarchy-and-visibility.md) for lifecycle, task visibility, and coordination invariants.
 

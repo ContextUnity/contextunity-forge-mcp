@@ -18,7 +18,7 @@ to the proof boundary:
 
 | Stage | Verification |
 | --- | --- |
-| Contract red and build green | Run the named test with a filter through its existing domain executable, for example `cargo test --test core_basics tasks::TEST_NAME`. Verify the expected red failure, then a green result. |
+| Contract and build | Run the named test through its existing domain executable, for example `cargo test --test core_basics tasks::TEST_NAME`. Use the admitted proof policy: `seam-test-first` requires red then green; `direct-proof` accepts an existing green seam. All policies require passing build proof. |
 | Task build and review | Run the affected domain executable, for example `cargo test --test core_basics`, plus strict Clippy. Rerun focused checks after candidate changes. |
 | Milestone deferred final test | Run the complete suite once after all task changes and the end-to-end test are in place. Record actual passed and failed counts for `milestone handoff`. |
 

@@ -1,6 +1,6 @@
 ---
 title: ACDD execution runbook
-doc_type: runbook
+doc_type: guide
 repository_id: contextunity-forge-mcp
 project_id: forge-mcp
 ---
@@ -32,30 +32,29 @@ messages. A code-index rebuild does not reset task state.
 
 1. Create and enter a dedicated worktree for the milestone:
    `git worktree add .worktrees/<milestone-prefix>-<slug> -b <branch-name>`
-   Run all subsequent ACDD operations, task claims, and tests inside this worktree.
+   Run integration and milestone closure here; run each task's claims and tests
+   in its claimed worktree.
 2. Read the milestone contract and relevant [architecture](../architecture/README.md)
    and [decisions](../adr/README.md). Check scope and dependencies before
    assigning agents.
 3. Bring any legacy task receipts in the milestone document into alignment with the
    current typed receipt schema before syncing, preserving engine parsers in `src/` intact.
 4. Run `contextunity-forge-mcp task sync docs/milestones/<number>-<slug>.md`.
-5. Run `contextunity-forge-mcp task list --status ready` and select a task whose prerequisites are complete.
+5. Run `contextunity-forge-mcp task list --milestone docs/milestones/<number>-<slug>.md --status ready` and select a task whose prerequisites are complete.
 6. Use distinct `worker_id` values for the builder and the review and delivery
    workers. Read `workflow_guidance`, `agent_type`, and the configured
    instruction path before claiming a stage.
-7. **Pre-existing code reconciliation**: When verifying tasks whose implementation was already authored
-   prior to a refactoring or imported from historical drafts, do NOT synthetically break working code to
-   force a red test. Prove the existing seam directly using `proof_policy: direct-proof` or targeted green
-   test evidence in `contract/v1`. If the seam test passes and meets the contract, proceed directly to review.
-9. **Targeted scope verification during parallel tasks**: When multiple tasks are in progress within a
-   milestone worktree, `test_proof` must execute ONLY the targeted test binary for that task (e.g.
-   `cargo test --test <seam_suite>`), NOT repository-wide suites (`--all-targets`). Incomplete work in sibling
-   files outside the task's declared scope must not block verification of a completed task.
-10. **Child worktrees for parallel subagents**: When delegating tasks to subagents to execute concurrently,
-    prefer creating dedicated child worktrees branched from the milestone:
-    `git worktree add .worktrees/<milestone-prefix>-<task-slug> -b <milestone-prefix>-<task-slug>`
-    Upon delivery, fast-forward or cherry-pick the atomic task commit into the milestone branch and prune the child worktree.
-11. **Subtasks for iterative deepening**: When new discoveries, component variations (e.g. Playwright fixtures,
+7. **Pre-existing code reconciliation**: Use `proof_policy: direct-proof` to
+   submit existing passing seam evidence at `contract/v1`. Complete build
+   verification before independent review; all four gates apply.
+8. **Targeted verification**: Run the task's affected test suite and record
+   its command and counts. Run final integration checks in the milestone worktree.
+9. **Parallel writers**: Create a dedicated child worktree for each concurrent
+   task, branched from the milestone. Claim and edit in that task worktree:
+   `git worktree add .worktrees/<milestone-prefix>-<task-slug> -b <milestone-prefix>-<task-slug>`.
+   Integrate its delivered task commit into the milestone branch under the
+   repository's Git permissions, then prune the completed child worktree.
+10. **Subtasks for iterative deepening**: When new discoveries, component variations (e.g. Playwright fixtures,
     Alpine directives, DOM query methods), or sub-checklists arise during implementation, record them as **subtasks**
     under the active task (`task subtask add <task_id> <subtask_ref> <title>`). Do NOT spawn new root-level milestone tasks
     for internal sub-discoveries, which would inflate the milestone and trigger full four-gate lifecycles (`contract/v1` through `deliver/v1`)
@@ -70,15 +69,17 @@ Use the stage shown by claim or inspect rather than skipping an open gate.
 
 | Gate | Worker action | Required proof |
 | --- | --- | --- |
-| `contract/v1` | Trace the proposed behavior from producer to consumer, owner, state, failure path, and observable proof. For greenfield tasks, write a red test through a public seam and verify its intended failure. For pre-existing code reconciliation, verify the existing seam directly without synthetic breakage. | `proof.contract_proof` names the seam test and its `red_exit_code` (or 0 for direct proof). |
-| `build/v1` | Implement inside the allowed scope; turn the seam test green; run the affected domain suite and Clippy. Keep changes scoped; no pre-delivery candidate commit or amend is required. | `proof.test_proof` records the exact test command, exit code 0, at least one passing test, and zero failures. |
+| `contract/v1` | Trace the proposed behavior from producer to consumer, owner, state, failure path, and observable proof. For greenfield tasks, write a red test through a public seam and verify its intended failure. For direct proof, verify the existing seam. | `proof.contract_proof` names the seam test and its `red_exit_code` (or 0 for direct proof). |
+| `build/v1` | Implement inside the allowed scope; turn the seam test green; run the affected domain suite and Clippy. Forge captures the candidate snapshot. | `proof.test_proof` records the exact test command, exit code 0, at least one passing test, and zero failures. |
 | `review/v1` | Use a worker different from the accepted builder. Review the candidate diff of scoped files against the task contract. Ignore unrelated dirty files outside this task's scope. | `proof.review_proof` records `decision: "pass"` and evidence for all five review contours. |
-| `deliver/v1` | Use a worker different from the builder. Submit task delivery. Forge validates the task and review proof, writes the receipt into the milestone document, marks the task completed in SQLite, and clears its blackboard. Immediately create one atomic commit for the task: `git add <scoped-files> <test-files> <milestone-doc> && git commit -m "feat(...) ..."`. | Forge validates the task and review proof, writes the receipt and context rollup, marks the task completed, and clears its blackboard. |
+| `deliver/v1` | Use a worker different from the builder. Submit delivery, then commit the delivered task under the repository's Git permissions. | Forge validates the task and review proof, writes the receipt and context rollup, marks the task completed, and clears its blackboard. |
 
 Claim before submitting each gate. Pass a direct JSON `evidence` object; do not
 create evidence files. Each object includes the active `task_id`, exact
 versioned `stage`, `claim_revision`, `contract_revision`, `worker_id`, absolute
-claimed `worktree`, candidate `commit`, and non-null `proof`. Contract, build,
+claimed `worktree`, and non-null `proof`. Forge supplies a scoped snapshot
+when contract/build evidence omits `commit`; review/delivery bind the accepted
+build candidate. Contract, build,
 and review use typed proof. Claim output supplies the revisions and worktree.
 A rejected review or delivery returns the
 task to build remediation; read findings before rebuilding. See
@@ -87,10 +88,17 @@ task to build remediation; read findings before rebuilding. See
 ### Independent review
 
 The reviewer checks the five contours against the current contract and the
-candidate diff. Findings must cite an admitted contract requirement, a regression against baseline suites, or a verifiable defect on reference corpus code. Route uncontracted speculative requests to future milestones or blackboard. For concrete adjacent defects uncovered during implementation (e.g. parser bugs, CRLF handling): do not stall in bystander inaction—if the defect falls within another milestone task's scope, `extend-scope` rejects the collision with `TASK_SCOPE_CONFLICT`, requiring `contextunity-forge-mcp task reopen <task-id>` to repair it cleanly; if unowned, extend scope via `contextunity-forge-mcp task extend-scope <task-id> <path>` subject to reviewer verification on the `paths` contour. Non-essential out-of-scope defects must be recorded in the milestone document under `## Deferred and out-of-scope defects` (via typed `deferred_defects: [...]` block) or on `task_blackboard` for subsequent milestones.
+candidate diff. Cite an admitted requirement, a baseline regression, or a
+verified defect on the reference corpus. Route sibling-owned defects to their
+owning task; reopen it when completed. Admit unowned paths through
+`contextunity-forge-mcp task extend-scope <task-id> <path>` before edits.
+Apply the [scope contract](../reference/tasks.md#five-flat-mcp-tools).
+Record deferred findings in milestone `deferred_defects` or a linked successor
+contract before delivery clears temporary blackboard discussion.
 
 > [!IMPORTANT]
-> **Anti-Looping Invariant**: Reviewers are strictly prohibited from rejecting candidates on speculative, uncontracted edge cases or inventing micro-requirements outside the agreed contract. If an edge case is observed but not required by the contract, record it on `task_blackboard` for future milestones; do not block the active delivery gate.
+> Invariant: Review findings cite the admitted contract or a verified regression.
+> Record proposals beyond that authority in a durable deferred destination.
 
 | Contour | Review question |
 | --- | --- |
@@ -114,22 +122,21 @@ existing domain suite, share fixtures, and follow ACDD task taxonomy:
 When replacing tests, preserve each unique observable scenario.
 Follow [test placement rules](../../tests/AGENTS.md).
 
-During the task gates, code and tests are authored and verified within the task scope. For `contract/v1` and `build/v1`, `evidence.commit` records the SHA of the scoped candidate snapshot (captured automatically if omitted). For `review/v1` and `deliver/v1`, `evidence.commit` matches the accepted build candidate snapshot SHA.
-The delivery gate (`deliver/v1`) completes the task in SQLite, clears the temporary blackboard, and writes the completion receipt into the milestone Markdown document.
-
-Immediately after passing `deliver/v1`, create exactly one clean atomic Git commit containing strictly the task's scoped files, tests, and milestone document:
+After successful delivery and explicit Git authorization, commit the task's
+source, tests, and generated milestone receipt together:
 ```bash
 git add <scoped-files> <test-files> <milestone-doc>
 git commit -m "feat(<scope>): <task summary>"
 ```
-- **Commit strictly after delivery**: Never run `git commit --amend` after delivery. All code, tests, and the updated milestone document are committed together in one clean, regular commit.
-- **Stage scoped changes only**: In shared worktrees, stage strictly the scoped files, tests, and milestone document for that task; do not use `git add -A` to avoid pulling in unrelated changes.
-- **Clean worktree requirement**: Never claim a subsequent task while uncommitted changes exist in the worktree.
-- **Task Reopening**: Completed tasks remain mutable within the active milestone branch until milestone handoff. If subsequent tasks or regressions require modifying a completed task, run `contextunity-forge-mcp task reopen <task-id>` (or `task reset <task-id>`). This resets the task back to `ready` at `contract/v1` in SQLite and clears its receipt. Files and commits can be adjusted freely until the final milestone handoff.
+Preserve the generated snapshot SHA in the receipt. Integrate delivered task
+commits into the milestone branch. To repair a completed task before handoff,
+run `contextunity-forge-mcp task reopen <task-id>` and repeat its gates.
 
 ## Share task context
 
-The task blackboard is temporary, task-scoped SQLite state for agent handovers.
+The blackboard holds temporary milestone, task, and subtask coordination.
+Read newest-first summary pages, then inspect relevant message IDs to obtain
+their payloads. Select explicit context keys when active work is ambiguous.
 The specification already lives in the queue, so post concise findings rather
 than duplicating the whole contract.
 
@@ -140,8 +147,10 @@ than duplicating the whole contract.
 | `build_proof` | Builder | Candidate SHA, focused test result, and Clippy result. |
 | `architectural_notes` | Any worker | Decisions or trade-offs that must survive task delivery. |
 
-Read relevant messages before taking over a gate. Blackboard messages do not
-replace gate evidence. On successful task delivery, Forge copies
+Read summaries and inspect relevant payloads when claiming a task, resuming a
+turn, starting a subtask, and taking over a gate. Submit gate
+evidence through `task_submit`. Before delivery, give each accepted deferred
+finding a durable destination in `deferred_defects` or a linked successor contract. On successful task delivery, Forge copies
 `architectural_notes` into the milestone receipt and clears that task's
 messages. Other topics are temporary.
 
@@ -149,6 +158,15 @@ messages. Other topics are temporary.
 contextunity-forge-mcp task blackboard post TASK_ID --topic architectural_notes --payload "Decision and reason"
 contextunity-forge-mcp task blackboard read TASK_ID --topic architectural_notes
 ```
+
+### Investigation checkpoints
+
+Post `hypothesis` before implementation, `architectural_seam` with the relevant
+ADR and pipeline changes, and `measured_delta` before completing a subtask.
+After two unsuccessful repair iterations or a performance/Merkle regression,
+record reproducible evidence under `blockers` and escalate the architectural
+blocker to the coordinator. Retain the current fail-closed boundary.
+Promote durable findings before delivery clears task messages.
 
 ## Verify at the right scope
 
@@ -198,23 +216,21 @@ completed messages and resolve findings before follow-up work.
    receipt. Align the affected reference, architecture, runbook, root agent
    guidance, and README pages with changed CLI, MCP, configuration, and schema
    behavior. Validate changed metadata and relative links.
-2. **Deferred final test & test-suite refactor**:
-   - Run the `test-suite-refactor` skill across all tests created or modified in the milestone.
-   - Verify and strengthen coverage at the boundaries where new contracts interface with pre-existing contracts.
-   - Refactor, consolidate, or clean up any pre-existing tests outside individual task scopes to eliminate duplicate checks and prevent drift.
-   - Add a deferred end-to-end test that crosses real public callers and proves the milestone invariants across the completed tasks.
+2. Run `test-suite-refactor` for the admitted final verification scope and prove
+   milestone invariants across real callers. Route required code/test changes
+   through their owning task and delivery gates before final verification.
 3. Run `cargo test --all-targets`,
    `cargo clippy --all-targets --all-features -- -D warnings`, and
    `cargo test --test commitment_integrity`. Record the actual test counts.
-4. Commit the deferred test and test refactors, then run:
+4. Commit final test changes. Record task IDs and their full commit SHAs in
+   `## Task commits`, including any final test commit. Run:
 
 ```sh
 contextunity-forge-mcp milestone handoff <number> --verification-command "cargo test --all-targets" --tests-passed <count> --tests-failed 0
 ```
 
-The handoff command records verification, duration, and commit, marks the
-milestone completed, moves it under `docs/milestones/archive/`, and updates
-task references. Inspect the result, commit the archived document, and merge the branch into `main`.
+5. Commit the archived milestone as the handoff commit; leave its own SHA
+   unrecorded. Merge under the repository's Git permissions.
 After merge, install the updated release binary with `cargo install --path . --root ~/.local --force`.
 
 ## Guidance configuration

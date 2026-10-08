@@ -80,9 +80,11 @@ contextunity-forge-mcp task submit TASK_ID --stage deliver --action pass --evide
 contextunity-forge-mcp task context TASK_ID
 ```
 
-`task claim --bundle` and `task context` return the unified zero-shot task context bundle:
-contract, gate-aware workflow guidance with subtask DoD, scope-to-ADR mapping,
-scope symbol skeleton, covering test seams, and active blackboard messages.
+`task claim` includes context by default. Context follows the active gate:
+contract/build receive symbols and test seams; review receives the candidate
+snapshot; delivery receives snapshot and milestone references; completed tasks
+include the receipt. See
+[task context](tasks.md#unified-task-context-bundle) for fields and limits.
 
 These commands deliver one task. `milestone handoff` below closes the whole
 milestone. Exchange temporary task context with:

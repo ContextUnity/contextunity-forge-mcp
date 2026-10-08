@@ -157,6 +157,9 @@ pub struct TaskSpec {
     pub proof_policy: String,
     /// The scope value.
     pub scope: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The pre-admitted boundary roots within which scope may be extended.
+    pub scope_roots: Vec<String>,
     #[serde(default = "initial_revision")]
     /// The contract revision value.
     pub contract_revision: u64,
@@ -337,6 +340,24 @@ impl Milestone {
             }
             for path in &task.scope {
                 relative_path(path)?;
+            }
+            for root in &task.scope_roots {
+                relative_path(root)?;
+            }
+            if !task.scope_roots.is_empty() {
+                for path in &task.scope {
+                    let rel = relative_path(path)?;
+                    let inside = task.scope_roots.iter().any(|r| {
+                        if let Ok(rel_root) = relative_path(r) {
+                            rel.starts_with(&rel_root)
+                        } else {
+                            false
+                        }
+                    });
+                    if !inside {
+                        bail!("TASK_SCOPE_INVALID: path '{path}' is outside scope_roots");
+                    }
+                }
             }
             if !ids.insert(task.task_ref.clone()) {
                 bail!("duplicate task_ref");

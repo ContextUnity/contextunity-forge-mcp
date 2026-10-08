@@ -31,12 +31,12 @@ Task lifecycle governance in ACDD required architectural decoupling between gate
 4. **Task Delivery vs Milestone Handoff**:
    - `deliver/v1` validates accepted build and review proofs, records `status: completed` with a typed receipt (retaining the build candidate snapshot SHA) in the milestone document, and clears temporary blackboard state.
    - Immediately after delivery, one clean atomic Git commit is created on the branch containing strictly the scoped files, tests, and milestone document (without `git add -A` and without `--amend`).
-   - `milestone handoff` performs repository-wide verification, archives the milestone into `docs/milestones/archive/`, records the final Git branch commit SHA (`git rev-parse HEAD`), and prunes namespaced snapshot refs.
+   - After all tasks are delivered and committed, run final verification and record task commit SHAs in the milestone. `milestone handoff` records supplied verification, archives the milestone, and prunes snapshot refs. Commit the archive as the handoff commit; its own SHA remains unrecorded.
 5. **Conflict-Aware Scope Extension & Out-of-Scope Defect Handling**:
    - **Sibling task scope**: If an adjacent defect falls within the admitted scope of another task in the milestone (hierarchical check covering exact match, subdirectory enclosure, or ancestor enclosure across both frozen and unfrozen paths), `extend-scope` rejects the collision with `TASK_SCOPE_CONFLICT`, requiring `task reopen <owner_id>`.
-   - **Unowned defect paths**: If a defect is unowned, workers may extend scope to test paths (`tests/`) or adjacent code modules (`src/`) with `frozen = 0`, subject to reviewer approval on the `paths` contour. Non-essential out-of-scope defects or deferred review findings are recorded in the milestone document directly under tasks in `## Deferred and out-of-scope defects` (via a typed `deferred_defects: [...]` block) or on `task_blackboard` for subsequent milestones rather than inflating active tasks.
+   - **Unowned defect paths**: Admit paths through `extend_scope` before editing, following the [scope contract](../reference/tasks.md#five-flat-mcp-tools). The reviewer verifies the `paths` contour. Record deferred findings in milestone `deferred_defects` or a linked successor contract before delivery clears temporary blackboard messages.
 6. **Zero-Shot Context Bundle by Default**:
-   `task claim` returns the full context bundle by default (relevant ADRs, code-map symbols, covering test seams, and aggregated blackboard messages from both the task and its parent milestone), eliminating procedural instruction overhead.
+   `task claim` includes context by default. [ADR 0016](0016-lean-stage-tailored-task-context-bundles.md) defines the current stage-specific fields and bounds.
 
 ## Consequences
 

@@ -14,59 +14,20 @@ Read [roadmap](docs/roadmap.md) for strategic context and
 - Verification: [testing](docs/testing/README.md).
 - Planning and execution queue: [roadmap](docs/roadmap.md), [milestones](docs/milestones/README.md), and [plans](docs/plans/README.md).
 - Architecture & Decisions: [architecture](docs/architecture/README.md) and [decisions](docs/adr/README.md).
-- Forge code-graph workflow: [`contextunity-forge`](~/.agents/skills/contextunity-forge/SKILL.md).
+- Forge code-graph workflow: the shared `contextunity-forge` skill.
 - Test suite rules and boundaries: [`tests/AGENTS.md`](tests/AGENTS.md).
 
-## Task Execution & Repository Milestones
+## Task execution and ownership
 
-This repository directly owns its execution queue and task commitments:
-- **Macro direction**: [docs/roadmap.md](docs/roadmap.md).
-- **Execution queue & milestones**: [`docs/milestones/`](docs/milestones/) ordered by numeric prefix (`010-*.md`, `020-*.md`).
-- **Research & proposal drafts**: [`docs/plans/`](docs/plans/README.md).
-- **Milestone discovery**: Run `contextunity-forge-mcp milestone list` to inspect active and planned milestones and task completion ratios. Run `contextunity-forge-mcp milestone show <id-or-prefix> --full` to read the selected contract and task descriptions.
-- **Milestone worktree mandate**: Every milestone must be developed in its own dedicated worktree. Always create and enter `.worktrees/<milestone-prefix>-<slug>` before editing files or claiming tasks. Keep the root checkout on `main` untouched.
-- **Milestone format integrity**: Resolve any legacy or mismatched receipt formats directly in the milestone markdown document inside the worktree to match the current typed receipt contract. Preserve engine and parser source in `src/` unchanged when importing milestone specifications.
-- **Milestone creation**: Run `contextunity-forge-mcp milestone init --plan <path>` to scaffold the next numbered contract. Use `--active` to start its active development clock at creation.
-- **Milestone closure**: Run `contextunity-forge-mcp milestone handoff <id-or-prefix> --verification-command <command> --tests-passed <count> --tests-failed 0` only after every SQLite task in the milestone is `completed` and the final verification passes. The command records one structured milestone receipt and moves the milestone into `docs/milestones/archive/`.
-- **Post-merge binary install**: After merging a completed milestone into `main`, install the updated release binary with `cargo install --path . --root ~/.local --force`.
-- **Milestone-free fixes & fast-forward branches**: Minor, self-contained fixes or maintenance improvements that do not belong to an active milestone may be committed directly to `main` or developed in a dedicated worktree branch and merged via fast-forward (`git merge --ff-only`), strictly upon explicit user instruction. All changes must satisfy clippy and test suites.
-- **Pre-existing code reconciliation**: When admitting or verifying tasks whose implementation already exists (e.g. historical migration or post-refactor reconciliation), do not author synthetic failing tests solely to force a red state. Validate the existing seam directly via `proof_policy: direct-proof` or targeted green test evidence in `contract/v1`.
-- **Subtasks over task proliferation & Quality Gates**: Keep milestone tasks scoped to clear architectural domains. When new discoveries, edge cases, or sub-components arise during implementation, deepen the active task using subtasks (`contextunity-forge-mcp task subtask add <task_id> <subtask_ref> <title>` or MCP `task_manage` with `action: "subtask_add"`). Never inflate the milestone queue by spawning lightweight sub-tasks as full root ACDD tasks.
-  - **Universal Subtask Definition of Done (DoD) & Implementation Invariants**: A subtask must resolve an explicit, bounded slice of the parent task's contract in full alignment with the milestone's overall design, architectural constraints (ADRs), and invariants. A subtask is NOT completed merely by passing an isolated micro-unit test in a vacuum:
-    - **Concrete Syntax-Targeted Mandate (No Abstract Formulations)**: Subtasks must NEVER be formulated as vague, aspirational goals (e.g. "improve resolution", "handle return flow", "fix edge cases"). Every subtask must explicitly specify: (1) the concrete syntax, grammar construct, API contract, or data flow pattern targeted; (2) the exact expected resolution, classification, or state transition status; (3) the verifiable production-path metric or acceptance delta.
-    - **No Partial / Incomplete Commits**: Never merge or commit partial implementations into milestone branches while known standard syntactic or contract constructs remain unhandled or fail closed as unknown. Commits must be held until the full concrete contract slice is demonstrably implemented and passes corpus-level verification.
-    - **Contract Slice Resolution**: The subtask must demonstrably fulfill its targeted slice of the contract, satisfying its stated acceptance criteria and invariants without breaking existing boundaries.
-    - **Milestone & Architectural Alignment**: Implementation must adhere to the milestone's design and established ADRs, building upon existing seams rather than introducing ad-hoc mechanisms or conflicting patterns.
-    - **Production-Seam Evidence (Anti-Toy-Fixture Gate)**: Verification evidence must demonstrate real production-path fulfillment (e.g. public integration seams, observable state/behavior transitions, verifiable performance/contract criteria), not synthetic stubs that mock away actual system complexity. A subtask CANNOT be marked completed if the targeted universal construct still fails on unshadowed code in the reference corpus.
-    - **Systemic Non-Regression**: The change must introduce zero warnings/lints, maintain behavioral equivalence for untouched cases, and preserve system invariants (e.g. Merkle determinism, fail-closed boundaries).
-  - **Architectural Grounding (ADR Alignment)**: Before modifying linkers, AST extractors, or schemas, consult existing architecture in `docs/adr/` and `docs/architecture/` via `search_docs` / `get_doc`. Build upon existing seams (`value_flow.rs`, `semantic_context.rs`, `normalized_imports`) instead of inventing ad-hoc isolated patches.
-  - **Anti-Looping Invariant**: If an architectural fix fails to produce green tests or causes performance/Merkle regressions after 2 iterations, stop looping. Post an `architectural_blocker` entry to `task_blackboard`, retain fail-closed behavior, and escalate rather than spinning in speculative rewrites.
-- **Tool Protocol & Prioritization**: In any workspace where ContextUnity Forge is available, agents must strictly route through Forge tools:
-  - Code & symbol discovery: use `code_map_*` tools.
-  - AST structural patterns: use `ast_grep_search` / `ast-grep`.
-  - Source reads & shell execution: use `lean-ctx` (`ctx_read`, `ctx_shell`).
-  - Task and subtask management: use `task_*` MCP tools or `contextunity-forge-mcp task` CLI.
-  - Ad-hoc scripts (raw `sqlite3` on `.forge/*.sqlite`, raw bash `grep` / `python` scrapers) are strictly discouraged when specialized Forge tools exist.
-- **Task Blackboard Protocol & Lifecycle Rules**: The blackboard (`task_blackboard` MCP tool or `contextunity-forge-mcp task blackboard`) is the mandatory ephemeral coordination channel across agent turns and subtasks:
-  - **When to read**:
-    - *Task claim or turn entry*: Agent MUST read blackboard messages (`action: "read"`) upon claiming a task or starting a turn to restore active context, baseline numbers, and documented blockers.
-    - *Before starting a subtask*: Review recent entries to ensure alignment with recorded architectural seams.
-  - **When to post (Lifecycle Topics)**:
-    - `hypothesis`: Post immediately after initial analysis and before writing code, capturing baseline metrics and identified root causes.
-    - `architectural_seam`: Post before code modifications, documenting ADR alignment, planned pipeline changes, and targeted files.
-    - `measured_delta`: Post upon verifying a subtask, recording the production-path delta (metric before/after, tests passed) BEFORE marking the subtask completed.
-    - `blockers`: Post immediately if an approach fails after 2 iterations or hits fundamental parser/system limits, then halt for escalation.
-- **Parallel task isolation**: Tasks in a milestone may proceed concurrently. When delegating heavy tasks to subagents, create dedicated child worktrees (`.worktrees/<milestone-prefix>-<task-slug>`) branched from the milestone. When working in a shared worktree, run targeted tests (`cargo test --test <name>`), stage and review only scoped files, and do not block a completed task on unfinished sibling tasks.
-- **Proactive Scope & Adjacent Defect Resolution (No Bystander Inaction)**: When adjacent defects or missing helpers are uncovered: if the defect is in a module owned by another task in the milestone, reopen that task via `task reopen <task_id>` (extending into another task's scope fails with `TASK_SCOPE_CONFLICT`). If unowned, either extend scope via `task extend-scope <task_id> <path>` with reviewer approval on the `paths` contour, or record it in `## Deferred and out-of-scope defects` under the milestone tasks (via typed `deferred_defects: [...]` block) or on `task_blackboard` for subsequent milestones. Reviewers must accept legitimate defect fixes within the verified scope while rejecting uncontracted scope creep.
-
-## Development Worktrees
-
-Every milestone, isolated subagent task, or parallel spike operates within a dedicated worktree:
-- Create worktrees under `.worktrees/<branch-name>`:
-  `git worktree add .worktrees/<branch-name> -b <branch-name>`
-- Switch into that directory for all development, task operations, and verification.
-- `.worktrees/` is gitignored at repository root to keep untracked workspaces clean.
-- On merge into `main`, verify the milestone state, prune the worktree with `git worktree remove .worktrees/<branch-name>`, and delete the merged feature branch.
+- Use the shared `contextunity-forge` skill for tool navigation and follow the [execution runbook](docs/runbooks/acdd.md). Read returned workflow guidance for the active task gate.
+- Read the [ACDD contract](docs/reference/acdd.md) for gates, task taxonomy, and proof policies; use the [task reference](docs/reference/tasks.md) for schemas and state transitions.
+- Discover admitted commitments through `contextunity-forge-mcp milestone list` and `milestone show <id> --full`.
+- Use a dedicated milestone worktree and a separate child worktree for every parallel writer. The runbook owns creation, claim, integration, and cleanup order.
+- Verify imported task specifications against the current receipt schema; preserve runtime source while reconciling documents.
+- Route adjacent defects through their owning task or admitted scope. Record deferred findings in milestone `deferred_defects` or a linked successor contract before delivery.
+- Use Forge for graph discovery, AST tools for code patterns, and `lean-ctx` for source reads and shell commands. Use task MCP/CLI operations for execution state.
+- Apply the [test instructions](tests/AGENTS.md) for test placement and the runbook for verification cadence.
+- Follow explicit user authorization for maintenance outside milestones and all Git commits, merges, publication, and cleanup. Use the runbook's post-merge installation command for Forge releases.
 
 ## Codebase Architecture
 
@@ -124,25 +85,12 @@ All performance measurements, tool comparisons, and quality benchmarks live in `
 3. **Contention Validation**:
    When measured latency spikes unexpectedly, check the baseline under identical conditions to confirm whether host contention caused the difference.
 
-## Test Rules & Boundaries
+## Test rules and boundaries
 
-Read [`tests/AGENTS.md`](tests/AGENTS.md) before authoring, moving, or editing tests:
-
-1. **No Absence / Negative Bug Probes**:
-   - Do NOT write tests that merely assert the absence of an agent's historical hallucination or bug.
-   - Tests must prove observable positive contracts, formal specifications, valid boundaries, or real fail-closed error states.
-2. **No Micro-Spike Test Binaries**:
-   - Every file directly in `tests/*.rs` is compiled and linked by Cargo as an independent executable.
-   - Do NOT create a new `tests/*.rs` file for a single task, PR, or review round.
-   - Group tests into existing domain test suites (`tests/languages/`, `tests/manifests.rs`, `tests/core_basics.rs`, `tests/python_semantics.rs`, `tests/typescript_semantics.rs`).
-   - Table-driven tests & shared harnesses: use parameterized data tables instead of copy-pasting functions; extract reusable fixtures into shared helpers; do NOT artificially split domain test files into part1/part2.
-3. **Public Seams**:
-   - Drive tests through public interfaces (CLI, MCP tool router, reader, or linker pipeline); do not construct tests around unexported private internals.
-4. **No Self-Justifying Synthetic Feature Tests**:
-   - Never author artificial tests that assert an invented, uncontracted requirement (such as matching raw string literals inside unindexed function bodies) solely to justify introducing heavy, redundant, or regressive subsystems. Tests must validate admitted contract specifications from active milestones.
-5. **Bounded Profiling and Honest Receipts**:
-   - Record measured metrics honestly in milestone receipts without spinning in recursive profiling loops (cap profiling iterations to <= 3 per turn).
-   - If an acceptance budget remains open due to physical or external bottlenecks, document the measured finding transparently in the receipt and hand off rather than stalling execution.
+Read [tests/AGENTS.md](tests/AGENTS.md) before changing tests and the
+[ACDD contract](docs/reference/acdd.md) for admitted proof requirements.
+Keep profiling in `benchmarks/`; cap profiling iterations at three per turn.
+Record measured results and unresolved acceptance budgets in milestone evidence.
 
 ## Performance & Optimization Principles
 

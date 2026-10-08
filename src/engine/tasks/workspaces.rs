@@ -115,7 +115,7 @@ impl Workspace {
                 "builder",
                 &[
                     "Implement the approved contract inside the allowed write scope.",
-                    "Run tests and clippy, then submit passing test proof.",
+                    "Run the owning repository's tests and lint checks, then submit passing test proof.",
                 ],
             ),
             "review/v1" => (
@@ -130,7 +130,7 @@ impl Workspace {
                 "delivery_reviewer",
                 &[
                     "Submit delivery proof first; Forge writes the durable receipt into the milestone document.",
-                    "After delivery, create one atomic commit containing scoped files, tests, and milestone document (without git add -A).",
+                    "After delivery, commit scoped files, tests, and the milestone receipt under the repository's Git permissions.",
                 ],
             ),
             "completed" => (

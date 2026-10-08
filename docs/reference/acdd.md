@@ -17,26 +17,26 @@ handover protocol, and verification cadence.
 
 ## Completion levels: Delivery vs Handoff
 
-ACDD maintains a strict separation between individual task delivery and milestone handoff:
-- **Task Delivery (`deliver/v1`)**: Completes a single task within an active milestone branch. During intermediate gates (`contract/v1`, `build/v1`), developers do not make Git commits on the branch; Forge automatically captures a deterministic Git snapshot of scoped changes under `refs/forge/snapshots/` and binds its SHA to the gate. On `review/v1`, the reviewer inspects this candidate snapshot (via `inspect_cmd`). At `deliver/v1`, delivery proof is submitted first; Forge marks the task completed in SQLite and writes its typed receipt—carrying this candidate snapshot SHA—into the milestone document. Immediately after delivery, all changes for the task (scoped source, tests, milestone doc) are committed in **one clean Git commit** on the branch (staging strictly scoped files; avoid `git add -A` in shared worktrees; do not amend or rewrite the receipt snapshot SHA). Tasks remain mutable in the branch: if fixes or adjustments are needed prior to handoff, any completed task can be reopened back to `contract/v1` via `contextunity-forge-mcp task reopen <task-id>` (or `task reset <task-id>`).
-- **Milestone Handoff (`milestone handoff`)**: The definitive, immutable seal of the entire milestone. Executes only after every task reaches `completed` in SQLite. Runs the final repository-wide verification suite (`cargo test --all-targets`), records the final Git HEAD commit and duration into `handoff:`, and archives the completed milestone into `docs/milestones/archive/`.
+- **Task delivery (`deliver/v1`)** completes a task and writes its snapshot-backed receipt.
+- **Milestone handoff** records final verification and archives the completed milestone.
 
-The admitted milestone specification defines what the task must prove. A
-reviewer checks the stable candidate against that contract and verified
-runtime behavior. When adjacent defects or parser bugs are identified:
-- If the defect lies within the scope of another task in the milestone, reopen that task via `contextunity-forge-mcp task reopen <task-id>` (extending into another task's scope fails with `TASK_SCOPE_CONFLICT`).
-- If unowned, extend scope via `task_manage extend_scope` (or CLI `task extend-scope <task_id> <path>`) with reviewer approval on the `paths` contour, or record it in `## Deferred and out-of-scope defects` under the milestone tasks (via typed `deferred_defects: [...]` block) or on `task_blackboard` for subsequent milestones.
-- "Do not silently expand" prohibits unrecorded code changes outside registered scope paths; it does not authorize bystander inaction on obvious defects.
+Commit each task after delivery. After all tasks complete, record their commit
+SHAs in the milestone, then create the handoff commit. Its own SHA remains
+unrecorded. Follow the [execution runbook](../runbooks/acdd.md#close-the-milestone).
+
+The admitted milestone defines acceptance. Review findings cite that contract
+or a verified regression. Follow the [review procedure](../runbooks/acdd.md#independent-review)
+for scope admission, ownership, and durable deferred findings.
 
 ## Task lifecycle
 
 Each task moves through `contract/v1`, `build/v1`, `review/v1`, and
 `deliver/v1`. A worker claims the current gate before submitting evidence for
-that claim. Neither contract nor build create commits on the branch; evidence
-`commit` can be omitted, and Forge records the SHA of the scoped snapshot.
+that claim. Omit `evidence.commit` to let Forge capture contract/build snapshots
+and inherit the accepted build snapshot during review/delivery.
 Contract records a failing test through a public seam for greenfield
-tasks, or proves existing seams directly via `proof_policy: direct-proof` (with exit code 0)
-without synthetic breakage. Build records passing tests. Review checks the candidate against
+tasks, or proves existing seams via `proof_policy: direct-proof` (exit code 0).
+Build records passing tests. Review checks the candidate against
 the contract and five review contours using `inspect_cmd` from the build gate.
 The accepted reviewer and delivery worker must have a different `worker_id` from
 the accepted builder; review and delivery use the accepted build snapshot SHA.
@@ -56,19 +56,23 @@ Tasks in ACDD fall into two structural categories:
 - **Feature Task**: Delivers a single coherent architectural capability. Requires exactly **one** root seam test at `contract/v1`. Subtasks represent iterative implementation steps and are strictly prohibited from authoring separate micro-unit test binaries or standalone test functions.
 - **Scope Task**: Operates across an entire architectural domain or subsystem (such as Language Semantics in Milestone 020). Replaces ad-hoc test function sprawl with a single unified, parameterized table-driven harness (`cases: [...]`), where each subtask contributes a test case row to prove red-to-green resolution.
 
-### Subtask contracts and universal Definition of Done (DoD)
+### Subtask acceptance
 
-Subtasks deepen a parent task without inflating the root milestone task queue. Every subtask operates under these binding invariants:
-1. **Concrete Syntax-Targeted Mandate (No Abstract Formulations)**: Subtasks must never be formulated as vague goals (e.g. "improve resolution", "fix edge cases"). Every subtask contract must explicitly specify: (1) the concrete syntax, grammar construct, or API contract targeted; (2) the exact expected resolution or state transition status; (3) the verifiable production-path metric or acceptance delta.
-2. **Production-Seam Evidence (Anti-Toy-Fixture Gate)**: Passing an isolated, synthetic micro-unit test in a vacuum does not satisfy subtask completion. Verification evidence must demonstrate real production-path fulfillment on the reference corpus. A subtask cannot be marked completed if the targeted universal construct still fails on unshadowed code in the reference workload.
-3. **No Review-Repair Micro-Looping (Anti-Looping Invariant)**: Reviewers are strictly prohibited from rejecting builds on uncontracted hypothetical edge cases. A review finding is only valid if it cites an admitted contract requirement, a regression against baseline suites, or a verifiable defect on reference corpus code. Speculative micro-findings belong to future tasks or the blackboard, not blocking the active delivery pipeline.
-4. **Volume-First Prioritization**: When executing domain scope tasks, subtasks must be implemented in order of reference corpus impact volume. Never spend execution iterations on esoteric constructs (<10 occurrences) while high-volume categories (>100 occurrences) remain unhandled.
-5. **No Partial / Incomplete Commits**: Never merge or commit partial implementations into milestone branches while known standard syntactic or contract constructs remain unhandled or fail closed as unknown.
+Each subtask names a concrete construct or API, expected result, and measurable
+acceptance delta. Prove it through the production seam and reference workload.
+Prioritize high-volume cases within the admitted contract. Deliver and commit
+the complete admitted task. The [review procedure](../runbooks/acdd.md#independent-review)
+owns finding admission and deferred work.
 
 Task contracts specify one of three proof policies:
 - `seam-test-first`: Greenfield contract requiring a failing red seam test (`contract/v1`) with non-zero exit code, followed by a passing green test at `build/v1`.
 - `direct-proof`: Admitted for pre-existing code reconciliation or refactoring where working production code is already in place. Validates existing seams directly, accepting exit code 0 without authoring synthetic red breakage.
-- `deferred-final-test`: Milestone-level test review gate executed prior to milestone handoff. Governed by the `test-suite-refactor` skill to audit and strengthen coverage at the boundaries where new contracts interface with pre-existing contracts. It possesses explicit cross-scope authority to refactor, consolidate, or update pre-existing tests outside individual task scopes.
+- `deferred-final-test`: Task proof policy for admitted final verification work.
+  Contract proof accepts a nonnegative exit code; build still requires passing
+  tests, followed by review and delivery. Declare test changes in the task scope.
+
+All policies traverse the same four gates. Milestone closure runs final
+verification through the [runbook](../runbooks/acdd.md#close-the-milestone).
 
 ## Evidence and retained context
 
@@ -88,9 +92,10 @@ Build proof accepts a passing, focused domain test. Run the full
 `cargo test --all-targets` suite for the deferred final milestone test. The
 [testing guide](../testing/README.md) defines when to run each check.
 
-`task_blackboard` keeps task-scoped messages in SQLite. Use `post` for a topic
-and payload, and `read` for chronological messages, optionally filtered by
-topic or limited in count. An omitted author uses the active claim worker, or
+`task_blackboard` keeps milestone, task, and subtask messages in SQLite. Use
+`post` for a topic and payload. `read` returns newest-first summary pages
+(default 10, maximum 50); `inspect` retrieves a selected message by `message_id`
+with its full payload. Use explicit context selectors when inference is ambiguous. An omitted author uses the active claim worker, or
 the transport name when unclaimed. Messages are useful for contract findings,
 build proof, and `architectural_notes`; they do not replace gate evidence.
 
@@ -101,7 +106,5 @@ review summary, and `architectural_notes`. It then clears that task's blackboard
 The milestone document retains the durable outcome; the blackboard remains a
 temporary coordination surface.
 
-After all tasks are completed, run the milestone's deferred final test and
-`milestone handoff`. That command records the milestone verification result
-and archives the completed document. See
-[milestone CLI lifecycle](tasks.md#milestone-cli-lifecycle).
+The [milestone CLI reference](tasks.md#milestone-cli-lifecycle) defines archival
+validation and verification fields.

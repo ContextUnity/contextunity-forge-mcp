@@ -95,7 +95,7 @@ perimeter cannot claim a foreign task.
 | Tool | Arguments and behavior |
 | --- | --- |
 | `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. Stage is `contract`, `build`, `review`, `deliver`, or null. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
-| `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning the zero-shot task context bundle (specification, guidance, symbols, tests, blackboard). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
+| `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. Selectors follow the table below. |
 | `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires `topic` and `payload`, accepts `author`, and returns an ID. Read accepts `topic`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect requires `message_id` and returns that message including payload. |
@@ -115,7 +115,7 @@ Null stage matches all gates.
 | `subtask_add` | `task_id`, `subtask_ref`, `title` | Optional workspace; omit milestone_ref/paths; force=false. |
 | `subtask_update` | `task_id`, `subtask_ref`, `subtask_status` | Optional `evidence`, `workspace`; status must be `pending`, `in_progress`, or `completed`. |
 | `subtask_list` | `task_id` | Optional workspace; omit milestone_ref/task_ref/paths; force=false. |
-| `reset` | `task_id` | Reopens in-progress or completed task back to ready at contract/v1. |
+| `reset` | `task_id` | Returns an open task to ready at its current gate; a completed task restarts at contract/v1. |
 | `reopen` | `task_id` | Alias for reset. |
 
 Completed task reset reads the owning milestone document and atomically replaces
@@ -133,9 +133,14 @@ creation preserves state. Changed specifications require a larger Git task
 cover task fields, identity, owners, dependencies, and invariants, excluding
 sibling tasks, completion status, and receipts.
 
-Scope extensions preserve frozen base roots: files freeze their parent;
-directories freeze themselves. Traversal and symlinks leaving the repository
-or the frozen module root fail before any extension is added.
+Scope extensions preserve admitted base roots: tasks may declare optional
+`scope_roots` to define the pre-admitted boundary roots within which `extend_scope`
+may add paths. When `scope_roots` is omitted, directories freeze themselves;
+files in subdirectories freeze their parent directory; repository-root files
+freeze only their own path. Declare `scope_roots` for a wider admitted boundary.
+Traversal, paths outside admitted roots, and symlinks leaving the repository or the
+admitted root fail before any extension is added. Scope extension within admitted
+roots preserves `contract_revision`, while altering `scope_roots` requires contract revision.
 Claim requires an existing directory; an unavailable worktree reports
 `WORKTREE_NOT_FOUND` before ownership is recorded.
 The first accepted claim for a planned milestone activates its worktree document
@@ -163,8 +168,7 @@ agents should deepen the active task using **subtasks**.
   never triggers `AUTHORITY_GAP` or forces contract re-admission.
 - **Sync behavior**: When the task contract digest is unchanged, `task sync` updates subtask titles from Markdown
   while preserving `status` and `evidence` recorded in SQLite; subtasks created via CLI or MCP remain preserved.
-  On successful re-admission with a higher `contract_revision`, sync replaces operational subtask rows with the manifest list and
-  its declared statuses and evidence. Reassess existing evidence and restore only subtasks still proved by the new contract.
+  On successful re-admission with a higher `contract_revision`, sync preserves status and evidence for retained `subtask_ref` values, updates their titles, and removes references omitted from the new specification. Reassess retained evidence against the amended contract.
 
 ```yaml
 task_ref: language-profile
@@ -231,11 +235,10 @@ captured from scoped changes during build), contract revision,
 RFC3339 `passed_at`, build proof, review proof, and decision. Its rollup retains
 verified invariants, review summary, and task blackboard `architectural_notes`.
 The task becomes completed in SQLite and its blackboard messages are cleared.
-The milestone document is the durable context after task delivery. Immediately
-after `deliver/v1` writes the task receipt into the milestone document, create
-one clean atomic Git commit on the branch containing source code, tests, and the updated
-milestone file (staging strictly scoped files; avoid `git add -A` in shared worktrees).
-Do not amend this branch commit or rewrite the snapshot SHA stored in the receipt.
+The milestone document is the durable context after task delivery. After
+`deliver/v1` and explicit Git authorization, commit the task's scoped source,
+tests, and updated milestone in its isolated task worktree. Preserve the
+snapshot SHA stored in the receipt. The execution runbook owns integration order.
 Prior to final milestone handoff, completed tasks can be reopened if necessary using
 `contextunity-forge-mcp task reopen <task-id>`.
 
@@ -293,13 +296,16 @@ or cancelled status filters include archived contracts.
 `--full` includes the complete task descriptions.
 
 `milestone handoff` validates completion of every task belonging to the selected
-milestone in SQLite. It records the full commit SHA and a YAML `handoff` block
+milestone in SQLite. The command records
+the supplied implementation commit (default: current HEAD) in a YAML `handoff` block
 with `completed_at`, `duration` as `Xh Ym`, and `verification` containing
 `command`, `status: passed`, `tests_passed`, and `tests_failed`. Duration starts
 at frontmatter `started_at`, or the earliest SQLite claim timestamp for an
 older active document. The command sets frontmatter `status: completed`, moves
 the document to the selected directory's `archive/`, and updates the stored
 `milestone_ref` of its tasks. The [CLI reference](cli.md) lists every flag.
+Follow [milestone closure](../runbooks/acdd.md#close-the-milestone) for task
+commit recording and the final handoff commit.
 
 ### Deferred and out-of-scope defects
 
@@ -393,7 +399,7 @@ Per [ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md), the bun
 2. **`guidance`** (All stages): Dynamic gate-aware guidance presets tailored to the active ACDD gate (`contract/v1`, `build/v1`, `review/v1`, `deliver/v1`) with:
    - `recommended_tools`: Stage-specific tool recommendations (e.g. `code_map_overview` and ADR reads at contract, `ast_grep_search` and `code_map_inspect` at build, `code_map_impact` and `code_map_prove_removal` at review).
    - `actionable_steps`: Concrete operational steps to advance the gate.
-   - `subtask_dod`: Universal Subtask Definition of Done (DoD) reminders.
+   - `subtask_dod`: Subtask acceptance criteria.
    - `review_policy`: Scope-extension and adjacent defect resolution policies (present at `review/v1` and `deliver/v1`).
 3. **`adrs`** (`contract/v1`, `build/v1`, `review/v1`): Scope-to-ADR mapping querying `docs/adr/` and `docs/architecture/`. Documents are included when their path or content matches scope tokens; unrelated documents are omitted.
 4. **`scope_symbols`** (`contract/v1`, `build/v1`): High-value symbol skeleton (structs, enums, traits, functions) within the task's declared scope from the code map index. Signatures are safely truncated along Unicode character boundaries at 200 characters. Omitted during review and delivery.

@@ -55,7 +55,7 @@ fn pinned_candidate(root: &std::path::Path, task_id: &str) -> String {
     assert!(output.status.success());
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
-const SPEC: &str = "---\nid: m-test\ntitle: Tasks\ndoc_type: contract\nstatus: active\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Deliver second\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first]\n```\n";
+const SPEC: &str = "---\nid: m-test\ntitle: Tasks\ndoc_type: contract\nstatus: active\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\nscope_roots: [src/, tests/]\n```\n```yaml\ntask_ref: second\ntarget: Deliver second\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first]\n```\n";
 fn fixture() -> (ScopedWorkspace, TasksStore, Milestone) {
     let root = ScopedWorkspace::new("forge_tasks");
     root.write("src/lib.rs", "pub fn example() {}\n");
@@ -5083,7 +5083,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         "forge-mcp.yaml",
         "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
-    let spec = "---\nid: m-conflict\ntitle: Conflict Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: task_a\ntarget: Deliver A\nproof_policy: seam-test-first\nscope: [src/module_a/foo.rs]\n```\n```yaml\ntask_ref: task_b\ntarget: Deliver B\nproof_policy: seam-test-first\nscope: [src/module_b/bar.rs]\n```\n";
+    let spec = "---\nid: m-conflict\ntitle: Conflict Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: task_a\ntarget: Deliver A\nproof_policy: seam-test-first\nscope: [src/module_a/foo.rs]\nscope_roots: [src/, tests/]\n```\n```yaml\ntask_ref: task_b\ntarget: Deliver B\nproof_policy: seam-test-first\nscope: [src/module_b/bar.rs]\nscope_roots: [src/, tests/]\n```\n";
     root.write("docs/010-conflict.md", spec);
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
@@ -5236,4 +5236,143 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
         "Expected both task and milestone sibling blackboard messages"
     );
     assert!(claim_res["workflow_guidance"].is_object());
+}
+
+#[test]
+fn universal_scope_roots_extend_scope_and_boundary_validation() {
+    let root = ScopedWorkspace::new("forge_universal_scope");
+    root.write("packages/catalogue/models/product.py", "# product\n");
+    root.write("packages/catalogue/services/product_service.py", "# service\n");
+    root.write("tests/catalogue/test_product.py", "# test\n");
+    root.write("docs/architecture/catalogue/overview.md", "# doc\n");
+    root.write("packages/auth/models/user.py", "# auth\n");
+    root.write("services/payment/handler.py", "# payment\n");
+    root.write("services/payment/utils.py", "# payment utils\n");
+    root.write("services/billing/invoice.py", "# billing\n");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [packages, services]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+
+    let spec = "---\nid: m-universal\ntitle: Universal Scope Tasks\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: catalogue_task\ntarget: Build catalogue service\nproof_policy: seam-test-first\nscope: [packages/catalogue/models/product.py]\nscope_roots:\n  - packages/catalogue/\n  - tests/catalogue/\n  - docs/architecture/catalogue/\n```\n```yaml\ntask_ref: payment_task\ntarget: Build payment handler\nproof_policy: seam-test-first\nscope: [services/payment/handler.py]\n```\n";
+    root.write("docs/010-universal.md", spec);
+    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    store
+        .sync(&milestone, "docs/010-universal.md", &root.0)
+        .unwrap();
+
+    let catalogue_id = "forge-mcp/forge-mcp/m-universal:catalogue_task";
+    let payment_id = "forge-mcp/forge-mcp/m-universal:payment_task";
+
+    // 1. Extending within declared scope_roots succeeds
+    let ext1 = store
+        .extend_scope(
+            catalogue_id,
+            &[
+                "packages/catalogue/services/product_service.py".into(),
+                "tests/catalogue/test_product.py".into(),
+                "docs/architecture/catalogue/overview.md".into(),
+            ],
+            &root.0,
+        )
+        .unwrap();
+    assert!(ext1
+        .spec
+        .scope
+        .contains(&"packages/catalogue/services/product_service.py".into()));
+    assert!(ext1
+        .spec
+        .scope
+        .contains(&"tests/catalogue/test_product.py".into()));
+    assert!(ext1
+        .spec
+        .scope
+        .contains(&"docs/architecture/catalogue/overview.md".into()));
+
+    // 2. Extending outside declared scope_roots fails (even for arbitrary paths or src/)
+    let err_auth = store
+        .extend_scope(
+            catalogue_id,
+            &["packages/auth/models/user.py".into()],
+            &root.0,
+        )
+        .unwrap_err();
+    assert!(
+        err_auth.to_string().contains("TASK_SCOPE_INVALID"),
+        "expected TASK_SCOPE_INVALID, got: {err_auth}"
+    );
+
+    let err_src = store
+        .extend_scope(catalogue_id, &["src/anything.rs".into()], &root.0)
+        .unwrap_err();
+    assert!(
+        err_src.to_string().contains("TASK_SCOPE_INVALID"),
+        "expected TASK_SCOPE_INVALID for src outside scope_roots, got: {err_src}"
+    );
+
+    // 3. Fallback when scope_roots is omitted: auto-derives base from initial scope
+    let ext_payment = store
+        .extend_scope(payment_id, &["services/payment/utils.py".into()], &root.0)
+        .unwrap();
+    assert!(ext_payment
+        .spec
+        .scope
+        .contains(&"services/payment/utils.py".into()));
+
+    let err_billing = store
+        .extend_scope(payment_id, &["services/billing/invoice.py".into()], &root.0)
+        .unwrap_err();
+    assert!(
+        err_billing.to_string().contains("TASK_SCOPE_INVALID"),
+        "expected TASK_SCOPE_INVALID for outside auto-derived base, got: {err_billing}"
+    );
+
+    // 4. Root-level file without scope_roots does not open repository tree
+    root.write("install.sh", "#!/bin/sh\n");
+    root.write("Cargo.toml", "[package]\n");
+    let root_spec = "---\nid: m-root\ntitle: Root File Task\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: installer_task\ntarget: Deliver installer\nproof_policy: direct-proof\nscope: [install.sh]\n```\n";
+    root.write("docs/010-root.md", root_spec);
+    let root_milestone = Milestone::parse(root_spec, "forge-mcp").unwrap();
+    store.sync(&root_milestone, "docs/010-root.md", &root.0).unwrap();
+    let installer_id = "forge-mcp/forge-mcp/m-root:installer_task";
+
+    let err_root_cargo = store
+        .extend_scope(installer_id, &["Cargo.toml".into()], &root.0)
+        .unwrap_err();
+    assert!(
+        err_root_cargo.to_string().contains("TASK_SCOPE_INVALID"),
+        "expected TASK_SCOPE_INVALID for Cargo.toml from root-level install.sh, got: {err_root_cargo}"
+    );
+
+    let err_root_src = store
+        .extend_scope(installer_id, &["src/lib.rs".into()], &root.0)
+        .unwrap_err();
+    assert!(
+        err_root_src.to_string().contains("TASK_SCOPE_INVALID"),
+        "expected TASK_SCOPE_INVALID for src/lib.rs from root-level install.sh, got: {err_root_src}"
+    );
+
+    // 5. Empty scope_roots is omitted from serialization to preserve task digest compatibility
+    let serialized_task = serde_json::to_string(&milestone.tasks[1]).unwrap();
+    assert!(
+        !serialized_task.contains("scope_roots"),
+        "expected empty scope_roots to be omitted from serialized JSON, got: {serialized_task}"
+    );
+    let digest_without_field = milestone.digest(&milestone.tasks[1]).unwrap();
+    let mut task_with_empty_vec = milestone.tasks[1].clone();
+    task_with_empty_vec.scope_roots = Vec::new();
+    let digest_with_empty_vec = milestone.digest(&task_with_empty_vec).unwrap();
+    assert_eq!(
+        digest_without_field, digest_with_empty_vec,
+        "empty scope_roots must produce identical digest to omitted field"
+    );
+
+    // 6. Milestone::parse rejects tasks where initial scope does not fall into scope_roots
+    let invalid_spec = "---\nid: m-inv\ntitle: Invalid\ndoc_type: contract\n---\n# Tasks\n```yaml\ntask_ref: bad\ntarget: Bad\nproof_policy: direct-proof\nscope: [packages/auth/user.py]\nscope_roots: [packages/catalogue/]\n```\n";
+    let parse_err = Milestone::parse(invalid_spec, "forge-mcp").unwrap_err();
+    assert!(
+        parse_err.to_string().contains("TASK_SCOPE_INVALID"),
+        "expected parse error for scope outside scope_roots, got: {parse_err}"
+    );
 }
