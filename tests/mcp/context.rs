@@ -1,6 +1,6 @@
 use crate::common::{
     assertions,
-    mcp_client::{run_cli, StdioClient as Client},
+    mcp_client::{invalidate_mcp_connection_cache, run_cli, StdioClient as Client},
     Workspace,
 };
 use contextunity_forge_mcp::{
@@ -25,9 +25,6 @@ fn query_cli_with_database(
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-fn wait_for_source_inventory_ttl() {
-    std::thread::sleep(Duration::from_millis(5100));
-}
 #[test]
 fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     let workspace = Workspace::new();
@@ -671,7 +668,7 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
     let (_, missing) = client.call("code_map_search", json!({"pattern":"symbol_*","offset":30}));
     assert_eq!(missing["result"]["isError"], true);
     workspace.write("service.py", &format!("{source}\ndef added(): return 0\n"));
-    wait_for_source_inventory_ttl();
+    invalidate_mcp_connection_cache(&workspace.db()).unwrap();
     let (_, stale) = client.call(
         "code_map_search",
         json!({"pattern":"symbol_*","offset":30,"generation":initial["nodes"]["generation"]}),
@@ -736,7 +733,7 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         "huge.py",
         &format!("def enormous(): return '{}'\n", "Привіт".repeat(50_000)),
     );
-    wait_for_source_inventory_ttl();
+    invalidate_mcp_connection_cache(&workspace.db()).unwrap();
     let enormous = client.payload("get_code_snippet", json!({"selector":"enormous"}));
     assert_eq!(enormous["source_preview"]["truncated_line"], true);
     assert!(enormous["source_preview"]["next_source_offset"].is_null());
@@ -846,7 +843,7 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
         .contains("narrow path or pattern"));
     let source = "f(1, 2, missing)\nf(1, 1)\nf(1, 2)\n";
     workspace.write("service.py", source);
-    wait_for_source_inventory_ttl();
+    invalidate_mcp_connection_cache(&workspace.db()).unwrap();
     for pattern in ["f($$$A, $$$B, missing)", "f($VALUE, $VALUE)"] {
         let ordinary = client.payload(
             "ast_grep_search",

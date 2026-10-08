@@ -136,7 +136,6 @@ const FIXTURES: &[Fixture] = &[
 
 use super::support::Workspace;
 
-
 #[test]
 fn registry_and_extraction_match_the_compiled_feature_contract() {
     let expected: BTreeSet<_> = FIXTURES

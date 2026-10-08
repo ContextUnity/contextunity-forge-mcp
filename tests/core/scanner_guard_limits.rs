@@ -199,7 +199,8 @@ fn delta_preserves_the_configured_file_size_limit() {
     writer::build(workspace.root(), &database, Some(&adapter)).unwrap();
 
     workspace.write("src/a.py", "x=1\n");
-    let error = writer::delta(workspace.root(), &database, &[PathBuf::from("src/a.py")]).unwrap_err();
+    let error =
+        writer::delta(workspace.root(), &database, &[PathBuf::from("src/a.py")]).unwrap_err();
     assert!(
         error.to_string().contains("file exceeds byte limit"),
         "{error:#}"
@@ -222,7 +223,11 @@ fn delta_accepts_a_root_allowed_by_the_current_adapter() {
     writer::build(workspace.root(), &database, Some(&adapter)).unwrap();
 
     workspace.write("repo-a/src/a.py", "x = 3\n");
-    let result = writer::delta(workspace.root(), &database, &[PathBuf::from("repo-a/src/a.py")]);
+    let result = writer::delta(
+        workspace.root(),
+        &database,
+        &[PathBuf::from("repo-a/src/a.py")],
+    );
     assert!(result.is_ok(), "{result:#?}");
 }
 
@@ -271,7 +276,12 @@ fn delta_rebuilds_stale_policy_with_its_explicit_adapter() {
     drop(conn);
 
     workspace.write("repo-a/src/a.py", "x = 3\n");
-    writer::delta(workspace.root(), &database, &[PathBuf::from("repo-a/src/a.py")]).unwrap();
+    writer::delta(
+        workspace.root(),
+        &database,
+        &[PathBuf::from("repo-a/src/a.py")],
+    )
+    .unwrap();
 
     let conn = Connection::open(&database).unwrap();
     let current_digest: String = conn
@@ -300,4 +310,42 @@ fn delta_rebuilds_stale_policy_with_its_explicit_adapter() {
     let policy: serde_json::Value = serde_json::from_str(&raw_policy).unwrap();
     assert_eq!(policy["adapter_path"], "adapter.yaml");
     assert_eq!(policy["limits"]["allow_broad_root"], true);
+}
+
+#[test]
+fn default_scope_excludes_common_generated_directories() {
+    let workspace = Workspace::new();
+    workspace.write("src/main.py", "def source(): pass\n");
+    workspace.write("src/build_helpers.py", "def source(): pass\n");
+    for directory in [
+        ".git",
+        ".forge",
+        ".forge-mcp",
+        ".venv",
+        "vendor",
+        "target",
+        "node_modules",
+        "build",
+        "dist",
+        "coverage",
+        ".cache",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".gradle",
+        "__pycache__",
+    ] {
+        workspace.write(format!("{directory}/generated.py"), "def source(): pass\n");
+    }
+
+    let report = scanner::scan(workspace.root(), None).unwrap();
+    let paths: Vec<_> = report
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    assert_eq!(paths, ["src/build_helpers.py", "src/main.py"]);
 }

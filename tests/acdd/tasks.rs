@@ -2349,7 +2349,10 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
 fn universal_scope_roots_extend_scope_and_boundary_validation() {
     let root = ScopedWorkspace::new("forge_universal_scope");
     root.write("packages/catalogue/models/product.py", "# product\n");
-    root.write("packages/catalogue/services/product_service.py", "# service\n");
+    root.write(
+        "packages/catalogue/services/product_service.py",
+        "# service\n",
+    );
     root.write("tests/catalogue/test_product.py", "# test\n");
     root.write("docs/architecture/catalogue/overview.md", "# doc\n");
     root.write("packages/auth/models/user.py", "# auth\n");
@@ -2441,7 +2444,9 @@ fn universal_scope_roots_extend_scope_and_boundary_validation() {
     let root_spec = "---\nid: m-root\ntitle: Root File Task\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: installer_task\ntarget: Deliver installer\nproof_policy: direct-proof\nscope: [install.sh]\n```\n";
     root.write("docs/010-root.md", root_spec);
     let root_milestone = Milestone::parse(root_spec, "forge-mcp").unwrap();
-    store.sync(&root_milestone, "docs/010-root.md", &root.0).unwrap();
+    store
+        .sync(&root_milestone, "docs/010-root.md", &root.0)
+        .unwrap();
     let installer_id = "forge-mcp/forge-mcp/m-root:installer_task";
 
     let err_root_cargo = store

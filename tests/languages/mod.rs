@@ -1,4 +1,3 @@
-pub(crate) mod support;
 mod ast_patterns;
 mod builtins;
 mod config;
@@ -12,5 +11,6 @@ mod profiles;
 mod proto;
 #[cfg(feature = "lang-python")]
 mod python;
+pub(crate) mod support;
 #[cfg(feature = "lang-typescript")]
 mod typescript;

@@ -167,7 +167,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
     }
 
     ws.write("main.rs", "pub fn current() { let value = 1; }\n");
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&database).unwrap();
     let response = client.request_value(
         "tools/call",
         json!({"name":"code_map_overview","arguments":{"detail":"compact","limit":1}}),

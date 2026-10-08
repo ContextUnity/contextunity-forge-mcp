@@ -1,5 +1,5 @@
-use super::*;
 use super::PythonWorkspace as Workspace;
+use super::*;
 use contextunity_forge_mcp::{
     core::response::{CoverageOptions, QueryOptions, ResponsePolicy},
     db::{reader, traversal},

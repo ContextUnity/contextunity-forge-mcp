@@ -1,14 +1,11 @@
+use crate::common::{mcp_client::StdioClient, Workspace};
 use contextunity_forge_mcp::{
     core::response::{QueryOptions, ResponsePolicy},
     db::lint,
     engine::languages,
 };
 use serde_json::{json, Value};
-use std::{
-    collections::BTreeSet,
-    fs,
-};
-use crate::common::{mcp_client::StdioClient, Workspace};
+use std::{collections::BTreeSet, fs};
 
 fn populate(workspace: &Workspace) -> BTreeSet<String> {
     let mut profiles = BTreeSet::new();
@@ -175,6 +172,9 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
         let result = analyze_call(&mut client, arguments);
         assert_eq!(result["result"]["isError"], true, "{result}");
     }
-    let sql = analyze_payload(&mut client, json!({"target":"SELECT count(*) AS total FROM nodes"}));
+    let sql = analyze_payload(
+        &mut client,
+        json!({"target":"SELECT count(*) AS total FROM nodes"}),
+    );
     assert!(sql["rows"]["items"][0]["total"].as_u64().unwrap() > 0);
 }

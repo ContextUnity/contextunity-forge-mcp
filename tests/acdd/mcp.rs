@@ -129,7 +129,8 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert_eq!(synced["tasks"][0]["status"], "in_progress");
     let commit = "0123456789abcdef0123456789abcdef01234567";
     let build_proof = json!({"test_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
-    let contract_proof = json!({"contract_proof":{"seam_test_ref":"tests/acdd/mcp.rs","red_exit_code":101}});
+    let contract_proof =
+        json!({"contract_proof":{"seam_test_ref":"tests/acdd/mcp.rs","red_exit_code":101}});
     let contours: serde_json::Map<String, Value> =
         contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
             .iter()
@@ -267,7 +268,8 @@ scope: [src/]
     }
     let commit = "0123456789abcdef0123456789abcdef01234567";
     let build_proof = json!({"test_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
-    let contract_proof = json!({"contract_proof":{"seam_test_ref":"tests/acdd/mcp.rs","red_exit_code":101}});
+    let contract_proof =
+        json!({"contract_proof":{"seam_test_ref":"tests/acdd/mcp.rs","red_exit_code":101}});
     let contours: serde_json::Map<String, Value> = REVIEW_CONTOURS
         .iter()
         .map(|name| {

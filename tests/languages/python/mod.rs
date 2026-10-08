@@ -1,5 +1,6 @@
 #![cfg(feature = "lang-python")]
 
+use super::support::Workspace as PythonWorkspace;
 use contextunity_forge_mcp::{
     core::models::ReceiverHint,
     engine::{ast, linker},
@@ -7,8 +8,6 @@ use contextunity_forge_mcp::{
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use super::support::Workspace as PythonWorkspace;
-
 
 fn linked_python_roots() -> (PythonWorkspace, PythonWorkspace) {
     let primary = PythonWorkspace::new();
@@ -73,7 +72,6 @@ fn persisted_status_rows(
         "SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path=?1 AND c.line=?2 AND x.expression=?3 ORDER BY c.status",
     ).unwrap().query_map(rusqlite::params![path, line, expression], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
 }
-
 
 mod frameworks;
 mod grammar;

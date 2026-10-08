@@ -226,23 +226,9 @@ def conventional(logger, log):
 }
 
 #[test]
-fn untyped_logger_parameters_remain_unresolved_in_persisted_coverage() {
-    let w = PythonWorkspace::new();
-    w.write("untyped.py", "def conventional(logger, log):\n    logger.exception('failed')\n    log.debug('details')\n");
-    let conn = w.build();
-    for (line, expression) in [(2, "logger.exception"), (3, "log.debug")] {
-        assert_eq!(
-            persisted_status(&conn, "untyped.py", line, expression),
-            "unresolved",
-            "{expression}"
-        );
-    }
-}
-
-#[test]
 fn logging_factory_methods_have_verified_builtin_origin_after_persistence() {
     let w = PythonWorkspace::new();
-    let source = "import logging\nlogging.basicConfig(level=logging.INFO)\nlogger = logging.getLogger(__name__)\nlogger.info('i')\nlogger.warning('w')\nlogger.error('e')\nlogger.debug('d')\nlogger.exception('x')\ndef unknown(logger):\n    logger.info('x')\n";
+    let source = "import logging\nlogging.basicConfig(level=logging.INFO)\nlogger = logging.getLogger(__name__)\nlogger.info('i')\nlogger.warning('w')\nlogger.error('e')\nlogger.debug('d')\nlogger.exception('x')\nlogger.process('x')\ndef unknown(logger):\n    logger.info('x')\n";
     w.write("src/factory.py", source);
     w.write("src/rebound.py", "import logging\nlogging = object()\nlogger = logging.getLogger(__name__)\nlogger.info('x')\n");
     let db = w.0.join(".forge/code-map.sqlite");
@@ -263,7 +249,11 @@ fn logging_factory_methods_have_verified_builtin_origin_after_persistence() {
             );
         }
         assert_eq!(
-            persisted_status(conn, "src/factory.py", 10, "logger.info"),
+            persisted_status(conn, "src/factory.py", 9, "logger.process"),
+            "unresolved"
+        );
+        assert_eq!(
+            persisted_status(conn, "src/factory.py", 11, "logger.info"),
             "unresolved"
         );
         assert_eq!(
@@ -530,25 +520,6 @@ fn nested_self_and_unbound_cls_do_not_take_the_enclosing_class() {
     let (status, evidence) = persisted_coverage(&reader, "src/repo.py", 19, "owned.execute");
     assert_eq!(status, "external", "{evidence}");
     assert!(evidence.contains("builtin:sqlite3"), "{evidence}");
-}
-
-#[test]
-fn logger_process_is_not_a_logger_method() {
-    let w = PythonWorkspace::new();
-    w.write(
-        "src/log_service.py",
-        "import logging\n\ndef run():\n    log = logging.getLogger('app')\n    log.info('ok')\n    log.process('no')\n",
-    );
-    let db = w.0.join(".forge/code-map.sqlite");
-    contextunity_forge_mcp::db::writer::build(&w.0, &db, None).unwrap();
-    let reader = contextunity_forge_mcp::db::reader::open(&db, &w.0).unwrap();
-    let (status, evidence) = persisted_coverage(&reader, "src/log_service.py", 5, "log.info");
-    assert_eq!(status, "external", "{evidence}");
-    assert!(evidence.contains("builtin:logging.Logger"), "{evidence}");
-    assert_eq!(
-        persisted_status(&reader, "src/log_service.py", 6, "log.process"),
-        "unresolved"
-    );
 }
 
 #[test]

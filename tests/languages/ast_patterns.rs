@@ -1,6 +1,10 @@
-use contextunity_forge_mcp::engine::{ast, languages};
-use contextunity_forge_mcp::{cli, core::response::{Detail, QueryOptions, ResponsePolicy}, db::reader};
 use super::support::Workspace;
+use contextunity_forge_mcp::engine::{ast, languages};
+use contextunity_forge_mcp::{
+    cli,
+    core::response::{Detail, QueryOptions, ResponsePolicy},
+    db::reader,
+};
 
 #[cfg(feature = "lang-rust")]
 #[test]

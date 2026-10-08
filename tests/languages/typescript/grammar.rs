@@ -1,5 +1,5 @@
-use super::*;
 use super::super::support::Workspace;
+use super::*;
 
 #[test]
 fn local_constructors_and_aliases_resolve_real_methods() {

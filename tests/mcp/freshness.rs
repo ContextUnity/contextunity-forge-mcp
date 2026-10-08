@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-rust")]
 
 use crate::common::{
-    mcp_client::{in_process_server, StdioClient},
+    mcp_client::{in_process_server, invalidate_mcp_connection_cache, StdioClient},
     Workspace,
 };
 use contextunity_forge_mcp::{db, engine::scanner, mcp::server::Server};
@@ -15,10 +15,6 @@ fn snapshot(server: &Server) -> anyhow::Result<Value> {
             "output_root": conn.query_row("SELECT value FROM metadata WHERE key='output_root'", [], |row| row.get::<_, String>(0))?,
         }))
     })
-}
-
-fn wait_for_inventory_ttl() {
-    std::thread::sleep(std::time::Duration::from_millis(5100));
 }
 
 #[path = "freshness/freshness_and_admission.rs"]

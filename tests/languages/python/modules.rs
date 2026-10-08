@@ -1,5 +1,5 @@
-use super::*;
 use super::PythonWorkspace as Workspace;
+use super::*;
 use rusqlite::Connection;
 use std::path::PathBuf;
 
@@ -79,14 +79,18 @@ fn oversized_python_flow_keeps_type_only_imports_fail_closed_after_persistence()
     let cold = contextunity_forge_mcp::db::reader::open(&db, &workspace.0).unwrap();
     check(&cold);
     drop(cold);
-    source.push_str("# changed for incremental indexing\n");
-    workspace.write("src/consumer.py", &source);
-    contextunity_forge_mcp::db::writer::delta(
+    workspace.write(
+        "src/pkg/model.py",
+        "class Client:\n    pass\nclass Added:\n    pass\n",
+    );
+    let delta_report = contextunity_forge_mcp::db::writer::delta(
         &workspace.0,
         &db,
-        &[PathBuf::from("src/consumer.py")],
+        &[PathBuf::from("src/pkg/model.py")],
     )
     .unwrap();
+    assert_eq!(delta_report["reparsed_files"].as_u64(), Some(1));
+    assert_eq!(delta_report["loaded_fact_files"].as_u64(), Some(1));
     let delta = contextunity_forge_mcp::db::reader::open(&db, &workspace.0).unwrap();
     check(&delta);
 }

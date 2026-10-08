@@ -162,11 +162,7 @@ fn delta_framework_manifest_parse_error_fails_closed_before_publication() {
 
     workspace.write(".forge/frameworks/acme.toml", "receivers = [\n");
     workspace.write_bytes("src/main.rs", b"\xff");
-    let result = writer::delta(
-        workspace.root(),
-        &database,
-        &[PathBuf::from("src/main.rs")],
-    );
+    let result = writer::delta(workspace.root(), &database, &[PathBuf::from("src/main.rs")]);
     let error = match result {
         Err(error) => error,
         Ok(summary) => panic!(

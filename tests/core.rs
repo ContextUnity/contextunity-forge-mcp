@@ -5,6 +5,8 @@ mod workspace_contract_tests;
 
 #[path = "core/adapters.rs"]
 mod adapters;
+#[path = "core/build_query_roundtrip.rs"]
+mod build_query_roundtrip;
 #[path = "core/compact_schema.rs"]
 mod compact_schema;
 #[path = "core/coverage_diagnostics.rs"]
@@ -13,5 +15,11 @@ mod coverage_diagnostics;
 mod debug_logging;
 #[path = "core/edge_aggregation.rs"]
 mod edge_aggregation;
+#[path = "core/fact_persistence.rs"]
+mod fact_persistence;
+#[path = "core/reader_row_limits.rs"]
+mod reader_row_limits;
 #[path = "core/scanner_guard_limits.rs"]
 mod scanner_guard_limits;
+#[path = "core/storage_batches.rs"]
+mod storage_batches;

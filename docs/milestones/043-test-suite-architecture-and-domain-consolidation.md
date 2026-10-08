@@ -99,6 +99,117 @@ receipt:
         project_isolation: accepted
 ```
 
+### task: full-test-suite-quality-refactor
+
+```yaml
+task_ref: full-test-suite-quality-refactor
+target: Audit and refactor every repository test suite per test-suite-refactor, removing weak coverage and optimizing test execution
+proof_policy: direct-proof
+contract_revision: 3
+scope_roots:
+- tests/
+- benchmarks/
+- src/
+scope:
+- tests/
+- benchmarks/
+- src/core/models.rs
+- src/core/semantic.rs
+- src/db/dictionary.rs
+- src/db/writer.rs
+- src/db/writer/memory_budget_tests.rs
+- src/db/writer/multi_value_batch_tests.rs
+- src/db/tasks_store.rs
+- src/engine/languages/build_manifest.rs
+- src/engine/languages/dependency_registry.rs
+- src/engine/linker/value_flow.rs
+- src/engine/scanner.rs
+- src/engine/scanner/adapter.rs
+- src/mcp/metadata.rs
+- src/mcp/response.rs
+invariants:
+- 'INV-TEST-CONTRACT-PARITY: Removed or rewritten tests retain every unique reachable observable contract through a stronger production or composition seam; uncertain cases are not deleted.'
+- 'INV-TEST-ONLY-SOURCE: Source behavior, public APIs, schemas, and configuration remain unchanged; formatter-only normalization in src/db/tasks_store.rs is allowed to satisfy cargo fmt --check, while semantic source changes remain confined to test-only modules.'
+- 'INV-TEST-REFACTOR-EVIDENCE: Every REMOVE and REWRITE has a classification and replacement map; final unique-test identities and any additions are reconciled against the frozen baseline.'
+subtasks:
+- subtask_ref: freeze-full-test-inventory
+  title: Freeze Cargo test identities, target counts, setup inventory, production seams, and baseline runtime before edits
+  status: completed
+  evidence: 'Pre-edit baseline frozen in /tmp/043-test-ids-baseline.txt using `cargo test --all-targets -- --list`: 646 unique test identities across 15 Cargo test executables. `cargo test --all-targets` passed 643, failed 0, ignored 3. Sum of Cargo per-target reported runtimes: 113.49s; tests/languages 69.76s (255 tests), tests/mcp 17.25s (75 tests), tests/incremental 6.52s (23 passed, 1 ignored), tests/core 6.23s (26 passed, 1 ignored). Existing domain directories and canonical `tests/common/` harness were inventoried; no edits made.'
+- subtask_ref: audit-weak-coverage
+  title: Classify tests KEEP, REWRITE, REMOVE, or UNCERTAIN and map each rewrite or removal to retained seam coverage
+  status: completed
+  evidence: 'KEEP: scanner default 100,000-file stress case. REWRITE(harness only): cli_roots, impact_context, query_context, commitment_integrity and cold_sealing; observable assertion dimensions remain. REWRITE(one scenario): Python overflow case now proves one importing-provider reparse and one restored fact file during delta while retaining fail-closed checks. MOVE to benchmarks/: frozen main/linked cold/delta/MCP profile and 1,600-TOML document suffix baseline profile; no residual test-scope finding.'
+- subtask_ref: consolidate-and-optimize-harnesses
+  title: Remove weak duplicates, consolidate domain suites and shared fixtures, and reduce measured setup or execution overhead
+  status: completed
+  evidence: 'Shared Workspace and CLI harness consolidation remains; Python focused case improved 42.18s→23.82s. Added standalone benchmarks Cargo package with the two paired profile runners. Final tests/ diff: 133 insertions and 505 deletions (638 changed lines); profile Cargo identities are removed by relocation.'
+- subtask_ref: prove-parity-and-final-gates
+  title: Reconcile unique-test identities and added dimensions, then pass full tests, strict Clippy, commitment integrity, formatting, and independent review
+  status: completed
+  evidence: 'Final candidate snapshot 6764282 passed independent review/v1 at claim revision 19 (all five contours). Final cargo test --all-targets: 637 passed, 0 failed, 1 expected ignored stress test; cargo test --test commitment_integrity: 14/14; cargo clippy --all-targets --all-features -- -D warnings: pass; cargo fmt --check and cargo fmt --manifest-path benchmarks/Cargo.toml --check: pass; git diff --check: pass. Final inventory: 638 identities vs 641 immediately before this follow-up (7 rehomed, 3 removed, 0 added). Contract revision 3 permits only formatter-only line wrapping in src/db/tasks_store.rs; no semantic source change.'
+- subtask_ref: migrate-ignored-profiles
+  title: Move the two ignored baseline/candidate performance scenarios from tests/ into benchmarks/ and reconcile the Cargo test inventory
+  status: completed
+  evidence: 'Moved frozen_workspace_cold_and_delta_profile and profile_document_suffix_delta_against_baseline into benchmarks/src/bin/{frozen_workspace_profile,document_suffix_delta_profile}. `cargo check --manifest-path benchmarks/Cargo.toml --all-targets` and nested strict Clippy pass. Final identity comparison: 646→644; exactly the two profile identities removed, no additions. Full Cargo suite: 643 passed, 0 failed, 1 ignored.'
+status: completed
+receipt:
+  commit: 676428289f89cc4d820506366c14a614ec11f1ad
+  contract_revision: 3
+  passed_at: 2026-10-08T15:38:44.386213482+00:00
+  evidence:
+    test_proof:
+      command: cargo test --all-targets
+      exit_code: 0
+      tests_passed: 637
+      tests_failed: 0
+      log: '1 expected ignored scanner stress test (>100,000 files). Standalone cargo test --test commitment_integrity: 14 passed. cargo clippy --all-targets --all-features -- -D warnings: pass. cargo fmt --check, cargo fmt --manifest-path benchmarks/Cargo.toml --check, git diff --check: pass. Final identity inventory: 638; immediate pre-follow-up 641 (7 rehomed, 3 removed, 0 additions). The task code/test diff is unchanged from the prior reviewed candidate; only the milestone task receipt was reopened and its completed-gate evidence retained.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Inspected snapshot 6764282 and the current worktree diff. Changes are confined to tests/, benchmarks/, the milestone manifest, and the single formatter-only line wrap in src/db/tasks_store.rs. The latest user steering to fix all formatting errors and contract revision 3 authorize that exact formatting-only normalization; no semantic source changes are present.
+        claims:
+          applicable: true
+          evidence: 'Inspected the current replacement map in blackboard message 124 and verified it matches the candidate: the three weak tests are removed; the previously absent untyped_logger_parameters test is correctly marked as confirmation only; seven core_basics tests are rehomed, core_basics.rs is deleted, and the TTL waits are replaced by database cache-identity invalidation. Persisted logger assertions retain cold-build and delta coverage. Test inventory reconciles 641→638 (7 rehomed, 3 removed, no new dimensions). Current build/v1 claim 23 records all gates: 637 passed/0 failed/1 expected ignored; commitment integrity 14/14; strict Clippy; root and benchmark fmt checks; and git diff --check.'
+        concurrency:
+          applicable: true
+          evidence: The shared invalidation helper mutates only the SQLite database owned by each unique temporary Workspace. Refresh sequences are local to each test; no shared database or process-global mutable state was added. Existing synchronized active-reader/rebuild coverage remains.
+        project_isolation:
+          applicable: true
+          evidence: The fixtures, SQLite stores, CLI/MCP operations, and mtime invalidation all use disposable Workspace roots. The helper does not touch the developer workspace or benchmark reference corpus.
+        administration:
+          applicable: true
+          evidence: Reviewer `codex-043-quality-receipt-review-v2` is distinct from build worker `codex-043-quality-receipt-build-v2`. Message 124 is the current replacement-map note; the stale prior receipt was not used. I made no file changes, commits, pushes, or task-scope changes.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CENTRAL-VS-LANGUAGE-ISOLATION: Central subsystem suites (acdd, core, linker, incremental, mcp, commitment_integrity) reside at tests/; all language extraction and semantic tests are strictly isolated inside tests/languages/.'
+    - 'INV-ACDD-SUITE-COHESION: All ACDD state machines, task lifecycles, subtasks, blackboard messages, and milestone operations reside in tests/acdd/ rather than core storage or MCP symbol modules.'
+    - 'INV-SHARED-HARNESS: Common workspace setup, file writing, database building, and MCP client lifecycle are managed through canonical shared helpers in tests/common/ rather than duplicated struct Workspace per test file.'
+    - 'INV-DOMAIN-DECOMPOSITION: Test modules are organized by cohesive architectural and contractual purpose. Monolithic files are split along natural architectural sub-boundaries.'
+    - 'INV-FORWARD-COMPAT-041-042: Language suites cleanly decouple pure grammar from framework manifests (frameworks.rs / manifests.rs) for milestone 041, and isolate universal AST patterns and path-scoped selectors (ast_patterns.rs, selectors.rs, navigation.rs) for milestone 042.'
+    - 'INV-CONTRACT-PARITY: Refactoring preserves 100% of observable positive contract assertions, fail-closed boundaries, and Merkle tree determinism (commitment_integrity).'
+    - 'INV-TABLE-DRIVEN-PERMUTATIONS: Multiple assertions over syntax permutations, keyword tables, or builtins use table-driven loops instead of copy-pasted test functions.'
+    - 'INV-TEST-CONTRACT-PARITY: Removed or rewritten tests retain every unique reachable observable contract through a stronger production or composition seam; uncertain cases are not deleted.'
+    - 'INV-TEST-ONLY-SOURCE: Source behavior, public APIs, schemas, and configuration remain unchanged; formatter-only normalization in src/db/tasks_store.rs is allowed to satisfy cargo fmt --check, while semantic source changes remain confined to test-only modules.'
+    - 'INV-TEST-REFACTOR-EVIDENCE: Every REMOVE and REWRITE has a classification and replacement map; final unique-test identities and any additions are reconciled against the frozen baseline.'
+    architectural_notes:
+    - '{"replacement_map":{"REMOVE":[{"test":"languages::profiles::unsupported_invocations_and_unbound_aliases_remain_unresolved","reason":"Removed absence-only Ruby/C#/C++/Java linker assertions.","retained_contract":"Python unresolved-provider behavior remains covered by tests/languages/python/modules.rs::cyclic_reexports_and_missing_providers_remain_unresolved, which checks cold build, delta, unresolved coverage, and no call target."},{"test":"languages::python::semantics::logger_process_is_not_a_logger_method","reason":"Removed the standalone negative-only logger test.","retained_contract":"tests/languages/python/semantics.rs::logging_factory_methods_have_verified_builtin_origin_after_persistence covers known logger methods and unresolved logger.process/untyped logger.info across cold build and delta."},{"test":"test_adapter_change_auto_rebuild","reason":"Removed duplicate metadata-only adapter rebuild test.","retained_contract":"tests/mcp/freshness/stdio_and_response.rs::stdio_response_only_adapter_transitions_preserve_facts_and_continuations changes only adapter_version in its third transition and checks rebuild, files_checked, and generation."}],"CONFIRM":{"test":"untyped_logger_parameters_remain_unresolved_in_persisted_coverage","finding":"Already absent from frozen pre-follow-up inventory and checkout; no identity removed by this change.","retained_contract":"tests/receivers/python_value_flow.rs::persisted_untyped_logger_parameters_without_provider_stay_unresolved checks persisted logger.info and log.warning; logger factory cold/delta coverage also checks untyped logger.info."},"CORE_BASICS_MOVES":[["public_linker_preserves_arbitrary_edge_tags_and_orders_edges_stably","tests/linker/public_output.rs (registered in tests/linker.rs)"],["default_scope_excludes_common_generated_directories","tests/core/scanner_guard_limits.rs"],["rows_enforces_the_exact_serialized_json_limit","tests/core/reader_row_limits.rs"],["database_roundtrip_build_and_query","tests/core/build_query_roundtrip.rs"],["cold_build_preserves_extracted_storage_across_full_and_remainder_batches","tests/core/storage_batches.rs"],["navigation_storage_preserves_compressed_analysis_and_delta_calls","tests/core/fact_persistence.rs"],["hybrid_search_ranks_connected_exact_symbols_before_path_order","tests/mcp/query_ranking.rs"]],"CORE_BASICS_DELETE":"Deleted tests/core_basics.rs and removed its Cargo test binary. Markdown extraction behavior is covered through writer/reader document section and search assertions in database_roundtrip_build_and_query.","REWRITE":[["tests/mcp/context.rs","Removed wait_for_source_inventory_ttl(); all three callers use invalidate_mcp_connection_cache(database)."],["tests/mcp/freshness.rs","Removed wait_for_inventory_ttl(); callers invalidate cache identity instead of waiting for TTL."],["tests/core/adapters/source_only_adapter.rs","Replaced sleep(5100) with invalidate_mcp_connection_cache."],["tests/common/mcp_client.rs","Shared helper advances the disposable SQLite DB mtime by one second, making server admission observe a new cache identity."]],"inventory":{"immediate_pre_followup_identities":641,"final_identities":638,"rehomed":7,"removed":3,"added":0,"all_targets":{"passed":637,"failed":0,"ignored":1,"ignored_reason":"Expected >100,000-file scanner stress lane."}},"verification":{"commitment_integrity":"cargo test --test commitment_integrity: 14 passed, 0 failed.","all_targets":"cargo test --all-targets: 637 passed, 0 failed, 1 ignored.","clippy":"cargo clippy --all-targets --all-features -- -D warnings: passed.","formatting":"cargo fmt --check and cargo fmt --manifest-path benchmarks/Cargo.toml --check: passed. 49 existing formatter hunks were normalized; src/db/tasks_store.rs has formatter-only line wrapping and no semantic change.","diff_check":"git diff --check: passed."}}}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```
+
+
+
 ### task: acdd-suite-extraction-and-consolidation
 
 ```yaml

@@ -1,9 +1,6 @@
 #![cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-vue"))]
 
-use contextunity_forge_mcp::{
-    core::commitments,
-    db::reader,
-};
+use contextunity_forge_mcp::{core::commitments, db::reader};
 use rusqlite::Connection;
 use std::fs;
 

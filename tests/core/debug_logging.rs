@@ -3,13 +3,6 @@ use contextunity_forge_mcp::{core::debug_log, engine::scanner};
 use std::fs;
 
 #[test]
-fn ignored_names_includes_forge() {
-    let ws = Workspace::new();
-    let adapter = scanner::load_adapter(ws.root(), None).unwrap();
-    assert!(adapter.ignored_names.contains(".forge"));
-}
-
-#[test]
 fn debug_flag_parsing_and_digest_determinism() {
     let ws = Workspace::new();
 
@@ -66,9 +59,10 @@ roots:
 fn debug_logger_writes_to_forge_directory() {
     let ws = Workspace::new();
     let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let expected_jsonl_file =
-        ws.root().join(".forge")
-            .join(format!("command-log-debug--{date_str}.jsonl"));
+    let expected_jsonl_file = ws
+        .root()
+        .join(".forge")
+        .join(format!("command-log-debug--{date_str}.jsonl"));
 
     assert!(!expected_jsonl_file.exists());
 

@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-proto")]
 
-use contextunity_forge_mcp::engine::ast;
 use super::support::Workspace;
+use contextunity_forge_mcp::engine::ast;
 use std::fs;
 
 #[cfg(feature = "lang-proto")]

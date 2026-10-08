@@ -42,7 +42,7 @@ fn blackboard_persists_task_scoped_messages_in_chronological_order() {
     ).unwrap();
     assert_eq!(index, "idx_task_blackboard_task_created");
     drop(root);
- }
+}
 #[test]
 fn blackboard_schema_v1_upgrade_keeps_task_store_operational() {
     let (root, store, milestone) = fixture();

@@ -1,0 +1,11 @@
+[package]
+name = "contextunity-forge-benchmarks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+contextunity-forge-mcp = { path = ".." }
+rusqlite = { version = "0.31", features = ["bundled", "modern_sqlite"] }
+serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }

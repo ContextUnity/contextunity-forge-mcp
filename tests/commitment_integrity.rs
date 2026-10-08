@@ -1,3 +1,8 @@
+#[path = "common/mod.rs"]
+#[allow(dead_code)]
+mod common;
+
+use common::Workspace;
 use contextunity_forge_mcp::{
     core::{commitments, models::stable_hash64, schema::SCHEMA_DDL},
     db::writer,
@@ -7,35 +12,6 @@ use rusqlite::{config::DbConfig, params, Connection};
 mod cold_sealing;
 #[path = "commitment_integrity/coverage.rs"]
 mod coverage;
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
-
-struct TemporaryWorkspace(PathBuf);
-
-impl TemporaryWorkspace {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "forge_commitment_integrity_{}_{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-}
-
-impl Drop for TemporaryWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 fn connection() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(SCHEMA_DDL).unwrap();
@@ -401,16 +377,14 @@ fn fts_sealing_survives_valid_rebuild_reindex_and_vacuum() {
 
 #[test]
 fn unchanged_input_cold_builds_have_the_same_root_after_reindex_and_vacuum() {
-    let workspace = TemporaryWorkspace::new();
-    let source = workspace.0.join("source");
-    fs::create_dir_all(source.join("src")).unwrap();
-    fs::write(
-        source.join("src/lib.rs"),
+    let workspace = Workspace::new();
+    let source = workspace.path("source");
+    workspace.write(
+        "source/src/lib.rs",
         "pub fn stable_build_fixture() -> &'static str { \"unchanged\" }\n",
-    )
-    .unwrap();
+    );
 
-    let first_db = workspace.0.join("first.sqlite");
+    let first_db = workspace.path("first.sqlite");
     let first_report = writer::build(&source, &first_db, None).unwrap();
     let first_root = first_report["output_root"].as_str().unwrap().to_owned();
     let first_conn = Connection::open(&first_db).unwrap();
@@ -432,7 +406,7 @@ fn unchanged_input_cold_builds_have_the_same_root_after_reindex_and_vacuum() {
     commitments::verify(&first_conn).unwrap();
     drop(first_conn);
 
-    let second_db = workspace.0.join("second.sqlite");
+    let second_db = workspace.path("second.sqlite");
     let second_report = writer::build(&source, &second_db, None).unwrap();
     assert_eq!(
         second_report["output_root"].as_str().unwrap(),
@@ -445,12 +419,11 @@ fn unchanged_input_cold_builds_have_the_same_root_after_reindex_and_vacuum() {
 #[cfg(feature = "lang-rust")]
 #[test]
 fn built_nodes_keep_owner_paths_and_repeatable_merkle_leaves() {
-    let workspace = TemporaryWorkspace::new();
-    let source = workspace.0.join("source");
-    fs::create_dir_all(&source).unwrap();
-    fs::write(source.join("a.rs"), "pub fn exported() {}\n").unwrap();
-    let first = workspace.0.join("first.sqlite");
-    let second = workspace.0.join("second.sqlite");
+    let workspace = Workspace::new();
+    let source = workspace.path("source");
+    workspace.write("source/a.rs", "pub fn exported() {}\n");
+    let first = workspace.path("first.sqlite");
+    let second = workspace.path("second.sqlite");
     writer::build(&source, &first, None).unwrap();
     writer::build(&source, &second, None).unwrap();
     let leaf = |path: &std::path::Path| {

@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-toml")]
 
 use rusqlite::Connection;
-use std::{path::Path, process::Command, time::Instant};
+use std::path::Path;
 
 use crate::common::Workspace;
 
@@ -83,71 +83,4 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         assert_eq!(doc_edges(&workspace.db()), doc_edges(&cold));
     }
     assert_eq!(doc_edges(&workspace.db()), baseline);
-}
-
-#[test]
-#[ignore = "paired profile requiring FORGE_BASELINE_BIN"]
-fn profile_document_suffix_delta_against_baseline() {
-    let baseline = std::env::var("FORGE_BASELINE_BIN").unwrap();
-    let old = Workspace::new();
-    let new = Workspace::new();
-    for workspace in [&old, &new] {
-        for file in 0..1_600 {
-            let mut source = String::from("[server]\n");
-            for key in 0..10 {
-                source.push_str(&format!("limit_{file}_{key}.cpu = {file}\n"));
-            }
-            workspace.write(format!("config/settings_{file:04}.toml"), &source);
-        }
-        workspace.write(
-            "docs/guide.md",
-            "# Configuration\nUse `server.limit_0_0.cpu`.\n",
-        );
-    }
-    let output = Command::new(&baseline)
-        .arg("--db")
-        .arg(old.db())
-        .arg("build")
-        .arg(old.root())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    new.build();
-    for workspace in [&old, &new] {
-        workspace.write(
-            "docs/guide.md",
-            "# Configuration\nUse `server.limit_0_0.cpu`.\n\nDetails.\n",
-        );
-    }
-    let old_wall = Instant::now();
-    let output = Command::new(baseline)
-        .arg("--db")
-        .arg(old.db())
-        .arg("delta")
-        .arg(old.root())
-        .arg("docs/guide.md")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let old_wall_ms = old_wall.elapsed().as_secs_f64() * 1000.;
-    let old_report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let new_wall = Instant::now();
-    let new_report = new.delta(&["docs/guide.md"]);
-    let new_wall_ms = new_wall.elapsed().as_secs_f64() * 1000.;
-    println!(
-        "DELTA_DOC_PROFILE {}",
-        serde_json::json!({
-            "files": 1601,
-            "baseline": {"wall_ms": old_wall_ms, "report": old_report, "doc_edges": doc_edges(&old.db()).len()},
-            "candidate_fix": {"wall_ms": new_wall_ms, "report": new_report, "doc_edges": doc_edges(&new.db()).len()}
-        })
-    );
 }

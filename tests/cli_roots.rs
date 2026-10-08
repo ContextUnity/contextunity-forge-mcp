@@ -1,39 +1,27 @@
+#[path = "common/mod.rs"]
+#[allow(dead_code)]
+mod common;
+
+use common::{mcp_client::run_cli, Workspace};
 use contextunity_forge_mcp::db::reader;
 use std::{
     fs,
-    path::PathBuf,
     process::{Command, Stdio},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
-struct Workspace(PathBuf);
-
-impl Workspace {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("forge_cli_root_{}_{nonce}", std::process::id()));
-        fs::create_dir_all(&path).unwrap();
-        fs::write(path.join("sample.py"), "def sample():\n    return 1\n").unwrap();
-        Self(path)
-    }
-
-    fn db(&self) -> PathBuf {
-        self.0.join(".forge/code-map.sqlite")
-    }
+fn workspace() -> Workspace {
+    let workspace = Workspace::new();
+    workspace.write("sample.py", "def sample():\n    return 1\n");
+    workspace
 }
 
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+fn cli(workspace: &Workspace, args: &[&str]) -> std::process::Output {
+    run_cli(workspace, args)
 }
 
-fn cli(args: &[&str]) -> std::process::Output {
+fn cli_with_explicit_roots(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args(args)
         .output()
@@ -56,9 +44,8 @@ enum Corruption {
 }
 
 fn build_workspace() -> Workspace {
-    let workspace = Workspace::new();
-    let root = workspace.0.to_str().unwrap();
-    let build = cli(&["--root", root, "build"]);
+    let workspace = workspace();
+    let build = cli(&workspace, &["build"]);
     assert!(
         build.status.success(),
         "{}",
@@ -154,16 +141,15 @@ fn assert_no_integrity_snapshot_for_current_process() {
 
 #[test]
 fn build_uses_global_root_when_positional_root_is_omitted() {
-    let workspace = Workspace::new();
-    let root = workspace.0.to_str().unwrap();
-    let result = cli(&["--root", root, "build"]);
+    let workspace = workspace();
+    let result = cli(&workspace, &["build"]);
     assert!(
         result.status.success(),
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(workspace.db().exists());
-    let inspect = cli(&["--root", root, "query", "inspect", "sample.py:sample"]);
+    let inspect = cli(&workspace, &["query", "inspect", "sample.py:sample"]);
     assert!(
         inspect.status.success(),
         "{}",
@@ -174,8 +160,8 @@ fn build_uses_global_root_when_positional_root_is_omitted() {
 
 #[test]
 fn positional_root_build_remains_supported() {
-    let workspace = Workspace::new();
-    let result = cli(&["build", workspace.0.to_str().unwrap()]);
+    let workspace = workspace();
+    let result = cli_with_explicit_roots(&["build", workspace.root().to_str().unwrap()]);
     assert!(
         result.status.success(),
         "{}",
@@ -187,8 +173,8 @@ fn positional_root_build_remains_supported() {
 #[cfg(unix)]
 #[test]
 fn cli_rejects_fifo_database_without_blocking() {
-    let workspace = Workspace::new();
-    let fifo = workspace.0.join("database.fifo");
+    let workspace = workspace();
+    let fifo = workspace.path("database.fifo");
     assert!(Command::new("mkfifo")
         .arg(&fifo)
         .status()
@@ -196,7 +182,7 @@ fn cli_rejects_fifo_database_without_blocking() {
         .success());
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
-        .args(["--root", workspace.0.to_str().unwrap(), "--db"])
+        .args(["--root", workspace.root().to_str().unwrap(), "--db"])
         .arg(&fifo)
         .args(["query", "inspect", "sample.py:sample"])
         .stdout(Stdio::null())
@@ -227,19 +213,19 @@ fn cli_rejects_fifo_database_without_blocking() {
 
 #[test]
 fn conflicting_roots_are_rejected_for_build_scan_and_delta() {
-    let first = Workspace::new();
-    let second = Workspace::new();
+    let first = workspace();
+    let second = workspace();
     for command in ["build", "scan", "delta"] {
         let mut args = vec![
             "--root",
-            first.0.to_str().unwrap(),
+            first.root().to_str().unwrap(),
             command,
-            second.0.to_str().unwrap(),
+            second.root().to_str().unwrap(),
         ];
         if command == "delta" {
             args.push("sample.py");
         }
-        let result = cli(&args);
+        let result = cli_with_explicit_roots(&args);
         assert!(
             !result.status.success(),
             "{command} accepted conflicting roots"
@@ -252,8 +238,8 @@ fn conflicting_roots_are_rejected_for_build_scan_and_delta() {
 
 #[test]
 fn scan_uses_global_root_when_positional_root_is_omitted() {
-    let workspace = Workspace::new();
-    let result = cli(&["--root", workspace.0.to_str().unwrap(), "scan"]);
+    let workspace = workspace();
+    let result = cli(&workspace, &["scan"]);
     assert!(
         result.status.success(),
         "{}",
@@ -264,26 +250,21 @@ fn scan_uses_global_root_when_positional_root_is_omitted() {
 
 #[test]
 fn delta_uses_global_root_with_named_modified_file() {
-    let workspace = Workspace::new();
-    let root = workspace.0.to_str().unwrap();
-    let build = cli(&["--root", root, "build"]);
+    let workspace = workspace();
+    let build = cli(&workspace, &["build"]);
     assert!(
         build.status.success(),
         "{}",
         String::from_utf8_lossy(&build.stderr)
     );
-    fs::write(
-        workspace.0.join("sample.py"),
-        "def updated():\n    return 2\n",
-    )
-    .unwrap();
-    let delta = cli(&["--root", root, "delta", "--modified", "sample.py"]);
+    workspace.write("sample.py", "def updated():\n    return 2\n");
+    let delta = cli(&workspace, &["delta", "--modified", "sample.py"]);
     assert!(
         delta.status.success(),
         "{}",
         String::from_utf8_lossy(&delta.stderr)
     );
-    let inspect = cli(&["--root", root, "query", "inspect", "sample.py:updated"]);
+    let inspect = cli(&workspace, &["query", "inspect", "sample.py:updated"]);
     assert!(
         inspect.status.success(),
         "{}",
@@ -304,20 +285,19 @@ fn query_rebuilds_typed_incompatible_indexes_but_preserves_corrupt_files() {
     for reason in reasons {
         let workspace = build_workspace();
         apply_rebuild_reason(&workspace, reason);
-        let root = workspace.0.to_str().unwrap();
-        let error = reader::open(&workspace.db(), &workspace.0).unwrap_err();
+        let error = reader::open(&workspace.db(), workspace.root()).unwrap_err();
         assert!(
             error.to_string().contains("rebuild") || matches!(reason, RebuildReason::SchemaVersion)
         );
         assert_no_integrity_snapshot_for_current_process();
 
-        let rebuilt = cli(&["--root", root, "query", "inspect", "sample.py:sample"]);
+        let rebuilt = cli(&workspace, &["query", "inspect", "sample.py:sample"]);
         assert!(
             rebuilt.status.success(),
             "{}",
             String::from_utf8_lossy(&rebuilt.stderr)
         );
-        assert!(reader::open(&workspace.db(), &workspace.0).is_ok());
+        assert!(reader::open(&workspace.db(), workspace.root()).is_ok());
     }
 
     let corruption_cases = [
@@ -334,7 +314,7 @@ fn query_rebuilds_typed_incompatible_indexes_but_preserves_corrupt_files() {
         apply_rebuild_reason(&workspace, reason);
         corrupt_database(&workspace, corruption);
         let before = fs::read(workspace.db()).unwrap();
-        let error = reader::open(&workspace.db(), &workspace.0).unwrap_err();
+        let error = reader::open(&workspace.db(), workspace.root()).unwrap_err();
         if matches!(corruption, Corruption::FreelistCount) {
             assert!(
                 error
@@ -346,8 +326,7 @@ fn query_rebuilds_typed_incompatible_indexes_but_preserves_corrupt_files() {
         assert_eq!(fs::read(workspace.db()).unwrap(), before);
         assert_no_integrity_snapshot_for_current_process();
 
-        let root = workspace.0.to_str().unwrap();
-        let rejected = cli(&["--root", root, "query", "inspect", "sample.py:sample"]);
+        let rejected = cli(&workspace, &["query", "inspect", "sample.py:sample"]);
         assert!(
             !rejected.status.success(),
             "{}",
@@ -356,38 +335,41 @@ fn query_rebuilds_typed_incompatible_indexes_but_preserves_corrupt_files() {
         assert_eq!(fs::read(workspace.db()).unwrap(), before);
     }
 
-    let unreadable_workspace = Workspace::new();
-    fs::create_dir_all(unreadable_workspace.0.join(".forge")).unwrap();
+    let unreadable_workspace = workspace();
+    fs::create_dir_all(unreadable_workspace.db().parent().unwrap()).unwrap();
     let corrupt = b"not a sqlite database";
     fs::write(unreadable_workspace.db(), corrupt).unwrap();
-    let root = unreadable_workspace.0.to_str().unwrap();
-    let rejected = cli(&["--root", root, "query", "inspect", "sample.py:sample"]);
+    let rejected = cli(
+        &unreadable_workspace,
+        &["query", "inspect", "sample.py:sample"],
+    );
     assert!(!rejected.status.success());
     assert_eq!(fs::read(unreadable_workspace.db()).unwrap(), corrupt);
 
-    let empty_workspace = Workspace::new();
+    let empty_workspace = workspace();
     fs::create_dir_all(empty_workspace.db().parent().unwrap()).unwrap();
     fs::write(empty_workspace.db(), []).unwrap();
     let before = fs::read(empty_workspace.db()).unwrap();
-    let root = empty_workspace.0.to_str().unwrap();
-    let rejected = cli(&["--root", root, "query", "inspect", "sample.py:sample"]);
+    let rejected = cli(&empty_workspace, &["query", "inspect", "sample.py:sample"]);
     assert!(!rejected.status.success());
     assert_eq!(fs::read(empty_workspace.db()).unwrap(), before);
 
-    let initialized_workspace = Workspace::new();
+    let initialized_workspace = workspace();
     fs::create_dir_all(initialized_workspace.db().parent().unwrap()).unwrap();
     let conn = rusqlite::Connection::open(initialized_workspace.db()).unwrap();
     conn.execute_batch("PRAGMA user_version=1").unwrap();
     drop(conn);
     let before = fs::read(initialized_workspace.db()).unwrap();
     assert_eq!(&before[..16], b"SQLite format 3\0");
-    let root = initialized_workspace.0.to_str().unwrap();
-    let rebuilt = cli(&["--root", root, "query", "inspect", "sample.py:sample"]);
+    let rebuilt = cli(
+        &initialized_workspace,
+        &["query", "inspect", "sample.py:sample"],
+    );
     assert!(
         rebuilt.status.success(),
         "{}",
         String::from_utf8_lossy(&rebuilt.stderr)
     );
     assert_ne!(fs::read(initialized_workspace.db()).unwrap(), before);
-    assert!(reader::open(&initialized_workspace.db(), &initialized_workspace.0).is_ok());
+    assert!(reader::open(&initialized_workspace.db(), initialized_workspace.root()).is_ok());
 }

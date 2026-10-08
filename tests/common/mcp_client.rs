@@ -9,6 +9,17 @@ use std::{
     time::Duration,
 };
 
+/// Changes the database mtime so the server re-admits its cached connection.
+/// This triggers source-inventory validation without waiting for the production TTL.
+pub fn invalidate_mcp_connection_cache(database: &std::path::Path) -> std::io::Result<()> {
+    let file = std::fs::File::open(database)?;
+    let modified = file.metadata()?.modified()?;
+    file.set_times(
+        std::fs::FileTimes::new().set_modified(modified + std::time::Duration::from_secs(1)),
+    )?;
+    Ok(())
+}
+
 const INITIALIZE_PROTOCOL_VERSION: &str = "2025-03-26";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -55,8 +66,14 @@ impl StdioClient {
             .stderr(Stdio::null())
             .spawn()
             .expect("could not start MCP server process");
-        let input = child.stdin.take().expect("MCP server stdin should be piped");
-        let stdout = child.stdout.take().expect("MCP server stdout should be piped");
+        let input = child
+            .stdin
+            .take()
+            .expect("MCP server stdin should be piped");
+        let stdout = child
+            .stdout
+            .take()
+            .expect("MCP server stdout should be piped");
         let (sender, output) = mpsc::channel();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -108,8 +125,9 @@ impl StdioClient {
                 "JSON-RPC frame was {} bytes",
                 line.len()
             );
-            let response: Value = serde_json::from_str(&line)
-                .unwrap_or_else(|error| panic!("MCP server returned invalid JSON: {error}: {line}"));
+            let response: Value = serde_json::from_str(&line).unwrap_or_else(|error| {
+                panic!("MCP server returned invalid JSON: {error}: {line}")
+            });
             if response["id"] == request_id {
                 return (line.len(), response);
             }
@@ -144,7 +162,9 @@ impl StdioClient {
 
     fn write_message(&mut self, message: Value) {
         writeln!(self.input, "{message}").expect("could not write to MCP server stdin");
-        self.input.flush().expect("could not flush MCP server stdin");
+        self.input
+            .flush()
+            .expect("could not flush MCP server stdin");
     }
 }
 

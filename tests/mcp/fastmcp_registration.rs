@@ -1,11 +1,8 @@
 #![cfg(feature = "lang-python")]
 
-use contextunity_forge_mcp::{
-    core::commitments,
-    db::reader,
-};
-use rusqlite::Connection;
 use crate::common::Workspace;
+use contextunity_forge_mcp::{core::commitments, db::reader};
+use rusqlite::Connection;
 
 fn graph(conn: &Connection) -> Vec<String> {
     conn.prepare("SELECT (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash)||'|'||(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash)||'|'||kind FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=edge_occurrences.owner_id)='server.py' ORDER BY (SELECT id FROM nodes WHERE node_hash=edge_occurrences.src_hash),(SELECT id FROM nodes WHERE node_hash=edge_occurrences.dst_hash),kind")
@@ -70,7 +67,10 @@ def after_rebind(): return 5
     drop(stmt);
     drop(conn);
 
-    workspace.write("server.py", &source.replace("@mcp.tool(name=\"public_name\")\n", ""));
+    workspace.write(
+        "server.py",
+        &source.replace("@mcp.tool(name=\"public_name\")\n", ""),
+    );
     workspace.delta(&["server.py"]);
     let conn = workspace.open();
     let remaining: i64 = conn

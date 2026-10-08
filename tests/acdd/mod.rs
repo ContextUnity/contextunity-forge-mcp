@@ -1,7 +1,7 @@
 pub(crate) mod support;
 
 mod blackboard;
-mod milestones;
 mod mcp;
+mod milestones;
 mod subtasks;
 mod tasks;

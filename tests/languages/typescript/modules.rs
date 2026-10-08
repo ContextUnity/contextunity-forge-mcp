@@ -1,5 +1,5 @@
-use super::*;
 use super::super::support::Workspace;
+use super::*;
 
 #[test]
 fn named_and_star_barrels_resolve_confirmed_exports() {

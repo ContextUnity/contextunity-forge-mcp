@@ -1,5 +1,5 @@
-use super::*;
 use super::super::support::Workspace;
+use super::*;
 use std::fs;
 
 #[test]

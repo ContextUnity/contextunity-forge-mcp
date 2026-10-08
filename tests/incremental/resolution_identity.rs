@@ -1,11 +1,8 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
-use contextunity_forge_mcp::{
-    core::commitments,
-    db::reader,
-};
-use rusqlite::Connection;
 use crate::common::Workspace;
+use contextunity_forge_mcp::{core::commitments, db::reader};
+use rusqlite::Connection;
 
 fn assert_cold_equivalent(workspace: &Workspace) {
     let incremental = workspace.open();

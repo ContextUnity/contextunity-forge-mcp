@@ -1,5 +1,5 @@
-use super::*;
 use super::super::support::Workspace;
+use super::*;
 
 #[test]
 fn node_and_web_callable_globals_have_external_origin() {

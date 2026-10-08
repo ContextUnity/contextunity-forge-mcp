@@ -6,19 +6,11 @@ use contextunity_forge_mcp::{
         response::{Detail, QueryOptions, ResponsePolicy, SourceOptions},
     },
     db::{reader, symbols, writer},
-    engine::{
-        ast,
-        scanner,
-    },
+    engine::{ast, scanner},
 };
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use super::support::Workspace;
-
 
 #[cfg(feature = "lang-typescript")]
 fn coverage_aggregate_rows(conn: &rusqlite::Connection) -> (Vec<String>, Vec<String>) {
@@ -51,14 +43,13 @@ fn coverage_aggregate_rows(conn: &rusqlite::Connection) -> (Vec<String>, Vec<Str
     (owner_language, language_counts)
 }
 
-
 #[cfg(feature = "lang-typescript")]
 #[path = "classic_wire.rs"]
 mod classic_wire;
+mod syntax;
+#[path = "template_masking.rs"]
+mod template_masking;
 #[cfg(feature = "lang-python")]
 #[path = "template_origins.rs"]
 mod template_origins;
-#[path = "template_masking.rs"]
-mod template_masking;
-mod syntax;
 mod templates;

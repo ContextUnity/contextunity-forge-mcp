@@ -7,7 +7,11 @@ fn workspace_builds_and_applies_delta_in_its_owned_temp_directory() {
 
     let before = workspace.open();
     let before_count: i64 = before
-        .query_row("SELECT count(*) FROM nodes WHERE name='before'", [], |row| row.get(0))
+        .query_row(
+            "SELECT count(*) FROM nodes WHERE name='before'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(before_count, 1);
     drop(before);
@@ -26,5 +30,8 @@ fn workspace_builds_and_applies_delta_in_its_owned_temp_directory() {
     drop(after);
 
     drop(workspace);
-    assert!(!root.exists(), "temporary workspace should be removed on drop");
+    assert!(
+        !root.exists(),
+        "temporary workspace should be removed on drop"
+    );
 }

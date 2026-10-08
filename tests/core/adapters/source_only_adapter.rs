@@ -1,6 +1,6 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
-use crate::common::Workspace;
+use crate::common::{mcp_client::invalidate_mcp_connection_cache, Workspace};
 use contextunity_forge_mcp::{db::reader, mcp::server::Server};
 use serde_json::{json, Value};
 
@@ -92,7 +92,7 @@ fn source_only_scope_removes_bundles_without_hiding_consumer_sources() {
         "library/frontend/src/grid.ts",
         "export function updated_grid() {}\n",
     );
-    std::thread::sleep(std::time::Duration::from_millis(5100));
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     let changed = inventory(&server);
     assert_eq!(changed["freshness"]["refresh"], "delta");
     assert_ne!(

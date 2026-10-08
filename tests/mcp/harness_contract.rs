@@ -14,7 +14,13 @@ fn shared_mcp_harness_supports_in_process_stdio_and_cli_seams() {
 
     let server = in_process_server(&workspace);
     let stored_nodes = server
-        .read(|conn| Ok(json!(conn.query_row::<i64, _, _>("SELECT count(*) FROM nodes", [], |row| row.get(0))?)))
+        .read(|conn| {
+            Ok(json!(conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM nodes",
+                [],
+                |row| row.get(0)
+            )?))
+        })
         .unwrap();
     assert!(stored_nodes.as_i64().unwrap() > 0);
 

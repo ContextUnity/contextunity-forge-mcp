@@ -1,10 +1,13 @@
+pub(crate) use crate::common::Workspace;
 pub(crate) use contextunity_forge_mcp::{
     core::tasks::{gates::Evidence, Milestone, Receipt, ReceiptRollup, ReviewSummary, GATES},
-    db::{tasks_store::{TasksStore, RETENTION_SECONDS}, writer},
+    db::{
+        tasks_store::{TasksStore, RETENTION_SECONDS},
+        writer,
+    },
     engine::tasks,
 };
 pub(crate) use serde_json::{json, Value};
-pub(crate) use crate::common::Workspace;
 use std::path::PathBuf;
 
 /// Compatibility wrapper for task fixtures; the shared Workspace owns setup and cleanup.

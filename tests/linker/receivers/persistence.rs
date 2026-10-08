@@ -1,8 +1,5 @@
-use contextunity_forge_mcp::{
-    core::commitments,
-    db::reader,
-};
 use crate::common::Workspace;
+use contextunity_forge_mcp::{core::commitments, db::reader};
 
 fn assert_factory_delta(
     provider: &str,

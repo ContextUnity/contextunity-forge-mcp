@@ -19,13 +19,13 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
     let before = evidence();
     assert!(!before["evidence"].as_str().unwrap().contains("manifest"));
     ws.write("requirements-dev.txt", "novel_library>=1\n");
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     let after = evidence();
     assert!(after["evidence"].as_str().unwrap().contains("manifest"));
     assert_ne!(before["manifest_digest"], after["manifest_digest"]);
     assert_eq!(after["freshness"]["refresh"], "rebuild");
     fs::remove_file(ws.path("requirements-dev.txt")).unwrap();
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     let removed = evidence();
     assert_eq!(removed["manifest_digest"], before["manifest_digest"]);
     assert!(!removed["evidence"].as_str().unwrap().contains("manifest"));
@@ -42,7 +42,7 @@ fn same_server_metadata_query_refreshes_edited_source() {
         "main.rs",
         "pub fn current() {\n    let value = 1;\n    let next = value + 1;\n}\n",
     );
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     let after = snapshot(&server).unwrap();
     assert_eq!(after["nodes"][0]["end_line"], 4);
     assert_ne!(before["corpus_hash"], after["corpus_hash"]);
@@ -144,15 +144,15 @@ fn same_server_refreshes_add_delete_and_rename() {
     let server = in_process_server(&ws);
     snapshot(&server).unwrap();
     ws.write("added.rs", "pub fn added() {}\n");
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     let added = snapshot(&server).unwrap();
     assert_eq!(added["nodes"].as_array().unwrap().len(), 2);
     fs::rename(ws.path("added.rs"), ws.path("renamed.rs")).unwrap();
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     let renamed = snapshot(&server).unwrap();
     assert_eq!(renamed["nodes"][1]["path"], "renamed.rs");
     fs::remove_file(ws.path("first.rs")).unwrap();
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     let deleted = snapshot(&server).unwrap();
     assert_eq!(deleted["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(deleted["nodes"][0]["name"], "added");
@@ -173,7 +173,7 @@ fn restored_mtime_and_same_length_edit_refreshes_digest() {
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(old_modified))
         .unwrap();
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     let after = snapshot(&server).unwrap();
     assert_eq!(after["nodes"][0]["name"], "after_");
     assert_ne!(before["corpus_hash"], after["corpus_hash"]);
@@ -196,16 +196,16 @@ fn linked_source_edits_and_renames_refresh_in_same_server() {
     let before = snapshot(&server).unwrap();
     assert_eq!(before["nodes"][0]["path"], "[library]/lib.rs");
     linked.write("lib.rs", "pub fn changed() {}\n");
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     assert_eq!(snapshot(&server).unwrap()["nodes"][0]["name"], "changed");
     fs::rename(linked.path("lib.rs"), linked.path("next.rs")).unwrap();
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     assert_eq!(
         snapshot(&server).unwrap()["nodes"][0]["path"],
         "[library]/next.rs"
     );
     fs::remove_file(linked.path("next.rs")).unwrap();
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     assert!(snapshot(&server).unwrap()["nodes"]
         .as_array()
         .unwrap()
@@ -546,7 +546,7 @@ fn newly_created_configured_root_is_admitted() {
         .unwrap()
         .is_empty());
     ws.write("src/created.rs", "pub fn created() {}\n");
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     let after = snapshot(&server).unwrap();
     assert_eq!(after["nodes"][0]["name"], "created");
     assert_eq!(after["freshness"]["refresh"], "rebuild");
@@ -567,7 +567,7 @@ fn changed_ignore_file_removes_existing_source_from_inventory() {
         2
     );
     ws.write(".gitignore", "ignored.rs\n");
-    wait_for_inventory_ttl();
+    invalidate_mcp_connection_cache(&server.db).unwrap();
     let after = snapshot(&server).unwrap();
     assert_eq!(after["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(after["nodes"][0]["name"], "visible");

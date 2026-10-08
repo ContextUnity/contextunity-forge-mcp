@@ -216,8 +216,7 @@ class Runner:
     def shadow(self, service):
         service.execute()
 "#;
-    let (_workspace, db) =
-        build_workspace(&[("provider.py", provider), ("consumer.py", consumer)]);
+    let (_workspace, db) = build_workspace(&[("provider.py", provider), ("consumer.py", consumer)]);
     assert!(persisted_edge(
         &db,
         "consumer.py",

@@ -1,6 +1,6 @@
+use super::support::Workspace;
 use contextunity_forge_mcp::db::{reader, writer};
 use contextunity_forge_mcp::engine::ast;
-use super::support::Workspace;
 use std::{fs, path::PathBuf};
 
 fn persisted_graph(w: &Workspace) -> Vec<Vec<String>> {
@@ -653,59 +653,5 @@ class Worker : public Base {
             .query_row("SELECT count(*) FROM errors", [], |r| r.get(0))
             .unwrap();
         assert!(count > 0, "{language} malformed syntax has diagnostics");
-    }
-}
-
-#[cfg(any(
-    feature = "lang-python",
-    feature = "lang-ruby",
-    feature = "lang-csharp",
-    feature = "lang-cpp",
-    feature = "lang-java"
-))]
-#[test]
-fn unsupported_invocations_and_unbound_aliases_remain_unresolved() {
-    let fixtures: &[(&str, &str)] = &[
-        #[cfg(feature = "lang-python")]
-        (
-            "a.py",
-            "def helper(): pass\nfrom missing import helper\ndef use(): helper()\n",
-        ),
-        #[cfg(feature = "lang-ruby")]
-        (
-            "a.rb",
-            "def helper; 1; end\ndef caller; helper; end\ndef dynamic; yield; super; end\n",
-        ),
-        #[cfg(feature = "lang-csharp")]
-        (
-            "a.cs",
-            "class A { A():base() {} object make() { return new A(); } }\n",
-        ),
-        #[cfg(feature = "lang-cpp")]
-        ("a.cpp", "class A {}; A *make() { return new A(); }\n"),
-        #[cfg(feature = "lang-java")]
-        ("a.java", "class A { A() { super(); } }\n"),
-    ];
-    for &(path, source) in fixtures {
-        let w = Workspace::new();
-        w.write(path, source);
-        w.build();
-        let conn = reader::open(&w.db(), &w.0).unwrap();
-        let calls: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM edge_occurrences WHERE kind='calls'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(calls, 0, "{path}");
-        let unresolved: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM resolution_coverage WHERE status='unresolved'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(unresolved > 0, "{path}");
     }
 }

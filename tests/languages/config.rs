@@ -1,10 +1,10 @@
+use super::support::Workspace;
 use contextunity_forge_mcp::{
     core::response::{QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols},
     engine::{ast, scanner},
 };
 use rusqlite::Connection;
-use super::support::Workspace;
 use std::collections::BTreeSet;
 
 fn rows(conn: &Connection, sql: &str) -> Vec<String> {

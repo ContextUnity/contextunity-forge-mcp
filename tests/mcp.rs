@@ -11,5 +11,7 @@ mod freshness;
 mod harness_contract;
 #[path = "mcp/lint_tools.rs"]
 mod lint_tools;
+#[path = "mcp/query_ranking.rs"]
+mod query_ranking;
 #[path = "mcp/tool_evolution.rs"]
 mod tool_evolution;

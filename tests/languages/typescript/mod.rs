@@ -50,7 +50,6 @@ fn resolves(source: &str, expression: &str) -> bool {
         .any(|edge| edge.kind == "calls" && edge.evidence == expression)
 }
 
-
 mod dom;
 mod frameworks;
 mod grammar;

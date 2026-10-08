@@ -72,8 +72,9 @@ impl Workspace {
                 )
             });
         }
-        fs::write(&target, content)
-            .unwrap_or_else(|error| panic!("could not write test fixture {}: {error}", target.display()));
+        fs::write(&target, content).unwrap_or_else(|error| {
+            panic!("could not write test fixture {}: {error}", target.display())
+        });
     }
 
     /// Writes binary fixture data, creating parent directories as needed.
@@ -87,8 +88,9 @@ impl Workspace {
                 )
             });
         }
-        fs::write(&target, content)
-            .unwrap_or_else(|error| panic!("could not write test fixture {}: {error}", target.display()));
+        fs::write(&target, content).unwrap_or_else(|error| {
+            panic!("could not write test fixture {}: {error}", target.display())
+        });
     }
 
     /// Returns the default code map database path.
@@ -108,11 +110,7 @@ impl Workspace {
     }
 
     /// Builds an index with the supplied adapter path.
-    pub fn build_with_adapter(
-        &self,
-        database: impl AsRef<Path>,
-        adapter: Option<&Path>,
-    ) -> Value {
+    pub fn build_with_adapter(&self, database: impl AsRef<Path>, adapter: Option<&Path>) -> Value {
         writer::build(self.root(), database.as_ref(), adapter)
             .unwrap_or_else(|error| panic!("could not build test workspace index: {error:#}"))
     }

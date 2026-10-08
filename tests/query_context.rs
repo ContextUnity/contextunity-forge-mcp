@@ -1,5 +1,9 @@
 #![cfg(feature = "lang-python")]
 
+#[path = "common/mod.rs"]
+#[allow(dead_code)]
+mod common;
+
 use contextunity_forge_mcp::{
     core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols, traversal, writer},
@@ -9,43 +13,27 @@ use rusqlite::{
     Connection,
 };
 use serde_json::Value;
-use std::{
-    collections::BTreeSet,
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::BTreeSet, path::PathBuf};
 
-struct Workspace(PathBuf);
+struct Workspace(PathBuf, common::Workspace);
+
 impl Workspace {
     fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "forge_query_context_{}_{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
+        let shared = common::Workspace::new();
+        Self(shared.root().to_path_buf(), shared)
     }
+
     fn write(&self, path: &str, contents: &str) {
-        let path = self.0.join(path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, contents).unwrap();
+        self.1.write(path, contents);
     }
+
     fn db(&self) -> PathBuf {
-        self.0.join(".forge/code-map.sqlite")
+        self.1.db()
     }
+
     fn build(&self) -> Connection {
-        writer::build(&self.0, &self.db(), None).unwrap();
-        reader::open(&self.db(), &self.0).unwrap()
-    }
-}
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        self.1.build();
+        self.1.open()
     }
 }
 

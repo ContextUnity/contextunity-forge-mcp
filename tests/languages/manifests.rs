@@ -2,18 +2,16 @@ use contextunity_forge_mcp::{
     db::{reader, writer},
     engine::{
         ast,
-        languages::{self, dependency_registry::DependencyRegistry, manifests::FrameworkManifestValue, LanguageFamily},
+        languages::{
+            self, dependency_registry::DependencyRegistry, manifests::FrameworkManifestValue,
+            LanguageFamily,
+        },
         linker,
     },
 };
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use super::support::Workspace;
-
 
 // ---------------------------------------------------------------------------
 // Language Manifest Profile Tests
