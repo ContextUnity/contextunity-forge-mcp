@@ -34,18 +34,69 @@ Work starts after active milestones 014, 030, 041, 042 conclude, ensuring clean 
 
 ```yaml
 task_ref: common-test-harness-and-workspace
-target: "Establish canonical shared test harness in tests/common/ for workspace lifecycle, database construction, and MCP testing"
+target: Establish canonical shared test harness in tests/common/ for workspace lifecycle, database construction, and MCP testing
 proof_policy: seam-test-first
 scope:
-  - tests/common/
-status: planned
+- tests/common/
+status: completed
 subtasks:
-  - subtask_ref: canonical-test-workspace
-    title: "Implement tests/common/workspace.rs with RAII temp dir, file writing, and build/delta execution"
-    status: pending
-  - subtask_ref: canonical-assertions-and-mcp-client
-    title: "Implement tests/common/assertions.rs and tests/common/mcp_client.rs for unified assertions and fast in-process/subprocess client spawning"
-    status: pending
+- subtask_ref: canonical-test-workspace
+  title: Implement tests/common/workspace.rs with RAII temp dir, file writing, and build/delta execution
+  status: completed
+  evidence: cargo test --test core workspace_contract_tests::workspace_builds_and_applies_delta_in_its_owned_temp_directory passed; exercises production writer build/delta, reader, and RAII cleanup.
+- subtask_ref: canonical-assertions-and-mcp-client
+  title: Implement tests/common/assertions.rs and tests/common/mcp_client.rs for unified assertions and fast in-process/subprocess client spawning
+  status: completed
+  evidence: 'Independent review confirmed tests/common/assertions.rs and mcp_client.rs are exercised across the public seams: harness_contract.rs covers in-process Server, stdio StdioClient, payload/assertion helpers, and CLI; consolidated MCP suites consume these helpers. Central accepted build passed 216 tests (2 ignored) and strict Clippy. Common snapshot fdfd133 contains exactly the allowed common files and passed independent review.'
+receipt:
+  commit: fdfd133b8c1f381be9d569ab4e957f1606bb8221
+  contract_revision: 1
+  passed_at: 2026-10-08T08:06:59.453931227+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test core workspace_contract_tests::workspace_builds_and_applies_delta_in_its_owned_temp_directory
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+      log: The core target ran the workspace lifecycle contract through production build, delta, read, and RAII cleanup.
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Snapshot fdfd133 contains exactly the five files in the task's tests/common/ allowlist. Each current file matches the snapshot blob, and git diff --check 476fc1f fdfd133 -- tests/common is clean.
+        claims:
+          applicable: true
+          evidence: Workspace provides collision-safe RAII roots, guarded relative paths, writing, production writer build/delta, and reader opening; its contract test exercises write/build/read/edit/delta/read/Drop cleanup. Shared assertions cover command status, JSON-RPC errors, and MCP payloads. The client provides real in-process Server, CLI, and initialized subprocess stdio seams, including custom binary, request/call/payload, PID access, frame-size bound, timeout, and kill/wait cleanup. The central MCP review confirmed the repaired suites consume these helpers; its accepted build includes the harness contract and reports 216 passed, 0 failed, 2 ignored with strict Clippy passing. Therefore canonical-assertions-and-mcp-client is fully evidenced.
+        concurrency:
+          applicable: true
+          evidence: Workspace naming includes process ID, timestamp, and an atomic sequence and uses exclusive create_dir with collision retry. Stdio responses are read through a channel and bounded timeout; each spawned child is killed and waited on Drop. Central reader/rebuild tests retain explicit channel synchronization.
+        project_isolation:
+          applicable: true
+          evidence: Each Workspace owns a unique temporary root, rejects absolute paths and parent traversal, and removes only its own root on Drop. build/open/client helpers bind operations to that root; foreign-root tests allocate separate Workspace values.
+        administration:
+          applicable: true
+          evidence: Reviewer codex-043-common-review-final-v1 differs from builder codex-043-common-builder. The accepted build snapshot fdfd133 includes the production-seam workspace contract test (1 passed, 0 failed). I made no edits; common files match the reviewed snapshot.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CENTRAL-VS-LANGUAGE-ISOLATION: Central subsystem suites (acdd, core, linker, incremental, mcp, commitment_integrity) reside at tests/; all language extraction and semantic tests are strictly isolated inside tests/languages/.'
+    - 'INV-ACDD-SUITE-COHESION: All ACDD state machines, task lifecycles, subtasks, blackboard messages, and milestone operations reside in tests/acdd/ rather than core storage or MCP symbol modules.'
+    - 'INV-SHARED-HARNESS: Common workspace setup, file writing, database building, and MCP client lifecycle are managed through canonical shared helpers in tests/common/ rather than duplicated struct Workspace per test file.'
+    - 'INV-DOMAIN-DECOMPOSITION: Test modules are organized by cohesive architectural and contractual purpose. Monolithic files are split along natural architectural sub-boundaries.'
+    - 'INV-FORWARD-COMPAT-041-042: Language suites cleanly decouple pure grammar from framework manifests (frameworks.rs / manifests.rs) for milestone 041, and isolate universal AST patterns and path-scoped selectors (ast_patterns.rs, selectors.rs, navigation.rs) for milestone 042.'
+    - 'INV-CONTRACT-PARITY: Refactoring preserves 100% of observable positive contract assertions, fail-closed boundaries, and Merkle tree determinism (commitment_integrity).'
+    - 'INV-TABLE-DRIVEN-PERMUTATIONS: Multiple assertions over syntax permutations, keyword tables, or builtins use table-driven loops instead of copy-pasted test functions.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: acdd-suite-extraction-and-consolidation
