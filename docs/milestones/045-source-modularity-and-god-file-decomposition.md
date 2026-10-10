@@ -312,39 +312,92 @@ receipt:
 
 ```yaml
 task_ref: task-engine-and-store-responsibility-split
-target: "Separate Git index snapshots, blackboard persistence, and subtask storage from task claim and submit, and migrate the ordinary Git calls in those files"
+target: Separate Git index snapshots, blackboard persistence, and subtask storage from task claim and submit, and migrate the ordinary Git calls in those files
 proof_policy: seam-test-first
 contract_revision: 6
 depends_on:
-  - core-leaf-purification-and-canonical-primitives
+- core-leaf-purification-and-canonical-primitives
 scope:
-  - src/engine/tasks.rs
-  - src/engine/tasks/mod.rs
-  - src/engine/tasks/git_snapshot.rs
-  - src/engine/tasks/blackboard.rs
-  - src/engine/tasks/lifecycle.rs
-  - src/db/tasks_store.rs
-  - src/db/tasks_store/mod.rs
-  - src/db/tasks_store/blackboard.rs
-  - src/db/tasks_store/subtasks.rs
-  - src/db/tasks_store/lifecycle.rs
-status: planned
+- src/engine/tasks.rs
+- src/engine/tasks/mod.rs
+- src/engine/tasks/git_snapshot.rs
+- src/engine/tasks/blackboard.rs
+- src/engine/tasks/lifecycle.rs
+- src/db/tasks_store.rs
+- src/db/tasks_store/mod.rs
+- src/db/tasks_store/blackboard.rs
+- src/db/tasks_store/subtasks.rs
+- src/db/tasks_store/lifecycle.rs
+status: completed
 subtasks:
-  - subtask_ref: isolate-git-index-and-snapshot-engine
-    title: "Move TemporaryGitIndex, GitHeadRollback, GitIndexRollback, and candidate snapshot capture into git_snapshot.rs. Migrate 12 ordinary Git calls in tasks.rs and 1 in tasks_store.rs to core::git. Switch the atomic_replace calls in tasks.rs to core::fs::atomic_replace. Keep stdin, GIT_INDEX_FILE, and spawn local"
-    status: pending
-  - subtask_ref: decompose-blackboard-engine-and-persistence
-    title: "Move blackboard request validation into engine/tasks/blackboard.rs, and blackboard_post, blackboard_post_scoped, blackboard_post_scoped_with_gate, blackboard_page, blackboard_page_for_gate, blackboard_inspect, blackboard_read, and blackboard_clear into db/tasks_store/blackboard.rs"
-    status: pending
-  - subtask_ref: decompose-subtask-and-lifecycle-store
-    title: "Move subtask CRUD into db/tasks_store/subtasks.rs and claim, reset, reopen, extend_scope, delete, and cleanup into db/tasks_store/lifecycle.rs. Leave TasksStore::submit in engine/tasks/gates.rs"
-    status: pending
-  - subtask_ref: assemble-task-engine-and-store-facades
-    title: "Keep tasks/mod.rs and tasks_store/mod.rs as facades, including the gates module added by task 1 and the existing context and workspaces modules"
-    status: pending
-  - subtask_ref: verify-acdd-task-suite
-    title: "Verify cargo test --test acdd passes"
-    status: pending
+- subtask_ref: isolate-git-index-and-snapshot-engine
+  title: Move TemporaryGitIndex, GitHeadRollback, GitIndexRollback, and candidate snapshot capture into git_snapshot.rs. Migrate 12 ordinary Git calls in tasks.rs and 1 in tasks_store.rs to core::git. Switch the atomic_replace calls in tasks.rs to core::fs::atomic_replace. Keep stdin, GIT_INDEX_FILE, and spawn local
+  status: completed
+  evidence: Moved snapshot/index/rollback machinery into `engine/tasks/git_snapshot.rs`; routed 12 ordinary task-engine Git operations and 1 store Git operation through `core::git`, with stdin, spawn, and GIT_INDEX_FILE flows kept local. Atomic replacement uses `core::fs`. Verified by seam test (1 passed), ACDD suite (68 passed), strict all-target Clippy, and all-target/all-features check.
+- subtask_ref: decompose-blackboard-engine-and-persistence
+  title: Move blackboard request validation into engine/tasks/blackboard.rs, and blackboard_post, blackboard_post_scoped, blackboard_post_scoped_with_gate, blackboard_page, blackboard_page_for_gate, blackboard_inspect, blackboard_read, and blackboard_clear into db/tasks_store/blackboard.rs
+  status: completed
+  evidence: Moved engine request types/validation/dispatch into `engine/tasks/blackboard.rs` and TasksStore blackboard persistence into `db/tasks_store/blackboard.rs`, with facade re-exports preserving public names. Verified by ACDD suite (68 passed) and strict all-target Clippy.
+- subtask_ref: decompose-subtask-and-lifecycle-store
+  title: Move subtask CRUD into db/tasks_store/subtasks.rs and claim, reset, reopen, extend_scope, delete, and cleanup into db/tasks_store/lifecycle.rs. Leave TasksStore::submit in engine/tasks/gates.rs
+  status: completed
+  evidence: Moved subtask CRUD to `db/tasks_store/subtasks.rs` and claim/reset/reopen/scope/delete/cleanup operations to `db/tasks_store/lifecycle.rs`. Verified by ACDD suite (68 passed), all-target/all-features check, and strict all-target Clippy.
+- subtask_ref: assemble-task-engine-and-store-facades
+  title: Keep tasks/mod.rs and tasks_store/mod.rs as facades, including the gates module added by task 1 and the existing context and workspaces modules
+  status: completed
+  evidence: Turned both former god files into `mod.rs` facades and retained existing modules and compatibility exports. Forge code-map reports zero parse errors in both module trees; `cargo check --all-targets --all-features` and strict Clippy pass.
+- subtask_ref: verify-acdd-task-suite
+  title: Verify cargo test --test acdd passes
+  status: completed
+  evidence: '`cargo test --test acdd` passed: 68 passed, 0 failed, 0 ignored. `cargo test --lib temporary_git_index_is_removed_when_dropped` passed: 1 passed. Strict `cargo clippy --all-targets --all-features -- -D warnings` passed.'
+receipt:
+  contract_revision: 6
+  passed_at: 2026-10-10T23:44:36.297123965+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test acdd
+      exit_code: 0
+      tests_passed: 68
+      tests_failed: 0
+      log: Also passed cargo test --lib temporary_git_index_is_removed_when_dropped (1 passed), cargo check --all-targets --all-features, cargo clippy --all-targets --all-features -- -D warnings, targeted rustfmt, and git diff --check.
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Inspected pinned candidate 5e423e9 against baseline 086b61deb0d9fbfb33ae87e66116470ff0aaa650. The scoped patch replaces src/engine/tasks.rs with src/engine/tasks/mod.rs and adds git_snapshot.rs, blackboard.rs, lifecycle.rs; it renames src/db/tasks_store.rs to src/db/tasks_store/mod.rs and adds db blackboard, subtasks, and lifecycle modules. Every changed or added path is in the initial scope, including the in-scope temporary-index regression test; no profile, configuration, credentials, generated state, or neighboring project paths changed.
+        claims:
+          applicable: true
+          evidence: 'Facade/API compatibility is retained: tasks/mod.rs keeps the public request/parameter types and re-exports blackboard, BlackboardAction/Request/Scope plus claim/manage/reopen/reset; tasks_store/mod.rs keeps the data types and re-exports clear_blackboard and is_canonical_blackboard_topic, while moved TasksStore methods remain public inherent methods. Engine blackboard validation/dispatch, DB blackboard persistence, DB subtask CRUD, and DB lifecycle operations are split into the contracted modules. Ordinary Git queries now use core::git; raw Command::new("git") remains only in git_snapshot.rs for piped-stdin/spawn index operations or commands isolated with GIT_INDEX_FILE. Both milestone receipt replacements use core::fs::atomic_replace. TemporaryGitIndex removes its file in Drop and the added unit test checks that cleanup. Build evidence records cargo test --test acdd (68 passed), the temporary-index cleanup test (1 passed), cargo check --all-targets --all-features, and strict all-target Clippy.'
+        concurrency:
+          applicable: true
+          evidence: The moved TasksStore claim/reset/scope/delete and subtask add/update paths retain immediate SQLite transactions; claim/revision and task status checks remain in place. Blackboard task posts retain conditional INSERT ... SELECT guards against task completion/subtask deletion races. The engine delivery path retains the receipt lock, baseline/HEAD fencing, and GitHeadRollback/GitIndexRollback restoration after hook or persistence failure. No new lock ordering or cross-store sharing is introduced.
+        project_isolation:
+          applicable: true
+          evidence: Workspace owner selection, worktree validation, frozen scope checks, confined milestone paths, and namespace-qualified task/milestone guards remain on the production paths. Snapshot capture starts from an empty temporary index and adds only admitted scope paths; delivery still requires the receipt path to be under the worktree and applies candidate files through the isolated delivery index.
+        administration:
+          applicable: true
+          evidence: No profile, schema migration, repository configuration, hook, or archived receipt format changed. Submission still derives the accepted snapshot from scoped capture, validates candidate/baseline identity and tree/parent before commit, preserves hook failure rollback, and persists the receipt through the existing pre-persist delivery path. Ordinary Git helper ownership is consolidated under core::git, with only stdin/spawn or GIT_INDEX_FILE operations remaining local.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli. Direct rusqlite use in src/core/commitments stays.'
+    - 'INV-FROZEN-ENGINE-DB-CYCLE: The legacy mutual import cycle between src/engine and src/db accepts no new edge. Ports that would break it belong to a later milestone.'
+    - 'INV-BALANCED-MODULARITY: Split only along mixed responsibilities. Cohesive multi-pass pipeline functions have no line-count cap.'
+    - 'INV-DEDUPLICATE-PROVEN-PATTERNS: Collapse a repeated block only where the control flow matches. Distinct rules stay separate.'
+    - 'INV-CANONICAL-HELPERS: Ordinary Git queries, atomic file writes, and cgroup memory detection have one owner in src/core.'
+    - 'INV-COMPAT-REEXPORTS: Moved scanner helpers keep pub use re-exports at engine::scanner. Pure receipt checks stay at core::tasks::gates. core does not re-export engine.'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Language extraction, static value flow, overload ambiguity, and selector disambiguation keep their current results.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: milestone-engine-and-scanner-modularization
