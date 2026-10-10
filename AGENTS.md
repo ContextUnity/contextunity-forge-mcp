@@ -4,13 +4,14 @@
 
 - Read [documentation instructions](docs/AGENTS.md) before documentation changes.
 - Read [architecture](docs/architecture/README.md) and [decisions](docs/adr/README.md) before structural changes.
+- Read [src/AGENTS.md](src/AGENTS.md) before source code changes and module decomposition.
 - Read [roadmap](docs/roadmap.md) and [milestones](docs/milestones/README.md) for admitted direction and commitments.
 - Read [tests/AGENTS.md](tests/AGENTS.md) for test placement and authoring boundaries.
 
 ## Routes
 
 - Runtime behavior and setup: [README.md](README.md) and [docs](docs/).
-- Architecture and performance: [architecture](docs/architecture/README.md) and [decisions](docs/adr/README.md).
+- Architecture and modularity: [src/AGENTS.md](src/AGENTS.md), [architecture](docs/architecture/README.md), and [decisions](docs/adr/README.md).
 - Interfaces: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), [ACDD navigation](docs/reference/acdd.md), and [CLI commands](docs/reference/cli.md).
 - Operations: [runbooks](docs/runbooks/README.md) and the [ACDD execution runbook](docs/runbooks/acdd.md).
 - Planning: [roadmap](docs/roadmap.md), [milestones](docs/milestones/README.md), and [plans](docs/plans/README.md).
