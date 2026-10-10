@@ -1,26 +1,27 @@
 ---
 id: m-source-modularity-and-god-file-decomposition
-title: "Source code modularity, god-file decomposition, and canonical helper extraction"
+title: Source code modularity, god-file decomposition, and canonical helper extraction
 doc_type: contract
-status: planned
+status: active
 depends_on:
-  - m-installer-distribution-and-acdd-onboarding
+- m-installer-distribution-and-acdd-onboarding
 owners:
-  - src/core/
-  - src/db/
-  - src/engine/
-  - src/engine/languages/
-  - src/engine/linker/
-  - src/engine/tasks/
+- src/core/
+- src/db/
+- src/engine/
+- src/engine/languages/
+- src/engine/linker/
+- src/engine/tasks/
 invariants:
-  - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli. Direct rusqlite use in src/core/commitments stays.'
-  - 'INV-FROZEN-ENGINE-DB-CYCLE: The legacy mutual import cycle between src/engine and src/db accepts no new edge. Ports that would break it belong to a later milestone.'
-  - 'INV-BALANCED-MODULARITY: Split only along mixed responsibilities. Cohesive multi-pass pipeline functions have no line-count cap.'
-  - 'INV-DEDUPLICATE-PROVEN-PATTERNS: Collapse a repeated block only where the control flow matches. Distinct rules stay separate.'
-  - 'INV-CANONICAL-HELPERS: Ordinary Git queries, atomic file writes, and cgroup memory detection have one owner in src/core.'
-  - 'INV-COMPAT-REEXPORTS: Moved scanner helpers keep pub use re-exports at engine::scanner. Pure receipt checks stay at core::tasks::gates. core does not re-export engine.'
-  - 'INV-ZERO-SEMANTIC-REGRESSION: Language extraction, static value flow, overload ambiguity, and selector disambiguation keep their current results.'
+- 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli. Direct rusqlite use in src/core/commitments stays.'
+- 'INV-FROZEN-ENGINE-DB-CYCLE: The legacy mutual import cycle between src/engine and src/db accepts no new edge. Ports that would break it belong to a later milestone.'
+- 'INV-BALANCED-MODULARITY: Split only along mixed responsibilities. Cohesive multi-pass pipeline functions have no line-count cap.'
+- 'INV-DEDUPLICATE-PROVEN-PATTERNS: Collapse a repeated block only where the control flow matches. Distinct rules stay separate.'
+- 'INV-CANONICAL-HELPERS: Ordinary Git queries, atomic file writes, and cgroup memory detection have one owner in src/core.'
+- 'INV-COMPAT-REEXPORTS: Moved scanner helpers keep pub use re-exports at engine::scanner. Pure receipt checks stay at core::tasks::gates. core does not re-export engine.'
+- 'INV-ZERO-SEMANTIC-REGRESSION: Language extraction, static value flow, overload ambiguity, and selector disambiguation keep their current results.'
 related_plans: []
+started_at: 2026-10-10T21:27:11+00:00
 ---
 
 # Source code modularity, god-file decomposition, and canonical helper extraction
@@ -39,7 +40,7 @@ Task 1 and task 2 share no files. Task 3 follows task 2. Tasks 4 and 5 follow ta
 task_ref: core-leaf-purification-and-canonical-primitives
 target: "Make src/core a leaf by moving submit and delivery-tree checks to engine::tasks, keeping pure receipt checks in core::tasks, and adding core::fs, core::git, and core::sys"
 proof_policy: seam-test-first
-contract_revision: 5
+contract_revision: 7
 scope:
   - src/core/fs.rs
   - src/core/git.rs
@@ -48,9 +49,10 @@ scope:
   - src/core/mod.rs
   - src/core/tasks/gates.rs
   - src/core/tasks/mod.rs
+  - src/engine/tasks.rs
   - src/engine/tasks/gates.rs
-  - src/engine/tasks/mod.rs
   - src/engine/scanner.rs
+  - tests/core/scanner_guard_limits.rs
 status: planned
 subtasks:
   - subtask_ref: split-gates-operational-execution
@@ -117,7 +119,9 @@ subtasks:
 task_ref: linker-pipeline-decomposition-along-existing-marks
 target: "Split link_compact_impl along its existing mark checkpoints, with no line-count cap"
 proof_policy: seam-test-first
-contract_revision: 5
+contract_revision: 6
+depends_on:
+  - deduplicate-proven-patterns-and-typescript-seams
 scope:
   - src/engine/linker.rs
   - src/engine/linker/mod.rs
@@ -149,7 +153,9 @@ subtasks:
 task_ref: task-engine-and-store-responsibility-split
 target: "Separate Git index snapshots, blackboard persistence, and subtask storage from task claim and submit, and migrate the ordinary Git calls in those files"
 proof_policy: seam-test-first
-contract_revision: 5
+contract_revision: 6
+depends_on:
+  - core-leaf-purification-and-canonical-primitives
 scope:
   - src/engine/tasks.rs
   - src/engine/tasks/mod.rs
@@ -186,7 +192,9 @@ subtasks:
 task_ref: milestone-engine-and-scanner-modularization
 target: "Split milestone contract parsing from Git handoff, migrate the 8 milestone Git calls, remove milestones::atomic_replace, and turn the post-cgroup scanner into scanner/mod.rs"
 proof_policy: seam-test-first
-contract_revision: 5
+contract_revision: 6
+depends_on:
+  - core-leaf-purification-and-canonical-primitives
 scope:
   - src/engine/milestones.rs
   - src/engine/milestones/mod.rs
