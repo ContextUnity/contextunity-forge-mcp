@@ -7,13 +7,36 @@ description: Load before repository code discovery, symbol lookup, dependency tr
 
 `contextunity-forge` provides high-performance semantic code-graph querying, architectural inspection, impact analysis, and **ACDD (Admitted-Contract-Driven Development)** task coordination for repositories indexed by Forge.
 
-## MCP & CLI Dual-Surface Binding
+## Documentation layers
 
-Use the registered Forge MCP tools or CLI (`contextunity-forge-mcp`) for symbols, callers, dependencies, impact, and task lifecycle operations:
-- Both interfaces share 100% functional parity.
-- The server may be named `contextunity-forge` or `forge-mcp`; use the active registry and tool schemas.
-- Start with `code_map_overview` to verify the active workspace, components, and indexing coverage.
-- Hot reload: On Unix, `contextunity-forge-mcp reload` sends `SIGHUP` to running servers, replacing the executable in-place without breaking client connections.
+Every indexed repository uses these roles. Create a directory only when it has pages. A page states current behavior or a command.
+
+| Path | Contains |
+| --- | --- |
+| `docs/AGENTS.md` | Authoring rules for that tree |
+| `docs/README.md` | Navigation |
+| `docs/roadmap.md` | One or two strategic paragraphs |
+| `docs/architecture/` | Current system topology |
+| `docs/adr/` | Accepted decisions |
+| `docs/reference/` | Interfaces: configuration, CLI, tools, and schemas |
+| `docs/runbooks/` | Commands and operational sequence for that repository |
+| `docs/testing/` | How that repository verifies |
+| `docs/milestones/` | Admitted commitments. `archive/` keeps receipts |
+| `docs/plans/` | Proposals before admission |
+| `docs/archive/` | Retained history outside the documentation index |
+
+The repository `AGENTS.md` names the verification command and the Git permission. The Forge binary's schemas stay in the Forge repository's `docs/reference/`. Indexer markup for pages Forge searches is in the Forge repository's `docs/AGENTS.md`.
+
+## Forge MCP Server & CLI Dual-Surface Binding
+
+> **CRITICAL DIRECTIVE**: Agents **MUST** use registered `contextunity-forge-mcp` MCP tools as the primary mechanism for code discovery, architecture inspection, documentation search, and task lifecycle operations whenever the server is active. Do NOT fallback to ad-hoc scripts or raw `grep` for code discovery unless Forge is unavailable.
+
+- **MCP & CLI Dual-Surface**: Use registered Forge MCP tools or the CLI (`contextunity-forge-mcp`) on the surface providing the required operation.
+- **Server Identity**: The MCP server is typically registered as `contextunity-forge` or `contextunity-forge-mcp`; use the active registry and tool schemas.
+- **Repository Setup**: Repositories declare tool routing using the canonical template in [references/agents.md.example](references/agents.md.example).
+- **CLI-Only Operations**: Milestone lifecycle commands (`milestone init/list/show/handoff`) are intentionally CLI-only.
+- **Session Kickoff**: Start with `code_map_overview()` to verify active workspace, components, and indexing coverage.
+- **Hot Reload**: On Unix, `contextunity-forge-mcp reload` sends `SIGHUP` to running servers, replacing the executable in-place without breaking client connections.
 
 ## Core Operational Boundaries
 
@@ -62,47 +85,60 @@ flowchart TD
 
 ---
 
-## ACDD (Admitted-Contract-Driven Development) & Tasks
+## ACDD
 
-ACDD connects Git milestone contracts (`docs/milestones/*.md`) to an executable, deterministic task queue in SQLite (`.forge/tasks.sqlite`). Code index rebuilds never reset task state.
+ACDD connects Git milestone contracts (`docs/milestones/*.md`) to a task queue in SQLite (`.forge/tasks.sqlite`). A code-index rebuild does not reset task state. The Forge repository's [task reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/tasks.md) owns operation and evidence schemas.
 
-### The 4 Verification Gates
-Each task advances sequentially through four gates:
-1. `contract/v1`:
-   - Greenfield / Bug fix (`seam-test-first`): Claim gate, create failing red seam test, submit proof with non-zero exit code.
-   - Existing code / refactoring (`direct-proof`): Validate existing seam directly; exit code 0 accepted.
-2. `build/v1`: Implement changes, verify green passing tests, submit passing exit code proof.
-3. `review/v1`: Independent audit across 5 contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`).
-   - **Worker Separation Rule**: The reviewer's `worker_id` MUST differ from the accepted builder.
-4. `deliver/v1`: Delivery worker (different from builder) writes durable snapshot-backed receipt into SQLite and milestone Markdown, then clears task blackboard.
+The shared skill provides generic Forge MCP and CLI guidance. The active task profile and the current claim's `workflow_guidance` own gate identifiers and order, proof policy, role and model selection, review contours, and profile-specific behavior. Follow those returned instructions; do not infer a fixed workflow from this skill. Use [references/acdd_profile.yaml.example](references/acdd_profile.yaml.example) only as a profile configuration example.
 
-### Scope Boundaries & `scope_roots`
-- Tasks define `scope` (target files) and optional `scope_roots` (allowed directory trees).
-- Modifications are restricted to the task's admitted scope.
-- Extending scope (`task_manage action=extend_scope` or `contextunity-forge-mcp task extend-scope`) requires explicit ownership. If a path falls outside `scope_roots`, `contract_revision` must be bumped in the milestone spec before sync.
+The repository `AGENTS.md` names this skill, local verification instructions, and standing Git permissions (see [references/agents.md.example](references/agents.md.example)). It does not restate this procedure. Install the skill at `~/.agents/skills/contextunity-forge/SKILL.md` or `.agents/skills/contextunity-forge/SKILL.md` in the repository. Claim and inspect return `TASK_GUIDANCE_MISSING` when the configured guidance file is missing, does not name the skill, or the skill is not installed.
+
+### Documentation and instructions co-evolution
+
+A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates the corresponding documentation and agent instructions during its configured build stage.
+
+The active review guidance determines how documentation changes are checked. Include affected documentation in the admitted scope, or add it with `extend_scope` before editing. Respect the task's exclusive file claims.
+
+### Tests
+
+Load `test-contract-seam` for contract test procedure. Keep one task on one production seam; add subtask cases to that seam. The repository's test instructions name the test domains and commands.
+
+### Scope
+
+Stay inside the admitted scope. Use `task_manage(action=extend_scope)` to add paths before editing outside the task's current scope. Follow the active contract and profile for scope roots and revision requirements.
 
 ### Subtasks
-- Subtasks allow iterative checklists, unit step tracking, and fine-grained discoveries without inflating the milestone task DAG or altering parent contract digests.
-- Use `contextunity-forge-mcp task subtask add/update/list`.
 
-### Temporary Memory: Task Blackboard
-- Post and read transient collaboration messages across milestone, task, and subtask scopes.
-- Canonical topics:
-  - `contract_draft`: Red test path, command, failure output, proposed seam.
-  - `contract_findings`: Unsupported assumptions and required repairs.
-  - `build_proof`: Candidate SHA, focused test results, clippy status.
-  - `architectural_notes`: Architectural decisions that survive delivery (auto-copied into task receipt).
+Record discoveries with `task subtask add`. Do not add a root milestone task for them. `context_bundle.guidance.subtask_dod` is advisory. A status update records the caller-provided status and evidence and does not score it.
 
-### Closing a Milestone
-- Once all tasks are delivered and committed, run full verification:
-  ```bash
-  contextunity-forge-mcp milestone handoff <id> \
-    --verification-command "cargo test --all-targets" \
-    --tests-passed <N> --tests-failed 0
-  ```
-- This writes the handoff receipt, seals Git commit SHAs, and moves the contract into `docs/milestones/archive/`.
+- Contract slice resolution: Demonstrably resolves an explicit, bounded slice of the contract without breaking boundaries.
+- Milestone and ADR alignment: Builds upon existing architectural seams rather than ad-hoc isolated patches.
+- Production-seam evidence: Validates through real production paths rather than synthetic stubs mocking away system complexity.
+- Systemic non-regression: Preserves existing behavior and untouched invariants.
+- Anti-looping invariant: Retain fail-closed boundaries and escalate via `task_blackboard` when repeated attempts stall.
 
----
+### Blackboard
+
+Post and read temporary messages at milestone, task, and subtask scope. Read the active tool schema for supported topics and gate targeting. Delivery copies configured durable topics into the receipt rollup and clears that task's messages.
+
+### Git permissions and milestone close
+
+The active delivery profile controls whether Forge or the agent creates the task commit:
+
+- With `auto_commit: true`, Forge commits the candidate tree together with the milestone receipt during delivery. Do not create a duplicate task commit.
+- With `auto_commit: false`, after delivery create one scoped task commit containing the task changes and generated receipt under the repository's standing permission.
+
+Merge each delivered task branch into the milestone branch and remove its temporary branch and worktree under the active ACDD permission. Load `commit-workflow` before authorized manual task or archive commits.
+
+Run the repository verification command before milestone handoff:
+
+```bash
+contextunity-forge-mcp milestone handoff <id> \
+  --verification-command "<project-verification-command>" \
+  --tests-passed <N> --tests-failed 0
+```
+
+`milestone handoff` is CLI-only. It records verified results and archives the milestone; it does not run tests. After handoff succeeds, create the final milestone archive commit and merge the milestone branch into its target under the active permission.
 
 ## Workspace Adapters (`forge-mcp.yaml`) & Default Behavior
 
@@ -152,7 +188,7 @@ response:
 
 ---
 
-## Complete MCP Tool Matrix (20 Tools)
+## MCP Tool Reference
 
 ### Operational Task Lifecycle
 - `task_list(repository?, milestone_ref?, milestone_status?, status?, stage?, detail?)`: Query task cards; defaults to ready tasks in active milestones.

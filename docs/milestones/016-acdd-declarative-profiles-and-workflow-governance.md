@@ -216,35 +216,89 @@ receipt:
 
 ```yaml
 task_ref: acdd-skill-single-source-of-truth-and-spec-consolidation
-target: "Consolidate ACDD tool usage, onboarding reference examples, and standing Git permissions into shared skill as generic reference and redirect redundant reference spec"
+target: Consolidate ACDD tool usage, onboarding reference examples, and standing Git permissions into shared skill as generic reference and redirect redundant reference spec
 proof_policy: direct-proof
 contract_revision: 17
 depends_on:
-  - agent-guidance-skill-validation-and-mcp-semantics
+- agent-guidance-skill-validation-and-mcp-semantics
 invariants:
-  - 'INV-SKILL-TOOL-REFERENCE-DELEGATION: The contextunity-forge skill serves as the generic tool reference and standing Git permission baseline, delegating workflow gate governance, review contours, and role policies to the active task profile. Git standing permissions explicitly distinguish auto_commit: true (Forge creates atomic commit on deliver) from auto_commit: false (agent commits after deliver) and final milestone archive commits.'
+- 'INV-SKILL-TOOL-REFERENCE-DELEGATION: The contextunity-forge skill serves as the generic tool reference and standing Git permission baseline, delegating workflow gate governance, review contours, and role policies to the active task profile. Git standing permissions explicitly distinguish auto_commit: true (Forge creates atomic commit on deliver) from auto_commit: false (agent commits after deliver) and final milestone archive commits.'
 scope:
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/agents.md.example
-  - docs/runbooks/acdd.md
-  - docs/reference/acdd.md
-  - tests/mcp/skill_sync.rs
-  - tests/mcp.rs
-  - AGENTS.md
-status: ready
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/agents.md.example
+- docs/runbooks/acdd.md
+- docs/reference/acdd.md
+- tests/mcp/skill_sync.rs
+- tests/mcp.rs
+- AGENTS.md
+status: completed
 subtasks:
-  - subtask_ref: elevate-skill-tool-guidance-and-standing-permissions
-    title: "Codify generic MCP tool usage, protocols, standing Git permissions, and delivery auto-commit semantics in skills/contextunity-forge/SKILL.md and AGENTS.md, documenting that delivery automatically commits candidate tree and milestone receipt when auto_commit: true (default) eliminating duplicate agent commits, that agents only commit task deliverables when auto_commit: false or upon milestone archive after handoff, and that workflow gate sequences are sourced dynamically from the active profile"
-    status: pending
-  - subtask_ref: maintain-onboarding-agents-md-example
-    title: "Maintain canonical skills/contextunity-forge/references/agents.md.example providing clean template for repository AGENTS.md routing and standing Git permissions (Forge commits on deliver when auto_commit: true; agents commit when auto_commit: false or milestone archive after handoff)"
-    status: pending
-  - subtask_ref: replace-redundant-reference-acdd-doc-with-redirect
-    title: "Replace deprecated docs/reference/acdd.md with clean cross-references pointing to SKILL.md and runbooks"
-    status: pending
-  - subtask_ref: track-skill-drift-verification-test
-    title: "Update tests/mcp/skill_sync.rs to actively assert synchronization between repo skill and installed global skill (~/.agents/skills/contextunity-forge), failing when drift is detected"
-    status: pending
+- subtask_ref: elevate-skill-tool-guidance-and-standing-permissions
+  title: 'Codify generic MCP tool usage, protocols, standing Git permissions, and delivery auto-commit semantics in skills/contextunity-forge/SKILL.md and AGENTS.md, documenting that delivery automatically commits candidate tree and milestone receipt when auto_commit: true (default) eliminating duplicate agent commits, that agents only commit task deliverables when auto_commit: false or upon milestone archive after handoff, and that workflow gate sequences are sourced dynamically from the active profile'
+  status: pending
+  evidence: null
+- subtask_ref: maintain-onboarding-agents-md-example
+  title: 'Maintain canonical skills/contextunity-forge/references/agents.md.example providing clean template for repository AGENTS.md routing and standing Git permissions (Forge commits on deliver when auto_commit: true; agents commit when auto_commit: false or milestone archive after handoff)'
+  status: pending
+  evidence: null
+- subtask_ref: replace-redundant-reference-acdd-doc-with-redirect
+  title: Replace deprecated docs/reference/acdd.md with clean cross-references pointing to SKILL.md and runbooks
+  status: pending
+  evidence: null
+- subtask_ref: track-skill-drift-verification-test
+  title: Update tests/mcp/skill_sync.rs to actively assert synchronization between repo skill and installed global skill (~/.agents/skills/contextunity-forge), failing when drift is detected
+  status: pending
+  evidence: null
+receipt:
+  commit: 98b7e831ff7c66b95871376c1292ce64faa5d2a6
+  contract_revision: 17
+  passed_at: 2026-10-10T07:27:10.811617997+00:00
+  evidence:
+    test_proof:
+      command: CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR=/tmp/forge-skill-sync-016-r1-0t2dmnj6/matching cargo test --test mcp
+      exit_code: 0
+      tests_passed: 78
+      tests_failed: 0
+      log: 'Focused skill_sync seam with isolated matching skill copy: cargo test --test mcp skill_sync — exit 0, 2 passed, 0 failed (complete file-tree/content equality plus portable Markdown-link resolution from both user-level and repository-local install layouts). Full MCP suite with the same /tmp override: exit 0, 78 passed, 0 failed. Clippy: cargo clippy --all-targets --all-features -- -D warnings — exit 0. git diff --check — exit 0. Repository-relative Markdown link validation — 5 changed files passed. Regression evidence: before the SKILL.md fix, the link-resolution seam failed with missing task-reference targets in both isolated supported layout copies for ../../docs/reference/tasks.md; after replacing it with https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/tasks.md, both copies pass. Global installation was not modified; its pre-existing missing references/gitignore.example drift remains separately known.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Same stable reviewer confirms candidate 98b7e831ff7c66b95871376c1292ce64faa5d2a6, unchanged contract revision 17/digest 02bc69af0662989b2a19741d152beb43c15abd712d14c2c5f1e7acc2f45fd0f3 and same seven admitted paths. Compared original baseline 4c980a5, rejected candidate 2ede787, and remediation 98b7e83. Remediation changes only skills/contextunity-forge/SKILL.md and tests/mcp/skill_sync.rs. Original scoped diff remains the six authorized changed files; tests/mcp.rs remains registered and unchanged. All seven working file byte contents equal candidate before and after proof. Forge overview/claim confirm exact active absolute workspace. No repository/global edits by reviewer.
+        claims:
+          applicable: true
+          evidence: 'PASS; sole cumulative raw finding R1 from review claim 4 is confirmed-fixed. Introduced-regression origin remains attributed to 2ede787 versus 4c980a5. 98b7e83 replaces escaping ../../docs/reference/tasks.md with canonical HTTPS Forge task-reference URL, preserving schema ownership. New real installed-layout boundary test copies the complete skill and resolves Markdown destinations in both documented install layouts. Reviewer independently compiled the candidate''s exact validate_installed_skill_links implementation under /tmp: old href fails in both global-like and repo-local layouts; existing package-contained target passes; canonical URL passes without network. Current cargo test --test mcp skill_sync with isolated matching copy passes 2/2. Full five-contour first review is retained for unchanged instruction/docs behavior: generic tool reference and profile delegation, reference redirect, Git auto_commit true/false and final archive rules remain consistent. No other prior findings existed; no residual R1 remains.'
+        concurrency:
+          applicable: false
+          evidence: No production concurrency, SQLite, task-claim locking, or transaction behavior changes. Original sync test remains read-only with subprocess-local override. New installation-link test uses a uniquely created temporary directory incorporating process ID/time, copies immutable source bytes, collects both layout failures, and removes its owned directory on Drop. Reviewer proofs use independent /tmp trees and preserve stable scoped source. Concurrency control of task runtime is outside this candidate.
+        project_isolation:
+          applicable: true
+          evidence: 'R1 installed-path isolation is restored: task-reference navigation no longer depends on consumer .agents/docs or Forge checkout location. The validator canonicalizes relative destinations and rejects targets outside the copied installed package; no user global skill is changed. Whole-tree sync still roots local skill at CARGO_MANIFEST_DIR and default global skill at HOME/.agents/skills/contextunity-forge. Fresh reviewer controls show missing global root, missing relative file, changed bytes, and extra file all exit 101. Supported global-like and repository-local installs both pass current boundary proof. Existing real-global installation drift from first review remains separately reported, not converted into a source regression or concealed by edits.'
+        administration:
+          applicable: true
+          evidence: 'Read cumulative admission ledger /tmp/016-skill-sot-evidence-map.md and compared sole R1 plus previous rejected gate evidence. Current accepted build claim 5 records isolated focused 2/2, full MCP 78/78, Clippy all targets/features -D warnings exit0, diff check and five-file repository link validation pass. Reviewer fresh focused 2/2 plus exact current link-validator mutation matrix passed, proof artifacts /tmp/016-r1-review-xrub1qy8. Fresh repository-relative file/anchor validation passes for all five changed instruction/docs files; git diff --check 4c980a5 98b7e83 passes. No network success claim is made: canonical HTTPS link portability is validated structurally; remote content availability is not part of R1. Global installed drift remains an explicit environment limitation. R1 disposition confirmed-fixed by the same independent reviewer on this exact candidate.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-COMPLETED-SCOPE-RELEASE: Completed milestone tasks release their exclusive file locks in SQLite: the status != "completed" filter applies strictly to lock conflict detection during task claim and extend_scope, preserving stored scope path history while freeing file claims for successor tasks to extend into and evolve shared documentation and code paths without false scope conflicts.'
+    - 'INV-REPO-AGNOSTIC-GUIDANCE: Task guidance gap detection verifies skill presence, repository instruction compliance, and exact canonical .gitignore compliance (tracking .forge/acdd/** including .forge/acdd/profile.yaml and .forge/frameworks/** extensions while ignoring runtime SQLite databases, locks, and logs) without imposing tool-name restrictions or hardcoded internal URLs on external consumer repositories.'
+    - 'INV-SKILL-TOOL-REFERENCE-DELEGATION: The contextunity-forge skill serves as the generic tool reference and standing Git permission baseline, delegating workflow gate governance, review contours, and role policies to the active task profile. Git standing permissions explicitly distinguish auto_commit: true (Forge creates atomic commit on deliver) from auto_commit: false (agent commits after deliver) and final milestone archive commits.'
+    - 'INV-HANDOFF-RECORDING-CLARITY: Milestone handoff is CLI-only and records caller-verified test results into durable receipts without conflating execution with persistence: upon verifying that all milestone tasks are completed and verification tests pass, handoff resolves the landed commit for each task in the milestone branch (the commit that landed the task''s work into the milestone branch, whether via fast-forward or merge commit), rewrites receipt.commit of each task in the milestone document and SQLite store to that landed commit SHA, records the overall milestone handoff.commit (HEAD at handoff) in frontmatter, and archives the document; the subsequent milestone archive commit occurs after handoff and is excluded from receipt.commit. Exact verification commands and counts are codified in TESTS.md.'
+    - 'INV-DECLARATIVE-ACDD-PROFILE: The declarative YAML profile engine (GateProfile with embedded acdd.default.yaml via include_str!) strictly separates arbitrary gate id (workspace tokens defaulting to contract, build, review, deliver), closed proof taxonomy (contract, command, review, delivery, none, or scheme with recursive data schema validation driving context bundles, independent review, and durable receipts), gate fields (explicit sha_snapshot: bool per gate in defaults, reject_to, independent_from, review_sources, role, steps, tools, contours set reference, and proof: { scheme: ... } structural schema definition for scheme proof), command registry (commands mapping to executable shell commands), and hierarchical policies. Default 4 gates in acdd.default.yaml map strictly to proof: contract, command, review, and delivery; sha_snapshot is explicitly true for contract/build and false for review/deliver. contours is a nested dictionary (IndexMap<String, IndexMap<String, ContourDef>> preserving definition order) where "standard" preserves the canonical 5 contours (paths, claims, concurrency, project_isolation, administration) with operational criteria and descriptions; gates reference contour sets via gate.contours (defaulting to "standard"). Delivery gates (proof: delivery) support auto_commit: bool (default true), creating an atomic Git commit directly from the candidate snapshot tree of the nearest predecessor gate with sha_snapshot: true (which is build in the default profile, whose candidate tree SHA is verified across all review_sources) plus the milestone receipt, with parent HEAD, verifying git rev-parse HEAD matches candidate_baseline_head (the exact commit SHA of HEAD captured when the candidate snapshot was created), standard commit messages derived from task targets and completed subtasks, and enforced hooks; the created commit SHA is persisted into the task''s delivery receipt in SQLite. If git commit fails, SQLite receipt recording and task completion roll back atomically, leaving the task at deliver with an explicit error ready for reject rewind or retry. Upon milestone handoff, Forge resolves each task''s landed commit in the milestone branch and rewrites receipt.commit to that landed SHA before archiving the document (the archive commit is created after handoff and is excluded from receipt.commit). Delivery rolls up reviews across review_sources (strictly prior gates with proof: review verifying the identical candidate SHA). Profile resolution precedence: task.spec.acdd_profile over milestone.acdd_profile over forge-mcp.yaml path link over .forge/acdd/profile.yaml over embedded defaults. Single-line profile pinning format in milestone frontmatter or task spec (acdd_profile: "<path>:<sha256_prefix>" with at least 7 hex characters) is persisted into SQLite task metadata during task sync; Forge verifies the file hash prefix matches, failing closed with TASK_PROFILE_TAMPERED on mismatch. Task operations validating gate identifiers fail closed with TASK_STAGE_UNKNOWN if a task stage is missing from the active profile gates, providing actionable recommendations. Zero runtime backward-compatibility is maintained strictly across SQLite runtime data and active milestones: historical archive receipts in docs/milestones/archive/ are exempt from active profile validation. Protected system paths in .forge/acdd/** cannot be added via extend_scope (TASK_SCOPE_PROTECTED) and dirty system files fail closed with TASK_SCOPE_VIOLATION unless explicitly admitted in the active task initial planning-time task.spec.scope. Linked workspace profiles are strictly ignored (only the active workspace root defines the ACDD profile). Profile compilation evaluates the merged profile and fails closed if gates is empty, delivery is not exactly one or not terminal, IDs repeat, reject_to or independent_from do not point to strictly prior gates, review_sources do not point to strictly prior review gates, or roles/contours/commands are undefined. Task state persists task.stage string ID where position is computed at runtime and unknown IDs stop claim. task list --stage accepts any active profile gate id.'
+    - 'INV-BLACKBOARD-GATE-ROUTING: task_blackboard in SQLite schema version 3 includes an optional gate TEXT column with query indexes, supports 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) with schema v2 to v3 migration and explicit legacy topic mapping (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) occurring strictly in the schema v3 migration, returns compact blackboard_info summaries and actionable schema hints on error, delivers targeted messages on claim, and rolls up decisions and deferred into durable receipts.'
+    - 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
+    - 'INV-SKILL-TOOL-REFERENCE-DELEGATION: The contextunity-forge skill serves as the generic tool reference and standing Git permission baseline, delegating workflow gate governance, review contours, and role policies to the active task profile. Git standing permissions explicitly distinguish auto_commit: true (Forge creates atomic commit on deliver) from auto_commit: false (agent commits after deliver) and final milestone archive commits.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: not_applicable
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: milestone-handoff-contract-and-repo-verification-gates

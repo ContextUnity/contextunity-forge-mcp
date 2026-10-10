@@ -1,0 +1,26 @@
+# Repository Agent Instructions Template
+
+Use this short router in a repository root `AGENTS.md` when ContextUnity Forge is active. Keep repository commands, test placement, and local boundaries in their owning documents.
+
+```markdown
+<!-- contextunity-forge:start -->
+# Repository Agent Instructions
+
+- Load the shared `contextunity-forge` skill for generic Forge MCP, CLI, and task tool guidance.
+- Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, role and model selection, review contours, and profile-specific behavior.
+- Read the repository's ACDD runbook for local execution steps, task reference for operation and evidence schemas, and `TESTS.md` for required verification commands.
+- Read the nearest `AGENTS.md` for test placement and other subtree-owned rules.
+
+## Forge ACDD Git Permissions
+
+- With `auto_commit: true`, Forge commits the candidate tree and milestone receipt during delivery; do not create a duplicate task commit.
+- With `auto_commit: false`, create one scoped task commit containing the task changes and generated receipt after delivery.
+- Merge each delivered task branch into the milestone branch and remove its temporary branch and worktree under the active ACDD permission.
+- After `milestone handoff`, create the final milestone archive commit and merge the milestone branch into its target.
+- Load `commit-workflow` before authorized manual task or archive commits. Require explicit approval for unrelated commits, pushes, or publication.
+<!-- contextunity-forge:end -->
+```
+
+---
+
+Adapt repository-relative document names and subtree routes when copying this template.
