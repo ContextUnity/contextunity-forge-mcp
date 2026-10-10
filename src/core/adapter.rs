@@ -1,3 +1,1 @@
-pub use crate::engine::scanner::{
-    canonical_root, checked_child, load_adapter, safe_relative, Adapter,
-};
+pub use crate::core::fs::{canonical_root, checked_child, safe_relative};

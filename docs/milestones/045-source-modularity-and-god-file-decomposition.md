@@ -38,38 +38,91 @@ Task 1 and task 2 share no files. Task 3 follows task 2. Tasks 4 and 5 follow ta
 
 ```yaml
 task_ref: core-leaf-purification-and-canonical-primitives
-target: "Make src/core a leaf by moving submit and delivery-tree checks to engine::tasks, keeping pure receipt checks in core::tasks, and adding core::fs, core::git, and core::sys"
+target: Make src/core a leaf by moving submit and delivery-tree checks to engine::tasks, keeping pure receipt checks in core::tasks, and adding core::fs, core::git, and core::sys
 proof_policy: seam-test-first
 contract_revision: 7
 scope:
-  - src/core/fs.rs
-  - src/core/git.rs
-  - src/core/sys.rs
-  - src/core/adapter.rs
-  - src/core/mod.rs
-  - src/core/tasks/gates.rs
-  - src/core/tasks/mod.rs
-  - src/engine/tasks.rs
-  - src/engine/tasks/gates.rs
-  - src/engine/scanner.rs
-  - tests/core/scanner_guard_limits.rs
-status: planned
+- src/core/fs.rs
+- src/core/git.rs
+- src/core/sys.rs
+- src/core/adapter.rs
+- src/core/mod.rs
+- src/core/tasks/gates.rs
+- src/core/tasks/mod.rs
+- src/engine/tasks.rs
+- src/engine/tasks/gates.rs
+- src/engine/scanner.rs
+- tests/core/scanner_guard_limits.rs
 subtasks:
-  - subtask_ref: split-gates-operational-execution
-    title: "Move TasksStore::submit, submit_with_pre_persist, accepted, validate_delivery_commit, delivery_tree_entries, ProvisionalReceiptRollback, and the receipt-side commit_tree_and_parent into src/engine/tasks/gates.rs. Keep REVIEW_CONTOURS, Evidence, validate_durable_receipt, validate_durable_receipt_with_profile, and their proof checkers in src/core/tasks/gates.rs"
-    status: pending
-  - subtask_ref: extract-canonical-git-primitives
-    title: "Implement crate::core::git (git_command, git_stdout, git_status, git_commit_exists) and migrate the 4 ordinary Git calls that move with delivery verification"
-    status: pending
-  - subtask_ref: unify-atomic-fs-primitives
-    title: "Move canonical_root, checked_child, and safe_relative into core::fs. Add atomic_replace beside atomic_write through commit_atomic_temp. Point ProvisionalReceiptRollback at core::fs::atomic_replace and leave milestones::atomic_replace for task 5"
-    status: pending
-  - subtask_ref: extract-system-memory-and-cgroup-detection
-    title: "Move cgroup v1/v2 parsing, available_memory_bytes, and memory_budget_bytes from engine::scanner into core::sys, and pub use those public functions from engine::scanner"
-    status: pending
-  - subtask_ref: verify-core-leaf-invariants
-    title: "Verify src/core imports no engine, db, mcp, or cli module, commitments still use rusqlite, and cargo test --test core passes"
-    status: pending
+- subtask_ref: split-gates-operational-execution
+  title: Move TasksStore::submit, submit_with_pre_persist, accepted, validate_delivery_commit, delivery_tree_entries, ProvisionalReceiptRollback, and the receipt-side commit_tree_and_parent into src/engine/tasks/gates.rs. Keep REVIEW_CONTOURS, Evidence, validate_durable_receipt, validate_durable_receipt_with_profile, and their proof checkers in src/core/tasks/gates.rs
+  status: completed
+  evidence: Moved submit, receipt transaction handling, delivery tree validation, and rollback into `src/engine/tasks/gates.rs`; `src/core/tasks/gates.rs` retains `Evidence`, gate proof validation, and durable receipt checks. Verified with `cargo test --manifest-path /tmp/contextunity-045-core-leaf-purification-and-canonical-primitives/Cargo.toml --test core` (31 passed, 0 failed, 1 ignored) and strict all-target Clippy.
+- subtask_ref: extract-canonical-git-primitives
+  title: Implement crate::core::git (git_command, git_stdout, git_status, git_commit_exists) and migrate the 4 ordinary Git calls that move with delivery verification
+  status: completed
+  evidence: Added `core::git::{git_command, git_stdout, git_status, git_commit_exists}` and routed the four delivery verification Git commands through `git_command`. Verified with the core integration suite and `cargo clippy --manifest-path /tmp/contextunity-045-core-leaf-purification-and-canonical-primitives/Cargo.toml --all-targets --all-features -- -D warnings`.
+- subtask_ref: unify-atomic-fs-primitives
+  title: Move canonical_root, checked_child, and safe_relative into core::fs. Add atomic_replace beside atomic_write through commit_atomic_temp. Point ProvisionalReceiptRollback at core::fs::atomic_replace and leave milestones::atomic_replace for task 5
+  status: completed
+  evidence: Moved canonical root, safe relative path, and checked child helpers to `core::fs`; added `atomic_replace` using shared `commit_atomic_temp`; moved receipt rollback to `core::fs::atomic_replace`; kept `engine::scanner` helper re-exports. Verified with the core integration suite and strict all-target Clippy.
+- subtask_ref: extract-system-memory-and-cgroup-detection
+  title: Move cgroup v1/v2 parsing, available_memory_bytes, and memory_budget_bytes from engine::scanner into core::sys, and pub use those public functions from engine::scanner
+  status: completed
+  evidence: Moved host/cgroup memory parsing and memory budget calculation to `core::sys`, re-exported public memory helpers from `engine::scanner`, and retained cgroup unit tests. Verified with `cargo test --manifest-path /tmp/contextunity-045-core-leaf-purification-and-canonical-primitives/Cargo.toml --lib` (37 passed) and the core integration suite.
+- subtask_ref: verify-core-leaf-invariants
+  title: Verify src/core imports no engine, db, mcp, or cli module, commitments still use rusqlite, and cargo test --test core passes
+  status: completed
+  evidence: Confirmed `src/core` has no `crate::engine`, `crate::db`, `crate::mcp`, or `crate::cli` references; core commitments still directly use rusqlite. `cargo test --manifest-path /tmp/contextunity-045-core-leaf-purification-and-canonical-primitives/Cargo.toml --test core` passed 31 tests (1 ignored), `cargo test --manifest-path /tmp/contextunity-045-core-leaf-purification-and-canonical-primitives/Cargo.toml --lib` passed 37 tests, and strict all-target Clippy passed.
+status: completed
+receipt:
+  contract_revision: 7
+  passed_at: 2026-10-11T00:02:57.417046638+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test core
+      exit_code: 0
+      tests_passed: 31
+      tests_failed: 0
+      log: 'Focused seam: cargo test --test core scanner_memory_helpers_reexport_the_core_system_contract passed (1 passed). Full core suite passed 31, failed 0, ignored 1. cargo clippy --all-targets --all-features -- -D warnings passed. Mutation check: replacing the direct scanner re-export with a forwarding wrapper made the seam fail (exit 101); the source was restored.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed pinned candidate 8e068fb against baseline 1cd4768d973454b79c0c6d79cb1398d572d7a122. The scoped patch changes only tests/core/scanner_guard_limits.rs (13 insertions, 10 deletions); the snapshot's included task artifacts are within the admitted path set. No profile/configuration, credential, generated-state, or neighboring-project paths are changed.
+        claims:
+          applicable: true
+          evidence: The seam now compares function items with std::ptr::fn_addr_eq, then samples available memory once and budget once for positivity and floor/cap assertions, avoiding equality checks across volatile host-memory reads. The accepted baseline's src/engine/scanner/mod.rs still directly re-exports core::sys::{available_memory_bytes, memory_budget_bytes}; this patch does not alter that production file, so the final facade remains restored. Build evidence records the focused/core tests and strict all-target Clippy passing, plus a forwarding-wrapper mutation failing the seam (exit 101).
+        concurrency:
+          applicable: true
+          evidence: The patch changes only the test and does not touch transaction, claim, receipt, Git, or filesystem publication logic. The replacement removes two time-separated dynamic memory samples from the re-export identity assertion; the remaining value checks each use one sample, so concurrent host/cgroup memory changes cannot cause the old cross-call equality failure.
+        project_isolation:
+          applicable: true
+          evidence: The test exercises the public core and scanner function items in the same crate and introduces no workspace paths, database access, profile loading, or Git operations. The production module re-export is unchanged from the captured baseline.
+        administration:
+          applicable: true
+          evidence: No schema, migration, profile, gate, repository configuration, or delivery behavior changes. Review identity differs from builder codex-build-memory-reexport-stability-20261011-r1. The accepted build evidence reports the focused seam, full core suite, strict Clippy, and wrapper-mutation failure; I did not rerun tests.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli. Direct rusqlite use in src/core/commitments stays.'
+    - 'INV-FROZEN-ENGINE-DB-CYCLE: The legacy mutual import cycle between src/engine and src/db accepts no new edge. Ports that would break it belong to a later milestone.'
+    - 'INV-BALANCED-MODULARITY: Split only along mixed responsibilities. Cohesive multi-pass pipeline functions have no line-count cap.'
+    - 'INV-DEDUPLICATE-PROVEN-PATTERNS: Collapse a repeated block only where the control flow matches. Distinct rules stay separate.'
+    - 'INV-CANONICAL-HELPERS: Ordinary Git queries, atomic file writes, and cgroup memory detection have one owner in src/core.'
+    - 'INV-COMPAT-REEXPORTS: Moved scanner helpers keep pub use re-exports at engine::scanner. Pure receipt checks stay at core::tasks::gates. core does not re-export engine.'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Language extraction, static value flow, overload ambiguity, and selector disambiguation keep their current results.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: deduplicate-proven-patterns-and-typescript-seams

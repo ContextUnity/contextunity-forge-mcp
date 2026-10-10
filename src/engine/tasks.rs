@@ -20,6 +20,7 @@ mod workspaces;
 use workspaces::Registry;
 mod context;
 use context::context_bundle;
+mod gates;
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -1255,15 +1256,28 @@ impl GitIndexRollback {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        let object_format = git_stdout(worktree, &["rev-parse", "--show-object-format"], "TASK_DELIVERY_INDEX_FAILED")?;
+        let object_format = git_stdout(
+            worktree,
+            &["rev-parse", "--show-object-format"],
+            "TASK_DELIVERY_INDEX_FAILED",
+        )?;
         let object_id_len = match object_format.as_str() {
             "sha1" => 40,
             "sha256" => 64,
-            _ => bail!("TASK_DELIVERY_INDEX_FAILED: unsupported Git object format '{object_format}'"),
+            _ => {
+                bail!("TASK_DELIVERY_INDEX_FAILED: unsupported Git object format '{object_format}'")
+            }
         };
-        let changed = paths.iter().cloned().collect::<std::collections::HashSet<_>>();
+        let changed = paths
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
         let mut previous = Vec::new();
-        for record in output.stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
+        for record in output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|record| !record.is_empty())
+        {
             let separator = record
                 .iter()
                 .position(|byte| *byte == b'\t')
@@ -1452,7 +1466,11 @@ fn add_candidate_entries_to_index(
         );
     }
     let mut entries = Vec::new();
-    for record in output.stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
+    for record in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
         let separator = record
             .iter()
             .position(|byte| *byte == b'\t')
@@ -1629,8 +1647,14 @@ fn commit_candidate_snapshot(
             String::from_utf8_lossy(&write_tree.stderr)
         );
     }
-    let expected_tree = String::from_utf8_lossy(&write_tree.stdout).trim().to_owned();
-    let head = git_stdout(worktree, &["rev-parse", "--verify", "HEAD"], "TASK_CANDIDATE_BASELINE_MISMATCH")?;
+    let expected_tree = String::from_utf8_lossy(&write_tree.stdout)
+        .trim()
+        .to_owned();
+    let head = git_stdout(
+        worktree,
+        &["rev-parse", "--verify", "HEAD"],
+        "TASK_CANDIDATE_BASELINE_MISMATCH",
+    )?;
     if head != candidate_baseline {
         let (head_tree, head_parent) = commit_tree_and_parent(worktree, &head)
             .unwrap_or_else(|_| (String::new(), String::new()));
@@ -1666,7 +1690,11 @@ fn commit_candidate_snapshot(
         .current_dir(worktree)
         .output()?;
     if !committed.status.success() {
-        if let Ok(head) = git_stdout(worktree, &["rev-parse", "--verify", "HEAD"], "TASK_DELIVERY_COMMIT_FAILED") {
+        if let Ok(head) = git_stdout(
+            worktree,
+            &["rev-parse", "--verify", "HEAD"],
+            "TASK_DELIVERY_COMMIT_FAILED",
+        ) {
             if let Ok((tree, parent)) = commit_tree_and_parent(worktree, &head) {
                 if tree == expected_tree && parent == candidate_baseline {
                     let mut rollback = GitHeadRollback {
@@ -1686,7 +1714,11 @@ fn commit_candidate_snapshot(
             String::from_utf8_lossy(&committed.stderr)
         );
     }
-    let landed = git_stdout(worktree, &["rev-parse", "--verify", "HEAD"], "TASK_DELIVERY_COMMIT_FAILED")?;
+    let landed = git_stdout(
+        worktree,
+        &["rev-parse", "--verify", "HEAD"],
+        "TASK_DELIVERY_COMMIT_FAILED",
+    )?;
     let mut rollback = GitHeadRollback {
         worktree: worktree.to_path_buf(),
         ref_name,
@@ -1721,7 +1753,9 @@ fn commit_candidate_snapshot(
         }
     };
     if let Err(error) = index_rollback.apply(&landed) {
-        index_rollback.restore().context("TASK_DELIVERY_ROLLBACK_FAILED")?;
+        index_rollback
+            .restore()
+            .context("TASK_DELIVERY_ROLLBACK_FAILED")?;
         rollback.rollback()?;
         return Err(error);
     }
@@ -1877,14 +1911,20 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     let mut store = workspace.open(&registry.database)?;
     let observed_task = store.inspect(&p.task_id)?;
     let profile = store.profile_for_task(&observed_task)?;
-    let gate_index = profile.index_of(&p.stage).with_context(|| format!(
-        "TASK_STAGE_UNKNOWN: '{}' is not in the active profile; choose one of: {}",
-        p.stage,
-        profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
-    ))?;
+    let gate_index = profile.index_of(&p.stage).with_context(|| {
+        format!(
+            "TASK_STAGE_UNKNOWN: '{}' is not in the active profile; choose one of: {}",
+            p.stage,
+            profile
+                .gates
+                .iter()
+                .map(|gate| gate.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
     let gate = &profile.gates[gate_index];
-    let is_delivery = gate.proof.kind()
-        == Some(crate::core::tasks::profile::ProofKind::Delivery);
+    let is_delivery = gate.proof.kind() == Some(crate::core::tasks::profile::ProofKind::Delivery);
     let _receipt_lock = if is_delivery {
         Some(lock_receipts(&registry.database)?)
     } else {
@@ -1922,24 +1962,32 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     if gate.sha_snapshot && p.action.name() == "pass" {
         let (snapshot, baseline) = capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
             .context("TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree")?;
-        if explicit_commit.as_ref().is_some_and(|commit| commit != &snapshot) {
+        if explicit_commit
+            .as_ref()
+            .is_some_and(|commit| commit != &snapshot)
+        {
             bail!("TASK_CANDIDATE_MISMATCH: supplied commit does not match the scoped snapshot");
         }
         evidence.commit = Some(snapshot);
         evidence.candidate_baseline_head = Some(baseline);
         candidate_commit = evidence.commit.clone();
     } else if needs_candidate {
-        let (candidate, candidate_baseline) = store
-            .build_snapshot_candidate(&p.task_id)?
-            .context("TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes this gate")?;
+        let (candidate, candidate_baseline) = store.build_snapshot_candidate(&p.task_id)?.context(
+            "TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes this gate",
+        )?;
         candidate_commit = Some(candidate.clone());
         evidence.candidate_baseline_head = Some(candidate_baseline.clone());
         if is_delivery && gate.auto_commit && p.action.name() == "pass" {
             if task.status == "completed" {
-                let delivered = task.receipt.as_ref()
+                let delivered = task
+                    .receipt
+                    .as_ref()
                     .and_then(|receipt| receipt.commit.as_deref())
                     .context("TASK_RECEIPT_INVALID: completed task has no delivery commit")?;
-                if explicit_commit.as_deref().is_some_and(|commit| commit != delivered) {
+                if explicit_commit
+                    .as_deref()
+                    .is_some_and(|commit| commit != delivered)
+                {
                     bail!("TASK_CANDIDATE_MISMATCH: supplied delivery commit differs from the accepted receipt");
                 }
                 evidence.commit = Some(delivered.to_owned());
@@ -1960,11 +2008,20 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
                 evidence.commit = Some(candidate.clone());
             }
         } else {
-            if explicit_commit.as_ref().is_some_and(|commit| commit != &candidate) {
+            if explicit_commit
+                .as_ref()
+                .is_some_and(|commit| commit != &candidate)
+            {
                 bail!("TASK_CANDIDATE_MISMATCH: supplied commit does not match accepted candidate");
             }
             evidence.commit = Some(candidate.clone());
-            if matches!(gate.proof.kind(), Some(crate::core::tasks::profile::ProofKind::Review | crate::core::tasks::profile::ProofKind::Delivery)) {
+            if matches!(
+                gate.proof.kind(),
+                Some(
+                    crate::core::tasks::profile::ProofKind::Review
+                        | crate::core::tasks::profile::ProofKind::Delivery
+                )
+            ) {
                 let (current, _) = capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
                     .context("TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree")?;
                 if current != candidate {
@@ -1979,10 +2036,8 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     let snapshot_scope = task.spec.scope.clone();
     let snapshot_commit = candidate_commit.clone().or_else(|| evidence.commit.clone());
     let snapshot_baseline = evidence.candidate_baseline_head.clone();
-    let delivery_needs_commit = is_delivery
-        && gate.auto_commit
-        && p.action.name() == "pass"
-        && task.status != "completed";
+    let delivery_needs_commit =
+        is_delivery && gate.auto_commit && p.action.name() == "pass" && task.status != "completed";
     let snapshot_milestone_ref = task.milestone_ref.clone();
     let task_result = store.submit_with_pre_persist(
         &p.task_id,
@@ -2062,7 +2117,9 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
         }
         Err(error) => {
             if let Some(rollback) = delivery_rollback.as_mut() {
-                rollback.rollback().context("TASK_DELIVERY_ROLLBACK_FAILED")?;
+                rollback
+                    .rollback()
+                    .context("TASK_DELIVERY_ROLLBACK_FAILED")?;
             }
             return Err(error);
         }

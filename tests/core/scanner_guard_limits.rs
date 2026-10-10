@@ -186,6 +186,31 @@ fn scanner_memory_budget_has_a_defensive_floor_and_cap() {
 }
 
 #[test]
+fn scanner_memory_helpers_reexport_the_core_system_contract() {
+    let core_available: fn() -> u64 = contextunity_forge_mcp::core::sys::available_memory_bytes;
+    let scanner_available: fn() -> u64 = scanner::available_memory_bytes;
+    assert!(
+        std::ptr::fn_addr_eq(scanner_available, core_available),
+        "scanner must re-export the canonical core memory helper"
+    );
+
+    let core_budget: fn() -> u64 = contextunity_forge_mcp::core::sys::memory_budget_bytes;
+    let scanner_budget: fn() -> u64 = scanner::memory_budget_bytes;
+    assert!(
+        std::ptr::fn_addr_eq(scanner_budget, core_budget),
+        "scanner must re-export the canonical core budget helper"
+    );
+
+    let available = scanner_available();
+    assert!(available > 0, "available memory must be positive");
+    let budget = scanner_budget();
+    assert!(
+        (64 * 1024 * 1024..=16 * 1024 * 1024 * 1024).contains(&budget),
+        "budget must retain its 64 MiB floor and 16 GiB cap"
+    );
+}
+
+#[test]
 fn delta_preserves_the_configured_file_size_limit() {
     let workspace = Workspace::new();
     workspace.write(".git/config", "");
