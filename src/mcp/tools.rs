@@ -179,7 +179,7 @@ impl Server {
         self.responding(|_, _| super::tasks::claim(&self.root, p))
     }
     #[tool(
-        description = "Pass or reject the claimed gate. Passing deliver/v1 writes the milestone receipt and clears the blackboard. The evidence field describes the required object."
+        description = "Pass or reject the claimed gate. Passing deliver writes the milestone receipt and clears the blackboard. The evidence field describes the required object."
     )]
     fn task_submit(&self, Parameters(p): Parameters<super::tasks::Submit>) -> CallToolResult {
         self.responding(|_, _| super::tasks::submit(&self.root, p))
@@ -414,7 +414,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Diagnostics for the workspace or one path, one read-only SELECT or WITH, stored syntax diagnostics, or static cycles. lint=true cannot combine with include_cycles=true and does not run SQL."
+        description = "Diagnostics for the workspace or one path, stored syntax diagnostics, or static cycles. lint=true cannot combine with include_cycles=true."
     )]
     fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
         self.responding(|adapter, policy| {

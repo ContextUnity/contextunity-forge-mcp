@@ -17,7 +17,7 @@
 - Verification: [required gates](TESTS.md) and the [testing guide](docs/testing/README.md).
 - Forge tool discovery and task operations: load the shared `contextunity-forge` skill.
 
-Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that provides the needed operation. Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, roles, models, review contours, and profile-specific behavior. Task builds run the affected test target and `cargo clippy --all-targets --all-features -- -D warnings`. The `TESTS.md` milestone gate is `cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets`.
+Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that provides the needed operation. Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, roles, models, review contours, and profile-specific behavior. Task builds run the affected test target and strict Clippy. Follow [TESTS.md](TESTS.md) for the exact task and milestone verification commands and count rules.
 
 ## Git permissions
 

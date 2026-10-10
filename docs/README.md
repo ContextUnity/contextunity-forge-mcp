@@ -15,7 +15,6 @@ Read [documentation instructions](AGENTS.md) before editing these pages.
 - [MCP tools](reference/mcp-tools.md): all 20 tools, selectors, paging, and a discovery workflow.
 - [Configuration](reference/configuration.md): indexing roots, linked workspaces, and response settings.
 - [Repository tasks](reference/tasks.md): claims, direct JSON evidence, blackboard messages, and receipts.
-- [ACDD](reference/acdd.md): admitted task gates, independent review, and context retention.
 - [Languages](reference/languages.md): compiled profiles, extensions, and static-analysis limits.
 
 ## Architecture
@@ -31,7 +30,8 @@ Read [documentation instructions](AGENTS.md) before editing these pages.
 
 - [Limits and freshness](runbooks/limits-and-freshness.md): protective indexing/query ceilings, recovery steps, source verification, and failure behavior.
 - [ACDD execution runbook](runbooks/acdd.md): the task and milestone delivery sequence.
-- [Testing](testing/README.md): test authority and verification commands.
+- [Required test gates](../TESTS.md): exact task and milestone verification commands.
+- [Testing guide](testing/README.md): test ownership, public seams, and verification cadence.
 
 ## Direction and work
 

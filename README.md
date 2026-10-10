@@ -22,7 +22,7 @@ Implemented in Rust, Forge operates as both a command-line interface and a stdio
   - `build/v1`: Green implementation with passing tests.
   - `review/v1`: Independent verification across 5 quality contours by a worker distinct from the builder.
   - `deliver/v1`: Snapshot-backed durable receipt recorded into SQLite and milestone Markdown.
-- **Milestone & Task Lifecycle Management**: Full CLI commands to initialize, show, filter, claim, advance, review, and close milestones (`milestone init/list/show/handoff`) and manage tasks/subtasks (`task list/claim/submit/subtask/blackboard`).
+- **Milestone & Task Lifecycle Management**: CLI commands initialize, list, inspect, and close milestones (`milestone init/list/show/handoff`). CLI and MCP task operations manage task queues and subtasks (`task list/claim/submit/subtask/blackboard`).
 - **Temporary Collaboration Memory**: Task-scoped message bus (`task_blackboard`) across milestone, task, and subtask levels, plus persistent session bookmarks (`session_checkpoint`).
 - **Zero-Daemon Architecture**: Pure local execution over stdio or CLI. No background daemons, cloud services, or centralized databases required.
 - **Protective Agent Budgets**: Automatic response paging (default 30 items), output payload caps (64 KiB), and bounded AST previews to prevent agent context exhaustion.
@@ -145,7 +145,7 @@ Milestone Contract (YAML frontmatter + Task specs)
    │                  ├── claim (build/v1)     -> Submit green passing test
    │                  ├── claim (review/v1)    -> Independent audit (different worker_id)
    │                  └── claim (deliver/v1)   -> Write durable receipt to Markdown
-   └── milestone handoff ──> Verify test suite, archive contract to archive/
+   └── milestone handoff ──> Record final verification, archive contract
 ```
 
 ### 1. How ACDD Works: The 4 Verification Gates
@@ -153,7 +153,7 @@ Every task moves strictly forward through four gates:
 1. `contract/v1`:
    - **`seam-test-first`** (Default for features/fixes): Worker claims the gate, introduces a failing red seam test, and submits proof with a non-zero exit code.
    - **`direct-proof`** (Refactoring/hardening): Directly verifies existing seams; exit code 0 accepted at contract gate.
-   - **`deferred-final-test`**: Task-level invariant validated; final integration test deferred to milestone closure.
+   - **`deferred-final-test`**: Contract proof accepts exit code 0. Build still requires a passing test. The milestone gate runs at handoff.
 2. `build/v1`: The builder implements code to satisfy the contract and submits proof with passing tests (exit code 0).
 3. `review/v1`: An independent reviewer audits the candidate against 5 contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`).
    - **Worker Separation Rule**: The reviewer's `worker_id` MUST differ from the accepted builder's `worker_id`.
@@ -162,7 +162,7 @@ Every task moves strictly forward through four gates:
 ### 2. Task Taxonomy & Scope Boundaries
 - **Feature Tasks**: Deliver a single architectural capability with exactly one root seam test.
 - **Scope Tasks**: Address cross-cutting domains via table-driven test harnesses (`cases: [...]`).
-- **Scope Roots (`scope_roots`)**: Tasks declare admitted file targets (`scope`) and allowed directory roots (`scope_roots`). Modifying files outside admitted roots is rejected to prevent accidental workspace leakage. Expanding scope requires updating `scope_roots` and incrementing `contract_revision` in the milestone spec before `task sync`.
+- **Scope Roots (`scope_roots`)**: Tasks declare file targets (`scope`) and allowed directory roots (`scope_roots`). `extend_scope` inside those roots keeps `contract_revision`. Changing `scope_roots` requires a higher `contract_revision` and `task sync`. Active tasks hold exclusive ownership of their files; a completed task releases that lock.
 - **Subtasks**: Iterative discoveries and checklists are tracked in SQLite (`task subtask add/update/list`) without invalidating the parent contract digest or cluttering the milestone queue.
 
 ### 3. Temporary Memory: Task Blackboard
@@ -173,40 +173,51 @@ The `task_blackboard` tool and CLI provide ephemeral SQLite messaging across `mi
 - `architectural_notes`: Significant decisions that automatically carry over into the durable receipt at `deliver/v1`.
 
 ### 4. Step-by-Step Task Execution Walkthrough
+
+Copy `task_id`, `stage`, `claim_revision`, `contract_revision`, `worker_id`, and `worktree` from the claim into `--evidence`. Proof shapes are in [task operations](docs/reference/tasks.md#gates-and-evidence).
+
 ```bash
-# 1. Discover ready tasks in active milestones
 contextunity-forge-mcp task list --stage contract
-
-# 2. Claim contract gate and submit failing seam test proof
 contextunity-forge-mcp task claim <task-id> --stage contract --worker agent-1 --worktree .
-contextunity-forge-mcp task submit <task-id> --stage contract --action pass --evidence '{"test_command":"cargo test test_seam","exit_code":1}'
+contextunity-forge-mcp task submit <task-id> --stage contract --action pass --evidence '{"task_id":"<task-id>","stage":"contract/v1","claim_revision":1,"contract_revision":1,"worker_id":"agent-1","worktree":"/absolute/worktree","proof":{"contract_proof":{"seam_test_ref":"tests/acdd/tasks.rs::test_name","red_exit_code":101}}}'
 
-# 3. Claim build gate and submit passing implementation proof
 contextunity-forge-mcp task claim <task-id> --stage build --worker agent-1 --worktree .
-contextunity-forge-mcp task submit <task-id> --stage build --action pass --evidence '{"test_command":"cargo test test_seam","exit_code":0}'
+contextunity-forge-mcp task submit <task-id> --stage build --action pass --evidence '{"task_id":"<task-id>","stage":"build/v1","claim_revision":2,"contract_revision":1,"worker_id":"agent-1","worktree":"/absolute/worktree","proof":{"test_proof":{"command":"cargo test --test acdd test_name","exit_code":0,"tests_passed":1,"tests_failed":0}}}'
 
-# 4. Independent review (worker must differ from builder)
 contextunity-forge-mcp task claim <task-id> --stage review --worker reviewer-2 --worktree .
-contextunity-forge-mcp task submit <task-id> --stage review --action pass --evidence '{"verdict":"accepted","contours":["paths","claims"]}'
+contextunity-forge-mcp task submit <task-id> --stage review --action pass --evidence '{"task_id":"<task-id>","stage":"review/v1","claim_revision":3,"contract_revision":1,"worker_id":"reviewer-2","worktree":"/absolute/worktree","commit":"<build-snapshot-sha>","proof":{"review_proof":{"decision":"pass","contours":{"paths":{"applicable":true,"evidence":"edits stay in scope"},"claims":{"applicable":true,"evidence":"seam matches the contract"},"concurrency":{"applicable":false,"evidence":"no shared state"},"project_isolation":{"applicable":true,"evidence":"repository boundary holds"},"administration":{"applicable":false,"evidence":"no configuration change"}}}}}'
 
-# 5. Delivery and receipt rollup
 contextunity-forge-mcp task claim <task-id> --stage deliver --worker reviewer-2 --worktree .
-contextunity-forge-mcp task submit <task-id> --stage deliver --action pass --evidence '{"receipt_note":"Delivered"}'
+contextunity-forge-mcp task submit <task-id> --stage deliver --action pass --evidence '{"task_id":"<task-id>","stage":"deliver/v1","claim_revision":4,"contract_revision":1,"worker_id":"reviewer-2","worktree":"/absolute/worktree","commit":"<build-snapshot-sha>","proof":{"delivered":true}}'
 ```
 
 ### 5. Closing a Milestone (`milestone handoff`)
-When all tasks in a milestone are delivered and committed:
+
+Milestone lifecycle commands are CLI-only. After every task is delivered, run the gate in [`TESTS.md`](TESTS.md#milestone-handoff-gate), then record its caller-verified result:
+
 ```bash
 contextunity-forge-mcp milestone handoff <id> \
-  --verification-command "cargo test --all-targets" \
-  --tests-passed 42 \
+  --verification-command "<TESTS.md gate>" \
+  --tests-passed <count> \
   --tests-failed 0
 ```
-This runs the full verification command, writes the `handoff` receipt with duration and commit SHA, updates SQLite references, and archives the milestone into `docs/milestones/archive/`.
+
+The handoff contract requires the CLI to check that every milestone task is
+completed, record the caller-verified result, and archive the milestone. The CLI
+does not execute the verification command.
+
+The contract also requires each task's `receipt.commit` to identify the commit
+that landed the task on the milestone branch, and `handoff.commit` to record the
+branch `HEAD` at handoff. Commit the archive afterward; that later archive commit
+is not recorded in either receipt.
+After handoff succeeds, commit the archived milestone and merge its branch into the target branch under the standing ACDD permission in root `AGENTS.md`.
 
 ---
 
 ## MCP Tool Reference (20 Tools)
+
+Milestone lifecycle commands are intentionally CLI-only. Use the CLI for
+`milestone init/list/show/handoff`; these operations have no MCP equivalents.
 
 | Category | Tool | Description |
 |---|---|---|
@@ -222,7 +233,7 @@ This runs the full verification command, writes the `handoff` receipt with durat
 | **Docs** | `search_docs` | Full-text searches indexed Markdown sections, architecture guides, and ADRs. |
 | **Docs** | `get_doc` | Reads an indexed document or specific heading section. |
 | **Query** | `code_map_query` | Executes specialized graph queries or paged read-only SQL queries. |
-| **Query** | `code_map_analyze` | Analyzes stored diagnostics, syntax lint errors, graph cycles, or custom SQL. |
+| **Query** | `code_map_analyze` | Analyzes stored diagnostics, syntax lint errors, or graph cycles. |
 | **Session** | `session_checkpoint` | Manages local workflow checkpoints in `.forge/checkpoints.json`. |
 | **Help** | `forge_guide` | Returns built-in guidance on tool selection, query syntax, and recovery. |
 | **Tasks** | `task_list` | Queries tasks with milestone, stage, repository, and status filters. |
@@ -248,7 +259,7 @@ contextunity-forge-mcp query tests 'src/lib.rs:run'            # Related test di
 contextunity-forge-mcp query remove 'src/lib.rs:run'           # Removal safety assessment
 contextunity-forge-mcp ast grep 'fn $NAME($$$)' --lang rust    # Tree-sitter AST grep
 contextunity-forge-mcp docs search 'ACDD' --doc-type guide     # Search documentation sections
-contextunity-forge-mcp docs get 'docs/reference/acdd.md'       # Retrieve documentation section
+contextunity-forge-mcp docs get 'docs/reference/tasks.md'       # Retrieve documentation section
 ```
 
 ### Milestones & Tasks
@@ -256,7 +267,7 @@ contextunity-forge-mcp docs get 'docs/reference/acdd.md'       # Retrieve docume
 contextunity-forge-mcp milestone list --status active          # List active milestones
 contextunity-forge-mcp milestone show 043 --full               # Inspect milestone contract
 contextunity-forge-mcp milestone init --num 045 --slug feature # Create new milestone contract
-contextunity-forge-mcp milestone handoff 043 ...               # Verify and archive completed milestone
+contextunity-forge-mcp milestone handoff 043 ...               # Record verification and archive completed milestone
 
 contextunity-forge-mcp task list --milestone 043               # List milestone tasks
 contextunity-forge-mcp task context <task-id>                  # Inspect unified task context bundle
@@ -268,12 +279,12 @@ contextunity-forge-mcp task subtask add <task-id> sub-1 "Note" # Add iterative s
 
 ## Documentation Links
 
+- [Test and verification gates](TESTS.md)
 - [Documentation Index](docs/README.md)
 - [MCP Setup & Client Configuration](docs/reference/mcp-setup.md)
 - [MCP Tool Reference](docs/reference/mcp-tools.md)
 - [CLI Reference](docs/reference/cli.md)
 - [Configuration Reference](docs/reference/configuration.md)
-- [ACDD Contract & Lifecycle](docs/reference/acdd.md)
 - [ACDD Execution Runbook](docs/runbooks/acdd.md)
 - [Task Schema & Operations](docs/reference/tasks.md)
 - [Indexing Architecture](docs/architecture/indexing.md)

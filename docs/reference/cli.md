@@ -62,7 +62,7 @@ Use [repository tasks](tasks.md) for `task list`, `create`, `sync`, `inspect`,
 `migrate preview/apply/verify` administration commands. These operations use
 `tasks_db` from `forge-mcp.yaml`; global `--db` selects only the code index.
 `task submit --evidence` accepts a JSON object with claim-bound identity and
-typed proof. The [ACDD workflow](acdd.md) completes a task with:
+typed proof. The `contextunity-forge` skill completes a task with:
 
 ```sh
 contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage STAGE] [--milestone-status active|planned|completed|all] [--planned|--completed|--all] [--full]
@@ -127,11 +127,14 @@ history so new work and audits can proceed.
 
 ## Repository milestones
 
+`milestone init`, `list`, `show`, and `handoff` are CLI-only. The MCP interface
+provides task operations and has no milestone lifecycle tools.
+
 ```sh
 contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|cancelled|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
 contextunity-forge-mcp milestone init [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
-contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --verification-command "cargo test --all-targets" --tests-passed <count> --tests-failed 0
+contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --verification-command "<verified TESTS.md milestone gate>" --tests-passed <count> --tests-failed 0
 ```
 
 `milestone list` returns a table and structured rows containing ID, title,
@@ -152,14 +155,23 @@ supplies a description and task blocks. Planned milestones omit `started_at`;
 `--active` records the current time. The command returns the file path and
 task sync and claim guidance.
 
-`milestone handoff` requires every milestone task in SQLite to be completed and
-the verification command to have zero failed tests. It writes `status:
-completed` and a `handoff` receipt with `completed_at`, `duration`, full Git
-commit, and language-neutral verification fields. It moves the file into an
-`archive/` directory beside the selected milestone and updates SQLite task references. An omitted
-`--commit` uses the current Git `HEAD`. See [repository tasks](tasks.md) for
-task claims, receipts, and activation timing. Milestone commands are CLI-only;
-the MCP task interface contains five flat tools.
+`milestone handoff` requires every milestone task in SQLite to be completed,
+a nonempty verification command, and a supplied failed-test count of zero. Run
+the verification gate from [`TESTS.md`](../../TESTS.md) before calling it; the
+CLI records the caller-verified result and does not execute the command.
+
+The handoff contract requires the CLI to resolve the commit that landed each
+task's work on the milestone branch (the fast-forwarded task commit or the task
+merge commit), then rewrite `receipt.commit` in each task block and SQLite task
+record to that SHA before archiving. It requires `status: completed` and a
+`handoff` frontmatter receipt whose `commit` records the milestone branch `HEAD`
+at handoff, or the supplied `--commit`, alongside `completed_at`, `duration`,
+and the verification `command`, `tests_passed`, and `tests_failed` fields. The
+CLI archives the milestone and updates SQLite task references. Commit the
+archived milestone afterward; that archive commit SHA is not recorded in the
+handoff or any task `receipt.commit`. An omitted `--commit` uses the current Git
+`HEAD`. See [repository tasks](tasks.md) for task claims, receipts, and
+activation timing.
 
 ## Server, guide, and checkpoints
 

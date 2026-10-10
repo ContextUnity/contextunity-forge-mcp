@@ -16,9 +16,8 @@ Preserve explicit validation boundaries and security checks.
 
 ## Canonical ownership
 
-Keep current topology in `architecture/`, interfaces in `reference/`, operations
-in `runbooks/`, and test guidance in `testing/`. Keep each contract in one canonical
-page and link its consumers. Record accepted decisions in `adr/` under owner
+Follow the documentation layers in the shared `contextunity-forge` skill.
+Keep each contract on one page and link its consumers. Record accepted decisions in `adr/` under owner
 approval; delivery agents escalate decision changes to that process.
 
 Use `roadmap.md` for one or two paragraphs of strategic context. Read admitted
@@ -87,7 +86,8 @@ align them with verified source. Apply clear accepted rules autonomously;
 escalate direct decision conflicts and irreversible database or data-loss choices.
 Preserve source-plan requirements until reconciliation proves their destination.
 Validate metadata, relative links, scan admission, and documentation retrieval.
-Obtain explicit approval for commits and publication under the root instructions.
+Follow root `AGENTS.md` ACDD permissions for task/archive commits and their
+branch merges. Obtain explicit approval for publication.
 
 ## Delivery documentation
 

@@ -24,22 +24,22 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
             json!({"frontmatter":"---\ndoc_type: architecture\ntitle: Module contract\n---","invariant":"> [!IMPORTANT] Invariant: Document the rule and reference `symbol.name`.","types":["architecture","adr","guide","api","plan"]}),
         ),
         "acdd" => Ok(json!({
-            "gates": ["contract/v1", "build/v1", "review/v1", "deliver/v1"],
+            "gates": ["contract", "build", "review", "deliver"],
             "proof_policies": {
-                "seam-test-first": "Greenfield: failing red seam test at contract/v1 (nonzero exit), passing green at build/v1.",
-                "direct-proof": "Pre-existing code: validate existing seam directly, exit code 0 accepted at contract/v1.",
-                "deferred-final-test": "Task-level policy: exit code 0 accepted at contract/v1; milestone-level final test runs before milestone handoff."
+                "seam-test-first": "Greenfield: failing red seam test at contract (nonzero exit), passing green at build.",
+                "direct-proof": "Pre-existing code: validate existing seam directly, exit code 0 accepted at contract.",
+                "deferred-final-test": "Task-level policy: exit code 0 accepted at contract; milestone-level final test runs before milestone handoff."
             },
             "blackboard_topics": {
                 "contract_draft": "Red test path, command, observed failure, proposed seam.",
                 "contract_findings": "Unsupported assumptions and required contract repairs.",
-                "build_proof": "Candidate SHA, focused test result, Clippy result.",
-                "architectural_notes": "Decisions or trade-offs surviving delivery; auto-copied to receipt at deliver/v1."
+                "build_proof": "Candidate SHA, focused test result, lint check result.",
+                "architectural_notes": "Decisions or trade-offs surviving delivery; auto-copied to receipt at deliver."
             },
             "review_contours": ["paths", "claims", "concurrency", "project_isolation", "administration"],
             "subtask_rules": "Subtask must name concrete target, expected status, and verification command. Not completed with partial implementation. Use subtask_add to deepen tasks, not root task proliferation.",
-            "commit_authority": "Task commits allowed in milestone worktrees. Merge to main, push, and force require user permission.",
-            "reference": "Read docs/reference/acdd.md for the contract, docs/runbooks/acdd.md for the execution sequence, docs/reference/tasks.md for API and evidence schemas."
+            "commit_authority": "Task commits, task-branch merges/cleanups, and merging the completed milestone branch into its target branch after handoff are authorized under ACDD. Push, force-push, and publication require user permission.",
+            "reference": "Load the contextunity-forge skill for the procedure, docs/runbooks/acdd.md for the execution sequence, docs/reference/tasks.md for API and evidence schemas."
         })),
         "query" => Ok(json!({
             "start": "Call code_map_overview to identify indexed paths and coverage.",

@@ -31,8 +31,8 @@ Selector grammar, SQL shape, proof objects, and examples stay in this page and i
 | `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`; depth defaults to one edge. Each reached node identifies one shortest predecessor edge. |
 | `code_map_tests` | Find test relationships for a `selector`; `direction` accepts `inbound` or `outbound`. Results distinguish graph evidence from the bounded lexical fallback for inbound searches. |
 | `code_map_prove_removal` | Estimate what a `selector` removal could affect; structural evidence, not a proof of runtime safety. |
-| `code_map_query` | Route an `operation` to graph queries or paged read-only SQL. |
-| `code_map_analyze` | Read workspace or path diagnostics, run read-only SQL, or request stored syntax diagnostics with `lint:true`; `include_cycles` opts into cycle analysis. |
+| `code_map_query` | Route an `operation` to graph queries or paged read-only SQL (`operation="sql"`). |
+| `code_map_analyze` | Read workspace or path diagnostics, or request stored syntax diagnostics with `lint:true`; `include_cycles` opts into cycle analysis. |
 | `ast_grep_search` | Match a language-specific AST `pattern` in admitted source. Indexed file lists and FTS terms narrow candidate files before Tree-sitter parses their contents. |
 | `search_docs` | Search indexed Markdown by `query` and optional `doc_type`; `include_excerpt=true` adds a bounded match excerpt. |
 | `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`. |
@@ -44,13 +44,13 @@ Selector grammar, SQL shape, proof objects, and examples stay in this page and i
 | `task_manage` | Create/sync specifications, inspect/context, delete, extend scope, manage subtasks, or reset/reopen tasks. See the [action schema](tasks.md#five-flat-mcp-tools). |
 | `task_blackboard` | Post, read, or inspect milestone-, task-, and subtask-scoped SQLite messages. `scope` selects the hierarchy level; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain it, with fail-closed resolution for omitted ambiguous context. `post` requires `topic` and `payload`, accepts optional `author`, and returns `{id}`. `read` accepts `topic`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first payload-free `{messages}` and `{pagination}` from the resolved context. `inspect` requires `message_id`, searches configured task workspaces, and returns the first matching message including its payload. |
 
-See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI parity, and [ACDD](acdd.md) for the task lifecycle.
+See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI parity, and the `contextunity-forge` skill for the task lifecycle.
 
 ## Selectors and graph queries
 
 Use a symbol identifier returned by search whenever possible. A file path selects a module or file. Selectors accept an exact ID, `path:name` or `path::name`, `path:known_kind:name` when the middle token is a registered node kind, and `path:line` or `path#Lline` for the narrowest symbol covering that line. Relative paths may use `./`, `file:`, or `file://` prefixes. A bare name can be ambiguous when a module and symbol share that name; specify the path. Markdown belongs in `get_doc` and `search_docs`.
 
-`code_map_query` supports `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, and `sql`. Its `impact` operation keeps the depth 2 default; the dedicated `code_map_impact` tool defaults to depth 1. Aliases: `doctor` for overview, and `search`, `discover`, or `find` for symbol search. `unwired` lists functions and methods with no indexed static caller and is not a dead-code proof. Compact `inspect` and `explain` operations return the same symbol summary as their dedicated tools; set `include_coverage=true` to add resolution coverage. For `operation="sql"`, put exactly one read-only `SELECT` or `WITH` statement in `selector`; the same secure SQL validation, query budget, and paged `QueryOptions` used by `code_map_analyze` apply. Pass `limit`, `offset`, and `generation` as tool arguments. Impact direction defaults to `inbound`; `outbound` traverses dependencies used by the selected symbol. See [CLI reference](cli.md) for equivalent command forms.
+`code_map_query` supports `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, and `sql`. Its `impact` operation keeps the depth 2 default; the dedicated `code_map_impact` tool defaults to depth 1. Aliases: `doctor` for overview, and `search`, `discover`, or `find` for symbol search. `unwired` lists functions and methods with no indexed static caller and is not a dead-code proof. Compact `inspect` and `explain` operations return the same symbol summary as their dedicated tools; set `include_coverage=true` to add resolution coverage. For `operation="sql"`, put exactly one read-only `SELECT` or `WITH` statement in `selector`; secure SQL validation, query budget, and paged `QueryOptions` apply. Pass `limit`, `offset`, and `generation` as tool arguments. Impact direction defaults to `inbound`; `outbound` traverses dependencies used by the selected symbol. See [CLI reference](cli.md) for equivalent command forms.
 
 Depth is limited to 16. A deep traversal whose first frontier exceeds 1,000 links is rejected; retry with depth 1 or a narrower selector. Removal analysis rejects scopes above 10,000 nodes. Graph results describe indexed, statically resolved relationships.
 
@@ -85,7 +85,7 @@ The registered matrix is: Rust supports all four capabilities; Python and TypeSc
 
 ## SQL and checkpoints
 
-`code_map_analyze` accepts exactly one `SELECT` or `WITH` statement. The connection is read-only, and write or administrative SQL is rejected. It has a query time budget; large result sets should be paged. Cycle analysis is omitted unless `include_cycles=true`. Cycles are static graph findings.
+`code_map_query(operation="sql")` accepts exactly one `SELECT` or `WITH` statement. The connection is read-only, and write or administrative SQL is rejected. It has a query time budget; large result sets should be paged. For structural cycle analysis, use `code_map_analyze` with `include_cycles=true`. Cycles are static graph findings.
 
 A checkpoint saves a JSON value under a local name in `.forge/checkpoints.json`. `save` needs both a name and valid JSON content. `list` returns each name with its serialized JSON byte size; `get` loads the value. Names are 1–200 UTF-8 bytes and cannot contain `..`, `/`, `\`, or a NUL byte. Values are limited to 1 MiB. A checkpoint is local session data, not part of the source index.
 
@@ -99,7 +99,7 @@ Call `code_map_analyze` with `lint:true` and an indexed file or directory in `ta
 
 Results include a rule ID, severity, language, path, line, and message, with pagination and generation checks. Coverage describes indexed sources and language-specific limits; excluded or unsupported files are not checked. An empty diagnostics page does not certify semantic correctness or compliance with style rules. Vue coverage is limited to its embedded scripts; HTML template expressions and styles are not validated.
 
-Syntax lint mode does not execute SQL or cycle analysis. Use a separate request for those operations. Ruff, Clippy, application-specific rules, and automatic fixes are outside this mode.
+Syntax lint mode does not execute cycle analysis. Use `code_map_query` for custom SQL or a separate `code_map_analyze` request for cycles. Ruff, Clippy, application-specific rules, and automatic fixes are outside this mode.
 
 ## Documentation queries
 

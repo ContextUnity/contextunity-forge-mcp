@@ -305,38 +305,92 @@ receipt:
 
 ```yaml
 task_ref: milestone-handoff-contract-and-repo-verification-gates
-target: "Codify TESTS.md verification gates, clarify CLI-only milestone handoff recording and task landed commit rewriting, and align tool guidance across CLI and MCP"
+target: Codify TESTS.md verification gates, clarify CLI-only milestone handoff recording and task landed commit rewriting, and align tool guidance across CLI and MCP
 proof_policy: direct-proof
 contract_revision: 17
 depends_on:
-  - acdd-skill-single-source-of-truth-and-spec-consolidation
+- acdd-skill-single-source-of-truth-and-spec-consolidation
 invariants:
-  - 'INV-HANDOFF-RECORDING-CLARITY: Milestone handoff is CLI-only and records caller-verified test results into durable receipts without conflating execution with persistence: upon verifying that all milestone tasks are completed and verification tests pass, handoff resolves the landed commit for each task in the milestone branch (the commit that landed the task''s work into the milestone branch, whether via fast-forward or merge commit), rewrites receipt.commit of each task in the milestone document and SQLite store to that landed commit SHA, records the overall milestone handoff.commit (HEAD at handoff) in frontmatter, and archives the document; the subsequent milestone archive commit occurs after handoff and is excluded from receipt.commit. Exact verification commands and counts are codified in TESTS.md.'
+- 'INV-HANDOFF-RECORDING-CLARITY: Milestone handoff is CLI-only and records caller-verified test results into durable receipts without conflating execution with persistence: upon verifying that all milestone tasks are completed and verification tests pass, handoff resolves the landed commit for each task in the milestone branch (the commit that landed the task''s work into the milestone branch, whether via fast-forward or merge commit), rewrites receipt.commit of each task in the milestone document and SQLite store to that landed commit SHA, records the overall milestone handoff.commit (HEAD at handoff) in frontmatter, and archives the document; the subsequent milestone archive commit occurs after handoff and is excluded from receipt.commit. Exact verification commands and counts are codified in TESTS.md.'
 scope:
-  - TESTS.md
-  - README.md
-  - AGENTS.md
-  - docs/AGENTS.md
-  - docs/README.md
-  - docs/reference/cli.md
-  - docs/reference/mcp-tools.md
-  - docs/testing/README.md
-  - src/cli/guide.rs
-  - src/mcp/tools.rs
-status: ready
+- TESTS.md
+- README.md
+- AGENTS.md
+- docs/AGENTS.md
+- docs/README.md
+- docs/reference/cli.md
+- docs/reference/mcp-tools.md
+- docs/testing/README.md
+- src/cli/guide.rs
+- src/mcp/tools.rs
+status: completed
 subtasks:
-  - subtask_ref: author-repo-tests-specification
-    title: "Author canonical TESTS.md defining task-level and milestone handoff verification gates"
-    status: pending
-  - subtask_ref: clarify-milestone-cli-only-and-handoff-semantics
-    title: "Clarify across README.md, CLI guides, and docs that milestone lifecycle commands are CLI-only, record verified test results, and that handoff rewrites receipt.commit for each task with its landed commit SHA in the milestone branch before archiving"
-    status: pending
-  - subtask_ref: repo-neutral-lint-guidance-in-guide
-    title: "Replace Rust-specific Clippy mention in src/cli/guide.rs with repo-neutral lint check result"
-    status: pending
-  - subtask_ref: clean-code-map-analyze-description
-    title: "Remove obsolete SQL references from code_map_analyze description in src/mcp/tools.rs"
-    status: pending
+- subtask_ref: author-repo-tests-specification
+  title: Author canonical TESTS.md defining task-level and milestone handoff verification gates
+  status: completed
+  evidence: TESTS.md now has YAML metadata and canonical task-level and milestone gates. It defines the strict Clippy command, the exact chained handoff command, sums per-target passed counts from cargo test --all-targets, excludes Clippy from test counts, and states that the caller runs verification before handoff. Verified with git diff --check and the local Markdown link-target check (81 links).
+- subtask_ref: clarify-milestone-cli-only-and-handoff-semantics
+  title: Clarify across README.md, CLI guides, and docs that milestone lifecycle commands are CLI-only, record verified test results, and that handoff rewrites receipt.commit for each task with its landed commit SHA in the milestone branch before archiving
+  status: completed
+  evidence: README.md and docs/reference/cli.md state that milestone lifecycle commands are CLI-only and verification results are caller-run and recorded, not executed. The handoff contract specifies landed task receipt.commit values, handoff.commit as branch HEAD at handoff, and the later archive commit as unrecorded. Runtime implementation is linked as a deferred prerequisite in task_blackboard message 125 to forge-mcp/forge-mcp/m-acdd-declarative-profiles-and-workflow-governance:acdd-configurable-profiles-and-workflow-engine / declarative-sha-snapshots-and-receipt-contour-validation. Verified with git diff --check and the local Markdown link-target check.
+- subtask_ref: repo-neutral-lint-guidance-in-guide
+  title: Replace Rust-specific Clippy mention in src/cli/guide.rs with repo-neutral lint check result
+  status: completed
+  evidence: src/cli/guide.rs describes build_proof as a focused test result plus a repo-neutral lint check result. Verified by Forge code_map_inspect and git diff --check.
+- subtask_ref: clean-code-map-analyze-description
+  title: Remove obsolete SQL references from code_map_analyze description in src/mcp/tools.rs
+  status: completed
+  evidence: src/mcp/tools.rs describes workspace/path diagnostics, stored syntax diagnostics, and cycles without advertising SQL on code_map_analyze. Focused MCP seam passed 1/1; Clippy passed. Full `cargo test --test mcp` was 77 passed/1 failed on the out-of-scope installed global skill drift, recorded separately in build evidence.
+receipt:
+  commit: 23199b91480980b4f0eb92f31c075bdbd357ffd2
+  contract_revision: 17
+  passed_at: 2026-10-10T07:46:34.341231101+00:00
+  evidence:
+    test_proof:
+      command: cargo test --test mcp mcp_analyze_router_checkpoint_and_guide_boundaries
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+      log: 'Focused production-seam proof: 1 passed, 0 failed, 77 filtered out. Required unfiltered affected target cargo test --test mcp: exit 101, 77 passed, 1 failed; failure was skill_sync::test_global_skill_matches_local_skill_when_present because the external global ContextUnity Forge skill install differs from the worktree-local skill (missing references/gitignore.example; changed SKILL.md and references/agents.md.example). cargo clippy --all-targets --all-features -- -D warnings: exit 0. git diff --check: exit 0 for tracked changes; TESTS.md no-index whitespace diagnostics: 0. Changed-document local-link check: 81 checked, 0 broken. TESTS.md now separates focused proof from the required full affected-target task gate while retaining milestone commands/count rules. Handoff receipt rewrite semantics remain a contract only and are deferred to forge-mcp/forge-mcp/m-acdd-declarative-profiles-and-workflow-governance:acdd-configurable-profiles-and-workflow-engine, subtask declarative-sha-snapshots-and-receipt-contour-validation.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Exact candidate 23199b91480980b4f0eb92f31c075bdbd357ffd2 contains exactly the ten admitted paths. Compared git ls-tree blob hashes with git hash-object for all ten current files: exact match. Prior reviewed candidate 62e5966 to current diff changes only TESTS.md. All unrelated dirty state preserved.'
+        claims:
+          applicable: true
+          evidence: 'R1 confirmed-fixed: TESTS.md explicitly separates focused contract/build proof from the unfiltered cargo test --test <affected-target> at build and review and requires command, exit code, passed and failed counts. This satisfies AGENTS.md:19 and docs/testing/README.md:23 and canonical task-level gate authority. Milestone commands, summed all-targets passed counts, Clippy exclusion and caller-run verification remain unchanged. Previously inspected CLI/MCP code descriptions and handlers are identical blob hashes. Milestone lifecycle is documented CLI-only; landed task receipt.commit, handoff.commit at HEAD and later archive commit remain correctly distinguished as the admitted contract. Independently inspected deferred blackboard message 125: runtime rewrite is explicitly owned by successor task/subtask, not claimed completed. Accepted current build evidence: focused MCP command cargo test --test mcp mcp_analyze_router_checkpoint_and_guide_boundaries exit 0, 1 passed/0 failed; unfiltered cargo test --test mcp exit 101, 77 passed/1 failed on skill_sync::test_global_skill_matches_local_skill_when_present due external global skill drift (missing references/gitignore.example and differing installed SKILL.md/agents example), explicitly recorded without global edits. Strict Clippy exit 0, tracked diff check exit 0, TESTS whitespace zero diagnostics, 81 links checked/0 broken. Reused current builder target evidence per coordinator instruction; no redundant suite rerun. No remaining task-owned defect.'
+        concurrency:
+          applicable: false
+          evidence: Entire candidate changes documentation and static CLI/MCP descriptions only. Repair changes only TESTS.md; no locks, transactions, scheduling, shared-state or task claim implementation changes.
+        project_isolation:
+          applicable: true
+          evidence: Forge claim confirms exact requested 016 worktree root. All ten current blobs match candidate. No linked workspace/global installed skill writes or unrelated-state edits; external skill drift stays explicitly recorded as an environment limitation.
+        administration:
+          applicable: true
+          evidence: Candidate retains accurate CLI-only milestone administration and caller-supplied verification recording. Standing ACDD authority for scoped task/archive work and approval boundaries for unrelated commits/push/publication preserved. Runtime receipt rewriting remains recorded as linked deferred work in message 125. No configuration/storage administration code changes, edits or review commits.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-COMPLETED-SCOPE-RELEASE: Completed milestone tasks release their exclusive file locks in SQLite: the status != "completed" filter applies strictly to lock conflict detection during task claim and extend_scope, preserving stored scope path history while freeing file claims for successor tasks to extend into and evolve shared documentation and code paths without false scope conflicts.'
+    - 'INV-REPO-AGNOSTIC-GUIDANCE: Task guidance gap detection verifies skill presence, repository instruction compliance, and exact canonical .gitignore compliance (tracking .forge/acdd/** including .forge/acdd/profile.yaml and .forge/frameworks/** extensions while ignoring runtime SQLite databases, locks, and logs) without imposing tool-name restrictions or hardcoded internal URLs on external consumer repositories.'
+    - 'INV-SKILL-TOOL-REFERENCE-DELEGATION: The contextunity-forge skill serves as the generic tool reference and standing Git permission baseline, delegating workflow gate governance, review contours, and role policies to the active task profile. Git standing permissions explicitly distinguish auto_commit: true (Forge creates atomic commit on deliver) from auto_commit: false (agent commits after deliver) and final milestone archive commits.'
+    - 'INV-HANDOFF-RECORDING-CLARITY: Milestone handoff is CLI-only and records caller-verified test results into durable receipts without conflating execution with persistence: upon verifying that all milestone tasks are completed and verification tests pass, handoff resolves the landed commit for each task in the milestone branch (the commit that landed the task''s work into the milestone branch, whether via fast-forward or merge commit), rewrites receipt.commit of each task in the milestone document and SQLite store to that landed commit SHA, records the overall milestone handoff.commit (HEAD at handoff) in frontmatter, and archives the document; the subsequent milestone archive commit occurs after handoff and is excluded from receipt.commit. Exact verification commands and counts are codified in TESTS.md.'
+    - 'INV-DECLARATIVE-ACDD-PROFILE: The declarative YAML profile engine (GateProfile with embedded acdd.default.yaml via include_str!) strictly separates arbitrary gate id (workspace tokens defaulting to contract, build, review, deliver), closed proof taxonomy (contract, command, review, delivery, none, or scheme with recursive data schema validation driving context bundles, independent review, and durable receipts), gate fields (explicit sha_snapshot: bool per gate in defaults, reject_to, independent_from, review_sources, role, steps, tools, contours set reference, and proof: { scheme: ... } structural schema definition for scheme proof), command registry (commands mapping to executable shell commands), and hierarchical policies. Default 4 gates in acdd.default.yaml map strictly to proof: contract, command, review, and delivery; sha_snapshot is explicitly true for contract/build and false for review/deliver. contours is a nested dictionary (IndexMap<String, IndexMap<String, ContourDef>> preserving definition order) where "standard" preserves the canonical 5 contours (paths, claims, concurrency, project_isolation, administration) with operational criteria and descriptions; gates reference contour sets via gate.contours (defaulting to "standard"). Delivery gates (proof: delivery) support auto_commit: bool (default true), creating an atomic Git commit directly from the candidate snapshot tree of the nearest predecessor gate with sha_snapshot: true (which is build in the default profile, whose candidate tree SHA is verified across all review_sources) plus the milestone receipt, with parent HEAD, verifying git rev-parse HEAD matches candidate_baseline_head (the exact commit SHA of HEAD captured when the candidate snapshot was created), standard commit messages derived from task targets and completed subtasks, and enforced hooks; the created commit SHA is persisted into the task''s delivery receipt in SQLite. If git commit fails, SQLite receipt recording and task completion roll back atomically, leaving the task at deliver with an explicit error ready for reject rewind or retry. Upon milestone handoff, Forge resolves each task''s landed commit in the milestone branch and rewrites receipt.commit to that landed SHA before archiving the document (the archive commit is created after handoff and is excluded from receipt.commit). Delivery rolls up reviews across review_sources (strictly prior gates with proof: review verifying the identical candidate SHA). Profile resolution precedence: task.spec.acdd_profile over milestone.acdd_profile over forge-mcp.yaml path link over .forge/acdd/profile.yaml over embedded defaults. Single-line profile pinning format in milestone frontmatter or task spec (acdd_profile: "<path>:<sha256_prefix>" with at least 7 hex characters) is persisted into SQLite task metadata during task sync; Forge verifies the file hash prefix matches, failing closed with TASK_PROFILE_TAMPERED on mismatch. Task operations validating gate identifiers fail closed with TASK_STAGE_UNKNOWN if a task stage is missing from the active profile gates, providing actionable recommendations. Zero runtime backward-compatibility is maintained strictly across SQLite runtime data and active milestones: historical archive receipts in docs/milestones/archive/ are exempt from active profile validation. Protected system paths in .forge/acdd/** cannot be added via extend_scope (TASK_SCOPE_PROTECTED) and dirty system files fail closed with TASK_SCOPE_VIOLATION unless explicitly admitted in the active task initial planning-time task.spec.scope. Linked workspace profiles are strictly ignored (only the active workspace root defines the ACDD profile). Profile compilation evaluates the merged profile and fails closed if gates is empty, delivery is not exactly one or not terminal, IDs repeat, reject_to or independent_from do not point to strictly prior gates, review_sources do not point to strictly prior review gates, or roles/contours/commands are undefined. Task state persists task.stage string ID where position is computed at runtime and unknown IDs stop claim. task list --stage accepts any active profile gate id.'
+    - 'INV-BLACKBOARD-GATE-ROUTING: task_blackboard in SQLite schema version 3 includes an optional gate TEXT column with query indexes, supports 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) with schema v2 to v3 migration and explicit legacy topic mapping (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) occurring strictly in the schema v3 migration, returns compact blackboard_info summaries and actionable schema hints on error, delivers targeted messages on claim, and rolls up decisions and deferred into durable receipts.'
+    - 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
+    - 'INV-HANDOFF-RECORDING-CLARITY: Milestone handoff is CLI-only and records caller-verified test results into durable receipts without conflating execution with persistence: upon verifying that all milestone tasks are completed and verification tests pass, handoff resolves the landed commit for each task in the milestone branch (the commit that landed the task''s work into the milestone branch, whether via fast-forward or merge commit), rewrites receipt.commit of each task in the milestone document and SQLite store to that landed commit SHA, records the overall milestone handoff.commit (HEAD at handoff) in frontmatter, and archives the document; the subsequent milestone archive commit occurs after handoff and is excluded from receipt.commit. Exact verification commands and counts are codified in TESTS.md.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: not_applicable
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: acdd-configurable-profiles-and-workflow-engine
