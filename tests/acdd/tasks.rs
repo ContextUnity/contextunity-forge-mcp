@@ -1,5 +1,20 @@
 use super::support::*;
 
+const CANONICAL_FORGE_GITIGNORE: &str = concat!(
+    "target/\n",
+    "!/.forge/\n",
+    "!/.forge/acdd/\n",
+    "!/.forge/acdd/**\n",
+    "!/.forge/frameworks/\n",
+    "!/.forge/frameworks/**\n",
+    ".forge/*.sqlite*\n",
+    ".forge/*.lock\n",
+    ".forge/*.log\n",
+    ".forge/*.jsonl\n",
+    ".forge/tasks/\n",
+    ".forge/checkpoints.json\n",
+);
+
 #[test]
 fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
     let specification = |agent_type: &str| {
@@ -43,6 +58,8 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             linked.0.display()
         ),
     );
+    root.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
+    linked.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
     linked.write(
         "forge-mcp.yaml",
         "task_repository: linked\ntask_project: linked\n",
@@ -193,28 +210,129 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
     let unnamed = ScopedWorkspace::new("forge_skill_unnamed");
     let global_only = ScopedWorkspace::new("forge_skill_global_only");
     let ignored_profile = ScopedWorkspace::new("forge_skill_ignored_profile");
-    for workspace in [&named, &named_mcp_skill, &unnamed, &global_only, &ignored_profile] {
+    let prefixed_name = ScopedWorkspace::new("forge_skill_prefixed_name");
+    let extended_mcp_name = ScopedWorkspace::new("forge_skill_extended_mcp_name");
+    let mcp_mention_without_skill_context =
+        ScopedWorkspace::new("forge_mcp_mention_without_skill_context");
+    let ignored_profile_yaml_exception =
+        ScopedWorkspace::new("forge_skill_ignored_profile_yaml_exception");
+    let wildcard_yaml_ignore = ScopedWorkspace::new("forge_skill_wildcard_yaml_ignore");
+    let wildcard_dot_ignore = ScopedWorkspace::new("forge_skill_wildcard_dot_ignore");
+    let runtime_path_negation = ScopedWorkspace::new("forge_skill_runtime_path_negation");
+    let markdown_mcp_skill_link = ScopedWorkspace::new("forge_skill_markdown_mcp_link");
+    let nested_framework_ignore = ScopedWorkspace::new("forge_skill_nested_framework_ignore");
+    let json_configuration_ignore = ScopedWorkspace::new("forge_skill_json_configuration_ignore");
+    let runtime_scan_negation = ScopedWorkspace::new("forge_skill_runtime_scan_negation");
+    let effective_protection_suffix =
+        ScopedWorkspace::new("forge_skill_effective_protection_suffix");
+    let unmatched_wildcard_configuration_ignore =
+        ScopedWorkspace::new("forge_skill_unmatched_wildcard_configuration_ignore");
+    let markdown_heading_reference = ScopedWorkspace::new("forge_skill_markdown_heading_reference");
+    let incomplete_gitignore = ScopedWorkspace::new("forge_skill_incomplete_gitignore");
+    let missing_gitignore = ScopedWorkspace::new("forge_skill_missing_gitignore");
+    for workspace in [
+        &named,
+        &named_mcp_skill,
+        &unnamed,
+        &global_only,
+        &ignored_profile,
+        &prefixed_name,
+        &extended_mcp_name,
+        &mcp_mention_without_skill_context,
+        &ignored_profile_yaml_exception,
+        &wildcard_yaml_ignore,
+        &wildcard_dot_ignore,
+        &runtime_path_negation,
+        &markdown_mcp_skill_link,
+        &nested_framework_ignore,
+        &json_configuration_ignore,
+        &runtime_scan_negation,
+        &effective_protection_suffix,
+        &unmatched_wildcard_configuration_ignore,
+        &markdown_heading_reference,
+        &incomplete_gitignore,
+        &missing_gitignore,
+    ] {
         workspace.write("src/lib.rs", "pub fn skill() {}\n");
         workspace.write("docs/010-skill.md", specification);
         workspace.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
     }
+    for workspace in [
+        &named,
+        &named_mcp_skill,
+        &unnamed,
+        &prefixed_name,
+        &extended_mcp_name,
+        &mcp_mention_without_skill_context,
+        &incomplete_gitignore,
+        &missing_gitignore,
+        &ignored_profile_yaml_exception,
+        &wildcard_yaml_ignore,
+        &wildcard_dot_ignore,
+        &runtime_path_negation,
+        &markdown_mcp_skill_link,
+        &nested_framework_ignore,
+        &json_configuration_ignore,
+        &runtime_scan_negation,
+        &effective_protection_suffix,
+        &unmatched_wildcard_configuration_ignore,
+        &markdown_heading_reference,
+    ] {
+        workspace.write(
+            ".agents/skills/contextunity-forge/SKILL.md",
+            "# ContextUnity Forge\n",
+        );
+    }
+    for workspace in [
+        &named,
+        &named_mcp_skill,
+        &unnamed,
+        &global_only,
+        &prefixed_name,
+        &extended_mcp_name,
+        &mcp_mention_without_skill_context,
+        &markdown_mcp_skill_link,
+        &markdown_heading_reference,
+        &effective_protection_suffix,
+        &unmatched_wildcard_configuration_ignore,
+    ] {
+        workspace.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
+    }
     named.write("AGENTS.md", "# Rules\nLoad the contextunity-forge skill.\n");
-    named.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
     named_mcp_skill.write(
         "AGENTS.md",
         "# Rules\nLoad contextunity-forge-mcp skill for ACDD.\n",
-    );
-    named_mcp_skill.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
     );
     unnamed.write(
         "AGENTS.md",
         "# Rules\nUse contextunity-forge-mcp for queries.\n",
     );
+    prefixed_name.write("AGENTS.md", "# Rules\nLoad xcontextunity-forge skill.\n");
+    extended_mcp_name.write(
+        "AGENTS.md",
+        "# Rules\nLoad contextunity-forge-mcp-tools skill for ACDD.\n",
+    );
+    mcp_mention_without_skill_context.write(
+        "AGENTS.md",
+        "# Rules\nUse contextunity-forge-mcp for queries.\nThe worker skill is installed.\n",
+    );
+    markdown_mcp_skill_link.write(
+        "AGENTS.md",
+        "# Rules\nLoad [contextunity-forge-mcp](https://example.com/SKILL.md) skill for ACDD.\n",
+    );
+    markdown_heading_reference.write("AGENTS.md", "# Intro\n\ncontextunity-forge skill.\n");
+    for workspace in [
+        &wildcard_yaml_ignore,
+        &wildcard_dot_ignore,
+        &runtime_path_negation,
+        &nested_framework_ignore,
+        &json_configuration_ignore,
+        &runtime_scan_negation,
+        &effective_protection_suffix,
+        &unmatched_wildcard_configuration_ignore,
+    ] {
+        workspace.write("AGENTS.md", "# Rules\nLoad the contextunity-forge skill.\n");
+    }
     global_only.write("AGENTS.md", "# Rules\nLoad the contextunity-forge skill.\n");
     ignored_profile.write("AGENTS.md", "# Rules\nLoad the contextunity-forge skill.\n");
     ignored_profile.write(
@@ -222,6 +340,44 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
         "# ContextUnity Forge\n",
     );
     ignored_profile.write(".gitignore", "target/\n.forge/\n");
+    ignored_profile_yaml_exception
+        .write("AGENTS.md", "# Rules\nLoad the contextunity-forge skill.\n");
+    wildcard_yaml_ignore.write(
+        ".gitignore",
+        &format!("{CANONICAL_FORGE_GITIGNORE}*.yaml\n"),
+    );
+    wildcard_dot_ignore.write(".gitignore", &format!("{CANONICAL_FORGE_GITIGNORE}.*\n"));
+    runtime_path_negation.write(
+        ".gitignore",
+        &format!("{CANONICAL_FORGE_GITIGNORE}!.forge/tasks.sqlite\n"),
+    );
+    nested_framework_ignore.write(
+        ".gitignore",
+        &format!("{CANONICAL_FORGE_GITIGNORE}.forge/frameworks/nested/\n"),
+    );
+    json_configuration_ignore.write(
+        ".gitignore",
+        &format!("{CANONICAL_FORGE_GITIGNORE}*.json\n"),
+    );
+    runtime_scan_negation.write(
+        ".gitignore",
+        &format!("{CANONICAL_FORGE_GITIGNORE}!.forge/scan.sqlite\n"),
+    );
+    effective_protection_suffix.write(
+        ".gitignore",
+        &format!(
+            ".*\n*.json\n.forge/frameworks/nested/\n!.forge/scan.sqlite\n{CANONICAL_FORGE_GITIGNORE}"
+        ),
+    );
+    // This active wildcard misses the validator's representative paths; the
+    // final-suffix invariant must reject it without enumerating file types.
+    unmatched_wildcard_configuration_ignore
+        .write(".gitignore", &format!("{CANONICAL_FORGE_GITIGNORE}*.md\n"));
+    ignored_profile_yaml_exception.write(".gitignore", "target/\n.forge/\n!.forge/*.yaml\n");
+    markdown_heading_reference.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
+    incomplete_gitignore.write("AGENTS.md", "# Rules\nLoad the contextunity-forge skill.\n");
+    incomplete_gitignore.write(".gitignore", "target/\n");
+    missing_gitignore.write("AGENTS.md", "# Rules\nLoad the contextunity-forge skill.\n");
     let global_installed = std::env::var_os("HOME").is_some_and(|home| {
         std::path::Path::new(&home)
             .join(".agents/skills/contextunity-forge/SKILL.md")
@@ -230,18 +386,37 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
     for (workspace, warning_fragment) in [
         (&named, None),
         (&named_mcp_skill, None),
+        (&markdown_mcp_skill_link, None),
+        (&markdown_heading_reference, None),
+        (&effective_protection_suffix, None),
         (
-            &unnamed,
+            &unmatched_wildcard_configuration_ignore,
+            Some("Edit `.gitignore`"),
+        ),
+        (&unnamed, Some("do not name the contextunity-forge skill")),
+        (
+            &prefixed_name,
             Some("do not name the contextunity-forge skill"),
         ),
         (
-            &global_only,
-            (!global_installed).then_some("not installed"),
+            &extended_mcp_name,
+            Some("do not name the contextunity-forge skill"),
         ),
         (
-            &ignored_profile,
-            Some("excludes .forge/"),
+            &mcp_mention_without_skill_context,
+            Some("do not name the contextunity-forge skill"),
         ),
+        (&global_only, (!global_installed).then_some("not installed")),
+        (&ignored_profile, Some("Edit `.gitignore`")),
+        (&ignored_profile_yaml_exception, Some("Edit `.gitignore`")),
+        (&wildcard_yaml_ignore, Some("Edit `.gitignore`")),
+        (&wildcard_dot_ignore, Some("Edit `.gitignore`")),
+        (&runtime_path_negation, Some("Edit `.gitignore`")),
+        (&nested_framework_ignore, Some("Edit `.gitignore`")),
+        (&json_configuration_ignore, Some("Edit `.gitignore`")),
+        (&runtime_scan_negation, Some("Edit `.gitignore`")),
+        (&incomplete_gitignore, Some("Edit `.gitignore`")),
+        (&missing_gitignore, Some("Edit `.gitignore`")),
     ] {
         tasks::manage(
             &workspace.0,
@@ -268,6 +443,26 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
                 assert_eq!(warning["code"], "TASK_GUIDANCE_MISSING");
                 let message = warning["message"].as_str().unwrap();
                 assert!(message.contains(fragment), "{message}");
+                if fragment == "Edit `.gitignore`" {
+                    assert!(warning["path"]
+                        .as_str()
+                        .is_some_and(|path| path.ends_with(".gitignore")));
+                    for rule in [
+                        "!/.forge/",
+                        "!/.forge/acdd/",
+                        "!/.forge/acdd/**",
+                        "!/.forge/frameworks/",
+                        "!/.forge/frameworks/**",
+                        ".forge/*.sqlite*",
+                        ".forge/*.lock",
+                        ".forge/*.log",
+                        ".forge/*.jsonl",
+                        ".forge/tasks/",
+                        ".forge/checkpoints.json",
+                    ] {
+                        assert!(message.contains(rule), "missing `{rule}` in: {message}");
+                    }
+                }
             }
         }
     }

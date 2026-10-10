@@ -4,6 +4,8 @@ use crate::{
     db::tasks_store::TasksStore,
 };
 use anyhow::{bail, Context, Result};
+use ignore::{gitignore::GitignoreBuilder, Match};
+use pulldown_cmark::{Event, Parser, Tag};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -33,6 +35,226 @@ fn default_milestones() -> String {
 }
 fn default_guidance() -> String {
     "AGENTS.md".into()
+}
+
+const FORGE_SKILL_NAME: &str = "contextunity-forge";
+const FORGE_SKILL_FILE: &str = ".agents/skills/contextunity-forge/SKILL.md";
+const CANONICAL_FORGE_GITIGNORE_SUFFIX: [&str; 11] = [
+    "!/.forge/",
+    "!/.forge/acdd/",
+    "!/.forge/acdd/**",
+    "!/.forge/frameworks/",
+    "!/.forge/frameworks/**",
+    ".forge/*.sqlite*",
+    ".forge/*.lock",
+    ".forge/*.log",
+    ".forge/*.jsonl",
+    ".forge/tasks/",
+    ".forge/checkpoints.json",
+];
+const CANONICAL_FORGE_GITIGNORE_MESSAGE: &str = concat!(
+    "Edit `.gitignore` after other ignore patterns with this final protection and runtime block. It keeps every path under `.forge/acdd/**` and `.forge/frameworks/**` trackable, then ignores Forge runtime state:\n",
+    "!/.forge/\n",
+    "!/.forge/acdd/\n",
+    "!/.forge/acdd/**\n",
+    "!/.forge/frameworks/\n",
+    "!/.forge/frameworks/**\n",
+    ".forge/*.sqlite*\n",
+    ".forge/*.lock\n",
+    ".forge/*.log\n",
+    ".forge/*.jsonl\n",
+    ".forge/tasks/\n",
+    ".forge/checkpoints.json",
+);
+
+fn is_word_character(character: char) -> bool {
+    character.is_alphanumeric() || matches!(character, '_' | '-')
+}
+
+fn contains_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(index, matched)| {
+        let before = text[..index].chars().next_back();
+        let after = text[index + matched.len()..].chars().next();
+        before.is_none_or(|character| !is_word_character(character))
+            && after.is_none_or(|character| !is_word_character(character))
+    })
+}
+
+fn sentence_context(text: &str, start: usize, end: usize) -> &str {
+    let start = text[..start]
+        .char_indices()
+        .rev()
+        .find(|(_, character)| matches!(character, '.' | '!' | '?' | ';' | '\n' | '\r'))
+        .map_or(0, |(index, character)| index + character.len_utf8());
+    let end = text[end..]
+        .char_indices()
+        .find(|(_, character)| matches!(character, '.' | '!' | '?' | ';' | '\n' | '\r'))
+        .map_or(text.len(), |(index, _)| end + index);
+    &text[start..end]
+}
+
+fn visible_markdown(text: &str) -> String {
+    let mut visible = String::with_capacity(text.len());
+    for event in Parser::new(text) {
+        match event {
+            Event::Text(text) | Event::Code(text) => visible.push_str(&text),
+            Event::SoftBreak | Event::HardBreak => visible.push('\n'),
+            Event::Start(
+                Tag::Heading { .. }
+                | Tag::Paragraph
+                | Tag::BlockQuote
+                | Tag::CodeBlock(_)
+                | Tag::List(_)
+                | Tag::Item,
+            ) if !visible.ends_with('\n') => visible.push('\n'),
+            _ => {}
+        }
+    }
+    visible
+}
+
+fn mentions_forge_skill(text: &str) -> bool {
+    let lower = visible_markdown(text).to_ascii_lowercase();
+    lower.match_indices(FORGE_SKILL_NAME).any(|(index, name)| {
+        let before = lower[..index].chars().next_back();
+        if before.is_some_and(is_word_character) {
+            return false;
+        }
+
+        let remainder = &lower[index + name.len()..];
+        if remainder.starts_with("-mcp") {
+            let mcp_end = index + name.len() + "-mcp".len();
+            let after_mcp = lower[mcp_end..].chars().next();
+            if after_mcp.is_some_and(is_word_character) {
+                return false;
+            }
+            let context = sentence_context(&lower, index, mcp_end);
+            return contains_word(context, "skill") || contains_word(context, "skills");
+        }
+
+        remainder
+            .chars()
+            .next()
+            .is_none_or(|character| !is_word_character(character))
+    })
+}
+
+fn forge_skill_installed(root: &Path) -> bool {
+    root.join(FORGE_SKILL_FILE).is_file()
+        || std::env::var_os("HOME")
+            .is_some_and(|home| Path::new(&home).join(FORGE_SKILL_FILE).is_file())
+}
+
+fn forge_gitignore_invalid(root: &Path) -> bool {
+    let gitignore_path = root.join(".gitignore");
+    let Ok(content) = std::fs::read_to_string(&gitignore_path) else {
+        return true;
+    };
+    let rules: Vec<&str> = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+
+    // Requiring this exact suffix proves the policy for arbitrary paths under
+    // both declarative trees and all six runtime classes: no active rule can
+    // follow the recursive reinclusions or runtime ignores. The representative
+    // matcher probes below guard the effective semantics of those patterns.
+    if !rules
+        .as_slice()
+        .ends_with(CANONICAL_FORGE_GITIGNORE_SUFFIX.as_slice())
+    {
+        return true;
+    }
+
+    let mut builder = GitignoreBuilder::new(root);
+    if builder.add(&gitignore_path).is_some() {
+        return true;
+    }
+    let Ok(matcher) = builder.build() else {
+        return true;
+    };
+
+    let trackable_configuration_paths = [
+        ".forge/acdd/profile.yaml",
+        ".forge/acdd/rules.toml",
+        ".forge/acdd/rules.json",
+        ".forge/acdd/nested/deep/custom.toml",
+        ".forge/frameworks/custom.yaml",
+        ".forge/frameworks/custom.toml",
+        ".forge/frameworks/nested/deep/custom.toml",
+    ];
+    if trackable_configuration_paths.iter().any(|path| {
+        matches!(
+            matcher.matched_path_or_any_parents(root.join(path), false),
+            Match::Ignore(_)
+        )
+    }) {
+        return true;
+    }
+
+    let runtime_paths = [
+        (".forge/tasks.sqlite", false),
+        (".forge/tasks.sqlite-wal", false),
+        (".forge/scan.sqlite", false),
+        (".forge/tasks.lock", false),
+        (".forge/tasks.log", false),
+        (".forge/tasks.jsonl", false),
+        (".forge/tasks", true),
+        (".forge/tasks/state.sqlite", false),
+        (".forge/checkpoints.json", false),
+    ];
+    runtime_paths.iter().any(|(path, is_dir)| {
+        !matches!(
+            matcher.matched_path_or_any_parents(root.join(path), *is_dir),
+            Match::Ignore(_)
+        )
+    })
+}
+
+#[derive(Clone, Copy)]
+enum GuidanceGap {
+    MissingFile,
+    MissingSkillReference,
+    SkillNotInstalled,
+    ForgeGitignoreInvalid,
+}
+
+fn guidance_gap(root: &Path, guidance: &Path) -> Option<GuidanceGap> {
+    let Ok(text) = std::fs::read_to_string(guidance) else {
+        return Some(GuidanceGap::MissingFile);
+    };
+    if !mentions_forge_skill(&text) {
+        return Some(GuidanceGap::MissingSkillReference);
+    }
+    if !forge_skill_installed(root) {
+        return Some(GuidanceGap::SkillNotInstalled);
+    }
+    if forge_gitignore_invalid(root) {
+        return Some(GuidanceGap::ForgeGitignoreInvalid);
+    }
+    None
+}
+
+fn guidance_gap_text(gap: GuidanceGap) -> (&'static str, &'static str) {
+    match gap {
+        GuidanceGap::MissingFile => (
+            "Create the repository instructions file. It must name the contextunity-forge skill, the global install or the repository copy, name the verification command, and state the Git commit and merge permission.",
+            "Repository instructions are missing. The file must name the contextunity-forge skill, name the verification command, and state the Git commit and merge permission. Install the skill at ~/.agents/skills/contextunity-forge/SKILL.md or .agents/skills/contextunity-forge/SKILL.md in the repository.",
+        ),
+        GuidanceGap::MissingSkillReference => (
+            "Name the contextunity-forge skill in the repository instructions. Point at the global skill or the skill in this repository, and install that skill.",
+            "Repository instructions do not name the contextunity-forge skill. Name the global skill or the repository skill, and install it at ~/.agents/skills/contextunity-forge/SKILL.md or .agents/skills/contextunity-forge/SKILL.md.",
+        ),
+        GuidanceGap::SkillNotInstalled => (
+            "Install the contextunity-forge skill at ~/.agents/skills/contextunity-forge/SKILL.md or .agents/skills/contextunity-forge/SKILL.md in this repository.",
+            "The contextunity-forge skill is not installed. Install it at ~/.agents/skills/contextunity-forge/SKILL.md or .agents/skills/contextunity-forge/SKILL.md in the repository.",
+        ),
+        GuidanceGap::ForgeGitignoreInvalid => (
+            "Edit the repository .gitignore with the final protection and runtime block in this warning. Keep .forge/acdd/** and .forge/frameworks/** trackable, and keep all six runtime rules last.",
+            CANONICAL_FORGE_GITIGNORE_MESSAGE,
+        ),
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -78,12 +300,15 @@ pub(super) struct Workspace {
     pub root: PathBuf,
     pub repository: String,
     pub project: String,
+    pub gates: std::sync::Arc<crate::core::tasks::profile::GateProfile>,
     milestones: Vec<PathBuf>,
     guidance: PathBuf,
 }
 impl Workspace {
     pub fn open(&self, database: &Path) -> Result<TasksStore> {
-        TasksStore::open_project(database, &self.repository, &self.project)
+        let mut store = TasksStore::open_project(database, &self.repository, &self.project)?;
+        store.set_profile(self.gates.clone());
+        Ok(store)
     }
     pub fn envelope(&self, mut value: Value) -> Result<Value> {
         let object = value
@@ -103,22 +328,26 @@ impl Workspace {
             value["stage"].as_str().context("task stage missing")?
         };
         let agent_type = value["spec"]["agent_type"].as_str().unwrap_or("worker");
-        let (subagent_role, actions): (&str, &[&str]) = match stage {
-            "contract/v1" => (
+        let role_info = self.gates.role_for_stage(stage);
+        let configured_role = role_info.map(|(name, _)| name);
+        let role_def = role_info.map(|(_, def)| def);
+
+        let (default_subagent_role, actions): (&str, &[&str]) = match stage {
+            "contract" => (
                 "contract_author",
                 &[
                     "Author or verify the public-seam test proof (or direct-proof exit code 0 for pre-existing code).",
                     "Submit contract proof.",
                 ],
             ),
-            "build/v1" => (
+            "build" => (
                 "builder",
                 &[
                     "Implement the approved contract inside the allowed write scope.",
                     "Run the owning repository's tests and lint checks, then submit passing test proof.",
                 ],
             ),
-            "review/v1" => (
+            "review" => (
                 "independent_reviewer",
                 &[
                     "Inspect candidate diff using inspect_cmd.",
@@ -126,7 +355,7 @@ impl Workspace {
                     "Accept legitimate adjacent defect fixes within scope and submit review proof.",
                 ],
             ),
-            "deliver/v1" => (
+            "deliver" => (
                 "delivery_reviewer",
                 &[
                     "Submit delivery proof first; Forge writes the durable receipt into the milestone document.",
@@ -139,19 +368,20 @@ impl Workspace {
             ),
             _ => bail!("TASK_STAGE_INVALID"),
         };
-        let guidance_exists = self.guidance.is_file();
-        let mut steps = if guidance_exists {
+        let subagent_role = configured_role.unwrap_or(default_subagent_role);
+        let gap = guidance_gap(&self.root, &self.guidance);
+        let mut steps = if matches!(&gap, Some(GuidanceGap::MissingFile)) {
+            Vec::new()
+        } else {
             vec![format!(
                 "Read the task instructions at {}.",
                 self.guidance.display()
             )]
-        } else {
-            Vec::new()
         };
         steps.extend(actions.iter().map(|action| (*action).to_owned()));
         let builder = value["gates"].as_array().and_then(|gates| {
             gates.iter().rev().find_map(|gate| {
-                if gate["stage"] != "build/v1" || gate["state"] != "passed" {
+                if gate["stage"] != "build" || gate["state"] != "passed" {
                     return None;
                 }
                 let evidence = gate["evidence"].as_str()?;
@@ -159,23 +389,30 @@ impl Workspace {
                 parsed["worker_id"].as_str().map(str::to_owned)
             })
         });
-        let needs_independent_reviewer = matches!(stage, "review/v1" | "deliver/v1");
-        let warning = if guidance_exists {
-            Value::Null
-        } else {
+        let needs_independent_reviewer = matches!(stage, "review" | "deliver");
+        let warning = if let Some(gap) = gap {
+            let (step, message) = guidance_gap_text(gap);
             steps.extend(
                 [
+                    step,
                     "Use the current stage and task scope to continue.",
                     "Record a verifiable proof in the task store.",
                     "Request independent review before delivery.",
                 ]
-                .map(str::to_owned),
+                .iter()
+                .map(|action| (*action).to_owned()),
             );
             json!({
                 "code": "TASK_GUIDANCE_MISSING",
-                "message": "Task guidance file is missing; use the inline steps and scaffold repository instructions.",
-                "path": self.guidance,
+                "message": message,
+                "path": if matches!(gap, GuidanceGap::ForgeGitignoreInvalid) {
+                    self.root.join(".gitignore")
+                } else {
+                    self.guidance.clone()
+                },
             })
+        } else {
+            Value::Null
         };
         let review_policy = if needs_independent_reviewer {
             Some("Reviewers must accept legitimate defect fixes registered via extend-scope or reopened tasks and verify changes against the declared scope (preventing uncontracted scope creep or overengineering).")
@@ -191,8 +428,15 @@ impl Workspace {
             "independence_rule": needs_independent_reviewer.then_some("Use a reviewer worker_id different from the accepted build worker_id."),
             "independent_from_worker_id": if needs_independent_reviewer { builder } else { None },
             "warning": warning,
-            "documentation_url": (!guidance_exists).then_some("https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/acdd.md"),
         });
+        if let Some(def) = role_def {
+            workflow_guidance["role_spec"] = json!({
+                "model": def.model,
+                "reasoning": def.reasoning,
+                "models": def.models,
+                "recommendation": def.recommendation,
+            });
+        }
         if let Some(policy) = review_policy {
             workflow_guidance["review_policy"] = json!(policy);
         }
@@ -411,10 +655,12 @@ impl Registry {
             primary_milestones.push(confined_path(&root, &default_milestones())?);
         }
         let guidance_path = confined_path(&root, &guidance)?;
+        let gates = crate::core::tasks::profile::load_for_workspace(&root)?;
         let mut workspaces = vec![Workspace {
             name: repository.clone(),
             repository: repository.clone(),
             project: project.clone(),
+            gates: gates.clone(),
             milestones: primary_milestones,
             guidance: guidance_path.clone(),
             root: root.clone(),
@@ -435,6 +681,7 @@ impl Registry {
                     name: sub_name.clone(),
                     repository: repository.clone(),
                     project: sub_name,
+                    gates: gates.clone(),
                     milestones: {
                         let mut dirs = sub_dirs;
                         dirs.sort();
@@ -488,6 +735,7 @@ impl Registry {
                 name: linked.name,
                 repository,
                 project,
+                gates: gates.clone(),
                 milestones: vec![confined_path(&path, &tasks.milestones_dir)?],
                 guidance: confined_path(&path, &tasks.agents_guidance)?,
                 root: path,

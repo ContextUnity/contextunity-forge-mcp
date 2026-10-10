@@ -1,12 +1,5 @@
-target/
-*.sqlite
-*.sqlite-*
-*.log
-.env
-.forge-mcp/
-.worktrees/
-__pycache__/
-*.pyc
+# Place this block after other ignore rules. It restores the configuration trees,
+# then leaves runtime state excluded by the final six patterns.
 !/.forge/
 !/.forge/acdd/
 !/.forge/acdd/**
