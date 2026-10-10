@@ -211,163 +211,6 @@ impl std::fmt::Display for TaskAlreadyClaimed {
 }
 impl std::error::Error for TaskAlreadyClaimed {}
 
-fn legacy_blackboard_namespace(task_id: &str) -> Result<String> {
-    let mut parts = task_id.split('/');
-    let repository = parts.next().unwrap_or_default();
-    let project = parts.next().unwrap_or_default();
-    let task = parts.next().unwrap_or_default();
-    if repository.is_empty() || project.is_empty() || task.is_empty() || parts.next().is_some() {
-        bail!("TASK_BLACKBOARD_MIGRATION_INVALID: malformed task identifier '{task_id}'");
-    }
-    let (milestone, task_ref) = task.split_once(':').with_context(|| {
-        format!("TASK_BLACKBOARD_MIGRATION_INVALID: malformed task identifier '{task_id}'")
-    })?;
-    for identity in [repository, project, milestone, task_ref] {
-        crate::core::tasks::valid_identity(identity).with_context(|| {
-            format!("TASK_BLACKBOARD_MIGRATION_INVALID: malformed task identifier '{task_id}'")
-        })?;
-    }
-    Ok(format!("{repository}/{project}/"))
-}
-
-fn migrate_blackboard_v1(connection: &mut Connection) -> Result<()> {
-    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let version: String = tx.query_row(
-        "SELECT value FROM task_store_metadata WHERE key='schema_version'",
-        [],
-        |row| row.get(0),
-    )?;
-    if version == "2" {
-        tx.commit()?;
-        return Ok(());
-    }
-    if version != "1" {
-        bail!("unsupported tasks schema; use recovery tooling");
-    }
-    tx.execute_batch(
-        "DROP INDEX IF EXISTS idx_task_blackboard_scope_created;
-         DROP INDEX IF EXISTS idx_task_blackboard_task_created;
-         ALTER TABLE task_blackboard RENAME TO task_blackboard_v1;
-         CREATE TABLE task_blackboard(
-             id INTEGER PRIMARY KEY AUTOINCREMENT,
-             milestone_ref TEXT NOT NULL,
-             task_id TEXT REFERENCES tasks ON DELETE CASCADE,
-             subtask_ref TEXT,
-             author TEXT NOT NULL,
-             topic TEXT NOT NULL,
-             payload TEXT NOT NULL,
-             created_at INTEGER NOT NULL,
-             CHECK(task_id IS NOT NULL OR subtask_ref IS NULL)
-         );",
-    )?;
-    let legacy_rows = {
-        let mut statement = tx.prepare(
-            "SELECT b.id,b.task_id,b.author,b.topic,b.payload,b.created_at,t.milestone_ref \
-             FROM task_blackboard_v1 b LEFT JOIN tasks t ON t.task_id=b.task_id \
-             ORDER BY b.id",
-        )?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, u64>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-    for (id, task_id, author, topic, payload, created_at, task_milestone_ref) in legacy_rows {
-        let task_id = task_id.with_context(|| {
-            format!("TASK_BLACKBOARD_MIGRATION_INVALID: message {id} has no task identifier")
-        })?;
-        let namespace = legacy_blackboard_namespace(&task_id)?;
-        let milestone_ref = task_milestone_ref.with_context(|| {
-            format!(
-                "TASK_BLACKBOARD_MIGRATION_INVALID: message {id} refers to missing task '{task_id}'"
-            )
-        })?;
-        let normalized_path = crate::core::tasks::relative_path(&milestone_ref)
-            .with_context(|| {
-                format!(
-                    "TASK_BLACKBOARD_MIGRATION_INVALID: task '{task_id}' has an invalid milestone path"
-                )
-            })?;
-        let milestone_ref = format!("{namespace}{}", normalized_path.to_string_lossy());
-        tx.execute(
-            "INSERT INTO task_blackboard(id,milestone_ref,task_id,subtask_ref,author,topic,payload,created_at) \
-             VALUES(?1,?2,?3,NULL,?4,?5,?6,?7)",
-            params![id, milestone_ref, task_id, author, topic, payload, created_at],
-        )?;
-    }
-    tx.execute_batch(
-        "DROP TABLE task_blackboard_v1;
-         CREATE INDEX idx_task_blackboard_scope_created
-             ON task_blackboard(milestone_ref,task_id,subtask_ref,created_at DESC,id DESC);
-         CREATE INDEX idx_task_blackboard_task_created
-             ON task_blackboard(task_id,created_at DESC,id DESC);
-         UPDATE task_store_metadata SET value='2' WHERE key='schema_version';",
-    )?;
-    tx.commit()?;
-    Ok(())
-}
-
-fn legacy_stage(index: u64) -> Result<&'static str> {
-    ["contract", "build", "review", "deliver"]
-        .get(index as usize)
-        .copied()
-        .context("unsupported legacy task gate index")
-}
-
-fn migrate_task_value(value: &mut serde_json::Value) -> Result<()> {
-    let Some(object) = value.as_object_mut() else { return Ok(()); };
-    if let Some(task) = object.get_mut("task") { migrate_task_value(task)?; }
-    let is_task = object.contains_key("task_id") && object.contains_key("spec");
-    if is_task {
-        if let Some(stage) = object.get("stage").and_then(serde_json::Value::as_str) {
-            let normalized = stage.strip_suffix("/v1").unwrap_or(stage).to_owned();
-            object.insert("stage".into(), normalized.into());
-        } else if let Some(index) = object.get("gate").and_then(serde_json::Value::as_u64) {
-            object.insert("stage".into(), legacy_stage(index)?.into());
-        } else {
-            bail!("task schema v2 record has neither a stage nor a gate index");
-        }
-        object.remove("gate");
-    } else if object.contains_key("claim_revision") && object.contains_key("proof") {
-        if let Some(stage) = object.get("stage").and_then(serde_json::Value::as_str) {
-            let normalized = stage.strip_suffix("/v1").unwrap_or(stage).to_owned();
-            object.insert("stage".into(), normalized.into());
-        }
-    }
-    if let Some(legacy) = object.remove("test_proof") {
-        if object.contains_key("command_proof") { bail!("duplicate task proof during schema migration"); }
-        object.insert("command_proof".into(), legacy);
-    }
-    for child in object.values_mut() { migrate_task_value(child)?; }
-    Ok(())
-}
-
-fn set_migrated_initial_scope(value: &mut serde_json::Value, task_id: &str, scope: &[String]) {
-    match value {
-        serde_json::Value::Object(object) => {
-            if object.get("task_id").and_then(serde_json::Value::as_str) == Some(task_id)
-                && object.contains_key("spec")
-            {
-                object.insert("initial_scope".into(), serde_json::json!(scope));
-            }
-            for child in object.values_mut() {
-                set_migrated_initial_scope(child, task_id, scope);
-            }
-        }
-        serde_json::Value::Array(items) => items.iter_mut().for_each(|child| set_migrated_initial_scope(child, task_id, scope)),
-        _ => {}
-    }
-}
-
 fn protected_acdd_path(path: &Path) -> bool {
     path.starts_with(Path::new(".forge/acdd"))
 }
@@ -414,209 +257,6 @@ fn resolve_task_profile(
     }
 }
 
-/// Reconcile one pre-v4 digest only when the active specification reproduces its stored authority.
-fn reconcile_pre_v4_task_digest(
-    connection: &Connection,
-    task_id: &str,
-    milestone: &Milestone,
-    spec: &TaskSpec,
-    digest: &str,
-    existing: &mut Task,
-) -> Result<()> {
-    let (digest_version, stored_descriptor): (i64, String) = connection.query_row(
-        "SELECT digest_version, descriptor FROM tasks WHERE task_id=?1",
-        [task_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    if digest_version != 0 {
-        return Ok(());
-    }
-
-    let previous_digest = milestone.pre_v4_digest(spec)?;
-    if existing.contract_revision != spec.contract_revision
-        || (existing.digest != previous_digest && existing.digest != digest)
-    {
-        return Ok(());
-    }
-
-    let mut descriptor: serde_json::Value = serde_json::from_str(&stored_descriptor)?;
-    if descriptor.get("task_id").and_then(serde_json::Value::as_str) != Some(task_id)
-        || descriptor.get("digest").and_then(serde_json::Value::as_str)
-            != Some(existing.digest.as_str())
-        || descriptor
-            .get("contract_revision")
-            .and_then(serde_json::Value::as_u64)
-            != Some(existing.contract_revision)
-    {
-        bail!("TASK_DIGEST_MIGRATION_CONFLICT: persisted task authority changed");
-    }
-
-    if existing.digest != digest {
-        descriptor["digest"] = digest.into();
-    }
-    let next_descriptor = serde_json::to_string(&descriptor)?;
-    // Exact descriptor matching fences the digest, contract revision, claim state, and every
-    // other persisted field while this immediate transaction updates the migration marker.
-    let changed = connection.execute(
-        "UPDATE tasks SET descriptor=?2,digest_version=1 \
-         WHERE task_id=?1 AND digest_version=0 AND descriptor=?3",
-        params![task_id, next_descriptor, stored_descriptor],
-    )?;
-    if changed != 1 {
-        bail!("TASK_DIGEST_MIGRATION_CONFLICT: task row changed during migration");
-    }
-    existing.digest = digest.to_owned();
-    Ok(())
-}
-
-/// Migrate all v2 runtime task records to string stages and the closed command proof key.
-fn migrate_tasks_v2_to_v3(connection: &mut Connection) -> Result<()> {
-    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let version: String = tx.query_row(
-        "SELECT value FROM task_store_metadata WHERE key='schema_version'",
-        [],
-        |row| row.get(0),
-    )?;
-    if version == "3" { tx.commit()?; return Ok(()); }
-    if version != "2" { bail!("unsupported tasks schema; use recovery tooling"); }
-
-    let descriptors: Vec<(String, String)> = tx.prepare("SELECT task_id, descriptor FROM tasks")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (id, text) in descriptors {
-        let mut value: serde_json::Value = serde_json::from_str(&text)?;
-        migrate_task_value(&mut value)?;
-        let initial_scope = tx.prepare("SELECT path FROM task_scope_paths WHERE task_id=?1 AND frozen=1 ORDER BY path")?
-            .query_map([&id], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        set_migrated_initial_scope(&mut value, &id, &initial_scope);
-        tx.execute("UPDATE tasks SET descriptor=?2 WHERE task_id=?1", params![id, serde_json::to_string(&value)?])?;
-    }
-
-    let submissions: Vec<(String, u64, String)> = tx.prepare("SELECT task_id, revision, result FROM task_submissions")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (id, revision, text) in submissions {
-        let mut value: serde_json::Value = serde_json::from_str(&text)?;
-        migrate_task_value(&mut value)?;
-        let initial_scope = tx.prepare("SELECT path FROM task_scope_paths WHERE task_id=?1 AND frozen=1 ORDER BY path")?
-            .query_map([&id], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        set_migrated_initial_scope(&mut value, &id, &initial_scope);
-        tx.execute("UPDATE task_submissions SET result=?3 WHERE task_id=?1 AND revision=?2", params![id, revision, serde_json::to_string(&value)?])?;
-    }
-
-    let gate_rows: Vec<(String, String, u64, Option<String>)> = tx
-        .prepare("SELECT task_id, gate, revision, evidence FROM task_gates")?
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    for (id, gate, revision, evidence) in gate_rows {
-        let normalized_gate = gate.strip_suffix("/v1").unwrap_or(&gate);
-        let migrated_evidence = evidence
-            .map(|text| -> Result<String> {
-                let mut value: serde_json::Value = serde_json::from_str(&text)?;
-                migrate_task_value(&mut value)?;
-                Ok(serde_json::to_string(&value)?)
-            })
-            .transpose()?;
-        tx.execute(
-            "UPDATE task_gates SET gate=?4, evidence=?5 WHERE task_id=?1 AND gate=?2 AND revision=?3",
-            params![id, gate, revision, normalized_gate, migrated_evidence],
-        )?;
-    }
-    tx.execute("UPDATE task_store_metadata SET value='3' WHERE key='schema_version'", [])?;
-    tx.commit()?;
-    Ok(())
-}
-
-/// Mark existing v3 task digests for the one-time authority-preserving format migration.
-fn migrate_task_digests_v3_to_v4(connection: &mut Connection) -> Result<()> {
-    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let version: String = tx.query_row(
-        "SELECT value FROM task_store_metadata WHERE key='schema_version'",
-        [],
-        |row| row.get(0),
-    )?;
-    if version == "4" {
-        tx.commit()?;
-        return Ok(());
-    }
-    if version != "3" {
-        bail!("unsupported tasks schema; use recovery tooling");
-    }
-
-    let has_digest_version = {
-        let mut statement = tx.prepare("PRAGMA table_info(tasks)")?;
-        let columns = statement
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        columns.iter().any(|column| column == "digest_version")
-    };
-    if has_digest_version {
-        tx.execute("UPDATE tasks SET digest_version=0", [])?;
-    } else {
-        tx.execute(
-            "ALTER TABLE tasks ADD COLUMN digest_version INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
-    }
-    tx.execute(
-        "UPDATE task_store_metadata SET value='4' WHERE key='schema_version'",
-        [],
-    )?;
-    tx.commit()?;
-    Ok(())
-}
-
-/// Add gate targeting and normalize historical blackboard topics once at schema v5.
-fn migrate_blackboard_v4_to_v5(connection: &mut Connection) -> Result<()> {
-    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let version: String = tx.query_row(
-        "SELECT value FROM task_store_metadata WHERE key='schema_version'",
-        [],
-        |row| row.get(0),
-    )?;
-    if version == "5" {
-        tx.commit()?;
-        return Ok(());
-    }
-    if version != "4" {
-        bail!("unsupported tasks schema; use recovery tooling");
-    }
-
-    tx.execute("ALTER TABLE task_blackboard ADD COLUMN gate TEXT", [])?;
-    tx.execute_batch(
-        "CREATE INDEX idx_task_blackboard_gate_scope_created
-             ON task_blackboard(milestone_ref, gate, task_id, subtask_ref, created_at DESC, id DESC);
-         CREATE INDEX idx_task_blackboard_task_gate_created
-             ON task_blackboard(task_id, gate, created_at DESC, id DESC);
-         UPDATE task_blackboard
-         SET topic = CASE topic
-             WHEN 'contract_draft' THEN 'draft'
-             WHEN 'contract_findings' THEN 'findings'
-             WHEN 'build_proof' THEN 'notes'
-             WHEN 'architectural_notes' THEN 'decisions'
-             WHEN 'draft' THEN 'draft'
-             WHEN 'notes' THEN 'notes'
-             WHEN 'findings' THEN 'findings'
-             WHEN 'blockers' THEN 'blockers'
-             WHEN 'decisions' THEN 'decisions'
-             WHEN 'deferred' THEN 'deferred'
-             ELSE 'notes'
-         END;
-         UPDATE task_store_metadata SET value='5' WHERE key='schema_version';",
-    )?;
-    tx.commit()?;
-    Ok(())
-}
-
 impl TasksStore {
     /// Performs open.
     pub fn open(path: &Path) -> Result<Self> {
@@ -629,7 +269,7 @@ impl TasksStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut connection = Connection::open(path)?;
+        let connection = Connection::open(path)?;
         connection.execute_batch("PRAGMA busy_timeout=5000")?;
         let known:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='task_store_metadata')",[],|r|r.get(0))?;
         if known {
@@ -638,33 +278,15 @@ impl TasksStore {
                 [],
                 |r| r.get(0),
             )?;
-            match version.as_str() {
-                "1" => migrate_blackboard_v1(&mut connection)?,
-                "2" | "3" | "4" | "5" => {}
-                _ => bail!("unsupported tasks schema; use recovery tooling"),
-            }
-            let version: String = connection.query_row(
-                "SELECT value FROM task_store_metadata WHERE key='schema_version'",
-                [],
-                |row| row.get(0),
-            )?;
-            if version == "2" { migrate_tasks_v2_to_v3(&mut connection)?; }
-            let version: String = connection.query_row(
-                "SELECT value FROM task_store_metadata WHERE key='schema_version'",
-                [],
-                |r| r.get(0),
-            )?;
-            if version == "3" { migrate_task_digests_v3_to_v4(&mut connection)?; }
-            let version: String = connection.query_row(
-                "SELECT value FROM task_store_metadata WHERE key='schema_version'",
-                [],
-                |row| row.get(0),
-            )?;
-            if version == "4" {
-                migrate_blackboard_v4_to_v5(&mut connection)?;
+            if version != "5" {
+                bail!("unsupported tasks schema; use recovery tooling");
             }
         } else {
-            let populated:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%')",[],|r|r.get(0))?;
+            let populated: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
+                [],
+                |row| row.get(0),
+            )?;
             if populated {
                 bail!("tasks_db must be a dedicated task store");
             }
@@ -675,7 +297,7 @@ impl TasksStore {
             CREATE TABLE IF NOT EXISTS task_store_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
             INSERT OR IGNORE INTO task_store_metadata VALUES('schema_version','5');
             CREATE TABLE IF NOT EXISTS task_revisions(task_id TEXT PRIMARY KEY,revision INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,milestone_ref TEXT NOT NULL,descriptor TEXT NOT NULL,digest_version INTEGER NOT NULL DEFAULT 1);
+            CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,milestone_ref TEXT NOT NULL,descriptor TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS task_claims(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,worker_id TEXT NOT NULL,worktree TEXT NOT NULL,claimed_at INTEGER NOT NULL,ended INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(task_id,revision));
             CREATE TABLE IF NOT EXISTS task_gates(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,gate TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,evidence TEXT,PRIMARY KEY(task_id,gate,revision));
             CREATE TABLE IF NOT EXISTS task_findings(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,findings TEXT NOT NULL);
@@ -1436,14 +1058,6 @@ impl TasksStore {
                 bail!("ACDD_PROFILE_INVALID: gates must not be empty");
             }
             if let Some(mut existing) = load(&tx, &id)? {
-                reconcile_pre_v4_task_digest(
-                    &tx,
-                    &id,
-                    milestone,
-                    spec,
-                    &digest,
-                    &mut existing,
-                )?;
                 if existing.digest == digest {
                     if spec.status.as_deref() == Some("completed")
                         && (existing.status != "completed" || existing.receipt != spec.receipt)
@@ -1621,10 +1235,6 @@ impl TasksStore {
                     .collect::<rusqlite::Result<Vec<_>>>()?;
             }
             save(&tx, &task)?;
-            tx.execute(
-                "UPDATE tasks SET digest_version=1 WHERE task_id=?1",
-                [&id],
-            )?;
             for scope_root in &spec.scope_roots {
                 crate::core::tasks::confined_path(root, scope_root)?;
             }

@@ -1241,6 +1241,20 @@ fn tasks_coordinate_claims_dependencies_reset_and_scope() {
         .iter()
         .filter_map(|r| r.as_ref().err())
         .all(|e| e.to_string() == "TASK_ALREADY_CLAIMED"));
+    assert!(milestone.acdd_profile.is_none());
+    assert!(milestone.tasks[0].acdd_profile.is_none());
+    let before_sync = store.inspect(&id).unwrap();
+    assert_eq!(before_sync.profile_pin, None);
+    let synced = store
+        .sync(&milestone, "docs/010-test.md", &root.0)
+        .unwrap();
+    assert_eq!(synced.len(), 2);
+    let after_sync = store.inspect(&id).unwrap();
+    assert_eq!(after_sync.profile_pin, None);
+    assert_eq!(after_sync.digest, before_sync.digest);
+    assert_eq!(after_sync.status, before_sync.status);
+    assert_eq!(after_sync.stage, before_sync.stage);
+    assert_eq!(after_sync.claim_revision, before_sync.claim_revision);
     let before = store.inspect(&id).unwrap();
     let reset = store.reset(&id).unwrap();
     assert!(reset.claim_revision > before.claim_revision);
@@ -1519,18 +1533,83 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
         )
         .unwrap();
     assert_eq!(task_tables, 0);
-    let future = root.0.join("future.sqlite");
-    let conn = rusqlite::Connection::open(&future).unwrap();
-    conn.execute_batch("CREATE TABLE task_store_metadata(key TEXT PRIMARY KEY,value TEXT); INSERT INTO task_store_metadata VALUES('schema_version','99');").unwrap();
-    assert!(TasksStore::open(&future).is_err());
+    for version in ["1", "2", "3", "4", "99"] {
+        let old = root.0.join(format!("schema-{version}.sqlite"));
+        let conn = rusqlite::Connection::open(&old).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE task_store_metadata(key TEXT PRIMARY KEY,value TEXT);\
+             INSERT INTO task_store_metadata VALUES('schema_version','{version}');\
+             CREATE TABLE sentinel(value TEXT NOT NULL);\
+             INSERT INTO sentinel VALUES('preserve me');"
+        ))
+        .unwrap();
+        assert!(TasksStore::open(&old).is_err(), "schema {version} must fail closed");
+        let stored_version: String = conn
+            .query_row(
+                "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_version, version, "schema marker {version} changed");
+        let sentinel: String = conn
+            .query_row("SELECT value FROM sentinel", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(sentinel, "preserve me");
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(tables, ["sentinel", "task_store_metadata"]);
+    }
+
+    let unversioned = root.0.join("unversioned.sqlite");
+    let conn = rusqlite::Connection::open(&unversioned).unwrap();
+    conn.execute_batch("CREATE TABLE old_data(value TEXT); INSERT INTO old_data VALUES('preserve me');")
+        .unwrap();
+    assert!(TasksStore::open(&unversioned).is_err());
     let tables: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM sqlite_schema WHERE type='table'",
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(tables, 1);
+    assert_eq!(tables, 1, "unversioned non-empty DB must not be initialized");
+    let value: String = conn
+        .query_row("SELECT value FROM old_data", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(value, "preserve me");
+
+    let unversioned_view = root.0.join("unversioned-view.sqlite");
+    let conn = rusqlite::Connection::open(&unversioned_view).unwrap();
+    conn.execute_batch("CREATE VIEW old_projection AS SELECT 1 AS value;")
+        .unwrap();
+    assert!(TasksStore::open(&unversioned_view).is_err());
+    let objects: Vec<(String, String)> = conn
+        .prepare("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(objects, [("view".into(), "old_projection".into())]);
+
+    let current = root.0.join("current.sqlite");
+    drop(TasksStore::open(&current).expect("empty DB should initialize as schema v5"));
+    let reopened = TasksStore::open(&current).expect("schema v5 should remain supported");
+    let version: String = reopened
+        .connection
+        .query_row(
+            "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, "5");
 }
 #[test]
 fn infer_project_from_path_supports_arbitrary_monorepo_structures_universally() {
@@ -3206,6 +3285,162 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     )
     .unwrap();
     assert_eq!(extended["status"], "in_progress");
+
+    let (protected_root, mut protected_store, protected_milestone) = fixture();
+    let protected_id = protected_milestone.task_id(&protected_milestone.tasks[0]);
+    let before_extension = protected_store.inspect(&protected_id).unwrap();
+    let before_paths: i64 = protected_store
+        .connection
+        .query_row(
+            "SELECT count(*) FROM task_scope_paths WHERE task_id=?1",
+            [&protected_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let extension_error = protected_store
+        .extend_scope(
+            &protected_id,
+            &[".forge/acdd/profile.yaml".into()],
+            &protected_root.0,
+        )
+        .unwrap_err();
+    assert!(extension_error.to_string().contains("TASK_SCOPE_PROTECTED"));
+    let after_extension = protected_store.inspect(&protected_id).unwrap();
+    assert_eq!(after_extension.spec.scope, before_extension.spec.scope);
+    assert_eq!(after_extension.status, before_extension.status);
+    let after_paths: i64 = protected_store
+        .connection
+        .query_row(
+            "SELECT count(*) FROM task_scope_paths WHERE task_id=?1",
+            [&protected_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after_paths, before_paths, "rejected extension added scope rows");
+
+    for tracked in [false, true] {
+        let root = ScopedWorkspace::new(if tracked {
+            "forge_protected_tracked"
+        } else {
+            "forge_protected_untracked"
+        });
+        root.write("src/lib.rs", "pub fn protected() {}\n");
+        root.write(".forge/acdd/profile.yaml", "\n");
+        root.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        );
+        let contract = "---\nid: m-protected\ntitle: Protected scope\ndoc_type: contract\nstatus: active\n---\n# Protected scope\n```yaml\ntask_ref: protected\ntarget: Reject dirty protected configuration\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+        root.write("docs/010-protected.md", contract);
+        let milestone = Milestone::parse(contract, "forge-mcp").unwrap();
+        let task_id = milestone.task_id(&milestone.tasks[0]);
+        let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+        store
+            .sync(&milestone, "docs/010-protected.md", &root.0)
+            .unwrap();
+        if tracked {
+            let added = std::process::Command::new("git")
+                .args(["add", "--", ".forge/acdd/profile.yaml"])
+                .current_dir(&root.0)
+                .output()
+                .unwrap();
+            assert!(added.status.success());
+            let committed = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=ACDD test",
+                    "-c",
+                    "user.email=acdd-test@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-m",
+                    "track protected profile",
+                ])
+                .current_dir(&root.0)
+                .output()
+                .unwrap();
+            assert!(
+                committed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&committed.stderr)
+            );
+            root.write(".forge/acdd/profile.yaml", "# changed after commit\n");
+        }
+
+        let before = store.inspect(&task_id).unwrap();
+        let claims_before: i64 = store
+            .connection
+            .query_row(
+                "SELECT count(*) FROM task_claims WHERE task_id=?1",
+                [&task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let error = tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: task_id.clone(),
+                stage: "contract".into(),
+                worker_id: "protected-scope-check".into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("TASK_SCOPE_VIOLATION"),
+            "tracked={tracked}: {error:#}"
+        );
+        let after = store.inspect(&task_id).unwrap();
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.stage, before.stage);
+        assert_eq!(after.claim_revision, before.claim_revision);
+        let claims_after: i64 = store
+            .connection
+            .query_row(
+                "SELECT count(*) FROM task_claims WHERE task_id=?1",
+                [&task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(claims_after, claims_before, "tracked={tracked} claim mutated DB");
+    }
+
+    let admitted_root = ScopedWorkspace::new("forge_protected_initial_scope");
+    admitted_root.write(".forge/acdd/profile.yaml", "\n");
+    admitted_root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    let admitted_contract = "---\nid: m-protected-admitted\ntitle: Protected scope admitted\ndoc_type: contract\nstatus: active\n---\n# Protected scope admitted\n```yaml\ntask_ref: protected\ntarget: Admit configuration at planning time\nproof_policy: seam-test-first\nscope: [.forge/acdd/profile.yaml]\nscope_roots: [.forge/acdd/]\n```\n";
+    admitted_root.write("docs/010-protected-admitted.md", admitted_contract);
+    let admitted_milestone = Milestone::parse(admitted_contract, "forge-mcp").unwrap();
+    let admitted_id = admitted_milestone.task_id(&admitted_milestone.tasks[0]);
+    let mut admitted_store = TasksStore::open(&admitted_root.0.join(".forge/tasks.sqlite")).unwrap();
+    admitted_store
+        .sync(
+            &admitted_milestone,
+            "docs/010-protected-admitted.md",
+            &admitted_root.0,
+        )
+        .unwrap();
+    let admitted = tasks::claim(
+        &admitted_root.0,
+        tasks::Claim {
+            task_id: admitted_id.clone(),
+            stage: "contract".into(),
+            worker_id: "admitted-protected-scope".into(),
+            worktree: admitted_root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(admitted["status"], "in_progress");
+    assert_eq!(
+        admitted_store.inspect(&admitted_id).unwrap().initial_scope,
+        vec![".forge/acdd/profile.yaml"]
+    );
 }
 
 #[test]
@@ -3259,61 +3494,7 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
 fn task_blackboard_gate_targeting_and_schema_hint() {
     let (root, store, milestone) = fixture();
     let task_id = milestone.task_id(&milestone.tasks[0]);
-    let task = store.inspect(&task_id).unwrap();
-    let milestone_ref = store.milestone_scope_ref(&task.milestone_ref).unwrap();
 
-    // Reconstruct the last admitted schema so this seam always exercises v4 -> v5,
-    // including after the implementation starts creating v5 stores by default.
-    store
-        .connection
-        .execute_batch(
-            "DROP TABLE task_blackboard;
-             CREATE TABLE task_blackboard(
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 milestone_ref TEXT NOT NULL,
-                 task_id TEXT REFERENCES tasks ON DELETE CASCADE,
-                 subtask_ref TEXT,
-                 author TEXT NOT NULL,
-                 topic TEXT NOT NULL,
-                 payload TEXT NOT NULL,
-                 created_at INTEGER NOT NULL,
-                 CHECK(task_id IS NOT NULL OR subtask_ref IS NULL)
-             );
-             CREATE INDEX idx_task_blackboard_scope_created
-                 ON task_blackboard(milestone_ref, task_id, subtask_ref, created_at DESC, id DESC);
-             CREATE INDEX idx_task_blackboard_task_created
-                 ON task_blackboard(task_id, created_at DESC, id DESC);
-             UPDATE task_store_metadata SET value='4' WHERE key='schema_version';",
-        )
-        .unwrap();
-
-    let topic_cases = [
-        ("contract_draft", "draft"),
-        ("contract_findings", "findings"),
-        ("build_proof", "notes"),
-        ("architectural_notes", "decisions"),
-        ("draft", "draft"),
-        ("notes", "notes"),
-        ("findings", "findings"),
-        ("blockers", "blockers"),
-        ("decisions", "decisions"),
-        ("deferred", "deferred"),
-        ("unrecognized_legacy_topic", "notes"),
-    ];
-    for (index, (topic, _)) in topic_cases.iter().enumerate() {
-        let id = index as i64 + 1;
-        store
-            .connection
-            .execute(
-                "INSERT INTO task_blackboard(id,milestone_ref,task_id,author,topic,payload,created_at)
-                 VALUES(?1,?2,?3,'legacy-worker',?4,?5,?6)",
-                rusqlite::params![id, milestone_ref, task_id, topic, format!("legacy-{id}"), id],
-            )
-            .unwrap();
-    }
-    drop(store);
-
-    let store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     let schema_version: String = store
         .connection
         .query_row(
@@ -3323,7 +3504,6 @@ fn task_blackboard_gate_targeting_and_schema_hint() {
         )
         .unwrap();
     assert_eq!(schema_version, "5");
-
     let gate_column_exists: bool = store
         .connection
         .query_row(
@@ -3332,16 +3512,7 @@ fn task_blackboard_gate_targeting_and_schema_hint() {
             |row| row.get(0),
         )
         .unwrap();
-    assert!(gate_column_exists, "v5 migration must add the gate column");
-    let gate_column: (String, i64) = store
-        .connection
-        .query_row(
-            "SELECT type, \"notnull\" FROM pragma_table_info('task_blackboard') WHERE name='gate'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(gate_column, ("TEXT".into(), 0));
+    assert!(gate_column_exists, "current schema stores gate targeting");
     let gate_indexes: i64 = store
         .connection
         .query_row(
@@ -3352,32 +3523,6 @@ fn task_blackboard_gate_targeting_and_schema_hint() {
         )
         .unwrap();
     assert!(gate_indexes > 0, "gate-targeted lookups need an index");
-
-    for (index, (_, expected_topic)) in topic_cases.iter().enumerate() {
-        let id = index as i64 + 1;
-        let migrated_topic: String = store
-            .connection
-            .query_row(
-                "SELECT topic FROM task_blackboard WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(&migrated_topic, expected_topic);
-        let migrated_gate: Option<String> = store
-            .connection
-            .query_row(
-                "SELECT gate FROM task_blackboard WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(migrated_gate, None);
-    }
-    store
-        .connection
-        .execute("DELETE FROM task_blackboard", [])
-        .unwrap();
     drop(store);
 
     let call = |request| {
@@ -3759,6 +3904,166 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         invalid_profile.is_err(),
         "a merged profile without exactly one terminal delivery gate must fail closed"
     );
+
+    let valid_gates = r#"gates:
+  - id: work
+    role: builder
+    proof: none
+  - id: review
+    role: independent_reviewer
+    proof: review
+    reject_to: work
+    independent_from: work
+    contours: standard
+  - id: deliver
+    role: delivery_reviewer
+    proof: delivery
+    receipt_review: review
+    review_sources: [review]
+    reject_to: work
+"#;
+    let later_gate = "  - id: later\n    role: builder\n    proof: none\n";
+    let assert_profile_error = |case: &str, yaml: &str, expected: &str| {
+        let workspace = crate::common::Workspace::new();
+        workspace.write(".forge/acdd/profile.yaml", yaml);
+        let error = match load_for_workspace(workspace.root()) {
+            Ok(_) => panic!("{case} should fail merged profile compilation"),
+            Err(error) => error,
+        };
+        let detail = format!("{error:#}");
+        assert!(
+            detail.contains(expected),
+            "{case} expected diagnostic {expected:?}, got: {detail}"
+        );
+    };
+    let invalid_token = valid_gates
+        .replacen("id: work", "id: work/v1", 1)
+        .replacen("reject_to: work", "reject_to: work/v1", 2)
+        .replacen("independent_from: work", "independent_from: work/v1", 1);
+    assert_profile_error(
+        "invalid gate token",
+        &invalid_token,
+        "gate id 'work/v1' must be a non-empty token",
+    );
+    let gates_without_receipt_review = valid_gates.replace("    receipt_review: review\n", "");
+    let missing_review_source = gates_without_receipt_review
+        .replacen("review_sources: [review]", "review_sources: [absent]", 1);
+    assert_profile_error(
+        "missing review source",
+        &missing_review_source,
+        "review_sources must reference strictly prior review gates",
+    );
+    let non_review_source =
+        gates_without_receipt_review.replacen("review_sources: [review]", "review_sources: [work]", 1);
+    assert_profile_error(
+        "non-review review source",
+        &non_review_source,
+        "review source 'work' is not a review gate",
+    );
+    let cases = [
+        (
+            "duplicate gate id",
+            valid_gates.replacen(
+                "  - id: review\n    role: independent_reviewer\n    proof: review",
+                "  - id: work\n    role: builder\n    proof: none\n  - id: review\n    role: independent_reviewer\n    proof: review",
+                1,
+            ),
+        ),
+        (
+            "forward reject_to",
+            valid_gates
+                .replacen("reject_to: work", "reject_to: later", 1)
+                .replacen("  - id: deliver", &format!("{later_gate}  - id: deliver"), 1),
+        ),
+        (
+            "missing reject_to",
+            valid_gates.replacen("reject_to: work", "reject_to: absent", 1),
+        ),
+        (
+            "forward independent_from",
+            valid_gates
+                .replacen("independent_from: work", "independent_from: later", 1)
+                .replacen("  - id: deliver", &format!("{later_gate}  - id: deliver"), 1),
+        ),
+        (
+            "missing independent_from",
+            valid_gates.replacen("independent_from: work", "independent_from: absent", 1),
+        ),
+        (
+            "missing receipt review",
+            valid_gates.replacen("receipt_review: review", "receipt_review: absent", 1),
+        ),
+        (
+            "non-review receipt review",
+            valid_gates.replacen("receipt_review: review", "receipt_review: work", 1),
+        ),
+        (
+            "undefined role",
+            valid_gates.replacen("role: builder", "role: missing_role", 1),
+        ),
+        (
+            "undefined contour set",
+            valid_gates.replacen("contours: standard", "contours: missing_contours", 1),
+        ),
+        (
+            "empty command value",
+            format!("commands:\n  blank: '  '\n{valid_gates}"),
+        ),
+        (
+            "empty command registry name",
+            format!("commands:\n  '': echo\n{valid_gates}"),
+        ),
+        (
+            "array schema without items",
+            valid_gates.replacen(
+                "    proof: none",
+                "    proof:\n      scheme:\n        type: array",
+                1,
+            ),
+        ),
+        (
+            "schema required property is undefined",
+            valid_gates.replacen(
+                "    proof: none",
+                "    proof:\n      scheme:\n        type: object\n        required: [missing]\n        properties:\n          nested:\n            type: string",
+                1,
+            ),
+        ),
+        (
+            "invalid nested schema type",
+            valid_gates.replacen(
+                "    proof: none",
+                "    proof:\n      scheme:\n        type: object\n        properties:\n          nested:\n            type: unsupported",
+                1,
+            ),
+        ),
+    ];
+    for (case, yaml) in cases {
+        let workspace = crate::common::Workspace::new();
+        workspace.write(".forge/acdd/profile.yaml", &yaml);
+        let error = match load_for_workspace(workspace.root()) {
+            Ok(_) => panic!("{case} should fail merged profile compilation"),
+            Err(error) => error,
+        };
+        let detail = format!("{error:#}");
+        assert!(
+            detail.contains("ACDD_PROFILE_INVALID")
+                || detail.contains("ACDD_PROFILE_SCHEMA_INVALID"),
+            "{case} failed for an unexpected reason: {detail}"
+        );
+    }
+
+    let empty_registry = parse_profile(
+        "roles:\n  builder: {}\n  independent_reviewer: {}\n  delivery_reviewer: {}\ncommands: {}\ngates:\n  - id: work\n    role: builder\n    proof: command\n  - id: review\n    role: independent_reviewer\n    proof: review\n  - id: deliver\n    role: delivery_reviewer\n    proof: delivery\n    review_sources: [review]\n",
+    )
+    .unwrap();
+    let error = empty_registry.validate().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("requires a non-empty commands registry"),
+        "unexpected empty-registry validation error: {error:#}"
+    );
 }
 
 #[test]
@@ -3793,15 +4098,18 @@ gates:
           report:
             type: object
             required: [entries]
+            additionalProperties: false
             properties:
               entries:
                 type: array
                 items:
                   type: object
                   required: [name]
+                  additionalProperties: false
                   properties:
                     name:
                       type: string
+                      enum: [accepted, rejected]
   - id: review
     role: independent_reviewer
     proof: review
@@ -3863,11 +4171,11 @@ gates:
                                     "required": [],
                                     "additionalProperties": null,
                                     "items": null,
-                                    "enum": []
+                            "enum": ["accepted", "rejected"]
                                 }
                             },
                             "required": ["name"],
-                            "additionalProperties": null,
+                            "additionalProperties": false,
                             "items": null,
                             "enum": []
                         },
@@ -3877,7 +4185,7 @@ gates:
                     }
                 },
                 "required": ["entries"],
-                "additionalProperties": null,
+                "additionalProperties": false,
                 "items": null,
                 "enum": []
             }
@@ -3887,6 +4195,157 @@ gates:
         "items": null,
         "enum": []
     }));
+
+    let properties = claim["context_bundle"]["proof_schema"]
+        .pointer("/properties/report/properties/entries/items/additionalProperties")
+        .expect("array item schema preserves the forbidden-property contract");
+    assert_eq!(properties, false);
+
+    let task: contextunity_forge_mcp::db::tasks_store::Task = {
+        let store = tasks::store(workspace.root()).unwrap();
+        let descriptor: String = store
+            .connection
+            .query_row(
+                "SELECT descriptor FROM tasks WHERE task_id=?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&descriptor).unwrap()
+    };
+    let before_state = || {
+        let store = tasks::store(workspace.root()).unwrap();
+        let descriptor: String = store
+            .connection
+            .query_row(
+                "SELECT descriptor FROM tasks WHERE task_id=?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let current: contextunity_forge_mcp::db::tasks_store::Task =
+            serde_json::from_str(&descriptor).unwrap();
+        let gates = store
+            .connection
+            .prepare("SELECT gate,revision,state,evidence FROM task_gates WHERE task_id=?1 ORDER BY gate,revision")
+            .unwrap()
+            .query_map([task_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let claims = store
+            .connection
+            .prepare("SELECT revision,ended FROM task_claims WHERE task_id=?1 ORDER BY revision")
+            .unwrap()
+            .query_map([task_id], |row| Ok((row.get::<_, u64>(0)?, row.get::<_, i64>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let submissions: i64 = store
+            .connection
+            .query_row(
+                "SELECT count(*) FROM task_submissions WHERE task_id=?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        (
+            current.status,
+            current.stage,
+            current.claim_revision,
+            current.worker_id,
+            gates,
+            claims,
+            submissions,
+        )
+    };
+    assert_eq!(task.stage, "schema_input");
+    let unchanged = before_state();
+    let invalid_proofs = [
+        (
+            "nested required field missing",
+            json!({"report":{}}),
+        ),
+        (
+            "wrong nested type",
+            json!({"report":{"entries":"not-an-array"}}),
+        ),
+        (
+            "enum value rejected",
+            json!({"report":{"entries":[{"name":"unknown"}]}}),
+        ),
+        (
+            "array element type rejected",
+            json!({"report":{"entries":[42]}}),
+        ),
+        (
+            "forbidden nested property rejected",
+            json!({"report":{"entries":[],"extra":true}}),
+        ),
+    ];
+    for (case, proof) in invalid_proofs {
+        let mut invalid_evidence = evidence(&task);
+        invalid_evidence.proof = json!({"scheme_proof":proof});
+        let error = tasks::submit(
+            workspace.root(),
+            serde_json::from_value(json!({
+                "task_id": task_id,
+                "stage": "schema_input",
+                "action": "pass",
+                "evidence": invalid_evidence
+            }))
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("TASK_EVIDENCE_INVALID"),
+            "{case} produced an unexpected error: {error:#}"
+        );
+        assert_eq!(before_state(), unchanged, "{case} mutated task/gate/claim state");
+    }
+
+    let mut accepted_evidence = evidence(&task);
+    accepted_evidence.proof = json!({
+        "scheme_proof":{"report":{"entries":[{"name":"accepted"}]}}
+    });
+    let accepted = tasks::submit(
+        workspace.root(),
+        serde_json::from_value(json!({
+            "task_id": task_id,
+            "stage": "schema_input",
+            "action": "pass",
+            "evidence": accepted_evidence
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(accepted["stage"], "review");
+    let submitted = before_state();
+    assert_eq!(submitted.0, "ready");
+    assert_eq!(submitted.1, "review");
+    assert_eq!(submitted.6, unchanged.6 + 1);
+    let stored_gate: (String, Option<String>) = tasks::store(workspace.root())
+        .unwrap()
+        .connection
+        .query_row(
+            "SELECT state,evidence FROM task_gates WHERE task_id=?1 AND gate='schema_input' ORDER BY revision DESC LIMIT 1",
+            [task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored_gate.0, "passed");
+    let stored_evidence: Value = serde_json::from_str(stored_gate.1.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        stored_evidence["proof"]["scheme_proof"]["report"]["entries"][0]["name"],
+        "accepted"
+    );
 }
 
 #[test]
@@ -4124,337 +4583,3 @@ fn linked_pinned_tasks_ignore_linked_workspace_profile_overrides() {
         .unwrap_or_else(|error| panic!("{case} pinned task inspection used linked base profile: {error}"));
     }
 }
-
-#[test]
-fn v2_migration_normalizes_pending_gate_ids_with_null_evidence() {
-    let (root, mut store, milestone) = fixture();
-    let task_id = milestone.task_id(&milestone.tasks[0]);
-    let reset = store.reset(&task_id).unwrap();
-    store
-        .connection
-        .execute("DELETE FROM task_gates WHERE task_id=?1", [&task_id])
-        .unwrap();
-    for (offset, gate) in ["contract/v1", "build/v1", "review/v1", "deliver/v1"]
-        .into_iter()
-        .enumerate()
-    {
-        store
-            .connection
-            .execute(
-                "INSERT INTO task_gates(task_id,gate,revision,state,evidence) VALUES(?1,?2,?3,'pending',NULL)",
-                rusqlite::params![task_id, gate, reset.claim_revision + offset as u64],
-            )
-            .unwrap();
-    }
-    store
-        .connection
-        .execute_batch(
-            "DROP INDEX IF EXISTS idx_task_blackboard_gate_scope_created;
-             DROP INDEX IF EXISTS idx_task_blackboard_task_gate_created;
-             ALTER TABLE task_blackboard DROP COLUMN gate;",
-        )
-        .unwrap();
-    store
-        .connection
-        .execute(
-            "UPDATE task_store_metadata SET value='2' WHERE key='schema_version'",
-            [],
-        )
-        .unwrap();
-    drop(store);
-
-    let migrated = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
-    let gates = {
-        let mut statement = migrated
-            .connection
-            .prepare("SELECT gate,state,evidence FROM task_gates WHERE task_id=?1 ORDER BY gate")
-            .unwrap();
-        statement
-            .query_map([&task_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap()
-    };
-    assert_eq!(
-        gates,
-        vec![
-            ("build".into(), "pending".into(), None),
-            ("contract".into(), "pending".into(), None),
-            ("deliver".into(), "pending".into(), None),
-            ("review".into(), "pending".into(), None),
-        ]
-    );
-    let schema_version: String = migrated
-        .connection
-        .query_row(
-            "SELECT value FROM task_store_metadata WHERE key='schema_version'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(schema_version, "5");
-}
-
-#[test]
-fn v2_migration_preserves_legacy_unpinned_task_authority_for_sync_and_claim() {
-    use sha2::{Digest, Sha256};
-
-    let (root, mut store, milestone) = fixture();
-    let task_id = milestone.task_id(&milestone.tasks[0]);
-    let task_path = "docs/010-test.md";
-    let worktree = root.0.to_str().unwrap();
-
-    let contract_claim = store
-        .claim(&task_id, "contract", "legacy-builder", worktree)
-        .unwrap();
-    let contract_request: tasks::Submit = serde_json::from_value(json!({
-        "task_id": task_id,
-        "stage": "contract",
-        "action": "pass",
-        "evidence": evidence(&contract_claim),
-    }))
-    .unwrap();
-    assert_eq!(tasks::submit(&root.0, contract_request).unwrap()["status"], "ready");
-    let before_migration = store.inspect(&task_id).unwrap();
-    assert_eq!(before_migration.stage, "build");
-
-    let mut legacy_spec = milestone.tasks[0].clone();
-    legacy_spec.receipt = None;
-    legacy_spec.status = None;
-    legacy_spec.subtasks = Vec::new();
-    let legacy_digest = hex::encode(Sha256::digest(
-        serde_json::to_vec(&(
-            &milestone.repository,
-            &milestone.project,
-            &milestone.id,
-            &milestone.invariants,
-            &milestone.owners,
-            &milestone.depends_on,
-            legacy_spec,
-        ))
-        .unwrap(),
-    ));
-
-    let descriptor: String = store
-        .connection
-        .query_row(
-            "SELECT descriptor FROM tasks WHERE task_id=?1",
-            [&task_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let mut descriptor: serde_json::Value = serde_json::from_str(&descriptor).unwrap();
-    descriptor["digest"] = legacy_digest.clone().into();
-    descriptor["stage"] = "build/v1".into();
-    store
-        .connection
-        .execute(
-            "UPDATE tasks SET descriptor=?2 WHERE task_id=?1",
-            rusqlite::params![task_id, serde_json::to_string(&descriptor).unwrap()],
-        )
-        .unwrap();
-    store
-        .connection
-        .execute(
-            "UPDATE task_gates SET gate='contract/v1' WHERE task_id=?1 AND gate='contract'",
-            [&task_id],
-        )
-        .unwrap();
-    store
-        .connection
-        .execute_batch(
-            "DROP INDEX IF EXISTS idx_task_blackboard_gate_scope_created;
-             DROP INDEX IF EXISTS idx_task_blackboard_task_gate_created;
-             ALTER TABLE task_blackboard DROP COLUMN gate;",
-        )
-        .unwrap();
-    store
-        .connection
-        .execute(
-            "UPDATE task_store_metadata SET value='2' WHERE key='schema_version'",
-            [],
-        )
-        .unwrap();
-    drop(store);
-
-    let mut migrated = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
-    let unchanged = Milestone::parse(&std::fs::read_to_string(root.0.join(task_path)).unwrap(), "forge-mcp")
-        .unwrap();
-    let pending_digest_version: i64 = migrated
-        .connection
-        .query_row(
-            "SELECT digest_version FROM tasks WHERE task_id=?1",
-            [&task_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(pending_digest_version, 0);
-    let synced = migrated.sync(&unchanged, task_path, &root.0).unwrap();
-    let synced_task = synced.iter().find(|task| task.task_id == task_id).unwrap();
-    assert_eq!(synced_task.digest, legacy_digest);
-    assert_eq!(synced_task.status, before_migration.status);
-    assert_eq!(synced_task.stage, before_migration.stage);
-    assert_eq!(synced_task.contract_revision, before_migration.contract_revision);
-    assert_eq!(synced_task.claim_revision, before_migration.claim_revision);
-    let current_digest_version: i64 = migrated
-        .connection
-        .query_row(
-            "SELECT digest_version FROM tasks WHERE task_id=?1",
-            [&task_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(current_digest_version, 1);
-
-    let mut changed = unchanged.clone();
-    changed.tasks[0].target.push_str(" after migration");
-    assert_ne!(unchanged.digest(&unchanged.tasks[0]).unwrap(), changed.digest(&changed.tasks[0]).unwrap());
-    let error = migrated.sync(&changed, task_path, &root.0).unwrap_err();
-    assert!(error.to_string().contains("AUTHORITY_GAP"));
-
-    let mut changed_invariant = unchanged.clone();
-    changed_invariant.invariants.push("changed admitted authority".into());
-    assert_ne!(
-        unchanged.digest(&unchanged.tasks[0]).unwrap(),
-        changed_invariant
-            .digest(&changed_invariant.tasks[0])
-            .unwrap()
-    );
-    let error = migrated
-        .sync(&changed_invariant, task_path, &root.0)
-        .unwrap_err();
-    assert!(error.to_string().contains("AUTHORITY_GAP"));
-
-    let mut task_pinned = unchanged.clone();
-    task_pinned.tasks[0].acdd_profile = Some("profiles/task.yaml:abcdef1234567".into());
-    assert_ne!(
-        unchanged.digest(&unchanged.tasks[0]).unwrap(),
-        task_pinned.digest(&task_pinned.tasks[0]).unwrap()
-    );
-    let mut milestone_pinned = unchanged.clone();
-    milestone_pinned.acdd_profile = Some("profiles/base.yaml:abcdef1234567".into());
-    assert_ne!(
-        unchanged.digest(&unchanged.tasks[0]).unwrap(),
-        milestone_pinned.digest(&milestone_pinned.tasks[0]).unwrap()
-    );
-
-    // Simulate an active schema-v3 row written by the pre-fix digest formula,
-    // which serialized an absent milestone profile as JSON null.
-    let before_pre_fix_migration = migrated.inspect(&task_id).unwrap();
-    let mut pre_fix_spec = unchanged.tasks[0].clone();
-    pre_fix_spec.receipt = None;
-    pre_fix_spec.status = None;
-    pre_fix_spec.subtasks = Vec::new();
-    let pre_fix_digest = hex::encode(Sha256::digest(
-        serde_json::to_vec(&(
-            &unchanged.repository,
-            &unchanged.project,
-            &unchanged.id,
-            &unchanged.invariants,
-            &unchanged.owners,
-            &unchanged.depends_on,
-            &unchanged.acdd_profile,
-            pre_fix_spec,
-        ))
-        .unwrap(),
-    ));
-    let descriptor: String = migrated
-        .connection
-        .query_row(
-            "SELECT descriptor FROM tasks WHERE task_id=?1",
-            [&task_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let mut descriptor: serde_json::Value = serde_json::from_str(&descriptor).unwrap();
-    descriptor["digest"] = pre_fix_digest.into();
-    migrated
-        .connection
-        .execute(
-            "UPDATE tasks SET descriptor=?2 WHERE task_id=?1",
-            rusqlite::params![task_id, serde_json::to_string(&descriptor).unwrap()],
-        )
-        .unwrap();
-    migrated
-        .connection
-        .execute_batch(
-            "DROP INDEX IF EXISTS idx_task_blackboard_gate_scope_created;
-             DROP INDEX IF EXISTS idx_task_blackboard_task_gate_created;
-             ALTER TABLE task_blackboard DROP COLUMN gate;",
-        )
-        .unwrap();
-    migrated
-        .connection
-        .execute(
-            "UPDATE task_store_metadata SET value='3' WHERE key='schema_version'",
-            [],
-        )
-        .unwrap();
-    drop(migrated);
-
-    let mut migrated = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
-    let pending_digest_version: i64 = migrated
-        .connection
-        .query_row(
-            "SELECT digest_version FROM tasks WHERE task_id=?1",
-            [&task_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(pending_digest_version, 0);
-
-    let mut changed_target = unchanged.clone();
-    changed_target.tasks[0].target.push_str(" after schema migration");
-    let error = migrated
-        .sync(&changed_target, task_path, &root.0)
-        .unwrap_err();
-    assert!(error.to_string().contains("AUTHORITY_GAP"));
-
-    let mut changed_invariant = unchanged.clone();
-    changed_invariant.invariants.push("changed during migration".into());
-    let error = migrated
-        .sync(&changed_invariant, task_path, &root.0)
-        .unwrap_err();
-    assert!(error.to_string().contains("AUTHORITY_GAP"));
-
-    let still_pending_digest_version: i64 = migrated
-        .connection
-        .query_row(
-            "SELECT digest_version FROM tasks WHERE task_id=?1",
-            [&task_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(still_pending_digest_version, 0);
-
-    let synced = migrated.sync(&unchanged, task_path, &root.0).unwrap();
-    let synced_task = synced.iter().find(|task| task.task_id == task_id).unwrap();
-    assert_eq!(synced_task.digest, unchanged.digest(&unchanged.tasks[0]).unwrap());
-    assert_eq!(synced_task.status, before_pre_fix_migration.status);
-    assert_eq!(synced_task.stage, before_pre_fix_migration.stage);
-    assert_eq!(synced_task.contract_revision, before_pre_fix_migration.contract_revision);
-    assert_eq!(synced_task.claim_revision, before_pre_fix_migration.claim_revision);
-    let current_digest_version: i64 = migrated
-        .connection
-        .query_row(
-            "SELECT digest_version FROM tasks WHERE task_id=?1",
-            [&task_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(current_digest_version, 1);
-
-    let build_claim = migrated
-        .claim(&task_id, "build", "legacy-builder", worktree)
-        .unwrap();
-    assert_eq!(build_claim.stage, "build");
-    assert_eq!(build_claim.contract_revision, before_migration.contract_revision);
-    assert_eq!(build_claim.claim_revision, before_migration.claim_revision + 1);
-}
-

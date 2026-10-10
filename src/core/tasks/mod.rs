@@ -452,25 +452,12 @@ impl Milestone {
     }
     /// Performs digest.
     pub fn digest(&self, task: &TaskSpec) -> Result<String> {
-        self.digest_with_absent_profile_slot(task, false)
-    }
-
-    /// Computes the pre-v4 digest for a schema-migration exact-match check.
-    pub(crate) fn pre_v4_digest(&self, task: &TaskSpec) -> Result<String> {
-        self.digest_with_absent_profile_slot(task, true)
-    }
-
-    fn digest_with_absent_profile_slot(
-        &self,
-        task: &TaskSpec,
-        include_absent_profile: bool,
-    ) -> Result<String> {
         let mut spec = task.clone();
         spec.receipt = None;
         spec.status = None;
         spec.subtasks = Vec::new();
-        let bytes = match (self.acdd_profile.as_ref(), include_absent_profile) {
-            (Some(profile), _) => serde_json::to_vec(&(
+        let bytes = match self.acdd_profile.as_ref() {
+            Some(profile) => serde_json::to_vec(&(
                 &self.repository,
                 &self.project,
                 &self.id,
@@ -480,17 +467,7 @@ impl Milestone {
                 profile,
                 spec,
             ))?,
-            (None, true) => serde_json::to_vec(&(
-                &self.repository,
-                &self.project,
-                &self.id,
-                &self.invariants,
-                &self.owners,
-                &self.depends_on,
-                &self.acdd_profile,
-                spec,
-            ))?,
-            (None, false) => serde_json::to_vec(&(
+            None => serde_json::to_vec(&(
                 &self.repository,
                 &self.project,
                 &self.id,

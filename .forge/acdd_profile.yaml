@@ -1,0 +1,9 @@
+# Repository-level ACDD profile override
+# Overrides roles and workflow settings for this repository.
+roles:
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - model: "sol-6.1"
+        reasoning: "high"

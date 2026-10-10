@@ -860,218 +860,6 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
 }
 
 #[test]
-fn legacy_parentless_candidate_handoff_resolves_first_parent_landings() {
-    let cases = [("direct", false), ("merge", true)];
-    for (landing_kind, merge_landing) in cases {
-        let root = ScopedWorkspace::new("forge_legacy_parentless_handoff");
-        root.write("src/lib.rs", "pub fn legacy_delivery() {}\n");
-        let milestone_id = format!("m-legacy-{landing_kind}");
-        let milestone_ref = format!("docs/milestones/010-legacy-{landing_kind}.md");
-        root.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nacdd_profile: custom/manual.yaml\n",
-        );
-        let mut profile = (*contextunity_forge_mcp::core::tasks::profile::compiled()).clone();
-        profile.gates.last_mut().unwrap().auto_commit = false;
-        root.write(
-            "custom/manual.yaml",
-            &serde_yaml::to_string(&profile).unwrap(),
-        );
-        let source = format!(
-            "---\nid: {milestone_id}\ntitle: Legacy parentless handoff\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Legacy parentless handoff\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish manually delivered work\nproof_policy: seam-test-first\nscope: [src/]\n```\n"
-        );
-        root.write(&milestone_ref, &source);
-        let milestone = Milestone::parse(&source, "forge-mcp").unwrap();
-        let task_id = milestone.task_id(&milestone.tasks[0]);
-        let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
-        store.sync(&milestone, &milestone_ref, &root.0).unwrap();
-        complete_task_through_engine(&root, &store, &task_id);
-
-        let task = store.inspect(&task_id).unwrap();
-        let receipt = task
-            .receipt
-            .clone()
-            .expect("engine delivery leaves a durable receipt for legacy import");
-        let candidate = receipt
-            .commit
-            .as_deref()
-            .expect("manual delivery retains its accepted candidate SHA")
-            .to_owned();
-        let candidate_parents = std::process::Command::new("git")
-            .args(["rev-list", "--parents", "-n", "1", &candidate])
-            .current_dir(&root.0)
-            .output()
-            .unwrap();
-        assert!(candidate_parents.status.success());
-        assert_eq!(
-            String::from_utf8_lossy(&candidate_parents.stdout)
-                .split_whitespace()
-                .count(),
-            1,
-            "accepted snapshots are parentless root commits"
-        );
-
-        let base_branch = std::process::Command::new("git")
-            .args(["symbolic-ref", "--short", "HEAD"])
-            .current_dir(&root.0)
-            .output()
-            .unwrap();
-        assert!(base_branch.status.success());
-        let base_branch = String::from_utf8_lossy(&base_branch.stdout)
-            .trim()
-            .to_owned();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(&root.0)
-                .output()
-                .unwrap()
-        };
-        let landed_commit = if merge_landing {
-            assert!(git(&["checkout", "-b", "legacy-task-landing"])
-                .status
-                .success());
-            let staged = git(&["add", "--", "src/lib.rs"]);
-            assert!(staged.status.success());
-            let commit = git(&[
-                "-c",
-                "user.name=ACDD test",
-                "-c",
-                "user.email=acdd-test@example.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-m",
-                "legacy task landing",
-            ]);
-            assert!(
-                commit.status.success(),
-                "{}",
-                String::from_utf8_lossy(&commit.stderr)
-            );
-            let switched = git(&["checkout", &base_branch]);
-            assert!(
-                switched.status.success(),
-                "{}",
-                String::from_utf8_lossy(&switched.stderr)
-            );
-            let merged = git(&["merge", "--no-ff", "--no-edit", "legacy-task-landing"]);
-            assert!(
-                merged.status.success(),
-                "{}",
-                String::from_utf8_lossy(&merged.stderr)
-            );
-            git_head(&root.0)
-        } else {
-            let staged = git(&["add", "--", "src/lib.rs"]);
-            assert!(staged.status.success());
-            let commit = git(&[
-                "-c",
-                "user.name=ACDD test",
-                "-c",
-                "user.email=acdd-test@example.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-m",
-                "legacy task landing",
-            ]);
-            assert!(
-                commit.status.success(),
-                "{}",
-                String::from_utf8_lossy(&commit.stderr)
-            );
-            git_head(&root.0)
-        };
-
-        let first_parent = git(&["rev-parse", &format!("{landed_commit}^1")]);
-        assert!(first_parent.status.success());
-        let first_parent = String::from_utf8_lossy(&first_parent.stdout)
-            .trim()
-            .to_owned();
-        let candidate_diff = git(&["diff", "--quiet", &candidate, &landed_commit, "--", "src/"]);
-        assert_eq!(candidate_diff.status.code(), Some(0));
-        let landing_diff = git(&[
-            "diff",
-            "--quiet",
-            &first_parent,
-            &landed_commit,
-            "--",
-            "src/",
-        ]);
-        assert_eq!(landing_diff.status.code(), Some(1));
-
-        // Legacy completed receipts have no preceding gate evidence carrying a baseline.
-        let legacy_db = root.0.join(".forge/legacy.sqlite");
-        let receipt_yaml = serde_yaml::to_string(&receipt).unwrap();
-        let receipt_yaml = receipt_yaml
-            .lines()
-            .map(|line| format!("  {line}\n"))
-            .collect::<String>();
-        let completed_source = source.replace(
-            "scope: [src/]\n```",
-            &format!("scope: [src/]\nstatus: completed\nreceipt:\n{receipt_yaml}```"),
-        );
-        root.write(&milestone_ref, &completed_source);
-        drop(store);
-        root.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/legacy.sqlite\nacdd_profile: custom/manual.yaml\n",
-        );
-        tasks::manage(
-            &root.0,
-            tasks::Manage {
-                action: tasks::ManageAction::Sync,
-                milestone_ref: Some(milestone_ref.clone()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let legacy_store = TasksStore::open(&legacy_db).unwrap();
-        assert_eq!(
-            legacy_store.build_snapshot_candidate(&task_id).unwrap(),
-            None,
-            "legacy receipt imports contain no captured candidate baseline"
-        );
-        drop(legacy_store);
-
-        let result = milestone_cli(
-            &root,
-            &[
-                "handoff",
-                &milestone_id,
-                "--commit",
-                &landed_commit,
-                "--verification-command",
-                "cargo test --test acdd",
-                "--tests-passed",
-                "1",
-                "--tests-failed",
-                "0",
-            ],
-        );
-        assert!(
-            result.status.success(),
-            "{landing_kind} parentless handoff should resolve: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        let archive = std::fs::read_to_string(root.0.join(format!(
-            "docs/milestones/archive/010-legacy-{landing_kind}.md"
-        )))
-        .unwrap();
-        let archived = Milestone::parse(&archive, "forge-mcp").unwrap();
-        assert_eq!(
-            archived.tasks[0]
-                .receipt
-                .as_ref()
-                .and_then(|receipt| receipt.commit.as_deref()),
-            Some(landed_commit.as_str()),
-            "handoff must record the first-parent landing for legacy candidates"
-        );
-    }
-}
-
-#[test]
 fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     let root = ScopedWorkspace::new("forge_task_context_rollup");
     root.write("src/lib.rs", "pub fn example() {}\n");
@@ -1095,6 +883,20 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     let second = milestone.task_id(&milestone.tasks[1]);
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     store.sync(&milestone, milestone_ref, &root.0).unwrap();
+    let candidate_baseline = git_head(&root.0);
+    let run_git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root.0)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
+    };
 
     for (index, stage) in GATES.iter().enumerate() {
         let worker = match index {
@@ -1146,6 +948,83 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
             assert_eq!(store.inspect(&first).unwrap().status, "in_progress");
             assert_eq!(store.blackboard_read(&first, None, None).unwrap().len(), 2);
             root.write(milestone_ref, &source);
+        }
+        if index == 3 {
+            root.write("src/head-moved-after-candidate.rs", "pub fn moved() {}\n");
+            run_git(&["add", "--", "src/head-moved-after-candidate.rs"]);
+            let committed = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=ACDD test",
+                    "-c",
+                    "user.email=acdd-test@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-m",
+                    "move HEAD after candidate capture",
+                ])
+                .current_dir(&root.0)
+                .output()
+                .unwrap();
+            assert!(
+                committed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&committed.stderr)
+            );
+            let moved_head = git_head(&root.0);
+            assert_ne!(moved_head, candidate_baseline);
+            root.write("src/staged-sentinel.rs", "pub fn staged() {}\n");
+            run_git(&["add", "--", "src/staged-sentinel.rs"]);
+            let staged_before = run_git(&["diff", "--cached", "--binary"]);
+            let receipt_before = std::fs::read(root.0.join(milestone_ref)).unwrap();
+            let task_before = store.inspect(&first).unwrap();
+            let submissions_before: i64 = store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM task_submissions WHERE task_id=?1",
+                    [&first],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let rejected: tasks::Submit = serde_json::from_value(json!({
+                "task_id":first,
+                "stage":stage,
+                "action":"pass",
+                "evidence":proof,
+            }))
+            .unwrap();
+            let error = tasks::submit(&root.0, rejected).unwrap_err();
+            assert!(
+                error.to_string().contains("TASK_CANDIDATE_BASELINE_MISMATCH"),
+                "{error:#}"
+            );
+            assert_eq!(git_head(&root.0), moved_head);
+            assert_eq!(run_git(&["diff", "--cached", "--binary"]), staged_before);
+            assert_eq!(std::fs::read(root.0.join(milestone_ref)).unwrap(), receipt_before);
+            let task_after = store.inspect(&first).unwrap();
+            assert_eq!(task_after.status, task_before.status);
+            assert_eq!(task_after.stage, task_before.stage);
+            assert_eq!(task_after.claim_revision, task_before.claim_revision);
+            assert!(task_after.receipt.is_none());
+            let submissions_after: i64 = store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM task_submissions WHERE task_id=?1",
+                    [&first],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(submissions_after, submissions_before);
+
+            let reset = std::process::Command::new("git")
+                .args(["reset", "--hard"])
+                .arg(&candidate_baseline)
+                .current_dir(&root.0)
+                .output()
+                .unwrap();
+            assert!(reset.status.success(), "{}", String::from_utf8_lossy(&reset.stderr));
+            assert_eq!(git_head(&root.0), candidate_baseline);
         }
         let request: tasks::Submit = serde_json::from_value(json!({
             "task_id":first,
@@ -1314,6 +1193,502 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 .blackboard_read(&second, None, None)
                 .unwrap()
                 .is_empty());
+        }
+    }
+
+    let custom = ScopedWorkspace::new("forge_custom_multi_review_rollup");
+    custom.write("src/lib.rs", "pub fn candidate() { let _version = 1; }\n");
+    custom.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    custom.write(
+        ".forge/acdd/profile.yaml",
+        r#"gates:
+  - id: contract
+    role: contract_author
+    proof: contract
+  - id: build
+    role: builder
+    proof: command
+    sha_snapshot: true
+  - id: candidate_final
+    role: builder
+    proof: command
+    sha_snapshot: true
+  - id: review
+    role: independent_reviewer
+    proof: review
+    independent_from: candidate_final
+    reject_to: candidate_final
+    contours: standard
+  - id: security_review
+    role: independent_reviewer
+    proof: review
+    independent_from: candidate_final
+    reject_to: candidate_final
+    contours: standard
+  - id: deliver
+    role: delivery_reviewer
+    proof: delivery
+    receipt_review: security_review
+    review_sources: [review, security_review]
+    reject_to: candidate_final
+    auto_commit: true
+"#,
+    );
+    let custom_ref = "docs/010-custom-review.md";
+    let custom_source = "---\nid: m-custom-review\ntitle: Custom review rollup\ndoc_type: contract\nstatus: active\ninvariants: [custom-rollup]\n---\n# Custom review rollup\n```yaml\ntask_ref: custom\ntarget: Deliver a final reviewed candidate\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    custom.write(custom_ref, custom_source);
+    let staged = std::process::Command::new("git")
+        .args([
+            "add",
+            "--",
+            "src/lib.rs",
+            "forge-mcp.yaml",
+            ".forge/acdd/profile.yaml",
+            custom_ref,
+        ])
+        .current_dir(&custom.0)
+        .output()
+        .unwrap();
+    assert!(staged.status.success(), "{}", String::from_utf8_lossy(&staged.stderr));
+    let committed = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "initialize custom multi-review workflow",
+        ])
+        .current_dir(&custom.0)
+        .output()
+        .unwrap();
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    tasks::manage(
+        &custom.0,
+        serde_json::from_value(json!({"action":"sync","milestone_ref":custom_ref})).unwrap(),
+    )
+    .unwrap();
+    let custom_id = "forge-mcp/forge-mcp/m-custom-review:custom";
+    let read_custom_task = || {
+        let store = tasks::store(&custom.0).unwrap();
+        let descriptor: String = store
+            .connection
+            .query_row(
+                "SELECT descriptor FROM tasks WHERE task_id=?1",
+                [custom_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str::<contextunity_forge_mcp::db::tasks_store::Task>(&descriptor)
+            .unwrap()
+    };
+    let custom_baseline = git_head(&custom.0);
+    let mut build_candidate: Option<String> = None;
+    let mut final_candidate: Option<String> = None;
+    for (stage, worker) in [
+        ("contract", "contract-author"),
+        ("build", "builder-initial"),
+        ("candidate_final", "builder-final"),
+        ("review", "reviewer"),
+        ("security_review", "security-reviewer"),
+        ("deliver", "delivery-reviewer"),
+    ] {
+        if stage == "candidate_final" {
+            custom.write("src/lib.rs", "pub fn candidate() { let _version = 2; }\n");
+        }
+        tasks::claim(
+            &custom.0,
+            tasks::Claim {
+                task_id: custom_id.into(),
+                stage: stage.into(),
+                worker_id: worker.into(),
+                worktree: custom.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let claimed = read_custom_task();
+        let mut proof = evidence(&claimed);
+        match stage {
+            "candidate_final" => {
+                proof.proof = json!({"command_proof":{"command":"cargo test --test acdd","exit_code":0,"tests_passed":1,"tests_failed":0}});
+            }
+            "review" | "security_review" => proof.proof = passing_review_proof(),
+            _ => {}
+        }
+        if stage == "review" {
+            let expected = final_candidate
+                .as_ref()
+                .expect("the configured nearest snapshot gate must precede reviews");
+            let first_candidate = build_candidate.as_ref().unwrap();
+            assert_ne!(first_candidate, expected, "the final snapshot must replace the prior candidate");
+            let mut wrong_candidate = proof.clone();
+            wrong_candidate.commit = Some(first_candidate.clone());
+            let rejected: tasks::Submit = serde_json::from_value(json!({
+                "task_id":custom_id,
+                "stage":stage,
+                "action":"pass",
+                "evidence":wrong_candidate,
+            }))
+            .unwrap();
+            let error = tasks::submit(&custom.0, rejected).unwrap_err();
+            assert!(error.to_string().contains("TASK_CANDIDATE_MISMATCH"), "{error:#}");
+            let unchanged = tasks::store(&custom.0).unwrap().inspect(custom_id).unwrap();
+            assert_eq!(unchanged.status, "in_progress");
+            assert_eq!(unchanged.stage, "review");
+            assert_eq!(unchanged.claim_revision, claimed.claim_revision);
+        }
+        if stage == "security_review" {
+            proof.commit = Some(
+                final_candidate
+                    .as_ref()
+                    .expect("security review uses the final candidate")
+                    .clone(),
+            );
+        }
+        let request: tasks::Submit = serde_json::from_value(json!({
+            "task_id":custom_id,
+            "stage":stage,
+            "action":"pass",
+            "evidence":proof,
+        }))
+        .unwrap();
+        tasks::submit(&custom.0, request).unwrap();
+        if stage == "build" {
+            build_candidate = Some(pinned_candidate(&custom.0, custom_id));
+        }
+        if stage == "candidate_final" {
+            final_candidate = Some(pinned_candidate(&custom.0, custom_id));
+            assert_ne!(final_candidate.as_deref(), Some(custom_baseline.as_str()));
+        }
+    }
+    let candidate = final_candidate.unwrap();
+    let custom_store = tasks::store(&custom.0).unwrap();
+    let delivered_descriptor: String = custom_store
+        .connection
+        .query_row(
+            "SELECT descriptor FROM tasks WHERE task_id=?1",
+            [custom_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let delivered: contextunity_forge_mcp::db::tasks_store::Task =
+        serde_json::from_str(&delivered_descriptor).unwrap();
+    let receipt = serde_json::to_value(delivered.receipt.unwrap()).unwrap();
+    assert_eq!(receipt["evidence"]["command_proof"]["command"], "cargo test --test acdd");
+    assert_eq!(receipt["review"]["review_sources"]["review"]["review_proof"]["decision"], "pass");
+    assert_eq!(receipt["review"]["review_sources"]["security_review"]["review_proof"]["decision"], "pass");
+    assert_eq!(receipt["rollup"]["review_summary"]["contours"]["review.paths"], "accepted");
+    assert_eq!(receipt["rollup"]["review_summary"]["contours"]["security_review.paths"], "accepted");
+    let stored_reviews: Vec<(String, String)> = {
+        let mut statement = custom_store
+            .connection
+            .prepare("SELECT gate,evidence FROM task_gates WHERE task_id=?1 AND gate IN ('review','security_review') AND state='passed' ORDER BY gate")
+            .unwrap();
+        statement
+            .query_map([custom_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    assert_eq!(stored_reviews.len(), 2);
+    for (_, evidence) in stored_reviews {
+        let evidence: Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["commit"], candidate);
+    }
+    let reopened = tasks::store(&custom.0).unwrap().inspect(custom_id).unwrap();
+    assert_eq!(serde_json::to_value(reopened.receipt.unwrap()).unwrap(), receipt);
+
+    let stale = ScopedWorkspace::new("forge_stale_review_source");
+    stale.write("src/lib.rs", "pub fn candidate() { let _version = 1; }\n");
+    stale.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    stale.write(
+        ".forge/acdd/profile.yaml",
+        r#"gates:
+  - id: contract
+    role: contract_author
+    proof: contract
+  - id: build
+    role: builder
+    proof: command
+    sha_snapshot: true
+  - id: review
+    role: independent_reviewer
+    proof: review
+    independent_from: build
+    reject_to: build
+    contours: standard
+  - id: candidate_final
+    role: builder
+    proof: command
+    sha_snapshot: true
+  - id: security_review
+    role: independent_reviewer
+    proof: review
+    independent_from: candidate_final
+    reject_to: candidate_final
+    contours: standard
+  - id: deliver
+    role: delivery_reviewer
+    proof: delivery
+    receipt_review: security_review
+    review_sources: [review, security_review]
+    reject_to: candidate_final
+    auto_commit: true
+"#,
+    );
+    let stale_ref = "docs/010-stale-review.md";
+    let stale_contract = "---\nid: m-stale-review\ntitle: Stale review source\ndoc_type: contract\nstatus: active\n---\n# Stale review source\n```yaml\ntask_ref: stale\ntarget: Reject a stale review source at delivery\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    stale.write(stale_ref, stale_contract);
+    let staged = std::process::Command::new("git")
+        .args([
+            "add",
+            "--",
+            "src/lib.rs",
+            "forge-mcp.yaml",
+            ".forge/acdd/profile.yaml",
+            stale_ref,
+        ])
+        .current_dir(&stale.0)
+        .output()
+        .unwrap();
+    assert!(staged.status.success(), "{}", String::from_utf8_lossy(&staged.stderr));
+    let committed = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "initialize stale review workflow",
+        ])
+        .current_dir(&stale.0)
+        .output()
+        .unwrap();
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    tasks::manage(
+        &stale.0,
+        serde_json::from_value(json!({"action":"sync","milestone_ref":stale_ref})).unwrap(),
+    )
+    .unwrap();
+    let stale_id = "forge-mcp/forge-mcp/m-stale-review:stale";
+    let read_stale_task = || {
+        let store = tasks::store(&stale.0).unwrap();
+        let descriptor: String = store
+            .connection
+            .query_row(
+                "SELECT descriptor FROM tasks WHERE task_id=?1",
+                [stale_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str::<contextunity_forge_mcp::db::tasks_store::Task>(&descriptor)
+            .unwrap()
+    };
+    let stale_persisted_state = || {
+        let store = tasks::store(&stale.0).unwrap();
+        let descriptor: String = store
+            .connection
+            .query_row(
+                "SELECT descriptor FROM tasks WHERE task_id=?1",
+                [stale_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let gates: Vec<(String, u64, String, Option<String>)> = {
+            let mut statement = store
+                .connection
+                .prepare("SELECT gate,revision,state,evidence FROM task_gates WHERE task_id=?1 ORDER BY gate,revision")
+                .unwrap();
+            statement
+                .query_map([stale_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let claims: Vec<(u64, String, String, i64, i64)> = {
+            let mut statement = store
+                .connection
+                .prepare("SELECT revision,worker_id,worktree,claimed_at,ended FROM task_claims WHERE task_id=?1 ORDER BY revision")
+                .unwrap();
+            statement
+                .query_map([stale_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let submissions: i64 = store
+            .connection
+            .query_row(
+                "SELECT count(*) FROM task_submissions WHERE task_id=?1",
+                [stale_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        (descriptor, gates, claims, submissions)
+    };
+    let mut stale_build_candidate: Option<String> = None;
+    let mut stale_final_candidate: Option<String> = None;
+    for (stage, worker) in [
+        ("contract", "contract-author"),
+        ("build", "builder-before-snapshot"),
+        ("review", "early-reviewer"),
+        ("candidate_final", "builder-final"),
+        ("security_review", "final-reviewer"),
+        ("deliver", "delivery-reviewer"),
+    ] {
+        if stage == "candidate_final" {
+            stale.write("src/lib.rs", "pub fn candidate() { let _version = 2; }\n");
+        }
+        tasks::claim(
+            &stale.0,
+            tasks::Claim {
+                task_id: stale_id.into(),
+                stage: stage.into(),
+                worker_id: worker.into(),
+                worktree: stale.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let claimed = read_stale_task();
+        let mut proof = evidence(&claimed);
+        match stage {
+            "candidate_final" => {
+                proof.proof = json!({"command_proof":{"command":"cargo test --test acdd","exit_code":0,"tests_passed":1,"tests_failed":0}});
+            }
+            "review" | "security_review" => proof.proof = passing_review_proof(),
+            _ => {}
+        }
+        match stage {
+            "review" => {
+                proof.commit = Some(
+                    stale_build_candidate
+                        .as_ref()
+                        .expect("the first review follows the build snapshot")
+                        .clone(),
+                );
+            }
+            "security_review" => {
+                proof.commit = Some(
+                    stale_final_candidate
+                        .as_ref()
+                        .expect("the security review follows the final snapshot")
+                        .clone(),
+                );
+            }
+            "deliver" => {
+                let store = tasks::store(&stale.0).unwrap();
+                let reviews: Vec<(String, String)> = {
+                    let mut statement = store
+                        .connection
+                        .prepare("SELECT gate,evidence FROM task_gates WHERE task_id=?1 AND gate IN ('review','security_review') AND state='passed' ORDER BY gate")
+                        .unwrap();
+                    statement
+                        .query_map([stale_id], |row| Ok((row.get(0)?, row.get(1)?)))
+                        .unwrap()
+                        .collect::<rusqlite::Result<_>>()
+                        .unwrap()
+                };
+                assert_eq!(reviews.len(), 2);
+                for (gate, evidence) in reviews {
+                    let evidence: Value = serde_json::from_str(&evidence).unwrap();
+                    let expected = if gate == "review" {
+                        stale_build_candidate.as_ref().unwrap()
+                    } else {
+                        stale_final_candidate.as_ref().unwrap()
+                    };
+                    assert_eq!(
+                        evidence["commit"].as_str(),
+                        Some(expected.as_str()),
+                        "{gate} should have passed its then-current snapshot"
+                    );
+                }
+
+                let stage_file = std::process::Command::new("git")
+                    .args(["add", "--", "src/lib.rs"])
+                    .current_dir(&stale.0)
+                    .output()
+                    .unwrap();
+                assert!(stage_file.status.success());
+                let head_before = git_head(&stale.0);
+                let index_before = std::process::Command::new("git")
+                    .args(["diff", "--cached", "--binary"])
+                    .current_dir(&stale.0)
+                    .output()
+                    .unwrap();
+                assert!(index_before.status.success());
+                assert!(
+                    !index_before.stdout.is_empty(),
+                    "the stale-source case should preserve a non-empty staged index"
+                );
+                let document_before = std::fs::read(stale.0.join(stale_ref)).unwrap();
+                let state_before = stale_persisted_state();
+                let request: tasks::Submit = serde_json::from_value(json!({
+                    "task_id":stale_id,
+                    "stage":stage,
+                    "action":"pass",
+                    "evidence":proof,
+                }))
+                .unwrap();
+                let error = tasks::submit(&stale.0, request).unwrap_err();
+                assert!(
+                    error.to_string().contains("TASK_CANDIDATE_MISMATCH")
+                        && error.to_string().contains("review source 'review'"),
+                    "delivery should identify the stale review source: {error:#}"
+                );
+                assert_eq!(git_head(&stale.0), head_before);
+                let index_after = std::process::Command::new("git")
+                    .args(["diff", "--cached", "--binary"])
+                    .current_dir(&stale.0)
+                    .output()
+                    .unwrap();
+                assert!(index_after.status.success());
+                assert_eq!(index_after.stdout, index_before.stdout);
+                assert_eq!(std::fs::read(stale.0.join(stale_ref)).unwrap(), document_before);
+                assert_eq!(stale_persisted_state(), state_before);
+                continue;
+            }
+            _ => {}
+        }
+        let request: tasks::Submit = serde_json::from_value(json!({
+            "task_id":stale_id,
+            "stage":stage,
+            "action":"pass",
+            "evidence":proof,
+        }))
+        .unwrap();
+        tasks::submit(&stale.0, request).unwrap();
+        if stage == "build" {
+            stale_build_candidate = Some(pinned_candidate(&stale.0, stale_id));
+        }
+        if stage == "candidate_final" {
+            stale_final_candidate = Some(pinned_candidate(&stale.0, stale_id));
+            assert_ne!(stale_build_candidate, stale_final_candidate);
         }
     }
 }
@@ -2001,24 +2376,6 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
     let database_path = tasks::database_path(&root.0).unwrap();
     std::fs::create_dir_all(database_path.parent().unwrap()).unwrap();
     let initial_store = TasksStore::open(&database_path).unwrap();
-    initial_store
-        .connection
-        .execute_batch(
-            "DROP TABLE task_blackboard;
-             CREATE TABLE task_blackboard(
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 milestone_ref TEXT NOT NULL,
-                 task_id TEXT REFERENCES tasks ON DELETE CASCADE,
-                 subtask_ref TEXT,
-                 author TEXT NOT NULL,
-                 topic TEXT NOT NULL,
-                 payload TEXT NOT NULL,
-                 created_at INTEGER NOT NULL
-             );
-             CREATE INDEX idx_task_blackboard_task_created ON task_blackboard(task_id, created_at);
-             UPDATE task_store_metadata SET value='1' WHERE key='schema_version';",
-        )
-        .unwrap();
     drop(initial_store);
 
     let manifest = |id: &str,

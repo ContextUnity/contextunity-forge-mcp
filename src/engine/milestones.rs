@@ -835,49 +835,15 @@ fn task_landed_commit(
     // With auto_commit disabled, the accepted candidate snapshot is a root
     // snapshot rather than an ancestor of the user's landing commit. Resolve
     // its first scoped-tree match after the candidate's recorded baseline.
-    let parents = std::process::Command::new("git")
-        .args(["rev-list", "--parents", "-n", "1", delivery])
-        .current_dir(root)
-        .output()?;
-    if parents.status.success() && !scope.is_empty() {
-        let fields = String::from_utf8(parents.stdout)?
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        let baseline = candidate_baseline_head
-            .map(str::to_owned)
-            .or_else(|| (fields.len() == 2).then(|| fields[1].clone()));
-        if let Some(baseline) = baseline {
+    if !scope.is_empty() {
+        if let Some(baseline) = candidate_baseline_head {
             for commit in &commits {
-                if commit == &baseline || !git_ancestor(root, &baseline, commit)? {
+                if commit == baseline || !git_ancestor(root, baseline, commit)? {
                     continue;
                 }
-                if !git_changed(root, &baseline, commit, scope)?
+                if !git_changed(root, baseline, commit, scope)?
                     || git_changed(root, delivery, commit, scope)?
                 {
-                    continue;
-                }
-                let parent_line = std::process::Command::new("git")
-                    .args(["rev-list", "--parents", "-n", "1", commit])
-                    .current_dir(root)
-                    .output()?;
-                let parent_fields = String::from_utf8(parent_line.stdout)?
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>();
-                if parent_fields.len() >= 2 && git_changed(root, &parent_fields[1], commit, scope)?
-                {
-                    return Ok(commit.clone());
-                }
-            }
-        } else if fields.len() == 1 {
-            // Older completed receipts retain only a parentless candidate snapshot,
-            // without the branch baseline captured by newer snapshot gates. Match
-            // its scoped tree exactly and require the first-parent landing itself
-            // to introduce a scoped change. The first parent remains authoritative
-            // for merge commits, just as it is for ordinary branch landings.
-            for commit in &commits {
-                if git_changed(root, delivery, commit, scope)? {
                     continue;
                 }
                 let parent_line = std::process::Command::new("git")

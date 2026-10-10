@@ -2,7 +2,7 @@
 id: m-acdd-declarative-profiles-and-workflow-governance
 title: ACDD declarative profiles, workflow governance, and standalone onboarding
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-acdd-lifecycle-snapshots-and-proactive-defect-resolution
 owners:
@@ -23,6 +23,15 @@ invariants:
 - 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
 related_plans: []
 started_at: 2026-10-10T05:51:02+00:00
+handoff:
+  completed_at: 2026-10-10T18:05:25.572621165+00:00
+  duration: 12h 14m
+  commit: 109a6bb8d4552986d096f6abd7b4d291167ceb14
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 651
+    tests_failed: 0
 ---
 
 # ACDD declarative profiles, workflow governance, and standalone onboarding
@@ -70,7 +79,7 @@ subtasks:
   status: completed
   evidence: Updated docs/reference/tasks.md with planning-time documentation co-evolution scope, claim/extension conflict rules, completed-scope release, and linked project namespace isolation.
 receipt:
-  commit: 96c3f9d96eab284c4587b6965ed4be3d894a9e63
+  commit: cff7c7997cc9fd37c8ed7226b356c80ee1bc3de6
   contract_revision: 20
   passed_at: 2026-10-10T06:18:38.859453723+00:00
   evidence:
@@ -121,6 +130,8 @@ receipt:
         project_isolation: accepted
 ```
 
+
+
 ### task: agent-guidance-skill-validation-and-mcp-semantics
 
 ```yaml
@@ -161,7 +172,7 @@ subtasks:
   status: pending
   evidence: null
 receipt:
-  commit: f8f4b2569001487c77b32760b130b708bbb2cc48
+  commit: 2660c596c355ed1be0ba3332af39a8c922d89082
   contract_revision: 17
   passed_at: 2026-10-10T06:59:48.534792408+00:00
   evidence:
@@ -250,7 +261,7 @@ subtasks:
   status: pending
   evidence: null
 receipt:
-  commit: 98b7e831ff7c66b95871376c1292ce64faa5d2a6
+  commit: 2746cb18e8c51a4ee3b5b2305757b5333fdfcab9
   contract_revision: 17
   passed_at: 2026-10-10T07:27:10.811617997+00:00
   evidence:
@@ -342,7 +353,7 @@ subtasks:
   status: completed
   evidence: src/mcp/tools.rs describes workspace/path diagnostics, stored syntax diagnostics, and cycles without advertising SQL on code_map_analyze. Focused MCP seam passed 1/1; Clippy passed. Full `cargo test --test mcp` was 77 passed/1 failed on the out-of-scope installed global skill drift, recorded separately in build evidence.
 receipt:
-  commit: 23199b91480980b4f0eb92f31c075bdbd357ffd2
+  commit: bbf33e49453e78e93bf800887181bfcb1d66295c
   contract_revision: 17
   passed_at: 2026-10-10T07:46:34.341231101+00:00
   evidence:
@@ -473,6 +484,7 @@ subtasks:
   evidence: null
 status: completed
 receipt:
+  commit: 3e31ca51ad98303b0799238a00fa8248e71eb39c
   contract_revision: 20
   passed_at: 2026-10-10T18:02:14.219433744+00:00
   evidence:
@@ -578,6 +590,7 @@ subtasks:
   status: pending
   evidence: null
 receipt:
+  commit: b5099deb6b9a89ac763f31cb285347b66a373c46
   contract_revision: 19
   passed_at: 2026-10-10T15:37:42.433807623+00:00
   evidence:
@@ -719,6 +732,7 @@ subtasks:
   status: completed
   evidence: Focused contract proofs passed for default profile identifiers, custom profile gate schema, CLI submit, and stdio lifecycle. Source inspection confirms stage validation resolves identifiers against the active profile.
 receipt:
+  commit: 109a6bb8d4552986d096f6abd7b4d291167ceb14
   contract_revision: 20
   passed_at: 2026-10-10T17:24:13.225055843+00:00
   evidence:
@@ -771,3 +785,7 @@ receipt:
         paths: accepted
         project_isolation: accepted
 ```
+
+### Post-handoff policy amendment (2026-10-10)
+
+Following the user's later direction, the active task store is schema-v5-only: empty databases initialize as v5, current v5 databases remain supported, and older, unknown, or populated unversioned databases fail closed without migration. The v1–v4 schema upgrades and pre-v4 `digest_version` reconciliation have been removed. Parentless candidate snapshots remain supported when they carry the recorded baseline; the baseline-free legacy receipt landing fallback has been removed. The task receipts and verified invariant text above remain the historical record of the original milestone delivery.
