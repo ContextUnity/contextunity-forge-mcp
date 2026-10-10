@@ -69,6 +69,48 @@ fn milestone_cli(root: &ScopedWorkspace, args: &[&str]) -> std::process::Output 
         .output()
         .unwrap()
 }
+
+fn complete_task_through_engine(root: &ScopedWorkspace, store: &TasksStore, task_id: &str) {
+    for (index, stage) in GATES.iter().enumerate() {
+        let worker_id = match index {
+            0 => "contract-author",
+            1 => "builder",
+            2 => "independent-reviewer",
+            _ => "delivery-reviewer",
+        };
+        tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: task_id.to_owned(),
+                stage: (*stage).to_owned(),
+                worker_id: worker_id.to_owned(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let task = store.inspect(task_id).unwrap();
+        let mut evidence = evidence(&task);
+        evidence.commit = None;
+        let request: tasks::Submit = serde_json::from_value(json!({
+            "task_id":task_id,
+            "stage":stage,
+            "action":"pass",
+            "evidence":evidence,
+        }))
+        .unwrap();
+        let result = tasks::submit(&root.0, request).unwrap();
+        assert_eq!(
+            result["status"],
+            if index + 1 == GATES.len() {
+                "completed"
+            } else {
+                "ready"
+            }
+        );
+    }
+}
+
 #[test]
 fn milestone_init_scaffolds_numbered_planned_and_active_documents() {
     use std::io::Write;
@@ -545,11 +587,12 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
             &root.0,
         )
         .unwrap();
+    let commit = git_head(&root.0);
     let args = [
         "handoff",
         "m-close",
         "--commit",
-        "0123456789abcdef0123456789abcdef01234567",
+        commit.as_str(),
         "--verification-command",
         "cargo test --all-targets",
         "--tests-passed",
@@ -561,16 +604,24 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("finish"));
     assert!(root.0.join("docs/milestones/010-close.md").exists());
-    let mut task = store.list(None, "all", None).unwrap().pop().unwrap();
-    task.status = "completed".into();
-    store
-        .connection
-        .execute(
-            "UPDATE tasks SET descriptor=?1 WHERE task_id=?2",
-            rusqlite::params![serde_json::to_string(&task).unwrap(), task.task_id],
-        )
-        .unwrap();
-    let completed = milestone_cli(&root, &args);
+    let task = store.list(None, "all", None).unwrap().pop().unwrap();
+    root.write("src/lib.rs", "pub fn finish() {}\n");
+    complete_task_through_engine(&root, &store, &task.task_id);
+    drop(store);
+    let handoff_commit = git_head(&root.0);
+    let completed_args = [
+        "handoff",
+        "m-close",
+        "--commit",
+        handoff_commit.as_str(),
+        "--verification-command",
+        "cargo test --all-targets",
+        "--tests-passed",
+        "7",
+        "--tests-failed",
+        "0",
+    ];
+    let completed = milestone_cli(&root, &completed_args);
     assert!(
         completed.status.success(),
         "{}",
@@ -594,7 +645,7 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     assert_eq!(meta["status"].as_str(), Some("completed"));
     assert_eq!(
         meta["handoff"]["commit"].as_str(),
-        Some("0123456789abcdef0123456789abcdef01234567")
+        Some(handoff_commit.as_str())
     );
     let started =
         chrono::DateTime::parse_from_rfc3339(meta["started_at"].as_str().unwrap()).unwrap();
@@ -628,28 +679,20 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         .sync(&milestone, "docs/milestones/020-fallback.md", &fallback.0)
         .unwrap();
     let id = milestone.task_id(&milestone.tasks[0]);
-    let mut claimed = fallback_store
-        .claim(&id, "contract", "worker", fallback.0.to_str().unwrap())
-        .unwrap();
+    complete_task_through_engine(&fallback, &fallback_store, &id);
     let claim_time = fallback_store
         .earliest_claim("forge-mcp/forge-mcp/m-fallback:")
         .unwrap()
         .unwrap();
-    claimed.status = "completed".into();
-    fallback_store
-        .connection
-        .execute(
-            "UPDATE tasks SET descriptor=?1 WHERE task_id=?2",
-            rusqlite::params![serde_json::to_string(&claimed).unwrap(), id],
-        )
-        .unwrap();
+    drop(fallback_store);
+    let fallback_commit = git_head(&fallback.0);
     let result = milestone_cli(
         &fallback,
         &[
             "handoff",
             "m-fallback",
             "--commit",
-            "0123456789abcdef0123456789abcdef01234567",
+            fallback_commit.as_str(),
             "--verification-command",
             "cargo test",
             "--tests-passed",
@@ -686,6 +729,349 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
 }
 
 #[test]
+fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
+    let root = ScopedWorkspace::new("forge_manual_delivery_handoff");
+    root.write("src/lib.rs", "pub fn manual_delivery() {}\n");
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nacdd_profile: custom/manual.yaml\n",
+    );
+    let mut profile = (*contextunity_forge_mcp::core::tasks::profile::compiled()).clone();
+    profile.gates.last_mut().unwrap().auto_commit = false;
+    root.write(
+        "custom/manual.yaml",
+        &serde_yaml::to_string(&profile).unwrap(),
+    );
+    let source = "---\nid: m-manual\ntitle: Manual delivery\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Manual delivery\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish manually delivered work\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    root.write("docs/milestones/010-manual.md", source);
+    let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    store
+        .sync(&milestone, "docs/milestones/010-manual.md", &root.0)
+        .unwrap();
+    let baseline = git_head(&root.0);
+    complete_task_through_engine(&root, &store, &task_id);
+
+    let task = store.inspect(&task_id).unwrap();
+    let candidate = task
+        .receipt
+        .as_ref()
+        .and_then(|receipt| receipt.commit.as_deref())
+        .expect("manual delivery receipt retains its accepted candidate SHA");
+    let (snapshot_candidate, candidate_baseline) = store
+        .build_snapshot_candidate(&task_id)
+        .unwrap()
+        .expect("delivery retains the captured snapshot candidate and its baseline");
+    assert_eq!(candidate, snapshot_candidate);
+    let candidate_parents = std::process::Command::new("git")
+        .args(["rev-list", "--parents", "-n", "1", candidate])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(candidate_parents.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&candidate_parents.stdout)
+            .split_whitespace()
+            .count(),
+        1,
+        "captured candidates are parentless root snapshots"
+    );
+    assert_eq!(
+        candidate_baseline, baseline,
+        "the accepted snapshot already stores the branch baseline needed by handoff"
+    );
+    assert_eq!(
+        git_head(&root.0),
+        baseline,
+        "manual delivery leaves HEAD unchanged"
+    );
+
+    let staged = std::process::Command::new("git")
+        .args(["add", "--", "src/lib.rs"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+    let commit = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "manual task landing",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let landed_commit = git_head(&root.0);
+    drop(store);
+
+    let result = milestone_cli(
+        &root,
+        &[
+            "handoff",
+            "m-manual",
+            "--commit",
+            landed_commit.as_str(),
+            "--verification-command",
+            "cargo test --test acdd",
+            "--tests-passed",
+            "1",
+            "--tests-failed",
+            "0",
+        ],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let archive =
+        std::fs::read_to_string(root.0.join("docs/milestones/archive/010-manual.md")).unwrap();
+    let archived = Milestone::parse(&archive, "forge-mcp").unwrap();
+    assert_eq!(
+        archived.tasks[0]
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.commit.as_deref()),
+        Some(landed_commit.as_str()),
+        "handoff must persist the landed Git commit into Markdown before archival"
+    );
+    let reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    assert_eq!(
+        reopened
+            .inspect(&task_id)
+            .unwrap()
+            .receipt
+            .and_then(|receipt| receipt.commit),
+        Some(landed_commit)
+    );
+}
+
+#[test]
+fn legacy_parentless_candidate_handoff_resolves_first_parent_landings() {
+    let cases = [("direct", false), ("merge", true)];
+    for (landing_kind, merge_landing) in cases {
+        let root = ScopedWorkspace::new("forge_legacy_parentless_handoff");
+        root.write("src/lib.rs", "pub fn legacy_delivery() {}\n");
+        let milestone_id = format!("m-legacy-{landing_kind}");
+        let milestone_ref = format!("docs/milestones/010-legacy-{landing_kind}.md");
+        root.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nacdd_profile: custom/manual.yaml\n",
+        );
+        let mut profile = (*contextunity_forge_mcp::core::tasks::profile::compiled()).clone();
+        profile.gates.last_mut().unwrap().auto_commit = false;
+        root.write(
+            "custom/manual.yaml",
+            &serde_yaml::to_string(&profile).unwrap(),
+        );
+        let source = format!(
+            "---\nid: {milestone_id}\ntitle: Legacy parentless handoff\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Legacy parentless handoff\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish manually delivered work\nproof_policy: seam-test-first\nscope: [src/]\n```\n"
+        );
+        root.write(&milestone_ref, &source);
+        let milestone = Milestone::parse(&source, "forge-mcp").unwrap();
+        let task_id = milestone.task_id(&milestone.tasks[0]);
+        let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+        store.sync(&milestone, &milestone_ref, &root.0).unwrap();
+        complete_task_through_engine(&root, &store, &task_id);
+
+        let task = store.inspect(&task_id).unwrap();
+        let receipt = task
+            .receipt
+            .clone()
+            .expect("engine delivery leaves a durable receipt for legacy import");
+        let candidate = receipt
+            .commit
+            .as_deref()
+            .expect("manual delivery retains its accepted candidate SHA")
+            .to_owned();
+        let candidate_parents = std::process::Command::new("git")
+            .args(["rev-list", "--parents", "-n", "1", &candidate])
+            .current_dir(&root.0)
+            .output()
+            .unwrap();
+        assert!(candidate_parents.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&candidate_parents.stdout)
+                .split_whitespace()
+                .count(),
+            1,
+            "accepted snapshots are parentless root commits"
+        );
+
+        let base_branch = std::process::Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(&root.0)
+            .output()
+            .unwrap();
+        assert!(base_branch.status.success());
+        let base_branch = String::from_utf8_lossy(&base_branch.stdout)
+            .trim()
+            .to_owned();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root.0)
+                .output()
+                .unwrap()
+        };
+        let landed_commit = if merge_landing {
+            assert!(git(&["checkout", "-b", "legacy-task-landing"])
+                .status
+                .success());
+            let staged = git(&["add", "--", "src/lib.rs"]);
+            assert!(staged.status.success());
+            let commit = git(&[
+                "-c",
+                "user.name=ACDD test",
+                "-c",
+                "user.email=acdd-test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "legacy task landing",
+            ]);
+            assert!(
+                commit.status.success(),
+                "{}",
+                String::from_utf8_lossy(&commit.stderr)
+            );
+            let switched = git(&["checkout", &base_branch]);
+            assert!(
+                switched.status.success(),
+                "{}",
+                String::from_utf8_lossy(&switched.stderr)
+            );
+            let merged = git(&["merge", "--no-ff", "--no-edit", "legacy-task-landing"]);
+            assert!(
+                merged.status.success(),
+                "{}",
+                String::from_utf8_lossy(&merged.stderr)
+            );
+            git_head(&root.0)
+        } else {
+            let staged = git(&["add", "--", "src/lib.rs"]);
+            assert!(staged.status.success());
+            let commit = git(&[
+                "-c",
+                "user.name=ACDD test",
+                "-c",
+                "user.email=acdd-test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "legacy task landing",
+            ]);
+            assert!(
+                commit.status.success(),
+                "{}",
+                String::from_utf8_lossy(&commit.stderr)
+            );
+            git_head(&root.0)
+        };
+
+        let first_parent = git(&["rev-parse", &format!("{landed_commit}^1")]);
+        assert!(first_parent.status.success());
+        let first_parent = String::from_utf8_lossy(&first_parent.stdout)
+            .trim()
+            .to_owned();
+        let candidate_diff = git(&["diff", "--quiet", &candidate, &landed_commit, "--", "src/"]);
+        assert_eq!(candidate_diff.status.code(), Some(0));
+        let landing_diff = git(&[
+            "diff",
+            "--quiet",
+            &first_parent,
+            &landed_commit,
+            "--",
+            "src/",
+        ]);
+        assert_eq!(landing_diff.status.code(), Some(1));
+
+        // Legacy completed receipts have no preceding gate evidence carrying a baseline.
+        let legacy_db = root.0.join(".forge/legacy.sqlite");
+        let receipt_yaml = serde_yaml::to_string(&receipt).unwrap();
+        let receipt_yaml = receipt_yaml
+            .lines()
+            .map(|line| format!("  {line}\n"))
+            .collect::<String>();
+        let completed_source = source.replace(
+            "scope: [src/]\n```",
+            &format!("scope: [src/]\nstatus: completed\nreceipt:\n{receipt_yaml}```"),
+        );
+        root.write(&milestone_ref, &completed_source);
+        drop(store);
+        root.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/legacy.sqlite\nacdd_profile: custom/manual.yaml\n",
+        );
+        tasks::manage(
+            &root.0,
+            tasks::Manage {
+                action: tasks::ManageAction::Sync,
+                milestone_ref: Some(milestone_ref.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let legacy_store = TasksStore::open(&legacy_db).unwrap();
+        assert_eq!(
+            legacy_store.build_snapshot_candidate(&task_id).unwrap(),
+            None,
+            "legacy receipt imports contain no captured candidate baseline"
+        );
+        drop(legacy_store);
+
+        let result = milestone_cli(
+            &root,
+            &[
+                "handoff",
+                &milestone_id,
+                "--commit",
+                &landed_commit,
+                "--verification-command",
+                "cargo test --test acdd",
+                "--tests-passed",
+                "1",
+                "--tests-failed",
+                "0",
+            ],
+        );
+        assert!(
+            result.status.success(),
+            "{landing_kind} parentless handoff should resolve: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let archive = std::fs::read_to_string(root.0.join(format!(
+            "docs/milestones/archive/010-legacy-{landing_kind}.md"
+        )))
+        .unwrap();
+        let archived = Milestone::parse(&archive, "forge-mcp").unwrap();
+        assert_eq!(
+            archived.tasks[0]
+                .receipt
+                .as_ref()
+                .and_then(|receipt| receipt.commit.as_deref()),
+            Some(landed_commit.as_str()),
+            "handoff must record the first-parent landing for legacy candidates"
+        );
+    }
+}
+
+#[test]
 fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     let root = ScopedWorkspace::new("forge_task_context_rollup");
     root.write("src/lib.rs", "pub fn example() {}\n");
@@ -716,9 +1102,20 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
             3 => "delivery-reviewer",
             _ => "builder",
         };
-        let claimed = store
-            .claim(&first, stage, worker, root.0.to_str().unwrap())
-            .unwrap();
+        tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: first.clone(),
+                stage: (*stage).to_owned(),
+                worker_id: worker.into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let claimed = store.inspect(&first).unwrap();
+        let mut proof = evidence(&claimed);
+        proof.commit = None;
         if index == 3 {
             store
                 .blackboard_post(
@@ -738,27 +1135,34 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 milestone_ref,
                 &source.replace("target: Deliver first", "target: Changed without admission"),
             );
-            assert!(store
-                .submit(&first, stage, &evidence(&claimed), "pass", None)
-                .is_err());
+            let rejected: tasks::Submit = serde_json::from_value(json!({
+                "task_id":first,
+                "stage":stage,
+                "action":"pass",
+                "evidence":proof,
+            }))
+            .unwrap();
+            assert!(tasks::submit(&root.0, rejected).is_err());
             assert_eq!(store.inspect(&first).unwrap().status, "in_progress");
             assert_eq!(store.blackboard_read(&first, None, None).unwrap().len(), 2);
             root.write(milestone_ref, &source);
         }
-        let result = store
-            .submit(&first, stage, &evidence(&claimed), "pass", None)
-            .unwrap();
+        let request: tasks::Submit = serde_json::from_value(json!({
+            "task_id":first,
+            "stage":stage,
+            "action":"pass",
+            "evidence":proof,
+        }))
+        .unwrap();
+        let result = tasks::submit(&root.0, request).unwrap();
         if index == 3 {
-            assert_eq!(result.status, "completed");
+            assert_eq!(result["status"], "completed");
         }
     }
 
     let delivered = store.inspect(&first).unwrap();
     let receipt = serde_json::to_value(delivered.receipt.unwrap()).unwrap();
-    assert_eq!(
-        receipt["commit"],
-        "0123456789abcdef0123456789abcdef01234567"
-    );
+    assert_eq!(receipt["commit"], git_head(&root.0));
     assert_eq!(
         receipt["rollup"]["verified_invariants"],
         json!(["isolated", "first-rule"])
@@ -792,9 +1196,16 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
         .find(|task| task.task_ref == "first")
         .unwrap();
     assert_eq!(persisted.status.as_deref(), Some("completed"));
+    let document_receipt = persisted.receipt.as_ref().unwrap();
+    assert!(document_receipt.commit.is_none());
+    let mut database_receipt = receipt.clone();
+    database_receipt
+        .as_object_mut()
+        .unwrap()
+        .remove("commit");
     assert_eq!(
-        serde_json::to_value(persisted.receipt.as_ref().unwrap()).unwrap(),
-        receipt
+        serde_json::to_value(document_receipt).unwrap(),
+        database_receipt
     );
     assert!(store
         .blackboard_read(&first, None, None)
@@ -819,9 +1230,18 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
             3 => "second-delivery-reviewer",
             _ => "second-builder",
         };
-        let claimed = store
-            .claim(&second, stage, worker, root.0.to_str().unwrap())
-            .unwrap();
+        tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: second.clone(),
+                stage: (*stage).to_owned(),
+                worker_id: worker.into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let claimed = store.inspect(&second).unwrap();
         let proof = evidence(&claimed);
         if index == 1 {
             accepted_build = proof.proof.clone();
@@ -869,20 +1289,31 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
             };
             recovered.rollup.as_mut().unwrap().architectural_notes[0] = "stale note".into();
             root.write(milestone_ref, &recovery_text(&recovered));
-            assert!(store.submit(&second, stage, &proof, "pass", None).is_err());
+            let rejected: tasks::Submit = serde_json::from_value(json!({
+                "task_id":second,
+                "stage":stage,
+                "action":"pass",
+                "evidence":proof,
+            }))
+            .unwrap();
+            assert!(tasks::submit(&root.0, rejected).is_err());
             assert_eq!(store.inspect(&second).unwrap().status, "in_progress");
             assert_eq!(store.blackboard_read(&second, None, None).unwrap().len(), 2);
             recovered.rollup.as_mut().unwrap().architectural_notes[0] =
                 "Retain retry notes.".into();
             root.write(milestone_ref, &recovery_text(&recovered));
         }
-        let completed = store.submit(&second, stage, &proof, "pass", None).unwrap();
+        let request: tasks::Submit = serde_json::from_value(json!({
+            "task_id":second,
+            "stage":stage,
+            "action":"pass",
+            "evidence":proof,
+        }))
+        .unwrap();
+        let completed = tasks::submit(&root.0, request).unwrap();
         if index == 3 {
-            assert_eq!(completed.status, "completed");
-            assert_eq!(
-                completed.receipt.as_ref().unwrap().passed_at,
-                "2026-10-02T00:00:00Z"
-            );
+            assert_eq!(completed["status"], "completed");
+            assert_eq!(completed["receipt"]["passed_at"], "2026-10-02T00:00:00Z");
             assert!(store
                 .blackboard_read(&second, None, None)
                 .unwrap()
@@ -986,7 +1417,9 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
         .unwrap()
     };
     assert_eq!(inspect()["spec"]["agent_type"], "gpt-6-sol");
-    let stages = ["contract/v1", "build/v1", "review/v1", "deliver/v1"];
+    let stages = ["contract", "build", "review", "deliver"];
+    let mut candidate_commit = None;
+    let mut delivery_commit = None;
 
     for (index, stage) in stages.iter().enumerate() {
         let before = inspect();
@@ -1065,25 +1498,42 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
             }))
             .unwrap();
             let rejected = tasks::submit(&root.0, previous_submit).unwrap_err();
-            assert!(rejected.to_string().contains("TASK_STAGE_INVALID"));
+            assert!(rejected.to_string().contains("TASK_STAGE_UNKNOWN"));
             assert_eq!(inspect()["status"], "in_progress");
         }
+        let mut submitted_evidence = evidence(&stored);
+        submitted_evidence.commit = None;
         let submitted = tasks::submit(
             &root.0,
             serde_json::from_value(json!({
                 "task_id":task_id,
                 "stage":stage,
                 "action":"pass",
-                "evidence":serde_json::to_value(evidence(&stored)).unwrap()
+                "evidence":serde_json::to_value(submitted_evidence).unwrap()
             }))
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(submitted["snapshot"]["commit"], "0123456");
-        assert_eq!(submitted["snapshot"]["inspect_cmd"], "git show 0123456");
+        if index == 1 {
+            candidate_commit = Some(pinned_candidate(&root.0, &task_id));
+        }
+        if let Some(candidate) = candidate_commit.as_deref() {
+            if matches!(index, 1 | 2) {
+                let short_candidate = &candidate[..7];
+                assert_eq!(submitted["snapshot"]["commit"], short_candidate);
+                assert_eq!(
+                    submitted["snapshot"]["inspect_cmd"],
+                    format!("git show {short_candidate}")
+                );
+            }
+        }
         if index == stages.len() - 1 {
             assert_eq!(submitted["status"], "completed");
-            assert_eq!(submitted["receipt"]["commit"], "0123456");
+            let landed = git_head(&root.0);
+            let short_landed = &landed[..7];
+            assert_eq!(submitted["snapshot"]["commit"], short_landed);
+            assert_eq!(submitted["receipt"]["commit"], short_landed);
+            delivery_commit = Some(landed);
         }
     }
 
@@ -1091,11 +1541,15 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
         .unwrap()
         .inspect_details(&task_id)
         .unwrap();
-    assert_eq!(details["latest_snapshot"]["commit"], "0123456");
+    let candidate = candidate_commit.as_deref().unwrap();
+    let short_candidate = &candidate[..7];
+    assert_eq!(details["latest_snapshot"]["commit"], short_candidate);
     assert_eq!(
         details["latest_snapshot"]["inspect_cmd"],
-        "git show 0123456"
+        format!("git show {short_candidate}")
     );
+    let delivery = delivery_commit.as_deref().unwrap();
+    assert_ne!(candidate, delivery);
 
     let written = std::fs::read_to_string(root.0.join(milestone_ref)).unwrap();
     let parsed = Milestone::parse(&written, "forge-mcp").unwrap();
@@ -1103,11 +1557,18 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
     assert_eq!(completed.status.as_deref(), Some("completed"));
     assert_eq!(completed.agent_type.as_deref(), Some("gpt-6-sol"));
     let receipt = completed.receipt.as_ref().unwrap();
-    assert_eq!(
-        receipt.commit.as_deref(),
-        Some("0123456789abcdef0123456789abcdef01234567")
-    );
-    assert!(receipt.evidence.get("test_proof").is_some());
+    assert!(receipt.commit.is_none());
+    let sqlite_receipt = tasks::store(&root.0)
+        .unwrap()
+        .inspect(&task_id)
+        .unwrap()
+        .receipt
+        .unwrap();
+    assert_eq!(sqlite_receipt.commit.as_deref(), Some(delivery));
+    let mut sqlite_receipt = serde_json::to_value(sqlite_receipt).unwrap();
+    sqlite_receipt.as_object_mut().unwrap().remove("commit");
+    assert_eq!(serde_json::to_value(receipt).unwrap(), sqlite_receipt);
+    assert!(receipt.evidence.get("command_proof").is_some());
     assert!(receipt.review.get("review_proof").is_some());
     let rollup = receipt.rollup.as_ref().unwrap();
     assert_eq!(rollup.verified_invariants, ["durable-context", "reviewed"]);
@@ -1318,21 +1779,15 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
         "extensions.commerce",
     )
     .unwrap();
-    let mut task = store.list(None, "all", None).unwrap().pop().unwrap();
-    task.status = "completed".into();
-    store
-        .connection
-        .execute(
-            "UPDATE tasks SET descriptor=?1 WHERE task_id=?2",
-            rusqlite::params![serde_json::to_string(&task).unwrap(), task.task_id],
-        )
-        .unwrap();
+    let task = store.list(None, "all", None).unwrap().pop().unwrap();
+    complete_task_through_engine(&root, &store, &task.task_id);
     drop(store);
 
+    let commit = git_head(&root.0);
     let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
         &root.0,
         "m-commerce",
-        Some("0123456789abcdef0123456789abcdef01234567"),
+        Some(&commit),
         "pytest extensions/commerce/tests",
         5,
         0,
@@ -1541,24 +1996,26 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
     );
     let database_path = tasks::database_path(&root.0).unwrap();
     std::fs::create_dir_all(database_path.parent().unwrap()).unwrap();
-    let db = rusqlite::Connection::open(&database_path).unwrap();
-    db.execute_batch(
-        "CREATE TABLE task_store_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-         INSERT INTO task_store_metadata VALUES('schema_version', '1');
-         CREATE TABLE task_blackboard(
-             id INTEGER PRIMARY KEY AUTOINCREMENT,
-             milestone_ref TEXT NOT NULL,
-             task_id TEXT REFERENCES tasks ON DELETE CASCADE,
-             subtask_ref TEXT,
-             author TEXT NOT NULL,
-             topic TEXT NOT NULL,
-             payload TEXT NOT NULL,
-             created_at INTEGER NOT NULL
-         );
-         CREATE INDEX idx_task_blackboard_task_created ON task_blackboard(task_id, created_at);",
-    )
-    .unwrap();
-    drop(db);
+    let initial_store = TasksStore::open(&database_path).unwrap();
+    initial_store
+        .connection
+        .execute_batch(
+            "DROP TABLE task_blackboard;
+             CREATE TABLE task_blackboard(
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 milestone_ref TEXT NOT NULL,
+                 task_id TEXT REFERENCES tasks ON DELETE CASCADE,
+                 subtask_ref TEXT,
+                 author TEXT NOT NULL,
+                 topic TEXT NOT NULL,
+                 payload TEXT NOT NULL,
+                 created_at INTEGER NOT NULL
+             );
+             CREATE INDEX idx_task_blackboard_task_created ON task_blackboard(task_id, created_at);
+             UPDATE task_store_metadata SET value='1' WHERE key='schema_version';",
+        )
+        .unwrap();
+    drop(initial_store);
 
     let manifest = |id: &str,
                     status: Option<&str>,
@@ -1608,7 +2065,7 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
         &root.0,
         tasks::Claim {
             task_id: crlf_id.into(),
-            stage: "contract/v1".into(),
+            stage: "contract".into(),
             worker_id: "crlf-lifecycle-test".into(),
             worktree: root.0.to_string_lossy().into_owned(),
             bundle: None,

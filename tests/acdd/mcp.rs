@@ -15,6 +15,7 @@ impl std::ops::Deref for Workspace {
 impl Workspace {
     fn new() -> Self {
         let workspace = SharedWorkspace::new();
+        super::support::init_git(workspace.root());
         Self(workspace.root().to_path_buf(), workspace)
     }
 
@@ -127,10 +128,12 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert_eq!(traversal["result"]["isError"], true);
     let synced = client.payload("task_manage", json!({"action":"sync","workspace":"traverse","milestone_ref":"docs/milestones/010-linked.md"}));
     assert_eq!(synced["tasks"][0]["status"], "in_progress");
-    let commit = "0123456789abcdef0123456789abcdef01234567";
-    let build_proof = json!({"test_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
+    let mut candidate_commit = None;
+    let mut delivery_commit = None;
+    let build_proof = json!({"command_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
     let contract_proof =
         json!({"contract_proof":{"seam_test_ref":"tests/acdd/mcp.rs","red_exit_code":101}});
+    let delivery_proof = json!({"delivery_proof":{"status":"passed"}});
     let contours: serde_json::Map<String, Value> =
         contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
             .iter()
@@ -159,25 +162,32 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
                 json!({"task_id":id,"stage":stage,"worker_id":worker,"worktree":linked.0}),
             )
         };
-        let proof = if gate == 2 {
+        let proof = if gate == 3 {
+            &delivery_proof
+        } else if gate == 2 {
             &review_proof
         } else if gate == 0 {
             &contract_proof
         } else {
             &build_proof
         };
-        let evidence = json!({"task_id":id,"stage":stage,"claim_revision":claim["claim_revision"],"contract_revision":1,"worker_id":worker,"worktree":linked.0,"commit":commit,"proof":proof});
+        let evidence = json!({"task_id":id,"stage":stage,"claim_revision":claim["claim_revision"],"contract_revision":1,"worker_id":worker,"worktree":linked.0,"proof":proof});
         let result = client.payload(
             "task_submit",
             json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"}),
         );
-        assert_eq!(result["snapshot"]["commit"], &commit[..7]);
-        assert_eq!(
-            result["snapshot"]["inspect_cmd"],
-            format!("git show {}", &commit[..7])
-        );
+        let snapshot = result["snapshot"]["commit"].as_str().unwrap();
+        if gate == 1 {
+            candidate_commit = Some(snapshot.to_owned());
+        }
         if gate == 3 {
-            assert_eq!(result["receipt"]["commit"], &commit[..7]);
+            delivery_commit = Some(snapshot.to_owned());
+            assert_eq!(result["receipt"]["commit"], snapshot);
+        } else {
+            assert_eq!(
+                result["snapshot"]["inspect_cmd"],
+                format!("git show {snapshot}")
+            );
         }
         assert_eq!(
             result["status"],
@@ -187,17 +197,20 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     drop(client);
     let mut client = Client::new(&main);
     let restored = client.payload("task_manage", json!({"action":"inspect","task_id":id}));
+    let candidate_commit = candidate_commit.unwrap();
+    let delivery_commit = delivery_commit.unwrap();
     assert_eq!(restored["status"], "completed");
-    assert_eq!(restored["receipt"]["commit"], &commit[..7]);
-    assert_eq!(restored["latest_snapshot"]["commit"], &commit[..7]);
+    assert_eq!(restored["receipt"]["commit"], delivery_commit);
+    assert_eq!(restored["latest_snapshot"]["commit"], candidate_commit);
     assert_eq!(
         restored["latest_snapshot"]["inspect_cmd"],
-        format!("git show {}", &commit[..7])
+        format!("git show {candidate_commit}")
     );
     for gate in restored["gates"].as_array().unwrap() {
-        assert_eq!(gate["commit"], &commit[..7]);
+        let gate_commit = gate["commit"].as_str().unwrap();
+        assert!(gate_commit == candidate_commit || gate_commit == delivery_commit);
         let evidence: Value = serde_json::from_str(gate["evidence"].as_str().unwrap()).unwrap();
-        assert_eq!(evidence["commit"], &commit[..7]);
+        assert_eq!(evidence["commit"], gate["commit"]);
     }
     assert_eq!(restored["agents_guidance"], inspected["agents_guidance"]);
     assert_eq!(
@@ -266,10 +279,12 @@ scope: [src/]
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let commit = "0123456789abcdef0123456789abcdef01234567";
-    let build_proof = json!({"test_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
+    let mut candidate_commit = None;
+    let mut delivery_commit = None;
+    let build_proof = json!({"command_proof":{"command":"cargo test","exit_code":0,"tests_passed":1,"tests_failed":0}});
     let contract_proof =
         json!({"contract_proof":{"seam_test_ref":"tests/acdd/mcp.rs","red_exit_code":101}});
+    let delivery_proof = json!({"delivery_proof":{"status":"passed"}});
     let contours: serde_json::Map<String, Value> = REVIEW_CONTOURS
         .iter()
         .map(|name| {
@@ -303,14 +318,16 @@ scope: [src/]
                 .as_array()
                 .is_some_and(|steps| !steps.is_empty()));
         }
-        let proof = if gate == 2 {
+        let proof = if gate == 3 {
+            &delivery_proof
+        } else if gate == 2 {
             &review_proof
         } else if gate == 0 {
             &contract_proof
         } else {
             &build_proof
         };
-        let evidence = json!({"task_id":id,"stage":stage,"claim_revision":claim["claim_revision"],"contract_revision":1,"worker_id":worker,"worktree":workspace.0,"commit":commit,"proof":proof});
+        let evidence = json!({"task_id":id,"stage":stage,"claim_revision":claim["claim_revision"],"contract_revision":1,"worker_id":worker,"worktree":workspace.0,"proof":proof});
         if gate == 0 {
             for invalid in [
                 json!({"task_id":id,"stage":stage,"action":"pass","evidence_ref":"proof.yaml"}),
@@ -336,13 +353,18 @@ scope: [src/]
             );
         }
         let submitted = client.payload("task_submit", args.clone());
-        assert_eq!(submitted["snapshot"]["commit"], &commit[..7]);
-        assert_eq!(
-            submitted["snapshot"]["inspect_cmd"],
-            format!("git show {}", &commit[..7])
-        );
+        let snapshot = submitted["snapshot"]["commit"].as_str().unwrap();
+        if gate == 1 {
+            candidate_commit = Some(snapshot.to_owned());
+        }
         if gate == 3 {
-            assert_eq!(submitted["receipt"]["commit"], &commit[..7]);
+            delivery_commit = Some(snapshot.to_owned());
+            assert_eq!(submitted["receipt"]["commit"], snapshot);
+        } else {
+            assert_eq!(
+                submitted["snapshot"]["inspect_cmd"],
+                format!("git show {snapshot}")
+            );
         }
         assert_eq!(
             submitted["status"],
@@ -358,13 +380,19 @@ scope: [src/]
     let written = fs::read_to_string(builder.0.join("docs/milestones/010-tasks.md")).unwrap();
     let milestone =
         contextunity_forge_mcp::core::tasks::Milestone::parse(&written, "contextunity").unwrap();
-    assert_eq!(
+    assert!(
         milestone.tasks[0]
             .receipt
             .as_ref()
-            .and_then(|receipt| receipt.commit.as_deref()),
-        Some(commit)
+            .and_then(|receipt| receipt.commit.as_deref())
+            .is_none()
     );
+    let stored = client.payload("task_manage", json!({"action":"inspect","task_id":id}));
+    assert_eq!(
+        stored["latest_snapshot"]["commit"],
+        candidate_commit.unwrap()
+    );
+    assert_eq!(stored["receipt"]["commit"], delivery_commit.unwrap());
     assert_eq!(milestone.deferred_defects.len(), 1);
     let defect = &milestone.deferred_defects[0];
     assert_eq!(defect.id, "DEFECT-E2E-001");
@@ -1319,12 +1347,11 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     );
     let task_id = sync_res["tasks"][0]["task_id"].as_str().unwrap();
 
-    // 1. Pass contract with an explicit contract commit
+    // 1. Pass contract proof without supplying a caller-selected commit.
     let contract_claim = client.payload(
         "task_claim",
         json!({"task_id": task_id, "stage": "contract", "worker_id": "author", "worktree": workspace.0}),
     );
-    let contract_commit = "1111111111111111111111111111111111111111";
     client.payload(
         "task_submit",
         json!({
@@ -1338,7 +1365,6 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
                 "contract_revision": 1,
                 "worker_id": "author",
                 "worktree": workspace.0,
-                "commit": contract_commit,
                 "proof": {"contract_proof": {"seam_test_ref": "tests/test.rs", "red_exit_code": 0}}
             }
         }),
@@ -1349,7 +1375,7 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         "task_claim",
         json!({"task_id": task_id, "stage": "build", "worker_id": "builder", "worktree": workspace.0}),
     );
-    client.payload(
+    let first_build = client.payload(
         "task_submit",
         json!({
             "task_id": task_id,
@@ -1362,20 +1388,21 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
                 "contract_revision": 1,
                 "worker_id": "builder",
                 "worktree": workspace.0,
-                "proof": {"test_proof": {"command": "cargo test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}}
+                "proof": {"command_proof": {"command": "cargo test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}}
             }
         }),
     );
 
-    // 3. Claim review: candidate_snapshot MUST be None because build had no commit
-    // (must NOT fall back to contract_commit!)
+    let first_candidate = first_build["snapshot"]["commit"].as_str().unwrap();
+
+    // The engine pins the scoped candidate even when build evidence omits a commit.
     let review_claim = client.payload(
         "task_claim",
         json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.0}),
     );
-    assert!(
-        review_claim["context_bundle"].get("candidate_snapshot").is_none(),
-        "candidate_snapshot must be omitted when build has no commit (must not fall back to contract commit)"
+    assert_eq!(
+        review_claim["context_bundle"]["candidate_snapshot"]["commit"],
+        first_candidate
     );
 
     // Reject review with findings -> task bounces back to build
@@ -1420,8 +1447,7 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         review_findings
     );
 
-    let build_commit = "2222222222222222222222222222222222222222";
-    client.payload(
+    let second_build = client.payload(
         "task_submit",
         json!({
             "task_id": task_id,
@@ -1434,13 +1460,14 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
                 "contract_revision": 1,
                 "worker_id": "builder",
                 "worktree": workspace.0,
-                "commit": build_commit,
-                "proof": {"test_proof": {"command": "cargo test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}}
+                "proof": {"command_proof": {"command": "cargo test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}}
             }
         }),
     );
 
-    // Now claim review: candidate_snapshot MUST match build_commit
+    let build_commit = second_build["snapshot"]["commit"].as_str().unwrap();
+
+    // Rebuilding the unchanged scoped tree keeps the pinned candidate.
     let review_claim2 = client.payload(
         "task_claim",
         json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.0}),
@@ -1464,7 +1491,6 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
                 "contract_revision": 1,
                 "worker_id": "reviewer",
                 "worktree": reviewer.0,
-                "commit": build_commit,
                 "proof": {"review_proof": {"decision": "pass", "contours": contours.clone()}}
             }
         }),
@@ -1492,7 +1518,6 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
                 "contract_revision": 1,
                 "worker_id": "delivery-lead",
                 "worktree": workspace.0,
-                "commit": build_commit,
                 "proof": {"delivery_proof": {"status": "rejected"}}
             },
             "findings": delivery_findings
@@ -1523,8 +1548,7 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
                 "contract_revision": 1,
                 "worker_id": "builder",
                 "worktree": workspace.0,
-                "commit": build_commit,
-                "proof": {"test_proof": {"command": "cargo test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}}
+                "proof": {"command_proof": {"command": "cargo test", "exit_code": 0, "tests_passed": 1, "tests_failed": 0}}
             }
         }),
     );
@@ -1546,7 +1570,6 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
                 "contract_revision": 1,
                 "worker_id": "reviewer",
                 "worktree": reviewer.0,
-                "commit": build_commit,
                 "proof": {"review_proof": {"decision": "pass", "contours": contours}}
             }
         }),
@@ -1558,7 +1581,7 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     );
     assert!(deliver_claim2["context_bundle"].get("receipt").is_none());
 
-    client.payload(
+    let delivered = client.payload(
         "task_submit",
         json!({
             "task_id": task_id,
@@ -1571,11 +1594,11 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
                 "contract_revision": 1,
                 "worker_id": "delivery-lead",
                 "worktree": workspace.0,
-                "commit": build_commit,
                 "proof": {"delivery_proof": {"status": "passed"}}
             }
         }),
     );
+    assert_eq!(delivered["snapshot"]["commit"], delivered["receipt"]["commit"]);
 
     // Completed task: context_bundle contains receipt, root envelope does not
     let completed_context = client.payload(
@@ -1589,5 +1612,13 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     assert!(
         completed_context["context_bundle"]["receipt"].is_object(),
         "context_bundle must contain receipt for completed task"
+    );
+    assert_eq!(
+        completed_context["context_bundle"]["receipt"]["commit"],
+        delivered["receipt"]["commit"]
+    );
+    assert_eq!(
+        completed_context["context_bundle"]["latest_snapshot"]["commit"],
+        build_commit
     );
 }

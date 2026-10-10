@@ -263,6 +263,45 @@ pub(super) fn context_bundle(
     task_id: &str,
     mut details: Value,
 ) -> Result<Value> {
+    let profile = workspace.profile_for_details(&details)?;
+    let stage = if details.get("status").and_then(Value::as_str) == Some("completed") {
+        "completed"
+    } else {
+        details.get("stage").and_then(Value::as_str).context("task stage missing")?
+    };
+    let active_index = if stage == "completed" {
+        profile.gates.len()
+    } else {
+        profile.index_of(stage).with_context(|| format!(
+            "TASK_STAGE_UNKNOWN: '{stage}' is not in the active profile; choose one of: {}",
+            profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
+        ))?
+    };
+    let active_gate = profile.gates.get(active_index);
+    let proof_kind = active_gate.and_then(|gate| gate.proof.kind());
+    let gate_history = details.get("gates").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    let evidence_for = |gate_id: &str, expected_state: &str| -> Option<Value> {
+        gate_history.iter().rev().find_map(|entry| {
+            (entry.get("stage").and_then(Value::as_str) == Some(gate_id)
+                && entry.get("state").and_then(Value::as_str) == Some(expected_state))
+                .then(|| entry.get("evidence").and_then(Value::as_str))
+                .flatten()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        })
+    };
+    let snapshot_for = |before_index: usize| -> Option<Value> {
+        profile.gates.iter().take(before_index).rev().find_map(|gate| {
+            if !gate.sha_snapshot { return None; }
+            let evidence = evidence_for(&gate.id, "passed")?;
+            let commit = evidence.get("commit")?.as_str()?;
+            Some(json!({
+                "stage": gate.id,
+                "commit": commit,
+                "candidate_baseline_head": evidence.get("candidate_baseline_head"),
+                "inspect_cmd": crate::core::tasks::snapshot_inspect_cmd(commit),
+            }))
+        })
+    };
     let scope: Vec<String> = details["allowed_write_scope"]
         .as_array()
         .map(|arr| {
@@ -283,111 +322,42 @@ pub(super) fn context_bundle(
     // 3. Covering test seams
     let covering_tests = find_covering_tests(&workspace.root, root, &scope);
 
-    // Extract stage-specific context before details is pruned
-    let contract_seam_test = details
-        .get("gates")
-        .and_then(|g| g.as_array())
-        .and_then(|gates| {
-            gates.iter().rev().find(|g| {
-                g.get("stage").and_then(|s| s.as_str()) == Some("contract/v1")
-                    && g.get("state").and_then(|s| s.as_str()) == Some("passed")
+    // Select proof context by configured gate taxonomy and references.
+    let contract_seam_test = profile.gates.iter().take(active_index).rev().find_map(|gate| {
+        if gate.proof.kind() != Some(crate::core::tasks::profile::ProofKind::Contract) { return None; }
+        let evidence = evidence_for(&gate.id, "passed")?;
+        evidence.get("proof")
+            .and_then(|proof| proof.get("contract_proof"))
+            .or_else(|| evidence.get("contract_proof"))
+            .and_then(|proof| proof.get("seam_test_ref"))
+            .cloned()
+    });
+
+    let unresolved_review_findings = active_gate.and_then(|_| {
+        let active_id = stage;
+        gate_history.iter().rev().find_map(|rejected| {
+            if rejected.get("state").and_then(Value::as_str) != Some("rejected") {
+                return None;
+            }
+            let rejected_stage = rejected.get("stage").and_then(Value::as_str)?;
+            let gate = profile.by_stage(rejected_stage)?;
+            if gate.reject_to.as_deref() != Some(active_id)
+                || !matches!(gate.proof.kind(), Some(crate::core::tasks::profile::ProofKind::Review | crate::core::tasks::profile::ProofKind::Delivery))
+            {
+                return None;
+            }
+            let revision = rejected.get("claim_revision").and_then(Value::as_u64)?;
+            details.get("findings")?.as_array()?.iter().rev().find(|finding| {
+                finding.get("claim_revision").and_then(Value::as_u64) == Some(revision)
+            }).and_then(|finding| finding.get("findings")).and_then(|value| {
+                value.as_str().and_then(|raw| serde_json::from_str::<Value>(raw).ok().or_else(|| Some(json!(raw))))
+                    .or_else(|| Some(value.clone()))
             })
         })
-        .and_then(|g| g.get("evidence").and_then(|e| e.as_str()))
-        .and_then(|ev_str| serde_json::from_str::<Value>(ev_str).ok())
-        .and_then(|ev| {
-            if let Some(proof) = ev.get("contract_proof") {
-                proof.get("seam_test_ref").cloned()
-            } else if let Some(proof) = ev.get("proof").and_then(|p| p.get("contract_proof")) {
-                proof.get("seam_test_ref").cloned()
-            } else {
-                ev.get("seam_test_ref").cloned()
-            }
-        });
+    });
 
-    let unresolved_review_findings =
-        if details.get("stage").and_then(|s| s.as_str()) == Some("build/v1") {
-            let latest_rejected_gate =
-                details
-                    .get("gates")
-                    .and_then(|g| g.as_array())
-                    .and_then(|gates| {
-                        gates.iter().rev().find(|g| {
-                            matches!(
-                                g.get("stage").and_then(|s| s.as_str()),
-                                Some("review/v1") | Some("deliver/v1")
-                            ) && g.get("state").and_then(|s| s.as_str()) == Some("rejected")
-                        })
-                    });
-            if let Some(rejected_gate) = latest_rejected_gate {
-                let rejected_rev = rejected_gate.get("claim_revision").and_then(|r| r.as_u64());
-                details
-                    .get("findings")
-                    .and_then(|f| f.as_array())
-                    .and_then(|arr| {
-                        arr.iter().rev().find(|finding| {
-                            finding.get("claim_revision").and_then(|r| r.as_u64()) == rejected_rev
-                        })
-                    })
-                    .and_then(|finding| {
-                        finding.get("findings").and_then(|s| {
-                            if let Some(text) = s.as_str() {
-                                serde_json::from_str::<Value>(text)
-                                    .ok()
-                                    .or_else(|| Some(json!(text)))
-                            } else {
-                                Some(s.clone())
-                            }
-                        })
-                    })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-    let candidate_snapshot = details
-        .get("gates")
-        .and_then(|g| g.as_array())
-        .and_then(|gates| {
-            gates.iter().rev().find_map(|g| {
-                if g.get("stage").and_then(|s| s.as_str()) == Some("build/v1")
-                    && g.get("state").and_then(|s| s.as_str()) == Some("passed")
-                {
-                    g.get("commit").and_then(|c| c.as_str()).map(|commit| {
-                        json!({
-                            "commit": commit,
-                            "inspect_cmd": crate::core::tasks::snapshot_inspect_cmd(commit),
-                        })
-                    })
-                } else {
-                    None
-                }
-            })
-        });
-
-    let latest_delivery_snapshot =
-        details
-            .get("gates")
-            .and_then(|g| g.as_array())
-            .and_then(|gates| {
-                gates.iter().rev().find_map(|g| {
-                    let stage_name = g.get("stage").and_then(|s| s.as_str())?;
-                    let state = g.get("state").and_then(|s| s.as_str())?;
-                    if state == "passed"
-                        && matches!(stage_name, "review/v1" | "build/v1" | "deliver/v1")
-                    {
-                        let commit = g.get("commit").and_then(|c| c.as_str())?;
-                        Some(json!({
-                            "commit": commit,
-                            "inspect_cmd": crate::core::tasks::snapshot_inspect_cmd(commit),
-                        }))
-                    } else {
-                        None
-                    }
-                })
-            });
+    let candidate_snapshot = snapshot_for(active_index);
+    let latest_delivery_snapshot = snapshot_for(profile.gates.len());
 
     let milestone_ref = details.get("milestone_ref").cloned();
     let depends_on = details
@@ -456,77 +426,24 @@ pub(super) fn context_bundle(
     };
 
     // 5. Gate-aware workflow guidance and subtask DoD
-    let stage = if details["status"] == "completed" {
-        "completed"
-    } else {
-        details["stage"].as_str().unwrap_or("contract/v1")
-    };
-
-    let (recommended_tools, actionable_steps): (&[&str], &[&str]) = match stage {
-        "contract/v1" => (
-            &["code_map_overview", "get_doc", "search_docs", "code_map_inspect"],
-            &[
-                "Author a sensitive failing seam test in the designated test suite (or verify existing seam directly with exit code 0 if proof_policy: direct-proof or deferred-final-test).",
-                "Submit contract proof with seam test and red_exit_code.",
-            ],
-        ),
-        "build/v1" => (
-            &["ast_grep_search", "code_map_inspect", "code_map_explain", "task_manage"],
-            &[
-                "Implement approved contract inside the declared allowed_write_scope.",
-                "Verify the seam and run the owning repository's focused tests and lint checks.",
-                "Submit passing test proof with test command, exit code 0, and passed counts.",
-            ],
-        ),
-        "review/v1" => (
-            &["code_map_impact", "code_map_prove_removal", "code_map_tests"],
-            &[
-                "Verify reviewer is distinct from builder (different worker_id).",
-                "Inspect candidate diff using inspect_cmd.",
-                "Verify the 5 review contours: paths (scope), claims (contract requirements), concurrency, project_isolation, administration.",
-                "Accept legitimate adjacent defect fixes within scope and submit review proof.",
-            ],
-        ),
-        "deliver/v1" => (
-            &["task_submit", "milestone show"],
-            &[
-                "Verify delivery worker is distinct from builder.",
-                "Submit delivery proof first; Forge verifies proofs, writes typed receipt into milestone Markdown, and clears blackboard.",
-                "After successful delivery, commit scoped files, tests, and the milestone receipt under the repository's Git permissions.",
-            ],
-        ),
-        _ => (
-            &["task_manage"],
-            &["Read the durable task receipt for completed work."],
-        ),
-    };
-
-    let subtask_dod = [
-        "Contract slice resolution: Demonstrably resolves an explicit, bounded slice of the contract without breaking boundaries.",
-        "Milestone & ADR alignment: Builds upon existing architectural seams rather than ad-hoc isolated patches.",
-        "Production-seam evidence: Validates through real production paths rather than synthetic stubs mocking away system complexity.",
-        "Systemic non-regression: Zero warnings/lints and complete behavioral preservation of untouched invariants.",
-        "Anti-looping invariant: If an approach fails after 2 iterations, halt, post blockers to task_blackboard, retain fail-closed behavior, and escalate.",
-    ];
-
-    let review_policy = [
-        "Route adjacent defects to their owning task or admit scope before edits; record deferred findings durably before delivery.",
-        "Reviewers must accept legitimate defect fixes and verify changes against the declared scope (preventing uncontracted scope creep or overengineering).",
-    ];
-
+    let recommended_tools = profile
+        .by_stage(stage)
+        .map(|gate| gate.tools.clone())
+        .unwrap_or_else(|| profile.completed.tools.clone());
     let mut guidance = details["workflow_guidance"].clone();
     if let Some(guidance_map) = guidance.as_object_mut() {
+        let steps = guidance_map
+            .get("steps")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
         guidance_map.insert("stage".into(), json!(stage));
         guidance_map.insert("recommended_tools".into(), json!(recommended_tools));
-        guidance_map.insert("actionable_steps".into(), json!(actionable_steps));
-        guidance_map.insert("subtask_dod".into(), json!(subtask_dod));
-        if matches!(stage, "review/v1" | "deliver/v1") {
-            guidance_map.insert("review_policy".into(), json!(review_policy));
-        } else {
-            guidance_map.remove("review_policy");
-        }
+        guidance_map.insert("actionable_steps".into(), steps);
+        guidance_map.insert(
+            "subtask_dod".into(),
+            json!(workspace.gates.subtask_dod.clone()),
+        );
     }
-
     let mut bundle_map = serde_json::Map::new();
     bundle_map.insert(
         "contract".into(),
@@ -548,14 +465,33 @@ pub(super) fn context_bundle(
     );
     bundle_map.insert("guidance".into(), guidance);
 
-    if matches!(stage, "contract/v1" | "build/v1" | "review/v1") {
+    if let Some(crate::core::tasks::profile::ProofDef::Scheme { scheme }) =
+        active_gate.map(|gate| &gate.proof)
+    {
+        bundle_map.insert("proof_schema".into(), serde_json::to_value(scheme)?);
+    }
+
+    if matches!(
+        proof_kind,
+        Some(
+            crate::core::tasks::profile::ProofKind::Contract
+                | crate::core::tasks::profile::ProofKind::Command
+                | crate::core::tasks::profile::ProofKind::Review
+        )
+    ) {
         bundle_map.insert("adrs".into(), json!(adrs));
     }
-    if matches!(stage, "contract/v1" | "build/v1") {
+    if matches!(
+        proof_kind,
+        Some(
+            crate::core::tasks::profile::ProofKind::Contract
+                | crate::core::tasks::profile::ProofKind::Command
+        )
+    ) {
         bundle_map.insert("scope_symbols".into(), json!(scope_symbols));
         bundle_map.insert("covering_tests".into(), json!(covering_tests));
     }
-    if stage == "build/v1" {
+    if proof_kind == Some(crate::core::tasks::profile::ProofKind::Command) {
         if let Some(seam) = contract_seam_test {
             bundle_map.insert("contract_seam_test".into(), seam);
         }
@@ -563,12 +499,13 @@ pub(super) fn context_bundle(
             bundle_map.insert("unresolved_review_findings".into(), findings);
         }
     }
-    if stage == "review/v1" {
+    if proof_kind == Some(crate::core::tasks::profile::ProofKind::Review) {
         if let Some(snapshot) = candidate_snapshot.as_ref() {
             bundle_map.insert("candidate_snapshot".into(), snapshot.clone());
         }
     }
-    if stage == "deliver/v1" || details.get("status").and_then(|s| s.as_str()) == Some("completed")
+    if proof_kind == Some(crate::core::tasks::profile::ProofKind::Delivery)
+        || details.get("status").and_then(|s| s.as_str()) == Some("completed")
     {
         if let Some(snapshot) = latest_delivery_snapshot.as_ref() {
             bundle_map.insert("latest_snapshot".into(), snapshot.clone());

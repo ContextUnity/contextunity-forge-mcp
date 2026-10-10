@@ -1,0 +1,10 @@
+# Workspace override. Unspecified gates, commands, policies, and contours use
+# the embedded defaults in src/core/tasks/acdd.default.yaml.
+roles:
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - model: sol-6.1
+        reasoning: high
+    recommendation: "Use a reviewer worker that is independent from the task builder."

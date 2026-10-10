@@ -117,6 +117,14 @@ In `forge-mcp.yaml`, `acdd_profile` specifies a path link to the profile file (e
 
 Any present or referenced configuration file with invalid YAML syntax or unrecognized fields fails closed with `ACDD_PROFILE_SCHEMA_INVALID` diagnostics. Task stage operations (claims, submissions, CLI/MCP stage arguments) validate that the stage exists in the active profile. If a task references a stage not defined in the active profile's `gates`, Forge fails closed with `TASK_STAGE_UNKNOWN`, naming the unrecognized stage and the active profile's available gates, advising to either migrate the task records or pin the intended profile via `acdd_profile: <path>:<sha256_prefix>`.
 
+### Gate IDs, proof kinds, commands, and policies
+
+Each gate declares a stable `id` and a closed `proof` behavior. The built-in proof kinds are `contract`, `command`, `review`, `delivery`, and `none`. A profile can also define a recursive evidence schema under `proof: { scheme: ... }`; the submitted payload must then use `scheme_proof` and match that schema. Gate IDs contain ASCII letters, digits, `_`, and `-`, and task rows persist those IDs directly in `stage`.
+
+`commands` is a registry keyed by command ID. Each entry can be a shell command string or an object with `command` and optional `description`. A command-proof gate accepts only a registered command ID or its registered command text. `policies` holds nested YAML settings; overrides merge recursively. Named review contour sets live under `contours`. Role entries merge by role, and a contour override replaces the named contour set. Defining `gates` replaces the whole ordered gate sequence, so include all required gates and the terminal delivery gate. References such as `reject_to`, `independent_from`, `receipt_review`, and `review_sources` must name valid preceding gates; delivery review sources must be review-proof gates.
+
+Schema nodes support `object`, `array`, `string`, `integer`, `number`, `boolean`, and `null`. Objects can declare `properties`, `required`, `additionalProperties`, and `enum`; arrays require an `items` schema. The compiler rejects invalid fields, undefined required properties, invalid child schemas, unresolved gate references, and profiles without exactly one terminal delivery gate. See the [complete profile example](../../skills/contextunity-forge/references/acdd_profile.yaml.example) for an executable multi-gate workflow using a recursive schema proof.
+
 ### Profile pinning, SQLite metadata, and tampering protection
 
 Custom profiles pinned at planning time use the single-line string format combining file path and SHA-256 hash prefix:
@@ -136,20 +144,35 @@ acdd_profile: ".forge/acdd/profile.yaml:a1b2c3d"
 
 ### Role and model configuration
 
-Agent models and reasoning levels are configured per **role**, not per task:
-- **Baseline defaults**: Embedded defaults define no hardcoded models (defaulting to the calling session's active model) and provide textual recommendations.
-- **Repository overrides**: Repositories can prescribe exact models, reasoning effort levels, or multi-model review ensembles for specific roles:
+Agent execution and model guidance are configured per **role**, not per task.
+`mode` accepts `subagent` or `inline` and effectively defaults to `subagent`.
+`reuse_on_reject` effectively defaults to `true`; when a review rewinds to a
+builder stage, this retains the prior builder's worker ID in rejection guidance.
+`models` is an ordered list of `ModelSpec` values, with `models[0]` as the
+primary recommendation. `ModelSpec` owns `model` and optional `reasoning`.
+An empty model list defaults to the active session model. Recommendations merge
+field-wise across profile overrides.
 
 ```yaml
 # .forge/acdd/profile.yaml
 roles:
   independent_reviewer:
-    model: "sol-6.1"
-    reasoning: "high"
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - model: "sol-6.1"
+        reasoning: "high"
     recommendation: "Run independent review on a dedicated high-reasoning model."
 ```
 
-During `task_claim` or `task_manage(inspect)`, Forge dynamically provides the resolved `subagent_role` and `role_spec` in `workflow_guidance`.
+During `task_claim` or `task_manage(inspect)`, Forge provides the resolved
+`subagent_role` and `role_spec` in `workflow_guidance`. `role_spec` contains
+effective `mode` and `reuse_on_reject`, the ordered `models`, and the role
+recommendation. After a `reject_to` rewind, `workflow_guidance.rejection`
+contains `rejected_from`, the prior builder `worker_id` when reuse is enabled,
+and the persisted `findings`; a clean forward run has `rejection: null`.
+When reuse is enabled, guidance adds the targeted step
+`Return task to builder '{worker_id}' with review rejection findings to repair defects.`
 
 ### Repository gitignore and profile versioning
 

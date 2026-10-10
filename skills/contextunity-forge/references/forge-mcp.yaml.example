@@ -1,0 +1,12 @@
+# Example forge-mcp.yaml adapter
+# Points to repository resources, guidance, and optional ACDD profile file.
+
+project_id: "forge-mcp"
+task_repository: "forge-mcp"
+task_project: "forge-mcp"
+tasks_db: ".forge/tasks.sqlite"
+agents_guidance: "AGENTS.md"
+milestones_dir: "docs/milestones"
+
+# Optional path link to repository ACDD profile (defaults to .forge/acdd/profile.yaml if omitted):
+acdd_profile: ".forge/acdd/profile.yaml"

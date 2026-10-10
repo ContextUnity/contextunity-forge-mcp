@@ -1,0 +1,103 @@
+# Example complete workflow profile override.
+# Gate IDs persist as task stages. Defining `gates` replaces the complete gate
+# sequence, so include a terminal delivery gate and all preceding references.
+
+roles:
+  contract_author:
+    recommendation: "Define a production-seam contract and submit its red proof."
+  builder:
+    recommendation: "Implement the accepted contract and run the registered command."
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - model: "sol-6.1"
+        reasoning: "high"
+    recommendation: "Review the candidate independently against every configured contour."
+  schema_author:
+    recommendation: "Submit structured evidence that matches the gate's recursive schema."
+  delivery_reviewer:
+    recommendation: "Verify accepted review evidence and deliver the pinned candidate."
+
+commands:
+  cargo-test:
+    command: "cargo test --test acdd tasks"
+    description: "Run the task workflow seam suite."
+
+policies:
+  proof:
+    command:
+      require_zero_exit: true
+      max_log_bytes: 65536
+  review:
+    independent_worker: true
+    require_all_contours: true
+  delivery:
+    atomic_receipt: true
+
+gates:
+  - id: contract
+    role: contract_author
+    proof: contract
+    sha_snapshot: true
+    tools: ["task_claim", "code_map_inspect"]
+    steps:
+      - "Write or identify one production-seam test for the task contract."
+      - "Submit contract_proof with seam_test_ref and red_exit_code."
+
+  - id: implement
+    role: builder
+    proof: command
+    sha_snapshot: true
+    tools: ["ast_grep_search", "code_map_inspect", "task_submit"]
+    steps:
+      - "Implement the accepted contract within the admitted scope."
+      - "Run the registered cargo-test command and submit command_proof."
+
+  - id: review
+    role: independent_reviewer
+    proof: review
+    independent_from: implement
+    reject_to: implement
+    contours: standard
+    tools: ["code_map_impact", "code_map_tests"]
+    steps:
+      - "Inspect the candidate snapshot and verify the configured review contours."
+      - "Submit review_proof with a decision and evidence for each contour."
+
+  - id: metadata
+    role: schema_author
+    proof:
+      scheme:
+        type: object
+        properties:
+          summary:
+            type: string
+          changed_files:
+            type: array
+            items:
+              type: string
+        required: [summary, changed_files]
+        additionalProperties: false
+    reject_to: implement
+    tools: ["task_claim", "task_submit"]
+    steps:
+      - "Submit scheme_proof with summary and changed_files."
+
+  - id: deliver
+    role: delivery_reviewer
+    proof: delivery
+    auto_commit: true
+    independent_from: implement
+    receipt_review: review
+    review_sources: [review]
+    reject_to: implement
+    contours: standard
+    tools: ["task_submit", "milestone show"]
+    steps:
+      - "Verify the candidate and accepted review proof."
+      - "Submit delivery_proof; Forge writes the receipt and commits the candidate tree with hooks enabled."
+
+completed:
+  tools: ["task_manage"]
+  steps: ["Read the durable task receipt."]

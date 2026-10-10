@@ -530,36 +530,70 @@ fn completed_tasks_sync_and_inspect_without_panic() {
         "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
     let spec = "---\nid: m-completed\ntitle: Completed Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: t1\ntarget: Deliver t1\nproof_policy: direct-proof\nscope: [src/]\n```\n";
-    root.write("docs/010-completed.md", spec);
+    root.write("docs/milestones/010-completed.md", spec);
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     store
-        .sync(&milestone, "docs/010-completed.md", &root.0)
+        .sync(&milestone, "docs/milestones/010-completed.md", &root.0)
         .unwrap();
 
     let t1_id = "forge-mcp/forge-mcp/m-completed:t1";
 
-    // 1. Deliver t1 cleanly through all 4 gates so it has a valid durable receipt in markdown
+    // 1. Deliver t1 through the engine so the final gate validates and records its commit.
     for (i, stage) in GATES.iter().enumerate() {
         let worker = if i >= 2 { "reviewer" } else { "builder" };
-        store
-            .claim(t1_id, stage, worker, root.0.to_str().unwrap())
-            .unwrap();
-        let t1_task = store.inspect(t1_id).unwrap();
-        store
-            .submit(t1_id, stage, &evidence(&t1_task), "pass", None)
-            .unwrap();
-    }
-    assert_eq!(store.inspect(t1_id).unwrap().status, "completed");
-    assert_eq!(store.inspect(t1_id).unwrap().gate, 3);
-
-    // 2. Re-sync from markdown with the completed task and verify gate is 3 without index panic
-    let updated_doc = std::fs::read_to_string(root.0.join("docs/010-completed.md")).unwrap();
-    let milestone_with_receipt = Milestone::parse(&updated_doc, "forge-mcp").unwrap();
-    store
-        .sync(&milestone_with_receipt, "docs/010-completed.md", &root.0)
+        tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: t1_id.into(),
+                stage: (*stage).into(),
+                worker_id: worker.into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                bundle: Some(false),
+            },
+        )
         .unwrap();
-    let resynced = store.inspect(t1_id).unwrap();
+        let t1_task = store.inspect(t1_id).unwrap();
+        let submission: tasks::Submit = serde_json::from_value(json!({
+            "task_id": t1_id,
+            "stage": stage,
+            "evidence": evidence(&t1_task),
+            "action": "pass"
+        }))
+        .unwrap();
+        tasks::submit(&root.0, submission).unwrap();
+    }
+    let completed = store.inspect(t1_id).unwrap();
+    assert_eq!(completed.status, "completed");
+    assert_eq!(completed.gate, 3);
+    assert_eq!(
+        completed
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.commit.as_deref()),
+        Some(git_head(&root.0).as_str())
+    );
+
+    // 2. Handoff reconciles the delivered commit into the archived receipt before syncing it.
+    let delivery_commit = git_head(&root.0);
+    drop(store);
+    let handoff = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-completed",
+        Some(&delivery_commit),
+        "cargo test --test acdd completed_tasks_sync_and_inspect_without_panic",
+        1,
+        0,
+    )
+    .unwrap();
+    let archive_path = handoff["path"].as_str().unwrap();
+    let updated_doc = std::fs::read_to_string(root.0.join(archive_path)).unwrap();
+    let milestone_with_receipt = Milestone::parse(&updated_doc, "forge-mcp").unwrap();
+    let mut reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    reopened
+        .sync(&milestone_with_receipt, archive_path, &root.0)
+        .unwrap();
+    let resynced = reopened.inspect(t1_id).unwrap();
     assert_eq!(resynced.status, "completed");
     assert_eq!(resynced.gate, 3);
 }

@@ -5,6 +5,7 @@ roots:
   - build.rs
 docs:
   - README.md
+  - TESTS.md
   - docs/AGENTS.md
   - docs/README.md
   - docs/roadmap.md
@@ -19,6 +20,7 @@ milestones:
   - docs/milestones
 plans:
   - docs/plans
+acdd_profile: .forge/acdd/profile.yaml
 ignore:
   - target
   - vendor

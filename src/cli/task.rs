@@ -1,6 +1,6 @@
 use crate::engine::tasks::{
     self, Action, BlackboardAction, BlackboardRequest, BlackboardScope, Claim, List, Manage,
-    ManageAction, MilestoneStatusFilter, Stage, Status, Submit, TaskListDetail,
+    ManageAction, MilestoneStatusFilter, Status, Submit, TaskListDetail,
 };
 use anyhow::Result;
 use clap::Subcommand;
@@ -130,9 +130,9 @@ pub enum TaskCommand {
         #[arg(long, value_enum)]
         /// Optional status value.
         status: Option<Status>,
-        #[arg(long, value_enum)]
-        /// Optional stage value.
-        stage: Option<Stage>,
+        #[arg(long)]
+        /// Filter by any gate identifier in the active workflow profile.
+        stage: Option<String>,
         #[arg(long, value_enum, conflicts_with_all = ["planned", "completed", "all"])]
         /// Filter by milestone lifecycle status: active, planned, completed, or all.
         milestone_status: Option<MilestoneStatusFilter>,

@@ -7,9 +7,11 @@ use std::{
 };
 /// Implements gates support.
 pub mod gates;
+/// Declarative ACDD profile module.
+pub mod profile;
 
 /// The gates value.
-pub const GATES: [&str; 4] = ["contract/v1", "build/v1", "review/v1", "deliver/v1"];
+pub const GATES: [&str; 4] = ["contract", "build", "review", "deliver"];
 
 /// Format the agent-facing command for inspecting a candidate snapshot.
 /// Durable evidence and receipts retain the full commit ID.
@@ -153,6 +155,9 @@ pub struct TaskSpec {
     /// Optional agent specialization requested by the task contract.
     #[serde(default)]
     pub agent_type: Option<String>,
+    /// Optional pinned ACDD profile override for this task (`path:sha256_prefix`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acdd_profile: Option<String>,
     /// The proof policy value.
     pub proof_policy: String,
     /// The scope value.
@@ -192,6 +197,9 @@ pub struct Milestone {
     pub repository: String,
     /// The project value.
     pub project: String,
+    /// Optional pinned ACDD profile override for every task in the milestone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acdd_profile: Option<String>,
     /// The invariants value.
     pub invariants: Vec<String>,
     /// The owners value.
@@ -255,6 +263,10 @@ impl Milestone {
         let field = |key: &str| meta[key].as_str().map(str::to_owned);
         let id = field("id").context("milestone requires id")?;
         let status = parse_lifecycle_status(&meta)?.map(str::to_owned);
+        let acdd_profile = field("acdd_profile");
+        if let Some(reference) = &acdd_profile {
+            profile::parse_profile_reference(reference, true)?;
+        }
         let repository = field("repository").unwrap_or_else(|| repository.into());
         let project = field("project").unwrap_or_else(|| project.unwrap_or(&repository).into());
         for value in [&id, &repository, &project] {
@@ -329,6 +341,9 @@ impl Milestone {
             }
             let task: TaskSpec = serde_yaml::from_value(value)?;
             valid_identity(&task.task_ref)?;
+            if let Some(reference) = &task.acdd_profile {
+                profile::parse_profile_reference(reference, true)?;
+            }
             if task.target.trim().is_empty()
                 || task.scope.is_empty()
                 || task.proof_policy.trim().is_empty()
@@ -420,6 +435,7 @@ impl Milestone {
             status,
             repository,
             project,
+            acdd_profile,
             invariants,
             owners,
             depends_on,
@@ -436,19 +452,55 @@ impl Milestone {
     }
     /// Performs digest.
     pub fn digest(&self, task: &TaskSpec) -> Result<String> {
+        self.digest_with_absent_profile_slot(task, false)
+    }
+
+    /// Computes the pre-v4 digest for a schema-migration exact-match check.
+    pub(crate) fn pre_v4_digest(&self, task: &TaskSpec) -> Result<String> {
+        self.digest_with_absent_profile_slot(task, true)
+    }
+
+    fn digest_with_absent_profile_slot(
+        &self,
+        task: &TaskSpec,
+        include_absent_profile: bool,
+    ) -> Result<String> {
         let mut spec = task.clone();
         spec.receipt = None;
         spec.status = None;
         spec.subtasks = Vec::new();
-        Ok(hex::encode(Sha256::digest(serde_json::to_vec(&(
-            &self.repository,
-            &self.project,
-            &self.id,
-            &self.invariants,
-            &self.owners,
-            &self.depends_on,
-            spec,
-        ))?)))
+        let bytes = match (self.acdd_profile.as_ref(), include_absent_profile) {
+            (Some(profile), _) => serde_json::to_vec(&(
+                &self.repository,
+                &self.project,
+                &self.id,
+                &self.invariants,
+                &self.owners,
+                &self.depends_on,
+                profile,
+                spec,
+            ))?,
+            (None, true) => serde_json::to_vec(&(
+                &self.repository,
+                &self.project,
+                &self.id,
+                &self.invariants,
+                &self.owners,
+                &self.depends_on,
+                &self.acdd_profile,
+                spec,
+            ))?,
+            (None, false) => serde_json::to_vec(&(
+                &self.repository,
+                &self.project,
+                &self.id,
+                &self.invariants,
+                &self.owners,
+                &self.depends_on,
+                spec,
+            ))?,
+        };
+        Ok(hex::encode(Sha256::digest(bytes)))
     }
 }
 

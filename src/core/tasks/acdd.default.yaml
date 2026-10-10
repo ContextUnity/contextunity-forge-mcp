@@ -1,0 +1,151 @@
+subtask_dod:
+  - "Contract slice resolution: Demonstrably resolves an explicit, bounded slice of the contract without breaking boundaries."
+  - "Milestone & ADR alignment: Builds upon existing architectural seams rather than ad-hoc isolated patches."
+  - "Production-seam evidence: Validates through real production paths rather than synthetic stubs mocking away system complexity."
+  - "Systemic non-regression: Zero warnings/lints and complete behavioral preservation of untouched invariants."
+  - "Anti-looping invariant: If an approach fails after 2 iterations, halt, post blockers to task_blackboard, retain fail-closed behavior, and escalate."
+
+review_policy:
+  - "Route adjacent defects to their owning task or admit scope before edits; record deferred findings durably before delivery."
+  - "Reviewers must accept legitimate defect fixes and verify changes against the declared scope (preventing uncontracted scope creep or overengineering)."
+
+contract_zero_exit_policies:
+  - "direct-proof"
+  - "deferred-final-test"
+
+roles:
+  contract_author:
+    mode: subagent
+    reuse_on_reject: true
+    recommendation: "Use the active session model or a fast reasoning model."
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    recommendation: "Use the active session model capable of writing and verifying code."
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    recommendation: "Use a strong reasoning model distinct from the builder to ensure strict contour verification."
+  delivery_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    recommendation: "Use the active session model for receipt verification and final delivery."
+
+commands:
+  test:
+    command: "cargo test"
+    description: "Run the repository's focused Rust test suite."
+
+policies:
+  proof:
+    command:
+      require_zero_exit: true
+      max_log_bytes: 65536
+  review:
+    independent_worker: true
+    require_all_contours: true
+  delivery:
+    atomic_receipt: true
+
+contours:
+  standard:
+    paths:
+      description: "Verify changes stay within the task's admitted write perimeter and preserve protected paths."
+      criteria:
+        - "Compare every changed, staged, untracked, and generated file with the task's initial scope and admitted extensions."
+        - "Check that profile, repository configuration, credentials, generated state, and neighboring project paths were not changed outside their explicit scope."
+        - "Confirm each changed file contributes directly to an accepted invariant or seam proof."
+    claims:
+      description: "Verify each accepted contract claim is implemented and supported by production-seam evidence."
+      criteria:
+        - "Trace every invariant and acceptance criterion to the production code path that enforces it."
+        - "Inspect the named seam test and confirm it reaches real storage, engine, CLI, or delivery behavior rather than a substitute implementation."
+        - "Check that failure cases reject malformed or missing evidence and that diagnostics identify the violated contract."
+    concurrency:
+      description: "Verify concurrent operations cannot admit stale authority, lose receipts, or publish partial task state."
+      criteria:
+        - "Check transaction boundaries, revision fencing, claim ownership, and candidate baseline comparisons under competing updates."
+        - "Verify rollback restores the prior task and receipt state after a failed filesystem or Git operation."
+        - "Ensure lock ordering and shared-database operations cannot deadlock or cross task namespaces."
+    project_isolation:
+      description: "Verify task data, profiles, paths, and Git operations stay within the owning workspace and project."
+      criteria:
+        - "Confirm workspace resolution uses the active repository root and ignores profile configuration from linked workspaces."
+        - "Check task identifiers, milestone paths, database rows, and profile paths are confined to their configured repository and project."
+        - "Verify symlinks, traversal segments, and malformed paths fail closed before mutation."
+    administration:
+      description: "Verify protected configuration, migration, profile pins, and privileged delivery behavior remain governed."
+      criteria:
+        - "Check schema migrations are atomic, one-time, and do not alter unrelated blackboard topics or archived historical receipts."
+        - "Verify profile hashes and compiled gate references fail closed on tampering or unresolved names."
+        - "Confirm Git hooks run, candidate commits retain the validated parent, and receipts record the landed task SHA."
+
+gates:
+  - id: "contract"
+    role: "contract_author"
+    proof: "contract"
+    sha_snapshot: true
+    tools:
+      - "code_map_overview"
+      - "get_doc"
+      - "search_docs"
+      - "code_map_inspect"
+    steps:
+      - "Author a sensitive failing seam test in the designated test suite (or verify existing seam directly with exit code 0 if proof_policy: direct-proof or deferred-final-test)."
+      - "Submit contract proof with seam test and red_exit_code."
+
+  - id: "build"
+    role: "builder"
+    proof: "command"
+    sha_snapshot: true
+    tools:
+      - "ast_grep_search"
+      - "code_map_inspect"
+      - "code_map_explain"
+      - "task_manage"
+    steps:
+      - "Implement approved contract inside the declared allowed_write_scope."
+      - "Verify the seam and run the owning repository's focused tests and lint checks."
+      - "Submit passing command proof with command, exit code 0, and passed counts."
+
+  - id: "review"
+    role: "independent_reviewer"
+    proof: "review"
+    sha_snapshot: false
+    independent_from: "build"
+    reject_to: "build"
+    contours: "standard"
+    tools:
+      - "code_map_impact"
+      - "code_map_prove_removal"
+      - "code_map_tests"
+    steps:
+      - "Verify reviewer is distinct from builder (different worker_id)."
+      - "Inspect candidate diff using inspect_cmd."
+      - "Apply every criterion in the configured review contour set."
+      - "Accept legitimate defect fixes within scope and submit review proof."
+
+  - id: "deliver"
+    role: "delivery_reviewer"
+    proof: "delivery"
+    sha_snapshot: false
+    auto_commit: true
+    independent_from: "build"
+    receipt_review: "review"
+    review_sources:
+      - "review"
+    reject_to: "build"
+    contours: "standard"
+    tools:
+      - "task_submit"
+      - "milestone show"
+    steps:
+      - "Verify delivery worker is distinct from builder."
+      - "Submit delivery proof first; Forge verifies proofs, writes typed receipt into milestone Markdown, and clears blackboard."
+      - "On delivery, atomically commit the validated candidate snapshot and receipt with Git hooks enabled."
+
+completed:
+  tools:
+    - "task_manage"
+  steps:
+    - "Read the durable task receipt for completed work."

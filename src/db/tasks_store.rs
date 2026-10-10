@@ -39,7 +39,17 @@ pub struct Task {
     pub claim_revision: u64,
     /// The status value.
     pub status: String,
-    /// The gate value.
+    /// Active declarative gate identifier persisted in the task descriptor.
+    #[serde(default)]
+    pub stage: String,
+    /// Effective pinned profile reference copied from task or milestone metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_pin: Option<String>,
+    /// Scope admitted by the original milestone contract, before later extensions.
+    #[serde(default)]
+    pub initial_scope: Vec<String>,
+    /// Runtime position derived from `stage`; never persisted.
+    #[serde(skip)]
     pub gate: usize,
     /// Optional worker id value.
     pub worker_id: Option<String>,
@@ -105,6 +115,7 @@ pub struct TasksStore {
     namespace: String,
     /// Active workflow gate profile.
     pub profile: std::sync::Arc<crate::core::tasks::profile::GateProfile>,
+    workspace_root: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -156,6 +167,265 @@ fn migrate_blackboard_v1(connection: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+fn legacy_stage(index: u64) -> Result<&'static str> {
+    ["contract", "build", "review", "deliver"]
+        .get(index as usize)
+        .copied()
+        .context("unsupported legacy task gate index")
+}
+
+fn migrate_task_value(value: &mut serde_json::Value) -> Result<()> {
+    let Some(object) = value.as_object_mut() else { return Ok(()); };
+    if let Some(task) = object.get_mut("task") { migrate_task_value(task)?; }
+    let is_task = object.contains_key("task_id") && object.contains_key("spec");
+    if is_task {
+        if let Some(stage) = object.get("stage").and_then(serde_json::Value::as_str) {
+            let normalized = stage.strip_suffix("/v1").unwrap_or(stage).to_owned();
+            object.insert("stage".into(), normalized.into());
+        } else if let Some(index) = object.get("gate").and_then(serde_json::Value::as_u64) {
+            object.insert("stage".into(), legacy_stage(index)?.into());
+        } else {
+            bail!("task schema v2 record has neither a stage nor a gate index");
+        }
+        object.remove("gate");
+    } else if object.contains_key("claim_revision") && object.contains_key("proof") {
+        if let Some(stage) = object.get("stage").and_then(serde_json::Value::as_str) {
+            let normalized = stage.strip_suffix("/v1").unwrap_or(stage).to_owned();
+            object.insert("stage".into(), normalized.into());
+        }
+    }
+    if let Some(legacy) = object.remove("test_proof") {
+        if object.contains_key("command_proof") { bail!("duplicate task proof during schema migration"); }
+        object.insert("command_proof".into(), legacy);
+    }
+    for child in object.values_mut() { migrate_task_value(child)?; }
+    Ok(())
+}
+
+fn set_migrated_initial_scope(value: &mut serde_json::Value, task_id: &str, scope: &[String]) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if object.get("task_id").and_then(serde_json::Value::as_str) == Some(task_id)
+                && object.contains_key("spec")
+            {
+                object.insert("initial_scope".into(), serde_json::json!(scope));
+            }
+            for child in object.values_mut() {
+                set_migrated_initial_scope(child, task_id, scope);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|child| set_migrated_initial_scope(child, task_id, scope)),
+        _ => {}
+    }
+}
+
+fn protected_acdd_path(path: &Path) -> bool {
+    path.starts_with(Path::new(".forge/acdd"))
+}
+
+fn verify_dirty_acdd_scope(root: &Path, initial_scope: &[String]) -> Result<()> {
+    if !root.join(".git").exists() {
+        return Ok(());
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".forge/acdd"])
+        .output()
+        .context("TASK_SCOPE_VIOLATION: unable to inspect protected ACDD paths")?;
+    if !output.status.success() {
+        bail!("TASK_SCOPE_VIOLATION: unable to inspect protected ACDD paths: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    for entry in output.stdout.split(|byte| *byte == 0).filter(|entry| entry.len() > 3) {
+        let path = std::str::from_utf8(&entry[3..])
+            .context("TASK_SCOPE_VIOLATION: invalid path in Git status")?;
+        let dirty = Path::new(path);
+        if protected_acdd_path(dirty)
+            && !initial_scope.iter().any(|scope| dirty.starts_with(Path::new(scope)))
+        {
+            bail!("TASK_SCOPE_VIOLATION: dirty protected path '{path}' must be present in the task's initial contract scope");
+        }
+    }
+    Ok(())
+}
+
+fn resolve_task_profile(
+    workspace_root: Option<&Path>,
+    base_profile: &std::sync::Arc<crate::core::tasks::profile::GateProfile>,
+    task: &Task,
+) -> Result<std::sync::Arc<crate::core::tasks::profile::GateProfile>> {
+    match task.profile_pin.as_deref() {
+        Some(reference) => {
+            let root = workspace_root.context(
+                "TASK_PROFILE_RESOLUTION_FAILED: workspace root is unavailable for pinned profile",
+            )?;
+            crate::core::tasks::profile::load_pinned_over(root, reference, base_profile)
+        }
+        None => Ok(base_profile.clone()),
+    }
+}
+
+/// Reconcile one pre-v4 digest only when the active specification reproduces its stored authority.
+fn reconcile_pre_v4_task_digest(
+    connection: &Connection,
+    task_id: &str,
+    milestone: &Milestone,
+    spec: &TaskSpec,
+    digest: &str,
+    existing: &mut Task,
+) -> Result<()> {
+    let (digest_version, stored_descriptor): (i64, String) = connection.query_row(
+        "SELECT digest_version, descriptor FROM tasks WHERE task_id=?1",
+        [task_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if digest_version != 0 {
+        return Ok(());
+    }
+
+    let previous_digest = milestone.pre_v4_digest(spec)?;
+    if existing.contract_revision != spec.contract_revision
+        || (existing.digest != previous_digest && existing.digest != digest)
+    {
+        return Ok(());
+    }
+
+    let mut descriptor: serde_json::Value = serde_json::from_str(&stored_descriptor)?;
+    if descriptor.get("task_id").and_then(serde_json::Value::as_str) != Some(task_id)
+        || descriptor.get("digest").and_then(serde_json::Value::as_str)
+            != Some(existing.digest.as_str())
+        || descriptor
+            .get("contract_revision")
+            .and_then(serde_json::Value::as_u64)
+            != Some(existing.contract_revision)
+    {
+        bail!("TASK_DIGEST_MIGRATION_CONFLICT: persisted task authority changed");
+    }
+
+    if existing.digest != digest {
+        descriptor["digest"] = digest.into();
+    }
+    let next_descriptor = serde_json::to_string(&descriptor)?;
+    // Exact descriptor matching fences the digest, contract revision, claim state, and every
+    // other persisted field while this immediate transaction updates the migration marker.
+    let changed = connection.execute(
+        "UPDATE tasks SET descriptor=?2,digest_version=1 \
+         WHERE task_id=?1 AND digest_version=0 AND descriptor=?3",
+        params![task_id, next_descriptor, stored_descriptor],
+    )?;
+    if changed != 1 {
+        bail!("TASK_DIGEST_MIGRATION_CONFLICT: task row changed during migration");
+    }
+    existing.digest = digest.to_owned();
+    Ok(())
+}
+
+/// Migrate all v2 runtime task records to string stages and the closed command proof key.
+fn migrate_tasks_v2_to_v3(connection: &mut Connection) -> Result<()> {
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let version: String = tx.query_row(
+        "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+        [],
+        |row| row.get(0),
+    )?;
+    if version == "3" { tx.commit()?; return Ok(()); }
+    if version != "2" { bail!("unsupported tasks schema; use recovery tooling"); }
+
+    let descriptors: Vec<(String, String)> = tx.prepare("SELECT task_id, descriptor FROM tasks")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, text) in descriptors {
+        let mut value: serde_json::Value = serde_json::from_str(&text)?;
+        migrate_task_value(&mut value)?;
+        let initial_scope = tx.prepare("SELECT path FROM task_scope_paths WHERE task_id=?1 AND frozen=1 ORDER BY path")?
+            .query_map([&id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        set_migrated_initial_scope(&mut value, &id, &initial_scope);
+        tx.execute("UPDATE tasks SET descriptor=?2 WHERE task_id=?1", params![id, serde_json::to_string(&value)?])?;
+    }
+
+    let submissions: Vec<(String, u64, String)> = tx.prepare("SELECT task_id, revision, result FROM task_submissions")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, revision, text) in submissions {
+        let mut value: serde_json::Value = serde_json::from_str(&text)?;
+        migrate_task_value(&mut value)?;
+        let initial_scope = tx.prepare("SELECT path FROM task_scope_paths WHERE task_id=?1 AND frozen=1 ORDER BY path")?
+            .query_map([&id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        set_migrated_initial_scope(&mut value, &id, &initial_scope);
+        tx.execute("UPDATE task_submissions SET result=?3 WHERE task_id=?1 AND revision=?2", params![id, revision, serde_json::to_string(&value)?])?;
+    }
+
+    let gate_rows: Vec<(String, String, u64, Option<String>)> = tx
+        .prepare("SELECT task_id, gate, revision, evidence FROM task_gates")?
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, gate, revision, evidence) in gate_rows {
+        let normalized_gate = gate.strip_suffix("/v1").unwrap_or(&gate);
+        let migrated_evidence = evidence
+            .map(|text| -> Result<String> {
+                let mut value: serde_json::Value = serde_json::from_str(&text)?;
+                migrate_task_value(&mut value)?;
+                Ok(serde_json::to_string(&value)?)
+            })
+            .transpose()?;
+        tx.execute(
+            "UPDATE task_gates SET gate=?4, evidence=?5 WHERE task_id=?1 AND gate=?2 AND revision=?3",
+            params![id, gate, revision, normalized_gate, migrated_evidence],
+        )?;
+    }
+    tx.execute("UPDATE task_store_metadata SET value='3' WHERE key='schema_version'", [])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Mark existing v3 task digests for the one-time authority-preserving format migration.
+fn migrate_task_digests_v3_to_v4(connection: &mut Connection) -> Result<()> {
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let version: String = tx.query_row(
+        "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+        [],
+        |row| row.get(0),
+    )?;
+    if version == "4" {
+        tx.commit()?;
+        return Ok(());
+    }
+    if version != "3" {
+        bail!("unsupported tasks schema; use recovery tooling");
+    }
+
+    let has_digest_version = {
+        let mut statement = tx.prepare("PRAGMA table_info(tasks)")?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        columns.iter().any(|column| column == "digest_version")
+    };
+    if has_digest_version {
+        tx.execute("UPDATE tasks SET digest_version=0", [])?;
+    } else {
+        tx.execute(
+            "ALTER TABLE tasks ADD COLUMN digest_version INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    tx.execute(
+        "UPDATE task_store_metadata SET value='4' WHERE key='schema_version'",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 impl TasksStore {
     /// Performs open.
     pub fn open(path: &Path) -> Result<Self> {
@@ -179,9 +449,21 @@ impl TasksStore {
             )?;
             match version.as_str() {
                 "1" => migrate_blackboard_v1(&mut connection)?,
-                "2" => {}
+                "2" | "3" | "4" => {}
                 _ => bail!("unsupported tasks schema; use recovery tooling"),
             }
+            let version: String = connection.query_row(
+                "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )?;
+            if version == "2" { migrate_tasks_v2_to_v3(&mut connection)?; }
+            let version: String = connection.query_row(
+                "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )?;
+            if version == "3" { migrate_task_digests_v3_to_v4(&mut connection)?; }
         } else {
             let populated:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%')",[],|r|r.get(0))?;
             if populated {
@@ -192,9 +474,9 @@ impl TasksStore {
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
             INSERT OR IGNORE INTO meta VALUES('generation',0);
             CREATE TABLE IF NOT EXISTS task_store_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-            INSERT OR IGNORE INTO task_store_metadata VALUES('schema_version','2');
+            INSERT OR IGNORE INTO task_store_metadata VALUES('schema_version','4');
             CREATE TABLE IF NOT EXISTS task_revisions(task_id TEXT PRIMARY KEY,revision INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,milestone_ref TEXT NOT NULL,descriptor TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,milestone_ref TEXT NOT NULL,descriptor TEXT NOT NULL,digest_version INTEGER NOT NULL DEFAULT 1);
             CREATE TABLE IF NOT EXISTS task_claims(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,worker_id TEXT NOT NULL,worktree TEXT NOT NULL,claimed_at INTEGER NOT NULL,ended INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(task_id,revision));
             CREATE TABLE IF NOT EXISTS task_gates(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,gate TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,evidence TEXT,PRIMARY KEY(task_id,gate,revision));
             CREATE TABLE IF NOT EXISTS task_findings(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,findings TEXT NOT NULL);
@@ -214,13 +496,14 @@ impl TasksStore {
             [],
             |r| r.get(0),
         )?;
-        if version != "2" {
+        if version != "4" {
             bail!("unsupported tasks schema; use recovery tooling");
         }
         Ok(Self {
             connection,
             namespace: format!("{repository}/{project}/"),
             profile: crate::core::tasks::profile::compiled(),
+            workspace_root: None,
         })
     }
     pub(crate) fn set_profile(
@@ -229,8 +512,28 @@ impl TasksStore {
     ) {
         self.profile = profile;
     }
-    pub(crate) fn gate_id(&self, index: usize) -> &str {
-        self.profile.gate_id(index)
+    pub(crate) fn set_workspace_root(&mut self, root: &Path) {
+        self.workspace_root = Some(root.to_path_buf());
+    }
+    /// Resolve and validate the profile pinned to one task, falling back to the workspace profile.
+    pub(crate) fn profile_for_task(
+        &self,
+        task: &Task,
+    ) -> Result<std::sync::Arc<crate::core::tasks::profile::GateProfile>> {
+        resolve_task_profile(self.workspace_root.as_deref(), &self.profile, task)
+    }
+    fn set_runtime_gate(
+        &self,
+        task: &mut Task,
+        profile: &crate::core::tasks::profile::GateProfile,
+    ) -> Result<()> {
+        task.gate = profile.index_of(&task.stage).with_context(|| format!(
+            "TASK_STAGE_UNKNOWN: task '{}' is stored at unknown stage '{}'; active gates: {}",
+            task.task_id,
+            task.stage,
+            profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
+        ))?;
+        Ok(())
     }
     pub(crate) fn assert_id(&self, id: &str) -> Result<()> {
         if !id.starts_with(&self.namespace) {
@@ -515,31 +818,53 @@ impl TasksStore {
         self.assert_id(task_id)?;
         clear_blackboard(&self.connection, task_id)
     }
-    /// Read the commit SHA recorded for the build gate evidence.
-    pub fn build_snapshot_commit(&self, task_id: &str) -> Result<Option<String>> {
+    /// Read the candidate commit and its captured branch baseline from the latest snapshot gate.
+    pub fn build_snapshot_candidate(&self, task_id: &str) -> Result<Option<(String, String)>> {
         self.assert_id(task_id)?;
+        let task = self.inspect(task_id)?;
+        let profile = self.profile_for_task(&task)?;
+        let stage_index = profile.index_of(&task.stage).with_context(|| format!(
+            "TASK_STAGE_UNKNOWN: task '{}' is stored at unknown stage '{}'",
+            task.task_id, task.stage
+        ))?;
+        let snapshot_gate = profile.gates[..stage_index]
+            .iter()
+            .rev()
+            .find(|gate| gate.sha_snapshot)
+            .context("TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes this gate")?;
         let evidence: Option<String> = self
             .connection
-            .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='build' AND state='passed' ORDER BY revision DESC LIMIT 1")?
-            .query_row([task_id], |r| r.get(0))
+            .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed' ORDER BY revision DESC LIMIT 1")?
+            .query_row(params![task_id, snapshot_gate.id], |r| r.get(0))
             .optional()?;
         Ok(evidence.and_then(|ev| {
-            serde_json::from_str::<serde_json::Value>(&ev)
-                .ok()?
-                .get("commit")?
-                .as_str()
-                .map(str::to_owned)
+            let evidence = serde_json::from_str::<serde_json::Value>(&ev).ok()?;
+            Some((
+                evidence.get("commit")?.as_str()?.to_owned(),
+                evidence.get("candidate_baseline_head")?.as_str()?.to_owned(),
+            ))
         }))
+    }
+    /// Read the candidate SHA recorded for the latest preceding snapshot gate.
+    pub fn build_snapshot_commit(&self, task_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .build_snapshot_candidate(task_id)?
+            .map(|(commit, _)| commit))
     }
     /// Performs inspect.
     pub fn inspect(&self, id: &str) -> Result<Task> {
         self.assert_id(id)?;
-        load(&self.connection, id)?.context("TASK_NOT_FOUND")
+        let mut task = load(&self.connection, id)?.context("TASK_NOT_FOUND")?;
+        let profile = self.profile_for_task(&task)?;
+        self.set_runtime_gate(&mut task, &profile)?;
+        Ok(task)
     }
     /// Performs inspect details.
     pub fn inspect_details(&self, id: &str) -> Result<serde_json::Value> {
         let _snapshot = self.connection.unchecked_transaction()?;
-        let task = self.inspect(id)?;
+        let mut task = self.inspect(id)?;
+        let profile = self.profile_for_task(&task)?;
+        self.set_runtime_gate(&mut task, &profile)?;
         let attempts:Vec<serde_json::Value>=self.connection.prepare("SELECT revision,worker_id,worktree,claimed_at,ended FROM task_claims WHERE task_id=?1 ORDER BY revision")?.query_map([id],|r|Ok(serde_json::json!({"claim_revision":r.get::<_,u64>(0)?,"worker_id":r.get::<_,String>(1)?,"worktree":r.get::<_,String>(2)?,"claimed_at":r.get::<_,i64>(3)?,"ended":r.get::<_,bool>(4)?})))?.collect::<std::result::Result<_,_>>()?;
         let gates: Vec<serde_json::Value> = self
             .connection
@@ -583,22 +908,32 @@ impl TasksStore {
             "proof_policy".into(),
             serde_json::json!(task.spec.proof_policy),
         );
-        object.insert("stage".into(), serde_json::json!(self.gate_id(task.gate)));
+        object.insert("stage".into(), serde_json::json!(task.stage));
         object.insert("attempts".into(), serde_json::json!(attempts));
         object.insert("gates".into(), serde_json::json!(gates));
-        let latest_snapshot = gates.iter().rev().find_map(|g| {
-            g.get("commit").and_then(|c| c.as_str()).map(|commit| {
-                serde_json::json!({
+        let latest_snapshot = profile
+            .gates
+            .iter()
+            .rev()
+            .filter(|gate| gate.sha_snapshot)
+            .find_map(|snapshot_gate| {
+                let accepted = gates.iter().rev().find(|record| {
+                    record.get("stage").and_then(serde_json::Value::as_str)
+                        == Some(snapshot_gate.id.as_str())
+                        && record.get("state").and_then(serde_json::Value::as_str)
+                            == Some("passed")
+                })?;
+                let commit = accepted.get("commit")?.as_str()?;
+                Some(serde_json::json!({
                     "commit": commit,
                     "inspect_cmd": snapshot_inspect_cmd(commit),
-                })
-            })
-        });
+                }))
+            });
         if let Some(snapshot) = latest_snapshot {
             object.insert("latest_snapshot".into(), snapshot);
         }
         object.insert("findings".into(), serde_json::json!(findings));
-        object.insert("gate_states".into(),serde_json::json!(self.profile.gates.iter().map(|gate| gate.id.as_str()).enumerate().map(|(i,name)|serde_json::json!({"stage":name,"state":if i<task.gate || task.status=="completed" {"passed"} else if i==task.gate && task.status=="in_progress" {"in_progress"} else {"pending"}})).collect::<Vec<_>>()));
+        object.insert("gate_states".into(),serde_json::json!(profile.gates.iter().map(|gate| gate.id.as_str()).enumerate().map(|(i,name)|serde_json::json!({"stage":name,"state":if i<task.gate || task.status=="completed" {"passed"} else if i==task.gate && task.status=="in_progress" {"in_progress"} else {"pending"}})).collect::<Vec<_>>()));
         object.insert("subtasks".into(), serde_json::json!(task.spec.subtasks));
         shorten_task_response_commits(&mut value);
         Ok(value)
@@ -805,6 +1140,7 @@ impl TasksStore {
         root: &Path,
         task_ref: Option<&str>,
     ) -> Result<Vec<Task>> {
+        self.set_workspace_root(root);
         if format!("{}/{}/", milestone.repository, milestone.project) != self.namespace {
             bail!("TASK_PROJECT_MISMATCH");
         }
@@ -827,7 +1163,27 @@ impl TasksStore {
             }
             let id = milestone.task_id(spec);
             let digest = milestone.digest(spec)?;
+            let profile_pin = spec.acdd_profile.clone().or_else(|| milestone.acdd_profile.clone());
+            let task_profile = match profile_pin.as_deref() {
+                Some(reference) => crate::core::tasks::profile::load_pinned_over(
+                    root,
+                    reference,
+                    &self.profile,
+                )?,
+                None => self.profile.clone(),
+            };
+            if task_profile.gates.is_empty() {
+                bail!("ACDD_PROFILE_INVALID: gates must not be empty");
+            }
             if let Some(mut existing) = load(&tx, &id)? {
+                reconcile_pre_v4_task_digest(
+                    &tx,
+                    &id,
+                    milestone,
+                    spec,
+                    &digest,
+                    &mut existing,
+                )?;
                 if existing.digest == digest {
                     if spec.status.as_deref() == Some("completed")
                         && (existing.status != "completed" || existing.receipt != spec.receipt)
@@ -911,14 +1267,18 @@ impl TasksStore {
                 }
             }
             let completed = spec.status.as_deref() == Some("completed");
-            if completed {
-                crate::core::tasks::gates::validate_durable_receipt(
+            if completed && !reference.split('/').any(|part| part == "archive") {
+                crate::core::tasks::gates::validate_durable_receipt_with_profile(
                     spec.receipt
                         .as_ref()
                         .context("TASK_RECEIPT_INVALID: missing receipt")?,
                     spec.contract_revision,
+                    &task_profile,
                 )?;
             }
+            let first_gate = task_profile.gate_id(0).to_owned();
+            let last_index = task_profile.gates.len().saturating_sub(1);
+            let last_gate = task_profile.gate_id(last_index).to_owned();
             let archived: Option<u64> = tx
                 .query_row(
                     "SELECT revision FROM task_revisions WHERE task_id=?1",
@@ -935,7 +1295,10 @@ impl TasksStore {
                     contract_revision: spec.contract_revision,
                     claim_revision: archived.unwrap_or(0),
                     status: "completed".into(),
-                    gate: 3,
+                    stage: last_gate.clone(),
+                    profile_pin: profile_pin.clone(),
+                    initial_scope: spec.scope.clone(),
+                    gate: last_index,
                     worker_id: None,
                     worktree: None,
                     completed_at: None,
@@ -958,11 +1321,10 @@ impl TasksStore {
                 contract_revision: spec.contract_revision,
                 claim_revision: revision,
                 status: if completed { "completed" } else { "ready" }.into(),
-                gate: if completed {
-                    self.profile.gates.len().saturating_sub(1)
-                } else {
-                    0
-                },
+                stage: if completed { last_gate } else { first_gate },
+                profile_pin: profile_pin.clone(),
+                initial_scope: spec.scope.clone(),
+                gate: if completed { last_index } else { 0 },
                 worker_id: None,
                 worktree: None,
                 completed_at: completed.then(now),
@@ -999,6 +1361,10 @@ impl TasksStore {
                     .collect::<rusqlite::Result<Vec<_>>>()?;
             }
             save(&tx, &task)?;
+            tx.execute(
+                "UPDATE tasks SET digest_version=1 WHERE task_id=?1",
+                [&id],
+            )?;
             for scope_root in &spec.scope_roots {
                 crate::core::tasks::confined_path(root, scope_root)?;
             }
@@ -1058,20 +1424,32 @@ impl TasksStore {
         let _snapshot = self.connection.unchecked_transaction()?;
         let mut stmt = self.connection.prepare("SELECT descriptor FROM tasks WHERE (?1 IS NULL OR milestone_ref=?1) AND substr(task_id,1,length(?2))=?2 ORDER BY milestone_ref,task_id")?;
         let mut result = Vec::new();
+        let mut known_stage = stage.is_none_or(|requested| self.profile.index_of(requested).is_some());
         for item in stmt.query_map(params![milestone, self.namespace], |r| {
             r.get::<_, String>(0)
         })? {
             let mut task: Task = serde_json::from_str(&item?)?;
+            let profile = self.profile_for_task(&task)?;
+            self.set_runtime_gate(&mut task, &profile)?;
+            if let Some(requested) = stage {
+                known_stage |= profile.index_of(requested).is_some();
+            }
             if task.status == "ready" && !dependencies_ready(&self.connection, &task.task_id)? {
                 task.status = "blocked".into();
             }
             if status != "all" && task.status != status {
                 continue;
             }
-            if stage.is_some_and(|s| self.gate_id(task.gate) != s) {
+            if stage.is_some_and(|s| task.stage != s) {
                 continue;
             }
             result.push(task);
+        }
+        if let Some(stage) = stage {
+            if !known_stage {
+                bail!("TASK_STAGE_UNKNOWN: '{stage}' is not in an active profile; choose one of: {}",
+                    self.profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", "));
+            }
         }
         Ok(result)
     }
@@ -1116,6 +1494,56 @@ impl TasksStore {
         tx.commit()?;
         Ok(())
     }
+    /// Relocate a completed milestone while replacing every task receipt with its landed commit.
+    pub fn handoff_milestone(
+        &mut self,
+        milestone_prefix: &str,
+        old_ref: &str,
+        new_ref: &str,
+        expected_ids: &[String],
+        receipts: &std::collections::BTreeMap<String, Receipt>,
+    ) -> Result<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let descriptors: Vec<String> = tx
+            .prepare("SELECT descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 AND substr(task_id,1,length(?2))=?2")?
+            .query_map(params![milestone_prefix, self.namespace], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut found_ids = Vec::new();
+        for descriptor in descriptors {
+            let mut task: Task = serde_json::from_str(&descriptor)?;
+            if task.milestone_ref != old_ref || task.status != "completed" {
+                bail!("milestone task state changed during handoff");
+            }
+            let receipt = receipts
+                .get(&task.task_id)
+                .context("TASK_RECEIPT_INVALID: handoff receipt is missing for a completed task")?;
+            if receipt.decision != "pass"
+                || receipt.commit.as_ref().is_none_or(|commit| {
+                    !matches!(commit.len(), 40 | 64)
+                        || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            {
+                bail!("TASK_RECEIPT_INVALID: handoff receipt must contain a landed Git SHA");
+            }
+            task.receipt = Some(receipt.clone());
+            task.spec.receipt = Some(receipt.clone());
+            task.milestone_ref = new_ref.into();
+            found_ids.push(task.task_id.clone());
+            save(&tx, &task)?;
+        }
+        found_ids.sort();
+        let mut expected = expected_ids.to_vec();
+        expected.sort();
+        let mut receipt_ids = receipts.keys().cloned().collect::<Vec<_>>();
+        receipt_ids.sort();
+        if found_ids != expected || receipt_ids != expected {
+            bail!("milestone task or receipt set changed during handoff");
+        }
+        tx.commit()?;
+        Ok(())
+    }
     /// Releases only the claim revision whose document activation failed.
     pub fn release_failed_claim(&mut self, id: &str, revision: u64) -> Result<()> {
         self.assert_id(id)?;
@@ -1148,19 +1576,34 @@ impl TasksStore {
             bail!("worker_id must be nonempty");
         }
         let worktree = crate::core::tasks::claim_worktree(worktree)?;
-        let profile = self.profile.clone();
         let namespace = self.namespace.clone();
+        let workspace_root = self.workspace_root.clone();
+        let base_profile = self.profile.clone();
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        let profile = resolve_task_profile(workspace_root.as_deref(), &base_profile, &task)?;
+        if let Some(root) = self.workspace_root.as_deref() {
+            verify_dirty_acdd_scope(root, &task.initial_scope)?;
+            if worktree != root {
+                verify_dirty_acdd_scope(&worktree, &task.initial_scope)?;
+            }
+        }
         if task.worker_id.is_some() {
             return Err(TaskAlreadyClaimed.into());
         }
         if task.status != "ready" || !dependencies_ready(&tx, id)? {
             bail!("TASK_NOT_READY");
         }
-        check_stage(profile.gate_id(task.gate), stage)?;
+        let task_gate = profile.index_of(&task.stage).with_context(|| format!(
+            "TASK_STAGE_UNKNOWN: task '{}' is stored at unknown stage '{}'; active gates: {}",
+            task.task_id,
+            task.stage,
+            profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
+        ))?;
+        check_stage(&task.stage, stage)?;
+        task.gate = task_gate;
         let my_scope_paths: Vec<PathBuf> = tx
             .prepare("SELECT path FROM task_scope_paths WHERE task_id=?1")?
             .query_map([id], |row| row.get::<_, String>(0).map(PathBuf::from))?
@@ -1203,13 +1646,16 @@ impl TasksStore {
     /// Performs reset.
     pub fn reset(&mut self, id: &str) -> Result<Task> {
         self.assert_id(id)?;
-        let profile = self.profile.clone();
+        let workspace_root = self.workspace_root.clone();
+        let base_profile = self.profile.clone();
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        let profile = resolve_task_profile(workspace_root.as_deref(), &base_profile, &task)?;
         if task.status == "completed" {
             task.gate = 0;
+            task.stage = profile.gate_id(0).to_owned();
             task.completed_at = None;
             task.receipt = None;
         }
@@ -1284,6 +1730,9 @@ impl TasksStore {
             .collect::<std::result::Result<_, _>>()?;
         for value in paths {
             let path = crate::core::tasks::relative_path(value)?;
+            if protected_acdd_path(&path) {
+                bail!("TASK_SCOPE_PROTECTED: paths under .forge/acdd/** must be admitted in the initial task contract scope");
+            }
             for (owner, other_path) in &other_scopes {
                 let is_conflict = if path == *other_path {
                     true
@@ -1413,12 +1862,18 @@ pub(crate) fn load(conn: &Connection, id: &str) -> Result<Option<Task>> {
             r.get(0)
         })
         .optional()?;
-    value
-        .map(|v| serde_json::from_str(&v).map_err(Into::into))
-        .transpose()
+    value.map(|v| {
+        let mut task: Task = serde_json::from_str(&v)?;
+        task.gate = crate::core::tasks::profile::compiled().index_of(&task.stage).unwrap_or(usize::MAX);
+        Ok(task)
+    }).transpose()
 }
 pub(crate) fn save(conn: &Connection, task: &Task) -> Result<()> {
-    conn.execute("INSERT INTO tasks VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET milestone_ref=excluded.milestone_ref,descriptor=excluded.descriptor",params![task.task_id,task.milestone_ref,serde_json::to_string(task)?])?;
+    conn.execute(
+        "INSERT INTO tasks(task_id,milestone_ref,descriptor) VALUES(?1,?2,?3) \
+         ON CONFLICT(task_id) DO UPDATE SET milestone_ref=excluded.milestone_ref,descriptor=excluded.descriptor",
+        params![task.task_id, task.milestone_ref, serde_json::to_string(task)?],
+    )?;
     Ok(())
 }
 pub(crate) fn next_revision(conn: &Connection, id: &str) -> Result<u64> {

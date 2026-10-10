@@ -76,7 +76,7 @@ fn blackboard_schema_v1_upgrade_keeps_task_store_operational() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(schema_version, "2");
+    assert_eq!(schema_version, "4");
     let task_id_nullable: i64 = reopened
         .connection
         .query_row(

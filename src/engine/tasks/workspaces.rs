@@ -304,10 +304,75 @@ pub(super) struct Workspace {
     milestones: Vec<PathBuf>,
     guidance: PathBuf,
 }
+
+fn rejected_workflow_context(
+    value: &Value,
+    profile: &crate::core::tasks::profile::GateProfile,
+    stage: &str,
+    role: Option<&crate::core::tasks::profile::RoleDef>,
+) -> Option<Value> {
+    let records = value.get("gates")?.as_array()?;
+    let (rejected_revision, rejected_from) = records
+        .iter()
+        .filter_map(|record| {
+            let rejected_from = record.get("stage")?.as_str()?;
+            let definition = profile.by_stage(rejected_from)?;
+            if record.get("state").and_then(Value::as_str) != Some("rejected")
+                || definition.reject_to.as_deref() != Some(stage)
+            {
+                return None;
+            }
+            Some((record.get("claim_revision")?.as_u64()?, rejected_from))
+        })
+        .max_by_key(|(revision, _)| *revision)?;
+
+    let worker_id = role
+        .filter(|definition| definition.effective_reuse_on_reject())
+        .and_then(|_| {
+            records
+                .iter()
+                .filter_map(|record| {
+                    if record.get("stage").and_then(Value::as_str) != Some(stage)
+                        || record.get("state").and_then(Value::as_str) != Some("passed")
+                    {
+                        return None;
+                    }
+                    let revision = record.get("claim_revision")?.as_u64()?;
+                    if revision >= rejected_revision {
+                        return None;
+                    }
+                    let evidence = record.get("evidence")?.as_str()?;
+                    let evidence: Value = serde_json::from_str(evidence).ok()?;
+                    Some((revision, evidence.get("worker_id")?.as_str()?.to_owned()))
+                })
+                .max_by_key(|(revision, _)| *revision)
+                .map(|(_, worker_id)| worker_id)
+        });
+    let findings = value
+        .get("findings")
+        .and_then(Value::as_array)
+        .and_then(|findings| {
+            findings.iter().find(|entry| {
+                entry.get("claim_revision").and_then(Value::as_u64) == Some(rejected_revision)
+            })
+        })
+        .and_then(|entry| entry.get("findings"))
+        .and_then(Value::as_str)
+        .and_then(|findings| serde_json::from_str::<Value>(findings).ok())
+        .unwrap_or(Value::Null);
+
+    Some(json!({
+        "rejected_from": rejected_from,
+        "worker_id": worker_id,
+        "findings": findings,
+    }))
+}
+
 impl Workspace {
     pub fn open(&self, database: &Path) -> Result<TasksStore> {
         let mut store = TasksStore::open_project(database, &self.repository, &self.project)?;
         store.set_profile(self.gates.clone());
+        store.set_workspace_root(&self.root);
         Ok(store)
     }
     pub fn envelope(&self, mut value: Value) -> Result<Value> {
@@ -320,53 +385,51 @@ impl Workspace {
         shorten_task_response_commits(&mut value);
         Ok(value)
     }
+    pub fn profile_for_details(
+        &self,
+        value: &Value,
+    ) -> Result<std::sync::Arc<crate::core::tasks::profile::GateProfile>> {
+        let pin = value
+            .get("profile_pin")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("spec").and_then(|spec| spec.get("acdd_profile")).and_then(Value::as_str));
+        match pin {
+            Some(reference) => crate::core::tasks::profile::load_pinned_over(
+                &self.root,
+                reference,
+                &self.gates,
+            ),
+            None => Ok(self.gates.clone()),
+        }
+    }
     pub fn guidance_envelope(&self, value: Value) -> Result<Value> {
         let mut value = self.envelope(value)?;
+        let profile = self.profile_for_details(&value)?;
         let stage = if value["status"] == "completed" {
             "completed"
         } else {
             value["stage"].as_str().context("task stage missing")?
         };
         let agent_type = value["spec"]["agent_type"].as_str().unwrap_or("worker");
-        let role_info = self.gates.role_for_stage(stage);
+        let gate = if stage == "completed" {
+            None
+        } else {
+            Some(profile.by_stage(stage).with_context(|| format!(
+                "TASK_STAGE_UNKNOWN: '{stage}' is not in the active profile; choose one of: {}",
+                profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
+            ))?)
+        };
+        let role_info = profile.role_for_stage(stage);
         let configured_role = role_info.map(|(name, _)| name);
         let role_def = role_info.map(|(_, def)| def);
-
-        let (default_subagent_role, actions): (&str, &[&str]) = match stage {
-            "contract" => (
-                "contract_author",
-                &[
-                    "Author or verify the public-seam test proof (or direct-proof exit code 0 for pre-existing code).",
-                    "Submit contract proof.",
-                ],
-            ),
-            "build" => (
-                "builder",
-                &[
-                    "Implement the approved contract inside the allowed write scope.",
-                    "Run the owning repository's tests and lint checks, then submit passing test proof.",
-                ],
-            ),
-            "review" => (
-                "independent_reviewer",
-                &[
-                    "Inspect candidate diff using inspect_cmd.",
-                    "Verify the 5 review contours: paths, claims, concurrency, project_isolation, administration.",
-                    "Accept legitimate adjacent defect fixes within scope and submit review proof.",
-                ],
-            ),
-            "deliver" => (
-                "delivery_reviewer",
-                &[
-                    "Submit delivery proof first; Forge writes the durable receipt into the milestone document.",
-                    "After delivery, commit scoped files, tests, and the milestone receipt under the repository's Git permissions.",
-                ],
-            ),
-            "completed" => (
-                "completed",
-                &["Read the durable task receipt for completed work."],
-            ),
-            _ => bail!("TASK_STAGE_INVALID"),
+        let proof_kind = gate.and_then(|definition| definition.proof.kind());
+        let default_subagent_role = match proof_kind {
+            Some(crate::core::tasks::profile::ProofKind::Contract) => "contract_author",
+            Some(crate::core::tasks::profile::ProofKind::Command) => "builder",
+            Some(crate::core::tasks::profile::ProofKind::Review) => "independent_reviewer",
+            Some(crate::core::tasks::profile::ProofKind::Delivery) => "delivery_reviewer",
+            _ if stage == "completed" => "completed",
+            _ => "worker",
         };
         let subagent_role = configured_role.unwrap_or(default_subagent_role);
         let gap = guidance_gap(&self.root, &self.guidance);
@@ -378,10 +441,18 @@ impl Workspace {
                 self.guidance.display()
             )]
         };
-        steps.extend(actions.iter().map(|action| (*action).to_owned()));
+        if let Some(gate) = gate {
+            steps.extend(gate.steps.iter().cloned());
+        } else {
+            steps.extend(profile.completed.steps.iter().cloned());
+        }
+        if matches!(proof_kind, Some(crate::core::tasks::profile::ProofKind::Review)) {
+            steps.push("Submit review proof for every contour in the configured contour set.".into());
+        }
         let builder = value["gates"].as_array().and_then(|gates| {
+            let prior = gate.and_then(|definition| definition.independent_from.as_deref())?;
             gates.iter().rev().find_map(|gate| {
-                if gate["stage"] != "build" || gate["state"] != "passed" {
+                if gate["stage"] != prior || gate["state"] != "passed" {
                     return None;
                 }
                 let evidence = gate["evidence"].as_str()?;
@@ -389,7 +460,20 @@ impl Workspace {
                 parsed["worker_id"].as_str().map(str::to_owned)
             })
         });
-        let needs_independent_reviewer = matches!(stage, "review" | "deliver");
+        let needs_independent_reviewer = gate.is_some_and(|definition| definition.independent_from.is_some());
+        let rejection = rejected_workflow_context(&value, &profile, stage, role_def);
+        if let Some(rejection) = rejection.as_ref() {
+            let rejected_from = rejection["rejected_from"].as_str().unwrap_or("prior");
+            if let Some(worker_id) = rejection["worker_id"].as_str() {
+                steps.push(format!(
+                    "Return task to builder '{worker_id}' with review rejection findings to repair defects."
+                ));
+            } else {
+                steps.push(format!(
+                    "Address findings from rejected '{rejected_from}' while continuing at '{stage}'."
+                ));
+            }
+        }
         let warning = if let Some(gap) = gap {
             let (step, message) = guidance_gap_text(gap);
             steps.extend(
@@ -397,7 +481,7 @@ impl Workspace {
                     step,
                     "Use the current stage and task scope to continue.",
                     "Record a verifiable proof in the task store.",
-                    "Request independent review before delivery.",
+                    "Follow the configured review sources and delivery policy.",
                 ]
                 .iter()
                 .map(|action| (*action).to_owned()),
@@ -414,11 +498,16 @@ impl Workspace {
         } else {
             Value::Null
         };
-        let review_policy = if needs_independent_reviewer {
-            Some("Reviewers must accept legitimate defect fixes registered via extend-scope or reopened tasks and verify changes against the declared scope (preventing uncontracted scope creep or overengineering).")
-        } else {
-            None
-        };
+        let review_policy = if needs_independent_reviewer { Some(profile.review_policy.clone()) } else { None };
+        let review_contours = gate
+            .filter(|definition| matches!(definition.proof.kind(), Some(crate::core::tasks::profile::ProofKind::Review)))
+            .and_then(|definition| profile.contour_set(definition.contours.as_deref()))
+            .map(|contours| contours.iter().map(|(name, contour)| json!({
+                "name": name,
+                "description": contour.description,
+                "criteria": contour.criteria,
+            })).collect::<Vec<_>>())
+            .unwrap_or_default();
         let mut workflow_guidance = json!({
             "active_stage": stage,
             "agent_type": agent_type,
@@ -427,12 +516,18 @@ impl Workspace {
             "instructions_path": self.guidance,
             "independence_rule": needs_independent_reviewer.then_some("Use a reviewer worker_id different from the accepted build worker_id."),
             "independent_from_worker_id": if needs_independent_reviewer { builder } else { None },
+            "rejection": rejection,
             "warning": warning,
+            "proof_kind": proof_kind.map(|kind| format!("{kind:?}").to_ascii_lowercase()),
+            "review_contours": review_contours,
+            "commands": profile.commands,
+            "policies": profile.policies,
+            "review_sources": gate.map(|definition| definition.review_sources.clone()).unwrap_or_default(),
         });
         if let Some(def) = role_def {
             workflow_guidance["role_spec"] = json!({
-                "model": def.model,
-                "reasoning": def.reasoning,
+                "mode": def.effective_mode(),
+                "reuse_on_reject": def.effective_reuse_on_reject(),
                 "models": def.models,
                 "recommendation": def.recommendation,
             });

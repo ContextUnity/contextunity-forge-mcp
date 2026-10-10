@@ -8,6 +8,7 @@ use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -583,8 +584,10 @@ fn task_rows(snapshot: &Snapshot, stored: &[Task]) -> Vec<Value> {
 
 fn stored_tasks(root: &Path, snapshot: &Snapshot) -> Result<Vec<Task>> {
     let path = tasks::database_path(root)?;
-    TasksStore::open_project(&path, &snapshot.repository, &snapshot.project)?
-        .list(None, "all", None)
+    let mut store = TasksStore::open_project(&path, &snapshot.repository, &snapshot.project)?;
+    store.set_profile(crate::core::tasks::profile::load_for_workspace(root)?);
+    store.set_workspace_root(root);
+    store.list(None, "all", None)
 }
 
 fn view(snapshot: &Snapshot, stored: &[Task]) -> Result<Value> {
@@ -781,6 +784,120 @@ pub(crate) fn atomic_replace(path: &Path, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn git_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let output = std::process::Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(root)
+        .output()?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => bail!("unable to resolve task delivery ancestry: {}", String::from_utf8_lossy(&output.stderr)),
+    }
+}
+
+fn git_changed(root: &Path, before: &str, after: &str, scope: &[String]) -> Result<bool> {
+    let mut command = std::process::Command::new("git");
+    command.args(["diff", "--quiet", before, after, "--"]);
+    command.args(scope);
+    let output = command.current_dir(root).output()?;
+    match output.status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => bail!("unable to compare task-scoped trees: {}", String::from_utf8_lossy(&output.stderr)),
+    }
+}
+
+fn task_landed_commit(
+    root: &Path,
+    handoff: &str,
+    delivery: &str,
+    candidate_baseline_head: Option<&str>,
+    scope: &[String],
+) -> Result<String> {
+    let history = std::process::Command::new("git")
+        .args(["rev-list", "--first-parent", "--reverse", handoff])
+        .current_dir(root)
+        .output()?;
+    if !history.status.success() {
+        bail!("unable to inspect milestone first-parent history");
+    }
+    let commits = String::from_utf8(history.stdout)?
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for commit in &commits {
+        if git_ancestor(root, delivery, commit)? {
+            return Ok(commit.clone());
+        }
+    }
+
+    // With auto_commit disabled, the accepted candidate snapshot is a root
+    // snapshot rather than an ancestor of the user's landing commit. Resolve
+    // its first scoped-tree match after the candidate's recorded baseline.
+    let parents = std::process::Command::new("git")
+        .args(["rev-list", "--parents", "-n", "1", delivery])
+        .current_dir(root)
+        .output()?;
+    if parents.status.success() && !scope.is_empty() {
+        let fields = String::from_utf8(parents.stdout)?
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let baseline = candidate_baseline_head
+            .map(str::to_owned)
+            .or_else(|| (fields.len() == 2).then(|| fields[1].clone()));
+        if let Some(baseline) = baseline {
+            for commit in &commits {
+                if commit == &baseline || !git_ancestor(root, &baseline, commit)? {
+                    continue;
+                }
+                if !git_changed(root, &baseline, commit, scope)?
+                    || git_changed(root, delivery, commit, scope)?
+                {
+                    continue;
+                }
+                let parent_line = std::process::Command::new("git")
+                    .args(["rev-list", "--parents", "-n", "1", commit])
+                    .current_dir(root)
+                    .output()?;
+                let parent_fields = String::from_utf8(parent_line.stdout)?
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                if parent_fields.len() >= 2 && git_changed(root, &parent_fields[1], commit, scope)?
+                {
+                    return Ok(commit.clone());
+                }
+            }
+        } else if fields.len() == 1 {
+            // Older completed receipts retain only a parentless candidate snapshot,
+            // without the branch baseline captured by newer snapshot gates. Match
+            // its scoped tree exactly and require the first-parent landing itself
+            // to introduce a scoped change. The first parent remains authoritative
+            // for merge commits, just as it is for ordinary branch landings.
+            for commit in &commits {
+                if git_changed(root, delivery, commit, scope)? {
+                    continue;
+                }
+                let parent_line = std::process::Command::new("git")
+                    .args(["rev-list", "--parents", "-n", "1", commit])
+                    .current_dir(root)
+                    .output()?;
+                let parent_fields = String::from_utf8(parent_line.stdout)?
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                if parent_fields.len() >= 2 && git_changed(root, &parent_fields[1], commit, scope)?
+                {
+                    return Ok(commit.clone());
+                }
+            }
+        }
+    }
+    bail!("TASK_LANDED_COMMIT_NOT_FOUND: no task-specific landing commit contains the accepted delivery")
+}
+
 /// Verifies completion, writes a handoff receipt, and archives the milestone.
 pub fn handoff(
     root: &Path,
@@ -803,6 +920,8 @@ pub fn handoff(
     }
     let db = tasks::database_path(root)?;
     let mut store = TasksStore::open_project(&db, &item.repository, &item.project)?;
+    store.set_profile(crate::core::tasks::profile::load_for_workspace(root)?);
+    store.set_workspace_root(root);
     let stored = store.list(None, "all", None)?;
     let prefix = format!("{}/{}/{}:", item.repository, item.project, item.id);
     let relevant: Vec<_> = stored
@@ -853,6 +972,55 @@ pub fn handoff(
     if !matches!(sha.len(), 40 | 64) || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("handoff commit must be a full Git SHA");
     }
+    let commit_object = format!("{sha}^{{commit}}");
+    let verified_commit = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "-e", &commit_object])
+        .output()?;
+    if !verified_commit.status.success() {
+        bail!("handoff commit is not available in the workspace Git object database");
+    }
+    let mut original_receipts = BTreeMap::new();
+    let mut landed_receipts = BTreeMap::new();
+    let mut handoff_text = item.text.replace("\r\n", "\n");
+    for task in &relevant {
+        let original = task
+            .receipt
+            .as_ref()
+            .context("TASK_RECEIPT_INVALID: completed task has no durable receipt")?;
+        let profile = store.profile_for_task(task)?;
+        crate::core::tasks::gates::validate_durable_receipt_with_profile(
+            original,
+            task.contract_revision,
+            &profile,
+        )?;
+        let mut landed = original.clone();
+        let delivery = original.commit.as_deref()
+            .context("TASK_RECEIPT_INVALID: completed task receipt has no delivery commit")?;
+        let candidate_baseline = store
+            .build_snapshot_candidate(&task.task_id)?
+            .map(|(_, baseline)| baseline);
+        landed.commit = Some(task_landed_commit(
+            root,
+            &sha,
+            delivery,
+            candidate_baseline.as_deref(),
+            &task.spec.scope,
+        )?);
+        let (_, task_ref) = task
+            .task_id
+            .rsplit_once(':')
+            .context("invalid task identity")?;
+        handoff_text = render_task_receipt(
+            &handoff_text,
+            task_ref,
+            &landed,
+            &task.spec.subtasks,
+        )?;
+        original_receipts.insert(task.task_id.clone(), original.clone());
+        landed_receipts.insert(task.task_id.clone(), landed);
+    }
     let started = match item.frontmatter["started_at"].as_str() {
         Some(value) => chrono::DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc),
         None => Utc
@@ -890,8 +1058,7 @@ pub fn handoff(
     );
     let archive_ref = archived.strip_prefix(root)?.to_string_lossy().into_owned();
     fs::create_dir_all(&archive_dir)?;
-    let normalized_text = item.text.replace("\r\n", "\n");
-    let (_, body) = normalized_text
+    let (_, body) = handoff_text
         .strip_prefix("---\n")
         .context("milestone frontmatter missing")?
         .split_once("\n---\n")
@@ -907,12 +1074,24 @@ pub fn handoff(
         return Err(error.into());
     }
     drop(file);
-    if let Err(error) = store.relocate_milestone(&prefix, &relative, &archive_ref, &expected_ids) {
+    if let Err(error) = store.handoff_milestone(
+        &prefix,
+        &relative,
+        &archive_ref,
+        &expected_ids,
+        &landed_receipts,
+    ) {
         fs::remove_file(&archived)?;
         return Err(error);
     }
     if let Err(error) = fs::remove_file(&item.path) {
-        store.relocate_milestone(&prefix, &archive_ref, &relative, &expected_ids)?;
+        store.handoff_milestone(
+            &prefix,
+            &archive_ref,
+            &relative,
+            &expected_ids,
+            &original_receipts,
+        )?;
         fs::remove_file(&archived)?;
         return Err(error.into());
     }

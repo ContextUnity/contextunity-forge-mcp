@@ -80,6 +80,12 @@ and scope extension to their owning namespace. Inspect and claim include absolut
 and stage-specific `workflow_guidance`. The latter gives `active_stage`,
 `agent_type`, `subagent_role`, `steps`, and the instruction path. At review and
 delivery it also gives the independence rule and accepted builder identity.
+When a role is configured, `role_spec` gives its effective `mode` and
+`reuse_on_reject`, ordered `models` (where the first model is primary), and
+recommendation. After a `reject_to` rewind, `rejection` gives
+`rejected_from`, the prior builder `worker_id` when reuse is enabled, and the
+persisted findings; it is null on clean forward runs. Reuse guidance adds
+`Return task to builder '{worker_id}' with review rejection findings to repair defects.`
 If the instruction file is missing, does not name the `contextunity-forge` skill, or that skill is not installed globally or in the repository, the response includes `TASK_GUIDANCE_MISSING`,
 inline steps.
 
@@ -95,7 +101,7 @@ perimeter cannot claim a foreign task.
 Every task contract declares an explicit file perimeter (`scope`) bounding allowable writes. Forge guards these write boundaries in SQLite (`task_scope_paths` table):
 
 - **Exclusive Scope Locks and Sibling Conflicts**: Declared task scope paths are registered as frozen write locks (`frozen = 1`) upon milestone initialization and synchronization. At `task_claim`, Forge compares a task's paths with sibling locks in the same milestone. Exact, ancestor, or descendant overlaps with a non-completed sibling fail closed with `TASK_SCOPE_CONFLICT`. Dynamic extensions use the same milestone lock registry and reject paths owned by active siblings.
-- **Dynamic Extension (`extend_scope`)**: During the build stage, a claimed task can dynamically extend its write perimeter to unowned files or tests (`frozen = 0`) via `task extend-scope <task_id> <path>...` (or MCP `task_manage(action: "extend_scope", ...)`).
+- **Dynamic Extension (`extend_scope`)**: During an open task, a claimed task can dynamically extend its write perimeter to unowned files or tests (`frozen = 0`) via `task extend-scope <task_id> <path>...` (or MCP `task_manage(action: "extend_scope", ...)`).
 - **Completed Task Scope Release**: Once a task reaches `completed`, both `task_claim` and `extend_scope` exclude its rows from scope-conflict checks (`json_extract(t.descriptor, '$.status') != 'completed'`). Forge retains the completed task's `task_scope_paths` history while allowing successor tasks to claim or extend into those paths.
 - **Protected System Scopes and Dirty File Prohibition**: System configuration and workflow profile files (`.forge/acdd/**` and profile definitions) are protected system paths (`TASK_SCOPE_PROTECTED`). Regular tasks cannot claim or extend into these paths via `extend_scope`. Furthermore, during `task_claim`, gate execution, and `task_submit`, the compiled binary inspects the worktree git status: if any file under `.forge/acdd/**` is dirty (modified, unstaged, staged, or untracked) and is not explicitly admitted in `task.spec.scope`, Forge fails closed with `TASK_SCOPE_VIOLATION`. This guarantees that agents cannot mutate workflow profiles, weaken review contours, or bypass test gates on the fly. Legitimate profile updates are performed either directly outside task cycles or within dedicated configuration tasks whose explicit scope admits `.forge/acdd/profile.yaml`.
 - **Documentation Co-Evolution Planning**: Shared documentation (such as `docs/reference/tasks.md`, `README.md`, or architecture documents) frequently evolves across multiple milestone tasks. When multiple tasks in a milestone must update the same documentation or common shared modules, dependencies must be sequenced via `depends_on`. Once the predecessor task completes, the successor task gains lawful access to extend into and evolve the shared documentation. Alternatively, documentation changes can be planned alongside code changes within the owning task's build gate, ensuring documentation and implementation remain synchronized without scope friction.
@@ -104,7 +110,7 @@ Every task contract declares an explicit file perimeter (`scope`) bounding allow
 
 | Tool | Arguments and behavior |
 | --- | --- |
-| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. Stage is `contract`, `build`, `review`, `deliver`, or null. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
+| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. Selectors follow the table below. |
@@ -125,11 +131,11 @@ Null stage matches all gates.
 | `subtask_add` | `task_id`, `subtask_ref`, `title` | Optional workspace; omit milestone_ref/paths; force=false. |
 | `subtask_update` | `task_id`, `subtask_ref`, `subtask_status` | Optional `evidence`, `workspace`; status must be `pending`, `in_progress`, or `completed`. |
 | `subtask_list` | `task_id` | Optional workspace; omit milestone_ref/task_ref/paths; force=false. |
-| `reset` | `task_id` | Returns an open task to ready at its current gate; a completed task restarts at contract/v1. |
+| `reset` | `task_id` | Returns an open task to ready at its current gate; a completed task restarts at the first gate in its active profile. |
 | `reopen` | `task_id` | Alias for reset. |
 
 Completed task reset reads the owning milestone document and atomically replaces
-its Markdown receipt before resetting SQLite to `contract/v1`. Missing or
+its Markdown receipt before resetting SQLite to the first gate in the active profile. Missing or
 unwritable milestone documents fail before SQLite changes. A returned SQLite
 error restores the original Markdown. The two stores are updated in sequence;
 an interrupted process between updates requires manual reconciliation.
@@ -151,7 +157,7 @@ freeze only their own path. Declare `scope_roots` for a wider admitted boundary.
 Documentation co-evolution scope planning: tasks altering observable contracts,
 interfaces, workflows, configuration, or operational assumptions must include their
 governing documentation files (e.g. `docs/reference/tasks.md`, `TESTS.md`, `tests/AGENTS.md`)
-in `scope` at task planning or add them during `build/v1` via `extend_scope`. File scope
+in `scope` at task planning or add them via `extend_scope` while the task is open. File scope
 isolation is enforced within the same repository/project and milestone via
 `TASK_SCOPE_CONFLICT`. During claim, a sibling with unsatisfied dependencies is not yet an
 eligible lock owner; `extend_scope` checks declared paths for every non-completed sibling.
@@ -176,16 +182,16 @@ retain an empty `started_at` while they wait in the queue.
 Complex domain tasks often contain finer-grained milestones, discovered edge cases,
 or sub-component checklists (e.g. testing specific UI fixtures, verifying individual DOM
 queries, or step-by-step refactoring). Instead of proliferating root-level milestone tasks
-that inflate the queue and require full four-gate lifecycles (`contract/v1` through `deliver/v1`),
+that inflate the queue and require a full configured gate lifecycle,
 agents should deepen the active task using **subtasks**.
 
 - **Schema**: Each subtask contains `subtask_ref` (alphanumeric identity slug), `title` (goal description),
   `status` (`pending`, `in_progress`, or `completed`), and optional `evidence` (verification command or test notes).
-- **Canonical State**: During active execution (`contract/v1` through `review/v1`), SQLite (`task_subtasks` table
-  and `Task.spec.subtasks` descriptor) is the canonical operational state. Upon task completion at `deliver/v1`,
+- **Canonical State**: During active execution, SQLite (`task_subtasks` table
+  and `Task.spec.subtasks` descriptor) is the canonical operational state. Upon task completion at the profile's terminal delivery gate,
   Forge serializes all subtasks directly into the milestone Markdown fenced YAML block alongside the delivery receipt.
   The milestone document is the durable canonical record that survives SQLite clearing, rebuilds, and milestone handoff.
-- **Post-Delivery Immutability**: Subtasks are strictly operational execution artifacts. Once a task reaches `deliver/v1`
+- **Post-Delivery Immutability**: Subtasks are strictly operational execution artifacts. Once a task passes its terminal delivery gate
   (`status: completed`), its subtasks and receipt are frozen. Calling `subtask_add` or `subtask_update` on a completed task
   fails closed with `TASK_TERMINAL`.
 - **Digest Independence**: Contract digests exclude `spec.subtasks`. Adding, updating, or completing subtasks
@@ -415,7 +421,7 @@ Reset (or `task reopen`, also available via MCP `task_manage` with `action: "res
 abandons ownership, increments claim revision, and marks the task pending. For in-progress tasks,
 passed predecessor gates are preserved. When executed on a completed task, reset cleanly reopens it:
 it clears terminal receipt data from both SQLite and the milestone Markdown document, resets the
-active gate to `contract/v1`, clears `completed_at`, restores `ready` status, and retains existing subtask
+active gate to the first gate in the active profile, clears `completed_at`, restores `ready` status, and retains existing subtask
 history so new subtasks (e.g. audit or remediation items) can be added and progressed.
 Additionally, when a milestone document increments `contract_revision`, `task sync` re-admits and
 reopens completed tasks into `ready` at the new contract revision.
@@ -438,23 +444,21 @@ Without a reference, migration selects numbered Markdown milestones under
 
 To achieve zero-shot agent orientation and eliminate exploratory tool-call loops, Forge aggregates task context by default upon MCP `task_claim` and CLI `task claim`, as well as through `task_manage(action: "context")` and CLI `task context <task-id>`. The MCP `task_claim` argument `bundle: false` returns minimal details; CLI `task claim` always returns the context bundle.
 
-### Stage-Differentiated Bundle Generation
+### Proof-Taxonomy Bundle Generation
 
-Per [ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md), the bundle is tailored dynamically to provide strictly what the claiming agent requires for the active stage, protecting LLM context windows:
+Per [ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md), the bundle follows the active gate's configured proof kind and provides the material needed for that gate. Gate IDs are profile-defined; the embedded default profile uses `contract`, `build`, `review`, and `deliver`.
 
 1. **`contract`** (All stages): Complete task contract, goal, active stage, status, proof policy, allowed write scope, invariants, subtasks, task dependencies (`depends_on`), worker identity, and revision counters.
-2. **`guidance`** (All stages): Dynamic gate-aware guidance presets tailored to the active ACDD gate (`contract/v1`, `build/v1`, `review/v1`, `deliver/v1`) with:
+2. **`guidance`** (All stages): Role, recommended tools, steps, command registry, policies, review sources, and review contours come from the active profile. A gate with `independent_from` also receives its independence rule and configured review policy.
    - `recommended_tools`: Stage-specific tool recommendations (e.g. `code_map_overview` and ADR reads at contract, `ast_grep_search` and `code_map_inspect` at build, `code_map_impact` and `code_map_prove_removal` at review).
    - `actionable_steps`: Concrete operational steps to advance the gate.
    - `subtask_dod`: Subtask acceptance criteria.
-   - `review_policy`: Scope-extension and adjacent defect resolution policies (present at `review/v1` and `deliver/v1`).
-3. **`adrs`** (`contract/v1`, `build/v1`, `review/v1`): Scope-to-ADR mapping querying `docs/adr/` and `docs/architecture/`. Documents are included when their path or content matches scope tokens; unrelated documents are omitted.
-4. **`scope_symbols`** (`contract/v1`, `build/v1`): High-value symbol skeleton (structs, enums, traits, functions) within the task's declared scope from the code map index. Signatures are safely truncated along Unicode character boundaries at 200 characters. Omitted during review and delivery.
-5. **`covering_tests`** (`contract/v1`, `build/v1`): Test suites covering declared scope files or domain boundaries. Omitted during review and delivery.
-6. **`contract_seam_test`** (`build/v1`): Reference or command of the approved failing red seam test submitted during the passed `contract/v1` gate.
-7. **`unresolved_review_findings`** (`build/v1`): Structured JSON review findings present strictly when the most recent `review/v1` or `deliver/v1` gate attempt was rejected.
-8. **`candidate_snapshot`** (`review/v1`): The build candidate commit SHA and `inspect_cmd` (`git show <commit>`) from the latest passed `build/v1` gate (omitted if build passed without an explicit commit) to inspect diffs against the five review contours.
-9. **`latest_snapshot` and `milestone_ref`** (`deliver/v1`, `completed`), and **`receipt`** (`completed`): Pinned commit SHA, inspect command, and milestone file path for atomic delivery and receipt verification, plus durable completion receipt inside `context_bundle` for completed tasks.
+3. **`adrs`** (contract, command, and review proof gates): Scope-to-ADR mapping querying `docs/adr/` and `docs/architecture/`. Documents are included when their path or content matches scope tokens; unrelated documents are omitted.
+4. **`scope_symbols` and `covering_tests`** (contract and command proof gates): High-value symbol skeletons and test suites covering declared scope files or domain boundaries. Signatures are safely truncated along Unicode character boundaries at 200 characters.
+5. **`contract_seam_test` and `unresolved_review_findings`** (command proof gates): The prior accepted contract seam reference and, when a rejected review or delivery gate routes back to this gate, the structured findings for that rejection.
+6. **`candidate_snapshot`** (review proof gates): The nearest prior accepted `sha_snapshot` commit, its captured baseline parent, and `inspect_cmd` (`git show <commit>`) for review against the configured contours.
+7. **`proof_schema`** (schema proof gates): The recursive JSON schema the worker must satisfy under `scheme_proof`.
+8. **`latest_snapshot` and `milestone_ref`** (delivery proof gates and completed tasks), and **`receipt`** (completed tasks): The nearest accepted candidate snapshot, inspect command, milestone file path, and durable completion receipt.
 10. **`blackboard`** (All stages): Active collaboration messages and architectural notes from the full milestone hierarchy: task-scoped (`task_id`), parent milestone-level (`milestone_ref` where `task_id IS NULL`), and milestone sibling tasks. Every message is explicitly annotated with origin metadata (`scope: "milestone" | "task" | "subtask" | "sibling"`), `task_id`, and `subtask_ref`.
 
 ### Response Bounding and Anti-Bloat Invariants
@@ -474,13 +478,13 @@ Below is an illustrative payload returned upon claiming a task (`task_claim` or 
 {
   "task_id": "forge-mcp/forge-mcp/m-sample:language-feature",
   "status": "ready",
-  "stage": "contract/v1",
+  "stage": "contract",
   "allowed_write_scope": ["src/engine/languages/html.rs", "tests/languages/html/syntax.rs"],
   "context_bundle": {
     "contract": {
       "task_id": "forge-mcp/forge-mcp/m-sample:language-feature",
       "target": "Add HTML template island extraction",
-      "stage": "contract/v1",
+      "stage": "contract",
       "status": "ready",
       "proof_policy": "seam-test-first",
       "allowed_scope": ["src/engine/languages/html.rs", "tests/languages/html/syntax.rs"],
@@ -502,7 +506,7 @@ Below is an illustrative payload returned upon claiming a task (`task_claim` or 
       "worktree": "/path/to/worktree"
     },
     "guidance": {
-      "stage": "contract/v1",
+      "stage": "contract",
       "recommended_tools": [
         "code_map_overview",
         "get_doc",
