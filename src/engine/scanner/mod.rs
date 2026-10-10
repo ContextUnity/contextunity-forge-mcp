@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub use crate::core::fs::{canonical_root, checked_child, safe_relative};
-pub use crate::core::sys::{available_memory_bytes, memory_budget_bytes};
 #[cfg(all(test, target_os = "linux"))]
 use crate::core::sys::available_memory_from_sources;
 #[cfg(test)]
 use crate::core::sys::memory_budget_from_available;
+pub use crate::core::sys::{available_memory_bytes, memory_budget_bytes};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 
@@ -19,7 +19,7 @@ fn error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
 }
 
-#[path = "scanner/adapter.rs"]
+#[path = "adapter.rs"]
 mod adapter;
 pub use adapter::{load_adapter, Adapter, LinkedWorkspace, LinkedWorkspaceConfig};
 

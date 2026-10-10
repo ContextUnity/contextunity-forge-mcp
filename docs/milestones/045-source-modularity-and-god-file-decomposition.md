@@ -404,32 +404,84 @@ receipt:
 
 ```yaml
 task_ref: milestone-engine-and-scanner-modularization
-target: "Split milestone contract parsing from Git handoff, migrate the 8 milestone Git calls, remove milestones::atomic_replace, and turn the post-cgroup scanner into scanner/mod.rs"
+target: Split milestone contract parsing from Git handoff, migrate the 8 milestone Git calls, remove milestones::atomic_replace, and turn the post-cgroup scanner into scanner/mod.rs
 proof_policy: seam-test-first
 contract_revision: 6
 depends_on:
-  - core-leaf-purification-and-canonical-primitives
+- core-leaf-purification-and-canonical-primitives
 scope:
-  - src/engine/milestones.rs
-  - src/engine/milestones/mod.rs
-  - src/engine/milestones/contract.rs
-  - src/engine/milestones/handoff.rs
-  - src/engine/scanner.rs
-  - src/engine/scanner/mod.rs
-status: planned
+- src/engine/milestones.rs
+- src/engine/milestones/mod.rs
+- src/engine/milestones/contract.rs
+- src/engine/milestones/handoff.rs
+- src/engine/scanner.rs
+- src/engine/scanner/mod.rs
+status: completed
 subtasks:
-  - subtask_ref: extract-milestone-contract-parsing
-    title: "Move markdown contract snapshots and YAML frontmatter parsing into src/engine/milestones/contract.rs"
-    status: pending
-  - subtask_ref: extract-milestone-git-handoff
-    title: "Move ancestor checks, changed-path checks, and landed-commit attribution into src/engine/milestones/handoff.rs. Migrate the 8 Git calls to core::git and delete milestones::atomic_replace in favor of core::fs::atomic_replace"
-    status: pending
-  - subtask_ref: finalize-scanner-engine-modularity
-    title: "Turn the scanner that task 1 already stripped of cgroup parsing into scanner/mod.rs for traversal, delta inventory, and adapter execution. Keep scanner/adapter.rs"
-    status: pending
-  - subtask_ref: verify-milestone-and-core-suites
-    title: "Verify cargo test --test acdd and cargo test --test core pass"
-    status: pending
+- subtask_ref: extract-milestone-contract-parsing
+  title: Move markdown contract snapshots and YAML frontmatter parsing into src/engine/milestones/contract.rs
+  status: completed
+  evidence: Moved the Snapshot type and markdown/YAML frontmatter/task-block parser to `engine/milestones/contract.rs`; the new production-seam test now passes (1 passed).
+- subtask_ref: extract-milestone-git-handoff
+  title: Move ancestor checks, changed-path checks, and landed-commit attribution into src/engine/milestones/handoff.rs. Migrate the 8 Git calls to core::git and delete milestones::atomic_replace in favor of core::fs::atomic_replace
+  status: completed
+  evidence: Moved ancestry, changed-path, landed-commit attribution, handoff, and snapshot-ref cleanup into `engine/milestones/handoff.rs`; all eight ordinary Git calls use `core::git`, and activation uses `core::fs::atomic_replace`. AST search finds zero raw `Command::new("git")` in milestone modules; ACDD handoff tests pass.
+- subtask_ref: finalize-scanner-engine-modularity
+  title: Turn the scanner that task 1 already stripped of cgroup parsing into scanner/mod.rs for traversal, delta inventory, and adapter execution. Keep scanner/adapter.rs
+  status: completed
+  evidence: Moved `engine/scanner.rs` to `engine/scanner/mod.rs`, kept `scanner/adapter.rs`, corrected its relative module path, and preserved scanner exports. `cargo test --test core` passes scanner helper compatibility tests.
+- subtask_ref: verify-milestone-and-core-suites
+  title: Verify cargo test --test acdd and cargo test --test core pass
+  status: completed
+  evidence: '`cargo test --test acdd`: 68 passed, 0 failed. `cargo test --test core`: 31 passed, 0 failed, 1 ignored. Strict all-target/all-features Clippy passes.'
+receipt:
+  contract_revision: 6
+  passed_at: 2026-10-10T23:52:59.702911660+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test acdd
+      exit_code: 0
+      tests_passed: 68
+      tests_failed: 0
+      log: Passed. Also passed the contract seam test (1), cargo test --test core (31 passed, 1 ignored), cargo check --all-targets --all-features, cargo clippy --all-targets --all-features -- -D warnings, rustfmt on scoped modules, AST check with zero direct Git Command calls in milestones, and git diff --check.
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Compared pinned candidate 7871f8b with baseline 0aef65ffe0c4917a3869048fe647633a533ff8d1. The scoped patch contains only the additions milestones/contract.rs and milestones/handoff.rs and the admitted moves milestones.rs to milestones/mod.rs and scanner.rs to scanner/mod.rs. No configuration, profile, credential, generated-state, or neighboring-project path is changed. scanner/adapter.rs remains at the directory-relative location, and scanner/mod.rs declares #[path = "adapter.rs"].'
+        claims:
+          applicable: true
+          evidence: Snapshot and snapshot parsing moved from the facade with parsing behavior preserved; the new snapshot_parses_frontmatter_identity_and_task_blocks test calls the real filesystem-reading parser. The facade retains its operations and publicly re-exports handoff. All eight milestone Git operations route through core::git (merge-base, diff, both rev-list forms, rev-parse, cat-file, for-each-ref, update-ref); special 0/1 exit-status handling for ancestry and diff remains explicit. activate_on_claim calls core::fs::atomic_replace and the local implementation is removed. Scanner adapter and helper exports remain available from engine::scanner. The accepted build evidence records the seam, ACDD/core suites, and strict Clippy passing; I did not rerun tests as instructed.
+        concurrency:
+          applicable: true
+          evidence: 'The extracted handoff preserves operation order: create the archive with create_new, transactionally update task rows/receipts through handoff_milestone, then remove the active milestone; on removal failure it restores original receipts/path in SQLite and deletes the archive. The unchanged database method uses an IMMEDIATE transaction and checks task state plus equality of discovered, expected, and receipt ID sets before commit. Git calls remain synchronous and use the same workspace root; extraction adds no concurrent mutation path.'
+        project_isolation:
+          applicable: true
+          evidence: Milestone discovery resolves from the supplied root; snapshot requires the document path to be beneath that root and validates repository/project identities. Handoff opens TasksStore for the milestone's repository/project namespace; Git operations use the same root, and landed-commit comparisons retain the task's declared scope. No linked-workspace profile or path is introduced.
+        administration:
+          applicable: true
+          evidence: The patch changes no schema, profile, gate, configuration, or delivery policy. Handoff continues validating durable receipts against each task's loaded profile, resolves and verifies the handoff commit in the owning repository, and records task-specific landed SHAs in archived receipts. No direct Git Command invocation remains in the milestone handoff module; all eight operations use canonical helpers.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli. Direct rusqlite use in src/core/commitments stays.'
+    - 'INV-FROZEN-ENGINE-DB-CYCLE: The legacy mutual import cycle between src/engine and src/db accepts no new edge. Ports that would break it belong to a later milestone.'
+    - 'INV-BALANCED-MODULARITY: Split only along mixed responsibilities. Cohesive multi-pass pipeline functions have no line-count cap.'
+    - 'INV-DEDUPLICATE-PROVEN-PATTERNS: Collapse a repeated block only where the control flow matches. Distinct rules stay separate.'
+    - 'INV-CANONICAL-HELPERS: Ordinary Git queries, atomic file writes, and cgroup memory detection have one owner in src/core.'
+    - 'INV-COMPAT-REEXPORTS: Moved scanner helpers keep pub use re-exports at engine::scanner. Pure receipt checks stay at core::tasks::gates. core does not re-export engine.'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Language extraction, static value flow, overload ambiguity, and selector disambiguation keep their current results.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ## Verification gates and proof requirements
