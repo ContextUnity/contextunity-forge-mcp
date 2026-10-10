@@ -1,6 +1,5 @@
 use crate::core::tasks::{
     shorten_task_response_commits, snapshot_inspect_cmd, Milestone, Receipt, SubtaskSpec, TaskSpec,
-    GATES,
 };
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -104,6 +103,8 @@ pub struct TasksStore {
     /// The connection value.
     pub connection: Connection,
     namespace: String,
+    /// Active workflow gate profile.
+    pub profile: std::sync::Arc<crate::core::tasks::profile::GateProfile>,
 }
 
 #[derive(Debug)]
@@ -219,7 +220,17 @@ impl TasksStore {
         Ok(Self {
             connection,
             namespace: format!("{repository}/{project}/"),
+            profile: crate::core::tasks::profile::compiled(),
         })
+    }
+    pub(crate) fn set_profile(
+        &mut self,
+        profile: std::sync::Arc<crate::core::tasks::profile::GateProfile>,
+    ) {
+        self.profile = profile;
+    }
+    pub(crate) fn gate_id(&self, index: usize) -> &str {
+        self.profile.gate_id(index)
     }
     pub(crate) fn assert_id(&self, id: &str) -> Result<()> {
         if !id.starts_with(&self.namespace) {
@@ -504,12 +515,12 @@ impl TasksStore {
         self.assert_id(task_id)?;
         clear_blackboard(&self.connection, task_id)
     }
-    /// Read the commit SHA recorded for the build/v1 gate evidence.
+    /// Read the commit SHA recorded for the build gate evidence.
     pub fn build_snapshot_commit(&self, task_id: &str) -> Result<Option<String>> {
         self.assert_id(task_id)?;
         let evidence: Option<String> = self
             .connection
-            .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='build/v1' AND state='passed' ORDER BY revision DESC LIMIT 1")?
+            .prepare("SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='build' AND state='passed' ORDER BY revision DESC LIMIT 1")?
             .query_row([task_id], |r| r.get(0))
             .optional()?;
         Ok(evidence.and_then(|ev| {
@@ -572,7 +583,7 @@ impl TasksStore {
             "proof_policy".into(),
             serde_json::json!(task.spec.proof_policy),
         );
-        object.insert("stage".into(), serde_json::json!(GATES[task.gate]));
+        object.insert("stage".into(), serde_json::json!(self.gate_id(task.gate)));
         object.insert("attempts".into(), serde_json::json!(attempts));
         object.insert("gates".into(), serde_json::json!(gates));
         let latest_snapshot = gates.iter().rev().find_map(|g| {
@@ -587,7 +598,7 @@ impl TasksStore {
             object.insert("latest_snapshot".into(), snapshot);
         }
         object.insert("findings".into(), serde_json::json!(findings));
-        object.insert("gate_states".into(),serde_json::json!(GATES.iter().enumerate().map(|(i,name)|serde_json::json!({"stage":name,"state":if i<task.gate || task.status=="completed" {"passed"} else if i==task.gate && task.status=="in_progress" {"in_progress"} else {"pending"}})).collect::<Vec<_>>()));
+        object.insert("gate_states".into(),serde_json::json!(self.profile.gates.iter().map(|gate| gate.id.as_str()).enumerate().map(|(i,name)|serde_json::json!({"stage":name,"state":if i<task.gate || task.status=="completed" {"passed"} else if i==task.gate && task.status=="in_progress" {"in_progress"} else {"pending"}})).collect::<Vec<_>>()));
         object.insert("subtasks".into(), serde_json::json!(task.spec.subtasks));
         shorten_task_response_commits(&mut value);
         Ok(value)
@@ -947,7 +958,11 @@ impl TasksStore {
                 contract_revision: spec.contract_revision,
                 claim_revision: revision,
                 status: if completed { "completed" } else { "ready" }.into(),
-                gate: if completed { 3 } else { 0 },
+                gate: if completed {
+                    self.profile.gates.len().saturating_sub(1)
+                } else {
+                    0
+                },
                 worker_id: None,
                 worktree: None,
                 completed_at: completed.then(now),
@@ -1053,7 +1068,7 @@ impl TasksStore {
             if status != "all" && task.status != status {
                 continue;
             }
-            if stage.is_some_and(|s| GATES[task.gate].split('/').next() != Some(s)) {
+            if stage.is_some_and(|s| self.gate_id(task.gate) != s) {
                 continue;
             }
             result.push(task);
@@ -1133,6 +1148,8 @@ impl TasksStore {
             bail!("worker_id must be nonempty");
         }
         let worktree = crate::core::tasks::claim_worktree(worktree)?;
+        let profile = self.profile.clone();
+        let namespace = self.namespace.clone();
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1143,7 +1160,37 @@ impl TasksStore {
         if task.status != "ready" || !dependencies_ready(&tx, id)? {
             bail!("TASK_NOT_READY");
         }
-        check_stage(&task, stage)?;
+        check_stage(profile.gate_id(task.gate), stage)?;
+        let my_scope_paths: Vec<PathBuf> = tx
+            .prepare("SELECT path FROM task_scope_paths WHERE task_id=?1")?
+            .query_map([id], |row| row.get::<_, String>(0).map(PathBuf::from))?
+            .collect::<std::result::Result<_, _>>()?;
+        let other_scopes: Vec<(String, PathBuf)> = tx
+            .prepare(
+                "SELECT p.task_id, p.path FROM task_scope_paths p \
+                 JOIN tasks t ON t.task_id = p.task_id \
+                 WHERE p.task_id != ?1 AND t.milestone_ref = ?2 \
+                   AND substr(p.task_id, 1, length(?3)) = ?3 \
+                   AND json_extract(t.descriptor, '$.status') != 'completed' \
+                   AND NOT EXISTS (SELECT 1 FROM task_dependencies d \
+                     LEFT JOIN tasks dependency ON dependency.task_id = d.dependency_id \
+                     WHERE d.task_id = t.task_id AND d.satisfied = 0 \
+                       AND (dependency.task_id IS NULL OR json_extract(dependency.descriptor, '$.status') != 'completed'))",
+            )?
+            .query_map(params![id, task.milestone_ref, namespace], |row| {
+                Ok((row.get(0)?, PathBuf::from(row.get::<_, String>(1)?)))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        for my_path in &my_scope_paths {
+            for (owner, other_path) in &other_scopes {
+                if my_path == other_path
+                    || my_path.starts_with(other_path)
+                    || other_path.starts_with(my_path)
+                {
+                    bail!("TASK_SCOPE_CONFLICT: path '{}' belongs to task '{owner}'; reopen that task instead", my_path.display());
+                }
+            }
+        }
         task.claim_revision = next_revision(&tx, id)?;
         task.worker_id = Some(worker.into());
         task.worktree = Some(worktree.to_string_lossy().into_owned());
@@ -1156,6 +1203,7 @@ impl TasksStore {
     /// Performs reset.
     pub fn reset(&mut self, id: &str) -> Result<Task> {
         self.assert_id(id)?;
+        let profile = self.profile.clone();
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1172,7 +1220,7 @@ impl TasksStore {
         task.status = "ready".into();
         tx.execute(
             "INSERT INTO task_gates VALUES(?1,?2,?3,'pending',NULL)",
-            params![id, GATES[task.gate], task.claim_revision],
+            params![id, profile.gate_id(task.gate), task.claim_revision],
         )?;
         save(&tx, &task)?;
         tx.commit()?;
@@ -1188,6 +1236,7 @@ impl TasksStore {
         if paths.is_empty() {
             bail!("paths must be nonempty");
         }
+        let namespace = self.namespace.clone();
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1223,9 +1272,11 @@ impl TasksStore {
             .prepare(
                 "SELECT p.task_id, p.path FROM task_scope_paths p \
                  JOIN tasks t ON t.task_id = p.task_id \
-                 WHERE p.task_id != ?1 AND t.milestone_ref = ?2",
+                 WHERE p.task_id != ?1 AND t.milestone_ref = ?2 \
+                   AND substr(p.task_id, 1, length(?3)) = ?3 \
+                   AND json_extract(t.descriptor, '$.status') != 'completed'",
             )?
-            .query_map(params![id, task.milestone_ref], |r| {
+            .query_map(params![id, task.milestone_ref, namespace], |r| {
                 let owner: String = r.get(0)?;
                 let p: String = r.get(1)?;
                 Ok((owner, PathBuf::from(p)))
@@ -1380,8 +1431,8 @@ pub(crate) fn end_claim(conn: &Connection, id: &str) -> Result<()> {
     )?;
     Ok(())
 }
-pub(crate) fn check_stage(task: &Task, stage: &str) -> Result<()> {
-    if GATES[task.gate] != stage && GATES[task.gate].split('/').next() != Some(stage) {
+pub(crate) fn check_stage(active_gate: &str, stage: &str) -> Result<()> {
+    if active_gate != stage {
         bail!("TASK_STAGE_INVALID");
     }
     Ok(())

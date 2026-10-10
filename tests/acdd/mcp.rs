@@ -88,7 +88,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert_eq!(
         selected["tasks"][0],
         json!({
-            "task_id":id,"target":"Deliver","status":"ready","stage":"contract/v1",
+            "task_id":id,"target":"Deliver","status":"ready","stage":"contract",
             "owner":null,"agent_type":"worker","rev":1
         })
     );
@@ -473,7 +473,7 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
     let active = client.payload("task_list", json!({"status":"in_progress"}));
     assert_eq!(active["tasks"][0]["task_id"], id);
     assert_eq!(active["tasks"][0]["owner"], "builder");
-    assert_eq!(active["tasks"][0]["stage"], "contract/v1");
+    assert_eq!(active["tasks"][0]["stage"], "contract");
     let reset = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args(["--root", workspace.0.to_str().unwrap(), "task", "reset", id])
         .output()
@@ -779,6 +779,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         "src/routing.rs",
         "pub struct Router;\npub fn route_task() {}\n",
     );
+    workspace.write("src/minimal_routing.rs", "pub fn minimal_route_task() {}\n");
     workspace.write("tests/test_routing.rs", "#[test]\nfn test_routing() {}\n");
     workspace.write("src/cli_routing.rs", "pub fn route_cli_task() {}\n");
     workspace.write(
@@ -787,7 +788,13 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     );
 
     let manifest = "---\nid: m-context\ntitle: Context Milestone\ndoc_type: contract\ninvariants: [routing-invariant]\n---\n```yaml\ntask_ref: routing-task\ntarget: Deliver unified routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n  - tests/test_routing.rs\n```\n```yaml\ntask_ref: cli-routing-task\ntarget: Deliver CLI unified routing\nproof_policy: seam-test-first\nscope:\n  - src/cli_routing.rs\n  - tests/test_cli_routing.rs\n```\n```yaml\ntask_ref: minimal-routing-task\ntarget: Deliver minimal routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n```\n";
-    workspace.write("docs/milestones/010-context.md", manifest);
+    workspace.write(
+        "docs/milestones/010-context.md",
+        &manifest.replace(
+            "task_ref: minimal-routing-task\ntarget: Deliver minimal routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs",
+            "task_ref: minimal-routing-task\ntarget: Deliver minimal routing\nproof_policy: seam-test-first\nscope:\n  - src/minimal_routing.rs",
+        ),
+    );
     workspace.write(
         "forge-mcp.yaml",
         "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
@@ -841,7 +848,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     // Check contract in bundle
     assert_eq!(bundle["contract"]["task_id"], task_id);
     assert_eq!(bundle["contract"]["target"], "Deliver unified routing");
-    assert_eq!(bundle["contract"]["stage"], "contract/v1");
+    assert_eq!(bundle["contract"]["stage"], "contract");
     assert_eq!(bundle["contract"]["status"], "ready");
     assert_eq!(
         bundle["contract"]["allowed_scope"],
@@ -853,7 +860,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     );
 
     // Check guidance in bundle
-    assert_eq!(bundle["guidance"]["stage"], "contract/v1");
+    assert_eq!(bundle["guidance"]["stage"], "contract");
     assert_eq!(bundle["guidance"]["subagent_role"], "contract_author");
     assert!(bundle["guidance"]["recommended_tools"]
         .as_array()
@@ -1315,18 +1322,18 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     // 1. Pass contract with an explicit contract commit
     let contract_claim = client.payload(
         "task_claim",
-        json!({"task_id": task_id, "stage": "contract/v1", "worker_id": "author", "worktree": workspace.0}),
+        json!({"task_id": task_id, "stage": "contract", "worker_id": "author", "worktree": workspace.0}),
     );
     let contract_commit = "1111111111111111111111111111111111111111";
     client.payload(
         "task_submit",
         json!({
             "task_id": task_id,
-            "stage": "contract/v1",
+            "stage": "contract",
             "action": "pass",
             "evidence": {
                 "task_id": task_id,
-                "stage": "contract/v1",
+                "stage": "contract",
                 "claim_revision": contract_claim["claim_revision"],
                 "contract_revision": 1,
                 "worker_id": "author",
@@ -1337,20 +1344,20 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         }),
     );
 
-    // 2. Pass build/v1 WITHOUT a commit in evidence
+    // 2. Pass build WITHOUT a commit in evidence
     let build_claim = client.payload(
         "task_claim",
-        json!({"task_id": task_id, "stage": "build/v1", "worker_id": "builder", "worktree": workspace.0}),
+        json!({"task_id": task_id, "stage": "build", "worker_id": "builder", "worktree": workspace.0}),
     );
     client.payload(
         "task_submit",
         json!({
             "task_id": task_id,
-            "stage": "build/v1",
+            "stage": "build",
             "action": "pass",
             "evidence": {
                 "task_id": task_id,
-                "stage": "build/v1",
+                "stage": "build",
                 "claim_revision": build_claim["claim_revision"],
                 "contract_revision": 1,
                 "worker_id": "builder",
@@ -1360,18 +1367,18 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         }),
     );
 
-    // 3. Claim review/v1: candidate_snapshot MUST be None because build/v1 had no commit
+    // 3. Claim review: candidate_snapshot MUST be None because build had no commit
     // (must NOT fall back to contract_commit!)
     let review_claim = client.payload(
         "task_claim",
-        json!({"task_id": task_id, "stage": "review/v1", "worker_id": "reviewer", "worktree": reviewer.0}),
+        json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.0}),
     );
     assert!(
         review_claim["context_bundle"].get("candidate_snapshot").is_none(),
-        "candidate_snapshot must be omitted when build/v1 has no commit (must not fall back to contract commit)"
+        "candidate_snapshot must be omitted when build has no commit (must not fall back to contract commit)"
     );
 
-    // Reject review with findings -> task bounces back to build/v1
+    // Reject review with findings -> task bounces back to build
     let contours: serde_json::Map<String, Value> = REVIEW_CONTOURS
         .iter()
         .map(|name| {
@@ -1388,11 +1395,11 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         "task_submit",
         json!({
             "task_id": task_id,
-            "stage": "review/v1",
+            "stage": "review",
             "action": "reject",
             "evidence": {
                 "task_id": task_id,
-                "stage": "review/v1",
+                "stage": "review",
                 "claim_revision": review_claim["claim_revision"],
                 "contract_revision": 1,
                 "worker_id": "reviewer",
@@ -1406,7 +1413,7 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     // Build claim after review reject: verify unresolved_review_findings contains review_findings
     let build_claim2 = client.payload(
         "task_claim",
-        json!({"task_id": task_id, "stage": "build/v1", "worker_id": "builder", "worktree": workspace.0}),
+        json!({"task_id": task_id, "stage": "build", "worker_id": "builder", "worktree": workspace.0}),
     );
     assert_eq!(
         build_claim2["context_bundle"]["unresolved_review_findings"],
@@ -1418,11 +1425,11 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         "task_submit",
         json!({
             "task_id": task_id,
-            "stage": "build/v1",
+            "stage": "build",
             "action": "pass",
             "evidence": {
                 "task_id": task_id,
-                "stage": "build/v1",
+                "stage": "build",
                 "claim_revision": build_claim2["claim_revision"],
                 "contract_revision": 1,
                 "worker_id": "builder",
@@ -1433,26 +1440,26 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         }),
     );
 
-    // Now claim review/v1: candidate_snapshot MUST match build_commit
+    // Now claim review: candidate_snapshot MUST match build_commit
     let review_claim2 = client.payload(
         "task_claim",
-        json!({"task_id": task_id, "stage": "review/v1", "worker_id": "reviewer", "worktree": reviewer.0}),
+        json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.0}),
     );
     assert_eq!(
         review_claim2["context_bundle"]["candidate_snapshot"]["commit"],
         &build_commit[..7]
     );
 
-    // Pass review/v1
+    // Pass review
     client.payload(
         "task_submit",
         json!({
             "task_id": task_id,
-            "stage": "review/v1",
+            "stage": "review",
             "action": "pass",
             "evidence": {
                 "task_id": task_id,
-                "stage": "review/v1",
+                "stage": "review",
                 "claim_revision": review_claim2["claim_revision"],
                 "contract_revision": 1,
                 "worker_id": "reviewer",
@@ -1463,12 +1470,12 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         }),
     );
 
-    // 4. Claim deliver/v1 and REJECT delivery with findings
+    // 4. Claim deliver and REJECT delivery with findings
     let deliver_claim = client.payload(
         "task_claim",
-        json!({"task_id": task_id, "stage": "deliver/v1", "worker_id": "delivery-lead", "worktree": workspace.0}),
+        json!({"task_id": task_id, "stage": "deliver", "worker_id": "delivery-lead", "worktree": workspace.0}),
     );
-    // At deliver/v1 before completion, receipt must be None
+    // At deliver before completion, receipt must be None
     assert!(deliver_claim["context_bundle"].get("receipt").is_none());
 
     let delivery_findings = json!({"decision": "reject", "notes": "Missing changelog entry"});
@@ -1476,11 +1483,11 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         "task_submit",
         json!({
             "task_id": task_id,
-            "stage": "deliver/v1",
+            "stage": "deliver",
             "action": "reject",
             "evidence": {
                 "task_id": task_id,
-                "stage": "deliver/v1",
+                "stage": "deliver",
                 "claim_revision": deliver_claim["claim_revision"],
                 "contract_revision": 1,
                 "worker_id": "delivery-lead",
@@ -1492,10 +1499,10 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         }),
     );
 
-    // Task bounced back to build/v1: claim build/v1 and verify unresolved_review_findings contains delivery findings
+    // Task bounced back to build: claim build and verify unresolved_review_findings contains delivery findings
     let rebounce_build_claim = client.payload(
         "task_claim",
-        json!({"task_id": task_id, "stage": "build/v1", "worker_id": "builder", "worktree": workspace.0}),
+        json!({"task_id": task_id, "stage": "build", "worker_id": "builder", "worktree": workspace.0}),
     );
     assert_eq!(
         rebounce_build_claim["context_bundle"]["unresolved_review_findings"],
@@ -1507,11 +1514,11 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         "task_submit",
         json!({
             "task_id": task_id,
-            "stage": "build/v1",
+            "stage": "build",
             "action": "pass",
             "evidence": {
                 "task_id": task_id,
-                "stage": "build/v1",
+                "stage": "build",
                 "claim_revision": rebounce_build_claim["claim_revision"],
                 "contract_revision": 1,
                 "worker_id": "builder",
@@ -1524,17 +1531,17 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
 
     let review_claim3 = client.payload(
         "task_claim",
-        json!({"task_id": task_id, "stage": "review/v1", "worker_id": "reviewer", "worktree": reviewer.0}),
+        json!({"task_id": task_id, "stage": "review", "worker_id": "reviewer", "worktree": reviewer.0}),
     );
     client.payload(
         "task_submit",
         json!({
             "task_id": task_id,
-            "stage": "review/v1",
+            "stage": "review",
             "action": "pass",
             "evidence": {
                 "task_id": task_id,
-                "stage": "review/v1",
+                "stage": "review",
                 "claim_revision": review_claim3["claim_revision"],
                 "contract_revision": 1,
                 "worker_id": "reviewer",
@@ -1547,7 +1554,7 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
 
     let deliver_claim2 = client.payload(
         "task_claim",
-        json!({"task_id": task_id, "stage": "deliver/v1", "worker_id": "delivery-lead", "worktree": workspace.0}),
+        json!({"task_id": task_id, "stage": "deliver", "worker_id": "delivery-lead", "worktree": workspace.0}),
     );
     assert!(deliver_claim2["context_bundle"].get("receipt").is_none());
 
@@ -1555,11 +1562,11 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         "task_submit",
         json!({
             "task_id": task_id,
-            "stage": "deliver/v1",
+            "stage": "deliver",
             "action": "pass",
             "evidence": {
                 "task_id": task_id,
-                "stage": "deliver/v1",
+                "stage": "deliver",
                 "claim_revision": deliver_claim2["claim_revision"],
                 "contract_revision": 1,
                 "worker_id": "delivery-lead",

@@ -20,8 +20,22 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
         workspace.write("src/lib.rs", "pub fn guided() {}\n");
         workspace.write("docs/010-guided.md", &specification(agent_type));
     }
-    root.write("docs/team-guidance.md", "# Root task guidance\n");
-    linked.write("docs/linked-guidance.md", "# Linked task guidance\n");
+    root.write(
+        "docs/team-guidance.md",
+        "# Root task guidance\nLoad the contextunity-forge skill.\n",
+    );
+    linked.write(
+        "docs/linked-guidance.md",
+        "# Linked task guidance\nLoad the contextunity-forge skill.\n",
+    );
+    root.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    linked.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
     root.write(
         "forge-mcp.yaml",
         &format!(
@@ -99,7 +113,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
         assert_eq!(before["spec"]["agent_type"], agent_type);
         assert_eq!(before["agents_guidance"], expected_path.to_str().unwrap());
         let guidance = &before["workflow_guidance"];
-        assert_eq!(guidance["active_stage"], "contract/v1");
+        assert_eq!(guidance["active_stage"], "contract");
         assert_eq!(guidance["agent_type"], agent_type);
         assert_eq!(guidance["subagent_role"], "contract_author");
         assert!(guidance["steps"]
@@ -107,7 +121,6 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             .is_some_and(|steps| !steps.is_empty()));
         if absent {
             assert_eq!(guidance["warning"]["code"], "TASK_GUIDANCE_MISSING");
-            assert!(guidance.to_string().contains("https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/acdd.md"));
         } else {
             assert!(guidance["warning"].is_null());
         }
@@ -115,7 +128,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             server,
             tasks::Claim {
                 task_id: id.clone(),
-                stage: "contract/v1".into(),
+                stage: "contract".into(),
                 worker_id: "guidance-contract-author".into(),
                 worktree: workspace.to_string_lossy().into_owned(),
                 ..Default::default()
@@ -127,10 +140,10 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
             let task = store.inspect(&id).unwrap();
             store
-                .submit(&id, "contract/v1", &evidence(&task), "pass", None)
+                .submit(&id, "contract", &evidence(&task), "pass", None)
                 .unwrap();
             let build = inspect();
-            assert_eq!(build["workflow_guidance"]["active_stage"], "build/v1");
+            assert_eq!(build["workflow_guidance"]["active_stage"], "build");
             assert_eq!(build["workflow_guidance"]["subagent_role"], "builder");
             assert_ne!(build["workflow_guidance"]["steps"], guidance["steps"]);
             assert!(build["workflow_guidance"]["steps"]
@@ -140,7 +153,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
                 server,
                 tasks::Claim {
                     task_id: id.clone(),
-                    stage: "build/v1".into(),
+                    stage: "build".into(),
                     worker_id: "guidance-builder".into(),
                     worktree: workspace.to_string_lossy().into_owned(),
                     ..Default::default()
@@ -153,10 +166,10 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             );
             let task = store.inspect(&id).unwrap();
             store
-                .submit(&id, "build/v1", &evidence(&task), "pass", None)
+                .submit(&id, "build", &evidence(&task), "pass", None)
                 .unwrap();
             let review = inspect();
-            assert_eq!(review["workflow_guidance"]["active_stage"], "review/v1");
+            assert_eq!(review["workflow_guidance"]["active_stage"], "review");
             assert_eq!(
                 review["workflow_guidance"]["subagent_role"],
                 "independent_reviewer"
@@ -168,6 +181,94 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             assert!(review["workflow_guidance"]["independence_rule"]
                 .as_str()
                 .is_some_and(|rule| rule.contains("different")));
+        }
+    }
+}
+
+#[test]
+fn task_guidance_requires_named_and_installed_forge_skill() {
+    let specification = "---\nid: m-skill\ntitle: Skill guidance\ndoc_type: contract\n---\n# Skill guidance\n```yaml\ntask_ref: skill\ntarget: Deliver skill guidance\nagent_type: worker\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    let named = ScopedWorkspace::new("forge_skill_named");
+    let named_mcp_skill = ScopedWorkspace::new("forge_skill_named_mcp_skill");
+    let unnamed = ScopedWorkspace::new("forge_skill_unnamed");
+    let global_only = ScopedWorkspace::new("forge_skill_global_only");
+    let ignored_profile = ScopedWorkspace::new("forge_skill_ignored_profile");
+    for workspace in [&named, &named_mcp_skill, &unnamed, &global_only, &ignored_profile] {
+        workspace.write("src/lib.rs", "pub fn skill() {}\n");
+        workspace.write("docs/010-skill.md", specification);
+        workspace.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
+    }
+    named.write("AGENTS.md", "# Rules\nLoad the contextunity-forge skill.\n");
+    named.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    named_mcp_skill.write(
+        "AGENTS.md",
+        "# Rules\nLoad contextunity-forge-mcp skill for ACDD.\n",
+    );
+    named_mcp_skill.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    unnamed.write(
+        "AGENTS.md",
+        "# Rules\nUse contextunity-forge-mcp for queries.\n",
+    );
+    global_only.write("AGENTS.md", "# Rules\nLoad the contextunity-forge skill.\n");
+    ignored_profile.write("AGENTS.md", "# Rules\nLoad the contextunity-forge skill.\n");
+    ignored_profile.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    ignored_profile.write(".gitignore", "target/\n.forge/\n");
+    let global_installed = std::env::var_os("HOME").is_some_and(|home| {
+        std::path::Path::new(&home)
+            .join(".agents/skills/contextunity-forge/SKILL.md")
+            .is_file()
+    });
+    for (workspace, warning_fragment) in [
+        (&named, None),
+        (&named_mcp_skill, None),
+        (
+            &unnamed,
+            Some("do not name the contextunity-forge skill"),
+        ),
+        (
+            &global_only,
+            (!global_installed).then_some("not installed"),
+        ),
+        (
+            &ignored_profile,
+            Some("excludes .forge/"),
+        ),
+    ] {
+        tasks::manage(
+            &workspace.0,
+            serde_json::from_value(json!({
+                "action": "sync",
+                "milestone_ref": "docs/010-skill.md"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let inspected = tasks::manage(
+            &workspace.0,
+            serde_json::from_value(json!({
+                "action": "inspect",
+                "task_id": "forge-mcp/forge-mcp/m-skill:skill"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let warning = &inspected["workflow_guidance"]["warning"];
+        match warning_fragment {
+            None => assert!(warning.is_null()),
+            Some(fragment) => {
+                assert_eq!(warning["code"], "TASK_GUIDANCE_MISSING");
+                let message = warning["message"].as_str().unwrap();
+                assert!(message.contains(fragment), "{message}");
+            }
         }
     }
 }
@@ -186,16 +287,16 @@ fn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {
     proof.commit = None;
     let raw_evidence = serde_json::to_value(&proof).unwrap();
     for invalid in [
-        json!({"task_id":task_id,"stage":"contract/v1","action":"pass"}),
-        json!({"task_id":task_id,"stage":"contract/v1","action":"pass","evidence_ref":"proof.yaml"}),
-        json!({"task_id":task_id,"stage":"contract/v1","action":"pass","evidence":raw_evidence,"evidence_ref":"proof.yaml"}),
+        json!({"task_id":task_id,"stage":"contract","action":"pass"}),
+        json!({"task_id":task_id,"stage":"contract","action":"pass","evidence_ref":"proof.yaml"}),
+        json!({"task_id":task_id,"stage":"contract","action":"pass","evidence":raw_evidence,"evidence_ref":"proof.yaml"}),
     ] {
         assert!(serde_json::from_value::<tasks::Submit>(invalid).is_err());
         assert_eq!(store.inspect(&task_id).unwrap().status, "in_progress");
     }
     let nonobject: tasks::Submit = serde_json::from_value(json!({
         "task_id": task_id,
-        "stage": "contract/v1",
+        "stage": "contract",
         "action": "pass",
         "evidence": 42
     }))
@@ -204,7 +305,7 @@ fn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {
     assert_eq!(store.inspect(&task_id).unwrap().status, "in_progress");
     let request: tasks::Submit = serde_json::from_value(json!({
         "task_id": task_id,
-        "stage": "contract/v1",
+        "stage": "contract",
         "action": "pass",
         "evidence": raw_evidence
     }))
@@ -215,7 +316,7 @@ fn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {
     let stored: String = store
         .connection
         .query_row(
-            "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='contract/v1' AND state='passed'",
+            "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='contract' AND state='passed'",
             [&task_id],
             |row| row.get(0),
         )
@@ -256,7 +357,7 @@ fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
                 "submit",
                 &task_id,
                 "--stage",
-                "contract/v1",
+                "contract",
                 "--action",
                 "pass",
                 "--evidence",
@@ -275,7 +376,7 @@ fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
             "submit",
             &task_id,
             "--stage",
-            "contract/v1",
+            "contract",
             "--action",
             "pass",
             "--evidence",
@@ -293,7 +394,7 @@ fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
     let stored: String = store
         .connection
         .query_row(
-            "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='contract/v1' AND state='passed'",
+            "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate='contract' AND state='passed'",
             [&task_id],
             |row| row.get(0),
         )
@@ -1276,7 +1377,7 @@ fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
     let task_id = "forge-mcp/forge-mcp/m-reopen:reopenable";
 
     // Advance task through all 4 gates to completed
-    let stages = ["contract/v1", "build/v1", "review/v1", "deliver/v1"];
+    let stages = ["contract", "build", "review", "deliver"];
     for (index, stage) in stages.iter().enumerate() {
         let worker = if index >= 2 { "reviewer" } else { "builder" };
         tasks::claim(
@@ -1293,7 +1394,7 @@ fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
 
         let stored = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
         let mut ev = evidence(&stored);
-        if *stage == "deliver/v1" {
+        if *stage == "deliver" {
             ev.proof = json!({
                 "review_proof": {
                     "decision": "pass",
@@ -1368,12 +1469,12 @@ fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
     assert_eq!(sub.subtask_ref, "sub-audit");
     assert_eq!(sub.status, "pending");
 
-    // Reopened task can be claimed again at contract/v1
+    // Reopened task can be claimed again at contract
     let re_claimed = tasks::claim(
         &root.0,
         tasks::Claim {
             task_id: task_id.into(),
-            stage: "contract/v1".into(),
+            stage: "contract".into(),
             worker_id: "auditor".into(),
             worktree: root.0.to_str().unwrap().into(),
             ..Default::default()
@@ -1728,12 +1829,12 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     let task_id = &tasks_in_store[0].task_id;
     root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 42 }\n");
 
-    // 1. Claim contract/v1
+    // 1. Claim contract
     tasks::claim(
         &root.0,
         tasks::Claim {
             task_id: task_id.into(),
-            stage: "contract/v1".into(),
+            stage: "contract".into(),
             worker_id: "builder".into(),
             worktree: root.0.to_str().unwrap().into(),
             ..Default::default()
@@ -1741,7 +1842,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     )
     .unwrap();
 
-    // Submit contract/v1 with commit: None -> automatically captures snapshot
+    // Submit contract with commit: None -> automatically captures snapshot
     let stored = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
     let mut ev = evidence(&stored);
     ev.commit = None;
@@ -1753,7 +1854,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         &root.0,
         tasks::Submit {
             task_id: task_id.into(),
-            stage: "contract/v1".into(),
+            stage: "contract".into(),
             action: tasks::Action::Pass,
             evidence: serde_json::to_value(&ev).unwrap(),
             findings: None,
@@ -1774,7 +1875,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         &root.0,
         tasks::Submit {
             task_id: task_id.into(),
-            stage: "contract/v1".into(),
+            stage: "contract".into(),
             action: tasks::Action::Pass,
             evidence: serde_json::to_value(&ev).unwrap(),
             findings: None,
@@ -1803,12 +1904,12 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .status()
         .unwrap();
 
-    // Claim build/v1
+    // Claim build
     tasks::claim(
         &root.0,
         tasks::Claim {
             task_id: task_id.into(),
-            stage: "build/v1".into(),
+            stage: "build".into(),
             worker_id: "builder".into(),
             worktree: root.0.to_str().unwrap().into(),
             ..Default::default()
@@ -1816,7 +1917,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     )
     .unwrap();
 
-    // Submit build/v1 with commit: None -> captures snapshot with the untracked file!
+    // Submit build with commit: None -> captures snapshot with the untracked file!
     let stored = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
     let mut ev = evidence(&stored);
     ev.commit = None;
@@ -1824,7 +1925,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         &root.0,
         tasks::Submit {
             task_id: task_id.into(),
-            stage: "build/v1".into(),
+            stage: "build".into(),
             action: tasks::Action::Pass,
             evidence: serde_json::to_value(&ev).unwrap(),
             findings: None,
@@ -1872,7 +1973,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         &root.0,
         tasks::Claim {
             task_id: task_id.into(),
-            stage: "review/v1".into(),
+            stage: "review".into(),
             worker_id: "reviewer".into(),
             worktree: root.0.to_str().unwrap().into(),
             ..Default::default()
@@ -1889,7 +1990,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         &root.0,
         tasks::Submit {
             task_id: task_id.into(),
-            stage: "review/v1".into(),
+            stage: "review".into(),
             action: tasks::Action::Pass,
             evidence: serde_json::to_value(&ev).unwrap(),
             findings: None,
@@ -1907,7 +2008,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         &root.0,
         tasks::Submit {
             task_id: task_id.into(),
-            stage: "review/v1".into(),
+            stage: "review".into(),
             action: tasks::Action::Pass,
             evidence: serde_json::to_value(&ev).unwrap(),
             findings: None,
@@ -1923,7 +2024,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         &root.0,
         tasks::Claim {
             task_id: task_id.into(),
-            stage: "deliver/v1".into(),
+            stage: "deliver".into(),
             worker_id: "delivery".into(),
             worktree: root.0.to_str().unwrap().into(),
             ..Default::default()
@@ -1943,7 +2044,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         &root.0,
         tasks::Submit {
             task_id: task_id.into(),
-            stage: "deliver/v1".into(),
+            stage: "deliver".into(),
             action: tasks::Action::Pass,
             evidence: serde_json::to_value(&ev).unwrap(),
             findings: None,
@@ -1961,7 +2062,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         &root.0,
         tasks::Submit {
             task_id: task_id.into(),
-            stage: "deliver/v1".into(),
+            stage: "deliver".into(),
             action: tasks::Action::Pass,
             evidence: serde_json::to_value(&ev).unwrap(),
             findings: None,
@@ -2021,10 +2122,10 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .unwrap();
     let task_id_2 = ready_tasks[0].task_id.clone();
     for (stage, worker) in [
-        ("contract/v1", "b1"),
-        ("build/v1", "b1"),
-        ("review/v1", "r1"),
-        ("deliver/v1", "d1"),
+        ("contract", "b1"),
+        ("build", "b1"),
+        ("review", "r1"),
+        ("deliver", "d1"),
     ] {
         tasks::claim(
             &root.0,
@@ -2135,7 +2236,7 @@ fn scoped_snapshot_omits_deleted_exact_path_during_contract_submit() {
         &root.0,
         tasks::Claim {
             task_id: task_id.clone(),
-            stage: "contract/v1".into(),
+            stage: "contract".into(),
             worker_id: "builder".into(),
             worktree: root.0.to_str().unwrap().into(),
             ..Default::default()
@@ -2154,7 +2255,7 @@ fn scoped_snapshot_omits_deleted_exact_path_during_contract_submit() {
         &root.0,
         tasks::Submit {
             task_id: task_id.clone(),
-            stage: "contract/v1".into(),
+            stage: "contract".into(),
             action: tasks::Action::Pass,
             evidence: serde_json::to_value(proof).unwrap(),
             findings: None,
@@ -2205,7 +2306,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         &root.0,
         tasks::Claim {
             task_id: task_b_id.into(),
-            stage: "contract/v1".into(),
+            stage: "contract".into(),
             worker_id: "worker_b".into(),
             worktree: root.0.to_string_lossy().into_owned(),
             ..Default::default()
@@ -2263,7 +2364,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         &root.0,
         tasks::Claim {
             task_id: task_a_id.into(),
-            stage: "contract/v1".into(),
+            stage: "contract".into(),
             worker_id: "worker_a".into(),
             worktree: root.0.to_string_lossy().into_owned(),
             ..Default::default()
@@ -2290,6 +2391,124 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     ] {
         assert_scope_conflict(task_a_id, path, task_b_id, shape);
     }
+
+    let claim_root = ScopedWorkspace::new("forge_claim_scope_conflict");
+    claim_root.write("src/shared/owned.rs", "pub fn owned() {}\n");
+    claim_root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    let claim_spec = "---\nid: m-claim-conflict\ntitle: Claim Conflict Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: owner\ntarget: Own shared path\nproof_policy: seam-test-first\nscope: [src/shared/owned.rs]\nscope_roots: [src/]\n```\n```yaml\ntask_ref: successor\ntarget: Claim overlapping path\nproof_policy: seam-test-first\nscope: [src/shared/owned.rs]\nscope_roots: [src/]\n```\n";
+    let claim_spec = claim_spec.replace(
+        "task_ref: successor\ntarget: Claim overlapping path\nproof_policy: seam-test-first\nscope:",
+        "task_ref: successor\ntarget: Claim overlapping path\nproof_policy: seam-test-first\ndepends_on: [owner]\nscope:",
+    );
+    claim_root.write("docs/010-claim-conflict.md", &claim_spec);
+    let claim_milestone = Milestone::parse(&claim_spec, "forge-mcp").unwrap();
+    let mut claim_store = TasksStore::open(&claim_root.0.join(".forge/tasks.sqlite")).unwrap();
+    claim_store
+        .sync(&claim_milestone, "docs/010-claim-conflict.md", &claim_root.0)
+        .unwrap();
+    let owner_id = "forge-mcp/forge-mcp/m-claim-conflict:owner";
+    tasks::claim(
+        &claim_root.0,
+        tasks::Claim {
+            task_id: owner_id.into(),
+            stage: "contract".into(),
+            worker_id: "owner".into(),
+            worktree: claim_root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let claim_spec = claim_spec
+        .replace(
+            "task_ref: successor\ntarget: Claim overlapping path\nproof_policy: seam-test-first\ndepends_on: [owner]\nscope:",
+            "task_ref: successor\ntarget: Claim overlapping path\nproof_policy: seam-test-first\ncontract_revision: 2\nscope:",
+        );
+    claim_root.write("docs/010-claim-conflict.md", &claim_spec);
+    let claim_milestone = Milestone::parse(&claim_spec, "forge-mcp").unwrap();
+    claim_store
+        .sync(&claim_milestone, "docs/010-claim-conflict.md", &claim_root.0)
+        .unwrap();
+    let claim_error = tasks::claim(
+        &claim_root.0,
+        tasks::Claim {
+            task_id: "forge-mcp/forge-mcp/m-claim-conflict:successor".into(),
+            stage: "contract".into(),
+            worker_id: "successor".into(),
+            worktree: claim_root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(claim_error.contains("TASK_SCOPE_CONFLICT"), "{claim_error}");
+    assert!(claim_error.contains(owner_id), "{claim_error}");
+
+    let release_root = ScopedWorkspace::new("forge_completed_scope_release");
+    release_root.write("src/released/owned.rs", "pub fn owned() {}\n");
+    release_root.write("src/released/extra.rs", "pub fn extra() {}\n");
+    release_root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    let release_spec = "---\nid: m-scope-release\ntitle: Scope Release Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: completed_owner\ntarget: Finish shared scope owner\nproof_policy: seam-test-first\nscope: [src/released/]\nscope_roots: [src/]\n```\n```yaml\ntask_ref: successor\ntarget: Reuse released scope\nproof_policy: seam-test-first\nscope: [src/released/owned.rs]\nscope_roots: [src/]\n```\n";
+    release_root.write("docs/010-scope-release.md", release_spec);
+    let mut release_milestone = Milestone::parse(release_spec, "forge-mcp").unwrap();
+    release_milestone.tasks[0].status = Some("completed".into());
+    release_milestone.tasks[0].receipt = Some(Receipt {
+        commit: None,
+        contract_revision: 1,
+        passed_at: "2026-10-10T00:00:00Z".into(),
+        evidence: json!({"test_proof":{"command":"cargo test --test acdd","exit_code":0,"tests_passed":1,"tests_failed":0}}),
+        review: passing_review_proof(),
+        decision: "pass".into(),
+        rollup: None,
+    });
+    let mut release_store =
+        TasksStore::open(&release_root.0.join(".forge/tasks.sqlite")).unwrap();
+    release_store
+        .sync(
+            &release_milestone,
+            "docs/010-scope-release.md",
+            &release_root.0,
+        )
+        .unwrap();
+    let completed_owner_id = "forge-mcp/forge-mcp/m-scope-release:completed_owner";
+    let retained_scope_count: i64 = release_store
+        .connection
+        .query_row(
+            "SELECT count(*) FROM task_scope_paths WHERE task_id=?1",
+            [completed_owner_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained_scope_count, 1);
+    let successor_id = "forge-mcp/forge-mcp/m-scope-release:successor";
+    let claimed = tasks::claim(
+        &release_root.0,
+        tasks::Claim {
+            task_id: successor_id.into(),
+            stage: "contract".into(),
+            worker_id: "successor".into(),
+            worktree: release_root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(claimed["status"], "in_progress");
+    let extended = tasks::manage(
+        &release_root.0,
+        serde_json::from_value(json!({
+            "action": "extend_scope",
+            "task_id": successor_id,
+            "paths": ["src/released/extra.rs"]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(extended["status"], "in_progress");
 }
 
 #[test]
@@ -2323,7 +2542,7 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
         &root.0,
         tasks::Claim {
             task_id: task_id.into(),
-            stage: "contract/v1".into(),
+            stage: "contract".into(),
             worker_id: "builder".into(),
             worktree: root.0.to_string_lossy().into_owned(),
             ..Default::default()
@@ -2488,3 +2707,62 @@ fn universal_scope_roots_extend_scope_and_boundary_validation() {
         "expected parse error for scope outside scope_roots, got: {parse_err}"
     );
 }
+
+#[test]
+fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
+    use contextunity_forge_mcp::core::tasks::profile::{compiled, load_for_workspace, parse_profile};
+
+    // 1. Embedded default profile has no hardcoded model and contains textual recommendations
+    let default_profile = compiled();
+    assert_eq!(default_profile.gates.len(), 4);
+    assert_eq!(default_profile.gate_id(0), "contract");
+    assert_eq!(default_profile.gate_id(1), "build");
+    assert_eq!(default_profile.gate_id(2), "review");
+    assert_eq!(default_profile.gate_id(3), "deliver");
+
+    let reviewer_role = default_profile
+        .roles
+        .get("independent_reviewer")
+        .expect("reviewer role exists");
+    assert!(reviewer_role.model.is_none(), "default reviewer must not hardcode a model");
+    assert!(reviewer_role.reasoning.is_none(), "default reviewer must not hardcode reasoning");
+    assert!(reviewer_role.recommendation.is_some(), "default reviewer must provide textual recommendation");
+
+    // 2. Strict deny_unknown_fields fails closed on unknown YAML keys
+    let invalid_yaml = "unknown_field: true\ngates: []\n";
+    let parse_err = parse_profile(invalid_yaml).unwrap_err();
+    assert!(
+        parse_err.to_string().contains("ACDD_PROFILE_SCHEMA_INVALID"),
+        "expected ACDD_PROFILE_SCHEMA_INVALID error on unknown field, got: {parse_err}"
+    );
+
+    // 3. Repository override in .forge/acdd/profile.yaml sets sol-6.1 with reasoning high
+    let ws = crate::common::Workspace::new();
+    ws.write(
+        ".forge/acdd/profile.yaml",
+        "roles:\n  independent_reviewer:\n    model: sol-6.1\n    reasoning: high\n",
+    );
+
+    let loaded = load_for_workspace(ws.root()).unwrap();
+    let loaded_reviewer = loaded.roles.get("independent_reviewer").unwrap();
+    assert_eq!(loaded_reviewer.model.as_deref(), Some("sol-6.1"));
+    assert_eq!(loaded_reviewer.reasoning.as_deref(), Some("high"));
+    // Other gates and roles remain preserved from defaults
+    assert_eq!(loaded.gates.len(), 4);
+    assert!(loaded.roles.contains_key("builder"));
+
+    // 4. Custom profile referenced by path in forge-mcp.yaml
+    ws.write(
+        "custom/team_profile.yaml",
+        "roles:\n  independent_reviewer:\n    model: custom-model\n    reasoning: medium\n",
+    );
+    ws.write(
+        "forge-mcp.yaml",
+        "acdd_profile: custom/team_profile.yaml\n",
+    );
+    let loaded_custom = load_for_workspace(ws.root()).unwrap();
+    let custom_reviewer = loaded_custom.roles.get("independent_reviewer").unwrap();
+    assert_eq!(custom_reviewer.model.as_deref(), Some("custom-model"));
+    assert_eq!(custom_reviewer.reasoning.as_deref(), Some("medium"));
+}
+

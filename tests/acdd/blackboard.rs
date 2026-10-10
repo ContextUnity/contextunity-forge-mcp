@@ -93,8 +93,12 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
     let root = ScopedWorkspace::new("forge_blackboard_hierarchy");
     let manifest = "---\nid: m-blackboard\ntitle: Blackboard\ndoc_type: contract\nstatus: active\n---\n# Blackboard\n```yaml\ntask_ref: first\ntarget: Coordinate task agents\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Coordinate another task\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
-    root.write("docs/milestones/010-blackboard.md", manifest);
-    let milestone = Milestone::parse(manifest, "forge-mcp").unwrap();
+    let manifest = manifest.replace(
+        "task_ref: second\ntarget: Coordinate another task\nproof_policy: seam-test-first\nscope: [src/]",
+        "task_ref: second\ntarget: Coordinate another task\nproof_policy: seam-test-first\nscope: [docs/]",
+    );
+    root.write("docs/milestones/010-blackboard.md", &manifest);
+    let milestone = Milestone::parse(&manifest, "forge-mcp").unwrap();
     let database = root.0.join(".forge/tasks.sqlite");
     let mut store = TasksStore::open(&database).unwrap();
     store

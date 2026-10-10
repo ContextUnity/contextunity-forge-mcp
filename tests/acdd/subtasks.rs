@@ -178,7 +178,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     drop(store);
 
     // Deliver task through all 4 gates and prove subtasks are rendered into durable milestone markdown
-    let stages = ["contract/v1", "build/v1", "review/v1", "deliver/v1"];
+    let stages = ["contract", "build", "review", "deliver"];
     for (index, stage) in stages.iter().enumerate() {
         let worker = if index >= 2 { "reviewer" } else { "builder" };
         tasks::claim(
@@ -282,12 +282,28 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
     let spec = "---\nid: m-policy\ntitle: Policy Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: direct\ntarget: Deliver direct\nproof_policy: direct-proof\nscope: [src/]\n```\n```yaml\ntask_ref: deferred\ntarget: Deliver deferred final test\nproof_policy: deferred-final-test\nscope: [src/]\n```\n```yaml\ntask_ref: seam\ntarget: Deliver seam\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     let root = ScopedWorkspace::new("forge_policy");
     root.write("src/lib.rs", "pub fn policy() {}\n");
+    root.write("src/direct.rs", "pub fn direct() {}\n");
+    root.write("src/deferred.rs", "pub fn deferred() {}\n");
+    root.write("src/seam.rs", "pub fn seam() {}\n");
     root.write(
         "forge-mcp.yaml",
         "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
-    root.write("docs/010-policy.md", spec);
-    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    let spec = spec
+        .replace(
+            "task_ref: direct\ntarget: Deliver direct\nproof_policy: direct-proof\nscope: [src/]",
+            "task_ref: direct\ntarget: Deliver direct\nproof_policy: direct-proof\nscope: [src/direct.rs]",
+        )
+        .replace(
+            "task_ref: deferred\ntarget: Deliver deferred final test\nproof_policy: deferred-final-test\nscope: [src/]",
+            "task_ref: deferred\ntarget: Deliver deferred final test\nproof_policy: deferred-final-test\nscope: [src/deferred.rs]",
+        )
+        .replace(
+            "task_ref: seam\ntarget: Deliver seam\nproof_policy: seam-test-first\nscope: [src/]",
+            "task_ref: seam\ntarget: Deliver seam\nproof_policy: seam-test-first\nscope: [src/seam.rs]",
+        );
+    root.write("docs/010-policy.md", &spec);
+    let milestone = Milestone::parse(&spec, "forge-mcp").unwrap();
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-policy.md", &root.0)
@@ -301,7 +317,7 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
     store
         .claim(
             direct_id,
-            "contract/v1",
+            "contract",
             "builder",
             root.0.to_str().unwrap(),
         )
@@ -314,7 +330,7 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
             "red_exit_code": 0
         }
     });
-    let direct_submit = store.submit(direct_id, "contract/v1", &direct_evidence, "pass", None);
+    let direct_submit = store.submit(direct_id, "contract", &direct_evidence, "pass", None);
     assert!(
         direct_submit.is_ok(),
         "direct-proof policy must accept exit code 0"
@@ -324,7 +340,7 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
     store
         .claim(
             deferred_id,
-            "contract/v1",
+            "contract",
             "builder",
             root.0.to_str().unwrap(),
         )
@@ -337,7 +353,7 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
             "red_exit_code": 0
         }
     });
-    let def_submit = store.submit(deferred_id, "contract/v1", &def_evidence, "pass", None);
+    let def_submit = store.submit(deferred_id, "contract", &def_evidence, "pass", None);
     assert!(
         def_submit.is_ok(),
         "deferred-final-test policy must accept exit code 0"
@@ -345,7 +361,7 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
 
     // seam-test-first rejects red_exit_code: 0
     store
-        .claim(seam_id, "contract/v1", "builder", root.0.to_str().unwrap())
+        .claim(seam_id, "contract", "builder", root.0.to_str().unwrap())
         .unwrap();
     let s_task = store.inspect(seam_id).unwrap();
 
@@ -358,7 +374,7 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
         }
     });
     let seam_submit_err = store
-        .submit(seam_id, "contract/v1", &seam_evidence, "pass", None)
+        .submit(seam_id, "contract", &seam_evidence, "pass", None)
         .unwrap_err();
     assert!(seam_submit_err
         .to_string()
@@ -371,7 +387,7 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
             "red_exit_code": 101
         }
     });
-    let seam_submit = store.submit(seam_id, "contract/v1", &seam_evidence, "pass", None);
+    let seam_submit = store.submit(seam_id, "contract", &seam_evidence, "pass", None);
     assert!(
         seam_submit.is_ok(),
         "seam-test-first accepts nonzero exit code"
