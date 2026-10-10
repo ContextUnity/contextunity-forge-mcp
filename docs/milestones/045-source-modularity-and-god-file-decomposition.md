@@ -225,34 +225,87 @@ receipt:
 
 ```yaml
 task_ref: linker-pipeline-decomposition-along-existing-marks
-target: "Split link_compact_impl along its existing mark checkpoints, with no line-count cap"
+target: Split link_compact_impl along its existing mark checkpoints, with no line-count cap
 proof_policy: seam-test-first
 contract_revision: 6
 depends_on:
-  - deduplicate-proven-patterns-and-typescript-seams
+- deduplicate-proven-patterns-and-typescript-seams
 scope:
-  - src/engine/linker.rs
-  - src/engine/linker/mod.rs
-  - src/engine/linker/routes.rs
-  - src/engine/linker/indexing.rs
-  - src/engine/linker/resolution.rs
-status: planned
+- src/engine/linker.rs
+- src/engine/linker/mod.rs
+- src/engine/linker/routes.rs
+- src/engine/linker/indexing.rs
+- src/engine/linker/resolution.rs
+status: completed
 subtasks:
-  - subtask_ref: extract-route-matching-and-normalization
-    title: "Move RouteEntry, normalize_route_segments, and normalize_client_url into src/engine/linker/routes.rs"
-    status: pending
-  - subtask_ref: extract-indexing-stages
-    title: "Move namespace and re-export index construction through the mark at line 458, and inheritance indexing through the mark at line 638, into src/engine/linker/indexing.rs"
-    status: pending
-  - subtask_ref: extract-reference-linking-stage
-    title: "Move HTML registry construction at lines 668-687 and the par_iter reference loop from line 688 through the mark at line 3083 into src/engine/linker/resolution.rs, keeping parameters all, public_all, owners, root, dependency_registry, and flows"
-    status: pending
-  - subtask_ref: assemble-linker-pipeline-orchestrator
-    title: "Keep link_compact_impl as the coordinator of indexing, semantic admission, value flow, resolution, and graph merge"
-    status: pending
-  - subtask_ref: verify-linker-suite
-    title: "Verify cargo test --test linker and cargo test --test receivers pass"
-    status: pending
+- subtask_ref: extract-route-matching-and-normalization
+  title: Move RouteEntry, normalize_route_segments, and normalize_client_url into src/engine/linker/routes.rs
+  status: completed
+  evidence: Moved RouteEntry, URL normalization, and route matching into linker/routes.rs; `cargo test --lib route_normalization_preserves_dynamic_segment_rules` passed (1 passed).
+- subtask_ref: extract-indexing-stages
+  title: Move namespace and re-export index construction through the mark at line 458, and inheritance indexing through the mark at line 638, into src/engine/linker/indexing.rs
+  status: completed
+  evidence: Moved profile/import/namespace/package-export construction and Python/Rust inheritance indexes into linker/indexing.rs; `cargo test --test linker` passed (93 tests).
+- subtask_ref: extract-reference-linking-stage
+  title: Move HTML registry construction at lines 668-687 and the par_iter reference loop from line 688 through the mark at line 3083 into src/engine/linker/resolution.rs, keeping parameters all, public_all, owners, root, dependency_registry, and flows
+  status: completed
+  evidence: Moved HTML registry setup and the parallel reference-resolution pass into linker/resolution.rs with the admitted context inputs; linker suite passed (93 tests), including receiver fixtures.
+- subtask_ref: assemble-linker-pipeline-orchestrator
+  title: Keep link_compact_impl as the coordinator of indexing, semantic admission, value flow, resolution, and graph merge
+  status: completed
+  evidence: Kept link_compact_impl coordinating route and indexes, semantic admission, value flow, resolution, profiling marks, and graph merge.
+- subtask_ref: verify-linker-suite
+  title: Verify cargo test --test linker and cargo test --test receivers pass
+  status: completed
+  evidence: '`cargo test --test linker` passed (93); `cargo test --test linker receiver` passed (86, 7 filtered); focused route unit passed (1); `cargo clippy --all-targets --all-features -- -D warnings` and targeted rustfmt/git diff --check passed. `cargo test --test receivers` is not a Cargo target; receiver modules are nested under tests/linker and ran as part of the linker suite.'
+receipt:
+  contract_revision: 6
+  passed_at: 2026-10-10T23:12:01.742590004+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test linker
+      exit_code: 0
+      tests_passed: 93
+      tests_failed: 0
+      log: 'Fixed the duplicate helper by calling parent super::qualified; AST confirms no local qualified() definition remains. Also passed: cargo test --lib route_normalization_preserves_dynamic_segment_rules (1 passed); cargo clippy --all-targets --all-features -- -D warnings; targeted rustfmt and git diff --check.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Inspected pinned candidate snapshot 6ee235c against baseline 1b1df31. The snapshot payload contains only src/engine/linker.rs and the new src/engine/linker/{indexing,resolution,routes}.rs; each is inside the admitted scope, while src/engine/linker/mod.rs and all configuration, generated state, credentials, and neighboring project files are unchanged in the task patch.
+        claims:
+          applicable: true
+          evidence: 'The prior duplicate is fixed: indexing.rs now calls super::qualified and has no local qualified() definition; the sole helper remains in linker.rs. The extraction preserves route matching/normalization and both consumers use RouteIndex; namespace/package-export/inheritance indexes retain their existing logic; link_compact_impl remains the coordinator; the resolution pass retains the existing per-file graph computation and merge. Accepted build proof records cargo test --test linker (93 passed), the focused route-normalization seam test (1 passed), strict all-target Clippy, targeted rustfmt, and git diff --check.'
+        concurrency:
+          applicable: true
+          evidence: The extracted resolver retains the baseline immutable per-file Rayon par_iter and returns per-file Graph values to the existing coordinator merge/sort. No shared mutable task state, transaction, claim revision, receipt, lock, or database behavior changed.
+        project_isolation:
+          applicable: true
+          evidence: The resolver continues to receive and apply the existing owners filter over the same all.par_iter() entries. The extracted modules introduce no workspace resolution, filesystem traversal, task identity, project path, or Git mutation behavior.
+        administration:
+          applicable: true
+          evidence: No ACDD profile, repository configuration, migration, hook, receipt, or delivery implementation changed. Forge build evidence pins candidate 6ee235c to baseline 1b1df31; no privileged administration path is touched.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli. Direct rusqlite use in src/core/commitments stays.'
+    - 'INV-FROZEN-ENGINE-DB-CYCLE: The legacy mutual import cycle between src/engine and src/db accepts no new edge. Ports that would break it belong to a later milestone.'
+    - 'INV-BALANCED-MODULARITY: Split only along mixed responsibilities. Cohesive multi-pass pipeline functions have no line-count cap.'
+    - 'INV-DEDUPLICATE-PROVEN-PATTERNS: Collapse a repeated block only where the control flow matches. Distinct rules stay separate.'
+    - 'INV-CANONICAL-HELPERS: Ordinary Git queries, atomic file writes, and cgroup memory detection have one owner in src/core.'
+    - 'INV-COMPAT-REEXPORTS: Moved scanner helpers keep pub use re-exports at engine::scanner. Pure receipt checks stay at core::tasks::gates. core does not re-export engine.'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Language extraction, static value flow, overload ambiguity, and selector disambiguation keep their current results.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: task-engine-and-store-responsibility-split
