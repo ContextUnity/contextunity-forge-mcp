@@ -1121,15 +1121,15 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 .blackboard_post(
                     &first,
                     "architect",
-                    "architectural_notes",
+                    "decisions",
                     "Keep durable task outcomes in the milestone receipt.",
                 )
                 .unwrap();
             store
-                .blackboard_post(&first, "builder", "debug", "temporary trace")
+                .blackboard_post(&first, "builder", "notes", "temporary trace")
                 .unwrap();
             store
-                .blackboard_post(&second, "sibling", "debug", "other task context")
+                .blackboard_post(&second, "sibling", "notes", "other task context")
                 .unwrap();
             root.write(
                 milestone_ref,
@@ -1169,7 +1169,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     );
     assert_eq!(
         receipt["rollup"]["architectural_notes"],
-        json!(["Keep durable task outcomes in the milestone receipt."])
+        json!(["decisions: Keep durable task outcomes in the milestone receipt."])
     );
     assert_eq!(receipt["rollup"]["review_summary"]["decision"], "pass");
     for contour in contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS {
@@ -1214,7 +1214,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     assert_eq!(store.blackboard_read(&second, None, None).unwrap().len(), 1);
     let reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     let closed = reopened
-        .blackboard_post(&first, "late-worker", "debug", "after delivery")
+        .blackboard_post(&first, "late-worker", "notes", "after delivery")
         .unwrap_err();
     assert_eq!(closed.to_string(), "TASK_TERMINAL");
     assert!(reopened
@@ -1251,12 +1251,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
         }
         if index == 3 {
             store
-                .blackboard_post(
-                    &second,
-                    "architect",
-                    "architectural_notes",
-                    "Retain retry notes.",
-                )
+                .blackboard_post(&second, "architect", "decisions", "Retain retry notes.")
                 .unwrap();
             let current = std::fs::read_to_string(root.0.join(milestone_ref)).unwrap();
             let parsed = Milestone::parse(&current, "forge-mcp").unwrap();
@@ -1269,7 +1264,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 decision: "pass".into(),
                 rollup: Some(ReceiptRollup {
                     verified_invariants: vec!["isolated".into()],
-                    architectural_notes: vec!["Retain retry notes.".into()],
+                    architectural_notes: vec!["decisions: Retain retry notes.".into()],
                     review_summary: ReviewSummary {
                         decision: "pass".into(),
                         contours: contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
@@ -1287,7 +1282,8 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 completed.receipt = Some(receipt.clone());
                 current.replace(original_block, &serde_yaml::to_string(&completed).unwrap())
             };
-            recovered.rollup.as_mut().unwrap().architectural_notes[0] = "stale note".into();
+            recovered.rollup.as_mut().unwrap().architectural_notes[0] =
+                "decisions: stale note".into();
             root.write(milestone_ref, &recovery_text(&recovered));
             let rejected: tasks::Submit = serde_json::from_value(json!({
                 "task_id":second,
@@ -1300,7 +1296,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
             assert_eq!(store.inspect(&second).unwrap().status, "in_progress");
             assert_eq!(store.blackboard_read(&second, None, None).unwrap().len(), 2);
             recovered.rollup.as_mut().unwrap().architectural_notes[0] =
-                "Retain retry notes.".into();
+                "decisions: Retain retry notes.".into();
             root.write(milestone_ref, &recovery_text(&recovered));
         }
         let request: tasks::Submit = serde_json::from_value(json!({
@@ -1459,7 +1455,15 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
             },
         )
         .unwrap();
-        assert_eq!(claimed["workflow_guidance"], before["workflow_guidance"]);
+        assert_eq!(
+            claimed["workflow_guidance"]["active_stage"],
+            before["workflow_guidance"]["active_stage"]
+        );
+        assert_eq!(
+            claimed["workflow_guidance"]["agent_type"],
+            before["workflow_guidance"]["agent_type"]
+        );
+        assert!(claimed["workflow_guidance"]["blackboard_messages"].is_array());
         if index == 2 {
             blackboard(&[
                 "post",
@@ -1467,7 +1471,7 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
                 "--author",
                 "architect",
                 "--topic",
-                "architectural_notes",
+                "decisions",
                 "--payload",
                 "Keep task context in the milestone receipt.",
             ]);
@@ -1477,7 +1481,7 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
                 "--author",
                 "builder",
                 "--topic",
-                "build_notes",
+                "notes",
                 "--payload",
                 "The direct JSON proof passed SQLite verification.",
             ]);
@@ -1574,7 +1578,7 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
     assert_eq!(rollup.verified_invariants, ["durable-context", "reviewed"]);
     assert_eq!(
         rollup.architectural_notes,
-        ["Keep task context in the milestone receipt."]
+        ["decisions: Keep task context in the milestone receipt."]
     );
     assert_eq!(rollup.review_summary.decision, "pass");
     assert!(blackboard(&["read", &task_id])["messages"]
@@ -2237,7 +2241,7 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
         .connection
         .execute(
             "INSERT INTO task_blackboard(milestone_ref, task_id, subtask_ref, author, topic, payload, created_at) \
-             VALUES(?1, ?2, NULL, 'reviewer', 'architectural_notes', 'task context', 1)",
+             VALUES(?1, ?2, NULL, 'reviewer', 'decisions', 'task context', 1)",
             rusqlite::params![cancelled_scope_ref, cancelled_id],
         )
         .unwrap();
@@ -2245,7 +2249,7 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
         .connection
         .execute(
             "INSERT INTO task_blackboard(milestone_ref, task_id, subtask_ref, author, topic, payload, created_at) \
-             VALUES(?1, NULL, NULL, 'reviewer', 'architectural_notes', 'milestone context', 2)",
+             VALUES(?1, NULL, NULL, 'reviewer', 'decisions', 'milestone context', 2)",
             [&cancelled_scope_ref],
         )
         .unwrap();

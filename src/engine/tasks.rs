@@ -3,7 +3,7 @@ use crate::{
         confined_path, gates::Evidence, shorten_task_response_commits, snapshot_inspect_cmd,
         Milestone,
     },
-    db::tasks_store::{Task, TasksStore},
+    db::tasks_store::{BlackboardPageRequest, BlackboardPostInput, Task, TasksStore},
 };
 use anyhow::{bail, Context, Result};
 use schemars::JsonSchema;
@@ -149,8 +149,11 @@ pub struct BlackboardRequest {
     pub message_id: Option<u64>,
     /// Posting worker identifier. Defaults to the active task owner or transport.
     pub author: Option<String>,
-    /// Optional message category filter for read; required for post.
+    /// Canonical topic: draft, notes, findings, blockers, decisions, or deferred; required for post.
     pub topic: Option<String>,
+    /// Optional active-profile gate target for posts and gate filter for reads.
+    #[serde(default)]
+    pub gate: Option<String>,
     /// Text or serialized JSON message; required for post.
     pub payload: Option<String>,
     /// Maximum number of messages for read (default 10, maximum 50).
@@ -615,6 +618,7 @@ pub fn store_for_task(root: &Path, id: &str) -> Result<TasksStore> {
 
 struct ResolvedBlackboardContext {
     store: TasksStore,
+    profile: std::sync::Arc<crate::core::tasks::profile::GateProfile>,
     milestone_ref: String,
     task_id: Option<String>,
     subtask_ref: Option<String>,
@@ -709,8 +713,25 @@ fn resolved_context_for_milestone(
 ) -> Result<ResolvedBlackboardContext> {
     let store = workspace.open(&registry.database)?;
     let milestone_ref = store.milestone_scope_ref(reference)?;
+    let full_path = confined_path(&workspace.root, reference)?;
+    let text = std::fs::read_to_string(full_path)
+        .with_context(|| format!("unable to read milestone manifest '{reference}'"))?;
+    let inferred = crate::core::tasks::infer_project_from_path(Path::new(reference));
+    let milestone = Milestone::parse_with_identity(
+        &text,
+        &workspace.repository,
+        inferred.as_deref().unwrap_or(&workspace.project),
+    )
+    .with_context(|| format!("invalid milestone manifest '{reference}'"))?;
+    let profile = match milestone.acdd_profile.as_deref() {
+        Some(pin) => {
+            crate::core::tasks::profile::load_pinned_over(&workspace.root, pin, &workspace.gates)?
+        }
+        None => workspace.gates.clone(),
+    };
     Ok(ResolvedBlackboardContext {
         store,
+        profile,
         milestone_ref,
         task_id: None,
         subtask_ref: None,
@@ -757,8 +778,10 @@ fn resolve_blackboard_context(
                     let (workspace, task) = tasks.pop().context("active task missing")?;
                     let store = workspace.open(&registry.database)?;
                     let milestone_ref = store.milestone_scope_ref(&task.milestone_ref)?;
+                    let profile = store.profile.clone();
                     Ok(ResolvedBlackboardContext {
                         store,
+                        profile,
                         milestone_ref,
                         task_id: Some(task.task_id),
                         subtask_ref: None,
@@ -811,8 +834,10 @@ fn resolve_blackboard_context(
             }
             let store = workspace.open(&registry.database)?;
             let milestone_ref = store.milestone_scope_ref(&task.milestone_ref)?;
+            let profile = store.profile.clone();
             Ok(ResolvedBlackboardContext {
                 store,
+                profile,
                 milestone_ref,
                 task_id: Some(task.task_id),
                 subtask_ref: None,
@@ -862,8 +887,10 @@ fn resolve_blackboard_context(
             };
             let store = workspace.open(&registry.database)?;
             let milestone_ref = store.milestone_scope_ref(&task.milestone_ref)?;
+            let profile = store.profile.clone();
             Ok(ResolvedBlackboardContext {
                 store,
+                profile,
                 milestone_ref,
                 task_id: Some(task.task_id),
                 subtask_ref: Some(subtask_ref),
@@ -875,9 +902,6 @@ fn resolve_blackboard_context(
 fn validate_blackboard_request(request: &BlackboardRequest) -> Result<()> {
     match request.action {
         BlackboardAction::Post => {
-            if request.topic.is_none() || request.payload.is_none() {
-                bail!("TASK_BLACKBOARD_INVALID: post requires topic and payload");
-            }
             if request.message_id.is_some() || request.limit.is_some() || request.offset.is_some() {
                 bail!("TASK_BLACKBOARD_INVALID: post rejects message_id, limit, and offset");
             }
@@ -898,6 +922,7 @@ fn validate_blackboard_request(request: &BlackboardRequest) -> Result<()> {
                 || request.subtask_ref.is_some()
                 || request.author.is_some()
                 || request.topic.is_some()
+                || request.gate.is_some()
                 || request.payload.is_some()
                 || request.limit.is_some()
                 || request.offset.is_some()
@@ -908,6 +933,87 @@ fn validate_blackboard_request(request: &BlackboardRequest) -> Result<()> {
     }
     if request.offset.is_some() && request.action != BlackboardAction::Read {
         bail!("TASK_BLACKBOARD_INVALID: offset is only valid for read");
+    }
+    Ok(())
+}
+
+fn blackboard_profile(
+    context: &ResolvedBlackboardContext,
+) -> Result<std::sync::Arc<crate::core::tasks::profile::GateProfile>> {
+    match context.task_id.as_deref() {
+        Some(task_id) => {
+            let task = context.store.inspect(task_id)?;
+            context.store.profile_for_task(&task)
+        }
+        None => Ok(context.profile.clone()),
+    }
+}
+
+fn blackboard_schema_hint(
+    profile: &crate::core::tasks::profile::GateProfile,
+    issue: &str,
+) -> String {
+    let topics = crate::db::tasks_store::BLACKBOARD_TOPICS
+        .iter()
+        .map(|(topic, description)| format!("{topic}: {description}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let gates = profile
+        .gates
+        .iter()
+        .map(|gate| gate.id.as_str())
+        .collect::<Vec<_>>();
+    let example_gate = gates.first().copied().unwrap_or("contract");
+    let example = json!({
+        "action": "post",
+        "scope": "task",
+        "gate": example_gate,
+        "topic": "draft",
+        "payload": "Record the contract decision"
+    });
+    format!(
+        "TASK_BLACKBOARD_SCHEMA_INVALID: {issue}. Canonical topics: {topics}. Active profile gates: {}. example request: {}",
+        if gates.is_empty() { "(none)".into() } else { gates.join(", ") },
+        serde_json::to_string(&example).unwrap_or_else(|_| "{}".into()),
+    )
+}
+
+fn validate_blackboard_schema(
+    request: &BlackboardRequest,
+    profile: &crate::core::tasks::profile::GateProfile,
+) -> Result<()> {
+    if request.action == BlackboardAction::Post && request.payload.is_none() {
+        bail!(
+            "{}",
+            blackboard_schema_hint(profile, "post requires a payload")
+        );
+    }
+    if request.action != BlackboardAction::Inspect {
+        if request.action == BlackboardAction::Post && request.topic.is_none() {
+            bail!(
+                "{}",
+                blackboard_schema_hint(profile, "post requires a topic")
+            );
+        }
+        if let Some(topic) = request.topic.as_deref() {
+            if !crate::db::tasks_store::is_canonical_blackboard_topic(topic) {
+                bail!(
+                    "{}",
+                    blackboard_schema_hint(profile, &format!("topic '{topic}' is not canonical"))
+                );
+            }
+        }
+        if let Some(gate) = request.gate.as_deref() {
+            if !profile.gates.iter().any(|definition| definition.id == gate) {
+                bail!(
+                    "{}",
+                    blackboard_schema_hint(
+                        profile,
+                        &format!("gate '{gate}' is not in the active task profile")
+                    )
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -931,6 +1037,8 @@ pub fn blackboard(root: &Path, request: BlackboardRequest, transport: &str) -> R
         }
         BlackboardAction::Post => {
             let context = resolve_blackboard_context(&registry, &request)?;
+            let profile = blackboard_profile(&context)?;
+            validate_blackboard_schema(&request, &profile)?;
             let task_author = context
                 .task_id
                 .as_deref()
@@ -942,32 +1050,40 @@ pub fn blackboard(root: &Path, request: BlackboardRequest, transport: &str) -> R
                 .as_deref()
                 .or(task_author.as_deref())
                 .unwrap_or(transport);
-            let id = context.store.blackboard_post_scoped(
-                &context.milestone_ref,
-                context.task_id.as_deref(),
-                context.subtask_ref.as_deref(),
-                author,
-                request
-                    .topic
-                    .as_deref()
-                    .context("TASK_BLACKBOARD_INVALID: post requires topic")?,
-                request
-                    .payload
-                    .as_deref()
-                    .context("TASK_BLACKBOARD_INVALID: post requires payload")?,
-            )?;
+            let id = context
+                .store
+                .blackboard_post_scoped_with_gate(BlackboardPostInput {
+                    milestone_ref: &context.milestone_ref,
+                    task_id: context.task_id.as_deref(),
+                    subtask_ref: context.subtask_ref.as_deref(),
+                    gate: request.gate.as_deref(),
+                    author,
+                    topic: request
+                        .topic
+                        .as_deref()
+                        .context("TASK_BLACKBOARD_INVALID: post requires topic")?,
+                    payload: request
+                        .payload
+                        .as_deref()
+                        .context("TASK_BLACKBOARD_INVALID: post requires payload")?,
+                })?;
             Ok(json!({"id":id}))
         }
         BlackboardAction::Read => {
             let context = resolve_blackboard_context(&registry, &request)?;
-            let page = context.store.blackboard_page(
-                &context.milestone_ref,
-                context.task_id.as_deref(),
-                context.subtask_ref.as_deref(),
-                request.topic.as_deref(),
-                request.limit,
-                request.offset,
-            )?;
+            let profile = blackboard_profile(&context)?;
+            validate_blackboard_schema(&request, &profile)?;
+            let page = context
+                .store
+                .blackboard_page_for_gate(BlackboardPageRequest {
+                    milestone_ref: &context.milestone_ref,
+                    task_id: context.task_id.as_deref(),
+                    subtask_ref: context.subtask_ref.as_deref(),
+                    topic: request.topic.as_deref(),
+                    gate: request.gate.as_deref(),
+                    limit: request.limit,
+                    offset: request.offset,
+                })?;
             Ok(json!({"messages":page.messages,"pagination":page.pagination}))
         }
     }

@@ -101,7 +101,7 @@ The active review guidance determines how documentation changes are checked. Inc
 
 ### Tests
 
-Load `test-contract-seam` for contract test procedure. Keep one task on one production seam; add subtask cases to that seam. The repository's test instructions name the test domains and commands.
+Keep each admitted task focused on one public production seam; add subtask cases to that seam. Drive tests through real collaborating components and domain test suites rather than synthetic stubs mocking away system complexity. Drive permutations and error codes through structured test case tables. Reuse shared fixtures, test harnesses, and temporary directories. The repository's test instructions (`TESTS.md`, `tests/AGENTS.md`) name the test domains and commands.
 
 ### Scope
 
@@ -119,16 +119,16 @@ Record discoveries with `task subtask add`. Do not add a root milestone task for
 
 ### Blackboard
 
-Post and read temporary messages at milestone, task, and subtask scope. Read the active tool schema for supported topics and gate targeting. Delivery copies configured durable topics into the receipt rollup and clears that task's messages.
+Post and read messages at milestone, task, and subtask scope. Use only `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`; post/read may target or filter by a gate id from the active task profile. Claims include untargeted messages plus those targeted to the current gate, and expose the targeted set through `workflow_guidance.blackboard_messages` with a compact `blackboard_info` summary. Delivery copies `decisions` and `deferred` into the existing `architectural_notes` receipt vector with topic labels before clearing that task's messages.
 
 ### Git permissions and milestone close
 
 The active delivery profile controls whether Forge or the agent creates the task commit:
 
-- With `auto_commit: true`, Forge commits the candidate tree together with the milestone receipt during delivery. Do not create a duplicate task commit.
+- With `auto_commit: true`, Forge commits the candidate tree during delivery and records the receipt in SQLite; milestone handoff rewrites `receipt.commit` in Markdown before archiving. Do not create a duplicate task commit.
 - With `auto_commit: false`, after delivery create one scoped task commit containing the task changes and generated receipt under the repository's standing permission.
 
-Merge each delivered task branch into the milestone branch and remove its temporary branch and worktree under the active ACDD permission. Load `commit-workflow` before authorized manual task or archive commits.
+Merge each delivered task branch into the milestone branch and remove its temporary branch and worktree under the active ACDD permission. For authorized manual task or archive commits, create intentional, reviewable Git commits staging only scoped task changes and receipts, and verify diffs before committing.
 
 Run the repository verification command before milestone handoff:
 
@@ -195,7 +195,7 @@ response:
 - `task_claim(task_id, stage, worker_id, worktree, bundle?)`: Claim the current gate; returns stage-specific guidance and context bundles.
 - `task_submit(task_id, stage, action, evidence, findings?)`: Submit claim-bound JSON proof or review findings.
 - `task_manage`: Manage tasks via flat actions (`create`, `sync`, `inspect`, `context`, `delete`, `extend_scope`, `subtask_add`, `subtask_update`, `subtask_list`, `reset`, `reopen`).
-- `task_blackboard`: Post/read/inspect ephemeral messages at `milestone`, `task`, or `subtask` scope.
+- `task_blackboard`: Post/read/inspect messages at `milestone`, `task`, or `subtask` scope. Post/read may include `gate` to target or filter messages by an active profile gate. Runtime topics are `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`; the last two are copied to the existing `architectural_notes` receipt vector with topic labels. Claims include untagged messages plus those targeted to the active gate, with targeted messages also listed in `workflow_guidance.blackboard_messages` and a compact `blackboard_info` summary.
 
 ### Discovery & Search
 - `code_map_overview()`: Workspace component inventory, module hierarchy, indexing metrics, and coverage diagnostics.

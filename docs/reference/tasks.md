@@ -114,7 +114,7 @@ Every task contract declares an explicit file perimeter (`scope`) bounding allow
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. Selectors follow the table below. |
-| `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires `topic` and `payload`, accepts `author`, and returns an ID. Read accepts `topic`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect requires `message_id` and returns that message including payload. |
+| `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires canonical `topic` and `payload`, accepts `author` and optional active-profile `gate`, and returns an ID. Read accepts `topic`, optional active-profile `gate`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect requires `message_id` and returns that message including payload and gate. |
 
 Unknown fields are rejected. Ready tasks are unclaimed and nonterminal, with
 satisfied local prerequisites. Missing or amended authority blocks open work.
@@ -285,7 +285,10 @@ If the commit fails (e.g. pre-commit hook failure), the SQLite transaction rolls
 leaving the task uncompleted at `deliver` with an explicit error (`TASK_DELIVERY_COMMIT_FAILED`), allowing the deliverer to reject
 back to `reject_to` (e.g. `build`) or retry. The task receipt created at delivery records the created commit SHA from `auto_commit` (or the developer's delivery commit when `auto_commit: false`), contract revision,
 RFC3339 `passed_at`, command proof, review proof, and decision. Its rollup retains
-verified invariants, review summary, and task blackboard `decisions` and `deferred`.
+verified invariants and review summary. Task blackboard `decisions` and `deferred`
+are stored as topic-labelled strings in the existing `architectural_notes` vector
+(for example, `decisions: <payload>`), preserving historical receipt bytes and
+the original message payload.
 The task becomes completed in SQLite and its blackboard messages are cleared.
 The milestone document is the durable context after task delivery. When `auto_commit` is active,
 Forge has already committed the deliverable; when `auto_commit: false`, commit the task's scoped source,
@@ -299,12 +302,25 @@ Zero runtime backward compatibility applies strictly to SQLite runtime storage a
 ## Task blackboard
 
 `task_blackboard` stores messages in the configured task SQLite store with a
-`milestone_ref`, optional `task_id`, optional `subtask_ref`, `author`, `topic`,
-`payload`, and `created_at`. Post requires a topic and payload. An omitted author
+`milestone_ref`, optional `task_id`, optional `subtask_ref`, optional `gate`,
+`author`, `topic`, `payload`, and `created_at`. The task-store schema is version 5;
+the one-time v4→v5 migration adds the nullable gate column and gate query indexes,
+then maps `contract_draft`→`draft`, `contract_findings`→`findings`,
+`build_proof`→`notes`, and `architectural_notes`→`decisions`. Existing canonical
+topics stay unchanged and unknown historical topics become `notes`. These aliases
+are accepted only by that migration; runtime calls must use one of the six
+canonical topics: `draft` for contract drafts, `notes` for build observations and
+general context, `findings` for review findings, `blockers` for current blockers,
+`decisions` for decisions retained in the delivery receipt, and `deferred` for
+deferred findings retained in the delivery receipt. Post requires a canonical
+topic and payload. An omitted author
 uses the task owner when the resolved context has one, or the current transport
 (`mcp` or `cli`). Post rejects read-only pagination fields; read rejects
 `author` and `payload`. Post and read use the resolved task project. Inspect
 searches configured task workspaces by `message_id` and returns the first match.
+Post and read accept optional `gate`, which must name a gate in the active task
+profile. A gate on a post targets that message; a gate on a read filters for that
+gate. Without a read gate, the requested scope returns messages from all gates.
 
 Use `scope: "milestone"` for milestone-level messages. It resolves the explicit
 milestone or the unique active milestone and never includes task-scoped entries.
@@ -318,8 +334,17 @@ Read returns one page of payload-free summaries, ordered by `created_at DESC`
 and `id DESC`. The default `limit` is 10, the maximum is 50, and `offset` selects
 the next page using the returned pagination metadata. Use `action: "inspect"`
 with a `message_id` from a post or read result to retrieve the full message and
-payload. Use `architectural_notes` for decisions that must survive task delivery;
-other topics are temporary collaboration context.
+payload. A claim or context bundle includes untagged messages and messages
+targeted to its active gate. Gate-targeted messages also appear under
+`workflow_guidance.blackboard_messages`; compact `blackboard_info` reports the
+active gate, message ids, count, and topic counts. Invalid topics or gate ids
+return the canonical topic descriptions, active profile gate ids, and a request
+example so the request can be corrected.
+
+At delivery, messages under `decisions` and `deferred` are copied into the
+receipt's existing `architectural_notes` vector as `decisions: <payload>` or
+`deferred: <payload>`, in `created_at`, then `id` order, before task blackboard
+messages are cleared.
 
 > [!IMPORTANT]
 > Invariant: A blackboard operation resolves to exactly one hierarchy scope; reads do not expose payloads, and only `inspect` returns payload.
@@ -391,8 +416,8 @@ contextunity-forge-mcp task sync [MILESTONE_REF] [--workspace NAME]
 contextunity-forge-mcp task inspect TASK_ID
 contextunity-forge-mcp task claim TASK_ID --stage STAGE --worker WORKER --worktree PATH
 contextunity-forge-mcp task submit TASK_ID --stage STAGE --action pass|reject --evidence '<JSON_OBJECT>' [--findings JSON]
-contextunity-forge-mcp task blackboard post [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] --topic TOPIC --payload TEXT [--author WORKER]
-contextunity-forge-mcp task blackboard read [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--topic TOPIC] [--limit N] [--offset N]
+contextunity-forge-mcp task blackboard post [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--gate GATE] --topic TOPIC --payload TEXT [--author WORKER]
+contextunity-forge-mcp task blackboard read [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--gate GATE] [--topic TOPIC] [--limit N] [--offset N]
 contextunity-forge-mcp task blackboard inspect MESSAGE_ID
 contextunity-forge-mcp task extend-scope TASK_ID PATH...
 contextunity-forge-mcp task delete TASK_ID [--force]
@@ -411,8 +436,10 @@ Use `--milestone-status planned|completed|all` or its mutually exclusive
 sets; `--milestone REF` targets one milestone and defaults that query to all
 milestone statuses. Use `--full` to include subtask titles and evidence.
 
-Blackboard `--scope` selects milestone, task, or subtask messages. If scope and
-keys are omitted, the command resolves one in-progress task, otherwise one
+Blackboard `--scope` selects milestone, task, or subtask messages. Optional
+`--gate` targets a post or filters a read using the active task profile. Topics
+must be one of `draft`, `notes`, `findings`, `blockers`, `decisions`, or `deferred`.
+If scope and keys are omitted, the command resolves one in-progress task, otherwise one
 active milestone; ambiguous contexts fail closed. Read pages default to 10 and
 cap at 50, omit payload, and return pagination metadata. `inspect MESSAGE_ID`
 returns the payload for one message.
@@ -459,7 +486,7 @@ Per [ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md), the bun
 6. **`candidate_snapshot`** (review proof gates): The nearest prior accepted `sha_snapshot` commit, its captured baseline parent, and `inspect_cmd` (`git show <commit>`) for review against the configured contours.
 7. **`proof_schema`** (schema proof gates): The recursive JSON schema the worker must satisfy under `scheme_proof`.
 8. **`latest_snapshot` and `milestone_ref`** (delivery proof gates and completed tasks), and **`receipt`** (completed tasks): The nearest accepted candidate snapshot, inspect command, milestone file path, and durable completion receipt.
-10. **`blackboard`** (All stages): Active collaboration messages and architectural notes from the full milestone hierarchy: task-scoped (`task_id`), parent milestone-level (`milestone_ref` where `task_id IS NULL`), and milestone sibling tasks. Every message is explicitly annotated with origin metadata (`scope: "milestone" | "task" | "subtask" | "sibling"`), `task_id`, and `subtask_ref`.
+10. **`blackboard` and `blackboard_info`** (All stages): Up to 15 recent untagged messages and messages targeted to the active gate from the task, parent milestone, and sibling tasks. Each message includes origin metadata (`scope: "milestone" | "task" | "subtask" | "sibling"`), `task_id`, `subtask_ref`, and optional `gate`. `blackboard_info` summarizes the active gate, message ids, total count, targeted count, and topic counts. Gate-targeted messages also appear in `workflow_guidance.blackboard_messages`.
 
 ### Response Bounding and Anti-Bloat Invariants
 
@@ -517,6 +544,14 @@ Below is an illustrative payload returned upon claiming a task (`task_claim` or 
         "Author a sensitive failing seam test in the designated test suite (or verify existing seam directly with exit code 0 if proof_policy: direct-proof or deferred-final-test).",
         "Submit contract proof with seam test and red_exit_code."
       ],
+      "blackboard_messages": [
+        {
+          "id": 101,
+          "gate": "contract",
+          "topic": "draft",
+          "payload": "HTML extractor misses template attributes; targeted seam in languages/html/syntax.rs."
+        }
+      ],
       "subtask_dod": [
         "Contract slice resolution: Demonstrably resolves an explicit, bounded slice of the contract without breaking boundaries.",
         "Milestone & ADR alignment: Builds upon existing architectural seams rather than ad-hoc isolated patches.",
@@ -553,11 +588,19 @@ Below is an illustrative payload returned upon claiming a task (`task_claim` or 
       {
         "id": 101,
         "scope": "task",
-        "topic": "hypothesis",
+        "topic": "draft",
+        "gate": "contract",
         "author": "builder-1",
         "payload": "HTML extractor misses template attributes; targeted seam in languages/html/syntax.rs."
       }
-    ]
+    ],
+    "blackboard_info": {
+      "active_gate": "contract",
+      "message_count": 1,
+      "targeted_count": 1,
+      "topic_counts": {"draft": 1},
+      "message_ids": [101]
+    }
   }
 }
 ```

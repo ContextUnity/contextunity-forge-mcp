@@ -75,6 +75,9 @@ pub struct BlackboardMessage {
     pub task_id: Option<String>,
     /// Subtask identifier, or null for milestone- and task-level messages.
     pub subtask_ref: Option<String>,
+    /// Optional workflow gate that should receive this message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
     /// Posting worker identifier.
     pub author: String,
     /// Message category.
@@ -84,6 +87,86 @@ pub struct BlackboardMessage {
     pub payload: Option<String>,
     /// Unix creation time.
     pub created_at: i64,
+}
+
+/// Fields needed to persist a scoped blackboard message.
+#[derive(Debug, Clone, Copy)]
+pub struct BlackboardPostInput<'a> {
+    /// Namespace-qualified milestone reference.
+    pub milestone_ref: &'a str,
+    /// Owning task identifier, or none for a milestone message.
+    pub task_id: Option<&'a str>,
+    /// Subtask identifier, if the message belongs to a subtask.
+    pub subtask_ref: Option<&'a str>,
+    /// Optional gate that should receive the message.
+    pub gate: Option<&'a str>,
+    /// Posting worker identifier.
+    pub author: &'a str,
+    /// Canonical blackboard category.
+    pub topic: &'a str,
+    /// Text or serialized JSON message.
+    pub payload: &'a str,
+}
+
+/// Filters and pagination for one scoped blackboard read.
+#[derive(Debug, Clone, Copy)]
+pub struct BlackboardPageRequest<'a> {
+    /// Namespace-qualified milestone reference.
+    pub milestone_ref: &'a str,
+    /// Owning task identifier, or none for a milestone page.
+    pub task_id: Option<&'a str>,
+    /// Subtask identifier, if the page is scoped to a subtask.
+    pub subtask_ref: Option<&'a str>,
+    /// Optional canonical topic filter.
+    pub topic: Option<&'a str>,
+    /// Optional exact gate filter.
+    pub gate: Option<&'a str>,
+    /// Maximum number of messages in the page.
+    pub limit: Option<usize>,
+    /// Number of messages to skip before the page.
+    pub offset: Option<usize>,
+}
+
+/// Canonical categories accepted by the runtime blackboard API.
+pub const BLACKBOARD_TOPICS: [(&str, &str); 6] = [
+    ("draft", "Contract drafts and proposed changes."),
+    (
+        "notes",
+        "Build notes, proof observations, and general context.",
+    ),
+    ("findings", "Review findings and verified defects."),
+    (
+        "blockers",
+        "Issues preventing the active work from proceeding.",
+    ),
+    (
+        "decisions",
+        "Decisions and trade-offs retained in the delivery receipt.",
+    ),
+    (
+        "deferred",
+        "Deferred findings retained in the delivery receipt.",
+    ),
+];
+
+/// Return whether a topic is one of the canonical runtime categories.
+pub fn is_canonical_blackboard_topic(topic: &str) -> bool {
+    BLACKBOARD_TOPICS
+        .iter()
+        .any(|(canonical, _)| *canonical == topic)
+}
+
+fn validate_blackboard_topic(topic: &str) -> Result<()> {
+    if is_canonical_blackboard_topic(topic) {
+        Ok(())
+    } else {
+        let allowed = BLACKBOARD_TOPICS
+            .iter()
+            .map(|(canonical, _)| *canonical)
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("TASK_BLACKBOARD_TOPIC_INVALID: use one of the canonical topics: {allowed}");
+    }
 }
 
 /// A bounded page of blackboard message summaries.
@@ -128,6 +211,25 @@ impl std::fmt::Display for TaskAlreadyClaimed {
 }
 impl std::error::Error for TaskAlreadyClaimed {}
 
+fn legacy_blackboard_namespace(task_id: &str) -> Result<String> {
+    let mut parts = task_id.split('/');
+    let repository = parts.next().unwrap_or_default();
+    let project = parts.next().unwrap_or_default();
+    let task = parts.next().unwrap_or_default();
+    if repository.is_empty() || project.is_empty() || task.is_empty() || parts.next().is_some() {
+        bail!("TASK_BLACKBOARD_MIGRATION_INVALID: malformed task identifier '{task_id}'");
+    }
+    let (milestone, task_ref) = task.split_once(':').with_context(|| {
+        format!("TASK_BLACKBOARD_MIGRATION_INVALID: malformed task identifier '{task_id}'")
+    })?;
+    for identity in [repository, project, milestone, task_ref] {
+        crate::core::tasks::valid_identity(identity).with_context(|| {
+            format!("TASK_BLACKBOARD_MIGRATION_INVALID: malformed task identifier '{task_id}'")
+        })?;
+    }
+    Ok(format!("{repository}/{project}/"))
+}
+
 fn migrate_blackboard_v1(connection: &mut Connection) -> Result<()> {
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: String = tx.query_row(
@@ -143,7 +245,8 @@ fn migrate_blackboard_v1(connection: &mut Connection) -> Result<()> {
         bail!("unsupported tasks schema; use recovery tooling");
     }
     tx.execute_batch(
-        "DROP INDEX IF EXISTS idx_task_blackboard_task_created;
+        "DROP INDEX IF EXISTS idx_task_blackboard_scope_created;
+         DROP INDEX IF EXISTS idx_task_blackboard_task_created;
          ALTER TABLE task_blackboard RENAME TO task_blackboard_v1;
          CREATE TABLE task_blackboard(
              id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,8 +258,54 @@ fn migrate_blackboard_v1(connection: &mut Connection) -> Result<()> {
              payload TEXT NOT NULL,
              created_at INTEGER NOT NULL,
              CHECK(task_id IS NOT NULL OR subtask_ref IS NULL)
-         );
-         DROP TABLE task_blackboard_v1;
+         );",
+    )?;
+    let legacy_rows = {
+        let mut statement = tx.prepare(
+            "SELECT b.id,b.task_id,b.author,b.topic,b.payload,b.created_at,t.milestone_ref \
+             FROM task_blackboard_v1 b LEFT JOIN tasks t ON t.task_id=b.task_id \
+             ORDER BY b.id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (id, task_id, author, topic, payload, created_at, task_milestone_ref) in legacy_rows {
+        let task_id = task_id.with_context(|| {
+            format!("TASK_BLACKBOARD_MIGRATION_INVALID: message {id} has no task identifier")
+        })?;
+        let namespace = legacy_blackboard_namespace(&task_id)?;
+        let milestone_ref = task_milestone_ref.with_context(|| {
+            format!(
+                "TASK_BLACKBOARD_MIGRATION_INVALID: message {id} refers to missing task '{task_id}'"
+            )
+        })?;
+        let normalized_path = crate::core::tasks::relative_path(&milestone_ref)
+            .with_context(|| {
+                format!(
+                    "TASK_BLACKBOARD_MIGRATION_INVALID: task '{task_id}' has an invalid milestone path"
+                )
+            })?;
+        let milestone_ref = format!("{namespace}{}", normalized_path.to_string_lossy());
+        tx.execute(
+            "INSERT INTO task_blackboard(id,milestone_ref,task_id,subtask_ref,author,topic,payload,created_at) \
+             VALUES(?1,?2,?3,NULL,?4,?5,?6,?7)",
+            params![id, milestone_ref, task_id, author, topic, payload, created_at],
+        )?;
+    }
+    tx.execute_batch(
+        "DROP TABLE task_blackboard_v1;
          CREATE INDEX idx_task_blackboard_scope_created
              ON task_blackboard(milestone_ref,task_id,subtask_ref,created_at DESC,id DESC);
          CREATE INDEX idx_task_blackboard_task_created
@@ -426,6 +575,48 @@ fn migrate_task_digests_v3_to_v4(connection: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// Add gate targeting and normalize historical blackboard topics once at schema v5.
+fn migrate_blackboard_v4_to_v5(connection: &mut Connection) -> Result<()> {
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let version: String = tx.query_row(
+        "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+        [],
+        |row| row.get(0),
+    )?;
+    if version == "5" {
+        tx.commit()?;
+        return Ok(());
+    }
+    if version != "4" {
+        bail!("unsupported tasks schema; use recovery tooling");
+    }
+
+    tx.execute("ALTER TABLE task_blackboard ADD COLUMN gate TEXT", [])?;
+    tx.execute_batch(
+        "CREATE INDEX idx_task_blackboard_gate_scope_created
+             ON task_blackboard(milestone_ref, gate, task_id, subtask_ref, created_at DESC, id DESC);
+         CREATE INDEX idx_task_blackboard_task_gate_created
+             ON task_blackboard(task_id, gate, created_at DESC, id DESC);
+         UPDATE task_blackboard
+         SET topic = CASE topic
+             WHEN 'contract_draft' THEN 'draft'
+             WHEN 'contract_findings' THEN 'findings'
+             WHEN 'build_proof' THEN 'notes'
+             WHEN 'architectural_notes' THEN 'decisions'
+             WHEN 'draft' THEN 'draft'
+             WHEN 'notes' THEN 'notes'
+             WHEN 'findings' THEN 'findings'
+             WHEN 'blockers' THEN 'blockers'
+             WHEN 'decisions' THEN 'decisions'
+             WHEN 'deferred' THEN 'deferred'
+             ELSE 'notes'
+         END;
+         UPDATE task_store_metadata SET value='5' WHERE key='schema_version';",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 impl TasksStore {
     /// Performs open.
     pub fn open(path: &Path) -> Result<Self> {
@@ -449,7 +640,7 @@ impl TasksStore {
             )?;
             match version.as_str() {
                 "1" => migrate_blackboard_v1(&mut connection)?,
-                "2" | "3" | "4" => {}
+                "2" | "3" | "4" | "5" => {}
                 _ => bail!("unsupported tasks schema; use recovery tooling"),
             }
             let version: String = connection.query_row(
@@ -464,6 +655,14 @@ impl TasksStore {
                 |r| r.get(0),
             )?;
             if version == "3" { migrate_task_digests_v3_to_v4(&mut connection)?; }
+            let version: String = connection.query_row(
+                "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )?;
+            if version == "4" {
+                migrate_blackboard_v4_to_v5(&mut connection)?;
+            }
         } else {
             let populated:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%')",[],|r|r.get(0))?;
             if populated {
@@ -474,7 +673,7 @@ impl TasksStore {
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
             INSERT OR IGNORE INTO meta VALUES('generation',0);
             CREATE TABLE IF NOT EXISTS task_store_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-            INSERT OR IGNORE INTO task_store_metadata VALUES('schema_version','4');
+            INSERT OR IGNORE INTO task_store_metadata VALUES('schema_version','5');
             CREATE TABLE IF NOT EXISTS task_revisions(task_id TEXT PRIMARY KEY,revision INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,milestone_ref TEXT NOT NULL,descriptor TEXT NOT NULL,digest_version INTEGER NOT NULL DEFAULT 1);
             CREATE TABLE IF NOT EXISTS task_claims(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,worker_id TEXT NOT NULL,worktree TEXT NOT NULL,claimed_at INTEGER NOT NULL,ended INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(task_id,revision));
@@ -483,9 +682,11 @@ impl TasksStore {
             CREATE TABLE IF NOT EXISTS task_scope_paths(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,path TEXT NOT NULL,base_root TEXT NOT NULL,frozen INTEGER NOT NULL,PRIMARY KEY(task_id,path));
             CREATE TABLE IF NOT EXISTS task_dependencies(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,dependency_id TEXT NOT NULL,satisfied INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(task_id,dependency_id));
             CREATE TABLE IF NOT EXISTS task_submissions(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,revision INTEGER NOT NULL,result TEXT NOT NULL,PRIMARY KEY(task_id,revision));
-            CREATE TABLE IF NOT EXISTS task_blackboard(id INTEGER PRIMARY KEY AUTOINCREMENT,milestone_ref TEXT NOT NULL,task_id TEXT REFERENCES tasks ON DELETE CASCADE,subtask_ref TEXT,author TEXT NOT NULL,topic TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL,CHECK(task_id IS NOT NULL OR subtask_ref IS NULL));
+            CREATE TABLE IF NOT EXISTS task_blackboard(id INTEGER PRIMARY KEY AUTOINCREMENT,milestone_ref TEXT NOT NULL,task_id TEXT REFERENCES tasks ON DELETE CASCADE,subtask_ref TEXT,gate TEXT,author TEXT NOT NULL,topic TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL,CHECK(task_id IS NOT NULL OR subtask_ref IS NULL));
             CREATE INDEX IF NOT EXISTS idx_task_blackboard_scope_created ON task_blackboard(milestone_ref, task_id, subtask_ref, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_task_blackboard_task_created ON task_blackboard(task_id, created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_task_blackboard_gate_scope_created ON task_blackboard(milestone_ref, gate, task_id, subtask_ref, created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_task_blackboard_task_gate_created ON task_blackboard(task_id, gate, created_at DESC, id DESC);
             CREATE TABLE IF NOT EXISTS task_subtasks(task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,subtask_ref TEXT NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL,evidence TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(task_id,subtask_ref));
             CREATE INDEX IF NOT EXISTS idx_task_subtasks_task ON task_subtasks(task_id);
             CREATE TRIGGER IF NOT EXISTS task_insert_generation AFTER INSERT ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
@@ -496,7 +697,7 @@ impl TasksStore {
             [],
             |r| r.get(0),
         )?;
-        if version != "4" {
+        if version != "5" {
             bail!("unsupported tasks schema; use recovery tooling");
         }
         Ok(Self {
@@ -570,10 +771,33 @@ impl TasksStore {
         topic: &str,
         payload: &str,
     ) -> Result<u64> {
+        self.blackboard_post_scoped_with_gate(BlackboardPostInput {
+            milestone_ref,
+            task_id,
+            subtask_ref,
+            gate: None,
+            author,
+            topic,
+            payload,
+        })
+    }
+
+    /// Persist a message targeted to an optional workflow gate.
+    pub fn blackboard_post_scoped_with_gate(&self, post: BlackboardPostInput<'_>) -> Result<u64> {
+        let BlackboardPostInput {
+            milestone_ref,
+            task_id,
+            subtask_ref,
+            gate,
+            author,
+            topic,
+            payload,
+        } = post;
         self.assert_milestone_scope_ref(milestone_ref)?;
-        if author.trim().is_empty() || topic.trim().is_empty() {
-            bail!("TASK_BLACKBOARD_INVALID: author and topic are required");
+        if author.trim().is_empty() {
+            bail!("TASK_BLACKBOARD_INVALID: author is required");
         }
+        validate_blackboard_topic(topic)?;
         let task_milestone_ref = if let Some(task_id) = task_id {
             self.assert_id(task_id)?;
             let task = self.inspect(task_id)?;
@@ -607,19 +831,19 @@ impl TasksStore {
             (task_id, task_milestone_ref.as_deref())
         {
             self.connection.execute(
-                "INSERT INTO task_blackboard(milestone_ref,task_id,subtask_ref,author,topic,payload,created_at) \
-                 SELECT ?1,?2,?3,?4,?5,?6,?7 \
+                "INSERT INTO task_blackboard(milestone_ref,task_id,subtask_ref,gate,author,topic,payload,created_at) \
+                 SELECT ?1,?2,?3,?4,?5,?6,?7,?8 \
                  FROM tasks \
-                 WHERE task_id=?2 AND milestone_ref=?8 \
+                 WHERE task_id=?2 AND milestone_ref=?9 \
                    AND json_extract(descriptor,'$.status')!='completed' \
                    AND (?3 IS NULL OR EXISTS(SELECT 1 FROM task_subtasks WHERE task_id=?2 AND subtask_ref=?3))",
-                params![milestone_ref, task_id, subtask_ref, author, topic, payload, created_at, task_milestone_ref],
+                params![milestone_ref, task_id, subtask_ref, gate, author, topic, payload, created_at, task_milestone_ref],
             )?
         } else {
             self.connection.execute(
-                "INSERT INTO task_blackboard(milestone_ref,task_id,subtask_ref,author,topic,payload,created_at) \
-                 VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![milestone_ref, task_id, subtask_ref, author, topic, payload, created_at],
+                "INSERT INTO task_blackboard(milestone_ref,task_id,subtask_ref,gate,author,topic,payload,created_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![milestone_ref, task_id, subtask_ref, gate, author, topic, payload, created_at],
             )?
         };
         if inserted == 0 {
@@ -668,7 +892,35 @@ impl TasksStore {
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<BlackboardPage> {
+        self.blackboard_page_for_gate(BlackboardPageRequest {
+            milestone_ref,
+            task_id,
+            subtask_ref,
+            topic,
+            gate: None,
+            limit,
+            offset,
+        })
+    }
+
+    /// Read one bounded page, optionally selecting messages for one workflow gate.
+    pub fn blackboard_page_for_gate(
+        &self,
+        request: BlackboardPageRequest<'_>,
+    ) -> Result<BlackboardPage> {
+        let BlackboardPageRequest {
+            milestone_ref,
+            task_id,
+            subtask_ref,
+            topic,
+            gate,
+            limit,
+            offset,
+        } = request;
         self.assert_milestone_scope_ref(milestone_ref)?;
+        if let Some(topic) = topic {
+            validate_blackboard_topic(topic)?;
+        }
         if let Some(task_id) = task_id {
             self.assert_id(task_id)?;
             let task = self.inspect(task_id)?;
@@ -700,14 +952,15 @@ impl TasksStore {
         let sql_limit = i64::try_from(limit.checked_add(1).context("blackboard limit overflow")?)?;
         let sql_offset = i64::try_from(offset)?;
         let mut statement = self.connection.prepare(
-            "SELECT id,milestone_ref,task_id,subtask_ref,author,topic,created_at \
+            "SELECT id,milestone_ref,task_id,subtask_ref,gate,author,topic,created_at \
              FROM task_blackboard \
              WHERE milestone_ref=?1 \
                AND ((?2 IS NULL AND task_id IS NULL) OR \
                     (?2 IS NOT NULL AND task_id=?2 AND \
                      ((?3 IS NULL AND subtask_ref IS NULL) OR (?3 IS NOT NULL AND subtask_ref=?3)))) \
                AND (?4 IS NULL OR topic=?4) \
-             ORDER BY created_at DESC,id DESC LIMIT ?5 OFFSET ?6",
+               AND (?5 IS NULL OR gate=?5) \
+             ORDER BY created_at DESC,id DESC LIMIT ?6 OFFSET ?7",
         )?;
         let mut messages = statement
             .query_map(
@@ -716,6 +969,7 @@ impl TasksStore {
                     task_id,
                     subtask_ref,
                     topic,
+                    gate,
                     sql_limit,
                     sql_offset
                 ],
@@ -725,10 +979,11 @@ impl TasksStore {
                         milestone_ref: row.get(1)?,
                         task_id: row.get(2)?,
                         subtask_ref: row.get(3)?,
-                        author: row.get(4)?,
-                        topic: row.get(5)?,
+                        gate: row.get(4)?,
+                        author: row.get(5)?,
+                        topic: row.get(6)?,
                         payload: None,
-                        created_at: row.get(6)?,
+                        created_at: row.get(7)?,
                     })
                 },
             )?
@@ -753,7 +1008,7 @@ impl TasksStore {
         let message = self
             .connection
             .query_row(
-                "SELECT id,milestone_ref,task_id,subtask_ref,author,topic,payload,created_at \
+                "SELECT id,milestone_ref,task_id,subtask_ref,gate,author,topic,payload,created_at \
                  FROM task_blackboard WHERE id=?1",
                 [id],
                 |row| {
@@ -762,10 +1017,11 @@ impl TasksStore {
                         milestone_ref: row.get(1)?,
                         task_id: row.get(2)?,
                         subtask_ref: row.get(3)?,
-                        author: row.get(4)?,
-                        topic: row.get(5)?,
-                        payload: Some(row.get(6)?),
-                        created_at: row.get(7)?,
+                        gate: row.get(4)?,
+                        author: row.get(5)?,
+                        topic: row.get(6)?,
+                        payload: Some(row.get(7)?),
+                        created_at: row.get(8)?,
                     })
                 },
             )
@@ -792,9 +1048,12 @@ impl TasksStore {
         limit: Option<usize>,
     ) -> Result<Vec<BlackboardMessage>> {
         self.assert_id(task_id)?;
+        if let Some(topic) = topic {
+            validate_blackboard_topic(topic)?;
+        }
         let limit = limit.map(i64::try_from).transpose()?.unwrap_or(i64::MAX);
         let mut statement = self.connection.prepare(
-            "SELECT id,milestone_ref,task_id,subtask_ref,author,topic,payload,created_at FROM task_blackboard \
+            "SELECT id,milestone_ref,task_id,subtask_ref,gate,author,topic,payload,created_at FROM task_blackboard \
              WHERE task_id=?1 AND (?2 IS NULL OR topic=?2) ORDER BY created_at,id LIMIT ?3",
         )?;
         let messages = statement
@@ -804,10 +1063,11 @@ impl TasksStore {
                     milestone_ref: row.get(1)?,
                     task_id: row.get(2)?,
                     subtask_ref: row.get(3)?,
-                    author: row.get(4)?,
-                    topic: row.get(5)?,
-                    payload: Some(row.get(6)?),
-                    created_at: row.get(7)?,
+                    gate: row.get(4)?,
+                    author: row.get(5)?,
+                    topic: row.get(6)?,
+                    payload: Some(row.get(7)?),
+                    created_at: row.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

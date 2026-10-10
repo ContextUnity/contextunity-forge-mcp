@@ -5,14 +5,20 @@ fn blackboard_persists_task_scoped_messages_in_chronological_order() {
     let (root, store, milestone) = fixture();
     let first = milestone.task_id(&milestone.tasks[0]);
     let second = milestone.task_id(&milestone.tasks[1]);
+    let legacy_topic_error = store
+        .blackboard_post(&first, "author-legacy", "contract_draft", "must use draft")
+        .unwrap_err();
+    assert!(legacy_topic_error
+        .to_string()
+        .contains("draft, notes, findings, blockers, decisions, deferred"));
     let first_id = store
-        .blackboard_post(&first, "author-a", "contract_draft", "red test")
+        .blackboard_post(&first, "author-a", "draft", "red test")
         .unwrap();
     let second_id = store
-        .blackboard_post(&first, "author-b", "architectural_notes", "use WAL")
+        .blackboard_post(&first, "author-b", "decisions", "use WAL")
         .unwrap();
     store
-        .blackboard_post(&second, "author-c", "contract_draft", "other task")
+        .blackboard_post(&second, "author-c", "draft", "other task")
         .unwrap();
     assert!(second_id > first_id);
     let all = store.blackboard_read(&first, None, None).unwrap();
@@ -23,7 +29,7 @@ fn blackboard_persists_task_scoped_messages_in_chronological_order() {
     assert!(all[0].created_at <= all[1].created_at);
     assert_eq!(
         store
-            .blackboard_read(&first, Some("architectural_notes"), Some(1))
+            .blackboard_read(&first, Some("decisions"), Some(1))
             .unwrap()[0]
             .payload
             .as_deref(),
@@ -47,6 +53,27 @@ fn blackboard_persists_task_scoped_messages_in_chronological_order() {
 fn blackboard_schema_v1_upgrade_keeps_task_store_operational() {
     let (root, store, milestone) = fixture();
     let task_id = milestone.task_id(&milestone.tasks[0]);
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nlinked_workspaces:\n  - name: linked\n    path: linked\n    tasks:\n      enabled: true\n      milestones_dir: contracts\n      agents_guidance: AGENTS.md\n",
+    );
+    root.write("linked/src/lib.rs", "pub fn linked() {}\n");
+    root.write("linked/AGENTS.md", "# Linked instructions\n");
+    root.write(
+        "linked/forge-mcp.yaml",
+        "task_repository: linked-repository\ntask_project: linked-project\n",
+    );
+    root.write(
+        "linked/contracts/010-shared-db.md",
+        "---\nid: m-shared-db\ntitle: Shared database\ndoc_type: contract\nstatus: active\n---\n# Shared database\n```yaml\ntask_ref: linked-task\ntarget: Keep the second namespace isolated\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
+    );
+    let linked = tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({"action":"sync","workspace":"linked"})).unwrap(),
+    )
+    .unwrap();
+    let linked_task_id = linked["tasks"][0]["task_id"].as_str().unwrap().to_owned();
+
     store
         .connection
         .execute_batch(
@@ -58,10 +85,22 @@ fn blackboard_schema_v1_upgrade_keeps_task_store_operational() {
                  topic TEXT NOT NULL,
                  payload TEXT NOT NULL,
                  created_at INTEGER NOT NULL
-             );
-             INSERT INTO task_blackboard(id,task_id,author,topic,payload,created_at)
-             VALUES(73,'forge-mcp/forge-mcp/m-test:first','legacy-worker','build_proof','preserved payload',1234);
-             UPDATE task_store_metadata SET value='1' WHERE key='schema_version';",
+              );
+              UPDATE task_store_metadata SET value='1' WHERE key='schema_version';",
+        )
+        .unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO task_blackboard(id,task_id,author,topic,payload,created_at) VALUES(73,?1,'legacy-worker','build_proof','preserved payload',1234)",
+            [&task_id],
+        )
+        .unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO task_blackboard(id,task_id,author,topic,payload,created_at) VALUES(74,?1,'linked-worker','decisions','linked payload',5678)",
+            [&linked_task_id],
         )
         .unwrap();
     drop(store);
@@ -76,7 +115,7 @@ fn blackboard_schema_v1_upgrade_keeps_task_store_operational() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(schema_version, "4");
+    assert_eq!(schema_version, "5");
     let task_id_nullable: i64 = reopened
         .connection
         .query_row(
@@ -86,6 +125,149 @@ fn blackboard_schema_v1_upgrade_keeps_task_store_operational() {
         )
         .unwrap();
     assert_eq!(task_id_nullable, 0);
+    let (linked_repository, linked_project) = ("linked-repository", "linked-project");
+    let linked_store = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        linked_repository,
+        linked_project,
+    )
+    .unwrap();
+    let primary_ref = reopened.milestone_scope_ref("docs/010-test.md").unwrap();
+    let linked_ref = linked_store
+        .milestone_scope_ref("contracts/010-shared-db.md")
+        .unwrap();
+    let call =
+        |arguments| tasks::blackboard(&root.0, serde_json::from_value(arguments).unwrap(), "test");
+    let primary_read =
+        call(json!({"action":"read","scope":"task","task_id":task_id.clone()})).unwrap();
+    assert_eq!(primary_read["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(primary_read["messages"][0]["id"], 73);
+    let primary_inspect = call(json!({"action":"inspect","message_id":73})).unwrap();
+    assert_eq!(primary_inspect["message"]["milestone_ref"], primary_ref);
+    assert_eq!(primary_inspect["message"]["task_id"], task_id);
+    assert_eq!(primary_inspect["message"]["author"], "legacy-worker");
+    assert_eq!(primary_inspect["message"]["topic"], "notes");
+    assert_eq!(primary_inspect["message"]["payload"], "preserved payload");
+    assert_eq!(primary_inspect["message"]["created_at"], 1234);
+
+    let linked_read =
+        call(json!({"action":"read","scope":"task","task_id":linked_task_id})).unwrap();
+    assert_eq!(linked_read["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(linked_read["messages"][0]["id"], 74);
+    let linked_inspect = call(json!({"action":"inspect","message_id":74})).unwrap();
+    assert_eq!(linked_inspect["message"]["milestone_ref"], linked_ref);
+    assert_eq!(linked_inspect["message"]["author"], "linked-worker");
+    assert_eq!(linked_inspect["message"]["topic"], "decisions");
+    assert_eq!(linked_inspect["message"]["payload"], "linked payload");
+    assert_eq!(linked_inspect["message"]["created_at"], 5678);
+
+    let post = call(json!({
+        "action":"post","scope":"task","task_id":task_id.clone(),
+        "gate":"contract","topic":"notes","payload":"canonical post after migration"
+    }))
+    .unwrap();
+    let post_id = post["id"].as_u64().unwrap();
+    drop(linked_store);
+    drop(reopened);
+    let reopened_post = call(json!({"action":"inspect","message_id":post_id})).unwrap();
+    assert_eq!(
+        reopened_post["message"]["payload"],
+        "canonical post after migration"
+    );
+    assert_eq!(reopened_post["message"]["milestone_ref"], primary_ref);
+    let primary_after_reopen =
+        call(json!({"action":"read","scope":"task","task_id":task_id})).unwrap();
+    assert_eq!(
+        primary_after_reopen["messages"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(primary_after_reopen["messages"][0]["id"], post_id);
+}
+
+#[test]
+fn blackboard_schema_v1_upgrade_rolls_back_malformed_or_orphan_task_rows() {
+    for (case, task_id, owner_exists) in [
+        ("malformed", "not-a-task-id", true),
+        ("orphan", "ghost/project/missing:task", false),
+    ] {
+        let (root, store, milestone) = fixture();
+        let original_task_id = milestone.task_id(&milestone.tasks[0]);
+        store
+            .connection
+            .execute_batch(
+                "PRAGMA foreign_keys=OFF;
+                 DROP TABLE task_blackboard;
+                 CREATE TABLE task_blackboard(
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     task_id TEXT NOT NULL REFERENCES tasks ON DELETE CASCADE,
+                     author TEXT NOT NULL,
+                     topic TEXT NOT NULL,
+                     payload TEXT NOT NULL,
+                     created_at INTEGER NOT NULL
+                 );
+                 UPDATE task_store_metadata SET value='1' WHERE key='schema_version';",
+            )
+            .unwrap();
+        if owner_exists {
+            store
+                .connection
+                .execute(
+                    "UPDATE tasks SET task_id=?2 WHERE task_id=?1",
+                    rusqlite::params![original_task_id, task_id],
+                )
+                .unwrap();
+        }
+        store
+            .connection
+            .execute(
+                "INSERT INTO task_blackboard(id,task_id,author,topic,payload,created_at) VALUES(73,?1,'legacy-worker','build_proof','must remain on failed migration',1234)",
+                [task_id],
+            )
+            .unwrap();
+        drop(store);
+
+        let error = TasksStore::open(&root.0.join(".forge/tasks.sqlite"))
+            .err()
+            .expect("invalid legacy ownership must fail migration");
+        assert!(
+            error
+                .to_string()
+                .contains("TASK_BLACKBOARD_MIGRATION_INVALID"),
+            "{error}"
+        );
+        let raw = rusqlite::Connection::open(root.0.join(".forge/tasks.sqlite")).unwrap();
+        let version: String = raw
+            .query_row(
+                "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            version, "1",
+            "{case} migration must roll back the version marker"
+        );
+        let preserved: (String, String) = raw
+            .query_row(
+                "SELECT task_id,payload FROM task_blackboard WHERE id=73",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved.0, task_id);
+        assert_eq!(preserved.1, "must remain on failed migration");
+        let legacy_table: i64 = raw
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='task_blackboard_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            legacy_table, 0,
+            "{case} migration must restore original table name"
+        );
+    }
 }
 
 #[test]
@@ -120,19 +302,19 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
     let milestone_post = call(json!({
         "action":"post","scope":"milestone",
         "milestone_ref":"docs/milestones/010-blackboard.md",
-        "topic":"architecture","payload":"milestone coordination"
+        "topic":"decisions","payload":"milestone coordination"
     }))
     .unwrap();
     let milestone_message_id = milestone_post["id"].as_u64().unwrap();
     let task_post = call(json!({
         "action":"post","task_id":first,
-        "topic":"build_proof","payload":"task coordination"
+        "topic":"notes","payload":"task coordination"
     }))
     .unwrap();
     let task_message_id = task_post["id"].as_u64().unwrap();
     let subtask_post = call(json!({
         "action":"post","scope":"subtask",
-        "topic":"architectural_seam","payload":"subtask coordination"
+        "topic":"findings","payload":"subtask coordination"
     }))
     .unwrap();
     let subtask_message_id = subtask_post["id"].as_u64().unwrap();
@@ -180,6 +362,155 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
 }
 
 #[test]
+fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering() {
+    use sha2::Digest;
+
+    let root = ScopedWorkspace::new("forge_blackboard_pinned_profile");
+    root.write("src/lib.rs", "pub fn primary() {}\n");
+    root.write("linked/src/lib.rs", "pub fn linked() {}\n");
+    root.write(
+        "linked/AGENTS.md",
+        "# Linked instructions\nLoad the contextunity-forge skill.\n",
+    );
+    root.write(
+        "linked/.agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nlinked_workspaces:\n  - name: linked\n    path: linked\n    tasks:\n      enabled: true\n      milestones_dir: contracts\n      agents_guidance: AGENTS.md\n",
+    );
+    root.write(
+        "linked/forge-mcp.yaml",
+        "task_repository: linked-repository\ntask_project: linked-project\n",
+    );
+
+    let with_first_gate = |gate_id: &str| {
+        include_str!("../../src/core/tasks/acdd.default.yaml")
+            .replace("id: \"contract\"", &format!("id: \"{gate_id}\""))
+    };
+    let milestone_profile = with_first_gate("plan");
+    let task_profile = with_first_gate("task_plan");
+    let pinned_reference = |path: &str, contents: &str| {
+        let digest = format!("{:x}", sha2::Sha256::digest(contents.as_bytes()));
+        format!("{path}:{}", &digest[..12])
+    };
+    let milestone_pin = pinned_reference("profiles/milestone.yaml", &milestone_profile);
+    let task_pin = pinned_reference("profiles/task.yaml", &task_profile);
+    root.write("linked/profiles/milestone.yaml", &milestone_profile);
+    root.write("linked/profiles/task.yaml", &task_profile);
+    let manifest = format!(
+        "---\nid: m-pinned-blackboard\ntitle: Pinned blackboard\ndoc_type: contract\nstatus: active\nacdd_profile: \"{milestone_pin}\"\n---\n# Pinned blackboard\n```yaml\ntask_ref: inherited\ntarget: Inherit the milestone profile\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: override\ntarget: Use a task-level profile override\nacdd_profile: \"{task_pin}\"\nproof_policy: seam-test-first\nscope: [src/]\n```\n"
+    );
+    root.write("linked/contracts/010-pinned-blackboard.md", &manifest);
+    let synced = tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({"action":"sync","workspace":"linked"})).unwrap(),
+    )
+    .unwrap();
+    let inherited_task = synced["tasks"][0]["task_id"].as_str().unwrap().to_owned();
+    let override_task = synced["tasks"][1]["task_id"].as_str().unwrap().to_owned();
+    let milestone_ref = "contracts/010-pinned-blackboard.md";
+    let call =
+        |arguments| tasks::blackboard(&root.0, serde_json::from_value(arguments).unwrap(), "test");
+
+    let milestone_post = call(json!({
+        "action":"post","scope":"milestone","milestone_ref":milestone_ref,
+        "gate":"plan","topic":"draft","payload":"pinned milestone gate"
+    }))
+    .unwrap();
+    let milestone_id = milestone_post["id"].as_u64().unwrap();
+    let default_gate_error = call(json!({
+        "action":"post","scope":"milestone","milestone_ref":milestone_ref,
+        "gate":"contract","topic":"draft","payload":"must reject default gate"
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(default_gate_error.contains("TASK_BLACKBOARD_SCHEMA_INVALID"));
+    assert!(default_gate_error.contains("Active profile gates: plan, build, review, deliver"));
+    let milestone_read = call(json!({
+        "action":"read","scope":"milestone","milestone_ref":milestone_ref,"gate":"plan"
+    }))
+    .unwrap();
+    assert_eq!(milestone_read["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(milestone_read["messages"][0]["id"], milestone_id);
+    let default_read_error = call(json!({
+        "action":"read","scope":"milestone","milestone_ref":milestone_ref,"gate":"contract"
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(default_read_error.contains("Active profile gates: plan, build, review, deliver"));
+
+    let inherited_post = call(json!({
+        "action":"post","scope":"task","task_id":inherited_task,
+        "gate":"plan","topic":"notes","payload":"inherited task gate"
+    }))
+    .unwrap();
+    let inherited_id = inherited_post["id"].as_u64().unwrap();
+    let inherited_read = call(json!({
+        "action":"read","scope":"task","task_id":inherited_task,"gate":"plan"
+    }))
+    .unwrap();
+    assert!(inherited_read["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["id"] == inherited_id));
+    let inherited_default_error = call(json!({
+        "action":"post","scope":"task","task_id":inherited_task,
+        "gate":"contract","topic":"notes","payload":"must reject default gate"
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(inherited_default_error.contains("Active profile gates: plan, build, review, deliver"));
+
+    let override_post = call(json!({
+        "action":"post","scope":"task","task_id":override_task,
+        "gate":"task_plan","topic":"notes","payload":"task override gate"
+    }))
+    .unwrap();
+    let override_id = override_post["id"].as_u64().unwrap();
+    let override_read = call(json!({
+        "action":"read","scope":"task","task_id":override_task,"gate":"task_plan"
+    }))
+    .unwrap();
+    assert!(override_read["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["id"] == override_id));
+
+    root.write(
+        "linked/profiles/milestone.yaml",
+        &milestone_profile.replace("id: \"plan\"", "id: \"planning\""),
+    );
+    for request in [
+        json!({
+            "action":"post","scope":"milestone","milestone_ref":milestone_ref,
+            "gate":"plan","topic":"draft","payload":"milestone after tampering"
+        }),
+        json!({"action":"read","scope":"milestone","milestone_ref":milestone_ref,"gate":"plan"}),
+        json!({
+            "action":"post","scope":"task","task_id":inherited_task,
+            "gate":"plan","topic":"notes","payload":"inherited task after tampering"
+        }),
+        json!({"action":"read","scope":"task","task_id":inherited_task,"gate":"plan"}),
+    ] {
+        let error = call(request).unwrap_err().to_string();
+        assert!(error.contains("TASK_PROFILE_TAMPERED"), "{error}");
+    }
+    let override_after_tamper = call(json!({
+        "action":"read","scope":"task","task_id":override_task,"gate":"task_plan"
+    }))
+    .unwrap();
+    assert!(override_after_tamper["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["id"] == override_id));
+}
+
+#[test]
 fn blackboard_automatic_scope_fails_closed_without_one_active_context() {
     for (name, manifests, expected) in [
         (
@@ -224,7 +555,7 @@ fn blackboard_concurrent_connections_persist_and_cascade() {
                         .blackboard_post(
                             &task_id,
                             &format!("worker-{worker}"),
-                            "build_proof",
+                            "notes",
                             &index.to_string(),
                         )
                         .unwrap();
@@ -304,7 +635,7 @@ fn blackboard_post_fails_closed_when_task_completes_during_write() {
             Some(&task_id),
             None,
             "worker",
-            "build_proof",
+            "notes",
             "post races task completion",
         )
     });
@@ -331,6 +662,7 @@ fn cancelled_milestone_blackboard_pruning_is_project_scoped() {
              milestone_ref TEXT NOT NULL,
              task_id TEXT REFERENCES tasks ON DELETE CASCADE,
              subtask_ref TEXT,
+             gate TEXT,
              author TEXT NOT NULL,
              topic TEXT NOT NULL,
              payload TEXT NOT NULL,
@@ -350,14 +682,14 @@ fn cancelled_milestone_blackboard_pruning_is_project_scoped() {
     primary
         .connection
         .execute(
-            "INSERT INTO task_blackboard(milestone_ref,author,topic,payload,created_at) VALUES(?1,'a','note','primary',1)",
+            "INSERT INTO task_blackboard(milestone_ref,author,topic,payload,created_at) VALUES(?1,'a','notes','primary',1)",
             [&primary_ref],
         )
         .unwrap();
     primary
         .connection
         .execute(
-            "INSERT INTO task_blackboard(milestone_ref,author,topic,payload,created_at) VALUES(?1,'b','note','linked',2)",
+            "INSERT INTO task_blackboard(milestone_ref,author,topic,payload,created_at) VALUES(?1,'b','notes','linked',2)",
             [&linked_ref],
         )
         .unwrap();

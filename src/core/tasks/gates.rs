@@ -609,13 +609,22 @@ impl TasksStore {
             } else {
                 serde_json::json!({"review_sources": review_proofs.iter().cloned().collect::<std::collections::BTreeMap<_, _>>()})
             };
-            let notes = tx.prepare(
-                "SELECT payload FROM task_blackboard WHERE task_id=?1 AND topic='architectural_notes' ORDER BY created_at,id",
-            )?.query_map([id], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let outcomes = tx
+                .prepare(
+                    "SELECT topic,payload FROM task_blackboard \
+                 WHERE task_id=?1 AND topic IN ('decisions','deferred') \
+                 ORDER BY created_at,id",
+                )?
+                .query_map([id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .map(|(topic, payload)| format!("{topic}: {payload}"))
+                .collect::<Vec<_>>();
             let rollup = ReceiptRollup {
                 verified_invariants: task.applicable_invariants.clone(),
-                architectural_notes: notes,
+                architectural_notes: outcomes,
                 review_summary: review_rollup_summary(&review_proofs)?,
             };
             let document_commit = if gate_def.auto_commit {

@@ -23,8 +23,11 @@ pub enum BlackboardCommand {
         /// Subtask receiving the message.
         #[arg(long)]
         subtask_ref: Option<String>,
+        /// Optional active-profile gate receiving the message.
         #[arg(long)]
-        /// Message category.
+        gate: Option<String>,
+        #[arg(long)]
+        /// Canonical message topic: draft, notes, findings, blockers, decisions, or deferred.
         topic: String,
         #[arg(long)]
         /// Message text or serialized JSON.
@@ -46,8 +49,11 @@ pub enum BlackboardCommand {
         /// Subtask whose messages are read.
         #[arg(long)]
         subtask_ref: Option<String>,
+        /// Optional active-profile gate used to filter messages.
         #[arg(long)]
-        /// Restrict results to this category.
+        gate: Option<String>,
+        #[arg(long)]
+        /// Restrict results to one canonical topic.
         topic: Option<String>,
         #[arg(long)]
         /// Maximum number of messages to return (default 10, maximum 50).
@@ -258,6 +264,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                     milestone_ref,
                     task_id,
                     subtask_ref,
+                    gate,
                     topic,
                     payload,
                     author,
@@ -272,6 +279,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                         message_id: None,
                         author,
                         topic: Some(topic),
+                        gate,
                         payload: Some(payload),
                         limit: None,
                         offset: None,
@@ -283,6 +291,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                     milestone_ref,
                     task_id,
                     subtask_ref,
+                    gate,
                     topic,
                     limit,
                     offset,
@@ -297,6 +306,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                         message_id: None,
                         author: None,
                         topic,
+                        gate,
                         payload: None,
                         limit,
                         offset,
@@ -314,6 +324,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                         message_id: Some(message_id),
                         author: None,
                         topic: None,
+                        gate: None,
                         payload: None,
                         limit: None,
                         offset: None,

@@ -377,23 +377,25 @@ pub(super) fn context_bundle(
             .and_then(|m| store.milestone_scope_ref(m).ok());
         let milestone_prefix = task_id.split_once(':').map(|(p, _)| format!("{p}:"));
         let mut stmt = store.connection.prepare(
-            "SELECT id, task_id, subtask_ref, author, topic, payload, created_at FROM task_blackboard \
-             WHERE task_id = ?1 \
+            "SELECT id, task_id, subtask_ref, gate, author, topic, payload, created_at FROM task_blackboard \
+             WHERE (task_id = ?1 \
                 OR (?2 IS NOT NULL AND milestone_ref = ?2 AND task_id IS NULL) \
-                OR (?3 IS NOT NULL AND substr(task_id, 1, length(?3)) = ?3) \
+                OR (?3 IS NOT NULL AND substr(task_id, 1, length(?3)) = ?3)) \
+             AND (gate IS NULL OR gate = ?4) \
              ORDER BY created_at DESC, id DESC LIMIT 15",
         )?;
         let mut msgs = stmt
             .query_map(
-                rusqlite::params![task_id, milestone_ref_str, milestone_prefix],
+                rusqlite::params![task_id, milestone_ref_str, milestone_prefix, stage],
                 |row| {
                     let id = row.get::<_, u64>(0)?;
                     let msg_task_id = row.get::<_, Option<String>>(1)?;
                     let msg_subtask_ref = row.get::<_, Option<String>>(2)?;
-                    let author = row.get::<_, String>(3)?;
-                    let topic = row.get::<_, String>(4)?;
-                    let raw_payload: String = row.get(5)?;
-                    let created_at = row.get::<_, i64>(6)?;
+                    let gate = row.get::<_, Option<String>>(3)?;
+                    let author = row.get::<_, String>(4)?;
+                    let topic = row.get::<_, String>(5)?;
+                    let raw_payload: String = row.get(6)?;
+                    let created_at = row.get::<_, i64>(7)?;
                     let payload = truncate_chars(&raw_payload, 500);
 
                     let scope = match msg_task_id.as_deref() {
@@ -413,6 +415,7 @@ pub(super) fn context_bundle(
                         "scope": scope,
                         "task_id": msg_task_id,
                         "subtask_ref": msg_subtask_ref,
+                        "gate": gate,
                         "author": author,
                         "topic": topic,
                         "payload": payload,
@@ -443,7 +446,33 @@ pub(super) fn context_bundle(
             "subtask_dod".into(),
             json!(workspace.gates.subtask_dod.clone()),
         );
+        let targeted_messages = blackboard_messages
+            .iter()
+            .filter(|message| message.get("gate").and_then(Value::as_str) == Some(stage))
+            .cloned()
+            .collect::<Vec<_>>();
+        guidance_map.insert("blackboard_messages".into(), json!(targeted_messages));
     }
+    let mut topic_counts = serde_json::Map::new();
+    let mut targeted_count = 0usize;
+    for message in &blackboard_messages {
+        if message.get("gate").and_then(Value::as_str) == Some(stage) {
+            targeted_count += 1;
+        }
+        if let Some(topic) = message.get("topic").and_then(Value::as_str) {
+            let count = topic_counts
+                .entry(topic.to_owned())
+                .or_insert_with(|| json!(0));
+            *count = json!(count.as_u64().unwrap_or(0) + 1);
+        }
+    }
+    let blackboard_info = json!({
+        "active_gate": stage,
+        "message_count": blackboard_messages.len(),
+        "targeted_count": targeted_count,
+        "topic_counts": topic_counts,
+        "message_ids": blackboard_messages.iter().filter_map(|message| message.get("id").cloned()).collect::<Vec<_>>(),
+    });
     let mut bundle_map = serde_json::Map::new();
     bundle_map.insert(
         "contract".into(),
@@ -463,7 +492,7 @@ pub(super) fn context_bundle(
             "worktree": details["worktree"],
         }),
     );
-    bundle_map.insert("guidance".into(), guidance);
+    bundle_map.insert("guidance".into(), guidance.clone());
 
     if let Some(crate::core::tasks::profile::ProofDef::Scheme { scheme }) =
         active_gate.map(|gate| &gate.proof)
@@ -520,6 +549,7 @@ pub(super) fn context_bundle(
         }
     }
     bundle_map.insert("blackboard".into(), json!(blackboard_messages));
+    bundle_map.insert("blackboard_info".into(), blackboard_info.clone());
 
     let bundle = Value::Object(bundle_map);
 
@@ -540,6 +570,8 @@ pub(super) fn context_bundle(
     // Retain bounded blackboard and contract essentials at root
     obj.insert("depends_on".into(), depends_on);
     obj.insert("blackboard".into(), json!(blackboard_messages));
+    obj.insert("blackboard_info".into(), blackboard_info.clone());
+    obj.insert("workflow_guidance".into(), guidance.clone());
     obj.insert("context_bundle".into(), bundle);
 
     Ok(details)

@@ -549,7 +549,7 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
 
     let (_, mcp_post) = client.call(
         "task_blackboard",
-        json!({"action":"post","task_id":task_id,"topic":"contract_draft","payload":"{\"red\":true}"}),
+        json!({"action":"post","task_id":task_id,"topic":"draft","payload":"{\"red\":true}"}),
     );
     let cli_post = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args([
@@ -560,7 +560,7 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
             "post",
             task_id,
             "--topic",
-            "build_proof",
+            "notes",
             "--payload",
             "cargo test --all-targets passed",
         ])
@@ -593,7 +593,7 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
             "read",
             task_id,
             "--topic",
-            "contract_draft",
+            "draft",
         ])
         .output()
         .unwrap();
@@ -638,7 +638,7 @@ fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
             "task_blackboard",
             json!({
                 "action":"post",
-                "topic":"architectural_notes",
+                "topic":"decisions",
                 "payload":format!("milestone note {index}")
             }),
         );
@@ -849,7 +849,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         json!({
             "action": "post",
             "task_id": task_id,
-            "topic": "architectural_notes",
+            "topic": "decisions",
             "payload": "Route tasks through unified zero-shot context bundle",
             "author": "architect"
         }),
@@ -859,7 +859,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         json!({
             "action": "post",
             "task_id": cli_task_id,
-            "topic": "hypothesis",
+            "topic": "notes",
             "payload": "Sibling task context is milestone scoped",
             "author": "cli-author"
         }),
@@ -930,7 +930,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     // Check blackboard
     let bb = bundle["blackboard"].as_array().unwrap();
     assert_eq!(bb.len(), 2);
-    assert_eq!(bb[0]["topic"], "architectural_notes");
+    assert_eq!(bb[0]["topic"], "decisions");
     assert_eq!(bb[0]["author"], "architect");
     assert_eq!(
         bb[0]["payload"],
@@ -1061,7 +1061,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         json!({
             "action": "post",
             "milestone_ref": "docs/milestones/010-context.md",
-            "topic": "hypothesis",
+            "topic": "notes",
             "payload": ukr_payload,
             "author": "ukr-architect"
         }),

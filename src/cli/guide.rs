@@ -31,11 +31,15 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
                 "deferred-final-test": "Task-level policy: exit code 0 accepted at contract; milestone-level final test runs before milestone handoff."
             },
             "blackboard_topics": {
-                "contract_draft": "Red test path, command, observed failure, proposed seam.",
-                "contract_findings": "Unsupported assumptions and required contract repairs.",
-                "build_proof": "Candidate SHA, focused test result, lint check result.",
-                "architectural_notes": "Decisions or trade-offs surviving delivery; auto-copied to receipt at deliver."
+                "draft": "Contract drafts and proposed changes.",
+                "notes": "Build notes, proof observations, and general context.",
+                "findings": "Review findings and verified defects.",
+                "blockers": "Issues preventing the active work from proceeding.",
+                "decisions": "Decisions and trade-offs retained in the delivery receipt.",
+                "deferred": "Deferred findings retained in the delivery receipt."
             },
+            "blackboard_gate_targeting": "An optional gate field targets a message to one gate id from the active task profile. Untargeted messages remain generally visible; claim context also includes messages targeted to its active gate.",
+            "blackboard_schema_version": 5,
             "review_contours": ["paths", "claims", "concurrency", "project_isolation", "administration"],
             "subtask_rules": "Subtask must name concrete target, expected status, and verification command. Not completed with partial implementation. Use subtask_add to deepen tasks, not root task proliferation.",
             "commit_authority": "Task commits, task-branch merges/cleanups, and merging the completed milestone branch into its target branch after handoff are authorized under ACDD. Push, force-push, and publication require user permission.",

@@ -19,7 +19,7 @@ invariants:
 - 'INV-SKILL-TOOL-REFERENCE-DELEGATION: The contextunity-forge skill serves as the generic tool reference and standing Git permission baseline, delegating workflow gate governance, review contours, and role policies to the active task profile. Git standing permissions explicitly distinguish auto_commit: true (Forge creates atomic commit on deliver) from auto_commit: false (agent commits after deliver) and final milestone archive commits.'
 - 'INV-HANDOFF-RECORDING-CLARITY: Milestone handoff is CLI-only and records caller-verified test results into durable receipts without conflating execution with persistence: upon verifying that all milestone tasks are completed and verification tests pass, handoff resolves the landed commit for each task in the milestone branch (the commit that landed the task''s work into the milestone branch, whether via fast-forward or merge commit), rewrites receipt.commit of each task in the milestone document and SQLite store to that landed commit SHA, records the overall milestone handoff.commit (HEAD at handoff) in frontmatter, and archives the document; the subsequent milestone archive commit occurs after handoff and is excluded from receipt.commit. Exact verification commands and counts are codified in TESTS.md.'
 - 'INV-DECLARATIVE-ACDD-PROFILE: The declarative YAML profile engine (GateProfile with embedded acdd.default.yaml via include_str!) strictly separates arbitrary gate id (workspace tokens defaulting to contract, build, review, deliver), closed proof taxonomy (contract, command, review, delivery, none, or scheme with recursive data schema validation driving context bundles, independent review, and durable receipts), gate fields (explicit sha_snapshot: bool per gate in defaults, reject_to, independent_from, review_sources, role, steps, tools, contours set reference, and proof: { scheme: ... } structural schema definition for scheme proof), command registry (commands mapping to executable shell commands), and hierarchical policies. Default 4 gates in acdd.default.yaml map strictly to proof: contract, command, review, and delivery; sha_snapshot is explicitly true for contract/build and false for review/deliver. contours is a nested dictionary (IndexMap<String, IndexMap<String, ContourDef>> preserving definition order) where "standard" preserves the canonical 5 contours (paths, claims, concurrency, project_isolation, administration) with operational criteria and descriptions; gates reference contour sets via gate.contours (defaulting to "standard"). Delivery gates (proof: delivery) support auto_commit: bool (default true), creating an atomic Git commit directly from the candidate snapshot tree of the nearest predecessor gate with sha_snapshot: true (which is build in the default profile, whose candidate tree SHA is verified across all review_sources) plus the milestone receipt, with parent HEAD, verifying git rev-parse HEAD matches candidate_baseline_head (the exact commit SHA of HEAD captured when the candidate snapshot was created), standard commit messages derived from task targets and completed subtasks, and enforced hooks; the created commit SHA is persisted into the task''s delivery receipt in SQLite. If git commit fails, SQLite receipt recording and task completion roll back atomically, leaving the task at deliver with an explicit error ready for reject rewind or retry. Upon milestone handoff, Forge resolves each task''s landed commit in the milestone branch and rewrites receipt.commit to that landed SHA before archiving the document (the archive commit is created after handoff and is excluded from receipt.commit). Delivery rolls up reviews across review_sources (strictly prior gates with proof: review verifying the identical candidate SHA). Profile resolution precedence: task.spec.acdd_profile over milestone.acdd_profile over forge-mcp.yaml path link over .forge/acdd/profile.yaml over embedded defaults. Single-line profile pinning format in milestone frontmatter or task spec (acdd_profile: "<path>:<sha256_prefix>" with at least 7 hex characters) is persisted into SQLite task metadata during task sync; Forge verifies the file hash prefix matches, failing closed with TASK_PROFILE_TAMPERED on mismatch. Task operations validating gate identifiers fail closed with TASK_STAGE_UNKNOWN if a task stage is missing from the active profile gates, providing actionable recommendations. Zero runtime backward-compatibility is maintained strictly across SQLite runtime data and active milestones: historical archive receipts in docs/milestones/archive/ are exempt from active profile validation. Protected system paths in .forge/acdd/** cannot be added via extend_scope (TASK_SCOPE_PROTECTED) and dirty system files fail closed with TASK_SCOPE_VIOLATION unless explicitly admitted in the active task initial planning-time task.spec.scope. Linked workspace profiles are strictly ignored (only the active workspace root defines the ACDD profile). Profile compilation evaluates the merged profile and fails closed if gates is empty, delivery is not exactly one or not terminal, IDs repeat, reject_to or independent_from do not point to strictly prior gates, review_sources do not point to strictly prior review gates, or roles/contours/commands are undefined. Task state persists task.stage string ID where position is computed at runtime and unknown IDs stop claim. task list --stage accepts any active profile gate id.'
-- 'INV-BLACKBOARD-GATE-ROUTING: task_blackboard in SQLite schema version 3 includes an optional gate TEXT column with query indexes, supports 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) with schema v2 to v3 migration and explicit legacy topic mapping (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) occurring strictly in the schema v3 migration, returns compact blackboard_info summaries and actionable schema hints on error, delivers targeted messages on claim, and rolls up decisions and deferred into durable receipts.'
+- 'INV-BLACKBOARD-GATE-ROUTING: task_blackboard in SQLite schema version 5 includes an optional gate TEXT column with query indexes, supports 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) with schema v4 to v5 migration and explicit legacy topic mapping (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) occurring strictly in the schema v5 migration, returns compact blackboard_info summaries and actionable schema hints on error, delivers targeted messages on claim, and rolls up decisions and deferred into durable receipts.'
 - 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
 related_plans: []
 started_at: 2026-10-10T05:51:02+00:00
@@ -36,7 +36,7 @@ Solidify the ACDD execution framework and ContextUnity Forge MCP governance so t
 4. Release task scope locks upon task completion in `TasksStore` strictly during claim and `extend_scope` conflict checks, allowing sequential sibling tasks to evolve documentation and shared files without artificial `TASK_SCOPE_CONFLICT` errors while preserving historical path records.
 5. Improve task guidance validation to accurately recognize repository skill references (including `contextunity-forge-mcp skill`) using semantic word-boundary and contextual parsing, and validate repository `.gitignore` against canonical rules to eliminate blanket `.forge/` directory ignores that inadvertently exclude `.forge/acdd/**` (including `.forge/acdd/profile.yaml`) or framework extensions in `.forge/frameworks/**`.
 6. Codify repository-wide test gates in `TESTS.md`, clarify CLI-only milestone lifecycle semantics (`milestone init/list/show/handoff`), and update milestone handoff to reconcile and rewrite receipt.commit in each task block and SQLite store with the task's landed commit SHA in the milestone branch before archiving.
-7. Upgrade the task-store schema from version 3 to version 4 for blackboard gate targeting, canonical single-word topics (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`), single legacy topic migration (`contract_draft` -> `draft`, `contract_findings` -> `findings`, `build_proof` -> `notes`, `architectural_notes` -> `decisions`; canonical topics preserved unchanged; unknown -> `notes`), rich schema hints, and receipt rollup for decisions and deferred topics.
+7. Upgrade the task-store schema from version 4 to version 5 for blackboard gate targeting, canonical single-word topics (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`), single legacy topic migration (`contract_draft` -> `draft`, `contract_findings` -> `findings`, `build_proof` -> `notes`, `architectural_notes` -> `decisions`; canonical topics preserved unchanged; unknown -> `notes`), rich schema hints, and receipt rollup for decisions and deferred topics.
 
 ---
 
@@ -527,47 +527,150 @@ receipt:
 ### task: task-blackboard-targeted-routing-and-topics
 ```yaml
 task_ref: task-blackboard-targeted-routing-and-topics
-target: "Enhance task_blackboard with optional gate targeting, task-store schema version 4 migration, legacy topic mapping, canonical single-word topics, compact blackboard_info summary, actionable schema hints, and durable receipt rollup"
+target: Enhance task_blackboard with optional gate targeting, task-store schema version 5 migration, legacy topic mapping, canonical single-word topics, compact blackboard_info summary, actionable schema hints, and durable receipt rollup
 proof_policy: seam-test-first
-contract_revision: 18
+contract_revision: 19
 depends_on:
-  - acdd-configurable-profiles-and-workflow-engine
+- acdd-configurable-profiles-and-workflow-engine
 invariants:
-  - 'INV-BLACKBOARD-GATE-ROUTING: task_blackboard in task-store schema version 4 includes an optional gate TEXT column with query indexes, supports 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) with schema v3 to v4 migration and explicit legacy topic mapping (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) occurring strictly in the schema v4 migration, returns compact blackboard_info summaries and actionable schema hints on error, delivers targeted messages on claim, and rolls up decisions and deferred into durable receipts.'
+- 'INV-BLACKBOARD-GATE-ROUTING: task_blackboard in task-store schema version 5 includes an optional gate TEXT column with query indexes, supports 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) with schema v4 to v5 migration and explicit legacy topic mapping (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) occurring strictly in the schema v5 migration, returns compact blackboard_info summaries and actionable schema hints on error, delivers targeted messages on claim, and rolls up decisions and deferred into durable receipts.'
 scope:
-  - src/db/tasks_store.rs
-  - src/engine/tasks.rs
-  - src/engine/tasks/context.rs
-  - src/core/tasks/gates.rs
-  - src/cli/guide.rs
-  - src/mcp/tools.rs
-  - skills/contextunity-forge/SKILL.md
-  - tests/acdd/blackboard.rs
-  - tests/acdd/tasks.rs
-  - docs/reference/tasks.md
-status: ready
+- src/db/tasks_store.rs
+- src/engine/tasks.rs
+- src/engine/tasks/context.rs
+- src/core/tasks/gates.rs
+- src/cli/guide.rs
+- src/mcp/tools.rs
+- skills/contextunity-forge/SKILL.md
+- tests/acdd/blackboard.rs
+- tests/acdd/tasks.rs
+- docs/reference/tasks.md
+status: completed
 subtasks:
-  - subtask_ref: migrate-blackboard-schema-v3-and-gate-column
-    title: "Migrate task_blackboard from task-store schema version 3 to version 4 adding optional gate TEXT column with indexes, compound queries in TasksStore, and explicit one-time SQLite migration mapping legacy topics (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) to canonical topics with zero runtime backward-compatibility shims (seam test: tests/acdd/tasks.rs::task_blackboard_gate_targeting_and_schema_hint, breaking mutation: reject gate column query)"
-    status: pending
-  - subtask_ref: extend-blackboard-request-with-gate-targeting
-    title: "Support optional gate parameter in BlackboardRequest for post and read actions with validation against active profile gates"
-    status: pending
-  - subtask_ref: adopt-canonical-single-word-topics-and-receipt-rollup
-    title: "Standardize the 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) and map decisions and deferred to durable receipt rollup in gates.rs"
-    status: pending
-  - subtask_ref: provide-actionable-schema-hints-and-workflow-gates
-    title: "Return rich schema hints with canonical topic descriptions, active profile gates, and example JSON when blackboard validation fails"
-    status: pending
-  - subtask_ref: auto-inject-targeted-messages-in-claim-and-guidance
-    title: "Automatically deliver targeted gate messages in workflow_guidance.blackboard_messages and blackboard_info during gate claim and context retrieval"
-    status: pending
-  - subtask_ref: align-skill-and-guide-blackboard-spec
-    title: "Update skills/contextunity-forge/SKILL.md, guide.rs, and docs/reference/tasks.md with canonical topics, gate targeting, and examples"
-    status: pending
-  - subtask_ref: add-blackboard-routing-and-validation-seam-tests
-    title: "Author comprehensive seam tests in tests/acdd/tasks.rs verifying gate targeting, canonical topics, legacy topic migration, error hints, and durable receipt rollup"
-    status: pending
+- subtask_ref: migrate-blackboard-schema-v3-and-gate-column
+  title: 'Migrate task_blackboard from task-store schema version 4 to version 5 adding optional gate TEXT column with indexes, compound queries in TasksStore, and explicit one-time SQLite migration mapping legacy topics (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) to canonical topics with zero runtime backward-compatibility shims (seam test: tests/acdd/tasks.rs::task_blackboard_gate_targeting_and_schema_hint, breaking mutation: reject gate column query)'
+  status: pending
+  evidence: null
+- subtask_ref: extend-blackboard-request-with-gate-targeting
+  title: Support optional gate parameter in BlackboardRequest for post and read actions with validation against active profile gates
+  status: pending
+  evidence: null
+- subtask_ref: adopt-canonical-single-word-topics-and-receipt-rollup
+  title: Standardize the 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) and map decisions and deferred to durable receipt rollup in gates.rs
+  status: pending
+  evidence: null
+- subtask_ref: provide-actionable-schema-hints-and-workflow-gates
+  title: Return rich schema hints with canonical topic descriptions, active profile gates, and example JSON when blackboard validation fails
+  status: pending
+  evidence: null
+- subtask_ref: auto-inject-targeted-messages-in-claim-and-guidance
+  title: Automatically deliver targeted gate messages in workflow_guidance.blackboard_messages and blackboard_info during gate claim and context retrieval
+  status: pending
+  evidence: null
+- subtask_ref: align-skill-and-guide-blackboard-spec
+  title: Update skills/contextunity-forge/SKILL.md, guide.rs, and docs/reference/tasks.md with canonical topics, gate targeting, and examples
+  status: pending
+  evidence: null
+- subtask_ref: add-blackboard-routing-and-validation-seam-tests
+  title: Author comprehensive seam tests in tests/acdd/tasks.rs verifying gate targeting, canonical topics, legacy topic migration, error hints, and durable receipt rollup
+  status: pending
+  evidence: null
+receipt:
+  contract_revision: 19
+  passed_at: 2026-10-10T15:37:42.433807623+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test acdd
+      exit_code: 0
+      tests_passed: 72
+      tests_failed: 0
+      log: '72 passed, 0 failed. Focused: cargo test --test acdd task_blackboard_gate_targeting_and_schema_hint -- --nocapture (1 passed); v1 migration valid + rollback (2 passed); milestone profile pin routing/tampering (1 passed). cargo clippy --all-targets --all-features -- -D warnings: exit 0. git diff --check: exit 0. Targeted rustfmt --edition 2021 --check --config skip_children=true on 12 Task6 Rust paths: exit 1 with 122 pre-existing formatter diffs in dirty files; newly added migration/profile blocks are formatted and tests/acdd/blackboard.rs passes rustfmt --check. No known functional failures.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'All 14 admitted source paths match candidate ae55bac; 13 changed versus baseline. Repair delta is limited to tasks_store.rs, engine/tasks.rs, and blackboard tests. Task5 receipt remains byte-identical. Scope evidence: /tmp/task6-r2-review-source-hashes.json.'
+        claims:
+          applicable: true
+          evidence: Fresh independent review claim 8, contract 19, worker task6-review-sol61. Required ACDD gate passed 72/72. R1 and R2 independently confirmed fixed using public CLI seams; closure ledger /tmp/task6-r2-review-closure-ledger.json. Canonical-only runtime topics, gate targeting, claim/context injection, actionable hints, and labeled decisions/deferred in existing architectural_notes are verified.
+        concurrency:
+          applicable: true
+          evidence: Immediate migration transactions preserve rollback for malformed, orphan, absolute, and traversal rows. Existing posting/completion fences and delivery transaction boundaries remain intact; concurrency and delivery rollback coverage passes in the 72-test ACDD target.
+        project_isolation:
+          applicable: true
+          evidence: 'Schema-v1 migration qualifies each preserved row using its owning task namespace; shared-project public reads and inspect preserve metadata. Milestone effective pinned profile resolves in its owning confined root, task overrides prevail, default/nonmember gates reject, tampered hashes and external symlinks fail closed. Public CLI proofs: /tmp/task6-r2-review-v1-public-proof.json and /tmp/task6-r2-review-pin-public-proof.json.'
+        administration:
+          applicable: true
+          evidence: Full migration chain reaches schema 5 with one-time legacy-topic mapping and no runtime compatibility fallback. Existing ReceiptRollup representation and historical Task5 receipt remain compatible without new fields/defaults. Documentation, skill, CLI guidance, and tests align. Builder strict Clippy and diff check passed; 122 scoped rustfmt differences are pre-existing. No new blocking findings.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-COMPLETED-SCOPE-RELEASE: Completed milestone tasks release their exclusive file locks in SQLite: the status != "completed" filter applies strictly to lock conflict detection during task claim and extend_scope, preserving stored scope path history while freeing file claims for successor tasks to extend into and evolve shared documentation and code paths without false scope conflicts.'
+    - 'INV-REPO-AGNOSTIC-GUIDANCE: Task guidance gap detection verifies skill presence, repository instruction compliance, and exact canonical .gitignore compliance (tracking .forge/acdd/** including .forge/acdd/profile.yaml and .forge/frameworks/** extensions while ignoring runtime SQLite databases, locks, and logs) without imposing tool-name restrictions or hardcoded internal URLs on external consumer repositories.'
+    - 'INV-SKILL-TOOL-REFERENCE-DELEGATION: The contextunity-forge skill serves as the generic tool reference and standing Git permission baseline, delegating workflow gate governance, review contours, and role policies to the active task profile. Git standing permissions explicitly distinguish auto_commit: true (Forge creates atomic commit on deliver) from auto_commit: false (agent commits after deliver) and final milestone archive commits.'
+    - 'INV-HANDOFF-RECORDING-CLARITY: Milestone handoff is CLI-only and records caller-verified test results into durable receipts without conflating execution with persistence: upon verifying that all milestone tasks are completed and verification tests pass, handoff resolves the landed commit for each task in the milestone branch (the commit that landed the task''s work into the milestone branch, whether via fast-forward or merge commit), rewrites receipt.commit of each task in the milestone document and SQLite store to that landed commit SHA, records the overall milestone handoff.commit (HEAD at handoff) in frontmatter, and archives the document; the subsequent milestone archive commit occurs after handoff and is excluded from receipt.commit. Exact verification commands and counts are codified in TESTS.md.'
+    - 'INV-DECLARATIVE-ACDD-PROFILE: The declarative YAML profile engine (GateProfile with embedded acdd.default.yaml via include_str!) strictly separates arbitrary gate id (workspace tokens defaulting to contract, build, review, deliver), closed proof taxonomy (contract, command, review, delivery, none, or scheme with recursive data schema validation driving context bundles, independent review, and durable receipts), gate fields (explicit sha_snapshot: bool per gate in defaults, reject_to, independent_from, review_sources, role, steps, tools, contours set reference, and proof: { scheme: ... } structural schema definition for scheme proof), command registry (commands mapping to executable shell commands), and hierarchical policies. Default 4 gates in acdd.default.yaml map strictly to proof: contract, command, review, and delivery; sha_snapshot is explicitly true for contract/build and false for review/deliver. contours is a nested dictionary (IndexMap<String, IndexMap<String, ContourDef>> preserving definition order) where "standard" preserves the canonical 5 contours (paths, claims, concurrency, project_isolation, administration) with operational criteria and descriptions; gates reference contour sets via gate.contours (defaulting to "standard"). Delivery gates (proof: delivery) support auto_commit: bool (default true), creating an atomic Git commit directly from the candidate snapshot tree of the nearest predecessor gate with sha_snapshot: true (which is build in the default profile, whose candidate tree SHA is verified across all review_sources) plus the milestone receipt, with parent HEAD, verifying git rev-parse HEAD matches candidate_baseline_head (the exact commit SHA of HEAD captured when the candidate snapshot was created), standard commit messages derived from task targets and completed subtasks, and enforced hooks; the created commit SHA is persisted into the task''s delivery receipt in SQLite. If git commit fails, SQLite receipt recording and task completion roll back atomically, leaving the task at deliver with an explicit error ready for reject rewind or retry. Upon milestone handoff, Forge resolves each task''s landed commit in the milestone branch and rewrites receipt.commit to that landed SHA before archiving the document (the archive commit is created after handoff and is excluded from receipt.commit). Delivery rolls up reviews across review_sources (strictly prior gates with proof: review verifying the identical candidate SHA). Profile resolution precedence: task.spec.acdd_profile over milestone.acdd_profile over forge-mcp.yaml path link over .forge/acdd/profile.yaml over embedded defaults. Single-line profile pinning format in milestone frontmatter or task spec (acdd_profile: "<path>:<sha256_prefix>" with at least 7 hex characters) is persisted into SQLite task metadata during task sync; Forge verifies the file hash prefix matches, failing closed with TASK_PROFILE_TAMPERED on mismatch. Task operations validating gate identifiers fail closed with TASK_STAGE_UNKNOWN if a task stage is missing from the active profile gates, providing actionable recommendations. Zero runtime backward-compatibility is maintained strictly across SQLite runtime data and active milestones: historical archive receipts in docs/milestones/archive/ are exempt from active profile validation. Protected system paths in .forge/acdd/** cannot be added via extend_scope (TASK_SCOPE_PROTECTED) and dirty system files fail closed with TASK_SCOPE_VIOLATION unless explicitly admitted in the active task initial planning-time task.spec.scope. Linked workspace profiles are strictly ignored (only the active workspace root defines the ACDD profile). Profile compilation evaluates the merged profile and fails closed if gates is empty, delivery is not exactly one or not terminal, IDs repeat, reject_to or independent_from do not point to strictly prior gates, review_sources do not point to strictly prior review gates, or roles/contours/commands are undefined. Task state persists task.stage string ID where position is computed at runtime and unknown IDs stop claim. task list --stage accepts any active profile gate id.'
+    - 'INV-BLACKBOARD-GATE-ROUTING: task_blackboard in SQLite schema version 5 includes an optional gate TEXT column with query indexes, supports 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) with schema v4 to v5 migration and explicit legacy topic mapping (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) occurring strictly in the schema v5 migration, returns compact blackboard_info summaries and actionable schema hints on error, delivers targeted messages on claim, and rolls up decisions and deferred into durable receipts.'
+    - 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
+    - 'INV-BLACKBOARD-GATE-ROUTING: task_blackboard in task-store schema version 5 includes an optional gate TEXT column with query indexes, supports 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) with schema v4 to v5 migration and explicit legacy topic mapping (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) occurring strictly in the schema v5 migration, returns compact blackboard_info summaries and actionable schema hints on error, delivers targeted messages on claim, and rolls up decisions and deferred into durable receipts.'
+    architectural_notes:
+    - |-
+      decisions: Contract boundary check for Task 6 (contract revision 18; local claim revision 2):
+
+      Verified:
+      - The live store is already schema v4: src/db/tasks_store.rs:391-427 migrates v3 to v4 for digest_version; open_project accepts v4 without a follow-on migration at lines 450-466, fresh stores start at v4 at line 477, and the task_blackboard table at line 486 has no gate column. Task 6 must therefore add the gate column and topic mapping in v4 to v5.
+      - Task 5, acdd-configurable-profiles-and-workflow-engine, is completed at contract revision 20. Its receipt records the v3-to-v4 digest_version marker migration (line 503) and its durable verified_invariants include the earlier blackboard text (line 512). Preserve that completed receipt byte-for-byte.
+      - Task 6 already owns src/db/tasks_store.rs and the blackboard engine, context, gates, CLI/MCP, tests, skill, and task reference paths. No scope change is needed.
+      - Task 7, acdd-nomenclature-rename-augmented-contract-driven-development, depends on Task 6 but has an independent nomenclature target and revision 18. Leave its contract and dependency unchanged.
+
+      Proposed minimal diff to docs/milestones/016-acdd-declarative-profiles-and-workflow-governance.md:
+
+      ```diff
+      @@ frontmatter invariants
+      - INV-BLACKBOARD-GATE-ROUTING: task_blackboard in SQLite schema version 3 ... schema v2 to v3 migration ... occurring strictly in the schema v3 migration ...
+      + INV-BLACKBOARD-GATE-ROUTING: task_blackboard in SQLite schema version 5 ... schema v4 to v5 migration ... occurring strictly in the schema v5 migration ...
+      @@ outcome bullet 7
+      - Upgrade the task-store schema from version 3 to version 4 for blackboard gate targeting, ...
+      + Upgrade the task-store schema from version 4 to version 5 for blackboard gate targeting, ...
+      @@ Task 6
+      - target: "... task-store schema version 4 migration ..."
+      + target: "... task-store schema version 5 migration ..."
+      - contract_revision: 18
+      + contract_revision: 19
+      @@ Task 6 invariant
+      - task_blackboard in task-store schema version 4 ... schema v3 to v4 migration ... schema v4 migration ...
+      + task_blackboard in task-store schema version 5 ... schema v4 to v5 migration ... schema v5 migration ...
+      @@ first Task 6 subtask title
+      - Migrate task_blackboard from task-store schema version 3 to version 4 adding optional gate TEXT ...
+      + Migrate task_blackboard from task-store schema version 4 to version 5 adding optional gate TEXT ...
+      ```
+
+      Keep the first subtask_ref stable to retain operational identity; preserve its named seam tests/acdd/tasks.rs::task_blackboard_gate_targeting_and_schema_hint and breaking mutation: reject gate column query. Also leave all completed receipts, including Task 5 at lines 475-525, and the entire Task 7 block at lines 573-613 unchanged. The active milestone objective bullet 7 and frontmatter invariant are the additional authority text that must change along with Task 6 target, revision, invariant, and first subtask title. No code, test, scope, or migration mechanism is proposed here.
+    - |-
+      decisions: Task 6 contract amendment proposal v2 — contract-only, no repository mutation
+
+      Proposed milestone diff:
+      - Frontmatter blackboard invariant: change the active blackboard schema target from v3 with migration v2→v3 to schema v5 with migration v4→v5.
+      - Active milestone outcome #7: change task-store schema v3→v4 to v4→v5.
+      - Task 6 target: v4→v5.
+      - Task 6 contract_revision: 18→19.
+      - Task 6 INV-BLACKBOARD-GATE-ROUTING: schema v5 with v4→v5 migration.
+      - First Task 6 subtask title: schema v3→v4 becomes v4→v5. Keep its existing subtask_ref, named seam test tests/acdd/tasks.rs::task_blackboard_gate_targeting_and_schema_hint, and breaking mutation “reject gate column query” unchanged.
+      - Task 7 contract_revision: 18→19 solely to acknowledge the changed inherited milestone invariant. Keep its target, scope, proof, dependency, and subtasks unchanged.
+
+      Authority basis: Milestone::digest serializes self.invariants into each digest form in src/core/tasks/mod.rs. sync_selected accepts an unchanged digest, but when the digest changes it rejects completed specs or a contract_revision that is not greater than the stored revision with AUTHORITY_GAP. Therefore, changing the parent invariant changes Task 7 digest too; leaving Task 7 at revision 18 would block its bounded sync/claim. Task 5 is completed, so preserve its historical receipt and do not re-sync it after the parent invariant changes.
+
+      After the milestone amendment is approved, sync only Task 6 and Task 7 by bounded task-specific operations; do not run broad milestone sync. Preserve Task 5 receipt exactly. Task 6 schema stays version 5 because schema v4 already exists for digest_version. No migration history or new mechanisms are proposed. No source or test edits have been made.
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: acdd-nomenclature-rename-augmented-contract-driven-development
@@ -576,13 +679,12 @@ subtasks:
 task_ref: acdd-nomenclature-rename-augmented-contract-driven-development
 target: "Consistently rename all active occurrences of 'admitted contract' to 'augmented contract' and verify clean default gate identifiers without /v1 suffixes where stage arguments validate against active profile across active codebase, documentation, tests, CLI, and skills without altering archive milestones or historical ADRs"
 proof_policy: direct-proof
-contract_revision: 18
+contract_revision: 20
 depends_on:
   - task-blackboard-targeted-routing-and-topics
 invariants:
   - 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
 scope:
-  - src/
   - docs/runbooks/
   - docs/reference/
   - skills/
@@ -605,7 +707,7 @@ subtasks:
     title: "Verify default clean gate identifiers (contract, build, review, deliver) without /v1 suffix across core models, queries, and verify CLI and MCP stage arguments validate dynamically against active profile"
     status: pending
   - subtask_ref: rename-nomenclature-in-source-code-and-comments
-    title: "Update src/ core models, cli messages, and doc comments from admitted to augmented contract"
+    title: "Audit active source models, CLI messages, and doc comments for legacy admitted-contract terminology and /v1 gate tokens; use bounded scope extensions only for verified matches, then rename terms and validate clean dynamic gate IDs"
     status: pending
   - subtask_ref: update-test-identifiers-and-assertions
     title: "Align test suites and error assertion texts with augmented contract nomenclature and clean gate tokens"

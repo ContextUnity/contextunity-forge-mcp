@@ -155,7 +155,16 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             },
         )
         .unwrap();
-        assert_eq!(claimed["workflow_guidance"], *guidance);
+        assert_eq!(
+            claimed["workflow_guidance"]["active_stage"],
+            guidance["active_stage"]
+        );
+        assert_eq!(
+            claimed["workflow_guidance"]["agent_type"],
+            guidance["agent_type"]
+        );
+        assert_eq!(claimed["workflow_guidance"]["steps"], guidance["steps"]);
+        assert!(claimed["workflow_guidance"]["blackboard_messages"].is_array());
         if repository == "forge-mcp" && !absent {
             let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
             let task = store.inspect(&id).unwrap();
@@ -1262,6 +1271,29 @@ fn tasks_coordinate_claims_dependencies_reset_and_scope() {
 fn gates_write_receipts_and_preserve_retention_outcomes() {
     let (root, mut store, milestone) = fixture();
     let id = milestone.task_id(&milestone.tasks[0]);
+    store
+        .blackboard_post(
+            &id,
+            "builder",
+            "decisions",
+            "Keep the parser boundary stable.",
+        )
+        .unwrap();
+    store
+        .blackboard_post(
+            &id,
+            "builder",
+            "deferred",
+            "Measure large fixture cost later.",
+        )
+        .unwrap();
+    store
+        .connection
+        .execute(
+            "UPDATE task_blackboard SET created_at=1 WHERE task_id=?1",
+            [&id],
+        )
+        .unwrap();
     for (gate, stage) in GATES.iter().enumerate() {
         let worker = match gate {
             2 => "reviewer",
@@ -1303,11 +1335,30 @@ fn gates_write_receipts_and_preserve_retention_outcomes() {
         }))
         .unwrap();
         let result = tasks::submit(&root.0, request).unwrap();
-        assert_eq!(result["status"], if gate == 3 { "completed" } else { "ready" });
+        assert_eq!(
+            result["status"],
+            if gate == 3 { "completed" } else { "ready" }
+        );
     }
     let completed = store.inspect(&id).unwrap();
-    assert!(completed.receipt.as_ref().unwrap().rollup.is_some());
+    let rollup = completed.receipt.as_ref().unwrap().rollup.as_ref().unwrap();
+    assert_eq!(
+        rollup.architectural_notes,
+        vec![
+            "decisions: Keep the parser boundary stable.",
+            "deferred: Measure large fixture cost later."
+        ]
+    );
     assert!(completed.receipt.as_ref().unwrap().commit.is_some());
+    let remaining_messages: i64 = store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM task_blackboard WHERE task_id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining_messages, 0);
     let at = completed.completed_at.unwrap();
     assert!(store
         .delete(Some(&id), None, false, at + RETENTION_SECONDS)
@@ -3164,23 +3215,13 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
 
     // Post message to task
     store
-        .blackboard_post(
-            task_id,
-            "agent_1",
-            "hypothesis",
-            "Initial hypothesis for task",
-        )
+        .blackboard_post(task_id, "agent_1", "notes", "Initial hypothesis for task")
         .unwrap();
 
     // Post message from another task in same milestone
     let task_2_id = "forge-mcp/forge-mcp/m-test:second";
     store
-        .blackboard_post(
-            task_2_id,
-            "agent_2",
-            "architectural_notes",
-            "Milestone level finding",
-        )
+        .blackboard_post(task_2_id, "agent_2", "decisions", "Milestone level finding")
         .unwrap();
 
     // Claim without specifying bundle (bundle defaults to true)
@@ -3212,6 +3253,244 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
         "Expected both task and milestone sibling blackboard messages"
     );
     assert!(claim_res["workflow_guidance"].is_object());
+}
+
+#[test]
+fn task_blackboard_gate_targeting_and_schema_hint() {
+    let (root, store, milestone) = fixture();
+    let task_id = milestone.task_id(&milestone.tasks[0]);
+    let task = store.inspect(&task_id).unwrap();
+    let milestone_ref = store.milestone_scope_ref(&task.milestone_ref).unwrap();
+
+    // Reconstruct the last admitted schema so this seam always exercises v4 -> v5,
+    // including after the implementation starts creating v5 stores by default.
+    store
+        .connection
+        .execute_batch(
+            "DROP TABLE task_blackboard;
+             CREATE TABLE task_blackboard(
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 milestone_ref TEXT NOT NULL,
+                 task_id TEXT REFERENCES tasks ON DELETE CASCADE,
+                 subtask_ref TEXT,
+                 author TEXT NOT NULL,
+                 topic TEXT NOT NULL,
+                 payload TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 CHECK(task_id IS NOT NULL OR subtask_ref IS NULL)
+             );
+             CREATE INDEX idx_task_blackboard_scope_created
+                 ON task_blackboard(milestone_ref, task_id, subtask_ref, created_at DESC, id DESC);
+             CREATE INDEX idx_task_blackboard_task_created
+                 ON task_blackboard(task_id, created_at DESC, id DESC);
+             UPDATE task_store_metadata SET value='4' WHERE key='schema_version';",
+        )
+        .unwrap();
+
+    let topic_cases = [
+        ("contract_draft", "draft"),
+        ("contract_findings", "findings"),
+        ("build_proof", "notes"),
+        ("architectural_notes", "decisions"),
+        ("draft", "draft"),
+        ("notes", "notes"),
+        ("findings", "findings"),
+        ("blockers", "blockers"),
+        ("decisions", "decisions"),
+        ("deferred", "deferred"),
+        ("unrecognized_legacy_topic", "notes"),
+    ];
+    for (index, (topic, _)) in topic_cases.iter().enumerate() {
+        let id = index as i64 + 1;
+        store
+            .connection
+            .execute(
+                "INSERT INTO task_blackboard(id,milestone_ref,task_id,author,topic,payload,created_at)
+                 VALUES(?1,?2,?3,'legacy-worker',?4,?5,?6)",
+                rusqlite::params![id, milestone_ref, task_id, topic, format!("legacy-{id}"), id],
+            )
+            .unwrap();
+    }
+    drop(store);
+
+    let store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    let schema_version: String = store
+        .connection
+        .query_row(
+            "SELECT value FROM task_store_metadata WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(schema_version, "5");
+
+    let gate_column_exists: bool = store
+        .connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_blackboard') WHERE name='gate')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(gate_column_exists, "v5 migration must add the gate column");
+    let gate_column: (String, i64) = store
+        .connection
+        .query_row(
+            "SELECT type, \"notnull\" FROM pragma_table_info('task_blackboard') WHERE name='gate'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(gate_column, ("TEXT".into(), 0));
+    let gate_indexes: i64 = store
+        .connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE type='index' AND tbl_name='task_blackboard' AND sql LIKE '%gate%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(gate_indexes > 0, "gate-targeted lookups need an index");
+
+    for (index, (_, expected_topic)) in topic_cases.iter().enumerate() {
+        let id = index as i64 + 1;
+        let migrated_topic: String = store
+            .connection
+            .query_row(
+                "SELECT topic FROM task_blackboard WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(&migrated_topic, expected_topic);
+        let migrated_gate: Option<String> = store
+            .connection
+            .query_row(
+                "SELECT gate FROM task_blackboard WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(migrated_gate, None);
+    }
+    store
+        .connection
+        .execute("DELETE FROM task_blackboard", [])
+        .unwrap();
+    drop(store);
+
+    let call = |request| {
+        tasks::blackboard(
+            &root.0,
+            serde_json::from_value(request).unwrap(),
+            "blackboard-test",
+        )
+    };
+    let contract_post = call(json!({
+        "action": "post",
+        "task_id": task_id,
+        "gate": "contract",
+        "topic": "decisions",
+        "payload": "Choose the public gate routing shape"
+    }))
+    .unwrap();
+    let contract_id = contract_post["id"].as_u64().unwrap();
+    let build_post = call(json!({
+        "action": "post",
+        "task_id": task_id,
+        "gate": "build",
+        "topic": "deferred",
+        "payload": "Retain the build follow-up"
+    }))
+    .unwrap();
+    let build_id = build_post["id"].as_u64().unwrap();
+
+    let contract_page = call(json!({
+        "action": "read",
+        "task_id": task_id,
+        "gate": "contract",
+        "limit": 50
+    }))
+    .unwrap();
+    let contract_messages = contract_page["messages"].as_array().unwrap();
+    assert_eq!(contract_messages.len(), 1);
+    assert_eq!(contract_messages[0]["id"], contract_id);
+    assert_eq!(contract_messages[0]["gate"], "contract");
+
+    let invalid_topic = call(json!({
+        "action": "post",
+        "task_id": task_id,
+        "gate": "contract",
+        "topic": "architectural_notes",
+        "payload": "This legacy topic must be rejected at runtime"
+    }))
+    .unwrap_err();
+    let schema_hint = format!("{invalid_topic:#}");
+    for expected in [
+        "draft",
+        "notes",
+        "findings",
+        "blockers",
+        "decisions",
+        "deferred",
+        "contract",
+        "build",
+        "review",
+        "deliver",
+        "example",
+    ] {
+        assert!(
+            schema_hint.contains(expected),
+            "actionable blackboard schema hint omitted {expected:?}: {schema_hint}"
+        );
+    }
+    let invalid_gate = call(json!({
+        "action": "read",
+        "task_id": task_id,
+        "gate": "unknown-gate"
+    }))
+    .unwrap_err();
+    let gate_hint = format!("{invalid_gate:#}");
+    for expected in [
+        "unknown-gate",
+        "contract",
+        "build",
+        "review",
+        "deliver",
+        "example",
+    ] {
+        assert!(
+            gate_hint.contains(expected),
+            "actionable blackboard gate hint omitted {expected:?}: {gate_hint}"
+        );
+    }
+
+    let claim = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.clone(),
+            stage: "contract".into(),
+            worker_id: "blackboard-claim-test".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let claim_messages = claim["workflow_guidance"]["blackboard_messages"]
+        .as_array()
+        .expect("claim guidance carries the active gate's blackboard messages");
+    assert_eq!(claim_messages.len(), 1);
+    assert_eq!(claim_messages[0]["id"], contract_id);
+    assert_eq!(claim_messages[0]["gate"], "contract");
+    let blackboard_info = claim["blackboard_info"]
+        .as_object()
+        .expect("claim returns a compact blackboard_info summary");
+    assert!(
+        serde_json::to_vec(blackboard_info).unwrap().len() <= 1024,
+        "blackboard_info should remain compact"
+    );
+    assert_ne!(contract_id, build_id);
 }
 
 #[test]
@@ -3869,6 +4148,14 @@ fn v2_migration_normalizes_pending_gate_ids_with_null_evidence() {
     }
     store
         .connection
+        .execute_batch(
+            "DROP INDEX IF EXISTS idx_task_blackboard_gate_scope_created;
+             DROP INDEX IF EXISTS idx_task_blackboard_task_gate_created;
+             ALTER TABLE task_blackboard DROP COLUMN gate;",
+        )
+        .unwrap();
+    store
+        .connection
         .execute(
             "UPDATE task_store_metadata SET value='2' WHERE key='schema_version'",
             [],
@@ -3911,7 +4198,7 @@ fn v2_migration_normalizes_pending_gate_ids_with_null_evidence() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(schema_version, "4");
+    assert_eq!(schema_version, "5");
 }
 
 #[test]
@@ -3977,6 +4264,14 @@ fn v2_migration_preserves_legacy_unpinned_task_authority_for_sync_and_claim() {
         .execute(
             "UPDATE task_gates SET gate='contract/v1' WHERE task_id=?1 AND gate='contract'",
             [&task_id],
+        )
+        .unwrap();
+    store
+        .connection
+        .execute_batch(
+            "DROP INDEX IF EXISTS idx_task_blackboard_gate_scope_created;
+             DROP INDEX IF EXISTS idx_task_blackboard_task_gate_created;
+             ALTER TABLE task_blackboard DROP COLUMN gate;",
         )
         .unwrap();
     store
@@ -4084,6 +4379,14 @@ fn v2_migration_preserves_legacy_unpinned_task_authority_for_sync_and_claim() {
         .execute(
             "UPDATE tasks SET descriptor=?2 WHERE task_id=?1",
             rusqlite::params![task_id, serde_json::to_string(&descriptor).unwrap()],
+        )
+        .unwrap();
+    migrated
+        .connection
+        .execute_batch(
+            "DROP INDEX IF EXISTS idx_task_blackboard_gate_scope_created;
+             DROP INDEX IF EXISTS idx_task_blackboard_task_gate_created;
+             ALTER TABLE task_blackboard DROP COLUMN gate;",
         )
         .unwrap();
     migrated

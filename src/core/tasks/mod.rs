@@ -83,7 +83,7 @@ pub struct Receipt {
 pub struct ReceiptRollup {
     /// Invariants admitted for the delivered task.
     pub verified_invariants: Vec<String>,
-    /// Architectural notes authored on the task blackboard.
+    /// Durable task blackboard outcomes; new decision and deferred entries retain a topic prefix.
     pub architectural_notes: Vec<String>,
     /// Compact decision across the five review contours.
     pub review_summary: ReviewSummary,
