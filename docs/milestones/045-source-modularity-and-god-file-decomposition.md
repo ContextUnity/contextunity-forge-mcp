@@ -131,7 +131,7 @@ receipt:
 task_ref: deduplicate-proven-patterns-and-typescript-seams
 target: "Deduplicate the matching stub filter and the TypeScript callback-parameter walk, then split typescript.rs along orthogonal subsystems"
 proof_policy: seam-test-first
-contract_revision: 5
+contract_revision: 6
 scope:
   - build.rs
   - src/engine/linker.rs
@@ -147,6 +147,8 @@ scope:
   - src/engine/languages/typescript/frameworks.rs
   - src/engine/languages/typescript/types.rs
   - src/engine/languages/typescript/linker_bindings.rs
+  - tests/languages.rs
+  - tests/linker.rs
 status: planned
 subtasks:
   - subtask_ref: deduplicate-linker-candidate-filters
