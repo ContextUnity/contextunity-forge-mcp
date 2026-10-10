@@ -19,6 +19,31 @@ pub type PackageExports<'a> = HashMap<&'a str, HashMap<&'a str, Option<&'a Node>
 /// Cross-file indexes available while resolving one import reference.
 pub type ModulesByNamespace<'a> = HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>;
 
+/// Drop stub and overload candidates only when a concrete implementation is available.
+pub(crate) fn filter_stubs_and_overloads(candidates: &mut Vec<&Node>) {
+    if candidates.len() <= 1 {
+        return;
+    }
+
+    let has_concrete = candidates.iter().any(|node| !is_stub_or_overload(node));
+    let has_stub_or_overload = candidates.iter().any(|node| is_stub_or_overload(node));
+    if has_concrete && has_stub_or_overload {
+        candidates.retain(|node| !is_stub_or_overload(node));
+    }
+}
+
+fn is_stub_or_overload(node: &Node) -> bool {
+    node.details
+        .get("is_stub")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+        || node
+            .details
+            .get("is_overload")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+}
+
 /// Input for a language linker resolving one import.
 pub struct ImportContext<'ctx, 'a, 'input> {
     /// Workspace-relative importing file.
@@ -295,4 +320,58 @@ pub(crate) fn resolve_default_import<'ctx, 'a, 'input>(
             }),
     );
     ImportResolution::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::filter_stubs_and_overloads;
+    use crate::core::models::Node;
+
+    fn node(id: &str, is_stub: bool, is_overload: bool) -> Node {
+        Node {
+            id: id.to_owned(),
+            kind: "function".to_owned(),
+            name: id.to_owned(),
+            qualname: id.to_owned(),
+            path: "module.ts".to_owned(),
+            line: 1,
+            end_line: 1,
+            is_test: false,
+            language: "typescript".to_owned(),
+            generated: false,
+            details: serde_json::json!({
+                "is_stub": is_stub,
+                "is_overload": is_overload,
+            }),
+        }
+    }
+
+    #[test]
+    fn filter_stubs_and_overloads_keeps_concrete_candidates_when_present() {
+        let stub = node("stub", true, false);
+        let implementation = node("implementation", false, false);
+        let overload = node("overload", false, true);
+        let mut candidates = vec![&stub, &implementation, &overload];
+
+        filter_stubs_and_overloads(&mut candidates);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.id.as_str())
+                .collect::<Vec<_>>(),
+            ["implementation"]
+        );
+    }
+
+    #[test]
+    fn filter_stubs_and_overloads_keeps_ambiguous_stubs_without_implementation() {
+        let stub = node("stub", true, false);
+        let overload = node("overload", false, true);
+        let mut candidates = vec![&stub, &overload];
+
+        filter_stubs_and_overloads(&mut candidates);
+
+        assert_eq!(candidates.len(), 2);
+    }
 }

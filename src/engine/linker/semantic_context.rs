@@ -716,28 +716,7 @@ impl<'a> Context<'a> {
                 ),
             })
             .collect();
-        if candidates.len() > 1 {
-            let non_stubs: Vec<&'a Node> = candidates
-                .iter()
-                .copied()
-                .filter(|n| {
-                    let is_stub = n
-                        .details
-                        .get("is_stub")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let is_overload = n
-                        .details
-                        .get("is_overload")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    !is_stub && !is_overload
-                })
-                .collect();
-            if !non_stubs.is_empty() && non_stubs.len() < candidates.len() {
-                candidates = non_stubs;
-            }
-        }
+        crate::engine::linker::traits::filter_stubs_and_overloads(&mut candidates);
         if candidates.is_empty() {
             return Symbol::Unknown;
         }

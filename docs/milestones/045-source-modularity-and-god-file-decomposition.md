@@ -129,43 +129,96 @@ receipt:
 
 ```yaml
 task_ref: deduplicate-proven-patterns-and-typescript-seams
-target: "Deduplicate the matching stub filter and the TypeScript callback-parameter walk, then split typescript.rs along orthogonal subsystems"
+target: Deduplicate the matching stub filter and the TypeScript callback-parameter walk, then split typescript.rs along orthogonal subsystems
 proof_policy: seam-test-first
 contract_revision: 6
 scope:
-  - build.rs
-  - src/engine/linker.rs
-  - src/engine/languages/python/linker.rs
-  - src/engine/linker/traits.rs
-  - src/engine/linker/semantic_context.rs
-  - src/engine/languages/mod.rs
-  - src/engine/languages/typescript.rs
-  - src/engine/languages/typescript/
-  - src/engine/languages/typescript/mod.rs
-  - src/engine/languages/typescript/dom.rs
-  - src/engine/languages/typescript/prototypes.rs
-  - src/engine/languages/typescript/frameworks.rs
-  - src/engine/languages/typescript/types.rs
-  - src/engine/languages/typescript/linker_bindings.rs
-  - tests/languages.rs
-  - tests/linker.rs
-status: planned
+- build.rs
+- src/engine/linker.rs
+- src/engine/languages/python/linker.rs
+- src/engine/linker/traits.rs
+- src/engine/linker/semantic_context.rs
+- src/engine/languages/mod.rs
+- src/engine/languages/typescript.rs
+- src/engine/languages/typescript/
+- src/engine/languages/typescript/mod.rs
+- src/engine/languages/typescript/dom.rs
+- src/engine/languages/typescript/prototypes.rs
+- src/engine/languages/typescript/frameworks.rs
+- src/engine/languages/typescript/types.rs
+- src/engine/languages/typescript/linker_bindings.rs
+- tests/languages.rs
+- tests/linker.rs
+status: completed
 subtasks:
-  - subtask_ref: deduplicate-linker-candidate-filters
-    title: "Add filter_stubs_and_overloads in linker/traits.rs and call it from linker.rs lines 940-953 and 2736-2749, python/linker.rs lines 482-495, and semantic_context.rs lines 719-740. Leave semantic_context.rs lines 897-919 and db/reader/selectors.rs unchanged"
-    status: pending
-  - subtask_ref: deduplicate-typescript-callback-param-ast
-    title: "Extract first_callback_parameter for the identical walks at typescript.rs lines 1049-1060 and 2078-2089"
-    status: pending
-  - subtask_ref: update-build-rs-profile-discovery
-    title: "Teach build.rs generate_profiles to register languages/<name>.rs and languages/<name>/mod.rs, keeping the generated #[path] attribute"
-    status: pending
-  - subtask_ref: decompose-typescript-orthogonal-subsystems
-    title: "Split typescript.rs into dom.rs, prototypes.rs, frameworks.rs, types.rs, and mod.rs. Leave typescript_bindings declared from languages/mod.rs"
-    status: pending
-  - subtask_ref: verify-typescript-and-linker-suites
-    title: "Verify cargo test --test languages and cargo test --test linker pass"
-    status: pending
+- subtask_ref: deduplicate-linker-candidate-filters
+  title: Add filter_stubs_and_overloads in linker/traits.rs and call it from linker.rs lines 940-953 and 2736-2749, python/linker.rs lines 482-495, and semantic_context.rs lines 719-740. Leave semantic_context.rs lines 897-919 and db/reader/selectors.rs unchanged
+  status: completed
+  evidence: Added one shared candidate filter and replaced the four matching blocks; `cargo test --test linker` passed (93 passed, 0 failed), including the concrete-vs-stub and ambiguous-stub unit cases.
+- subtask_ref: deduplicate-typescript-callback-param-ast
+  title: Extract first_callback_parameter for the identical walks at typescript.rs lines 1049-1060 and 2078-2089
+  status: completed
+  evidence: Extracted the shared TypeScript callback parameter walk into `typescript/dom.rs`; `cargo test --lib first_callback_parameter` passed (1 passed, 39 filtered), and `cargo test --test languages` passed (252 passed).
+- subtask_ref: update-build-rs-profile-discovery
+  title: 'Teach build.rs generate_profiles to register languages/<name>.rs and languages/<name>/mod.rs, keeping the generated #[path] attribute'
+  status: completed
+  evidence: Profile discovery accepts flat `<name>.rs` files and only directory modules backed by an exact declared Cargo feature `lang-<name>`; helpers such as support/registries are excluded. Regression `helper_modules_are_not_advertised_as_language_profiles` failed before the filter and passed after it. Full `cargo test --test languages` passed (253 passed).
+- subtask_ref: decompose-typescript-orthogonal-subsystems
+  title: Split typescript.rs into dom.rs, prototypes.rs, frameworks.rs, types.rs, and mod.rs. Leave typescript_bindings declared from languages/mod.rs
+  status: completed
+  evidence: Moved DOM handling, frameworks, prototype helpers, and type inference to their own modules; `typescript_bindings` remains declared from `languages/mod.rs`. Corrected candidate passed `cargo test --test languages` (253 passed) and targeted rustfmt checks.
+- subtask_ref: verify-typescript-and-linker-suites
+  title: Verify cargo test --test languages and cargo test --test linker pass
+  status: completed
+  evidence: On the corrected candidate, `cargo test --test languages` passed (253 passed); `cargo test --test linker` passed (93 passed); `cargo clippy --all-targets --all-features -- -D warnings` passed; targeted rustfmt and `git diff --check` passed.
+receipt:
+  contract_revision: 6
+  passed_at: 2026-10-10T22:44:20.989126009+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test languages
+      exit_code: 0
+      tests_passed: 253
+      tests_failed: 0
+      log: 'The new helper-module regression failed before the build.rs change and passes now. Also passed: cargo test --test linker (93); cargo clippy --all-targets --all-features -- -D warnings; rustfmt checks; git diff --check.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed pinned snapshot f7c7c3f. It contains only the task's admitted build.rs, linker/language sources, src/engine/languages/typescript/**, and tests/languages.rs/tests/linker.rs. The round-2 delta from accfb0e is limited to build.rs and the in-scope production regression test; no protected configuration, generated state, credentials, or neighboring project paths changed.
+        claims:
+          applicable: true
+          evidence: The repeated stub/overload filter preserves the prior rule at all four intended call sites, and the TypeScript callback parameter walk and subsystem split remain as previously reviewed. The round-2 build.rs directory branch now requires both mod.rs and a matching declared lang-<name> feature in Cargo.toml. The production test helper_modules_are_not_advertised_as_language_profiles verifies support/registries are absent from AVAILABLE_LANGUAGE_FEATURES and languages::require() returns an unknown-language error. Accepted build evidence records this regression failing before the fix and passing after, plus 253 language tests, 93 linker tests, and strict all-target Clippy.
+        concurrency:
+          applicable: true
+          evidence: The snapshot changes build-time profile discovery, local linker candidate filtering, TypeScript modules, and tests. It does not alter task-store transactions, revision/claim fencing, receipts, locks, Git mutation, or shared task namespaces; no concurrent task state is introduced.
+        project_isolation:
+          applicable: true
+          evidence: Directory discovery enumerates the repository-relative src/engine/languages tree, reads the repository Cargo.toml, and canonicalizes discovered module paths. The round-2 filter excludes helper directories without changing task IDs, workspace resolution, database rows, profile path routing, or Git operations.
+        administration:
+          applicable: true
+          evidence: No ACDD profile/configuration, schema migration, task database, hook, receipt, or delivery code is changed. Cargo.toml remains outside the candidate changes; existing profile digest inputs and generated output placement remain intact. The discovered-feature filter only prevents helper module names from being advertised as language features.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli. Direct rusqlite use in src/core/commitments stays.'
+    - 'INV-FROZEN-ENGINE-DB-CYCLE: The legacy mutual import cycle between src/engine and src/db accepts no new edge. Ports that would break it belong to a later milestone.'
+    - 'INV-BALANCED-MODULARITY: Split only along mixed responsibilities. Cohesive multi-pass pipeline functions have no line-count cap.'
+    - 'INV-DEDUPLICATE-PROVEN-PATTERNS: Collapse a repeated block only where the control flow matches. Distinct rules stay separate.'
+    - 'INV-CANONICAL-HELPERS: Ordinary Git queries, atomic file writes, and cgroup memory detection have one owner in src/core.'
+    - 'INV-COMPAT-REEXPORTS: Moved scanner helpers keep pub use re-exports at engine::scanner. Pure receipt checks stay at core::tasks::gates. core does not re-export engine.'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Language extraction, static value flow, overload ambiguity, and selector disambiguation keep their current results.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: linker-pipeline-decomposition-along-existing-marks

@@ -937,20 +937,7 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                 } = resolution;
                 candidates.sort_by(|a,b|a.id.cmp(&b.id));
                 candidates.dedup_by_key(|n|&n.id);
-                if candidates.len() > 1 {
-                    let non_stubs: Vec<&Node> = candidates
-                        .iter()
-                        .copied()
-                        .filter(|n| {
-                            let is_stub = n.details.get("is_stub").and_then(|v| v.as_bool()).unwrap_or(false);
-                            let is_overload = n.details.get("is_overload").and_then(|v| v.as_bool()).unwrap_or(false);
-                            !is_stub && !is_overload
-                        })
-                        .collect();
-                    if !non_stubs.is_empty() && non_stubs.len() < candidates.len() {
-                        candidates = non_stubs;
-                    }
-                }
+                crate::engine::linker::traits::filter_stubs_and_overloads(&mut candidates);
                 let external = if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
                     profile.and_then(|p| dependency_registry.classification_for_path(p, r.module.as_deref().unwrap_or(&r.expression), path))
                 } else {
@@ -2733,20 +2720,7 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
                 }
                 candidates.sort_by(|a, b| a.id.cmp(&b.id));
                 candidates.dedup_by_key(|n| &n.id);
-                if candidates.len() > 1 {
-                    let non_stubs: Vec<&Node> = candidates
-                        .iter()
-                        .copied()
-                        .filter(|n| {
-                            let is_stub = n.details.get("is_stub").and_then(|v| v.as_bool()).unwrap_or(false);
-                            let is_overload = n.details.get("is_overload").and_then(|v| v.as_bool()).unwrap_or(false);
-                            !is_stub && !is_overload
-                        })
-                        .collect();
-                    if !non_stubs.is_empty() && non_stubs.len() < candidates.len() {
-                        candidates = non_stubs;
-                    }
-                }
+                crate::engine::linker::traits::filter_stubs_and_overloads(&mut candidates);
                 if candidates.is_empty()
                     && !shadowed
                     && profile.is_some_and(|p| matches!(p.id(), "vue" | "typescript" | "javascript"))

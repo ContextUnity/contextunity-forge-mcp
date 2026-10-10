@@ -18,20 +18,40 @@ fn main() {
 fn generate_profiles() {
     use sha2::Digest;
     let directory = std::path::Path::new("src/engine/languages");
+    let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo manifest");
     println!("cargo:rerun-if-changed={}", directory.display());
     let mut profiles = Vec::new();
     for entry in std::fs::read_dir(directory).expect("read language profile directory") {
         let entry = entry.expect("read language profile entry");
-        let path = entry.path();
-        if !entry.file_type().expect("read profile file type").is_file()
-            || path.extension().and_then(|p| p.to_str()) != Some("rs")
+        let entry_path = entry.path();
+        let file_type = entry.file_type().expect("read profile file type");
+        let (name, path) = if file_type.is_file()
+            && entry_path.extension().and_then(|p| p.to_str()) == Some("rs")
         {
+            (
+                entry_path
+                    .file_stem()
+                    .and_then(|p| p.to_str())
+                    .expect("UTF-8 profile filename")
+                    .to_owned(),
+                entry_path,
+            )
+        } else if file_type.is_dir() {
+            let name = entry_path
+                .file_name()
+                .and_then(|p| p.to_str())
+                .expect("UTF-8 profile directory name")
+                .to_owned();
+            let module_path = entry_path.join("mod.rs");
+            if !module_path.is_file()
+                || !manifest_declares_feature(&manifest, &format!("lang-{name}"))
+            {
+                continue;
+            }
+            (name, module_path)
+        } else {
             continue;
-        }
-        let name = path
-            .file_stem()
-            .and_then(|p| p.to_str())
-            .expect("UTF-8 profile filename");
+        };
         if name == "mod" {
             continue;
         }
@@ -42,12 +62,19 @@ fn generate_profiles() {
             "invalid language profile filename: {name}"
         );
         profiles.push((
-            name.to_owned(),
+            name,
             path.canonicalize()
                 .expect("canonical language profile path"),
         ));
     }
     profiles.sort_by(|a, b| a.0.cmp(&b.0));
+    for pair in profiles.windows(2) {
+        assert_ne!(
+            pair[0].0, pair[1].0,
+            "language profile has both a flat and directory module: {}",
+            pair[0].0
+        );
+    }
     let enabled: Vec<_> = profiles
         .iter()
         .filter(|(name, _)| {
@@ -133,4 +160,23 @@ fn generate_profiles() {
     let output =
         std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));
     std::fs::write(output.join("language_profiles.rs"), source).expect("write language registry");
+}
+
+fn manifest_declares_feature(manifest: &str, feature: &str) -> bool {
+    let mut in_features = false;
+    for line in manifest.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if line.starts_with('[') {
+            in_features = line == "[features]";
+            continue;
+        }
+        if in_features
+            && line
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim().trim_matches('"') == feature)
+        {
+            return true;
+        }
+    }
+    false
 }
