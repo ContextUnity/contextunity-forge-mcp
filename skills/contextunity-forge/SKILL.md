@@ -5,7 +5,7 @@ description: Load before repository code discovery, symbol lookup, dependency tr
 
 # ContextUnity Forge MCP
 
-`contextunity-forge` provides high-performance semantic code-graph querying, architectural inspection, impact analysis, and **ACDD (Admitted-Contract-Driven Development)** task coordination for repositories indexed by Forge.
+`contextunity-forge` provides high-performance semantic code-graph querying, architectural inspection, impact analysis, and **ACDD (Augmented Contract-Driven Development)** task coordination for repositories indexed by Forge.
 
 ## Documentation layers
 

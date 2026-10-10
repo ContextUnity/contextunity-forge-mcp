@@ -5,7 +5,7 @@ doc_type: guide
 
 # ContextUnity Forge MCP
 
-ContextUnity Forge MCP is a high-performance local code graph engine, AST search indexer, documentation server, and **ACDD (Admitted-Contract-Driven Development)** task coordinator for AI coding agents.
+ContextUnity Forge MCP is a high-performance local code graph engine, AST search indexer, documentation server, and **ACDD (Augmented Contract-Driven Development)** task coordinator for AI coding agents.
 
 Implemented in Rust, Forge operates as both a command-line interface and a stdio **Model Context Protocol (MCP)** server providing **20 specialized tools**. It indexes codebases into a repository-local SQLite database (`.forge/code-map.sqlite`) and orchestrates task state, gates, and receipts in an independent SQLite store (`.forge/tasks.sqlite`).
 
@@ -17,11 +17,11 @@ Implemented in Rust, Forge operates as both a command-line interface and a stdio
 - **Structural AST Pattern Matching**: Language-aware syntax search via Tree-sitter (`ast_grep_search` / `ast grep`), matching structural AST expressions across Python, Rust, TypeScript, JavaScript, Vue, Protobuf, HTML, YAML, TOML, Markdown, and optional language profiles.
 - **Dependency & Impact Analysis**: Directional call and import graph traversal (`code_map_impact`), test coverage and regression seam discovery (`code_map_tests`), and statically proven safe symbol removal (`code_map_prove_removal`).
 - **Architecture & Documentation Indexing**: Heading-level search and retrieval for Markdown/MDX (`search_docs`, `get_doc`), cross-linking documentation sections with code symbols and ADRs.
-- **ACDD (Admitted-Contract-Driven Development)**: Bridges declarative Git milestone contracts directly to an executable, deterministic task queue with four enforced verification gates:
-  - `contract/v1`: Red test seam or verified invariant baseline (`direct-proof`).
-  - `build/v1`: Green implementation with passing tests.
-  - `review/v1`: Independent verification across 5 quality contours by a worker distinct from the builder.
-  - `deliver/v1`: Snapshot-backed durable receipt recorded into SQLite and milestone Markdown.
+- **ACDD (Augmented Contract-Driven Development)**: Bridges declarative Git milestone contracts directly to an executable, deterministic task queue. The active profile defines gate identifiers and order; the default profile uses four gates:
+  - `contract`: Red test seam or verified invariant baseline (`direct-proof`).
+  - `build`: Green implementation with passing tests.
+  - `review`: Independent verification across 5 quality contours by a worker distinct from the builder.
+  - `deliver`: Snapshot-backed durable receipt recorded into SQLite and milestone Markdown.
 - **Milestone & Task Lifecycle Management**: CLI commands initialize, list, inspect, and close milestones (`milestone init/list/show/handoff`). CLI and MCP task operations manage task queues and subtasks (`task list/claim/submit/subtask/blackboard`).
 - **Temporary Collaboration Memory**: Task-scoped message bus (`task_blackboard`) across milestone, task, and subtask levels, plus persistent session bookmarks (`session_checkpoint`).
 - **Zero-Daemon Architecture**: Pure local execution over stdio or CLI. No background daemons, cloud services, or centralized databases required.
@@ -134,30 +134,30 @@ When `forge-mcp.yaml` is absent, Forge runs out-of-the-box with sensible default
 
 ---
 
-## ACDD (Admitted-Contract-Driven Development) & Tasks
+## ACDD (Augmented Contract-Driven Development) & Tasks
 
-ACDD connects declarative Git milestone contracts (`docs/milestones/*.md`) to an executable, deterministic task queue in SQLite (`.forge/tasks.sqlite`). Code index rebuilds never alter or reset task state.
+ACDD connects declarative Git milestone contracts (`docs/milestones/*.md`) to an executable, deterministic task queue in SQLite (`.forge/tasks.sqlite`). Code index rebuilds never alter or reset task state. The active profile defines each task's gate identifiers and order; CLI and MCP stage arguments use those identifiers.
 
 ```text
 Milestone Contract (YAML frontmatter + Task specs)
    ├── task_sync ──> SQLite Tasks Queue (.forge/tasks.sqlite)
-   │                  ├── claim (contract/v1)  -> Submit red test seam (or direct-proof)
-   │                  ├── claim (build/v1)     -> Submit green passing test
-   │                  ├── claim (review/v1)    -> Independent audit (different worker_id)
-   │                  └── claim (deliver/v1)   -> Write durable receipt to Markdown
+   │                  ├── claim (contract) -> Submit red test seam (or direct-proof)
+   │                  ├── claim (build)    -> Submit green passing test
+   │                  ├── claim (review)   -> Independent audit (different worker_id)
+   │                  └── claim (deliver)  -> Write durable receipt to Markdown
    └── milestone handoff ──> Record final verification, archive contract
 ```
 
-### 1. How ACDD Works: The 4 Verification Gates
-Every task moves strictly forward through four gates:
-1. `contract/v1`:
+### 1. Default Profile Gates
+The active profile defines a task's gates and their order. The default profile uses four gates:
+1. `contract`:
    - **`seam-test-first`** (Default for features/fixes): Worker claims the gate, introduces a failing red seam test, and submits proof with a non-zero exit code.
    - **`direct-proof`** (Refactoring/hardening): Directly verifies existing seams; exit code 0 accepted at contract gate.
    - **`deferred-final-test`**: Contract proof accepts exit code 0. Build still requires a passing test. The milestone gate runs at handoff.
-2. `build/v1`: The builder implements code to satisfy the contract and submits proof with passing tests (exit code 0).
-3. `review/v1`: An independent reviewer audits the candidate against 5 contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`).
+2. `build`: The builder implements code to satisfy the contract and submits proof with passing tests (exit code 0).
+3. `review`: An independent reviewer audits the candidate against 5 contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`).
    - **Worker Separation Rule**: The reviewer's `worker_id` MUST differ from the accepted builder's `worker_id`.
-4. `deliver/v1`: A delivery worker (distinct from builder) writes the durable receipt into SQLite and updates milestone Markdown with verified proof and architectural notes, then clears the task blackboard.
+4. `deliver`: A delivery worker (distinct from builder) writes the durable receipt into SQLite and updates milestone Markdown with verified proof and architectural notes, then clears the task blackboard.
 
 ### 2. Task Taxonomy & Scope Boundaries
 - **Feature Tasks**: Deliver a single architectural capability with exactly one root seam test.
@@ -170,25 +170,25 @@ The `task_blackboard` tool and CLI provide ephemeral SQLite messaging across `mi
 - `contract_draft`: Proposed test paths, commands, and failure outputs.
 - `contract_findings`: Unsupported assumptions and contract repairs.
 - `build_proof`: Candidate commit SHAs, test outputs, and clippy status.
-- `architectural_notes`: Significant decisions that automatically carry over into the durable receipt at `deliver/v1`.
+- `architectural_notes`: Significant decisions that automatically carry over into the durable receipt at `deliver`.
 
 ### 4. Step-by-Step Task Execution Walkthrough
 
-Copy `task_id`, `stage`, `claim_revision`, `contract_revision`, `worker_id`, and `worktree` from the claim into `--evidence`. Proof shapes are in [task operations](docs/reference/tasks.md#gates-and-evidence).
+Use stage identifiers from the active task profile and claim context. The commands below use the default profile. Copy `task_id`, `stage`, `claim_revision`, `contract_revision`, `worker_id`, and `worktree` from the claim into `--evidence`. Proof shapes are in [task operations](docs/reference/tasks.md#gates-and-evidence).
 
 ```bash
 contextunity-forge-mcp task list --stage contract
 contextunity-forge-mcp task claim <task-id> --stage contract --worker agent-1 --worktree .
-contextunity-forge-mcp task submit <task-id> --stage contract --action pass --evidence '{"task_id":"<task-id>","stage":"contract/v1","claim_revision":1,"contract_revision":1,"worker_id":"agent-1","worktree":"/absolute/worktree","proof":{"contract_proof":{"seam_test_ref":"tests/acdd/tasks.rs::test_name","red_exit_code":101}}}'
+contextunity-forge-mcp task submit <task-id> --stage contract --action pass --evidence '{"task_id":"<task-id>","stage":"contract","claim_revision":1,"contract_revision":1,"worker_id":"agent-1","worktree":"/absolute/worktree","proof":{"contract_proof":{"seam_test_ref":"tests/acdd/tasks.rs::test_name","red_exit_code":101}}}'
 
 contextunity-forge-mcp task claim <task-id> --stage build --worker agent-1 --worktree .
-contextunity-forge-mcp task submit <task-id> --stage build --action pass --evidence '{"task_id":"<task-id>","stage":"build/v1","claim_revision":2,"contract_revision":1,"worker_id":"agent-1","worktree":"/absolute/worktree","proof":{"test_proof":{"command":"cargo test --test acdd test_name","exit_code":0,"tests_passed":1,"tests_failed":0}}}'
+contextunity-forge-mcp task submit <task-id> --stage build --action pass --evidence '{"task_id":"<task-id>","stage":"build","claim_revision":2,"contract_revision":1,"worker_id":"agent-1","worktree":"/absolute/worktree","proof":{"test_proof":{"command":"cargo test --test acdd test_name","exit_code":0,"tests_passed":1,"tests_failed":0}}}'
 
 contextunity-forge-mcp task claim <task-id> --stage review --worker reviewer-2 --worktree .
-contextunity-forge-mcp task submit <task-id> --stage review --action pass --evidence '{"task_id":"<task-id>","stage":"review/v1","claim_revision":3,"contract_revision":1,"worker_id":"reviewer-2","worktree":"/absolute/worktree","commit":"<build-snapshot-sha>","proof":{"review_proof":{"decision":"pass","contours":{"paths":{"applicable":true,"evidence":"edits stay in scope"},"claims":{"applicable":true,"evidence":"seam matches the contract"},"concurrency":{"applicable":false,"evidence":"no shared state"},"project_isolation":{"applicable":true,"evidence":"repository boundary holds"},"administration":{"applicable":false,"evidence":"no configuration change"}}}}}'
+contextunity-forge-mcp task submit <task-id> --stage review --action pass --evidence '{"task_id":"<task-id>","stage":"review","claim_revision":3,"contract_revision":1,"worker_id":"reviewer-2","worktree":"/absolute/worktree","commit":"<build-snapshot-sha>","proof":{"review_proof":{"decision":"pass","contours":{"paths":{"applicable":true,"evidence":"edits stay in scope"},"claims":{"applicable":true,"evidence":"seam matches the contract"},"concurrency":{"applicable":false,"evidence":"no shared state"},"project_isolation":{"applicable":true,"evidence":"repository boundary holds"},"administration":{"applicable":false,"evidence":"no configuration change"}}}}}'
 
 contextunity-forge-mcp task claim <task-id> --stage deliver --worker reviewer-2 --worktree .
-contextunity-forge-mcp task submit <task-id> --stage deliver --action pass --evidence '{"task_id":"<task-id>","stage":"deliver/v1","claim_revision":4,"contract_revision":1,"worker_id":"reviewer-2","worktree":"/absolute/worktree","commit":"<build-snapshot-sha>","proof":{"delivered":true}}'
+contextunity-forge-mcp task submit <task-id> --stage deliver --action pass --evidence '{"task_id":"<task-id>","stage":"deliver","claim_revision":4,"contract_revision":1,"worker_id":"reviewer-2","worktree":"/absolute/worktree","commit":"<build-snapshot-sha>","proof":{"delivered":true}}'
 ```
 
 ### 5. Closing a Milestone (`milestone handoff`)

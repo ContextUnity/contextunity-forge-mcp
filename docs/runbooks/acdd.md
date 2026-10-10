@@ -84,7 +84,7 @@ Record deferred findings in milestone `deferred_defects` or a linked successor
 contract before delivery clears temporary blackboard discussion.
 
 > [!IMPORTANT]
-> Invariant: Review findings cite the admitted contract or a verified regression.
+> Invariant: Review findings cite the augmented contract or a verified regression.
 > Record proposals beyond that authority in a durable deferred destination.
 
 For a valid finding, repair the underlying invariant and prove the result
@@ -170,8 +170,9 @@ completed messages and resolve findings before follow-up work.
 ## Close the milestone
 
 1. Confirm every milestone task is `completed` in SQLite and has a durable
-   receipt. Documentation and instruction updates belong to each task's `build/v1`;
-   verify changed relative links and metadata.
+   receipt. Documentation and instruction updates belong to each task's
+   configured build gate (default ID: `build`). Verify changed relative links
+   and metadata.
 2. Run the milestone handoff gate in [`TESTS.md`](../../TESTS.md#milestone-handoff-gate)
    and prove milestone invariants through real callers.
 3. Run `milestone handoff` with that gate as `--verification-command` and the

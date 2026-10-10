@@ -9,7 +9,6 @@ doc_type: guide
 - [CLI](cli.md): commands and arguments.
 - [MCP tools](mcp-tools.md): registered requests, selectors, and pagination.
 - [Repository tasks](tasks.md): lifecycle, receipts, shared storage, and CLI administration.
-- [ACDD](acdd.md): task gates, independent review, guidance, and context retention.
 - [MCP setup](mcp-setup.md): client installation and workspace selection.
 - [Languages](languages.md): compiled profiles and extraction coverage.
 - [Framework manifests](framework-manifests.md): bundled rules, project manifest files, validation, and language-extension boundaries.

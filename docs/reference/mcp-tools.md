@@ -40,7 +40,7 @@ Selector grammar, SQL shape, proof objects, and examples stay in this page and i
 | `forge_guide` | Return the built-in usage guide. |
 | `task_list` | List ready tasks in the primary repository by default; select repository/all, task `status`, `milestone_ref`, `milestone_status`, or stage explicitly. Milestone status defaults to `active`, except a targeted milestone reference defaults to all statuses. Subtasks are compact by default; request `detail: "full"` for titles and evidence. |
 | `task_claim` | Atomically claim the current task gate for a worker and worktree. |
-| `task_submit` | Submit a revision-bound JSON `evidence` object. Passing `deliver/v1` writes the validated task receipt and context rollup. |
+| `task_submit` | Submit a revision-bound JSON `evidence` object. Passing the active profile's terminal delivery gate (default ID: `deliver`) writes the validated task receipt and context rollup. |
 | `task_manage` | Create/sync specifications, inspect/context, delete, extend scope, manage subtasks, or reset/reopen tasks. See the [action schema](tasks.md#five-flat-mcp-tools). |
 | `task_blackboard` | Post, read, or inspect milestone-, task-, and subtask-scoped SQLite messages. `scope` selects the hierarchy level; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain it, with fail-closed resolution for omitted ambiguous context. `post` requires `topic` and `payload`, accepts optional `author`, and returns `{id}`. `read` accepts `topic`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first payload-free `{messages}` and `{pagination}` from the resolved context. `inspect` requires `message_id`, searches configured task workspaces, and returns the first matching message including its payload. |
 

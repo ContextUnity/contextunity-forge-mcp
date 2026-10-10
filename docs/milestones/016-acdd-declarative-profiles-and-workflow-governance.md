@@ -74,7 +74,7 @@ receipt:
   contract_revision: 20
   passed_at: 2026-10-10T06:18:38.859453723+00:00
   evidence:
-    test_proof:
+    command_proof:
       command: cargo test --test acdd
       exit_code: 0
       tests_passed: 63
@@ -165,7 +165,7 @@ receipt:
   contract_revision: 17
   passed_at: 2026-10-10T06:59:48.534792408+00:00
   evidence:
-    test_proof:
+    command_proof:
       command: cargo test --test acdd
       exit_code: 0
       tests_passed: 63
@@ -254,8 +254,8 @@ receipt:
   contract_revision: 17
   passed_at: 2026-10-10T07:27:10.811617997+00:00
   evidence:
-    test_proof:
-      command: CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR=/tmp/forge-skill-sync-016-r1-0t2dmnj6/matching cargo test --test mcp
+    command_proof:
+      command: cargo test --test mcp
       exit_code: 0
       tests_passed: 78
       tests_failed: 0
@@ -346,7 +346,7 @@ receipt:
   contract_revision: 17
   passed_at: 2026-10-10T07:46:34.341231101+00:00
   evidence:
-    test_proof:
+    command_proof:
       command: cargo test --test mcp mcp_analyze_router_checkpoint_and_guide_boundaries
       exit_code: 0
       tests_passed: 1
@@ -513,7 +513,9 @@ receipt:
     - 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
     - 'INV-DECLARATIVE-ACDD-PROFILE-ROLE-MODEL-CYCLE: RoleDef contains mode: Option<RoleExecutionMode> with subagent and inline YAML values and effective default Subagent, reuse_on_reject: Option<bool> with effective default true, and ordered models: Vec<ModelSpec> defaulting empty, where models[0] is the primary default and ModelSpec owns model plus optional reasoning. RoleDef has no top-level model or reasoning fields. merge_profiles inherits mode and reuse_on_reject when overrides are None and inherits models when the override list is empty; a non-empty models override replaces the ordered list. Role recommendation continues to merge field-wise.'
     - 'INV-DECLARATIVE-ACDD-PROFILE: The declarative YAML profile engine (GateProfile with embedded acdd.default.yaml via include_str!) strictly separates arbitrary gate id (workspace tokens defaulting to contract, build, review, deliver), closed proof taxonomy (contract, command, review, delivery, none, or scheme with recursive data schema validation driving context bundles, independent review, and durable receipts), gate fields (explicit sha_snapshot: bool per gate in defaults, reject_to, independent_from, review_sources, role, steps, tools, contours set reference, and proof: { scheme: ... } structural schema definition for scheme proof), command registry (commands mapping to executable shell commands), and hierarchical policies. Default 4 gates in acdd.default.yaml map strictly to proof: contract, command, review, and delivery; sha_snapshot is explicitly true for contract/build and false for review/deliver. contours is a nested dictionary (IndexMap<String, IndexMap<String, ContourDef>> preserving definition order) where "standard" preserves the canonical 5 contours (paths, claims, concurrency, project_isolation, administration) with operational criteria and descriptions; gates reference contour sets via gate.contours (defaulting to "standard"). Delivery gates (proof: delivery) support auto_commit: bool (default true), creating an atomic Git commit directly from the candidate snapshot tree of the nearest predecessor gate with sha_snapshot: true (which is build in the default profile, whose candidate tree SHA is verified across all review_sources), with parent HEAD, verifying git rev-parse HEAD matches candidate_baseline_head (the exact commit SHA of HEAD captured when the candidate snapshot was created), standard commit messages derived from task targets and completed subtasks, and enforced hooks; the created commit SHA is persisted into the task''s delivery receipt in SQLite. If git commit fails, SQLite receipt recording and task completion roll back atomically, leaving the task at deliver with an explicit error ready for reject rewind or retry. Upon milestone handoff, Forge resolves each task''s landed commit in the milestone branch and rewrites receipt.commit to that landed SHA before archiving the document (the archive commit is created after handoff and is excluded from receipt.commit). Delivery rolls up reviews across review_sources (strictly prior gates with proof: review verifying the identical candidate SHA). Profile resolution precedence: task.spec.acdd_profile over milestone.acdd_profile over forge-mcp.yaml path link over .forge/acdd/profile.yaml over embedded defaults. Single-line profile pinning format in milestone frontmatter or task spec (acdd_profile: "<path>:<sha256_prefix>" with at least 7 hex characters) is persisted into SQLite task metadata during task sync; Forge verifies the file hash prefix matches, failing closed with TASK_PROFILE_TAMPERED on mismatch. Task operations validating gate identifiers fail closed with TASK_STAGE_UNKNOWN if a task stage is missing from the active profile gates, providing actionable recommendations. Zero runtime backward-compatibility is maintained strictly across SQLite runtime data and active milestones: historical archive receipts in docs/milestones/archive/ are exempt from active profile validation. Protected system paths in .forge/acdd/** cannot be added via extend_scope (TASK_SCOPE_PROTECTED) and dirty system files fail closed with TASK_SCOPE_VIOLATION unless explicitly admitted in the active task initial planning-time task.spec.scope. Linked workspace profiles are strictly ignored (only the active workspace root defines the ACDD profile). Profile compilation evaluates the merged profile and fails closed if gates is empty, delivery is not exactly one or not terminal, IDs repeat, reject_to or independent_from do not point to strictly prior gates, review_sources do not point to strictly prior review gates, or roles/contours/commands are undefined. Roles define execution mode (mode: "subagent" | "inline"), rejection retention policy (reuse_on_reject: bool returning to the same builder upon review rejection), ordered model specifications (models: Vec<ModelSpec> preserving model and optional reasoning where the first model is the primary default), and field-wise role merging. When reject_to rewinds to a prior stage, workflow_guidance inspects task_gates and task_findings to deliver rejection: { rejected_from, worker_id, findings } with a targeted return-to-builder step ("Return task to builder ''{worker_id}'' with review rejection findings to repair defects.") when reuse_on_reject is enabled, returning null rejection on clean forward runs. Task state persists task.stage string ID where position is computed at runtime and unknown IDs stop claim. task list --stage accepts any active profile gate id.'
-    architectural_notes: []
+    architectural_notes:
+    - |-
+      decisions: User clarified the existing receipt lifecycle; do not amend the contract for hash semantics and do not add a new field/entity. At deliver, auto_commit commits the candidate snapshot plus the task receipt without embedding its own SHA in the milestone document, stores the created delivery SHA in the existing SQLite task receipt, and returns it. Milestone handoff later resolves each task's landed SHA and writes receipt.commit into the milestone document and SQLite before archive. This has no hash cycle. Contract scope amendments previously authorized for direct indexmap/test fixture write ownership remain separate from this receipt clarification.
     review_summary:
       decision: pass
       contours:
@@ -627,7 +629,7 @@ receipt:
 
       Proposed minimal diff to docs/milestones/016-acdd-declarative-profiles-and-workflow-governance.md:
 
-      ```diff
+      ~~~diff
       @@ frontmatter invariants
       - INV-BLACKBOARD-GATE-ROUTING: task_blackboard in SQLite schema version 3 ... schema v2 to v3 migration ... occurring strictly in the schema v3 migration ...
       + INV-BLACKBOARD-GATE-ROUTING: task_blackboard in SQLite schema version 5 ... schema v4 to v5 migration ... occurring strictly in the schema v5 migration ...
@@ -645,7 +647,7 @@ receipt:
       @@ first Task 6 subtask title
       - Migrate task_blackboard from task-store schema version 3 to version 4 adding optional gate TEXT ...
       + Migrate task_blackboard from task-store schema version 4 to version 5 adding optional gate TEXT ...
-      ```
+      ~~~
 
       Keep the first subtask_ref stable to retain operational identity; preserve its named seam tests/acdd/tasks.rs::task_blackboard_gate_targeting_and_schema_hint and breaking mutation: reject gate column query. Also leave all completed receipts, including Task 5 at lines 475-525, and the entire Task 7 block at lines 573-613 unchanged. The active milestone objective bullet 7 and frontmatter invariant are the additional authority text that must change along with Task 6 target, revision, invariant, and first subtask title. No code, test, scope, or migration mechanism is proposed here.
     - |-
@@ -677,39 +679,95 @@ receipt:
 
 ```yaml
 task_ref: acdd-nomenclature-rename-augmented-contract-driven-development
-target: "Consistently rename all active occurrences of 'admitted contract' to 'augmented contract' and verify clean default gate identifiers without /v1 suffixes where stage arguments validate against active profile across active codebase, documentation, tests, CLI, and skills without altering archive milestones or historical ADRs"
+target: Consistently rename all active occurrences of 'admitted contract' to 'augmented contract' and verify clean default gate identifiers without /v1 suffixes where stage arguments validate against active profile across active codebase, documentation, tests, CLI, and skills without altering archive milestones or historical ADRs
 proof_policy: direct-proof
 contract_revision: 20
 depends_on:
-  - task-blackboard-targeted-routing-and-topics
+- task-blackboard-targeted-routing-and-topics
 invariants:
-  - 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
+- 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
 scope:
-  - docs/runbooks/
-  - docs/reference/
-  - skills/
-  - AGENTS.md
-  - README.md
+- docs/runbooks/
+- docs/reference/
+- skills/
+- AGENTS.md
+- README.md
 scope_roots:
-  - src/
-  - docs/runbooks/
-  - docs/reference/
-  - skills/
-  - tests/
-  - AGENTS.md
-  - README.md
-status: ready
+- src/
+- docs/runbooks/
+- docs/reference/
+- skills/
+- tests/
+- AGENTS.md
+- README.md
+status: completed
 subtasks:
-  - subtask_ref: rename-nomenclature-in-documentation-and-agents
-    title: "Update AGENTS.md, README.md, docs/runbooks/, docs/reference/, and skills/ terminology from admitted contract to augmented contract without modifying historical ADRs or archived milestones"
-    status: pending
-  - subtask_ref: verify-clean-tokens-across-models-and-cli
-    title: "Verify default clean gate identifiers (contract, build, review, deliver) without /v1 suffix across core models, queries, and verify CLI and MCP stage arguments validate dynamically against active profile"
-    status: pending
-  - subtask_ref: rename-nomenclature-in-source-code-and-comments
-    title: "Audit active source models, CLI messages, and doc comments for legacy admitted-contract terminology and /v1 gate tokens; use bounded scope extensions only for verified matches, then rename terms and validate clean dynamic gate IDs"
-    status: pending
-  - subtask_ref: update-test-identifiers-and-assertions
-    title: "Align test suites and error assertion texts with augmented contract nomenclature and clean gate tokens"
-    status: pending
+- subtask_ref: rename-nomenclature-in-documentation-and-agents
+  title: Update AGENTS.md, README.md, docs/runbooks/, docs/reference/, and skills/ terminology from admitted contract to augmented contract without modifying historical ADRs or archived milestones
+  status: completed
+  evidence: Updated README.md, docs/runbooks/acdd.md, docs/reference/cli.md, docs/reference/mcp-tools.md, and skills/contextunity-forge/SKILL.md. Scoped scan found no active admitted-contract terminology in the admitted paths.
+- subtask_ref: rename-nomenclature-in-source-code-and-comments
+  title: Audit active source models, CLI messages, and doc comments for legacy admitted-contract terminology and /v1 gate tokens; use bounded scope extensions only for verified matches, then rename terms and validate clean dynamic gate IDs
+  status: completed
+  evidence: Scoped source scan found no active admitted-contract terminology or /v1 gate identifiers under src/. No scope extension was needed.
+- subtask_ref: update-test-identifiers-and-assertions
+  title: Align test suites and error assertion texts with augmented contract nomenclature and clean gate tokens
+  status: completed
+  evidence: Scoped tests scan found only legacy schema-v2 migration fixture values for /v1 gate IDs; preserved those migration inputs. No active test identifiers or assertion text required changes.
+- subtask_ref: verify-clean-tokens-across-models-and-cli
+  title: Verify default clean gate identifiers (contract, build, review, deliver) without /v1 suffix across core models, queries, and verify CLI and MCP stage arguments validate dynamically against active profile
+  status: completed
+  evidence: Focused contract proofs passed for default profile identifiers, custom profile gate schema, CLI submit, and stdio lifecycle. Source inspection confirms stage validation resolves identifiers against the active profile.
+receipt:
+  contract_revision: 20
+  passed_at: 2026-10-10T17:24:13.225055843+00:00
+  evidence:
+    command_proof:
+      command: |-
+        cargo test --test acdd
+        cargo clippy --all-targets --all-features -- -D warnings
+      exit_code: 0
+      tests_passed: 72
+      tests_failed: 0
+      log: 'cargo test --test acdd: 72 passed [5.12s]. cargo clippy --all-targets --all-features -- -D warnings: exit 0; Finished dev profile [optimized + debuginfo] target(s) in 0.20s.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Re-reviewed the same candidate and all five scoped files: README.md, docs/runbooks/acdd.md, docs/reference/cli.md, docs/reference/mcp-tools.md, skills/contextunity-forge/SKILL.md. No scope expansion or source change occurred.'
+        claims:
+          applicable: true
+          evidence: 'Task7 nomenclature and clean profile-driven gate validation claims pass. Previous R1 incomplete build-proof finding is closed: build revision 6 records cargo test --test acdd with 72 passed and strict cargo clippy --all-targets --all-features -- -D warnings exit 0; review-stage cargo test --test acdd also passed 72 tests, exit 0.'
+        concurrency:
+          applicable: true
+          evidence: Independent reviewer worker task7_review_sol61 is distinct from builder worker task7-nomenclature-builder-20261010. Reviewer performed read-only inspection against unchanged candidate snapshot.
+        project_isolation:
+          applicable: true
+          evidence: Review used the active 016 worktree and shared primary task database. Candidate snapshot SHA and worktree root match the accepted build; test artifacts were confined to the repository target and temporary test fixtures.
+        administration:
+          applicable: true
+          evidence: Task7 contract revision 20 and review claim revision 7 are recorded. Adjacent nonblocking observations are preserved as deferred task blackboard message 130. No lifecycle or scope anomalies remain.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-COMPLETED-SCOPE-RELEASE: Completed milestone tasks release their exclusive file locks in SQLite: the status != "completed" filter applies strictly to lock conflict detection during task claim and extend_scope, preserving stored scope path history while freeing file claims for successor tasks to extend into and evolve shared documentation and code paths without false scope conflicts.'
+    - 'INV-REPO-AGNOSTIC-GUIDANCE: Task guidance gap detection verifies skill presence, repository instruction compliance, and exact canonical .gitignore compliance (tracking .forge/acdd/** including .forge/acdd/profile.yaml and .forge/frameworks/** extensions while ignoring runtime SQLite databases, locks, and logs) without imposing tool-name restrictions or hardcoded internal URLs on external consumer repositories.'
+    - 'INV-SKILL-TOOL-REFERENCE-DELEGATION: The contextunity-forge skill serves as the generic tool reference and standing Git permission baseline, delegating workflow gate governance, review contours, and role policies to the active task profile. Git standing permissions explicitly distinguish auto_commit: true (Forge creates atomic commit on deliver) from auto_commit: false (agent commits after deliver) and final milestone archive commits.'
+    - 'INV-HANDOFF-RECORDING-CLARITY: Milestone handoff is CLI-only and records caller-verified test results into durable receipts without conflating execution with persistence: upon verifying that all milestone tasks are completed and verification tests pass, handoff resolves the landed commit for each task in the milestone branch (the commit that landed the task''s work into the milestone branch, whether via fast-forward or merge commit), rewrites receipt.commit of each task in the milestone document and SQLite store to that landed commit SHA, records the overall milestone handoff.commit (HEAD at handoff) in frontmatter, and archives the document; the subsequent milestone archive commit occurs after handoff and is excluded from receipt.commit. Exact verification commands and counts are codified in TESTS.md.'
+    - 'INV-DECLARATIVE-ACDD-PROFILE: The declarative YAML profile engine (GateProfile with embedded acdd.default.yaml via include_str!) strictly separates arbitrary gate id (workspace tokens defaulting to contract, build, review, deliver), closed proof taxonomy (contract, command, review, delivery, none, or scheme with recursive data schema validation driving context bundles, independent review, and durable receipts), gate fields (explicit sha_snapshot: bool per gate in defaults, reject_to, independent_from, review_sources, role, steps, tools, contours set reference, and proof: { scheme: ... } structural schema definition for scheme proof), command registry (commands mapping to executable shell commands), and hierarchical policies. Default 4 gates in acdd.default.yaml map strictly to proof: contract, command, review, and delivery; sha_snapshot is explicitly true for contract/build and false for review/deliver. contours is a nested dictionary (IndexMap<String, IndexMap<String, ContourDef>> preserving definition order) where "standard" preserves the canonical 5 contours (paths, claims, concurrency, project_isolation, administration) with operational criteria and descriptions; gates reference contour sets via gate.contours (defaulting to "standard"). Delivery gates (proof: delivery) support auto_commit: bool (default true), creating an atomic Git commit directly from the candidate snapshot tree of the nearest predecessor gate with sha_snapshot: true (which is build in the default profile, whose candidate tree SHA is verified across all review_sources) plus the milestone receipt, with parent HEAD, verifying git rev-parse HEAD matches candidate_baseline_head (the exact commit SHA of HEAD captured when the candidate snapshot was created), standard commit messages derived from task targets and completed subtasks, and enforced hooks; the created commit SHA is persisted into the task''s delivery receipt in SQLite. If git commit fails, SQLite receipt recording and task completion roll back atomically, leaving the task at deliver with an explicit error ready for reject rewind or retry. Upon milestone handoff, Forge resolves each task''s landed commit in the milestone branch and rewrites receipt.commit to that landed SHA before archiving the document (the archive commit is created after handoff and is excluded from receipt.commit). Delivery rolls up reviews across review_sources (strictly prior gates with proof: review verifying the identical candidate SHA). Profile resolution precedence: task.spec.acdd_profile over milestone.acdd_profile over forge-mcp.yaml path link over .forge/acdd/profile.yaml over embedded defaults. Single-line profile pinning format in milestone frontmatter or task spec (acdd_profile: "<path>:<sha256_prefix>" with at least 7 hex characters) is persisted into SQLite task metadata during task sync; Forge verifies the file hash prefix matches, failing closed with TASK_PROFILE_TAMPERED on mismatch. Task operations validating gate identifiers fail closed with TASK_STAGE_UNKNOWN if a task stage is missing from the active profile gates, providing actionable recommendations. Zero runtime backward-compatibility is maintained strictly across SQLite runtime data and active milestones: historical archive receipts in docs/milestones/archive/ are exempt from active profile validation. Protected system paths in .forge/acdd/** cannot be added via extend_scope (TASK_SCOPE_PROTECTED) and dirty system files fail closed with TASK_SCOPE_VIOLATION unless explicitly admitted in the active task initial planning-time task.spec.scope. Linked workspace profiles are strictly ignored (only the active workspace root defines the ACDD profile). Profile compilation evaluates the merged profile and fails closed if gates is empty, delivery is not exactly one or not terminal, IDs repeat, reject_to or independent_from do not point to strictly prior gates, review_sources do not point to strictly prior review gates, or roles/contours/commands are undefined. Task state persists task.stage string ID where position is computed at runtime and unknown IDs stop claim. task list --stage accepts any active profile gate id.'
+    - 'INV-BLACKBOARD-GATE-ROUTING: task_blackboard in SQLite schema version 5 includes an optional gate TEXT column with query indexes, supports 6 canonical single-word topics (draft, notes, findings, blockers, decisions, deferred) with schema v4 to v5 migration and explicit legacy topic mapping (contract_draft -> draft, contract_findings -> findings, build_proof -> notes, architectural_notes -> decisions; canonical topics preserved unchanged; unknown -> notes) occurring strictly in the schema v5 migration, returns compact blackboard_info summaries and actionable schema hints on error, delivers targeted messages on claim, and rolls up decisions and deferred into durable receipts.'
+    - 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
+    - 'INV-AUGMENTED-NOMENCLATURE: Nomenclature consistently uses "augmented contract" and "augmented contract-driven development", and standard gate identifiers are clean tokens without version suffixes (contract, build, review, deliver).'
+    architectural_notes:
+    - 'deferred: {"kind":"deferred_defects","source":"Task7 review adjacent observations","items":[{"path":"README.md","area":"blackboard topic examples near lines 170-173","observation":"Examples use legacy topic names contract_draft, contract_findings, build_proof, and architectural_notes instead of current canonical topics.","classification":"Pre-existing documentation mismatch; outside Task7 acceptance for nomenclature and gate identifiers."},{"path":"README.md","area":"task walkthrough proof examples near lines 185 and 191","observation":"Examples use test_proof and {\"delivered\":true}; current proof keys are command_proof and delivery_proof.","classification":"Pre-existing proof-schema documentation mismatch; outside Task7 acceptance."},{"path":"TESTS.md","area":"build gate references","observation":"Active test guidance still mentions build/v1.","classification":"Pre-existing stage-token documentation mismatch in a file outside Task7 write scope."}],"disposition":"Deferred for a separately scoped documentation follow-up; no changes made to preserve the reviewed five-file candidate."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```

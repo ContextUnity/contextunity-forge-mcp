@@ -122,8 +122,8 @@ contextunity-forge-mcp task context TASK_ID
 Subtasks allow tracking fine-grained discoveries, checklists, and verification steps
 without altering the parent task contract digest or inflating the milestone queue.
 Resetting or reopening a completed task clears terminal receipt state from both
-SQLite and milestone Markdown, resets the gate to `contract/v1`, and retains existing subtask
-history so new work and audits can proceed.
+SQLite and milestone Markdown, resets the task to the first gate in its active profile
+(default ID: `contract`), and retains existing subtask history so new work and audits can proceed.
 
 ## Repository milestones
 

@@ -13,11 +13,11 @@ Use this short router in a repository root `AGENTS.md` when ContextUnity Forge i
 
 ## Forge ACDD Git Permissions
 
-- With `auto_commit: true`, Forge commits the candidate tree and milestone receipt during delivery; do not create a duplicate task commit.
+- With `auto_commit: true`, Forge commits the candidate tree during delivery and records the receipt in SQLite; milestone handoff rewrites receipt.commit in Markdown before archiving. Do not create a duplicate task commit.
 - With `auto_commit: false`, create one scoped task commit containing the task changes and generated receipt after delivery.
 - Merge each delivered task branch into the milestone branch and remove its temporary branch and worktree under the active ACDD permission.
 - After `milestone handoff`, create the final milestone archive commit and merge the milestone branch into its target.
-- Load `commit-workflow` before authorized manual task or archive commits. Require explicit approval for unrelated commits, pushes, or publication.
+- For authorized manual task or archive commits, stage only scoped task changes and generated receipts, and verify diffs before committing. Require explicit approval for unrelated commits, pushes, or publication.
 <!-- contextunity-forge:end -->
 ```
 
