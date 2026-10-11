@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "contextunity-forge-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cc",
@@ -240,6 +240,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "hex",
  "ignore",
+ "indexmap",
  "libc",
  "petgraph",
  "pulldown-cmark",

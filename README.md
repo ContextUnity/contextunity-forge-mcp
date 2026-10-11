@@ -1,13 +1,8 @@
----
-title: "ContextUnity Forge MCP"
-doc_type: guide
----
-
 # ContextUnity Forge MCP
 
 [![Rust](https://img.shields.io/badge/rust-2021%20edition-blue.svg)](https://www.rust-lang.org)
 [![MCP Protocol](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green.svg)](https://modelcontextprotocol.io)
-[![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg)](#license)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
 Forge is a local Rust engine for AI coding agents. It keeps a structural map of the repository, indexes the documentation next to that map, and runs milestone work through a task queue with proof at each gate. The same binary is a stdio [Model Context Protocol](https://modelcontextprotocol.io) server (`contextunity-forge-mcp`, 20 tools) and a command-line interface.
 
@@ -276,4 +271,4 @@ The rest of the map — architecture, decisions, runbooks, roadmap, and mileston
 
 ## License
 
-ContextUnity Forge MCP is dual-licensed. Use either [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
+ContextUnity Forge MCP is licensed under the [MIT License](LICENSE).

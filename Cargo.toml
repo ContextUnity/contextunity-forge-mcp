@@ -1,10 +1,10 @@
 [package]
 name = "contextunity-forge-mcp"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["ContextUnity Team"]
 description = "Pure Rust ContextUnity Forge MCP Server, Code Map and Documentation Engine"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 readme = "README.md"
 repository = "https://github.com/ContextUnity/contextunity-forge-mcp"
 keywords = ["mcp", "code-graph", "ast", "acdd", "ai-agents"]

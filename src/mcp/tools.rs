@@ -533,7 +533,7 @@ impl Server {
 
 #[tool_handler(
     name = "contextunity-forge-mcp",
-    version = "0.2.0",
+    version = "0.3.0",
     instructions = "Workspace code graph and task coordination, 20 tools. Responses cap at 64 KiB. SQLite budget is 2 seconds. Start with code_map_overview and check coverage before an absence claim. Continue a page with offset and generation. Prefer detail=compact. Selector rules and gate proofs: forge_guide topic=query or acdd."
 )]
 impl ServerHandler for Server {

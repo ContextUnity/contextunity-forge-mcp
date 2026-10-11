@@ -90,4 +90,4 @@ Before submitting a Pull Request, ensure all checks pass:
 
 ## License
 
-By contributing to ContextUnity Forge MCP, you agree that your contributions will be licensed under its dual [MIT](LICENSE-MIT) and [Apache-2.0](LICENSE-APACHE) licenses.
+By contributing to ContextUnity Forge MCP, you agree that your contributions will be licensed under the [MIT License](LICENSE).
