@@ -1795,7 +1795,7 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
     for (index, stage) in stages.iter().enumerate() {
         let before = inspect();
         assert_eq!(before["workflow_guidance"]["active_stage"], *stage);
-        assert_eq!(before["workflow_guidance"]["agent_type"], "gpt-6-sol");
+        assert!(before["workflow_guidance"]["role"].is_string());
         assert!(before["workflow_guidance"]["steps"]
             .as_array()
             .is_some_and(|steps| !steps.is_empty()));
@@ -1835,8 +1835,8 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
             before["workflow_guidance"]["active_stage"]
         );
         assert_eq!(
-            claimed["workflow_guidance"]["agent_type"],
-            before["workflow_guidance"]["agent_type"]
+            claimed["workflow_guidance"]["role"],
+            before["workflow_guidance"]["role"]
         );
         assert!(claimed["workflow_guidance"]["blackboard_messages"].is_array());
         if index == 2 {
@@ -2710,4 +2710,816 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
         .find(|task| task.task_id == remaining_id)
         .unwrap();
     assert_eq!(remaining.status, "blocked");
+}
+
+#[test]
+fn repacked_task_commits_sync_and_handoff_cleanly() {
+    let root = ScopedWorkspace::new("forge_repack_handoff");
+    root.write(
+        "forge-mcp.yaml",
+        "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/AGENTS.md\n",
+    );
+    root.write("docs/AGENTS.md", "# Agent Guidance\n");
+    root.write("src/lib.rs", "pub fn work() -> bool { true }\n");
+
+    let milestone_content = r#"---
+id: m-repack
+title: Repack test
+doc_type: contract
+---
+# Repack test
+
+```yaml
+task_ref: first
+target: Complete first task
+proof_policy: seam-test-first
+scope:
+  - src/lib.rs
+```
+"#;
+    root.write("docs/milestones/010-repack.md", milestone_content);
+
+    // Initial commit
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "add", ".",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-m", "Initial milestone contract",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let _initial_commit = git_head(&root.0);
+
+    // 1. Sync milestone
+    let sync_res = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-repack.md"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sync_res["tasks"].as_array().unwrap().len(), 1);
+
+    // 2. Complete the task through engine
+    let store = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    let task = store.list(None, "all", None).unwrap().pop().unwrap();
+
+    // Create an intermediate commit on the task branch before delivery modifying only src/lib.rs
+    root.write("src/lib.rs", "pub fn work() -> bool { false }\n// step 1\n");
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-am", "Intermediate commit before delivery",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let c1_sha = git_head(&root.0);
+
+    // Deliver task with final implementation in scope
+    root.write("src/lib.rs", "pub fn work() -> bool { true }\n// completed\n");
+    complete_task_through_engine(&root, &store, &task.task_id);
+    drop(store);
+
+    // 3. Verify milestone markdown document was updated on disk with the receipt
+    let milestone_doc = std::fs::read_to_string(root.0.join("docs/milestones/010-repack.md")).unwrap();
+    assert!(milestone_doc.contains("receipt:"), "milestone document must have receipt written");
+    assert!(milestone_doc.contains("status: completed"), "milestone task must be completed");
+
+    // 4. Repack task commit via amend (reword commit message while preserving delivered scope tree)
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "--amend", "-m", "Repacked clean task commit",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+
+    let repacked_sha = git_head(&root.0);
+
+    // Update milestone markdown with the repacked SHA in receipt
+    let parsed_before = Milestone::parse(&milestone_doc, "forge-mcp").unwrap();
+    let mut updated_receipt = parsed_before.tasks[0].receipt.clone().unwrap();
+    updated_receipt.commit = Some(repacked_sha.clone());
+    let updated_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &milestone_doc,
+        "first",
+        &updated_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &updated_doc);
+
+    // 5. Test tamper rejection: if receipt decision is modified, sync must reject
+    let mut tampered_receipt = updated_receipt.clone();
+    tampered_receipt.decision = "fail".into();
+    let tampered_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &tampered_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &tampered_doc);
+
+    let tamper_sync = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-repack.md"
+        }))
+        .unwrap(),
+    );
+    assert!(tamper_sync.is_err(), "tampered receipt must be rejected by task sync");
+
+    // 5b. Tamper passed_at: sync must reject
+    let mut tampered_time = updated_receipt.clone();
+    tampered_time.passed_at = "2099-01-01T00:00:00Z".into();
+    let tampered_time_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &tampered_time,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &tampered_time_doc);
+    let tamper_time_sync = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-repack.md"
+        }))
+        .unwrap(),
+    );
+    assert!(tamper_time_sync.is_err(), "tampered passed_at must be rejected by task sync");
+
+    // 5c. Foreign commit touching files outside task scope: sync must reject
+    root.write("tests/unrelated.rs", "fn foreign() {}\n");
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "add", "tests/unrelated.rs",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-m", "Foreign commit outside scope",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let foreign_sha = git_head(&root.0);
+    let mut foreign_receipt = updated_receipt.clone();
+    foreign_receipt.commit = Some(foreign_sha.clone());
+    let foreign_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &foreign_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &foreign_doc);
+    let foreign_sync = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-repack.md"
+        }))
+        .unwrap(),
+    );
+    assert!(foreign_sync.is_err(), "commit outside task scope must be rejected by task sync");
+
+    // 5d. Commit modifying protected profile without scope: sync must reject
+    root.write(".forge/acdd/profile.yaml", "gates: []\n");
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "add", ".forge/acdd/profile.yaml",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-m", "Modify protected profile without scope",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let protected_sha = git_head(&root.0);
+    let mut protected_receipt = updated_receipt.clone();
+    protected_receipt.commit = Some(protected_sha.clone());
+    let protected_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &protected_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &protected_doc);
+    let protected_sync = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-repack.md"
+        }))
+        .unwrap(),
+    );
+    assert!(protected_sync.is_err(), "commit modifying protected profile must be rejected by task sync");
+
+    // 5e. Obsolete ancestor commit: sync must reject
+    let mut ancestor_receipt = updated_receipt.clone();
+    ancestor_receipt.commit = Some(c1_sha.clone());
+    let ancestor_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &ancestor_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &ancestor_doc);
+    let ancestor_sync = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-repack.md"
+        }))
+        .unwrap(),
+    );
+    assert!(ancestor_sync.is_err(), "obsolete ancestor commit must be rejected by task sync");
+
+    // 5f. Divergent commit from the same baseline with different content in scope: sync must reject
+    let divergent_sha = {
+        let _ = std::process::Command::new("git")
+            .args(["checkout", "-q", &c1_sha])
+            .current_dir(&root.0)
+            .output();
+        root.write("src/lib.rs", "pub fn work() -> bool { false }\n// different code\n");
+        let output = std::process::Command::new("git")
+            .args([
+                "-c", "user.name=ACDD test",
+                "-c", "user.email=acdd-test@example.invalid",
+                "-c", "commit.gpgsign=false",
+                "commit", "-am", "Divergent commit from same baseline with different scope code",
+            ])
+            .current_dir(&root.0)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let d_sha = git_head(&root.0);
+        let _ = std::process::Command::new("git")
+            .args(["checkout", "-q", &protected_sha])
+            .current_dir(&root.0)
+            .output();
+        root.write("src/lib.rs", "pub fn work() -> bool { true }\n// completed\n");
+        d_sha
+    };
+    let mut divergent_receipt = updated_receipt.clone();
+    divergent_receipt.commit = Some(divergent_sha.clone());
+    let divergent_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &divergent_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &divergent_doc);
+    let divergent_sync = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-repack.md"
+        }))
+        .unwrap(),
+    );
+    assert!(divergent_sync.is_err(), "divergent commit with different code in scope must be rejected by task sync");
+
+    // 5g. Corrupted evidence in task_gates: sync and migrate verify must fail closed
+    {
+        let store_corrupt = TasksStore::open_project(
+            &root.0.join(".forge/tasks.sqlite"),
+            "forge-mcp",
+            "forge-mcp",
+        )
+        .unwrap();
+        store_corrupt
+            .connection
+            .execute(
+                "UPDATE task_gates SET evidence='{corrupted-non-json: candidate_baseline_head}' WHERE task_id=?1 AND state='passed' AND evidence LIKE '%candidate_baseline_head%'",
+                [&task.task_id],
+            )
+            .unwrap();
+    }
+    root.write("docs/milestones/010-repack.md", &updated_doc);
+    let corrupt_sync = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-repack.md"
+        }))
+        .unwrap(),
+    );
+    assert!(corrupt_sync.is_err(), "sync must fail closed when task_gates evidence is corrupted");
+    assert!(
+        corrupt_sync.unwrap_err().to_string().contains("TASK_GATE_EVIDENCE_CORRUPTED"),
+        "expected TASK_GATE_EVIDENCE_CORRUPTED error"
+    );
+    let corrupt_verify = contextunity_forge_mcp::cli::migrate::run(
+        &root.0,
+        contextunity_forge_mcp::cli::migrate::MigrateCommand::Verify {
+            milestone_ref: Some("docs/milestones/010-repack.md".into()),
+        },
+    );
+    assert!(corrupt_verify.is_err(), "migrate verify must fail closed when task_gates evidence is corrupted");
+
+    // Restore valid task_gates evidence
+    {
+        let store_restore = TasksStore::open_project(
+            &root.0.join(".forge/tasks.sqlite"),
+            "forge-mcp",
+            "forge-mcp",
+        )
+        .unwrap();
+        let valid_evidence = serde_json::json!({
+            "commit": repacked_sha,
+            "candidate_baseline_head": c1_sha,
+        });
+        store_restore
+            .connection
+            .execute(
+                "UPDATE task_gates SET evidence=?1 WHERE task_id=?2 AND state='passed' AND evidence LIKE '%corrupted%'",
+                rusqlite::params![valid_evidence.to_string(), task.task_id],
+            )
+            .unwrap();
+    }
+
+    // Restore the valid repacked doc
+    root.write("docs/milestones/010-repack.md", &updated_doc);
+
+    // 6. Test that task sync succeeds with the repacked commit
+    let sync_repack = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-repack.md"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sync_repack["tasks"].as_array().unwrap().len(), 1);
+
+    // Verify SQLite task receipt has repacked SHA
+    let store2 = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    let inspected = store2.inspect(&task.task_id).unwrap();
+    assert_eq!(inspected.receipt.unwrap().commit.as_deref(), Some(repacked_sha.as_str()));
+    drop(store2);
+
+    // 7. Verify migrate check passes without conflicts
+    let verify_res = contextunity_forge_mcp::cli::migrate::run(
+        &root.0,
+        contextunity_forge_mcp::cli::migrate::MigrateCommand::Verify {
+            milestone_ref: Some("docs/milestones/010-repack.md".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(verify_res["conflicts"].as_array().unwrap().len(), 0);
+
+    // Commit the milestone doc change before handoff
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "add", "docs/milestones/010-repack.md",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-m", "Record repacked SHA in milestone",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let doc_only_sha = git_head(&root.0);
+
+    // Merge divergent_sha into milestone branch so it becomes an ancestor of handoff_commit
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "merge", "-s", "ours", "-m", "Merge divergent branch for ancestry check", &divergent_sha,
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+
+    let handoff_commit = git_head(&root.0);
+
+    // 7b. Test handoff fails if markdown has non-existent commit
+    let mut missing_receipt = updated_receipt.clone();
+    missing_receipt.commit = Some("0123456789abcdef0123456789abcdef01234567".into());
+    let missing_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &missing_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &missing_doc);
+    let missing_err = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-repack",
+        Some(&handoff_commit),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap_err();
+    assert!(
+        missing_err.to_string().contains("is not available in workspace Git repository"),
+        "expected missing commit error, got: {missing_err}"
+    );
+
+    // 7c. Test handoff fails if markdown has commit outside task scope
+    let mut foreign_md_receipt = updated_receipt.clone();
+    foreign_md_receipt.commit = Some(foreign_sha);
+    let foreign_md_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &foreign_md_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &foreign_md_doc);
+    let foreign_err = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-repack",
+        Some(&handoff_commit),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap_err();
+    assert!(
+        foreign_err.to_string().contains("changes files outside task scope"),
+        "expected outside scope error, got: {foreign_err}"
+    );
+
+    // 7d. Test handoff fails if markdown has commit that touches only milestone doc (does not touch task scope)
+    let mut doc_only_receipt = updated_receipt.clone();
+    doc_only_receipt.commit = Some(doc_only_sha);
+    let doc_only_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &doc_only_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &doc_only_doc);
+    let doc_only_err = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-repack",
+        Some(&handoff_commit),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap_err();
+    assert!(
+        doc_only_err.to_string().contains("does not touch task scope"),
+        "expected does not touch task scope error, got: {doc_only_err}"
+    );
+
+    // 7e. Test migrate verify rejects when markdown has foreign commit or commit not touching scope
+    let verify_foreign = contextunity_forge_mcp::cli::migrate::run(
+        &root.0,
+        contextunity_forge_mcp::cli::migrate::MigrateCommand::Verify {
+            milestone_ref: Some("docs/milestones/010-repack.md".into()),
+        },
+    );
+    assert!(
+        verify_foreign.is_err(),
+        "migrate verify must reject markdown receipt specifying commit that does not touch scope"
+    );
+
+    // 7f. Test handoff fails if markdown has obsolete ancestor commit
+    let mut ancestor_md_receipt = updated_receipt.clone();
+    ancestor_md_receipt.commit = Some(c1_sha);
+    let ancestor_md_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &ancestor_md_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &ancestor_md_doc);
+    let ancestor_err = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-repack",
+        Some(&handoff_commit),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap_err();
+    assert!(
+        ancestor_err.to_string().contains("TASK_COMMIT_OBSOLETE") || ancestor_err.to_string().contains("does not advance beyond baseline"),
+        "expected obsolete ancestry error in handoff, got: {ancestor_err}"
+    );
+
+    // 7g. Test handoff fails if markdown has commit modifying protected profile
+    let mut protected_md_receipt = updated_receipt.clone();
+    protected_md_receipt.commit = Some(protected_sha);
+    let protected_md_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &protected_md_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &protected_md_doc);
+    let protected_err = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-repack",
+        Some(&handoff_commit),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap_err();
+    assert!(
+        protected_err.to_string().contains("changes files outside task scope"),
+        "expected outside scope error for protected profile in handoff, got: {protected_err}"
+    );
+
+    // 7h. Test handoff fails if markdown has divergent commit with different code in scope
+    let mut divergent_md_receipt = updated_receipt.clone();
+    divergent_md_receipt.commit = Some(divergent_sha);
+    let divergent_md_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &updated_doc,
+        "first",
+        &divergent_md_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-repack.md", &divergent_md_doc);
+    let divergent_err = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-repack",
+        Some(&handoff_commit),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap_err();
+    assert!(
+        divergent_err.to_string().contains("TASK_COMMIT_TREE_MISMATCH"),
+        "expected TASK_COMMIT_TREE_MISMATCH error in handoff, got: {divergent_err}"
+    );
+
+    // Restore valid markdown doc with repacked SHA before handoff
+    root.write("docs/milestones/010-repack.md", &updated_doc);
+
+    // Verify migrate verify passes for the valid repacked SHA
+    let verify_valid = contextunity_forge_mcp::cli::migrate::run(
+        &root.0,
+        contextunity_forge_mcp::cli::migrate::MigrateCommand::Verify {
+            milestone_ref: Some("docs/milestones/010-repack.md".into()),
+        },
+    );
+    assert!(verify_valid.is_ok(), "migrate verify must succeed for valid repacked SHA");
+
+    // 8. Run milestone handoff
+    let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-repack",
+        Some(&handoff_commit),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap();
+    assert_eq!(handoff_res["id"], "m-repack");
+
+    let archived_path = root.0.join("docs/milestones/archive/010-repack.md");
+    assert!(archived_path.exists());
+    let archived_doc = std::fs::read_to_string(&archived_path).unwrap();
+    let archived_milestone = Milestone::parse(&archived_doc, "forge-mcp").unwrap();
+    assert_eq!(
+        archived_milestone.tasks[0].receipt.as_ref().and_then(|r| r.commit.as_deref()),
+        Some(repacked_sha.as_str()),
+        "archived receipt must preserve the repacked task commit"
+    );
+}
+
+#[test]
+fn handoff_resolves_repacked_commit_directly_from_markdown_without_prior_sync() {
+    let root = ScopedWorkspace::new("forge_repack_direct_handoff");
+    root.write(
+        "forge-mcp.yaml",
+        "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/AGENTS.md\n",
+    );
+    root.write("docs/AGENTS.md", "# Agent Guidance\n");
+    root.write("src/lib.rs", "pub fn work() -> bool { true }\n");
+
+    let milestone_content = r#"---
+id: m-direct-repack
+title: Direct repack test
+doc_type: contract
+---
+# Direct repack test
+
+```yaml
+task_ref: direct
+target: Complete direct task
+proof_policy: seam-test-first
+scope:
+  - src/lib.rs
+```
+"#;
+    root.write("docs/milestones/010-direct.md", milestone_content);
+
+    // Initial commit
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "add", ".",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-m", "Initial milestone contract",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+
+    // 1. Sync milestone
+    contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-direct.md"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    // 2. Complete the task through engine
+    let store = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    let task = store.list(None, "all", None).unwrap().pop().unwrap();
+    root.write("src/lib.rs", "pub fn work() -> bool { true }\n// direct delivered\n");
+    complete_task_through_engine(&root, &store, &task.task_id);
+    drop(store);
+
+    let milestone_doc = std::fs::read_to_string(root.0.join("docs/milestones/010-direct.md")).unwrap();
+
+    // 3. Repack commit via amend (squash / reword commit message without modifying verified scope tree)
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "--amend", "-m", "Repacked direct task commit",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+
+    let repacked_sha = git_head(&root.0);
+
+    // Update milestone markdown with the repacked SHA in receipt
+    let parsed_before = Milestone::parse(&milestone_doc, "forge-mcp").unwrap();
+    let mut updated_receipt = parsed_before.tasks[0].receipt.clone().unwrap();
+    updated_receipt.commit = Some(repacked_sha.clone());
+    let updated_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+        &milestone_doc,
+        "direct",
+        &updated_receipt,
+        &[],
+    )
+    .unwrap();
+    root.write("docs/milestones/010-direct.md", &updated_doc);
+
+    // Notice: We deliberately DO NOT run task sync here!
+    // SQLite still has the old delivery commit.
+
+    // Commit the milestone doc change
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "add", "docs/milestones/010-direct.md",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-m", "Record repacked SHA in milestone doc",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+
+    let handoff_commit = git_head(&root.0);
+
+    // 4. Run milestone handoff: it should pick the commit from the milestone doc!
+    let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-direct-repack",
+        Some(&handoff_commit),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap();
+    assert_eq!(handoff_res["id"], "m-direct-repack");
+
+    let archived_path = root.0.join("docs/milestones/archive/010-direct.md");
+    assert!(archived_path.exists());
+    let archived_doc = std::fs::read_to_string(&archived_path).unwrap();
+    let archived_milestone = Milestone::parse(&archived_doc, "forge-mcp").unwrap();
+    assert_eq!(
+        archived_milestone.tasks[0].receipt.as_ref().and_then(|r| r.commit.as_deref()),
+        Some(repacked_sha.as_str()),
+        "archived receipt must preserve the repacked task commit from markdown"
+    );
+
+    // And verify SQLite was updated with the repacked commit too
+    let store2 = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    let inspected = store2.inspect(&task.task_id).unwrap();
+    assert_eq!(
+        inspected.receipt.unwrap().commit.as_deref(),
+        Some(repacked_sha.as_str()),
+        "SQLite receipt must be updated by handoff with the landed commit"
+    );
 }

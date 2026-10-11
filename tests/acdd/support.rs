@@ -38,6 +38,18 @@ pub(crate) fn init_git(root: &Path) {
         "could not initialize ACDD fixture repository: {}",
         String::from_utf8_lossy(&initialized.stderr)
     );
+    let _ = std::process::Command::new("git")
+        .args(["config", "commit.gpgsign", "false"])
+        .current_dir(root)
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["config", "user.name", "ACDD test"])
+        .current_dir(root)
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["config", "user.email", "acdd-test@example.invalid"])
+        .current_dir(root)
+        .output();
     let initial = std::process::Command::new("git")
         .args([
             "-c",

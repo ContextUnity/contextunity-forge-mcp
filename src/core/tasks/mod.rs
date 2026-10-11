@@ -77,6 +77,134 @@ pub struct Receipt {
     pub rollup: Option<ReceiptRollup>,
 }
 
+impl Receipt {
+    /// Checks whether another receipt shares the exact same verification proofs,
+    /// decision, contract revision, timestamp, and rollup, ignoring the Git commit pointer.
+    pub fn matches_proofs(&self, other: &Self) -> bool {
+        self.contract_revision == other.contract_revision
+            && self.passed_at == other.passed_at
+            && self.decision == other.decision
+            && self.evidence == other.evidence
+            && self.review == other.review
+            && self.rollup == other.rollup
+    }
+}
+
+/// Check if a path matches a scope entry (exact file or directory prefix).
+pub fn path_matches_scope_entry(path: &str, scope_entry: &str) -> bool {
+    let path = path.trim_matches('/').replace('\\', "/");
+    let entry = scope_entry.trim_matches('/').replace('\\', "/");
+    if entry.is_empty() || entry == "." {
+        return true;
+    }
+    path == entry || path.starts_with(&format!("{entry}/"))
+}
+
+/// Normalizes a repository-relative path by stripping leading/trailing slashes and './'.
+pub fn normalize_repo_path(path: &str) -> String {
+    let p = path.replace('\\', "/");
+    let p = p.trim();
+    let p = p.strip_prefix("./").unwrap_or(p);
+    p.trim_matches('/').to_string()
+}
+
+/// Check whether a path represents an internal Forge runtime/scratch artifact
+/// (e.g. SQLite databases, locks, logs, tasks runtime directory, or checkpoints).
+/// Project configuration paths under `.forge/acdd/**` and `.forge/frameworks/**`
+/// are protected and are NEVER considered runtime files.
+pub fn is_forge_runtime_file(path: &str) -> bool {
+    let norm = normalize_repo_path(path);
+    if norm.starts_with(".forge/acdd/")
+        || norm == ".forge/acdd"
+        || norm.starts_with(".forge/frameworks/")
+        || norm == ".forge/frameworks"
+    {
+        return false;
+    }
+    if norm.starts_with(".forge-mcp/") || norm == ".forge-mcp" {
+        return true;
+    }
+    if !norm.starts_with(".forge/") {
+        return false;
+    }
+    norm.ends_with(".sqlite")
+        || norm.contains(".sqlite-")
+        || norm.ends_with(".lock")
+        || norm.ends_with(".log")
+        || norm.ends_with(".jsonl")
+        || norm == ".forge/checkpoints.json"
+        || norm.starts_with(".forge/tasks/")
+        || norm == ".forge/tasks"
+}
+
+/// Verify that all files changed by a commit fall within the task's scope or milestone reference.
+pub fn commit_files_within_scope(
+    changed_files: &[String],
+    scope: &[String],
+    milestone_ref: Option<&str>,
+) -> bool {
+    let m_norm = milestone_ref.map(normalize_repo_path);
+    changed_files.iter().all(|file| {
+        let f_norm = normalize_repo_path(file);
+        if is_forge_runtime_file(&f_norm) {
+            return true;
+        }
+        if let Some(m_path) = &m_norm {
+            if &f_norm == m_path {
+                return true;
+            }
+        }
+        scope.iter().any(|s| path_matches_scope_entry(file, s))
+    })
+}
+
+/// Validate that a commit modifies files within task scope, actually touches task scope,
+/// and is a valid progression from baseline and any accepted delivery commit.
+pub fn validate_commit_for_task(
+    worktree: &Path,
+    commit: &str,
+    scope: &[String],
+    milestone_ref: Option<&str>,
+    accepted_delivery: Option<&str>,
+    baseline: Option<&str>,
+) -> Result<()> {
+    if !crate::core::git::git_commit_exists(worktree, commit)? {
+        bail!("TASK_COMMIT_NOT_FOUND: commit '{commit}' is not available in workspace Git repository");
+    }
+    let changed = crate::core::git::git_commit_changed_files(worktree, commit)?;
+    if changed.is_empty() {
+        bail!("TASK_COMMIT_EMPTY: commit '{commit}' contains no changed files");
+    }
+    if !commit_files_within_scope(&changed, scope, milestone_ref) {
+        bail!("TASK_COMMIT_OUTSIDE_SCOPE: commit '{commit}' changes files outside task scope");
+    }
+    let touches_scope = changed.iter().any(|f| {
+        scope.iter().any(|s| path_matches_scope_entry(f, s))
+    });
+    if !touches_scope {
+        bail!("TASK_COMMIT_IGNORES_SCOPE: commit '{commit}' does not touch task scope");
+    }
+    if let Some(accepted) = accepted_delivery {
+        if commit != accepted {
+            if crate::core::git::git_ancestor(worktree, commit, accepted)? {
+                bail!("TASK_COMMIT_OBSOLETE: commit '{commit}' is an ancestor of accepted delivery '{accepted}'");
+            }
+            if crate::core::git::git_scoped_tree_changed(worktree, accepted, commit, scope)? {
+                bail!("TASK_COMMIT_TREE_MISMATCH: commit '{commit}' scoped tree differs from accepted delivery '{accepted}'");
+            }
+        }
+    }
+    if let Some(base) = baseline {
+        if commit == base || crate::core::git::git_ancestor(worktree, commit, base)? {
+            bail!("TASK_COMMIT_OBSOLETE: commit '{commit}' does not advance beyond baseline '{base}'");
+        }
+        if commit != accepted_delivery.unwrap_or("") && !crate::core::git::git_ancestor(worktree, base, commit)? {
+            bail!("TASK_COMMIT_UNRELATED: commit '{commit}' does not descend from task baseline '{base}'");
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 /// Durable outcomes copied from the task store at delivery.

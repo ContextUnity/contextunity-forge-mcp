@@ -466,15 +466,13 @@ impl TasksStore {
         }
         let mut provisional_rollback = None;
         let pre_persist = (|| -> Result<()> {
-            if auto_delivery.is_some() {
-                if let Some((path, original, written)) = &document_update {
-                    provisional_rollback = Some(ProvisionalReceiptRollback {
-                        path: path.clone(),
-                        original: original.clone(),
-                        armed: true,
-                    });
-                    crate::core::fs::atomic_replace(path, written.as_bytes())?;
-                }
+            if let Some((path, original, written)) = &document_update {
+                provisional_rollback = Some(ProvisionalReceiptRollback {
+                    path: path.clone(),
+                    original: original.clone(),
+                    armed: true,
+                });
+                crate::core::fs::atomic_replace(path, written.as_bytes())?;
             }
             let created_delivery = before_persist(&task)?;
             match (auto_delivery.as_ref(), created_delivery) {

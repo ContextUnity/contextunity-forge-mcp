@@ -616,7 +616,7 @@ pub fn activate_on_claim(worktree: &Path, reference: &str, claimed_at: i64) -> R
 }
 
 /// Replaces the YAML block for one task while preserving the surrounding milestone text.
-pub(crate) fn render_task_receipt(
+pub fn render_task_receipt(
     text: &str,
     task_ref: &str,
     receipt: &Receipt,

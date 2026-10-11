@@ -4612,6 +4612,220 @@ fn linked_pinned_tasks_ignore_linked_workspace_profile_overrides() {
 }
 
 #[test]
+fn commit_scope_validation_checks_exact_milestone_and_non_empty_scope() {
+    use contextunity_forge_mcp::core::tasks::commit_files_within_scope;
+
+    let milestone_ref = "docs/milestones/010-repack.md";
+    let scope = vec!["src/lib.rs".to_string()];
+
+    // Exact milestone file matches
+    assert!(commit_files_within_scope(
+        &["docs/milestones/010-repack.md".into(), "src/lib.rs".into()],
+        &scope,
+        Some(milestone_ref)
+    ));
+
+    // Suffixes or file basenames in root must NOT match milestone_ref
+    assert!(!commit_files_within_scope(
+        &["010-repack.md".into(), "src/lib.rs".into()],
+        &scope,
+        Some(milestone_ref)
+    ));
+    assert!(!commit_files_within_scope(
+        &["notdocs/milestones/010-repack.md".into(), "src/lib.rs".into()],
+        &scope,
+        Some(milestone_ref)
+    ));
+    assert!(!commit_files_within_scope(
+        &["md".into(), "src/lib.rs".into()],
+        &scope,
+        Some(milestone_ref)
+    ));
+
+    // Normalized variants of the exact same path do match
+    assert!(commit_files_within_scope(
+        &["./docs/milestones/010-repack.md".into()],
+        &[],
+        Some(milestone_ref)
+    ));
+    assert!(commit_files_within_scope(
+        &["docs\\milestones\\010-repack.md".into()],
+        &[],
+        Some(milestone_ref)
+    ));
+
+    // Protected paths under .forge/acdd/** and .forge/frameworks/** are NOT treated as runtime files:
+    // they require explicit scope admission.
+    assert!(!commit_files_within_scope(
+        &[".forge/acdd/profile.yaml".into()],
+        &scope,
+        Some(milestone_ref),
+    ));
+    assert!(!commit_files_within_scope(
+        &[".forge/frameworks/rules.yaml".into()],
+        &scope,
+        Some(milestone_ref),
+    ));
+    // If explicitly admitted in task scope, they pass:
+    assert!(commit_files_within_scope(
+        &[".forge/acdd/profile.yaml".into()],
+        &[".forge/acdd/profile.yaml".into()],
+        Some(milestone_ref),
+    ));
+
+    // Internal runtime artifacts (sqlite, lock, log, tasks runtime, checkpoints) pass without scope:
+    assert!(commit_files_within_scope(
+        &[".forge/tasks.sqlite".into()],
+        &[],
+        Some(milestone_ref),
+    ));
+    assert!(commit_files_within_scope(
+        &[".forge/tasks.lock".into()],
+        &[],
+        Some(milestone_ref),
+    ));
+    assert!(commit_files_within_scope(
+        &[".forge/checkpoints.json".into()],
+        &[],
+        Some(milestone_ref),
+    ));
+    assert!(commit_files_within_scope(
+        &[".forge/tasks/state.sqlite".into()],
+        &[],
+        Some(milestone_ref),
+    ));
+}
+
+#[test]
+fn validate_commit_for_task_enforces_scope_and_ancestry_invariants() {
+    use contextunity_forge_mcp::core::tasks::validate_commit_for_task;
+
+    let root = ScopedWorkspace::new("forge_validate_commit_invariants");
+    root.write("src/lib.rs", "pub fn base() {}\n");
+
+    // Commit 1: base commit
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "add", "src/lib.rs",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-m", "Baseline commit",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let base_sha = git_head(&root.0);
+
+    // Commit 2: intermediate commit C1
+    root.write("src/lib.rs", "pub fn base() {}\npub fn c1() {}\n");
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-am", "Intermediate commit C1",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let c1_sha = git_head(&root.0);
+
+    // Commit 3: delivery commit D
+    root.write("src/lib.rs", "pub fn base() {}\npub fn c1() {}\npub fn delivery() {}\n");
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-am", "Delivery commit D",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let d_sha = git_head(&root.0);
+
+    let scope = vec!["src/lib.rs".to_string()];
+    let milestone_ref = "docs/milestones/010-test.md";
+
+    // 1. Delivery commit D is valid when accepted_delivery is D
+    assert!(validate_commit_for_task(&root.0, &d_sha, &scope, Some(milestone_ref), Some(&d_sha), Some(&base_sha)).is_ok());
+
+    // 2. Intermediate commit C1 is REJECTED when accepted_delivery is D (C1 is an ancestor of D)
+    let c1_err = validate_commit_for_task(&root.0, &c1_sha, &scope, Some(milestone_ref), Some(&d_sha), Some(&base_sha)).unwrap_err();
+    assert!(c1_err.to_string().contains("TASK_COMMIT_OBSOLETE"), "expected obsolete commit error, got: {c1_err}");
+
+    // 3. Baseline commit is REJECTED (does not advance beyond baseline)
+    let base_err = validate_commit_for_task(&root.0, &base_sha, &scope, Some(milestone_ref), Some(&d_sha), Some(&base_sha)).unwrap_err();
+    assert!(base_err.to_string().contains("TASK_COMMIT_OBSOLETE"), "expected obsolete baseline error, got: {base_err}");
+
+    // 4. Empty scope rejects commits that touch files outside scope (such as src/lib.rs):
+    let outside_err = validate_commit_for_task(&root.0, &d_sha, &[], Some(milestone_ref), Some(&d_sha), Some(&base_sha)).unwrap_err();
+    assert!(outside_err.to_string().contains("TASK_COMMIT_OUTSIDE_SCOPE"), "expected outside scope error for empty scope on src/lib.rs, got: {outside_err}");
+
+    // 5. Commits that only modify the milestone doc (or runtime files) fail with TASK_COMMIT_IGNORES_SCOPE
+    root.write("docs/milestones/010-test.md", "# Milestone\n");
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "add", "docs/milestones/010-test.md",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-m", "Milestone doc only",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let doc_only_sha = git_head(&root.0);
+    let empty_scope_err = validate_commit_for_task(&root.0, &doc_only_sha, &[], Some(milestone_ref), Some(&d_sha), Some(&base_sha)).unwrap_err();
+    assert!(empty_scope_err.to_string().contains("TASK_COMMIT_IGNORES_SCOPE"), "expected ignores scope error for empty scope, got: {empty_scope_err}");
+
+    // 6. Divergent commit with different changes in scope MUST fail with TASK_COMMIT_TREE_MISMATCH
+    root.write("src/lib.rs", "pub fn base() {}\npub fn malicious_divergent() {}\n");
+    std::process::Command::new("git")
+        .args([
+            "-c", "user.name=ACDD test",
+            "-c", "user.email=acdd-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "commit", "-am", "Divergent commit with different changes in scope",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let d_alt_sha = git_head(&root.0);
+    let mismatch_err = validate_commit_for_task(&root.0, &d_alt_sha, &scope, Some(milestone_ref), Some(&d_sha), Some(&base_sha)).unwrap_err();
+    assert!(mismatch_err.to_string().contains("TASK_COMMIT_TREE_MISMATCH"), "expected tree mismatch error for divergent commit, got: {mismatch_err}");
+
+    // 7. git_scoped_tree_changed compares full tree when scope is empty
+    assert!(
+        contextunity_forge_mcp::core::git::git_scoped_tree_changed(&root.0, &d_sha, &d_alt_sha, &[]).unwrap(),
+        "git_scoped_tree_changed with empty scope must detect full tree difference"
+    );
+    assert!(
+        !contextunity_forge_mcp::core::git::git_scoped_tree_changed(&root.0, &d_sha, &d_sha, &[]).unwrap(),
+        "git_scoped_tree_changed with empty scope must return false for identical commits"
+    );
+}
+
+#[test]
 fn inline_role_mode_adapts_guidance_text() {
     let root = ScopedWorkspace::new("forge_inline_role_mode");
     root.write(

@@ -889,7 +889,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
 
     // Check guidance in bundle
     assert_eq!(bundle["guidance"]["stage"], "contract");
-    assert_eq!(bundle["guidance"]["subagent_role"], "contract_author");
+    assert_eq!(bundle["guidance"]["role"], "contract_author");
     assert!(bundle["guidance"]["recommended_tools"]
         .as_array()
         .is_some_and(|tools| !tools.is_empty()));

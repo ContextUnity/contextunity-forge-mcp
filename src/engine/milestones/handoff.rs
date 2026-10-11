@@ -12,32 +12,11 @@ use std::{
 };
 
 fn git_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
-    let output = crate::core::git::git_command(
-        root,
-        &["merge-base", "--is-ancestor", ancestor, descendant],
-    )?;
-    match output.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => bail!(
-            "unable to resolve task delivery ancestry: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ),
-    }
+    crate::core::git::git_ancestor(root, ancestor, descendant)
 }
 
 fn git_changed(root: &Path, before: &str, after: &str, scope: &[String]) -> Result<bool> {
-    let mut args = vec!["diff", "--quiet", before, after, "--"];
-    args.extend(scope.iter().map(String::as_str));
-    let output = crate::core::git::git_command(root, &args)?;
-    match output.status.code() {
-        Some(0) => Ok(false),
-        Some(1) => Ok(true),
-        _ => bail!(
-            "unable to compare task-scoped trees: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ),
-    }
+    crate::core::git::git_scoped_tree_changed(root, before, after, scope)
 }
 
 fn task_landed_commit(
@@ -65,29 +44,27 @@ fn task_landed_commit(
     // With auto_commit disabled, the accepted candidate snapshot is a root
     // snapshot rather than an ancestor of the user's landing commit. Resolve
     // its first scoped-tree match after the candidate's recorded baseline.
-    if !scope.is_empty() {
-        if let Some(baseline) = candidate_baseline_head {
-            for commit in &commits {
-                if commit == baseline || !git_ancestor(root, baseline, commit)? {
-                    continue;
-                }
-                if !git_changed(root, baseline, commit, scope)?
-                    || git_changed(root, delivery, commit, scope)?
-                {
-                    continue;
-                }
-                let parent_line = crate::core::git::git_command(
-                    root,
-                    &["rev-list", "--parents", "-n", "1", commit],
-                )?;
-                let parent_fields = String::from_utf8(parent_line.stdout)?
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>();
-                if parent_fields.len() >= 2 && git_changed(root, &parent_fields[1], commit, scope)?
-                {
-                    return Ok(commit.clone());
-                }
+    if let Some(baseline) = candidate_baseline_head {
+        for commit in &commits {
+            if commit == baseline || !git_ancestor(root, baseline, commit)? {
+                continue;
+            }
+            if !git_changed(root, baseline, commit, scope)?
+                || git_changed(root, delivery, commit, scope)?
+            {
+                continue;
+            }
+            let parent_line = crate::core::git::git_command(
+                root,
+                &["rev-list", "--parents", "-n", "1", commit],
+            )?;
+            let parent_fields = String::from_utf8(parent_line.stdout)?
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if parent_fields.len() >= 2 && git_changed(root, &parent_fields[1], commit, scope)?
+            {
+                return Ok(commit.clone());
             }
         }
     }
@@ -182,24 +159,60 @@ pub fn handoff(
             &profile,
         )?;
         let mut landed = original.clone();
-        let delivery = original
-            .commit
-            .as_deref()
-            .context("TASK_RECEIPT_INVALID: completed task receipt has no delivery commit")?;
-        let candidate_baseline = store
-            .build_snapshot_candidate(&task.task_id)?
-            .map(|(_, baseline)| baseline);
-        landed.commit = Some(task_landed_commit(
-            root,
-            &sha,
-            delivery,
-            candidate_baseline.as_deref(),
-            &task.spec.scope,
-        )?);
         let (_, task_ref) = task
             .task_id
             .rsplit_once(':')
             .context("invalid task identity")?;
+        let markdown_commit = item
+            .tasks
+            .iter()
+            .find(|spec| spec["task_ref"].as_str() == Some(task_ref))
+            .and_then(|spec| spec.get("receipt"))
+            .and_then(|receipt| receipt.get("commit"))
+            .and_then(|commit| commit.as_str());
+        let candidate_baseline = store
+            .build_snapshot_candidate(&task.task_id)?
+            .map(|(_, baseline)| baseline);
+        let effective_delivery = match markdown_commit {
+            Some(md_sha) => {
+                if !matches!(md_sha.len(), 40 | 64) || !md_sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    bail!("TASK_RECEIPT_INVALID: milestone task receipt contains invalid Git commit '{md_sha}'");
+                }
+                if !crate::core::git::git_commit_exists(root, md_sha)? {
+                    bail!("TASK_RECEIPT_INVALID: task receipt commit '{md_sha}' is not available in workspace Git repository");
+                }
+                if original.commit.as_deref() != Some(md_sha) {
+                    if !git_ancestor(root, md_sha, &sha)? {
+                        bail!("TASK_DELIVERY_COMMIT_INVALID: task receipt commit '{md_sha}' is not an ancestor of milestone handoff commit '{sha}'");
+                    }
+                    let milestone_rel = item.path.strip_prefix(root).unwrap_or(&item.path).to_string_lossy();
+                    crate::core::tasks::validate_commit_for_task(
+                        root,
+                        md_sha,
+                        &task.spec.scope,
+                        Some(&milestone_rel),
+                        original.commit.as_deref(),
+                        candidate_baseline.as_deref(),
+                    )
+                    .map_err(|e| anyhow::anyhow!("TASK_DELIVERY_COMMIT_INVALID: {e}"))?;
+                }
+                md_sha
+            }
+            None => {
+                original
+                    .commit
+                    .as_deref()
+                    .context("TASK_RECEIPT_INVALID: completed task receipt has no delivery commit")?
+            }
+        };
+        let landed_sha = task_landed_commit(
+            root,
+            &sha,
+            effective_delivery,
+            candidate_baseline.as_deref(),
+            &task.spec.scope,
+        )?;
+        landed.commit = Some(landed_sha);
         handoff_text = render_task_receipt(&handoff_text, task_ref, &landed, &task.spec.subtasks)?;
         original_receipts.insert(task.task_id.clone(), original.clone());
         landed_receipts.insert(task.task_id.clone(), landed);

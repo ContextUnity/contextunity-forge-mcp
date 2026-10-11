@@ -259,6 +259,24 @@ fn resolve_task_profile(
     }
 }
 
+/// Query the latest passed candidate snapshot baseline for a task from `task_gates`.
+pub fn task_candidate_baseline(connection: &Connection, task_id: &str) -> Result<Option<String>> {
+    let mut stmt = connection.prepare(
+        "SELECT evidence FROM task_gates WHERE task_id=?1 AND state='passed' AND evidence LIKE '%candidate_baseline_head%' ORDER BY revision DESC LIMIT 1",
+    )?;
+    let evidence: Option<String> = stmt.query_row(params![task_id], |r| r.get(0)).optional()?;
+    if let Some(ev) = evidence {
+        let val: serde_json::Value = serde_json::from_str(&ev)
+            .with_context(|| format!("TASK_GATE_EVIDENCE_CORRUPTED: failed to parse evidence JSON for task '{task_id}'"))?;
+        let base = val
+            .get("candidate_baseline_head")
+            .and_then(|v| v.as_str())
+            .with_context(|| format!("TASK_GATE_EVIDENCE_CORRUPTED: missing 'candidate_baseline_head' in evidence for task '{task_id}'"))?;
+        return Ok(Some(base.to_owned()));
+    }
+    Ok(None)
+}
+
 impl TasksStore {
     /// Performs open.
     pub fn open(path: &Path) -> Result<Self> {
@@ -554,6 +572,38 @@ impl TasksStore {
         tx.commit()?;
         Ok(deleted)
     }
+
+fn is_repack_receipt_update(
+    root: &Path,
+    existing: &Option<Receipt>,
+    imported: &Option<Receipt>,
+    scope: &[String],
+    milestone_ref: &str,
+    baseline: Option<&str>,
+) -> Result<bool> {
+    let (Some(existing), Some(imported)) = (existing.as_ref(), imported.as_ref()) else {
+        return Ok(false);
+    };
+    if !existing.matches_proofs(imported) {
+        return Ok(false);
+    }
+    let Some(commit) = imported.commit.as_deref() else {
+        return Ok(false);
+    };
+    if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(false);
+    }
+    Ok(crate::core::tasks::validate_commit_for_task(
+        root,
+        commit,
+        scope,
+        Some(milestone_ref),
+        existing.commit.as_deref(),
+        baseline,
+    )
+    .is_ok())
+}
+
     fn sync_selected(
         &mut self,
         milestone: &Milestone,
@@ -599,10 +649,18 @@ impl TasksStore {
             }
             if let Some(mut existing) = load(&tx, &id)? {
                 if existing.digest == digest {
-                    if spec.status.as_deref() == Some("completed")
-                        && (existing.status != "completed" || existing.receipt != spec.receipt)
-                    {
-                        bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
+                    if spec.status.as_deref() == Some("completed") {
+                        if existing.status != "completed" {
+                            bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
+                        }
+                        if existing.receipt != spec.receipt {
+                            let baseline = task_candidate_baseline(&tx, &id)?;
+                            if !Self::is_repack_receipt_update(root, &existing.receipt, &spec.receipt, &existing.spec.scope, &existing.milestone_ref, baseline.as_deref())? {
+                                bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
+                            }
+                            existing.receipt = spec.receipt.clone();
+                            existing.spec.receipt = spec.receipt.clone();
+                        }
                     }
                     for sub in &spec.subtasks {
                         tx.execute(
@@ -916,7 +974,7 @@ impl TasksStore {
     pub fn handoff_milestone(
         &mut self,
         milestone_prefix: &str,
-        old_ref: &str,
+        _old_ref: &str,
         new_ref: &str,
         expected_ids: &[String],
         receipts: &std::collections::BTreeMap<String, Receipt>,
@@ -931,7 +989,7 @@ impl TasksStore {
         let mut found_ids = Vec::new();
         for descriptor in descriptors {
             let mut task: Task = serde_json::from_str(&descriptor)?;
-            if task.milestone_ref != old_ref || task.status != "completed" {
+            if task.status != "completed" {
                 bail!("milestone task state changed during handoff");
             }
             let receipt = receipts

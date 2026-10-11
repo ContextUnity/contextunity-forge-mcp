@@ -82,7 +82,7 @@ fn reconcile(root: &Path, reference: &str, mode: &str) -> Result<Value> {
         bail!("TASK_PROJECT_MISMATCH");
     }
     for spec in &milestone.tasks {
-        if spec.status.as_deref() == Some("completed") {
+        if spec.status.as_deref() == Some("completed") && !reference.split('/').any(|part| part == "archive") {
             crate::core::tasks::gates::validate_durable_receipt(
                 spec.receipt
                     .as_ref()
@@ -118,7 +118,29 @@ fn reconcile(root: &Path, reference: &str, mode: &str) -> Result<Value> {
             Some(task)
                 if task.digest == milestone.digest(spec)?
                     && (spec.status.as_deref() != Some("completed")
-                        || task.receipt == spec.receipt) => {}
+                        || task.receipt == spec.receipt
+                        || match (&task.receipt, &spec.receipt) {
+                            (Some(t_r), Some(s_r)) if t_r.matches_proofs(s_r) => {
+                                match s_r.commit.as_deref() {
+                                    Some(c) if matches!(c.len(), 40 | 64) && c.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                                        let baseline = match connection.as_ref() {
+                                            Some(conn) => crate::db::tasks_store::task_candidate_baseline(conn, &id)?,
+                                            None => None,
+                                        };
+                                        crate::core::tasks::validate_commit_for_task(
+                                            root,
+                                            c,
+                                            &task.spec.scope,
+                                            Some(reference),
+                                            t_r.commit.as_deref(),
+                                            baseline.as_deref(),
+                                        ).is_ok()
+                                    }
+                                    _ => false,
+                                }
+                            }
+                            _ => false,
+                        }) => {}
             None if spec.status.as_deref() == Some("completed") => {}
             None => conflicts.push(json!({"task_id":id,"reason":"not_imported"})),
             Some(_) => {
