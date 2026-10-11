@@ -29,7 +29,6 @@ Read [documentation instructions](AGENTS.md) before editing these pages.
 ## Operations and verification
 
 - [Limits and freshness](runbooks/limits-and-freshness.md): protective indexing/query ceilings, recovery steps, source verification, and failure behavior.
-- [ACDD execution runbook](runbooks/acdd.md): the task and milestone delivery sequence.
 - [Required test gates](../TESTS.md): exact task and milestone verification commands.
 - [Testing guide](testing/README.md): test ownership, public seams, and verification cadence.
 

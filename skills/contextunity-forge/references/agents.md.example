@@ -8,16 +8,28 @@ Use this short router in a repository root `AGENTS.md` when ContextUnity Forge i
 
 - Load the shared `contextunity-forge` skill for generic Forge MCP, CLI, and task tool guidance.
 - Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, role and model selection, review contours, and profile-specific behavior.
-- Read the repository's ACDD runbook for local execution steps, task reference for operation and evidence schemas, and `TESTS.md` for required verification commands.
+- Read task reference for operation and evidence schemas, and `TESTS.md` for required verification commands.
 - Read the nearest `AGENTS.md` for test placement and other subtree-owned rules.
 
-## Forge ACDD Git Permissions
+## Worktrees and Git permissions
 
-- With `auto_commit: true`, Forge commits the candidate tree during delivery and records the receipt in SQLite; milestone handoff rewrites receipt.commit in Markdown before archiving. Do not create a duplicate task commit.
-- With `auto_commit: false`, create one scoped task commit containing the task changes and generated receipt after delivery.
-- Merge each delivered task branch into the milestone branch and remove its temporary branch and worktree under the active ACDD permission.
-- After `milestone handoff`, create the final milestone archive commit and merge the milestone branch into its target.
-- For authorized manual task or archive commits, stage only scoped task changes and generated receipts, and verify diffs before committing. Require explicit approval for unrelated commits, pushes, or publication.
+Worktrees live at `.worktrees/<milestone-prefix>-<slug>` for milestones and `.worktrees/<milestone-prefix>-<task-slug>` for concurrent tasks.
+
+### Permitted Git operations inside active milestone workflows
+
+- Task commits:
+  - With `auto_commit: true`, Forge automatically creates the delivery commit and records the receipt in SQLite; do not create duplicate commits.
+  - With `auto_commit: false`, create exactly one scoped task commit containing task changes and the generated receipt after delivery.
+- Task repacking: Before milestone handoff, ensure exactly one commit per task, squashing intermediate commits if any. Record actual task commit SHAs in the milestone document.
+- Branch integration: Merge each delivered task branch into the milestone branch, delete the temporary task branch, and remove its worktree (`git worktree remove .worktrees/<milestone-prefix>-<task-slug>`).
+- Handoff commit: When all milestone tasks are delivered and verified, run `contextunity-forge-mcp milestone handoff` in the milestone worktree. Commit the archived milestone document, along with any out-of-scope adjustments, deferred fixes, and recorded findings, documenting them in the handoff commit message.
+- Milestone landing: In the primary worktree (`main`), fast-forward the milestone branch (`git merge --ff-only <milestone-branch>`), remove the milestone worktree (`git worktree remove .worktrees/<milestone-prefix>-<slug>`), and delete the milestone branch (`git branch -d <milestone-branch>`).
+
+### Operations requiring explicit user approval
+
+- Commits on `main`: Do not create Git commits directly on `main` without explicit user approval.
+- Dangerous Git operations: History rewrites (`git reset --hard`, destructive rebases, force pushes), branch deletion outside task/milestone cleanup, and repository-level state clearing require explicit user approval.
+- Remote publications: `git push`, tagging, releases, and credential publication require explicit user approval.
 <!-- contextunity-forge:end -->
 ```
 

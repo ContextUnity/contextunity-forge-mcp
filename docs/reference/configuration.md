@@ -148,27 +148,32 @@ Agent execution and model guidance are configured per **role**, not per task.
 `mode` accepts `subagent` or `inline` and effectively defaults to `subagent`.
 `reuse_on_reject` effectively defaults to `true`; when a review rewinds to a
 builder stage, this retains the prior builder's worker ID in rejection guidance.
-`models` is an ordered list of `ModelSpec` values, with `models[0]` as the
-primary recommendation. `ModelSpec` owns `model` and optional `reasoning`.
+`models` is an ordered list of model specifications, with `models[0]` as the
+primary recommendation. Entries can be specified as compact strings with optional
+reasoning (`model:reasoning` or `model`, e.g. `'gpt6-luna:xhigh'`, `'composer-2.5'`)
+or structured mappings (`{ model: "sol-6.1", reasoning: "high" }`).
 An empty model list defaults to the active session model. Recommendations merge
 field-wise across profile overrides.
 
 ```yaml
 # .forge/acdd/profile.yaml
 roles:
+  builder:
+    models:
+      - 'gpt6-luna:xhigh'
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
     models:
-      - model: "sol-6.1"
-        reasoning: "high"
-    recommendation: "Run independent review on a dedicated high-reasoning model."
+      - 'sol-6.1:high'
+    guidance: "Run independent review on a dedicated high-reasoning model."
 ```
 
 During `task_claim` or `task_manage(inspect)`, Forge provides the resolved
-`subagent_role` and `role_spec` in `workflow_guidance`. `role_spec` contains
-effective `mode` and `reuse_on_reject`, the ordered `models`, and the role
-recommendation. After a `reject_to` rewind, `workflow_guidance.rejection`
+`role`, `mode` (`subagent` or `inline`), and `role_guide` in `workflow_guidance`. `role` specifies the active role
+identifier, `mode` specifies whether the role executes as an isolated subagent or inline in the current agent (with role guidance automatically adapted for inline execution), and `role_guide` combines advisory guidance with configured
+recommended models (e.g. `Recommended model: gpt6-luna:xhigh or sol-6.1:high.`).
+After a `reject_to` rewind, `workflow_guidance.rejection`
 contains `rejected_from`, the prior builder `worker_id` when reuse is enabled,
 and the persisted `findings`; a clean forward run has `rejection: null`.
 When reuse is enabled, guidance adds the targeted step

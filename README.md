@@ -5,7 +5,7 @@ doc_type: guide
 
 # ContextUnity Forge MCP
 
-ContextUnity Forge MCP is a high-performance local code graph engine, AST search indexer, documentation server, and **ACDD (Augmented Contract-Driven Development)** task coordinator for AI coding agents.
+ContextUnity Forge MCP is a high-performance local code graph engine, AST search indexer, documentation server, and **ACDD (Augmented Context-Driven Development)** task coordinator for AI coding agents.
 
 Implemented in Rust, Forge operates as both a command-line interface and a stdio **Model Context Protocol (MCP)** server providing **20 specialized tools**. It indexes codebases into a repository-local SQLite database (`.forge/code-map.sqlite`) and orchestrates task state, gates, and receipts in an independent SQLite store (`.forge/tasks.sqlite`).
 
@@ -17,7 +17,7 @@ Implemented in Rust, Forge operates as both a command-line interface and a stdio
 - **Structural AST Pattern Matching**: Language-aware syntax search via Tree-sitter (`ast_grep_search` / `ast grep`), matching structural AST expressions across Python, Rust, TypeScript, JavaScript, Vue, Protobuf, HTML, YAML, TOML, Markdown, and optional language profiles.
 - **Dependency & Impact Analysis**: Directional call and import graph traversal (`code_map_impact`), test coverage and regression seam discovery (`code_map_tests`), and statically proven safe symbol removal (`code_map_prove_removal`).
 - **Architecture & Documentation Indexing**: Heading-level search and retrieval for Markdown/MDX (`search_docs`, `get_doc`), cross-linking documentation sections with code symbols and ADRs.
-- **ACDD (Augmented Contract-Driven Development)**: Bridges declarative Git milestone contracts directly to an executable, deterministic task queue. The active profile defines gate identifiers and order; the default profile uses four gates:
+- **ACDD (Augmented Context-Driven Development)**: Bridges declarative Git milestone contracts directly to an executable, deterministic task queue. The active profile defines gate identifiers and order; the default profile uses four gates:
   - `contract`: Red test seam or verified invariant baseline (`direct-proof`).
   - `build`: Green implementation with passing tests.
   - `review`: Independent verification across 5 quality contours by a worker distinct from the builder.
@@ -134,7 +134,7 @@ When `forge-mcp.yaml` is absent, Forge runs out-of-the-box with sensible default
 
 ---
 
-## ACDD (Augmented Contract-Driven Development) & Tasks
+## ACDD (Augmented Context-Driven Development) & Tasks
 
 ACDD connects declarative Git milestone contracts (`docs/milestones/*.md`) to an executable, deterministic task queue in SQLite (`.forge/tasks.sqlite`). Code index rebuilds never alter or reset task state. The active profile defines each task's gate identifiers and order; CLI and MCP stage arguments use those identifiers.
 
@@ -285,7 +285,6 @@ contextunity-forge-mcp task subtask add <task-id> sub-1 "Note" # Add iterative s
 - [MCP Tool Reference](docs/reference/mcp-tools.md)
 - [CLI Reference](docs/reference/cli.md)
 - [Configuration Reference](docs/reference/configuration.md)
-- [ACDD Execution Runbook](docs/runbooks/acdd.md)
 - [Task Schema & Operations](docs/reference/tasks.md)
 - [Indexing Architecture](docs/architecture/indexing.md)
 - [Language Support Matrix](docs/reference/languages.md)

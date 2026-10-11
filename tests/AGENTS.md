@@ -28,7 +28,7 @@ This document defines the rules for placing, creating, refactoring, and maintain
 - Domain cohesion: keep coherent test suites unified within their subsystem domain (`tests/acdd/tasks.rs`, `tests/languages/manifests.rs`). Split tests strictly along natural architectural sub-boundaries when distinct domains emerge.
 
 ## 3. Suite moves
-- When moving, renaming, splitting, or removing a test suite or test file, update `docs/runbooks/acdd.md`, `docs/testing/README.md`, and this file in the same `build`.
+- When moving, renaming, splitting, or removing a test suite or test file, update `docs/testing/README.md` and this file in the same `build`.
 
 ## 4. Public Seams Over Internal Mocks
 

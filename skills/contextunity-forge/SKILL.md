@@ -5,7 +5,7 @@ description: Load before repository code discovery, symbol lookup, dependency tr
 
 # ContextUnity Forge MCP
 
-`contextunity-forge` provides high-performance semantic code-graph querying, architectural inspection, impact analysis, and **ACDD (Augmented Contract-Driven Development)** task coordination for repositories indexed by Forge.
+`contextunity-forge` provides high-performance semantic code-graph querying, architectural inspection, impact analysis, and **ACDD (Augmented Context-Driven Development)** task coordination for repositories indexed by Forge.
 
 ## Documentation layers
 
@@ -121,14 +121,12 @@ Record discoveries with `task subtask add`. Do not add a root milestone task for
 
 Post and read messages at milestone, task, and subtask scope. Use only `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`; post/read may target or filter by a gate id from the active task profile. Claims include untargeted messages plus those targeted to the current gate, and expose the targeted set through `workflow_guidance.blackboard_messages` with a compact `blackboard_info` summary. Delivery copies `decisions` and `deferred` into the existing `architectural_notes` receipt vector with topic labels before clearing that task's messages.
 
-### Git permissions and milestone close
+### Delivery and milestone handoff
 
-The active delivery profile controls whether Forge or the agent creates the task commit:
+The active delivery profile controls whether Forge automatically commits the candidate tree during delivery:
 
-- With `auto_commit: true`, Forge commits the candidate tree during delivery and records the receipt in SQLite; milestone handoff rewrites `receipt.commit` in Markdown before archiving. Do not create a duplicate task commit.
-- With `auto_commit: false`, after delivery create one scoped task commit containing the task changes and generated receipt under the repository's standing permission.
-
-Merge each delivered task branch into the milestone branch and remove its temporary branch and worktree under the active ACDD permission. For authorized manual task or archive commits, create intentional, reviewable Git commits staging only scoped task changes and receipts, and verify diffs before committing.
+- With `auto_commit: true`, Forge automatically creates the delivery commit and records the receipt in SQLite; do not create duplicate task commits.
+- With `auto_commit: false`, Forge records the delivery receipt in SQLite without creating a commit; create the scoped task commit under repository-owned Git permissions.
 
 Run the repository verification command before milestone handoff:
 
@@ -138,7 +136,8 @@ contextunity-forge-mcp milestone handoff <id> \
   --tests-passed <N> --tests-failed 0
 ```
 
-`milestone handoff` is CLI-only. It records verified results and archives the milestone; it does not run tests. After handoff succeeds, create the final milestone archive commit and merge the milestone branch into its target under the active permission.
+`milestone handoff` is CLI-only. It resolves each task's landed commit from the milestone document or first-parent branch, verifies proofs and scopes against task records, records verified results, and archives the milestone; it does not run tests.
+
 
 ## Workspace Adapters (`forge-mcp.yaml`) & Default Behavior
 

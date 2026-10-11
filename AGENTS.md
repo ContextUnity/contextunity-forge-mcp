@@ -13,22 +13,31 @@
 - Runtime behavior and setup: [README.md](README.md) and [docs](docs/).
 - Architecture and modularity: [src/AGENTS.md](src/AGENTS.md), [architecture](docs/architecture/README.md), and [decisions](docs/adr/README.md).
 - Interfaces: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), [ACDD navigation](docs/reference/acdd.md), and [CLI commands](docs/reference/cli.md).
-- Operations: [runbooks](docs/runbooks/README.md) and the [ACDD execution runbook](docs/runbooks/acdd.md).
+- Operations: [runbooks](docs/runbooks/README.md).
 - Planning: [roadmap](docs/roadmap.md), [milestones](docs/milestones/README.md), and [plans](docs/plans/README.md).
 - Verification: [required gates](TESTS.md) and the [testing guide](docs/testing/README.md).
 - Forge tool discovery and task operations: load the shared `contextunity-forge` skill.
 
 Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that provides the needed operation. Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, roles, models, review contours, and profile-specific behavior. Task builds run the affected test target and strict Clippy. Follow [TESTS.md](TESTS.md) for the exact task and milestone verification commands and count rules.
 
-## Git permissions
+## Worktrees and Git permissions
 
-Forge ACDD grants standing permission inside an active milestone workflow:
+Worktrees live at `.worktrees/<milestone-prefix>-<slug>` for milestones and `.worktrees/<milestone-prefix>-<task-slug>` for concurrent tasks.
 
-- With `auto_commit: true`, Forge commits the candidate tree during delivery and records the receipt in SQLite; milestone handoff rewrites receipt.commit in Markdown before archiving. Do not create a duplicate task commit.
-- With `auto_commit: false`, create one scoped task commit containing task changes and the generated receipt after delivery.
-- Merge each delivered task branch into the milestone branch and remove its temporary branch and worktree.
-- After all milestone tasks are delivered and verified, run `milestone handoff`, then commit the archived milestone and merge the completed milestone branch into its target.
+### Permitted Git operations inside active milestone workflows
 
-For authorized manual task or archive commits, create intentional, reviewable Git commits: stage only scoped task changes and generated receipts, verify diffs, and write concise commit messages. Require explicit approval for unrelated commits, pushes, publication, and repository-level cleanup.
+- Task commits:
+  - With `auto_commit: true`, Forge automatically creates the delivery commit and records the receipt in SQLite; do not create duplicate commits.
+  - With `auto_commit: false`, create exactly one scoped task commit containing task changes and the generated receipt after delivery.
+- Task repacking: Before milestone handoff, ensure exactly one commit per task, squashing intermediate commits if any. Record actual task commit SHAs in the milestone document.
+- Branch integration: Merge each delivered task branch into the milestone branch, delete the temporary task branch, and remove its worktree (`git worktree remove .worktrees/<milestone-prefix>-<task-slug>`).
+- Handoff commit: When all milestone tasks are delivered and verified, run `contextunity-forge-mcp milestone handoff` in the milestone worktree. Commit the archived milestone document, along with any out-of-scope adjustments, deferred fixes, and recorded findings, documenting them in the handoff commit message.
+- Milestone landing: In the primary worktree (`main`), fast-forward the milestone branch (`git merge --ff-only <milestone-branch>`), remove the milestone worktree (`git worktree remove .worktrees/<milestone-prefix>-<slug>`), and delete the milestone branch (`git branch -d <milestone-branch>`).
+
+### Operations requiring explicit user approval
+
+- Commits on `main`: Do not create Git commits directly on `main` without explicit user approval.
+- Dangerous Git operations: History rewrites (`git reset --hard`, destructive rebases, force pushes), branch deletion outside task/milestone cleanup, and repository-level state clearing require explicit user approval.
+- Remote publications: `git push`, tagging, releases, and credential publication require explicit user approval.
 
 Do not run benchmarks without explicit user approval. Read [benchmark instructions](benchmarks/AGENTS.md) before benchmarking.

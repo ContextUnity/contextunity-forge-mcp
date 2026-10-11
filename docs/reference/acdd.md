@@ -1,5 +1,5 @@
 ---
-title: "Augmented contract-driven development"
+title: "Augmented Context-Driven Development"
 doc_type: guide
 ---
 
@@ -7,7 +7,7 @@ doc_type: guide
 
 Use the shared [contextunity-forge skill](../../skills/contextunity-forge/SKILL.md#acdd) for generic Forge MCP and CLI guidance, task tools, and standing Git permissions. The active task profile and claim guidance govern gate sequence, proof policy, roles, models, review contours, and profile-specific behavior.
 
-Use the [ACDD execution runbook](../runbooks/acdd.md) for this repository's operational sequence and [task operations](tasks.md) for CLI and MCP arguments, evidence schemas, and state transitions.
+Use [task operations](tasks.md) for CLI and MCP arguments, evidence schemas, and state transitions, [configuration](configuration.md) for profile schemas, and [CLI commands](cli.md) for command operations.
 
 ## Documentation and instructions co-evolution
 

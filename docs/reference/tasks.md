@@ -8,8 +8,8 @@ doc_type: api
 Git milestone frontmatter and fenced YAML task blocks own specifications.
 `src/engine/tasks.rs` serves CLI and MCP through the independent SQLite store
 in `src/db/tasks_store.rs`. Code-index rebuilds preserve operational task state.
-For the lifecycle, load the `contextunity-forge` skill; for the delivery sequence,
-follow the [execution runbook](../runbooks/acdd.md).
+For the lifecycle, load the `contextunity-forge` skill; for worktree and Git rules,
+follow root [AGENTS.md](../../AGENTS.md#worktrees-and-git-permissions).
 
 ## Configuration and identity
 
@@ -78,11 +78,9 @@ and attempts. Existing task IDs route claim, submit, inspect, reset, delete,
 and scope extension to their owning namespace. Inspect and claim include absolute
 `workspace_root`, absolute `agents_guidance`, the milestone's local invariants,
 and stage-specific `workflow_guidance`. The latter gives `active_stage`,
-`agent_type`, `subagent_role`, `steps`, and the instruction path. At review and
+`role`, `mode` (`subagent` or `inline`), `role_guide` (advisory role guidance and recommended models, adapted for inline execution when `mode: inline`), and `steps`. At review and
 delivery it also gives the independence rule and accepted builder identity.
-When a role is configured, `role_spec` gives its effective `mode` and
-`reuse_on_reject`, ordered `models` (where the first model is primary), and
-recommendation. After a `reject_to` rewind, `rejection` gives
+After a `reject_to` rewind, `rejection` gives
 `rejected_from`, the prior builder `worker_id` when reuse is enabled, and the
 persisted findings; it is null on clean forward runs. Reuse guidance adds
 `Return task to builder '{worker_id}' with review rejection findings to repair defects.`
@@ -382,7 +380,7 @@ with `completed_at`, `duration` as `Xh Ym`, and `verification` containing
 at frontmatter `started_at`, or the earliest SQLite claim timestamp for an
 older active document. The command sets frontmatter `status: completed`, moves
 the document to the selected directory's `archive/`, and updates the stored
-`milestone_ref` of its tasks. The subsequent milestone archive commit occurs after handoff and is excluded from `receipt.commit`, avoiding any hash cycle. Follow [milestone closure](../runbooks/acdd.md#close-the-milestone) for the final
+`milestone_ref` of its tasks. The subsequent milestone archive commit occurs after handoff and is excluded from `receipt.commit`, avoiding any hash cycle. Follow root [AGENTS.md](../../AGENTS.md#worktrees-and-git-permissions) and [TESTS.md](../../TESTS.md#milestone-handoff-gate) for the final
 verification gate, handoff, and archiving.
 
 ### Deferred and out-of-scope defects

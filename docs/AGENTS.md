@@ -89,9 +89,17 @@ Validate metadata, relative links, scan admission, and documentation retrieval.
 Follow root `AGENTS.md` ACDD permissions for task/archive commits and their
 branch merges. Obtain explicit approval for publication.
 
+## Shared skill and example maintenance
+
+When modifying architecture, workflows, declarative profiles, schemas, CLI commands, or standing Git permissions:
+- Update the repository skill [`skills/contextunity-forge/SKILL.md`](../skills/contextunity-forge/SKILL.md) and all reference examples under [`skills/contextunity-forge/references/`](../skills/contextunity-forge/references/) (`acdd_profile.yaml.example`, `agents.md.example`, `forge-mcp.yaml.example`, `gitignore.example`) to match active system behavior and schemas.
+- Ensure all example configurations parse cleanly and adhere to strict validation invariants (e.g. `deny_unknown_fields`, valid `guidance` keys, and accurate model specs).
+- Synchronize repository skill changes with the global skill (`~/.agents/skills/contextunity-forge/` and `~/.gemini/config/skills/contextunity-forge/`).
+
 ## Delivery documentation
 
-Follow [milestone closure](runbooks/acdd.md#close-the-milestone) for verification,
+Follow root [AGENTS.md](../AGENTS.md#worktrees-and-git-permissions) and [TESTS.md](../TESTS.md#milestone-handoff-gate) for verification,
 archival, integration, and worktree cleanup. Include changed reference,
-architecture, runbook, and navigation pages in the reviewed delivery scope.
-Verify generated receipts and relative links before authorized publication.
+architecture, runbook, navigation pages, shared skills, and reference examples in the reviewed delivery scope.
+Verify that all profile and configuration examples parse and validate cleanly.
+Synchronize skill changes with the global installation and verify generated receipts and relative links before authorized publication.
