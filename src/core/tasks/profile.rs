@@ -6,14 +6,85 @@ use std::{collections::BTreeMap, path::{Component, Path, PathBuf}, sync::{Arc, O
 const DEFAULT_PROFILE_YAML: &str = include_str!("acdd.default.yaml");
 
 /// Specification of an agent execution model within a role.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ModelSpec {
     /// Model identifier offered for this role.
     pub model: String,
     /// Optional reasoning effort recommendation.
     #[serde(default)]
     pub reasoning: Option<String>,
+}
+
+impl ModelSpec {
+    /// Format model with optional reasoning (e.g. "model:reasoning" or "model").
+    pub fn formatted(&self) -> String {
+        match &self.reasoning {
+            Some(reasoning) => format!("{}:{}", self.model, reasoning),
+            None => self.model.clone(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct MapRepr {
+            model: String,
+            #[serde(default)]
+            reasoning: Option<String>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Str(String),
+            Map(MapRepr),
+        }
+
+        match Repr::deserialize(deserializer)? {
+            Repr::Str(s) => {
+                let s = s.trim();
+                if s.is_empty() {
+                    return Err(serde::de::Error::custom("model identifier cannot be empty"));
+                }
+                if let Some((model, reasoning)) = s.split_once(':') {
+                    let model = model.trim();
+                    let reasoning = reasoning.trim();
+                    if model.is_empty() || reasoning.is_empty() {
+                        return Err(serde::de::Error::custom(
+                            "model string with colon requires non-empty model and reasoning (or use map format)",
+                        ));
+                    }
+                    Ok(ModelSpec {
+                        model: model.to_owned(),
+                        reasoning: Some(reasoning.to_owned()),
+                    })
+                } else {
+                    Ok(ModelSpec {
+                        model: s.to_owned(),
+                        reasoning: None,
+                    })
+                }
+            }
+            Repr::Map(MapRepr { model, reasoning }) => {
+                let model = model.trim();
+                if model.is_empty() {
+                    return Err(serde::de::Error::custom("model identifier cannot be empty"));
+                }
+                let reasoning = reasoning
+                    .map(|r| r.trim().to_owned())
+                    .filter(|r| !r.is_empty());
+                Ok(ModelSpec {
+                    model: model.to_owned(),
+                    reasoning,
+                })
+            }
+        }
+    }
 }
 
 /// Execution mode selected for an ACDD role.
@@ -42,7 +113,7 @@ pub struct RoleDef {
     pub models: Vec<ModelSpec>,
     /// Free-form advisory guidance for the role.
     #[serde(default)]
-    pub recommendation: Option<String>,
+    pub guidance: Option<String>,
 }
 
 impl RoleDef {
@@ -60,7 +131,7 @@ impl RoleDef {
         if other.mode.is_some() { self.mode = other.mode; }
         if other.reuse_on_reject.is_some() { self.reuse_on_reject = other.reuse_on_reject; }
         if !other.models.is_empty() { self.models = other.models; }
-        if other.recommendation.is_some() { self.recommendation = other.recommendation; }
+        if other.guidance.is_some() { self.guidance = other.guidance; }
     }
 }
 

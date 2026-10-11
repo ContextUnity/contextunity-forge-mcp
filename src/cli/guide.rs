@@ -43,7 +43,7 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
             "review_contours": ["paths", "claims", "concurrency", "project_isolation", "administration"],
             "subtask_rules": "Subtask must name concrete target, expected status, and verification command. Not completed with partial implementation. Use subtask_add to deepen tasks, not root task proliferation.",
             "commit_authority": "Task commits, task-branch merges/cleanups, and merging the completed milestone branch into its target branch after handoff are authorized under ACDD. Push, force-push, and publication require user permission.",
-            "reference": "Load the contextunity-forge skill for the procedure, docs/runbooks/acdd.md for the execution sequence, docs/reference/tasks.md for API and evidence schemas."
+            "reference": "Load the contextunity-forge skill for the procedure, AGENTS.md for worktrees and permissions, docs/reference/tasks.md for API and evidence schemas."
         })),
         "query" => Ok(json!({
             "start": "Call code_map_overview to identify indexed paths and coverage.",

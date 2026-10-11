@@ -4,20 +4,21 @@
 
 roles:
   contract_author:
-    recommendation: "Define a production-seam contract and submit its red proof."
+    guidance: "Define a production-seam contract and submit its red proof."
   builder:
-    recommendation: "Implement the accepted contract and run the registered command."
+    models:
+      - 'gpt6-luna:xhigh'
+    guidance: "Implement the accepted contract and run the registered command."
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
     models:
-      - model: "sol-6.1"
-        reasoning: "high"
-    recommendation: "Review the candidate independently against every configured contour."
+      - 'sol-6.1:high'
+    guidance: "Review the candidate independently against every configured contour."
   schema_author:
-    recommendation: "Submit structured evidence that matches the gate's recursive schema."
+    guidance: "Submit structured evidence that matches the gate's recursive schema."
   delivery_reviewer:
-    recommendation: "Verify accepted review evidence and deliver the pinned candidate."
+    guidance: "Verify accepted review evidence and deliver the pinned candidate."
 
 commands:
   cargo-test:

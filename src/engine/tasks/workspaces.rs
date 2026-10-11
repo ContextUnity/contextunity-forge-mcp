@@ -410,7 +410,6 @@ impl Workspace {
         } else {
             value["stage"].as_str().context("task stage missing")?
         };
-        let agent_type = value["spec"]["agent_type"].as_str().unwrap_or("worker");
         let gate = if stage == "completed" {
             None
         } else {
@@ -433,14 +432,14 @@ impl Workspace {
         };
         let subagent_role = configured_role.unwrap_or(default_subagent_role);
         let gap = guidance_gap(&self.root, &self.guidance);
-        let mut steps = if matches!(&gap, Some(GuidanceGap::MissingFile)) {
-            Vec::new()
-        } else {
-            vec![format!(
-                "Read the task instructions at {}.",
-                self.guidance.display()
-            )]
-        };
+        let mut steps = Vec::new();
+        if gap.is_none() {
+            let guidance_path = self.guidance.strip_prefix(&self.root).unwrap_or(&self.guidance);
+            steps.push(format!(
+                "Read the task instructions and Git permissions at {}.",
+                guidance_path.display()
+            ));
+        }
         if let Some(gate) = gate {
             steps.extend(gate.steps.iter().cloned());
         } else {
@@ -510,10 +509,8 @@ impl Workspace {
             .unwrap_or_default();
         let mut workflow_guidance = json!({
             "active_stage": stage,
-            "agent_type": agent_type,
-            "subagent_role": subagent_role,
+            "role": subagent_role,
             "steps": steps,
-            "instructions_path": self.guidance,
             "independence_rule": needs_independent_reviewer.then_some("Use a reviewer worker_id different from the accepted build worker_id."),
             "independent_from_worker_id": if needs_independent_reviewer { builder } else { None },
             "rejection": rejection,
@@ -525,12 +522,40 @@ impl Workspace {
             "review_sources": gate.map(|definition| definition.review_sources.clone()).unwrap_or_default(),
         });
         if let Some(def) = role_def {
-            workflow_guidance["role_spec"] = json!({
-                "mode": def.effective_mode(),
-                "reuse_on_reject": def.effective_reuse_on_reject(),
-                "models": def.models,
-                "recommendation": def.recommendation,
-            });
+            workflow_guidance["mode"] = json!(def.effective_mode());
+            let mut guide_parts = Vec::new();
+            if let Some(guidance) = &def.guidance {
+                let adapted_guidance = if def.effective_mode() == crate::core::tasks::profile::RoleExecutionMode::Inline {
+                    if let Some(rest) = guidance.strip_prefix("Spawn a dedicated ") {
+                        if let Some((_, action)) = rest.split_once(") to ") {
+                            format!("Execute inline in the current agent to {action}")
+                        } else if let Some((_, action)) = rest.split_once(" subagent to ") {
+                            format!("Execute inline in the current agent to {action}")
+                        } else if let Some((_, action)) = rest.split_once(" to ") {
+                            format!("Execute inline in the current agent to {action}")
+                        } else {
+                            format!("Execute inline in the current agent: {rest}")
+                        }
+                    } else {
+                        guidance.clone()
+                    }
+                } else {
+                    guidance.clone()
+                };
+                guide_parts.push(adapted_guidance);
+            }
+            if !def.models.is_empty() {
+                let models_str = def
+                    .models
+                    .iter()
+                    .map(|m| m.formatted())
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                guide_parts.push(format!("Recommended model: {models_str}."));
+            }
+            if !guide_parts.is_empty() {
+                workflow_guidance["role_guide"] = json!(guide_parts.join(" "));
+            }
         }
         if let Some(policy) = review_policy {
             workflow_guidance["review_policy"] = json!(policy);

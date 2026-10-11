@@ -131,11 +131,11 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
         assert_eq!(before["agents_guidance"], expected_path.to_str().unwrap());
         let guidance = &before["workflow_guidance"];
         assert!(guidance["rejection"].is_null());
-        assert_eq!(guidance["active_stage"], "contract");
-        assert_eq!(guidance["agent_type"], agent_type);
-        assert_eq!(guidance["subagent_role"], "contract_author");
-        assert_eq!(guidance["role_spec"]["mode"], "subagent");
-        assert_eq!(guidance["role_spec"]["reuse_on_reject"], true);
+        assert_eq!(guidance["role"], "contract_author");
+        assert!(guidance["role_guide"]
+            .as_str()
+            .unwrap()
+            .contains("contract author"));
         assert!(guidance["steps"]
             .as_array()
             .is_some_and(|steps| !steps.is_empty()));
@@ -160,8 +160,8 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             guidance["active_stage"]
         );
         assert_eq!(
-            claimed["workflow_guidance"]["agent_type"],
-            guidance["agent_type"]
+            claimed["workflow_guidance"]["role"],
+            guidance["role"]
         );
         assert_eq!(claimed["workflow_guidance"]["steps"], guidance["steps"]);
         assert!(claimed["workflow_guidance"]["blackboard_messages"].is_array());
@@ -173,7 +173,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
                 .unwrap();
             let build = inspect();
             assert_eq!(build["workflow_guidance"]["active_stage"], "build");
-            assert_eq!(build["workflow_guidance"]["subagent_role"], "builder");
+            assert_eq!(build["workflow_guidance"]["role"], "builder");
             assert_ne!(build["workflow_guidance"]["steps"], guidance["steps"]);
             assert!(build["workflow_guidance"]["steps"]
                 .as_array()
@@ -190,7 +190,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             )
             .unwrap();
             assert_eq!(
-                claimed_build["workflow_guidance"]["subagent_role"],
+                claimed_build["workflow_guidance"]["role"],
                 "builder"
             );
             let task = store.inspect(&id).unwrap();
@@ -200,7 +200,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             let review = inspect();
             assert_eq!(review["workflow_guidance"]["active_stage"], "review");
             assert_eq!(
-                review["workflow_guidance"]["subagent_role"],
+                review["workflow_guidance"]["role"],
                 "independent_reviewer"
             );
             assert_eq!(
@@ -3813,7 +3813,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     assert_eq!(reviewer_value["models"], serde_json::json!([]));
     assert!(reviewer_value.get("model").is_none(), "model belongs to ModelSpec");
     assert!(reviewer_value.get("reasoning").is_none(), "reasoning belongs to ModelSpec");
-    assert!(reviewer_role.recommendation.is_some(), "default reviewer must provide textual recommendation");
+    assert!(reviewer_role.guidance.is_some(), "default reviewer must provide textual guidance");
 
     // 2. Strict deny_unknown_fields fails closed on unknown YAML keys
     let invalid_yaml = "unknown_field: true\ngates: []\n";
@@ -3841,7 +3841,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     assert_eq!(loaded_reviewer_value["models"][1]["reasoning"], serde_json::json!("medium"));
     assert!(loaded_reviewer_value.get("model").is_none());
     assert!(loaded_reviewer_value.get("reasoning").is_none());
-    assert!(loaded_reviewer.recommendation.is_some(), "the base recommendation is inherited");
+    assert!(loaded_reviewer.guidance.is_some(), "the base guidance is inherited");
     // Other gates and roles remain preserved from defaults
     assert_eq!(loaded.gates.len(), 4);
     assert!(loaded.roles.contains_key("builder"));
@@ -3869,7 +3869,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     // Direct field-wise merge keeps base fields when an override omits them or
     // supplies an empty model list, then replaces the ordered models as a unit.
     let mut base = parse_profile(
-        "roles:\n  builder:\n    mode: inline\n    reuse_on_reject: false\n    models:\n      - model: base-model\n        reasoning: high\n    recommendation: base guidance\n",
+        "roles:\n  builder:\n    mode: inline\n    reuse_on_reject: false\n    models:\n      - model: base-model\n        reasoning: high\n    guidance: base guidance\n",
     )
     .unwrap();
     base.merge_override(parse_profile(
@@ -3880,7 +3880,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     assert_eq!(inherited["mode"], serde_json::json!("inline"));
     assert_eq!(inherited["reuse_on_reject"], serde_json::json!(false));
     assert_eq!(inherited["models"][0]["model"], serde_json::json!("base-model"));
-    assert_eq!(inherited["recommendation"], serde_json::json!("base guidance"));
+    assert_eq!(inherited["guidance"], serde_json::json!("base guidance"));
     base.merge_override(parse_profile(
         "roles:\n  builder:\n    mode: subagent\n    reuse_on_reject: true\n    models:\n      - model: replacement-model\n        reasoning: medium\n",
     )
@@ -3890,9 +3890,34 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     assert_eq!(replaced["reuse_on_reject"], serde_json::json!(true));
     assert_eq!(replaced["models"].as_array().unwrap().len(), 1);
     assert_eq!(replaced["models"][0]["model"], serde_json::json!("replacement-model"));
-    assert_eq!(replaced["recommendation"], serde_json::json!("base guidance"));
+    assert_eq!(replaced["guidance"], serde_json::json!("base guidance"));
 
-    // Merged profile compilation rejects a replacement gate sequence without
+    // String model notation parses model:reasoning and bare model strings
+    let string_models = parse_profile(
+        "roles:\n  builder:\n    models:\n      - 'gpt6-luna:xhigh'\n      - 'gemini-3.8:high'\n      - 'composer-2.5'\n",
+    )
+    .unwrap();
+    let builder_models = &string_models.roles.get("builder").unwrap().models;
+    assert_eq!(builder_models.len(), 3);
+    assert_eq!(builder_models[0].model, "gpt6-luna");
+    assert_eq!(builder_models[0].reasoning.as_deref(), Some("xhigh"));
+    assert_eq!(builder_models[0].formatted(), "gpt6-luna:xhigh");
+    assert_eq!(builder_models[1].formatted(), "gemini-3.8:high");
+    assert_eq!(builder_models[2].formatted(), "composer-2.5");
+
+    // Invalid string models with empty segments fail closed
+    assert!(parse_profile("roles:\n  builder:\n    models:\n      - 'model:'\n").is_err());
+    assert!(parse_profile("roles:\n  builder:\n    models:\n      - ':high'\n").is_err());
+    assert!(parse_profile("roles:\n  builder:\n    models:\n      - ''\n").is_err());
+    // Map models with unknown fields fail closed
+    assert!(parse_profile("roles:\n  builder:\n    models:\n      - model: foo\n        unknown_field: bar\n").is_err());
+
+    // The documented reference profile example loads and validates cleanly
+    let example_profile_text = std::fs::read_to_string("skills/contextunity-forge/references/acdd_profile.yaml.example")
+        .expect("example profile file must exist");
+    let parsed_example = parse_profile(&example_profile_text)
+        .expect("example profile must parse and validate without error");
+    assert!(!parsed_example.roles.is_empty());
     // exactly one terminal delivery gate instead of accepting an incomplete workflow.
     let invalid_workflow = crate::common::Workspace::new();
     invalid_workflow.write(
@@ -4487,9 +4512,11 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
                 String::from_utf8_lossy(&inspect.stderr)
             );
             let inspected: Value = serde_json::from_slice(&inspect.stdout).unwrap();
-            assert_eq!(
-                inspected["workflow_guidance"]["role_spec"]["models"][0]["model"],
-                expected_model
+            assert!(
+                inspected["workflow_guidance"]["role_guide"]
+                    .as_str()
+                    .unwrap()
+                    .contains(expected_model)
             );
         } else if sync.status.success() {
             let synced: Value = serde_json::from_slice(&sync.stdout).unwrap();
@@ -4500,7 +4527,7 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
                 .unwrap();
             let exposed_model = if inspect.status.success() {
                 let inspected: Value = serde_json::from_slice(&inspect.stdout).unwrap();
-                inspected["workflow_guidance"]["role_spec"]["models"][0]["model"]
+                inspected["workflow_guidance"]["role_guide"]
                     .as_str()
                     .map(str::to_owned)
             } else {
@@ -4583,3 +4610,162 @@ fn linked_pinned_tasks_ignore_linked_workspace_profile_overrides() {
         .unwrap_or_else(|error| panic!("{case} pinned task inspection used linked base profile: {error}"));
     }
 }
+
+#[test]
+fn inline_role_mode_adapts_guidance_text() {
+    let root = ScopedWorkspace::new("forge_inline_role_mode");
+    root.write(
+        "forge-mcp.yaml",
+        "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/AGENTS.md\nacdd_profile: custom_profile.yaml\n",
+    );
+    root.write("docs/AGENTS.md", "# Agent Guidance\nUse ContextUnity Forge.\n");
+    root.write("src/lib.rs", "pub fn work() -> bool { true }\n");
+
+    let profile_yaml = r#"
+gates:
+  - id: contract
+    role: contract_author
+    proof: contract
+  - id: build
+    role: builder
+    proof: command
+  - id: review
+    role: independent_reviewer
+    proof: review
+    reject_to: build
+    independent_from: build
+    contours: standard
+  - id: deliver
+    role: delivery_reviewer
+    proof: delivery
+    review_sources: [review]
+    reject_to: build
+roles:
+  independent_reviewer:
+    mode: inline
+    reuse_on_reject: true
+"#;
+    root.write("custom_profile.yaml", profile_yaml);
+
+    let milestone_content = r#"---
+id: m-inline-role
+title: Inline role test
+doc_type: contract
+status: active
+---
+# Inline role test
+
+```yaml
+task_ref: inline-task
+target: Verify inline role guidance
+proof_policy: seam-test-first
+scope:
+  - src/lib.rs
+```
+"#;
+    root.write("docs/milestones/010-inline.md", milestone_content);
+
+    let sync_res = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-inline.md"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let task_id = sync_res["tasks"][0]["task_id"].as_str().unwrap();
+
+    let inspected = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "inspect",
+            "task_id": task_id
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    // At contract stage, mode is subagent
+    assert_eq!(inspected["workflow_guidance"]["mode"], "subagent");
+
+    // Advance to review stage
+    let store = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    contextunity_forge_mcp::engine::tasks::claim(
+        &root.0,
+        contextunity_forge_mcp::engine::tasks::Claim {
+            task_id: task_id.to_string(),
+            stage: "contract".into(),
+            worker_id: "author".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut claimed_task = store.inspect(task_id).unwrap();
+    let evidence_val = evidence(&claimed_task);
+    contextunity_forge_mcp::engine::tasks::submit(
+        &root.0,
+        serde_json::from_value(json!({
+            "task_id": task_id,
+            "stage": "contract",
+            "action": "pass",
+            "evidence": evidence_val
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    contextunity_forge_mcp::engine::tasks::claim(
+        &root.0,
+        contextunity_forge_mcp::engine::tasks::Claim {
+            task_id: task_id.to_string(),
+            stage: "build".into(),
+            worker_id: "builder".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    claimed_task = store.inspect(task_id).unwrap();
+    let build_evidence = evidence(&claimed_task);
+    contextunity_forge_mcp::engine::tasks::submit(
+        &root.0,
+        serde_json::from_value(json!({
+            "task_id": task_id,
+            "stage": "build",
+            "action": "pass",
+            "evidence": build_evidence
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Now claim review stage: mode must be inline and guidance must be adapted!
+    let review_claim = contextunity_forge_mcp::engine::tasks::claim(
+        &root.0,
+        contextunity_forge_mcp::engine::tasks::Claim {
+            task_id: task_id.to_string(),
+            stage: "review".into(),
+            worker_id: "inline-reviewer".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let guidance = &review_claim["workflow_guidance"];
+    assert_eq!(guidance["role"], "independent_reviewer");
+    assert_eq!(guidance["mode"], "inline");
+    let role_guide = guidance["role_guide"].as_str().unwrap();
+    assert!(
+        role_guide.contains("Execute inline in the current agent to review candidate diff across contours."),
+        "expected adapted inline role guide, got: {role_guide}"
+    );
+    assert!(!role_guide.contains("Spawn a dedicated"));
+}
+
