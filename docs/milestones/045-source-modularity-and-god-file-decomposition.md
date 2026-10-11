@@ -77,6 +77,7 @@ subtasks:
 status: completed
 receipt:
   contract_revision: 7
+  commit: 36b009a3bbb22bbf657ed1fe850aebd8b4e05e4c
   passed_at: 2026-10-11T00:02:57.417046638+00:00
   evidence:
     command_proof:
@@ -173,6 +174,7 @@ subtasks:
   evidence: On the corrected candidate, `cargo test --test languages` passed (253 passed); `cargo test --test linker` passed (93 passed); `cargo clippy --all-targets --all-features -- -D warnings` passed; targeted rustfmt and `git diff --check` passed.
 receipt:
   contract_revision: 6
+  commit: 93a59633fb4822a3d5847903fd9b7ed054709cbb
   passed_at: 2026-10-10T22:44:20.989126009+00:00
   evidence:
     command_proof:
@@ -260,6 +262,7 @@ subtasks:
   evidence: '`cargo test --test linker` passed (93); `cargo test --test linker receiver` passed (86, 7 filtered); focused route unit passed (1); `cargo clippy --all-targets --all-features -- -D warnings` and targeted rustfmt/git diff --check passed. `cargo test --test receivers` is not a Cargo target; receiver modules are nested under tests/linker and ran as part of the linker suite.'
 receipt:
   contract_revision: 6
+  commit: 7e34f9da8a5857653ea70ee6666f89e500f357db
   passed_at: 2026-10-10T23:12:01.742590004+00:00
   evidence:
     command_proof:
@@ -352,6 +355,7 @@ subtasks:
   evidence: '`cargo test --test acdd` passed: 68 passed, 0 failed, 0 ignored. `cargo test --lib temporary_git_index_is_removed_when_dropped` passed: 1 passed. Strict `cargo clippy --all-targets --all-features -- -D warnings` passed.'
 receipt:
   contract_revision: 6
+  commit: 3b9aaa03c20d360c9ad2e402153b110f8278149d
   passed_at: 2026-10-10T23:44:36.297123965+00:00
   evidence:
     command_proof:
@@ -436,6 +440,7 @@ subtasks:
   evidence: '`cargo test --test acdd`: 68 passed, 0 failed. `cargo test --test core`: 31 passed, 0 failed, 1 ignored. Strict all-target/all-features Clippy passes.'
 receipt:
   contract_revision: 6
+  commit: 754650ce2f8d093d4ae52acf904dbf1b62d9b10b
   passed_at: 2026-10-10T23:52:59.702911660+00:00
   evidence:
     command_proof:
