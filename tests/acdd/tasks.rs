@@ -1393,6 +1393,247 @@ fn specifications_validate_unique_identities_and_governing_digests() {
     }
 }
 #[test]
+fn claim_reports_structured_authority_gap_for_frontmatter_and_task_drift() {
+    let (root, _, milestone) = fixture();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    let changed = SPEC
+        .replace(
+            "status: active\n",
+            "status: active\nowners: [docs/AGENTS.md]\n",
+        )
+        .replace("target: Deliver first", "target: Deliver amended first");
+    root.write("docs/010-test.md", &changed);
+
+    let error = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: id.clone(),
+            stage: "contract".into(),
+            worker_id: "builder".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(
+        error,
+        format!(
+            "AUTHORITY_GAP: task '{id}'. file revision 1 <= stored 1; frontmatter fields [milestone.owners], task fields [task.target]. Do: revert [milestone.owners] in docs/010-test.md, set contract_revision above 1, and run contextunity-forge-mcp task sync."
+        )
+    );
+}
+
+#[test]
+fn authority_gap_attributes_milestone_invariants_and_owners_with_specific_repair() {
+    for (expected_fields, advice) in [
+        (
+            "milestone.invariants",
+            ". Declare task invariants inside task.invariants",
+        ),
+        ("milestone.owners", ""),
+    ] {
+        let (root, _, milestone) = fixture();
+        let id = milestone.task_id(&milestone.tasks[0]);
+        let changed = if expected_fields == "milestone.invariants" {
+            SPEC.replace("invariants: [isolated]", "invariants: [changed]")
+        } else {
+            SPEC.replace(
+                "status: active\n",
+                "status: active\nowners: [docs/AGENTS.md]\n",
+            )
+        };
+        root.write("docs/010-test.md", &changed);
+        let error = tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: id.clone(),
+                stage: "contract".into(),
+                worker_id: "header-authority-check".into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            error,
+            format!(
+                "AUTHORITY_GAP: task '{id}'. file revision 1 <= stored 1; digest fields [{expected_fields}]. Do: revert [{expected_fields}] in docs/010-test.md{advice}."
+            )
+        );
+    }
+}
+
+#[test]
+fn sync_reports_structured_authority_gap_for_task_drift_at_equal_revision() {
+    let (root, mut store, milestone) = fixture();
+    let changed_text = SPEC.replace("target: Deliver first", "target: Deliver changed");
+    let changed = Milestone::parse(&changed_text, "forge-mcp").unwrap();
+    let error = store
+        .sync(&changed, "docs/010-test.md", &root.0)
+        .unwrap_err()
+        .to_string();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    assert_eq!(
+        error,
+        format!(
+            "AUTHORITY_GAP: task '{id}'. file revision 1 <= stored 1; digest fields [task.target]. Do: set contract_revision above 1 and run contextunity-forge-mcp task sync."
+        )
+    );
+}
+
+#[test]
+fn milestone_id_change_is_rejected_before_sync_admission_and_claim_lookup() {
+    let (root, mut store, milestone) = fixture();
+    let original_id = milestone.task_id(&milestone.tasks[0]);
+    let changed_text = SPEC.replace("id: m-test", "id: m-renamed");
+    root.write("docs/010-test.md", &changed_text);
+    let changed = Milestone::parse(&changed_text, "forge-mcp").unwrap();
+    let sync_error = store
+        .sync(&changed, "docs/010-test.md", &root.0)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        sync_error,
+        "AUTHORITY_GAP: milestone 'docs/010-test.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/010-test.md. Task ids are forge-mcp/m-renamed:first; sync would admit them as new tasks."
+    );
+    assert!(store.inspect("forge-mcp/m-renamed:first").is_err());
+
+    let claim_error = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: original_id,
+            stage: "contract".into(),
+            worker_id: "id-change-check".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        claim_error,
+        "AUTHORITY_GAP: milestone 'docs/010-test.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/010-test.md. Task ids are forge-mcp/m-renamed:first; task cannot be resolved."
+    );
+}
+
+#[test]
+fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
+    let root = ScopedWorkspace::new("forge_tasks_shared_manifest_path");
+    let database = root.0.join(".forge/tasks.sqlite");
+    let mut foreign_store = TasksStore::open_project(&database, "forge-mcp", "aaa").unwrap();
+    let mut current_store = TasksStore::open_project(&database, "forge-mcp", "zzz").unwrap();
+    let specification = |project: &str, id: &str| {
+        format!(
+            "---\nrepository: forge-mcp\nproject: {project}\nid: {id}\ntitle: Shared path\ndoc_type: contract\nstatus: active\n---\n# Shared path\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n"
+        )
+    };
+    let foreign = Milestone::parse(&specification("aaa", "m-test"), "forge-mcp").unwrap();
+    foreign_store
+        .sync(&foreign, "docs/010-shared.md", &root.0)
+        .unwrap();
+    let current = Milestone::parse(&specification("zzz", "m-test"), "forge-mcp").unwrap();
+    current_store
+        .sync(&current, "docs/010-shared.md", &root.0)
+        .unwrap();
+
+    let renamed = Milestone::parse(&specification("zzz", "m-renamed"), "forge-mcp").unwrap();
+    let error = current_store
+        .sync(&renamed, "docs/010-shared.md", &root.0)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        error,
+        "AUTHORITY_GAP: milestone 'docs/010-shared.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/010-shared.md. Task ids are zzz/m-renamed:first; sync would admit them as new tasks."
+    );
+    assert!(current_store.inspect("zzz/m-renamed:first").is_err());
+}
+
+#[test]
+fn claim_distinguishes_missing_milestone_file_from_missing_task() {
+    let (root, _, milestone) = fixture();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    std::fs::remove_file(root.0.join("docs/010-test.md")).unwrap();
+    let missing_file = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: id.clone(),
+            stage: "contract".into(),
+            worker_id: "missing-file-check".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        missing_file,
+        "TASK_AUTHORITY_MISSING: milestone file 'docs/010-test.md' is missing. Do: restore milestone file 'docs/010-test.md'."
+    );
+
+    let (root, _, milestone) = fixture();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    root.write(
+        "docs/010-test.md",
+        &SPEC
+            .replace("task_ref: first", "task_ref: renamed")
+            .replace("depends_on: [first]", "depends_on: [renamed]"),
+    );
+    let missing_task = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: id.clone(),
+            stage: "contract".into(),
+            worker_id: "missing-task-check".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        missing_task,
+        format!(
+            "TASK_AUTHORITY_MISSING: task '{id}' not found in milestone document 'docs/010-test.md'. Do: restore task '{id}' in 'docs/010-test.md'."
+        )
+    );
+}
+
+#[test]
+fn unsynced_higher_revision_with_header_drift_reports_header_and_sync_action() {
+    let (root, _, milestone) = fixture();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    let changed = SPEC
+        .replace(
+            "status: active\n",
+            "status: active\nowners: [docs/AGENTS.md]\n",
+        )
+        .replace("task_ref: first", "task_ref: first\ncontract_revision: 2");
+    root.write("docs/010-test.md", &changed);
+    let error = tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: id.clone(),
+            stage: "contract".into(),
+            worker_id: "unsynced-revision-check".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        error,
+        format!(
+            "AUTHORITY_GAP: task '{id}'. file revision 2 > stored 1 (unsynced); digest fields [milestone.owners]. Do: revert [milestone.owners] in docs/010-test.md and run contextunity-forge-mcp task sync."
+        )
+    );
+    assert!(!error.contains("task.contract_revision"));
+}
+
+#[test]
 fn contract_readmission_and_reset_fence_old_evidence() {
     let (root, mut store, mut milestone) = fixture();
     let id = milestone.task_id(&milestone.tasks[0]);

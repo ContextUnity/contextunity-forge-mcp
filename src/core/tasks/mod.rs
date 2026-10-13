@@ -350,6 +350,247 @@ pub struct Milestone {
     pub deferred_defects: Vec<DeferredDefect>,
 }
 
+/// Digest-bound authority fields captured when a task is admitted.
+///
+/// This snapshot exists only to explain a later digest mismatch. It does not
+/// participate in `Milestone::digest`, whose serialized representation is a
+/// durable compatibility boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoritySnapshot {
+    /// The repository frontmatter value.
+    pub repository: String,
+    /// The project frontmatter value.
+    pub project: String,
+    /// The milestone id frontmatter value.
+    pub milestone_id: String,
+    /// The milestone invariants frontmatter value.
+    pub milestone_invariants: Vec<String>,
+    /// The milestone owners frontmatter value.
+    pub milestone_owners: Vec<String>,
+    /// The milestone dependencies frontmatter value.
+    pub milestone_depends_on: Vec<String>,
+    /// The optional milestone ACDD profile frontmatter value.
+    pub milestone_acdd_profile: Option<String>,
+    /// The task reference field.
+    pub task_ref: String,
+    /// The task target field.
+    pub task_target: String,
+    /// The optional task agent type field.
+    pub task_agent_type: Option<String>,
+    /// The optional task ACDD profile field.
+    pub task_acdd_profile: Option<String>,
+    /// The task proof policy field.
+    pub task_proof_policy: String,
+    /// The task scope field.
+    pub task_scope: Vec<String>,
+    /// The task scope roots field.
+    pub task_scope_roots: Vec<String>,
+    /// The task dependencies field.
+    pub task_depends_on: Vec<String>,
+    /// The task invariants field.
+    pub task_invariants: Vec<String>,
+}
+
+impl AuthoritySnapshot {
+    /// Capture the digest-bound values represented by one milestone/task pair.
+    pub fn capture(milestone: &Milestone, task: &TaskSpec) -> Self {
+        Self {
+            repository: milestone.repository.clone(),
+            project: milestone.project.clone(),
+            milestone_id: milestone.id.clone(),
+            milestone_invariants: milestone.invariants.clone(),
+            milestone_owners: milestone.owners.clone(),
+            milestone_depends_on: milestone.depends_on.clone(),
+            milestone_acdd_profile: milestone.acdd_profile.clone(),
+            task_ref: task.task_ref.clone(),
+            task_target: task.target.clone(),
+            task_agent_type: task.agent_type.clone(),
+            task_acdd_profile: task.acdd_profile.clone(),
+            task_proof_policy: task.proof_policy.clone(),
+            task_scope: task.scope.clone(),
+            task_scope_roots: task.scope_roots.clone(),
+            task_depends_on: task.depends_on.clone(),
+            task_invariants: task.invariants.clone(),
+        }
+    }
+}
+
+/// Format the milestone identity diagnostic used before task lookup/admission.
+pub fn milestone_id_change_diagnostic(
+    milestone_ref: &str,
+    project: &str,
+    stored_id: &str,
+    file_id: &str,
+    task_ref: &str,
+    task_cannot_be_resolved: bool,
+) -> String {
+    let ending = if task_cannot_be_resolved {
+        "task cannot be resolved"
+    } else {
+        "sync would admit them as new tasks"
+    };
+    format!(
+        "AUTHORITY_GAP: milestone '{milestone_ref}'. milestone id changed from '{stored_id}' to '{file_id}'. Do: revert milestone id in {milestone_ref}. Task ids are {project}/{file_id}:{task_ref}; {ending}."
+    )
+}
+
+/// Explain a digest mismatch by comparing admitted values with the current
+/// milestone and task specification. The digest calculation itself stays
+/// untouched and this helper never attributes `task.contract_revision`.
+pub fn authority_gap_diagnostic(
+    milestone: &Milestone,
+    task: &TaskSpec,
+    task_id: &str,
+    milestone_ref: &str,
+    stored_revision: u64,
+    previous: Option<&AuthoritySnapshot>,
+    previous_task: &TaskSpec,
+) -> String {
+    let current = AuthoritySnapshot::capture(milestone, task);
+    let legacy = previous.is_none();
+    let baseline = previous.cloned().unwrap_or_else(|| {
+        let mut baseline = current.clone();
+        baseline.task_ref = previous_task.task_ref.clone();
+        baseline.task_target = previous_task.target.clone();
+        baseline.task_agent_type = previous_task.agent_type.clone();
+        baseline.task_acdd_profile = previous_task.acdd_profile.clone();
+        baseline.task_proof_policy = previous_task.proof_policy.clone();
+        baseline.task_scope = previous_task.scope.clone();
+        baseline.task_scope_roots = previous_task.scope_roots.clone();
+        baseline.task_depends_on = previous_task.depends_on.clone();
+        baseline.task_invariants = previous_task.invariants.clone();
+        baseline
+    });
+
+    let mut frontmatter_fields = Vec::new();
+    if current.repository != baseline.repository {
+        frontmatter_fields.push("milestone.repository");
+    }
+    if current.project != baseline.project {
+        frontmatter_fields.push("milestone.project");
+    }
+    if current.milestone_invariants != baseline.milestone_invariants {
+        frontmatter_fields.push("milestone.invariants");
+    }
+    if current.milestone_owners != baseline.milestone_owners {
+        frontmatter_fields.push("milestone.owners");
+    }
+    if current.milestone_depends_on != baseline.milestone_depends_on {
+        frontmatter_fields.push("milestone.depends_on");
+    }
+    if current.milestone_acdd_profile != baseline.milestone_acdd_profile {
+        frontmatter_fields.push("milestone.acdd_profile");
+    }
+    if current.milestone_id != baseline.milestone_id {
+        frontmatter_fields.push("milestone.id");
+    }
+
+    let mut task_fields = Vec::new();
+    if current.task_target != baseline.task_target {
+        task_fields.push("task.target");
+    }
+    if current.task_proof_policy != baseline.task_proof_policy {
+        task_fields.push("task.proof_policy");
+    }
+    if current.task_scope != baseline.task_scope {
+        task_fields.push("task.scope");
+    }
+    if current.task_scope_roots != baseline.task_scope_roots {
+        task_fields.push("task.scope_roots");
+    }
+    if current.task_invariants != baseline.task_invariants {
+        task_fields.push("task.invariants");
+    }
+    if current.task_depends_on != baseline.task_depends_on {
+        task_fields.push("task.depends_on");
+    }
+    if current.task_acdd_profile != baseline.task_acdd_profile {
+        task_fields.push("task.acdd_profile");
+    }
+    if current.task_ref != baseline.task_ref {
+        task_fields.push("task.task_ref");
+    }
+    if current.task_agent_type != baseline.task_agent_type {
+        task_fields.push("task.agent_type");
+    }
+
+    // Descriptors written before the authority snapshot was introduced cannot
+    // recover the old owners/dependency/profile values. Attribute that legacy
+    // gap to the complete milestone header group so the diagnostic still gives
+    // an actionable repair path instead of reverting to an opaque code.
+    if legacy && frontmatter_fields.is_empty() {
+        frontmatter_fields.extend([
+            "milestone.invariants",
+            "milestone.owners",
+            "milestone.depends_on",
+            "milestone.acdd_profile",
+        ]);
+    }
+
+    let higher_revision = task.contract_revision > stored_revision;
+    let revision_facts = if higher_revision {
+        format!(
+            "file revision {} > stored {stored_revision} (unsynced)",
+            task.contract_revision
+        )
+    } else {
+        format!(
+            "file revision {} <= stored {stored_revision}",
+            task.contract_revision
+        )
+    };
+    let frontmatter = frontmatter_fields.join(", ");
+    let task_spec = task_fields.join(", ");
+    let facts = match (frontmatter_fields.is_empty(), task_fields.is_empty()) {
+        (false, false) => format!(
+            "{revision_facts}; frontmatter fields [{frontmatter}], task fields [{task_spec}]"
+        ),
+        (false, true) => format!("{revision_facts}; digest fields [{frontmatter}]"),
+        (true, false) => format!("{revision_facts}; digest fields [{task_spec}]"),
+        (true, true) => format!("{revision_facts}; no attributed digest fields"),
+    };
+    let has_milestone_invariants = frontmatter_fields.contains(&"milestone.invariants");
+    let action = if higher_revision {
+        match (frontmatter_fields.is_empty(), task_fields.is_empty()) {
+            (false, true) if has_milestone_invariants => format!(
+                "revert [{frontmatter}] in {milestone_ref}, declare task invariants inside task.invariants, and run contextunity-forge-mcp task sync"
+            ),
+            (false, true) => format!(
+                "revert [{frontmatter}] in {milestone_ref} and run contextunity-forge-mcp task sync"
+            ),
+            (true, false) => "run contextunity-forge-mcp task sync".to_owned(),
+            (false, false) if has_milestone_invariants => format!(
+                "revert [{frontmatter}] in {milestone_ref}, declare task invariants inside task.invariants, and run contextunity-forge-mcp task sync"
+            ),
+            (false, false) => format!(
+                "revert [{frontmatter}] in {milestone_ref} and run contextunity-forge-mcp task sync"
+            ),
+            (true, true) => "run contextunity-forge-mcp task sync".to_owned(),
+        }
+    } else {
+        match (frontmatter_fields.is_empty(), task_fields.is_empty()) {
+            (false, true) if has_milestone_invariants => format!(
+                "revert [{frontmatter}] in {milestone_ref}. Declare task invariants inside task.invariants"
+            ),
+            (false, true) => format!("revert [{frontmatter}] in {milestone_ref}"),
+            (true, false) => format!(
+                "set contract_revision above {stored_revision} and run contextunity-forge-mcp task sync"
+            ),
+            (false, false) if has_milestone_invariants => format!(
+                "revert [{frontmatter}] in {milestone_ref}, declare task invariants inside task.invariants, set contract_revision above {stored_revision}, and run contextunity-forge-mcp task sync"
+            ),
+            (false, false) => format!(
+                "revert [{frontmatter}] in {milestone_ref}, set contract_revision above {stored_revision}, and run contextunity-forge-mcp task sync"
+            ),
+            (true, true) => format!(
+                "set contract_revision above {stored_revision} and run contextunity-forge-mcp task sync"
+            ),
+        }
+    };
+    format!("AUTHORITY_GAP: task '{task_id}'. {facts}. Do: {action}.")
+}
+
 impl Milestone {
     /// Resolves a manifest's lifecycle status, applying the location-based default.
     pub fn status_from_frontmatter(text: &str, archived: bool) -> Result<&'static str> {

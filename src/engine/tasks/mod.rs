@@ -479,16 +479,61 @@ fn validate_authority(
     repository: &str,
     project: &str,
 ) -> Result<()> {
-    let text = std::fs::read_to_string(confined_path(root, &task.milestone_ref)?)
-        .context("TASK_AUTHORITY_MISSING")?;
+    let path = confined_path(root, &task.milestone_ref)?;
+    if !path.is_file() {
+        bail!(
+            "TASK_AUTHORITY_MISSING: milestone file '{}' is missing. Do: restore milestone file '{}'.",
+            task.milestone_ref,
+            task.milestone_ref
+        );
+    }
+    let text = std::fs::read_to_string(path)?;
     let milestone = Milestone::parse_with_identity(&text, repository, project)?;
+    let stored_parts = task
+        .task_id
+        .strip_prefix(&format!("{project}/"))
+        .and_then(|suffix| suffix.split_once(':'));
+    if let Some((stored_id, task_ref)) = stored_parts {
+        if milestone.id != stored_id {
+            bail!(
+                "{}",
+                crate::core::tasks::milestone_id_change_diagnostic(
+                    &task.milestone_ref,
+                    project,
+                    stored_id,
+                    &milestone.id,
+                    task_ref,
+                    true,
+                )
+            );
+        }
+    }
     let spec = milestone
         .tasks
         .iter()
         .find(|s| milestone.task_id(s) == task.task_id)
-        .context("TASK_AUTHORITY_MISSING")?;
+        .with_context(|| {
+            format!(
+                "TASK_AUTHORITY_MISSING: task '{}' not found in milestone document '{}'. Do: restore task '{}' in '{}'.",
+                task.task_id,
+                task.milestone_ref,
+                task.task_id,
+                task.milestone_ref
+            )
+        })?;
     if milestone.digest(spec)? != task.digest {
-        bail!("AUTHORITY_GAP: specification changed");
+        bail!(
+            "{}",
+            crate::core::tasks::authority_gap_diagnostic(
+                &milestone,
+                spec,
+                &task.task_id,
+                &task.milestone_ref,
+                task.contract_revision,
+                task.authority_snapshot.as_ref(),
+                &task.spec,
+            )
+        );
     }
     Ok(())
 }

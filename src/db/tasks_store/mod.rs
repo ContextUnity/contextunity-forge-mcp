@@ -1,5 +1,6 @@
 use crate::core::tasks::{
-    shorten_task_response_commits, snapshot_inspect_cmd, Milestone, Receipt, SubtaskSpec, TaskSpec,
+    authority_gap_diagnostic, milestone_id_change_diagnostic, shorten_task_response_commits,
+    snapshot_inspect_cmd, AuthoritySnapshot, Milestone, Receipt, SubtaskSpec, TaskSpec,
 };
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -52,6 +53,9 @@ pub struct Task {
     /// Effective pinned profile reference copied from task or milestone metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_pin: Option<String>,
+    /// Digest-bound authority values captured at the last successful sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_snapshot: Option<AuthoritySnapshot>,
     /// Scope admitted by the original milestone contract, before later extensions.
     #[serde(default)]
     pub initial_scope: Vec<String>,
@@ -202,6 +206,46 @@ impl std::fmt::Display for TaskAlreadyClaimed {
     }
 }
 impl std::error::Error for TaskAlreadyClaimed {}
+
+fn stored_task_id_for_milestone(
+    connection: &Connection,
+    milestone_ref: &str,
+    repository: &str,
+    project: &str,
+) -> Result<Option<String>> {
+    let project_prefix = format!("{project}/");
+    let namespace_prefix = format!("{repository}/{project}/");
+    Ok(connection
+        .query_row(
+            "SELECT task_id FROM tasks \
+             WHERE milestone_ref=?1 AND ( \
+                 (json_extract(descriptor, '$.authority_snapshot.repository')=?2 \
+                     AND json_extract(descriptor, '$.authority_snapshot.project')=?3) \
+                 OR (json_extract(descriptor, '$.authority_snapshot.repository') IS NULL \
+                     AND (substr(task_id, 1, length(?4))=?4 OR substr(task_id, 1, length(?5))=?5)) \
+             ) ORDER BY task_id LIMIT 1",
+            params![
+                milestone_ref,
+                repository,
+                project,
+                project_prefix,
+                namespace_prefix
+            ],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+fn stored_task_parts<'a>(
+    task_id: &'a str,
+    repository: &str,
+    project: &str,
+) -> Option<(&'a str, &'a str)> {
+    task_id
+        .strip_prefix(&format!("{repository}/{project}/"))
+        .or_else(|| task_id.strip_prefix(&format!("{project}/")))?
+        .split_once(':')
+}
 
 fn protected_acdd_path(path: &Path) -> bool {
     path.starts_with(Path::new(".forge/acdd"))
@@ -651,13 +695,35 @@ impl TasksStore {
         }) {
             bail!("MILESTONE_STATUS_INVALID: expected active, planned, completed, or cancelled");
         }
-        if milestone.status.as_deref() == Some("cancelled") {
-            self.prune_cancelled(reference)?;
-            return Ok(Vec::new());
-        }
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(stored_task_id) =
+            stored_task_id_for_milestone(&tx, reference, &milestone.repository, &milestone.project)?
+        {
+            if let Some((stored_id, task_ref)) =
+                stored_task_parts(&stored_task_id, &milestone.repository, &milestone.project)
+            {
+                if milestone.id != stored_id {
+                    bail!(
+                        "{}",
+                        milestone_id_change_diagnostic(
+                            reference,
+                            &milestone.project,
+                            stored_id,
+                            &milestone.id,
+                            task_ref,
+                            false,
+                        )
+                    );
+                }
+            }
+        }
+        if milestone.status.as_deref() == Some("cancelled") {
+            drop(tx);
+            self.prune_cancelled(reference)?;
+            return Ok(Vec::new());
+        }
         let mut result = Vec::new();
         for spec in &milestone.tasks {
             if task_ref.is_some_and(|r| spec.task_ref != r) {
@@ -723,6 +789,10 @@ impl TasksStore {
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     existing.spec.subtasks = current_subtasks;
                     existing.milestone_ref = reference.into();
+                    if existing.authority_snapshot.is_none() {
+                        existing.authority_snapshot =
+                            Some(AuthoritySnapshot::capture(milestone, spec));
+                    }
                     save(&tx, &existing)?;
                     result.push(existing);
                     continue;
@@ -730,7 +800,18 @@ impl TasksStore {
                 if spec.status.as_deref() == Some("completed")
                     || spec.contract_revision <= existing.contract_revision
                 {
-                    bail!("AUTHORITY_GAP: changed specification requires contract re-admission");
+                    bail!(
+                        "{}",
+                        authority_gap_diagnostic(
+                            milestone,
+                            spec,
+                            &id,
+                            reference,
+                            existing.contract_revision,
+                            existing.authority_snapshot.as_ref(),
+                            &existing.spec,
+                        )
+                    );
                 }
                 end_claim(&tx, &id)?;
                 tx.execute("DELETE FROM task_scope_paths WHERE task_id=?1", [&id])?;
@@ -805,6 +886,7 @@ impl TasksStore {
                     status: "completed".into(),
                     stage: last_gate.clone(),
                     profile_pin: profile_pin.clone(),
+                    authority_snapshot: Some(AuthoritySnapshot::capture(milestone, spec)),
                     initial_scope: spec.scope.clone(),
                     gate: last_index,
                     worker_id: None,
@@ -831,6 +913,7 @@ impl TasksStore {
                 status: if completed { "completed" } else { "ready" }.into(),
                 stage: if completed { last_gate } else { first_gate },
                 profile_pin: profile_pin.clone(),
+                authority_snapshot: Some(AuthoritySnapshot::capture(milestone, spec)),
                 initial_scope: spec.scope.clone(),
                 gate: if completed { last_index } else { 0 },
                 worker_id: None,
