@@ -2,7 +2,7 @@
 id: m-bounded-semantic-resolution-and-language-boundaries
 title: Bounded semantic resolution and language ownership
 doc_type: contract
-status: active
+status: completed
 repository: forge-mcp
 project: forge-mcp
 depends_on:
@@ -49,6 +49,15 @@ invariants:
 - 'INV-DOCS: Keep milestone contracts outside doc_search; publish delivered semantic contracts in indexed ADR, architecture, and reference documents.'
 related_plans: []
 started_at: 2026-10-13T04:00:44+00:00
+handoff:
+  completed_at: 2026-10-13T18:12:14.926112539+00:00
+  duration: 14h 11m
+  commit: 5f56cea2aff1f92dce89f4c97a300ba0e2f378f7
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 672
+    tests_failed: 0
 ---
 
 # Bounded semantic resolution and language ownership
@@ -154,7 +163,7 @@ subtasks:
 - subtask_ref: contract-and-quality-oracle-3
   title: Establish public-seam ground truth and baseline performance on isolated copy of control repository
   status: completed
-  evidence: 'Task 1 baseline complete. Corrected isolated comparison exited 0 at pre-run load 0.95 (2026-10-13T06:21:57.965812681Z) on pinned clean scratch copies: commerce-release-update cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd, traverse 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec d5f8f43e63c012c78af680af3391d04ea4855be7. Receipt: /tmp/contextunity-forge-m046-baseline/results/task1-baseline-verified-20261013/comparison.json. Task worktree release binary SHA-256 4d6f52fcdf30a75df55582a96e536e6c904c745a25f8301869189c5f3d0ba8e2. Comparison cold builds wall/CPU/peak RSS: Forge 10,995.749 ms / 48,665.935 ms / 1,378,116 KiB; Codebase Memory 25,738.266 ms / 112,234.788 ms / 4,110,080 KiB (startup 4,203.668 ms). Flattening all raw request runs by backend and process state gives medians (wall/CPU): Forge cold 100.792/147.559 ms (85 samples), warm 3.120/3.024 ms (85 samples); Codebase Memory cold 77.761795/41.511023 ms (90 samples), warm 86.205175/39.824425 ms (90 samples). Maximum sampled request RSS: Forge 64,496 KiB, Codebase Memory 1,113,128 KiB.'
+  evidence: 'Task 1 baseline complete. Corrected isolated comparison exited 0 at pre-run load 0.95 (2026-10-13T06:21:57.965812681Z) on pinned clean scratch copies: commerce-release-update cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd, traverse 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec d5f8f43e63c012c78af680af3391d04ea4855be7. Receipt: /tmp/contextunity-forge-m046-baseline/results/task1-baseline-verified-20261013/comparison.json. Task worktree release binary SHA-256 4d6f52fcdf30a75df55582a96e536e6c904c745a25f8301869189c5f3d0ba8e2. Comparison cold builds wall/CPU/peak RSS: Forge 10,995.749 ms / 48,665.935 ms / 1,378,116 KiB; Codebase Memory 25,738.266 ms / 112,234.788 ms / 4,110,080 KiB (startup 4,203.668 ms). Flattening all raw request runs by backend and process state gives medians (wall/CPU): Forge cold 100.792/147.559 ms (85 samples), warm 3.120/3.024 ms (85 samples); Codebase Memory cold 77.761795/41.511023 ms (90 samples), warm 86.205175/39.824425 ms (90 samples). Maximum sampled request RSS: Forge 64,496 KiB, Codebase Memory 1,113,128 KiB. Separate standalone build of the same precompiled release binary on the isolated Commerce copy exited 0 at 2026-10-13T09:02:54Z, pre-run load average 1.86 (<4 per owner clarification, milestone blackboard decision 137); Python stdlib subprocess + monotonic clock + resource.getrusage(RUSAGE_CHILDREN) measured wall 10.589928868 s, child CPU 48.634931 s, max RSS 1,358,348 KiB. SHA-256 matches the task release binary. Receipt: /tmp/contextunity-forge-m046-baseline/results/task1-baseline-verified-20261013/standalone-build-measurement.json; stdout/stderr are standalone-build-stdout.json and standalone-build-stderr.txt in the same directory. Owner clarification superseding the milestone''s prior <1.0 wording is recorded in milestone blackboard message 137.'
 receipt:
   commit: 5a619aee2a8a4c5a47b267fd3fead051399e13c8
   contract_revision: 4
@@ -655,6 +664,7 @@ subtasks:
   status: completed
   evidence: Updated MCP/CLI, language, architecture, and testing references for paged analysis_gaps, possible_calls impact/removal behavior, and Rust trait/macro limits; fmt and diff checks pass.
 receipt:
+  commit: eeaa282e83cc0d380b36ea2eafdffa20458aad54
   contract_revision: 4
   passed_at: 2026-10-13T14:40:06.551851294+00:00
   evidence:
@@ -789,6 +799,7 @@ subtasks:
   status: completed
   evidence: 'Completed: src/core/commitments.rs and src/db/ingest.rs remediate the measured logical FTS commitment/ingest cold-build cost while preserving deterministic commitments; tests/commitment_integrity.rs verifies insertion-order invariance. Approved isolated Bash build was 11.330s (<11.5s).'
 receipt:
+  commit: 5f56cea2aff1f92dce89f4c97a300ba0e2f378f7
   contract_revision: 8
   passed_at: 2026-10-13T18:07:48.648317973+00:00
   evidence:
@@ -879,3 +890,19 @@ cargo test --test commitment_integrity && cargo clippy --all-targets --all-featu
 ```
 
 Count passes from the final all-targets run according to TESTS.md. Code-map regeneration never resets tasks.sqlite. Execute gates, receipt generation, and authorized task/worktree operations through Forge.
+
+```yaml
+deferred_defects:
+  - id: m046-skill-example-governance-conflict
+    source: task_blackboard
+    title: "Resolve repository skill and example maintenance policy conflict"
+    path: docs/AGENTS.md
+    disposition: deferred
+    notes: >-
+      docs/AGENTS.md requires updating skills/contextunity-forge/SKILL.md and
+      bundled examples when architecture changes, while milestone 046 explicitly
+      assigns skill distribution and packaging to milestone 044 and excludes
+      skill changes from its admitted scope. No skill files were changed here.
+      Resolve this reusable instruction conflict in a separately admitted
+      documentation task or milestone 044.
+```
