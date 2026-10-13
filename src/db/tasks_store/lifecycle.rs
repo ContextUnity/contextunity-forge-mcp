@@ -33,6 +33,9 @@ impl TasksStore {
             bail!("worker_id must be nonempty");
         }
         let worktree = crate::core::tasks::claim_worktree(worktree)?;
+        let repository = self.repository.clone();
+        let project = self.project.clone();
+        let id_prefix = self.id_prefix.clone();
         let namespace = self.namespace.clone();
         let workspace_root = self.workspace_root.clone();
         let base_profile = self.profile.clone();
@@ -73,17 +76,21 @@ impl TasksStore {
                 "SELECT p.task_id, p.path FROM task_scope_paths p \
                  JOIN tasks t ON t.task_id = p.task_id \
                  WHERE p.task_id != ?1 AND t.milestone_ref = ?2 \
-                   AND substr(p.task_id, 1, length(?3)) = ?3 \
+                   AND (substr(p.task_id, 1, length(?3)) = ?3 OR substr(p.task_id, 1, length(?4)) = ?4) \
                    AND json_extract(t.descriptor, '$.status') != 'completed' \
                    AND NOT EXISTS (SELECT 1 FROM task_dependencies d \
                      LEFT JOIN tasks dependency ON dependency.task_id = d.dependency_id \
                      WHERE d.task_id = t.task_id AND d.satisfied = 0 \
                        AND (dependency.task_id IS NULL OR json_extract(dependency.descriptor, '$.status') != 'completed'))",
             )?
-            .query_map(params![id, task.milestone_ref, namespace], |row| {
+            .query_map(params![id, task.milestone_ref, id_prefix, namespace], |row| {
                 Ok((row.get(0)?, PathBuf::from(row.get::<_, String>(1)?)))
             })?
             .collect::<std::result::Result<_, _>>()?;
+        let other_scopes: Vec<(String, PathBuf)> = other_scopes
+            .into_iter()
+            .filter(|(owner, _)| task_belongs_to(&repository, &project, owner))
+            .collect();
         for my_path in &my_scope_paths {
             for (owner, other_path) in &other_scopes {
                 if my_path == other_path
@@ -142,6 +149,9 @@ impl TasksStore {
         if paths.is_empty() {
             bail!("paths must be nonempty");
         }
+        let repository = self.repository.clone();
+        let project = self.project.clone();
+        let id_prefix = self.id_prefix.clone();
         let namespace = self.namespace.clone();
         let tx = self
             .connection
@@ -179,15 +189,19 @@ impl TasksStore {
                 "SELECT p.task_id, p.path FROM task_scope_paths p \
                  JOIN tasks t ON t.task_id = p.task_id \
                  WHERE p.task_id != ?1 AND t.milestone_ref = ?2 \
-                   AND substr(p.task_id, 1, length(?3)) = ?3 \
+                   AND (substr(p.task_id, 1, length(?3)) = ?3 OR substr(p.task_id, 1, length(?4)) = ?4) \
                    AND json_extract(t.descriptor, '$.status') != 'completed'",
             )?
-            .query_map(params![id, task.milestone_ref, namespace], |r| {
+            .query_map(params![id, task.milestone_ref, id_prefix, namespace], |r| {
                 let owner: String = r.get(0)?;
                 let p: String = r.get(1)?;
                 Ok((owner, PathBuf::from(p)))
             })?
             .collect::<std::result::Result<_, _>>()?;
+        let other_scopes: Vec<(String, PathBuf)> = other_scopes
+            .into_iter()
+            .filter(|(owner, _)| task_belongs_to(&repository, &project, owner))
+            .collect();
         for value in paths {
             let path = crate::core::tasks::relative_path(value)?;
             if protected_acdd_path(&path) {
@@ -257,10 +271,20 @@ impl TasksStore {
         if let Some(id) = id {
             self.assert_id(id)?;
         }
+        let repository = self.repository.clone();
+        let project = self.project.clone();
+        let id_prefix = self.id_prefix.clone();
+        let namespace = self.namespace.clone();
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let targets: Vec<String> = tx.prepare("SELECT task_id FROM tasks WHERE ((?1 IS NOT NULL AND task_id=?1) OR (?2 IS NOT NULL AND milestone_ref=?2)) AND substr(task_id,1,length(?3))=?3")?.query_map(params![id,milestone,self.namespace],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?;
+        let targets: Vec<String> = tx
+            .prepare("SELECT task_id FROM tasks WHERE ((?1 IS NOT NULL AND task_id=?1) OR (?2 IS NOT NULL AND milestone_ref=?2)) AND (substr(task_id,1,length(?3))=?3 OR substr(task_id,1,length(?4))=?4)")?
+            .query_map(params![id, milestone, id_prefix, namespace], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|task_id| task_belongs_to(&repository, &project, task_id))
+            .collect();
         let mut revoked_claims = 0;
         for id in &targets {
             let task = load(&tx, id)?.context("TASK_NOT_FOUND")?;

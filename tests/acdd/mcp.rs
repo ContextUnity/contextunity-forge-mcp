@@ -261,7 +261,7 @@ scope: [src/]
         json!({"action":"sync","milestone_ref":"docs/milestones/010-tasks.md"}),
     );
     let id = synced["tasks"][0]["task_id"].as_str().unwrap();
-    assert_eq!(id, "contextunity/tooling/m-handoff:delivery");
+    assert_eq!(id, "tooling/m-handoff:delivery");
     for action in ["preview", "apply", "verify"] {
         let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
             .args([
@@ -380,13 +380,11 @@ scope: [src/]
     let written = fs::read_to_string(builder.0.join("docs/milestones/010-tasks.md")).unwrap();
     let milestone =
         contextunity_forge_mcp::core::tasks::Milestone::parse(&written, "contextunity").unwrap();
-    assert!(
-        milestone.tasks[0]
-            .receipt
-            .as_ref()
-            .and_then(|receipt| receipt.commit.as_deref())
-            .is_none()
-    );
+    assert!(milestone.tasks[0]
+        .receipt
+        .as_ref()
+        .and_then(|receipt| receipt.commit.as_deref())
+        .is_none());
     let stored = client.payload("task_manage", json!({"action":"inspect","task_id":id}));
     assert_eq!(
         stored["latest_snapshot"]["commit"],
@@ -706,7 +704,7 @@ fn subtask_mcp_and_cli_operations() {
         "task_manage",
         json!({"action": "sync", "milestone_ref": "docs/milestones/010-subtasks.md"}),
     );
-    let task_id = "forge-mcp/forge-mcp/m-mcp-subtasks:sub-demo";
+    let task_id = "forge-mcp/m-mcp-subtasks:sub-demo";
 
     // MCP task_manage subtask_add
     let add_res = client.payload(
@@ -1598,7 +1596,10 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
             }
         }),
     );
-    assert_eq!(delivered["snapshot"]["commit"], delivered["receipt"]["commit"]);
+    assert_eq!(
+        delivered["snapshot"]["commit"],
+        delivered["receipt"]["commit"]
+    );
 
     // Completed task: context_bundle contains receipt, root envelope does not
     let completed_context = client.payload(

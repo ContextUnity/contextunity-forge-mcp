@@ -116,6 +116,47 @@ fn expand_parts(root: &Path, current: &Path, parts: &[&str], out: &mut Vec<PathB
     }
 }
 
+/// Determine whether a filename matches the milestone manifest pattern.
+pub fn is_milestone_manifest_name(name: &str) -> bool {
+    if !name.ends_with(".md") {
+        return false;
+    }
+    let stem = &name[..name.len() - 3];
+    if stem.eq_ignore_ascii_case("readme") || stem.eq_ignore_ascii_case("agents") {
+        return false;
+    }
+    // Pattern 1: Pure digits e.g. "001-*.md"
+    if let Some((number, _)) = stem.split_once('-') {
+        if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) {
+            return true;
+        }
+    }
+    // Pattern 2: Letter prefix + number e.g. "P-001-*.md", "EC-001-*.md", "TR-001-*.md"
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() >= 3 {
+        let tag = parts[0];
+        let num = parts[1];
+        if !tag.is_empty()
+            && tag.len() <= 6
+            && tag.bytes().all(|b| b.is_ascii_alphanumeric())
+            && !num.is_empty()
+            && num.bytes().all(|b| b.is_ascii_digit())
+        {
+            return true;
+        }
+    }
+    // Pattern 3: Alphanumeric prefix without extra dash e.g. "P001-*.md", "EC001-*.md"
+    if let Some((tag_num, _)) = stem.split_once('-') {
+        if tag_num.len() >= 3
+            && tag_num.bytes().any(|b| b.is_ascii_digit())
+            && tag_num.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn target_milestone_paths(target_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for dir in [target_dir.to_path_buf(), target_dir.join("archive")] {
@@ -125,12 +166,10 @@ fn target_milestone_paths(target_dir: &Path) -> Result<Vec<PathBuf>> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             if entry.file_type()?.is_file()
-                && entry.path().extension().is_some_and(|e| e == "md")
-                && entry.file_name().to_str().is_some_and(|name| {
-                    name.split_once('-').is_some_and(|(number, _)| {
-                        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
-                    })
-                })
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(is_milestone_manifest_name)
             {
                 paths.push(entry.path());
             }
@@ -150,12 +189,10 @@ fn milestone_paths(root: &Path) -> Result<Vec<PathBuf>> {
             for entry in fs::read_dir(dir)? {
                 let entry = entry?;
                 if entry.file_type()?.is_file()
-                    && entry.path().extension().is_some_and(|e| e == "md")
-                    && entry.file_name().to_str().is_some_and(|name| {
-                        name.split_once('-').is_some_and(|(number, _)| {
-                            !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
-                        })
-                    })
+                    && entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(is_milestone_manifest_name)
                 {
                     paths.push(entry.path());
                 }
@@ -171,15 +208,29 @@ fn prefix(path: &Path) -> Result<Option<u64>> {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return Ok(None);
     };
-    let Some((digits, _)) = name.split_once('-') else {
-        return Ok(None);
-    };
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Ok(None);
+    if let Some((digits, _)) = name.split_once('-') {
+        if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+            return Ok(Some(digits.parse().with_context(|| {
+                format!("milestone number overflow: {}", path.display())
+            })?));
+        }
     }
-    Ok(Some(digits.parse().with_context(|| {
-        format!("milestone number overflow: {}", path.display())
-    })?))
+    let parts: Vec<&str> = name.split('-').collect();
+    if parts.len() >= 3 {
+        let tag = parts[0];
+        let num = parts[1];
+        if !tag.is_empty()
+            && tag.len() <= 6
+            && tag.bytes().all(|b| b.is_ascii_alphanumeric())
+            && !num.is_empty()
+            && num.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Ok(Some(num.parse().with_context(|| {
+                format!("milestone number overflow: {}", path.display())
+            })?));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn file_id(path: &Path) -> Result<Option<String>> {
@@ -460,11 +511,20 @@ fn snapshots(root: &Path, include_archive: bool, selector: Option<&str>) -> Resu
                 let id = file_id(&path).with_context(|| {
                     format!("failed to read milestone id from '{}'", path.display())
                 })?;
+                let tag_prefix = stem.and_then(|s| {
+                    let parts: Vec<&str> = s.split('-').collect();
+                    if parts.len() >= 2 {
+                        Some(format!("{}-{}", parts[0], parts[1]))
+                    } else {
+                        None
+                    }
+                });
 
                 if (numeric && (number == Some(selector) || number_u64 == selector_u64))
                     || id.as_deref() == Some(selector)
                     || stem == Some(selector)
                     || file_name == Some(selector)
+                    || tag_prefix.as_deref() == Some(selector)
                 {
                     selected.push(path);
                 }
@@ -490,7 +550,7 @@ fn snapshots(root: &Path, include_archive: bool, selector: Option<&str>) -> Resu
 fn task_rows(snapshot: &Snapshot, stored: &[Task]) -> Vec<Value> {
     snapshot.tasks.iter().map(|spec| {
         let task_ref = spec["task_ref"].as_str().unwrap_or("");
-        let id = format!("{}/{}/{}:{task_ref}", snapshot.repository, snapshot.project, snapshot.id);
+        let id = format!("{}/{}:{task_ref}", snapshot.project, snapshot.id);
         let status = stored.iter().find(|task| task.task_id == id)
             .map(|task| task.status.as_str()).unwrap_or("unsynced");
         json!({"task_ref":task_ref,"target":spec["target"].as_str().unwrap_or(""),"status":status,

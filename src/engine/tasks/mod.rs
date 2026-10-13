@@ -129,7 +129,7 @@ pub struct List {
 #[serde(deny_unknown_fields)]
 /// Parameters for claiming a task lifecycle gate.
 pub struct Claim {
-    /// Unique task identifier in repository/project/milestone:task_ref format.
+    /// Unique task identifier `{project}/{milestone_id}:{task_ref}`.
     pub task_id: String,
     /// Lifecycle stage identifier from the task's active workflow profile.
     pub stage: String,
@@ -145,7 +145,7 @@ pub struct Claim {
 #[serde(deny_unknown_fields)]
 /// Parameters for submitting evidence to advance or reject a lifecycle gate.
 pub struct Submit {
-    /// Unique task identifier in repository/project/milestone:task_ref format.
+    /// Unique task identifier `{project}/{milestone_id}:{task_ref}`.
     pub task_id: String,
     /// Active lifecycle stage identifier from the task's pinned workflow profile.
     pub stage: String,
@@ -349,7 +349,9 @@ pub fn store(root: &Path) -> Result<TasksStore> {
 }
 fn resolve_manifest_status(root: &Path, milestone_ref: &str) -> Result<String> {
     let path = confined_path(root, milestone_ref)?;
-    let text = std::fs::read_to_string(&path)?;
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok("unknown".into());
+    };
     let archived = path
         .components()
         .any(|component| component.as_os_str() == "archive");
@@ -404,6 +406,8 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
                         .as_deref()
                         .map(Path::new)
                         .unwrap_or(&workspace.root),
+                    &workspace.repository,
+                    &workspace.project,
                 )
                 .is_err()
                     || registry
@@ -469,12 +473,14 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
             .envelope(json!({"tasks":tasks}))
     }
 }
-fn validate_authority(task: &crate::db::tasks_store::Task, root: &Path) -> Result<()> {
+fn validate_authority(
+    task: &crate::db::tasks_store::Task,
+    root: &Path,
+    repository: &str,
+    project: &str,
+) -> Result<()> {
     let text = std::fs::read_to_string(confined_path(root, &task.milestone_ref)?)
         .context("TASK_AUTHORITY_MISSING")?;
-    let mut identity = task.task_id.split('/');
-    let repository = identity.next().context("invalid task identity")?;
-    let project = identity.next().context("invalid task identity")?;
     let milestone = Milestone::parse_with_identity(&text, repository, project)?;
     let spec = milestone
         .tasks
@@ -531,7 +537,12 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     evidence.candidate_baseline_head = None;
     registry.check_worktree(workspace, Path::new(&evidence.worktree))?;
     if task.status != "completed" {
-        validate_authority(&task, Path::new(&evidence.worktree))?;
+        validate_authority(
+            &task,
+            Path::new(&evidence.worktree),
+            &workspace.repository,
+            &workspace.project,
+        )?;
         registry.check_scope(
             workspace,
             &task.spec.scope,

@@ -45,11 +45,26 @@ pub fn git_commit_changed_files(worktree: &Path, commit: &str) -> Result<Vec<Str
     )?;
     let parents: Vec<&str> = parents_raw.split_whitespace().collect();
     let args = if parents.len() <= 1 {
-        vec!["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", commit]
+        vec![
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            commit,
+        ]
     } else if parents.len() == 2 {
         vec!["diff-tree", "--no-commit-id", "--name-only", "-r", commit]
     } else {
-        vec!["diff-tree", "--no-commit-id", "--name-only", "-r", "--first-parent", "-m", commit]
+        vec![
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "--first-parent",
+            "-m",
+            commit,
+        ]
     };
     let output = git_command(worktree, &args)?;
     if !output.status.success() {

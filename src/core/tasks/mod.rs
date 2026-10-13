@@ -169,7 +169,9 @@ pub fn validate_commit_for_task(
     baseline: Option<&str>,
 ) -> Result<()> {
     if !crate::core::git::git_commit_exists(worktree, commit)? {
-        bail!("TASK_COMMIT_NOT_FOUND: commit '{commit}' is not available in workspace Git repository");
+        bail!(
+            "TASK_COMMIT_NOT_FOUND: commit '{commit}' is not available in workspace Git repository"
+        );
     }
     let changed = crate::core::git::git_commit_changed_files(worktree, commit)?;
     if changed.is_empty() {
@@ -178,9 +180,9 @@ pub fn validate_commit_for_task(
     if !commit_files_within_scope(&changed, scope, milestone_ref) {
         bail!("TASK_COMMIT_OUTSIDE_SCOPE: commit '{commit}' changes files outside task scope");
     }
-    let touches_scope = changed.iter().any(|f| {
-        scope.iter().any(|s| path_matches_scope_entry(f, s))
-    });
+    let touches_scope = changed
+        .iter()
+        .any(|f| scope.iter().any(|s| path_matches_scope_entry(f, s)));
     if !touches_scope {
         bail!("TASK_COMMIT_IGNORES_SCOPE: commit '{commit}' does not touch task scope");
     }
@@ -196,9 +198,13 @@ pub fn validate_commit_for_task(
     }
     if let Some(base) = baseline {
         if commit == base || crate::core::git::git_ancestor(worktree, commit, base)? {
-            bail!("TASK_COMMIT_OBSOLETE: commit '{commit}' does not advance beyond baseline '{base}'");
+            bail!(
+                "TASK_COMMIT_OBSOLETE: commit '{commit}' does not advance beyond baseline '{base}'"
+            );
         }
-        if commit != accepted_delivery.unwrap_or("") && !crate::core::git::git_ancestor(worktree, base, commit)? {
+        if commit != accepted_delivery.unwrap_or("")
+            && !crate::core::git::git_ancestor(worktree, base, commit)?
+        {
             bail!("TASK_COMMIT_UNRELATED: commit '{commit}' does not descend from task baseline '{base}'");
         }
     }
@@ -410,7 +416,7 @@ impl Milestone {
             .map(|v| serde_yaml::from_value(v.clone()))
             .transpose()?
             .unwrap_or_default();
-        let depends_on = meta
+        let depends_on: Vec<String> = meta
             .get("depends_on")
             .map(|v| serde_yaml::from_value(v.clone()))
             .transpose()?
@@ -525,7 +531,23 @@ impl Milestone {
         }
         for task in &tasks {
             for dependency in &task.depends_on {
-                if dependency == &task.task_ref || !ids.contains(dependency) {
+                if dependency == &task.task_ref {
+                    bail!("invalid local task dependency");
+                }
+                if ids.contains(dependency) {
+                    continue;
+                }
+                if let Some((milestone_or_proj, task_part)) = dependency.split_once(':') {
+                    if task_part.trim().is_empty() {
+                        bail!("invalid external task dependency");
+                    }
+                    valid_identity(task_part)?;
+                    for segment in milestone_or_proj.split('/') {
+                        valid_identity(segment)?;
+                    }
+                } else if depends_on.contains(dependency) {
+                    valid_identity(dependency)?;
+                } else {
                     bail!("invalid local task dependency");
                 }
             }
@@ -542,13 +564,10 @@ impl Milestone {
             if !active.insert(id) {
                 bail!("cyclic task dependencies");
             }
-            for dep in &tasks
-                .iter()
-                .find(|t| t.task_ref == id)
-                .context("missing dependency")?
-                .depends_on
-            {
-                visit(dep, tasks, active, done)?;
+            if let Some(task) = tasks.iter().find(|t| t.task_ref == id) {
+                for dep in &task.depends_on {
+                    visit(dep, tasks, active, done)?;
+                }
             }
             active.remove(id);
             done.insert(id);
@@ -571,12 +590,10 @@ impl Milestone {
             deferred_defects,
         })
     }
-    /// Performs task id.
+    /// Task id `{project}/{milestone_id}:{task_ref}`.
+    /// The workspace repository is not part of the id.
     pub fn task_id(&self, task: &TaskSpec) -> String {
-        format!(
-            "{}/{}/{}:{}",
-            self.repository, self.project, self.id, task.task_ref
-        )
+        format!("{}/{}:{}", self.project, self.id, task.task_ref)
     }
     /// Performs digest.
     pub fn digest(&self, task: &TaskSpec) -> Result<String> {

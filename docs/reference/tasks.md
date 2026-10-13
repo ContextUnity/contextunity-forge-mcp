@@ -27,7 +27,7 @@ increment the `meta` generation; requests retain no cached task connection.
 `task_repository` defaults to `forge-mcp`; `task_project` defaults to that
 repository. Omitted milestone identity fields use the configured pair.
 Matching milestone frontmatter may declare `repository` and
-`project`. IDs are `repository/project/milestone_id:task_ref`. Operations and
+`project`. IDs are `project/milestone_id:task_ref`. The repository selects the Git checkout and is omitted from the task id. A legacy id `repository/project/milestone_id:task_ref` still resolves when that repository and project match the workspace. Operations and
 cleanup remain restricted to the configured project, including forced deletion.
 Unknown schemas and populated non-task databases fail before schema mutation.
 Revision counters survive operational deletion.
@@ -103,6 +103,7 @@ Every task contract declares an explicit file perimeter (`scope`) bounding allow
 - **Completed Task Scope Release**: Once a task reaches `completed`, both `task_claim` and `extend_scope` exclude its rows from scope-conflict checks (`json_extract(t.descriptor, '$.status') != 'completed'`). Forge retains the completed task's `task_scope_paths` history while allowing successor tasks to claim or extend into those paths.
 - **Protected System Scopes and Dirty File Prohibition**: System configuration and workflow profile files (`.forge/acdd/**` and profile definitions) are protected system paths (`TASK_SCOPE_PROTECTED`). Regular tasks cannot claim or extend into these paths via `extend_scope`. Furthermore, during `task_claim`, gate execution, and `task_submit`, the compiled binary inspects the worktree git status: if any file under `.forge/acdd/**` is dirty (modified, unstaged, staged, or untracked) and is not explicitly admitted in `task.spec.scope`, Forge fails closed with `TASK_SCOPE_VIOLATION`. This guarantees that agents cannot mutate workflow profiles, weaken review contours, or bypass test gates on the fly. Legitimate profile updates are performed either directly outside task cycles or within dedicated configuration tasks whose explicit scope admits `.forge/acdd/profile.yaml`.
 - **Documentation Co-Evolution Planning**: Shared documentation (such as `docs/reference/tasks.md`, `README.md`, or architecture documents) frequently evolves across multiple milestone tasks. When multiple tasks in a milestone must update the same documentation or common shared modules, dependencies must be sequenced via `depends_on`. Once the predecessor task completes, the successor task gains lawful access to extend into and evolve the shared documentation. Alternatively, documentation changes can be planned alongside code changes within the owning task's build gate, ensuring documentation and implementation remain synchronized without scope friction.
+- **Task Dependencies and Cross-Milestone Sequencing (`depends_on`)**: Task contracts declare local dependencies (`task_ref`), cross-milestone task dependencies (`milestone_id:task_ref`), or external project dependencies (`project/milestone_id:task_ref`). Dependent tasks remain in `blocked` status until all predecessor tasks are completed, preventing premature claims (`TASK_NOT_READY`).
 
 ## Five flat MCP tools
 
@@ -243,7 +244,7 @@ When claiming a gate with `task_claim`, Forge returns tailored context bundles b
 
 ```json
 {
-  "task_id": "forge-mcp/forge-mcp/m-example:implementation",
+  "task_id": "forge-mcp/m-example:implementation",
   "stage": "build",
   "claim_revision": 7,
   "contract_revision": 1,
@@ -501,13 +502,13 @@ Below is an illustrative payload returned upon claiming a task (`task_claim` or 
 
 ```json
 {
-  "task_id": "forge-mcp/forge-mcp/m-sample:language-feature",
+  "task_id": "forge-mcp/m-sample:language-feature",
   "status": "ready",
   "stage": "contract",
   "allowed_write_scope": ["src/engine/languages/html.rs", "tests/languages/html/syntax.rs"],
   "context_bundle": {
     "contract": {
-      "task_id": "forge-mcp/forge-mcp/m-sample:language-feature",
+      "task_id": "forge-mcp/m-sample:language-feature",
       "target": "Add HTML template island extraction",
       "stage": "contract",
       "status": "ready",

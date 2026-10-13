@@ -182,7 +182,12 @@ pub struct BlackboardPagination {
 pub struct TasksStore {
     /// The connection value.
     pub connection: Connection,
+    pub(crate) repository: String,
+    pub(crate) project: String,
+    /// `{repository}/{project}/` blackboard scope prefix.
     namespace: String,
+    /// `{project}/` prefix matched against task ids.
+    id_prefix: String,
     /// Active workflow gate profile.
     pub profile: std::sync::Arc<crate::core::tasks::profile::GateProfile>,
     workspace_root: Option<PathBuf>,
@@ -266,8 +271,11 @@ pub fn task_candidate_baseline(connection: &Connection, task_id: &str) -> Result
     )?;
     let evidence: Option<String> = stmt.query_row(params![task_id], |r| r.get(0)).optional()?;
     if let Some(ev) = evidence {
-        let val: serde_json::Value = serde_json::from_str(&ev)
-            .with_context(|| format!("TASK_GATE_EVIDENCE_CORRUPTED: failed to parse evidence JSON for task '{task_id}'"))?;
+        let val: serde_json::Value = serde_json::from_str(&ev).with_context(|| {
+            format!(
+                "TASK_GATE_EVIDENCE_CORRUPTED: failed to parse evidence JSON for task '{task_id}'"
+            )
+        })?;
         let base = val
             .get("candidate_baseline_head")
             .and_then(|v| v.as_str())
@@ -277,6 +285,22 @@ pub fn task_candidate_baseline(connection: &Connection, task_id: &str) -> Result
     Ok(None)
 }
 
+fn task_belongs_to(repository: &str, project: &str, id: &str) -> bool {
+    let Some((head, _)) = id.split_once(':') else {
+        return false;
+    };
+    let segments: Vec<&str> = head
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    match segments.as_slice() {
+        [project_name, _] => *project_name == project,
+        [repository_name, project_name, _] => {
+            *repository_name == repository && *project_name == project
+        }
+        _ => false,
+    }
+}
 impl TasksStore {
     /// Performs open.
     pub fn open(path: &Path) -> Result<Self> {
@@ -344,7 +368,10 @@ impl TasksStore {
         }
         Ok(Self {
             connection,
+            repository: repository.to_owned(),
+            project: project.to_owned(),
             namespace: format!("{repository}/{project}/"),
+            id_prefix: format!("{project}/"),
             profile: crate::core::tasks::profile::compiled(),
             workspace_root: None,
         })
@@ -382,10 +409,14 @@ impl TasksStore {
         Ok(())
     }
     pub(crate) fn assert_id(&self, id: &str) -> Result<()> {
-        if !id.starts_with(&self.namespace) {
+        if !self.task_id_in_project(id) {
             bail!("TASK_PROJECT_MISMATCH");
         }
         Ok(())
+    }
+    /// Accept `{project}/{milestone}:{task}` and legacy `{repository}/{project}/{milestone}:{task}`.
+    fn task_id_in_project(&self, id: &str) -> bool {
+        task_belongs_to(&self.repository, &self.project, id)
     }
     /// Qualify a relative milestone path for use as a shared-database blackboard key.
     pub fn milestone_scope_ref(&self, reference: &str) -> Result<String> {
@@ -562,47 +593,47 @@ impl TasksStore {
 
         tx.execute(
             "DELETE FROM task_dependencies WHERE task_id IN \
-             (SELECT task_id FROM tasks WHERE milestone_ref=?1 AND substr(task_id,1,length(?2))=?2)",
-            params![relative_reference.as_ref(), self.namespace],
+             (SELECT task_id FROM tasks WHERE milestone_ref=?1 AND (substr(task_id,1,length(?2))=?2 OR substr(task_id,1,length(?3))=?3))",
+            params![relative_reference.as_ref(), self.id_prefix, self.namespace],
         )?;
         let deleted = tx.execute(
-            "DELETE FROM tasks WHERE milestone_ref=?1 AND substr(task_id,1,length(?2))=?2",
-            params![relative_reference.as_ref(), self.namespace],
+            "DELETE FROM tasks WHERE milestone_ref=?1 AND (substr(task_id,1,length(?2))=?2 OR substr(task_id,1,length(?3))=?3)",
+            params![relative_reference.as_ref(), self.id_prefix, self.namespace],
         )?;
         tx.commit()?;
         Ok(deleted)
     }
 
-fn is_repack_receipt_update(
-    root: &Path,
-    existing: &Option<Receipt>,
-    imported: &Option<Receipt>,
-    scope: &[String],
-    milestone_ref: &str,
-    baseline: Option<&str>,
-) -> Result<bool> {
-    let (Some(existing), Some(imported)) = (existing.as_ref(), imported.as_ref()) else {
-        return Ok(false);
-    };
-    if !existing.matches_proofs(imported) {
-        return Ok(false);
+    fn is_repack_receipt_update(
+        root: &Path,
+        existing: &Option<Receipt>,
+        imported: &Option<Receipt>,
+        scope: &[String],
+        milestone_ref: &str,
+        baseline: Option<&str>,
+    ) -> Result<bool> {
+        let (Some(existing), Some(imported)) = (existing.as_ref(), imported.as_ref()) else {
+            return Ok(false);
+        };
+        if !existing.matches_proofs(imported) {
+            return Ok(false);
+        }
+        let Some(commit) = imported.commit.as_deref() else {
+            return Ok(false);
+        };
+        if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok(false);
+        }
+        Ok(crate::core::tasks::validate_commit_for_task(
+            root,
+            commit,
+            scope,
+            Some(milestone_ref),
+            existing.commit.as_deref(),
+            baseline,
+        )
+        .is_ok())
     }
-    let Some(commit) = imported.commit.as_deref() else {
-        return Ok(false);
-    };
-    if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Ok(false);
-    }
-    Ok(crate::core::tasks::validate_commit_for_task(
-        root,
-        commit,
-        scope,
-        Some(milestone_ref),
-        existing.commit.as_deref(),
-        baseline,
-    )
-    .is_ok())
-}
 
     fn sync_selected(
         &mut self,
@@ -655,7 +686,14 @@ fn is_repack_receipt_update(
                         }
                         if existing.receipt != spec.receipt {
                             let baseline = task_candidate_baseline(&tx, &id)?;
-                            if !Self::is_repack_receipt_update(root, &existing.receipt, &spec.receipt, &existing.spec.scope, &existing.milestone_ref, baseline.as_deref())? {
+                            if !Self::is_repack_receipt_update(
+                                root,
+                                &existing.receipt,
+                                &spec.receipt,
+                                &existing.spec.scope,
+                                &existing.milestone_ref,
+                                baseline.as_deref(),
+                            )? {
                                 bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
                             }
                             existing.receipt = spec.receipt.clone();
@@ -684,9 +722,7 @@ fn is_repack_receipt_update(
                         })?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     existing.spec.subtasks = current_subtasks;
-                    if existing.status == "completed" {
-                        existing.milestone_ref = reference.into();
-                    }
+                    existing.milestone_ref = reference.into();
                     save(&tx, &existing)?;
                     result.push(existing);
                     continue;
@@ -868,14 +904,63 @@ fn is_repack_receipt_update(
                 )?;
             }
             for dep in &spec.depends_on {
-                let dependency_id = format!(
-                    "{}/{}/{}:{}",
-                    milestone.repository, milestone.project, milestone.id, dep
-                );
-                tx.execute(
-                    "INSERT INTO task_dependencies VALUES(?1,?2,?3)",
-                    params![id, dependency_id,milestone.tasks.iter().any(|t|t.task_ref == *dep && t.status.as_deref()==Some("completed"))],
-                )?;
+                if milestone.tasks.iter().any(|t| t.task_ref == *dep) {
+                    let dependency_id = format!("{}/{}:{}", milestone.project, milestone.id, dep);
+                    let satisfied = milestone
+                        .tasks
+                        .iter()
+                        .any(|t| t.task_ref == *dep && t.status.as_deref() == Some("completed"));
+                    tx.execute(
+                        "INSERT INTO task_dependencies VALUES(?1,?2,?3)",
+                        params![id, dependency_id, satisfied],
+                    )?;
+                } else if dep.contains(':') {
+                    let dependency_id = if dep.contains('/') {
+                        dep.clone()
+                    } else {
+                        format!("{}/{}", milestone.project, dep)
+                    };
+                    let satisfied: bool = tx
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id=?1 AND json_extract(descriptor, '$.status')='completed')",
+                            params![dependency_id],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(false);
+                    tx.execute(
+                        "INSERT INTO task_dependencies VALUES(?1,?2,?3)",
+                        params![id, dependency_id, satisfied],
+                    )?;
+                } else {
+                    let prefix1 = format!("{}/{}:%", milestone.project, dep);
+                    let prefix2 = format!("{}:%", dep);
+                    let mut dep_tasks: Vec<(String, bool)> = Vec::new();
+                    {
+                        let mut stmt = tx.prepare(
+                            "SELECT task_id, json_extract(descriptor, '$.status')='completed' FROM tasks WHERE task_id LIKE ?1 OR task_id LIKE ?2"
+                        )?;
+                        let rows = stmt.query_map(params![prefix1, prefix2], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+                        })?;
+                        for r in rows {
+                            dep_tasks.push(r?);
+                        }
+                    }
+                    if dep_tasks.is_empty() {
+                        let dependency_id = format!("{}/{}:__milestone__", milestone.project, dep);
+                        tx.execute(
+                            "INSERT INTO task_dependencies VALUES(?1,?2,0)",
+                            params![id, dependency_id],
+                        )?;
+                    } else {
+                        for (dep_task_id, satisfied) in dep_tasks {
+                            tx.execute(
+                                "INSERT INTO task_dependencies VALUES(?1,?2,?3)",
+                                params![id, dep_task_id, satisfied],
+                            )?;
+                        }
+                    }
+                }
             }
             result.push(task);
         }
@@ -890,14 +975,17 @@ fn is_repack_receipt_update(
         stage: Option<&str>,
     ) -> Result<Vec<Task>> {
         let _snapshot = self.connection.unchecked_transaction()?;
-        let mut stmt = self.connection.prepare("SELECT descriptor FROM tasks WHERE (?1 IS NULL OR milestone_ref=?1) AND substr(task_id,1,length(?2))=?2 ORDER BY milestone_ref,task_id")?;
+        let mut stmt = self.connection.prepare("SELECT descriptor FROM tasks WHERE (?1 IS NULL OR milestone_ref=?1) AND (substr(task_id,1,length(?2))=?2 OR substr(task_id,1,length(?3))=?3) ORDER BY milestone_ref,task_id")?;
         let mut result = Vec::new();
         let mut known_stage =
             stage.is_none_or(|requested| self.profile.index_of(requested).is_some());
-        for item in stmt.query_map(params![milestone, self.namespace], |r| {
+        for item in stmt.query_map(params![milestone, self.id_prefix, self.namespace], |r| {
             r.get::<_, String>(0)
         })? {
             let mut task: Task = serde_json::from_str(&item?)?;
+            if !self.task_id_in_project(&task.task_id) {
+                continue;
+            }
             let profile = self.profile_for_task(&task)?;
             self.set_runtime_gate(&mut task, &profile)?;
             if let Some(requested) = stage {
@@ -933,7 +1021,7 @@ fn is_repack_receipt_update(
     pub fn earliest_claim(&self, milestone_prefix: &str) -> Result<Option<i64>> {
         Ok(self.connection.query_row(
             "SELECT MIN(c.claimed_at) FROM task_claims c JOIN tasks t ON t.task_id=c.task_id WHERE substr(t.task_id,1,length(?1))=?1 AND substr(t.task_id,1,length(?2))=?2",
-            params![milestone_prefix, self.namespace], |row| row.get(0))?)
+            params![milestone_prefix, self.id_prefix], |row| row.get(0))?)
     }
     /// Moves a completed milestone's task references after verifying its exact task set.
     pub fn relocate_milestone(
@@ -948,7 +1036,7 @@ fn is_repack_receipt_update(
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut stmt = tx.prepare("SELECT descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 AND substr(task_id,1,length(?2))=?2")?;
         let tasks: Vec<String> = stmt
-            .query_map(params![milestone_prefix, self.namespace], |row| row.get(0))?
+            .query_map(params![milestone_prefix, self.id_prefix], |row| row.get(0))?
             .collect::<std::result::Result<_, _>>()?;
         drop(stmt);
         let mut found_ids = Vec::new();
@@ -984,7 +1072,7 @@ fn is_repack_receipt_update(
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let descriptors: Vec<String> = tx
             .prepare("SELECT descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 AND substr(task_id,1,length(?2))=?2")?
-            .query_map(params![milestone_prefix, self.namespace], |row| row.get(0))?
+            .query_map(params![milestone_prefix, self.id_prefix], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         let mut found_ids = Vec::new();
         for descriptor in descriptors {

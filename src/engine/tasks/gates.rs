@@ -339,10 +339,7 @@ impl TasksStore {
                 ));
             }
             let text = std::fs::read_to_string(&path)?;
-            let mut identity = id.split('/');
-            let repository = identity.next().context("invalid task identity")?;
-            let project = identity.next().context("invalid task identity")?;
-            let milestone = Milestone::parse_with_identity(&text, repository, project)?;
+            let milestone = Milestone::parse_with_identity(&text, &self.repository, &self.project)?;
             let spec = milestone
                 .tasks
                 .iter()

@@ -45,7 +45,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
         .sync(&milestone, "docs/010-subtasks.md", &root.0)
         .unwrap();
 
-    let task_id = "forge-mcp/forge-mcp/m-subtasks:core-feature";
+    let task_id = "forge-mcp/m-subtasks:core-feature";
     let loaded = store.inspect(task_id).unwrap();
     assert_eq!(loaded.spec.subtasks.len(), 1);
     assert_eq!(loaded.spec.subtasks[0].subtask_ref, "sub-1");
@@ -309,18 +309,13 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
         .sync(&milestone, "docs/010-policy.md", &root.0)
         .unwrap();
 
-    let direct_id = "forge-mcp/forge-mcp/m-policy:direct";
-    let deferred_id = "forge-mcp/forge-mcp/m-policy:deferred";
-    let seam_id = "forge-mcp/forge-mcp/m-policy:seam";
+    let direct_id = "forge-mcp/m-policy:direct";
+    let deferred_id = "forge-mcp/m-policy:deferred";
+    let seam_id = "forge-mcp/m-policy:seam";
 
     // direct-proof allows red_exit_code: 0
     store
-        .claim(
-            direct_id,
-            "contract",
-            "builder",
-            root.0.to_str().unwrap(),
-        )
+        .claim(direct_id, "contract", "builder", root.0.to_str().unwrap())
         .unwrap();
     let d_task = store.inspect(direct_id).unwrap();
     let mut direct_evidence = evidence(&d_task);
@@ -338,12 +333,7 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
 
     // deferred-final-test allows red_exit_code: 0
     store
-        .claim(
-            deferred_id,
-            "contract",
-            "builder",
-            root.0.to_str().unwrap(),
-        )
+        .claim(deferred_id, "contract", "builder", root.0.to_str().unwrap())
         .unwrap();
     let def_task = store.inspect(deferred_id).unwrap();
     let mut def_evidence = evidence(&def_task);
@@ -409,7 +399,7 @@ fn concurrent_subtask_add_preserves_all_subtasks_in_sqlite_and_descriptor() {
     store
         .sync(&milestone, "docs/010-concurrent.md", &root.0)
         .unwrap();
-    let task_id = "forge-mcp/forge-mcp/m-concurrent:worker";
+    let task_id = "forge-mcp/m-concurrent:worker";
 
     let db_path = root.0.join(".forge/tasks.sqlite");
     let t1 = {
@@ -467,7 +457,7 @@ fn subtask_update_preserves_evidence_when_none_provided_and_contract_bump_resets
     store
         .sync(&milestone_v1, "docs/010-bump.md", &root.0)
         .unwrap();
-    let task_id = "forge-mcp/forge-mcp/m-bump:feature";
+    let task_id = "forge-mcp/m-bump:feature";
 
     // 1. Update subtask with evidence
     let updated = store
@@ -537,7 +527,7 @@ fn completed_tasks_sync_and_inspect_without_panic() {
         .sync(&milestone, "docs/milestones/010-completed.md", &root.0)
         .unwrap();
 
-    let t1_id = "forge-mcp/forge-mcp/m-completed:t1";
+    let t1_id = "forge-mcp/m-completed:t1";
 
     // 1. Deliver t1 through the engine so the final gate validates and records its commit.
     for (i, stage) in GATES.iter().enumerate() {

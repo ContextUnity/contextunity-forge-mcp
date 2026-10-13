@@ -9,7 +9,7 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
     registry.check_worktree(workspace, &worktree)?;
     let mut store = workspace.open(&registry.database)?;
     let task = store.inspect(&p.task_id)?;
-    validate_authority(&task, &worktree)?;
+    validate_authority(&task, &worktree, &workspace.repository, &workspace.project)?;
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
     let claimed = store.claim(&p.task_id, &p.stage, &p.worker_id, &p.worktree)?;
     let activation = (|| {

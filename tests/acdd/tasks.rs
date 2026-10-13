@@ -108,7 +108,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             true,
         ),
     ] {
-        let id = format!("{repository}/{repository}/m-guided:guided");
+        let id = format!("{repository}/m-guided:guided");
         tasks::manage(
             server,
             serde_json::from_value(json!({
@@ -159,10 +159,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             claimed["workflow_guidance"]["active_stage"],
             guidance["active_stage"]
         );
-        assert_eq!(
-            claimed["workflow_guidance"]["role"],
-            guidance["role"]
-        );
+        assert_eq!(claimed["workflow_guidance"]["role"], guidance["role"]);
         assert_eq!(claimed["workflow_guidance"]["steps"], guidance["steps"]);
         assert!(claimed["workflow_guidance"]["blackboard_messages"].is_array());
         if repository == "forge-mcp" && !absent {
@@ -189,20 +186,14 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
                 },
             )
             .unwrap();
-            assert_eq!(
-                claimed_build["workflow_guidance"]["role"],
-                "builder"
-            );
+            assert_eq!(claimed_build["workflow_guidance"]["role"], "builder");
             let task = store.inspect(&id).unwrap();
             store
                 .submit(&id, "build", &evidence(&task), "pass", None)
                 .unwrap();
             let review = inspect();
             assert_eq!(review["workflow_guidance"]["active_stage"], "review");
-            assert_eq!(
-                review["workflow_guidance"]["role"],
-                "independent_reviewer"
-            );
+            assert_eq!(review["workflow_guidance"]["role"], "independent_reviewer");
             assert_eq!(
                 review["workflow_guidance"]["independent_from_worker_id"],
                 "guidance-builder"
@@ -224,15 +215,10 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             .unwrap();
             let mut review_evidence = evidence(&store.inspect(&id).unwrap());
             review_evidence.proof = review_proof("reject");
-            let findings = json!({"decision":"remediate","summary":"preserve rejected review details"});
+            let findings =
+                json!({"decision":"remediate","summary":"preserve rejected review details"});
             store
-                .submit(
-                    &id,
-                    "review",
-                    &review_evidence,
-                    "reject",
-                    Some(&findings),
-                )
+                .submit(&id, "review", &review_evidence, "reject", Some(&findings))
                 .unwrap();
             let returned = inspect();
             assert_eq!(returned["stage"], "build");
@@ -250,7 +236,10 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
                     step.as_str()
                         == Some("Return task to builder 'guidance-builder' with review rejection findings to repair defects.")
                 })));
-            assert_eq!(claimed_review["workflow_guidance"]["active_stage"], "review");
+            assert_eq!(
+                claimed_review["workflow_guidance"]["active_stage"],
+                "review"
+            );
         }
     }
 }
@@ -484,7 +473,7 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
             &workspace.0,
             serde_json::from_value(json!({
                 "action": "inspect",
-                "task_id": "forge-mcp/forge-mcp/m-skill:skill"
+                "task_id": "forge-mcp/m-skill:skill"
             }))
             .unwrap(),
         )
@@ -573,10 +562,7 @@ fn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {
     let mut expected = raw_evidence.clone();
     expected["commit"] = stored["commit"].clone();
     expected["candidate_baseline_head"] = stored["candidate_baseline_head"].clone();
-    assert_eq!(
-        stored,
-        expected
-    );
+    assert_eq!(stored, expected);
     let snapshot_commit = stored["commit"].as_str().unwrap();
     assert_eq!(snapshot_commit.len(), 40);
     assert_eq!(&snapshot_commit[..7], submitted["snapshot"]["commit"]);
@@ -659,10 +645,7 @@ fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
     let mut expected = serde_json::to_value(proof).unwrap();
     expected["commit"] = stored["commit"].clone();
     expected["candidate_baseline_head"] = stored["candidate_baseline_head"].clone();
-    assert_eq!(
-        stored,
-        expected
-    );
+    assert_eq!(stored, expected);
     let snapshot_commit = stored["commit"].as_str().unwrap();
     assert_eq!(snapshot_commit.len(), 40);
     assert_eq!(&snapshot_commit[..7], result["snapshot"]["commit"]);
@@ -882,18 +865,15 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
     let imported = sync("traverse");
     assert_eq!(imported["tasks"].as_array().unwrap().len(), 2);
     let id = imported["tasks"][0]["task_id"].as_str().unwrap();
-    assert!(id.starts_with("traverse-library/tooling/"));
+    assert!(id.starts_with("tooling/"));
     let list =
         |arguments| tasks::list(&root.0, serde_json::from_value(arguments).unwrap()).unwrap();
     let linked_by_milestone = list(json!({"milestone_ref":"m-linked","status":"all"}));
     let linked_by_milestone_tasks = linked_by_milestone["tasks"].as_array().unwrap();
     assert_eq!(linked_by_milestone_tasks.len(), 2);
-    assert!(linked_by_milestone_tasks.iter().all(|task| {
-        task["task_id"]
-            .as_str()
-            .unwrap()
-            .starts_with("traverse-library/tooling/")
-    }));
+    assert!(linked_by_milestone_tasks
+        .iter()
+        .all(|task| { task["task_id"].as_str().unwrap().starts_with("tooling/") }));
     assert_eq!(list(json!({}))["tasks"].as_array().unwrap().len(), 1);
     assert_eq!(
         list(json!({"repository":"all"}))["tasks"]
@@ -1245,9 +1225,7 @@ fn tasks_coordinate_claims_dependencies_reset_and_scope() {
     assert!(milestone.tasks[0].acdd_profile.is_none());
     let before_sync = store.inspect(&id).unwrap();
     assert_eq!(before_sync.profile_pin, None);
-    let synced = store
-        .sync(&milestone, "docs/010-test.md", &root.0)
-        .unwrap();
+    let synced = store.sync(&milestone, "docs/010-test.md", &root.0).unwrap();
     assert_eq!(synced.len(), 2);
     let after_sync = store.inspect(&id).unwrap();
     assert_eq!(after_sync.profile_pin, None);
@@ -1543,7 +1521,10 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
              INSERT INTO sentinel VALUES('preserve me');"
         ))
         .unwrap();
-        assert!(TasksStore::open(&old).is_err(), "schema {version} must fail closed");
+        assert!(
+            TasksStore::open(&old).is_err(),
+            "schema {version} must fail closed"
+        );
         let stored_version: String = conn
             .query_row(
                 "SELECT value FROM task_store_metadata WHERE key='schema_version'",
@@ -1568,8 +1549,10 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
 
     let unversioned = root.0.join("unversioned.sqlite");
     let conn = rusqlite::Connection::open(&unversioned).unwrap();
-    conn.execute_batch("CREATE TABLE old_data(value TEXT); INSERT INTO old_data VALUES('preserve me');")
-        .unwrap();
+    conn.execute_batch(
+        "CREATE TABLE old_data(value TEXT); INSERT INTO old_data VALUES('preserve me');",
+    )
+    .unwrap();
     assert!(TasksStore::open(&unversioned).is_err());
     let tables: i64 = conn
         .query_row(
@@ -1578,7 +1561,10 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(tables, 1, "unversioned non-empty DB must not be initialized");
+    assert_eq!(
+        tables, 1,
+        "unversioned non-empty DB must not be initialized"
+    );
     let value: String = conn
         .query_row("SELECT value FROM old_data", [], |r| r.get(0))
         .unwrap();
@@ -1590,7 +1576,9 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
         .unwrap();
     assert!(TasksStore::open(&unversioned_view).is_err());
     let objects: Vec<(String, String)> = conn
-        .prepare("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")
+        .prepare(
+            "SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+        )
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
@@ -1741,10 +1729,10 @@ fn infer_project_from_path_supports_arbitrary_monorepo_structures_universally() 
         ids.insert(response["tasks"][0]["task_id"].as_str().unwrap().to_owned());
     }
     assert_eq!(ids.len(), 6);
-    assert!(ids.iter().any(|id| id.contains("/explicit-api/")));
-    assert!(ids.iter().any(|id| id.contains("/forge-mcp/")));
-    assert!(ids.iter().any(|id| id.contains("/alpha/")));
-    assert!(ids.iter().any(|id| id.contains("/beta/")));
+    assert!(ids.iter().any(|id| id.starts_with("explicit-api/")));
+    assert!(ids.iter().any(|id| id.starts_with("forge-mcp/")));
+    assert!(ids.iter().any(|id| id.starts_with("alpha/")));
+    assert!(ids.iter().any(|id| id.starts_with("beta/")));
 }
 
 #[test]
@@ -1763,7 +1751,7 @@ fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
     store
         .sync(&milestone, "docs/010-reopen.md", &root.0)
         .unwrap();
-    let task_id = "forge-mcp/forge-mcp/m-reopen:reopenable";
+    let task_id = "forge-mcp/m-reopen:reopenable";
 
     // Advance task through all 4 gates to completed
     let stages = ["contract", "build", "review", "deliver"];
@@ -2053,10 +2041,7 @@ fn task_list_filters_milestone_status_and_controls_subtask_details() {
     .unwrap();
     let tasks_arr = active_only["tasks"].as_array().unwrap();
     assert_eq!(tasks_arr.len(), 1);
-    assert_eq!(
-        tasks_arr[0]["task_id"],
-        "forge-mcp/forge-mcp/m-active:active-task"
-    );
+    assert_eq!(tasks_arr[0]["task_id"], "forge-mcp/m-active:active-task");
 
     // Compact listings retain the subtask reference and status, omitting details.
     let subtasks = tasks_arr[0]["subtasks"].as_array().unwrap();
@@ -2086,15 +2071,15 @@ fn task_list_filters_milestone_status_and_controls_subtask_details() {
     for (filter, expected_id) in [
         (
             tasks::MilestoneStatusFilter::Active,
-            "forge-mcp/forge-mcp/m-active:active-task",
+            "forge-mcp/m-active:active-task",
         ),
         (
             tasks::MilestoneStatusFilter::Planned,
-            "forge-mcp/forge-mcp/m-planned:planned-task",
+            "forge-mcp/m-planned:planned-task",
         ),
         (
             tasks::MilestoneStatusFilter::Completed,
-            "forge-mcp/forge-mcp/m-archived:archived-task",
+            "forge-mcp/m-archived:archived-task",
         ),
     ] {
         let filtered = tasks::list(
@@ -2126,7 +2111,7 @@ fn task_list_filters_milestone_status_and_controls_subtask_details() {
         .map(|task| task["task_id"].as_str().unwrap())
         .collect();
     assert_eq!(all_ids.len(), 4);
-    assert!(all_ids.contains(&"forge-mcp/forge-mcp/m-cancelled:cancelled-task"));
+    assert!(all_ids.contains(&"forge-mcp/m-cancelled:cancelled-task"));
 
     // A targeted milestone reference exposes its tasks by default, including a pre-sync cancellation.
     let direct_archived = tasks::list(
@@ -2142,7 +2127,7 @@ fn task_list_filters_milestone_status_and_controls_subtask_details() {
     assert_eq!(direct_arr.len(), 1);
     assert_eq!(
         direct_arr[0]["task_id"],
-        "forge-mcp/forge-mcp/m-archived:archived-task"
+        "forge-mcp/m-archived:archived-task"
     );
     let direct_cancelled = tasks::list(
         &root.0,
@@ -2156,7 +2141,7 @@ fn task_list_filters_milestone_status_and_controls_subtask_details() {
     assert_eq!(direct_cancelled["tasks"].as_array().unwrap().len(), 1);
     assert_eq!(
         direct_cancelled["tasks"][0]["task_id"],
-        "forge-mcp/forge-mcp/m-cancelled:cancelled-task"
+        "forge-mcp/m-cancelled:cancelled-task"
     );
 }
 
@@ -2483,7 +2468,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .output()
         .unwrap();
     assert!(delivery_baseline.status.success());
-    let delivery_baseline = String::from_utf8_lossy(&delivery_baseline.stdout).trim().to_owned();
+    let delivery_baseline = String::from_utf8_lossy(&delivery_baseline.stdout)
+        .trim()
+        .to_owned();
     let milestone_path = root.0.join("docs/milestones/010-test.md");
     let milestone_before_delivery = std::fs::read_to_string(&milestone_path).unwrap();
 
@@ -2538,7 +2525,10 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     )
     .unwrap_err()
     .to_string();
-    assert!(hook_error.contains("TASK_DELIVERY_HOOK_REJECTED"), "{hook_error}");
+    assert!(
+        hook_error.contains("TASK_DELIVERY_HOOK_REJECTED"),
+        "{hook_error}"
+    );
     assert_eq!(
         std::fs::read_to_string(&milestone_path).unwrap(),
         milestone_before_delivery
@@ -2548,7 +2538,10 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .current_dir(&root.0)
         .output()
         .unwrap();
-    assert_eq!(String::from_utf8_lossy(&hook_head.stdout).trim(), delivery_baseline);
+    assert_eq!(
+        String::from_utf8_lossy(&hook_head.stdout).trim(),
+        delivery_baseline
+    );
     let hook_index = std::process::Command::new("git")
         .args(["ls-files", "--stage", "-z"])
         .current_dir(&root.0)
@@ -2588,7 +2581,10 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     )
     .unwrap_err()
     .to_string();
-    assert!(sqlite_error.contains("forced delivery sqlite failure"), "{sqlite_error}");
+    assert!(
+        sqlite_error.contains("forced delivery sqlite failure"),
+        "{sqlite_error}"
+    );
     rusqlite::Connection::open(&db_path)
         .unwrap()
         .execute_batch("DROP TRIGGER reject_delivery_gate;")
@@ -2630,8 +2626,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
 
     assert_eq!(deliver_res["status"], "completed");
     assert_eq!(
-        deliver_res["snapshot"]["commit"],
-        deliver_res["receipt"]["commit"],
+        deliver_res["snapshot"]["commit"], deliver_res["receipt"]["commit"],
         "delivery returns the auto-created commit SHA"
     );
     let delivered_task = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
@@ -2661,8 +2656,8 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     let completed_subtask_present =
         delivery_message.contains("Publish release notes and notify maintainers");
     let pending_subtask_excluded = !delivery_message.contains("Optional cleanup follow-up");
-    let subtask_title_is_single_line = completed_subtask_present
-        && !delivery_message.contains("\nand notify maintainers");
+    let subtask_title_is_single_line =
+        completed_subtask_present && !delivery_message.contains("\nand notify maintainers");
     assert!(
         target_present
             && completed_subtask_present
@@ -2791,7 +2786,10 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     let delivery_evidence: serde_json::Value =
         serde_json::from_str(&delivery_evidence_json).unwrap();
     assert_eq!(delivery_evidence["commit"], delivery_commit);
-    assert_eq!(delivery_evidence["candidate_baseline_head"], delivery_baseline);
+    assert_eq!(
+        delivery_evidence["candidate_baseline_head"],
+        delivery_baseline
+    );
 
     // Verify snapshot refs exist in git before handoff
     let refs_out = std::process::Command::new("git")
@@ -2873,7 +2871,13 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .unwrap()
         .success());
     assert!(std::process::Command::new("git")
-        .args(["merge", "--no-ff", "task-second-delivery", "-m", "merge second task"])
+        .args([
+            "merge",
+            "--no-ff",
+            "task-second-delivery",
+            "-m",
+            "merge second task"
+        ])
         .current_dir(&root.0)
         .status()
         .unwrap()
@@ -2920,24 +2924,42 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     let archived_text = std::fs::read_to_string(&archive_path).unwrap();
     let archived = Milestone::parse(&archived_text, "forge-mcp").unwrap();
     assert_eq!(
-        archived.tasks[0].receipt.as_ref().and_then(|receipt| receipt.commit.as_deref()),
+        archived.tasks[0]
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.commit.as_deref()),
         Some(delivery_commit.as_str()),
         "fast-forwarded first task keeps its own landed SHA"
     );
     assert_eq!(
-        archived.tasks[1].receipt.as_ref().and_then(|receipt| receipt.commit.as_deref()),
+        archived.tasks[1]
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.commit.as_deref()),
         Some(merge_commit.as_str()),
         "merged second task records the merge commit that first landed it"
     );
     assert_ne!(delivery_commit, merge_commit);
     assert_eq!(
-        tasks::store(&root.0).unwrap().inspect(task_id).unwrap()
-            .receipt.unwrap().commit.as_deref(),
+        tasks::store(&root.0)
+            .unwrap()
+            .inspect(task_id)
+            .unwrap()
+            .receipt
+            .unwrap()
+            .commit
+            .as_deref(),
         Some(delivery_commit.as_str())
     );
     assert_eq!(
-        tasks::store(&root.0).unwrap().inspect(&task_id_2).unwrap()
-            .receipt.unwrap().commit.as_deref(),
+        tasks::store(&root.0)
+            .unwrap()
+            .inspect(&task_id_2)
+            .unwrap()
+            .receipt
+            .unwrap()
+            .commit
+            .as_deref(),
         Some(merge_commit.as_str())
     );
 
@@ -3075,8 +3097,8 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         .sync(&milestone, "docs/010-conflict.md", &root.0)
         .unwrap();
 
-    let task_b_id = "forge-mcp/forge-mcp/m-conflict:task_b";
-    let task_a_id = "forge-mcp/forge-mcp/m-conflict:task_a";
+    let task_b_id = "forge-mcp/m-conflict:task_b";
+    let task_a_id = "forge-mcp/m-conflict:task_a";
 
     tasks::claim(
         &root.0,
@@ -3183,9 +3205,13 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     let claim_milestone = Milestone::parse(&claim_spec, "forge-mcp").unwrap();
     let mut claim_store = TasksStore::open(&claim_root.0.join(".forge/tasks.sqlite")).unwrap();
     claim_store
-        .sync(&claim_milestone, "docs/010-claim-conflict.md", &claim_root.0)
+        .sync(
+            &claim_milestone,
+            "docs/010-claim-conflict.md",
+            &claim_root.0,
+        )
         .unwrap();
-    let owner_id = "forge-mcp/forge-mcp/m-claim-conflict:owner";
+    let owner_id = "forge-mcp/m-claim-conflict:owner";
     tasks::claim(
         &claim_root.0,
         tasks::Claim {
@@ -3205,12 +3231,16 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     claim_root.write("docs/010-claim-conflict.md", &claim_spec);
     let claim_milestone = Milestone::parse(&claim_spec, "forge-mcp").unwrap();
     claim_store
-        .sync(&claim_milestone, "docs/010-claim-conflict.md", &claim_root.0)
+        .sync(
+            &claim_milestone,
+            "docs/010-claim-conflict.md",
+            &claim_root.0,
+        )
         .unwrap();
     let claim_error = tasks::claim(
         &claim_root.0,
         tasks::Claim {
-            task_id: "forge-mcp/forge-mcp/m-claim-conflict:successor".into(),
+            task_id: "forge-mcp/m-claim-conflict:successor".into(),
             stage: "contract".into(),
             worker_id: "successor".into(),
             worktree: claim_root.0.to_string_lossy().into_owned(),
@@ -3242,8 +3272,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         decision: "pass".into(),
         rollup: None,
     });
-    let mut release_store =
-        TasksStore::open(&release_root.0.join(".forge/tasks.sqlite")).unwrap();
+    let mut release_store = TasksStore::open(&release_root.0.join(".forge/tasks.sqlite")).unwrap();
     release_store
         .sync(
             &release_milestone,
@@ -3251,7 +3280,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
             &release_root.0,
         )
         .unwrap();
-    let completed_owner_id = "forge-mcp/forge-mcp/m-scope-release:completed_owner";
+    let completed_owner_id = "forge-mcp/m-scope-release:completed_owner";
     let retained_scope_count: i64 = release_store
         .connection
         .query_row(
@@ -3261,7 +3290,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         )
         .unwrap();
     assert_eq!(retained_scope_count, 1);
-    let successor_id = "forge-mcp/forge-mcp/m-scope-release:successor";
+    let successor_id = "forge-mcp/m-scope-release:successor";
     let claimed = tasks::claim(
         &release_root.0,
         tasks::Claim {
@@ -3316,7 +3345,10 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(after_paths, before_paths, "rejected extension added scope rows");
+    assert_eq!(
+        after_paths, before_paths,
+        "rejected extension added scope rows"
+    );
 
     for tracked in [false, true] {
         let root = ScopedWorkspace::new(if tracked {
@@ -3404,7 +3436,10 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(claims_after, claims_before, "tracked={tracked} claim mutated DB");
+        assert_eq!(
+            claims_after, claims_before,
+            "tracked={tracked} claim mutated DB"
+        );
     }
 
     let admitted_root = ScopedWorkspace::new("forge_protected_initial_scope");
@@ -3417,7 +3452,8 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     admitted_root.write("docs/010-protected-admitted.md", admitted_contract);
     let admitted_milestone = Milestone::parse(admitted_contract, "forge-mcp").unwrap();
     let admitted_id = admitted_milestone.task_id(&admitted_milestone.tasks[0]);
-    let mut admitted_store = TasksStore::open(&admitted_root.0.join(".forge/tasks.sqlite")).unwrap();
+    let mut admitted_store =
+        TasksStore::open(&admitted_root.0.join(".forge/tasks.sqlite")).unwrap();
     admitted_store
         .sync(
             &admitted_milestone,
@@ -3446,7 +3482,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
 #[test]
 fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages() {
     let (root, store, _) = fixture();
-    let task_id = "forge-mcp/forge-mcp/m-test:first";
+    let task_id = "forge-mcp/m-test:first";
 
     // Post message to task
     store
@@ -3454,7 +3490,7 @@ fn claim_returns_bundle_by_default_with_task_and_milestone_blackboard_messages()
         .unwrap();
 
     // Post message from another task in same milestone
-    let task_2_id = "forge-mcp/forge-mcp/m-test:second";
+    let task_2_id = "forge-mcp/m-test:second";
     store
         .blackboard_post(task_2_id, "agent_2", "decisions", "Milestone level finding")
         .unwrap();
@@ -3665,8 +3701,8 @@ fn universal_scope_roots_extend_scope_and_boundary_validation() {
         .sync(&milestone, "docs/010-universal.md", &root.0)
         .unwrap();
 
-    let catalogue_id = "forge-mcp/forge-mcp/m-universal:catalogue_task";
-    let payment_id = "forge-mcp/forge-mcp/m-universal:payment_task";
+    let catalogue_id = "forge-mcp/m-universal:catalogue_task";
+    let payment_id = "forge-mcp/m-universal:payment_task";
 
     // 1. Extending within declared scope_roots succeeds
     let ext1 = store
@@ -3740,7 +3776,7 @@ fn universal_scope_roots_extend_scope_and_boundary_validation() {
     store
         .sync(&root_milestone, "docs/010-root.md", &root.0)
         .unwrap();
-    let installer_id = "forge-mcp/forge-mcp/m-root:installer_task";
+    let installer_id = "forge-mcp/m-root:installer_task";
 
     let err_root_cargo = store
         .extend_scope(installer_id, &["Cargo.toml".into()], &root.0)
@@ -3811,15 +3847,26 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     assert_eq!(reviewer_value["mode"], serde_json::json!("subagent"));
     assert_eq!(reviewer_value["reuse_on_reject"], serde_json::json!(true));
     assert_eq!(reviewer_value["models"], serde_json::json!([]));
-    assert!(reviewer_value.get("model").is_none(), "model belongs to ModelSpec");
-    assert!(reviewer_value.get("reasoning").is_none(), "reasoning belongs to ModelSpec");
-    assert!(reviewer_role.guidance.is_some(), "default reviewer must provide textual guidance");
+    assert!(
+        reviewer_value.get("model").is_none(),
+        "model belongs to ModelSpec"
+    );
+    assert!(
+        reviewer_value.get("reasoning").is_none(),
+        "reasoning belongs to ModelSpec"
+    );
+    assert!(
+        reviewer_role.guidance.is_some(),
+        "default reviewer must provide textual guidance"
+    );
 
     // 2. Strict deny_unknown_fields fails closed on unknown YAML keys
     let invalid_yaml = "unknown_field: true\ngates: []\n";
     let parse_err = parse_profile(invalid_yaml).unwrap_err();
     assert!(
-        parse_err.to_string().contains("ACDD_PROFILE_SCHEMA_INVALID"),
+        parse_err
+            .to_string()
+            .contains("ACDD_PROFILE_SCHEMA_INVALID"),
         "expected ACDD_PROFILE_SCHEMA_INVALID error on unknown field, got: {parse_err}"
     );
 
@@ -3834,14 +3881,32 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     let loaded_reviewer = loaded.roles.get("independent_reviewer").unwrap();
     let loaded_reviewer_value = serde_json::to_value(loaded_reviewer).unwrap();
     assert_eq!(loaded_reviewer_value["mode"], serde_json::json!("inline"));
-    assert_eq!(loaded_reviewer_value["reuse_on_reject"], serde_json::json!(false));
-    assert_eq!(loaded_reviewer_value["models"][0]["model"], serde_json::json!("sol-6.1"));
-    assert_eq!(loaded_reviewer_value["models"][0]["reasoning"], serde_json::json!("high"));
-    assert_eq!(loaded_reviewer_value["models"][1]["model"], serde_json::json!("sol-6.0"));
-    assert_eq!(loaded_reviewer_value["models"][1]["reasoning"], serde_json::json!("medium"));
+    assert_eq!(
+        loaded_reviewer_value["reuse_on_reject"],
+        serde_json::json!(false)
+    );
+    assert_eq!(
+        loaded_reviewer_value["models"][0]["model"],
+        serde_json::json!("sol-6.1")
+    );
+    assert_eq!(
+        loaded_reviewer_value["models"][0]["reasoning"],
+        serde_json::json!("high")
+    );
+    assert_eq!(
+        loaded_reviewer_value["models"][1]["model"],
+        serde_json::json!("sol-6.0")
+    );
+    assert_eq!(
+        loaded_reviewer_value["models"][1]["reasoning"],
+        serde_json::json!("medium")
+    );
     assert!(loaded_reviewer_value.get("model").is_none());
     assert!(loaded_reviewer_value.get("reasoning").is_none());
-    assert!(loaded_reviewer.guidance.is_some(), "the base guidance is inherited");
+    assert!(
+        loaded_reviewer.guidance.is_some(),
+        "the base guidance is inherited"
+    );
     // Other gates and roles remain preserved from defaults
     assert_eq!(loaded.gates.len(), 4);
     assert!(loaded.roles.contains_key("builder"));
@@ -3851,18 +3916,24 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         "custom/team_profile.yaml",
         "roles:\n  independent_reviewer:\n    models:\n      - model: custom-model\n        reasoning: medium\n",
     );
-    ws.write(
-        "forge-mcp.yaml",
-        "acdd_profile: custom/team_profile.yaml\n",
-    );
+    ws.write("forge-mcp.yaml", "acdd_profile: custom/team_profile.yaml\n");
     let loaded_custom = load_for_workspace(ws.root()).unwrap();
     let custom_reviewer = loaded_custom.roles.get("independent_reviewer").unwrap();
     let custom_reviewer_value = serde_json::to_value(custom_reviewer).unwrap();
     assert_eq!(custom_reviewer_value["mode"], serde_json::json!("subagent"));
-    assert_eq!(custom_reviewer_value["reuse_on_reject"], serde_json::json!(true));
+    assert_eq!(
+        custom_reviewer_value["reuse_on_reject"],
+        serde_json::json!(true)
+    );
     assert_eq!(custom_reviewer_value["models"].as_array().unwrap().len(), 1);
-    assert_eq!(custom_reviewer_value["models"][0]["model"], serde_json::json!("custom-model"));
-    assert_eq!(custom_reviewer_value["models"][0]["reasoning"], serde_json::json!("medium"));
+    assert_eq!(
+        custom_reviewer_value["models"][0]["model"],
+        serde_json::json!("custom-model")
+    );
+    assert_eq!(
+        custom_reviewer_value["models"][0]["reasoning"],
+        serde_json::json!("medium")
+    );
     assert!(custom_reviewer_value.get("model").is_none());
     assert!(custom_reviewer_value.get("reasoning").is_none());
 
@@ -3872,14 +3943,19 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         "roles:\n  builder:\n    mode: inline\n    reuse_on_reject: false\n    models:\n      - model: base-model\n        reasoning: high\n    guidance: base guidance\n",
     )
     .unwrap();
-    base.merge_override(parse_profile(
-        "roles:\n  builder:\n    mode: null\n    reuse_on_reject: null\n    models: []\n",
-    )
-    .unwrap());
+    base.merge_override(
+        parse_profile(
+            "roles:\n  builder:\n    mode: null\n    reuse_on_reject: null\n    models: []\n",
+        )
+        .unwrap(),
+    );
     let inherited = serde_json::to_value(base.roles.get("builder").unwrap()).unwrap();
     assert_eq!(inherited["mode"], serde_json::json!("inline"));
     assert_eq!(inherited["reuse_on_reject"], serde_json::json!(false));
-    assert_eq!(inherited["models"][0]["model"], serde_json::json!("base-model"));
+    assert_eq!(
+        inherited["models"][0]["model"],
+        serde_json::json!("base-model")
+    );
     assert_eq!(inherited["guidance"], serde_json::json!("base guidance"));
     base.merge_override(parse_profile(
         "roles:\n  builder:\n    mode: subagent\n    reuse_on_reject: true\n    models:\n      - model: replacement-model\n        reasoning: medium\n",
@@ -3889,7 +3965,10 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     assert_eq!(replaced["mode"], serde_json::json!("subagent"));
     assert_eq!(replaced["reuse_on_reject"], serde_json::json!(true));
     assert_eq!(replaced["models"].as_array().unwrap().len(), 1);
-    assert_eq!(replaced["models"][0]["model"], serde_json::json!("replacement-model"));
+    assert_eq!(
+        replaced["models"][0]["model"],
+        serde_json::json!("replacement-model")
+    );
     assert_eq!(replaced["guidance"], serde_json::json!("base guidance"));
 
     // String model notation parses model:reasoning and bare model strings
@@ -3910,11 +3989,15 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     assert!(parse_profile("roles:\n  builder:\n    models:\n      - ':high'\n").is_err());
     assert!(parse_profile("roles:\n  builder:\n    models:\n      - ''\n").is_err());
     // Map models with unknown fields fail closed
-    assert!(parse_profile("roles:\n  builder:\n    models:\n      - model: foo\n        unknown_field: bar\n").is_err());
+    assert!(parse_profile(
+        "roles:\n  builder:\n    models:\n      - model: foo\n        unknown_field: bar\n"
+    )
+    .is_err());
 
     // The documented reference profile example loads and validates cleanly
-    let example_profile_text = std::fs::read_to_string("skills/contextunity-forge/references/acdd_profile.yaml.example")
-        .expect("example profile file must exist");
+    let example_profile_text =
+        std::fs::read_to_string("skills/contextunity-forge/references/acdd_profile.yaml.example")
+            .expect("example profile file must exist");
     let parsed_example = parse_profile(&example_profile_text)
         .expect("example profile must parse and validate without error");
     assert!(!parsed_example.roles.is_empty());
@@ -3971,15 +4054,21 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         "gate id 'work/v1' must be a non-empty token",
     );
     let gates_without_receipt_review = valid_gates.replace("    receipt_review: review\n", "");
-    let missing_review_source = gates_without_receipt_review
-        .replacen("review_sources: [review]", "review_sources: [absent]", 1);
+    let missing_review_source = gates_without_receipt_review.replacen(
+        "review_sources: [review]",
+        "review_sources: [absent]",
+        1,
+    );
     assert_profile_error(
         "missing review source",
         &missing_review_source,
         "review_sources must reference strictly prior review gates",
     );
-    let non_review_source =
-        gates_without_receipt_review.replacen("review_sources: [review]", "review_sources: [work]", 1);
+    let non_review_source = gates_without_receipt_review.replacen(
+        "review_sources: [review]",
+        "review_sources: [work]",
+        1,
+    );
     assert_profile_error(
         "non-review review source",
         &non_review_source,
@@ -4165,7 +4254,7 @@ gates:
     )
     .unwrap();
 
-    let task_id = "forge-mcp/forge-mcp/m-scheme:schema";
+    let task_id = "forge-mcp/m-scheme:schema";
     let claim = tasks::claim(
         workspace.root(),
         tasks::Claim {
@@ -4178,48 +4267,51 @@ gates:
     )
     .unwrap();
 
-    assert_eq!(claim["context_bundle"]["proof_schema"], json!({
-        "type": "object",
-        "properties": {
-            "report": {
-                "type": "object",
-                "properties": {
-                    "entries": {
-                        "type": "array",
-                        "properties": {},
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {
-                                    "type": "string",
-                                    "properties": {},
-                                    "required": [],
-                                    "additionalProperties": null,
-                                    "items": null,
-                            "enum": ["accepted", "rejected"]
-                                }
+    assert_eq!(
+        claim["context_bundle"]["proof_schema"],
+        json!({
+            "type": "object",
+            "properties": {
+                "report": {
+                    "type": "object",
+                    "properties": {
+                        "entries": {
+                            "type": "array",
+                            "properties": {},
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "properties": {},
+                                        "required": [],
+                                        "additionalProperties": null,
+                                        "items": null,
+                                "enum": ["accepted", "rejected"]
+                                    }
+                                },
+                                "required": ["name"],
+                                "additionalProperties": false,
+                                "items": null,
+                                "enum": []
                             },
-                            "required": ["name"],
-                            "additionalProperties": false,
-                            "items": null,
+                            "required": [],
+                            "additionalProperties": null,
                             "enum": []
-                        },
-                        "required": [],
-                        "additionalProperties": null,
-                        "enum": []
-                    }
-                },
-                "required": ["entries"],
-                "additionalProperties": false,
-                "items": null,
-                "enum": []
-            }
-        },
-        "required": ["report"],
-        "additionalProperties": false,
-        "items": null,
-        "enum": []
-    }));
+                        }
+                    },
+                    "required": ["entries"],
+                    "additionalProperties": false,
+                    "items": null,
+                    "enum": []
+                }
+            },
+            "required": ["report"],
+            "additionalProperties": false,
+            "items": null,
+            "enum": []
+        })
+    );
 
     let properties = claim["context_bundle"]["proof_schema"]
         .pointer("/properties/report/properties/entries/items/additionalProperties")
@@ -4269,7 +4361,9 @@ gates:
             .connection
             .prepare("SELECT revision,ended FROM task_claims WHERE task_id=?1 ORDER BY revision")
             .unwrap()
-            .query_map([task_id], |row| Ok((row.get::<_, u64>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([task_id], |row| {
+                Ok((row.get::<_, u64>(0)?, row.get::<_, i64>(1)?))
+            })
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
@@ -4294,10 +4388,7 @@ gates:
     assert_eq!(task.stage, "schema_input");
     let unchanged = before_state();
     let invalid_proofs = [
-        (
-            "nested required field missing",
-            json!({"report":{}}),
-        ),
+        ("nested required field missing", json!({"report":{}})),
         (
             "wrong nested type",
             json!({"report":{"entries":"not-an-array"}}),
@@ -4333,7 +4424,11 @@ gates:
             error.to_string().contains("TASK_EVIDENCE_INVALID"),
             "{case} produced an unexpected error: {error:#}"
         );
-        assert_eq!(before_state(), unchanged, "{case} mutated task/gate/claim state");
+        assert_eq!(
+            before_state(),
+            unchanged,
+            "{case} mutated task/gate/claim state"
+        );
     }
 
     let mut accepted_evidence = evidence(&task);
@@ -4423,7 +4518,9 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
         )
         .expect_err("pinned profile symlink escape must fail closed");
         assert!(
-            error.to_string().contains("TASK_SCOPE_INVALID: symlink escape"),
+            error
+                .to_string()
+                .contains("TASK_SCOPE_INVALID: symlink escape"),
             "{name} symlink should be rejected as an escape: {error}"
         );
     }
@@ -4503,7 +4600,13 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
             let synced: Value = serde_json::from_slice(&sync.stdout).unwrap();
             let task_id = synced["tasks"][0]["task_id"].as_str().unwrap();
             let inspect = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
-                .args(["--root", root.0.to_str().unwrap(), "task", "inspect", task_id])
+                .args([
+                    "--root",
+                    root.0.to_str().unwrap(),
+                    "task",
+                    "inspect",
+                    task_id,
+                ])
                 .output()
                 .unwrap();
             assert!(
@@ -4512,17 +4615,21 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
                 String::from_utf8_lossy(&inspect.stderr)
             );
             let inspected: Value = serde_json::from_slice(&inspect.stdout).unwrap();
-            assert!(
-                inspected["workflow_guidance"]["role_guide"]
-                    .as_str()
-                    .unwrap()
-                    .contains(expected_model)
-            );
+            assert!(inspected["workflow_guidance"]["role_guide"]
+                .as_str()
+                .unwrap()
+                .contains(expected_model));
         } else if sync.status.success() {
             let synced: Value = serde_json::from_slice(&sync.stdout).unwrap();
             let task_id = synced["tasks"][0]["task_id"].as_str().unwrap();
             let inspect = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
-                .args(["--root", root.0.to_str().unwrap(), "task", "inspect", task_id])
+                .args([
+                    "--root",
+                    root.0.to_str().unwrap(),
+                    "task",
+                    "inspect",
+                    task_id,
+                ])
                 .output()
                 .unwrap();
             let exposed_model = if inspect.status.success() {
@@ -4558,8 +4665,7 @@ fn linked_pinned_tasks_ignore_linked_workspace_profile_overrides() {
     use sha2::Digest;
     let task_profile = "roles:\n  builder:\n    models:\n      - model: linked-task-override\n";
     let digest = format!("{:x}", sha2::Sha256::digest(task_profile.as_bytes()));
-    let invalid_linked_base =
-        "gates:\n  - id: linked_only\n    role: builder\n    proof: none\n";
+    let invalid_linked_base = "gates:\n  - id: linked_only\n    role: builder\n    proof: none\n";
 
     for (case, linked_base_path) in [
         ("forge_config", "forge-mcp.yaml"),
@@ -4601,13 +4707,15 @@ fn linked_pinned_tasks_ignore_linked_workspace_profile_overrides() {
         let imported_tasks = imported["tasks"].as_array().unwrap();
         assert_eq!(imported_tasks.len(), 1);
         let task_id = imported_tasks[0]["task_id"].as_str().unwrap();
-        assert!(task_id.starts_with("linked-repository/linked-project/"));
+        assert!(task_id.starts_with("linked-project/"));
 
         tasks::manage(
             &root.0,
             serde_json::from_value(json!({"action":"inspect","task_id":task_id})).unwrap(),
         )
-        .unwrap_or_else(|error| panic!("{case} pinned task inspection used linked base profile: {error}"));
+        .unwrap_or_else(|error| {
+            panic!("{case} pinned task inspection used linked base profile: {error}")
+        });
     }
 }
 
@@ -4632,7 +4740,10 @@ fn commit_scope_validation_checks_exact_milestone_and_non_empty_scope() {
         Some(milestone_ref)
     ));
     assert!(!commit_files_within_scope(
-        &["notdocs/milestones/010-repack.md".into(), "src/lib.rs".into()],
+        &[
+            "notdocs/milestones/010-repack.md".into(),
+            "src/lib.rs".into()
+        ],
         &scope,
         Some(milestone_ref)
     ));
@@ -4706,20 +4817,29 @@ fn validate_commit_for_task_enforces_scope_and_ancestry_invariants() {
     // Commit 1: base commit
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "add", "src/lib.rs",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            "src/lib.rs",
         ])
         .current_dir(&root.0)
         .output()
         .unwrap();
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-m", "Baseline commit",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Baseline commit",
         ])
         .current_dir(&root.0)
         .output()
@@ -4730,10 +4850,15 @@ fn validate_commit_for_task_enforces_scope_and_ancestry_invariants() {
     root.write("src/lib.rs", "pub fn base() {}\npub fn c1() {}\n");
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-am", "Intermediate commit C1",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-am",
+            "Intermediate commit C1",
         ])
         .current_dir(&root.0)
         .output()
@@ -4741,13 +4866,21 @@ fn validate_commit_for_task_enforces_scope_and_ancestry_invariants() {
     let c1_sha = git_head(&root.0);
 
     // Commit 3: delivery commit D
-    root.write("src/lib.rs", "pub fn base() {}\npub fn c1() {}\npub fn delivery() {}\n");
+    root.write(
+        "src/lib.rs",
+        "pub fn base() {}\npub fn c1() {}\npub fn delivery() {}\n",
+    );
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-am", "Delivery commit D",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-am",
+            "Delivery commit D",
         ])
         .current_dir(&root.0)
         .output()
@@ -4758,69 +4891,162 @@ fn validate_commit_for_task_enforces_scope_and_ancestry_invariants() {
     let milestone_ref = "docs/milestones/010-test.md";
 
     // 1. Delivery commit D is valid when accepted_delivery is D
-    assert!(validate_commit_for_task(&root.0, &d_sha, &scope, Some(milestone_ref), Some(&d_sha), Some(&base_sha)).is_ok());
+    assert!(validate_commit_for_task(
+        &root.0,
+        &d_sha,
+        &scope,
+        Some(milestone_ref),
+        Some(&d_sha),
+        Some(&base_sha)
+    )
+    .is_ok());
 
     // 2. Intermediate commit C1 is REJECTED when accepted_delivery is D (C1 is an ancestor of D)
-    let c1_err = validate_commit_for_task(&root.0, &c1_sha, &scope, Some(milestone_ref), Some(&d_sha), Some(&base_sha)).unwrap_err();
-    assert!(c1_err.to_string().contains("TASK_COMMIT_OBSOLETE"), "expected obsolete commit error, got: {c1_err}");
+    let c1_err = validate_commit_for_task(
+        &root.0,
+        &c1_sha,
+        &scope,
+        Some(milestone_ref),
+        Some(&d_sha),
+        Some(&base_sha),
+    )
+    .unwrap_err();
+    assert!(
+        c1_err.to_string().contains("TASK_COMMIT_OBSOLETE"),
+        "expected obsolete commit error, got: {c1_err}"
+    );
 
     // 3. Baseline commit is REJECTED (does not advance beyond baseline)
-    let base_err = validate_commit_for_task(&root.0, &base_sha, &scope, Some(milestone_ref), Some(&d_sha), Some(&base_sha)).unwrap_err();
-    assert!(base_err.to_string().contains("TASK_COMMIT_OBSOLETE"), "expected obsolete baseline error, got: {base_err}");
+    let base_err = validate_commit_for_task(
+        &root.0,
+        &base_sha,
+        &scope,
+        Some(milestone_ref),
+        Some(&d_sha),
+        Some(&base_sha),
+    )
+    .unwrap_err();
+    assert!(
+        base_err.to_string().contains("TASK_COMMIT_OBSOLETE"),
+        "expected obsolete baseline error, got: {base_err}"
+    );
 
     // 4. Empty scope rejects commits that touch files outside scope (such as src/lib.rs):
-    let outside_err = validate_commit_for_task(&root.0, &d_sha, &[], Some(milestone_ref), Some(&d_sha), Some(&base_sha)).unwrap_err();
-    assert!(outside_err.to_string().contains("TASK_COMMIT_OUTSIDE_SCOPE"), "expected outside scope error for empty scope on src/lib.rs, got: {outside_err}");
+    let outside_err = validate_commit_for_task(
+        &root.0,
+        &d_sha,
+        &[],
+        Some(milestone_ref),
+        Some(&d_sha),
+        Some(&base_sha),
+    )
+    .unwrap_err();
+    assert!(
+        outside_err
+            .to_string()
+            .contains("TASK_COMMIT_OUTSIDE_SCOPE"),
+        "expected outside scope error for empty scope on src/lib.rs, got: {outside_err}"
+    );
 
     // 5. Commits that only modify the milestone doc (or runtime files) fail with TASK_COMMIT_IGNORES_SCOPE
     root.write("docs/milestones/010-test.md", "# Milestone\n");
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "add", "docs/milestones/010-test.md",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            "docs/milestones/010-test.md",
         ])
         .current_dir(&root.0)
         .output()
         .unwrap();
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-m", "Milestone doc only",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Milestone doc only",
         ])
         .current_dir(&root.0)
         .output()
         .unwrap();
     let doc_only_sha = git_head(&root.0);
-    let empty_scope_err = validate_commit_for_task(&root.0, &doc_only_sha, &[], Some(milestone_ref), Some(&d_sha), Some(&base_sha)).unwrap_err();
-    assert!(empty_scope_err.to_string().contains("TASK_COMMIT_IGNORES_SCOPE"), "expected ignores scope error for empty scope, got: {empty_scope_err}");
+    let empty_scope_err = validate_commit_for_task(
+        &root.0,
+        &doc_only_sha,
+        &[],
+        Some(milestone_ref),
+        Some(&d_sha),
+        Some(&base_sha),
+    )
+    .unwrap_err();
+    assert!(
+        empty_scope_err
+            .to_string()
+            .contains("TASK_COMMIT_IGNORES_SCOPE"),
+        "expected ignores scope error for empty scope, got: {empty_scope_err}"
+    );
 
     // 6. Divergent commit with different changes in scope MUST fail with TASK_COMMIT_TREE_MISMATCH
-    root.write("src/lib.rs", "pub fn base() {}\npub fn malicious_divergent() {}\n");
+    root.write(
+        "src/lib.rs",
+        "pub fn base() {}\npub fn malicious_divergent() {}\n",
+    );
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-am", "Divergent commit with different changes in scope",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-am",
+            "Divergent commit with different changes in scope",
         ])
         .current_dir(&root.0)
         .output()
         .unwrap();
     let d_alt_sha = git_head(&root.0);
-    let mismatch_err = validate_commit_for_task(&root.0, &d_alt_sha, &scope, Some(milestone_ref), Some(&d_sha), Some(&base_sha)).unwrap_err();
-    assert!(mismatch_err.to_string().contains("TASK_COMMIT_TREE_MISMATCH"), "expected tree mismatch error for divergent commit, got: {mismatch_err}");
+    let mismatch_err = validate_commit_for_task(
+        &root.0,
+        &d_alt_sha,
+        &scope,
+        Some(milestone_ref),
+        Some(&d_sha),
+        Some(&base_sha),
+    )
+    .unwrap_err();
+    assert!(
+        mismatch_err
+            .to_string()
+            .contains("TASK_COMMIT_TREE_MISMATCH"),
+        "expected tree mismatch error for divergent commit, got: {mismatch_err}"
+    );
 
     // 7. git_scoped_tree_changed compares full tree when scope is empty
     assert!(
-        contextunity_forge_mcp::core::git::git_scoped_tree_changed(&root.0, &d_sha, &d_alt_sha, &[]).unwrap(),
+        contextunity_forge_mcp::core::git::git_scoped_tree_changed(
+            &root.0,
+            &d_sha,
+            &d_alt_sha,
+            &[]
+        )
+        .unwrap(),
         "git_scoped_tree_changed with empty scope must detect full tree difference"
     );
     assert!(
-        !contextunity_forge_mcp::core::git::git_scoped_tree_changed(&root.0, &d_sha, &d_sha, &[]).unwrap(),
+        !contextunity_forge_mcp::core::git::git_scoped_tree_changed(&root.0, &d_sha, &d_sha, &[])
+            .unwrap(),
         "git_scoped_tree_changed with empty scope must return false for identical commits"
     );
 }
@@ -4832,7 +5058,10 @@ fn inline_role_mode_adapts_guidance_text() {
         "forge-mcp.yaml",
         "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/AGENTS.md\nacdd_profile: custom_profile.yaml\n",
     );
-    root.write("docs/AGENTS.md", "# Agent Guidance\nUse ContextUnity Forge.\n");
+    root.write(
+        "docs/AGENTS.md",
+        "# Agent Guidance\nUse ContextUnity Forge.\n",
+    );
     root.write("src/lib.rs", "pub fn work() -> bool { true }\n");
 
     let profile_yaml = r#"
@@ -4977,9 +5206,63 @@ scope:
     assert_eq!(guidance["mode"], "inline");
     let role_guide = guidance["role_guide"].as_str().unwrap();
     assert!(
-        role_guide.contains("Execute inline in the current agent to review candidate diff across contours."),
+        role_guide.contains(
+            "Execute inline in the current agent to review candidate diff across contours."
+        ),
         "expected adapted inline role guide, got: {role_guide}"
     );
     assert!(!role_guide.contains("Spawn a dedicated"));
 }
 
+#[test]
+fn cross_milestone_task_dependencies_gate_readiness_and_claim() {
+    let root = ScopedWorkspace::new("forge_cross_milestone");
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    let m1_text = "---\nid: m-first\ntitle: First\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\ninvariants: [isolated]\n---\n# First\n```yaml\ntask_ref: producer\ntarget: Deliver producer\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    let m2_text = "---\nid: m-second\ntitle: Second\ndoc_type: contract\nstatus: planned\ndepends_on: [m-first]\ninvariants: [isolated]\n---\n# Second\n```yaml\ntask_ref: consumer\ntarget: Deliver consumer\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [\"m-first:producer\"]\n```\n";
+    let m1 = Milestone::parse(m1_text, "forge-mcp").unwrap();
+    let m2 = Milestone::parse(m2_text, "forge-mcp").unwrap();
+    root.write("src/lib.rs", "pub fn f() {}\n");
+    root.write("docs/milestones/m1.md", m1_text);
+    root.write("docs/milestones/m2.md", m2_text);
+
+    store.sync(&m1, "docs/milestones/m1.md", &root.0).unwrap();
+    store.sync(&m2, "docs/milestones/m2.md", &root.0).unwrap();
+
+    let producer_id = m1.task_id(&m1.tasks[0]);
+    let consumer_id = m2.task_id(&m2.tasks[0]);
+
+    let tasks = store.list(None, "all", None).unwrap();
+    let producer_task = tasks.iter().find(|t| t.task_id == producer_id).unwrap();
+    let consumer_task = tasks.iter().find(|t| t.task_id == consumer_id).unwrap();
+    assert_eq!(producer_task.status, "ready");
+    assert_eq!(consumer_task.status, "blocked");
+
+    // Attempting to claim consumer should fail because its dependency is not ready
+    let worktree = root.0.to_string_lossy().into_owned();
+    let claim_err = store
+        .claim(&consumer_id, "contract", "worker-1", &worktree)
+        .unwrap_err();
+    assert_eq!(claim_err.to_string(), "TASK_NOT_READY");
+
+    // Complete producer task
+    store.connection.execute(
+        "UPDATE tasks SET descriptor = json_set(descriptor, '$.status', 'completed') WHERE task_id = ?1",
+        [&producer_id],
+    ).unwrap();
+
+    // Now consumer should be ready!
+    let tasks_after = store.list(None, "all", None).unwrap();
+    let consumer_after = tasks_after
+        .iter()
+        .find(|t| t.task_id == consumer_id)
+        .unwrap();
+    assert_eq!(consumer_after.status, "ready");
+
+    // And claiming consumer should now succeed!
+    let claimed = store
+        .claim(&consumer_id, "contract", "worker-1", &worktree)
+        .unwrap();
+    assert_eq!(claimed.task_id, consumer_id);
+    assert_eq!(claimed.status, "in_progress");
+}

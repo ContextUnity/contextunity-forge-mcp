@@ -1,7 +1,11 @@
 use anyhow::{bail, Context, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::{Component, Path, PathBuf}, sync::{Arc, OnceLock}};
+use std::{
+    collections::BTreeMap,
+    path::{Component, Path, PathBuf},
+    sync::{Arc, OnceLock},
+};
 
 const DEFAULT_PROFILE_YAML: &str = include_str!("acdd.default.yaml");
 
@@ -128,10 +132,18 @@ impl RoleDef {
     }
 
     fn merge_override(&mut self, other: RoleDef) {
-        if other.mode.is_some() { self.mode = other.mode; }
-        if other.reuse_on_reject.is_some() { self.reuse_on_reject = other.reuse_on_reject; }
-        if !other.models.is_empty() { self.models = other.models; }
-        if other.guidance.is_some() { self.guidance = other.guidance; }
+        if other.mode.is_some() {
+            self.mode = other.mode;
+        }
+        if other.reuse_on_reject.is_some() {
+            self.reuse_on_reject = other.reuse_on_reject;
+        }
+        if !other.models.is_empty() {
+            self.models = other.models;
+        }
+        if other.guidance.is_some() {
+            self.guidance = other.guidance;
+        }
     }
 }
 
@@ -179,7 +191,9 @@ impl SchemaDef {
     fn validate_definition(&self, path: &str) -> Result<()> {
         match self.schema_type.as_str() {
             "object" => {
-                if self.items.is_some() { bail!("ACDD_PROFILE_SCHEMA_INVALID: {path}.items is only valid for arrays"); }
+                if self.items.is_some() {
+                    bail!("ACDD_PROFILE_SCHEMA_INVALID: {path}.items is only valid for arrays");
+                }
                 for required in &self.required {
                     if !self.properties.contains_key(required) {
                         bail!("ACDD_PROFILE_SCHEMA_INVALID: {path}.required references undefined property '{required}'");
@@ -193,11 +207,16 @@ impl SchemaDef {
                 if !self.properties.is_empty() || !self.required.is_empty() {
                     bail!("ACDD_PROFILE_SCHEMA_INVALID: {path} array cannot declare object properties");
                 }
-                self.items.as_ref().context(format!("ACDD_PROFILE_SCHEMA_INVALID: {path}.items is required for arrays"))?
+                self.items
+                    .as_ref()
+                    .context(format!(
+                        "ACDD_PROFILE_SCHEMA_INVALID: {path}.items is required for arrays"
+                    ))?
                     .validate_definition(&format!("{path}.items"))?;
             }
             "string" | "integer" | "number" | "boolean" | "null" => {
-                if !self.properties.is_empty() || !self.required.is_empty() || self.items.is_some() {
+                if !self.properties.is_empty() || !self.required.is_empty() || self.items.is_some()
+                {
                     bail!("ACDD_PROFILE_SCHEMA_INVALID: {path} scalar schema has container fields");
                 }
             }
@@ -218,13 +237,17 @@ impl SchemaDef {
             "null" => value.is_null(),
             _ => false,
         };
-        if !matches { bail!("TASK_EVIDENCE_INVALID: {path} must be {}", self.schema_type); }
+        if !matches {
+            bail!("TASK_EVIDENCE_INVALID: {path} must be {}", self.schema_type);
+        }
         if !self.enum_values.is_empty() && !self.enum_values.contains(value) {
             bail!("TASK_EVIDENCE_INVALID: {path} is not an allowed value");
         }
         if let Some(object) = value.as_object() {
             for required in &self.required {
-                if !object.contains_key(required) { bail!("TASK_EVIDENCE_INVALID: {path}.{required} is required"); }
+                if !object.contains_key(required) {
+                    bail!("TASK_EVIDENCE_INVALID: {path}.{required} is required");
+                }
             }
             for (name, item) in object {
                 if let Some(schema) = self.properties.get(name) {
@@ -259,11 +282,16 @@ pub enum ProofDef {
 impl ProofDef {
     /// Return the built-in proof kind, or `None` for a schema proof.
     pub fn kind(&self) -> Option<ProofKind> {
-        match self { Self::Kind(kind) => Some(*kind), Self::Scheme { .. } => None }
+        match self {
+            Self::Kind(kind) => Some(*kind),
+            Self::Scheme { .. } => None,
+        }
     }
     /// Validate the schema definition for a scheme proof.
     pub fn validate_scheme(&self) -> Result<()> {
-        if let Self::Scheme { scheme } = self { scheme.validate_definition("proof.scheme")?; }
+        if let Self::Scheme { scheme } = self {
+            scheme.validate_definition("proof.scheme")?;
+        }
         Ok(())
     }
 }
@@ -295,7 +323,12 @@ pub enum CommandDef {
 }
 impl CommandDef {
     /// Return the executable shell command.
-    pub fn command(&self) -> &str { match self { Self::Script(s) => s, Self::Detailed { command, .. } => command } }
+    pub fn command(&self) -> &str {
+        match self {
+            Self::Script(s) => s,
+            Self::Detailed { command, .. } => command,
+        }
+    }
 }
 
 /// Definition of an ACDD lifecycle gate.
@@ -337,16 +370,20 @@ pub struct GateDef {
     #[serde(default = "default_auto_commit")]
     pub auto_commit: bool,
 }
-fn default_auto_commit() -> bool { true }
+fn default_auto_commit() -> bool {
+    true
+}
 
 /// Settings and guidance for completed tasks.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CompletedGate {
     /// Tools shown after all configured gates pass.
-    #[serde(default)] pub tools: Vec<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
     /// Steps shown after all configured gates pass.
-    #[serde(default)] pub steps: Vec<String>,
+    #[serde(default)]
+    pub steps: Vec<String>,
 }
 
 /// A complete declarative ACDD workflow profile.
@@ -354,32 +391,50 @@ pub struct CompletedGate {
 #[serde(deny_unknown_fields)]
 pub struct GateProfile {
     /// Definition of done applied to every subtask.
-    #[serde(default)] pub subtask_dod: Vec<String>,
+    #[serde(default)]
+    pub subtask_dod: Vec<String>,
     /// Review guidance shown to reviewers.
-    #[serde(default)] pub review_policy: Vec<String>,
+    #[serde(default)]
+    pub review_policy: Vec<String>,
     /// Contract proof policies that permit a zero red exit code.
-    #[serde(default)] pub contract_zero_exit_policies: Vec<String>,
+    #[serde(default)]
+    pub contract_zero_exit_policies: Vec<String>,
     /// Available agent roles and their model guidance.
-    #[serde(default)] pub roles: BTreeMap<String, RoleDef>,
+    #[serde(default)]
+    pub roles: BTreeMap<String, RoleDef>,
     /// Registered shell commands usable by command proof gates.
-    #[serde(default)] pub commands: BTreeMap<String, CommandDef>,
+    #[serde(default)]
+    pub commands: BTreeMap<String, CommandDef>,
     /// Hierarchical workflow policy values.
-    #[serde(default)] pub policies: BTreeMap<String, serde_yaml::Value>,
+    #[serde(default)]
+    pub policies: BTreeMap<String, serde_yaml::Value>,
     /// Named ordered sets of review contours.
-    #[serde(default)] pub contours: IndexMap<String, IndexMap<String, ContourDef>>,
+    #[serde(default)]
+    pub contours: IndexMap<String, IndexMap<String, ContourDef>>,
     /// Ordered workflow gates.
-    #[serde(default)] pub gates: Vec<GateDef>,
+    #[serde(default)]
+    pub gates: Vec<GateDef>,
     /// Guidance displayed after completion.
-    #[serde(default)] pub completed: CompletedGate,
+    #[serde(default)]
+    pub completed: CompletedGate,
 }
 
 impl GateProfile {
     /// Return the gate identifier at a runtime index.
-    pub fn gate_id(&self, index: usize) -> &str { self.gates.get(index).map(|g| g.id.as_str()).unwrap_or("completed") }
+    pub fn gate_id(&self, index: usize) -> &str {
+        self.gates
+            .get(index)
+            .map(|g| g.id.as_str())
+            .unwrap_or("completed")
+    }
     /// Return a gate's runtime index by its persisted identifier.
-    pub fn index_of(&self, id: &str) -> Option<usize> { self.gates.iter().position(|g| g.id == id) }
+    pub fn index_of(&self, id: &str) -> Option<usize> {
+        self.gates.iter().position(|g| g.id == id)
+    }
     /// Return a gate by its persisted identifier.
-    pub fn by_stage(&self, stage: &str) -> Option<&GateDef> { self.gates.iter().find(|g| g.id == stage) }
+    pub fn by_stage(&self, stage: &str) -> Option<&GateDef> {
+        self.gates.iter().find(|g| g.id == stage)
+    }
     /// Return the role name and role definition assigned to a gate.
     pub fn role_for_stage(&self, stage: &str) -> Option<(&str, &RoleDef)> {
         let role_name = self.by_stage(stage)?.role.as_deref()?;
@@ -392,32 +447,65 @@ impl GateProfile {
 
     /// Validate the fully merged profile before it becomes active.
     pub fn validate(&self) -> Result<()> {
-        if self.gates.is_empty() { bail!("ACDD_PROFILE_INVALID: gates must not be empty"); }
+        if self.gates.is_empty() {
+            bail!("ACDD_PROFILE_INVALID: gates must not be empty");
+        }
         let mut seen = BTreeMap::<&str, usize>::new();
         for (index, gate) in self.gates.iter().enumerate() {
-            if gate.id.is_empty() || !gate.id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
-                bail!("ACDD_PROFILE_INVALID: gate id '{}' must be a non-empty token", gate.id);
+            if gate.id.is_empty()
+                || !gate
+                    .id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                bail!(
+                    "ACDD_PROFILE_INVALID: gate id '{}' must be a non-empty token",
+                    gate.id
+                );
             }
-            if seen.insert(gate.id.as_str(), index).is_some() { bail!("ACDD_PROFILE_INVALID: duplicate gate id '{}'", gate.id); }
+            if seen.insert(gate.id.as_str(), index).is_some() {
+                bail!("ACDD_PROFILE_INVALID: duplicate gate id '{}'", gate.id);
+            }
             if let Some(role) = &gate.role {
-                if !self.roles.contains_key(role) { bail!("ACDD_PROFILE_INVALID: gate '{}' references undefined role '{role}'", gate.id); }
+                if !self.roles.contains_key(role) {
+                    bail!(
+                        "ACDD_PROFILE_INVALID: gate '{}' references undefined role '{role}'",
+                        gate.id
+                    );
+                }
             }
             if let Some(set) = &gate.contours {
-                if self.contours.get(set).is_none() { bail!("ACDD_PROFILE_INVALID: gate '{}' references undefined contour set '{set}'", gate.id); }
+                if self.contours.get(set).is_none() {
+                    bail!(
+                        "ACDD_PROFILE_INVALID: gate '{}' references undefined contour set '{set}'",
+                        gate.id
+                    );
+                }
             }
             gate.proof.validate_scheme()?;
             if matches!(gate.proof.kind(), Some(ProofKind::Command)) && self.commands.is_empty() {
                 bail!("ACDD_PROFILE_INVALID: command gate '{}' requires a non-empty commands registry", gate.id);
             }
-            for (field, reference) in [("reject_to", gate.reject_to.as_deref()), ("independent_from", gate.independent_from.as_deref()), ("receipt_review", gate.receipt_review.as_deref())] {
+            for (field, reference) in [
+                ("reject_to", gate.reject_to.as_deref()),
+                ("independent_from", gate.independent_from.as_deref()),
+                ("receipt_review", gate.receipt_review.as_deref()),
+            ] {
                 if let Some(reference) = reference {
                     let prior = seen.get(reference).copied().filter(|prior| *prior < index);
-                    if prior.is_none() { bail!("ACDD_PROFILE_INVALID: gate '{}' {field} must reference a strictly prior gate", gate.id); }
+                    if prior.is_none() {
+                        bail!("ACDD_PROFILE_INVALID: gate '{}' {field} must reference a strictly prior gate", gate.id);
+                    }
                 }
             }
             for source in &gate.review_sources {
-                let prior = seen.get(source.as_str()).copied().filter(|prior| *prior < index);
-                let Some(prior) = prior else { bail!("ACDD_PROFILE_INVALID: gate '{}' review_sources must reference strictly prior review gates", gate.id); };
+                let prior = seen
+                    .get(source.as_str())
+                    .copied()
+                    .filter(|prior| *prior < index);
+                let Some(prior) = prior else {
+                    bail!("ACDD_PROFILE_INVALID: gate '{}' review_sources must reference strictly prior review gates", gate.id);
+                };
                 if self.gates[prior].proof.kind() != Some(ProofKind::Review) {
                     bail!("ACDD_PROFILE_INVALID: gate '{}' review source '{source}' is not a review gate", gate.id);
                 }
@@ -438,18 +526,32 @@ impl GateProfile {
                 }
             }
         }
-        let deliveries: Vec<_> = self.gates.iter().enumerate().filter(|(_, gate)| gate.proof.kind() == Some(ProofKind::Delivery)).collect();
+        let deliveries: Vec<_> = self
+            .gates
+            .iter()
+            .enumerate()
+            .filter(|(_, gate)| gate.proof.kind() == Some(ProofKind::Delivery))
+            .collect();
         if deliveries.len() != 1 || deliveries[0].0 + 1 != self.gates.len() {
             bail!("ACDD_PROFILE_INVALID: exactly one terminal delivery gate is required");
         }
         for (name, command) in &self.commands {
             if name.trim().is_empty() || command.command().trim().is_empty() {
-                bail!("ACDD_PROFILE_INVALID: commands registry names and commands must be non-empty");
+                bail!(
+                    "ACDD_PROFILE_INVALID: commands registry names and commands must be non-empty"
+                );
             }
         }
         for (set_name, contours) in self.contours.iter() {
             for (name, contour) in contours.iter() {
-                if name.trim().is_empty() || contour.description.trim().is_empty() || contour.criteria.is_empty() || contour.criteria.iter().any(|criterion| criterion.trim().is_empty()) {
+                if name.trim().is_empty()
+                    || contour.description.trim().is_empty()
+                    || contour.criteria.is_empty()
+                    || contour
+                        .criteria
+                        .iter()
+                        .any(|criterion| criterion.trim().is_empty())
+                {
                     bail!("ACDD_PROFILE_INVALID: contour '{set_name}.{name}' requires a description and operational criteria");
                 }
             }
@@ -459,28 +561,52 @@ impl GateProfile {
 
     /// Merge overrides on top of this base profile. Gates replace as a whole sequence.
     pub fn merge_override(&mut self, other: GateProfile) {
-        if !other.subtask_dod.is_empty() { self.subtask_dod = other.subtask_dod; }
-        if !other.review_policy.is_empty() { self.review_policy = other.review_policy; }
-        if !other.contract_zero_exit_policies.is_empty() { self.contract_zero_exit_policies = other.contract_zero_exit_policies; }
+        if !other.subtask_dod.is_empty() {
+            self.subtask_dod = other.subtask_dod;
+        }
+        if !other.review_policy.is_empty() {
+            self.review_policy = other.review_policy;
+        }
+        if !other.contract_zero_exit_policies.is_empty() {
+            self.contract_zero_exit_policies = other.contract_zero_exit_policies;
+        }
         for (key, role) in other.roles {
-            if let Some(current) = self.roles.get_mut(&key) { current.merge_override(role); }
-            else { self.roles.insert(key, role); }
+            if let Some(current) = self.roles.get_mut(&key) {
+                current.merge_override(role);
+            } else {
+                self.roles.insert(key, role);
+            }
         }
         self.commands.extend(other.commands);
-        for (key, value) in other.policies { merge_yaml(self.policies.entry(key).or_default(), value); }
+        for (key, value) in other.policies {
+            merge_yaml(self.policies.entry(key).or_default(), value);
+        }
         self.contours.extend(other.contours);
-        if !other.gates.is_empty() { self.gates = other.gates; }
-        if !other.completed.tools.is_empty() { self.completed.tools = other.completed.tools; }
-        if !other.completed.steps.is_empty() { self.completed.steps = other.completed.steps; }
+        if !other.gates.is_empty() {
+            self.gates = other.gates;
+        }
+        if !other.completed.tools.is_empty() {
+            self.completed.tools = other.completed.tools;
+        }
+        if !other.completed.steps.is_empty() {
+            self.completed.steps = other.completed.steps;
+        }
     }
 }
 
 fn merge_yaml(base: &mut serde_yaml::Value, override_value: serde_yaml::Value) {
-    if let (serde_yaml::Value::Mapping(base), serde_yaml::Value::Mapping(overrides)) = (&mut *base, &override_value) {
+    if let (serde_yaml::Value::Mapping(base), serde_yaml::Value::Mapping(overrides)) =
+        (&mut *base, &override_value)
+    {
         for (key, value) in overrides {
-            merge_yaml(base.entry(key.clone()).or_insert(serde_yaml::Value::Null), value.clone());
+            merge_yaml(
+                base.entry(key.clone()).or_insert(serde_yaml::Value::Null),
+                value.clone(),
+            );
         }
-    } else { *base = override_value; }
+    } else {
+        *base = override_value;
+    }
 }
 
 /// Parse an ACDD profile YAML document. Validation is applied after overrides merge.
@@ -493,27 +619,43 @@ pub fn parse_profile(yaml_str: &str) -> Result<GateProfile> {
 static COMPILED_PROFILE: OnceLock<Arc<GateProfile>> = OnceLock::new();
 /// Compile and return the embedded default workflow profile.
 pub fn compiled() -> Arc<GateProfile> {
-    COMPILED_PROFILE.get_or_init(|| {
-        let profile = parse_profile(DEFAULT_PROFILE_YAML).expect("embedded acdd.default.yaml must be valid");
-        profile.validate().expect("embedded acdd.default.yaml must compile");
-        Arc::new(profile)
-    }).clone()
+    COMPILED_PROFILE
+        .get_or_init(|| {
+            let profile = parse_profile(DEFAULT_PROFILE_YAML)
+                .expect("embedded acdd.default.yaml must be valid");
+            profile
+                .validate()
+                .expect("embedded acdd.default.yaml must compile");
+            Arc::new(profile)
+        })
+        .clone()
 }
 
 /// Split a pinned profile reference into a relative path and optional SHA prefix.
-pub fn parse_profile_reference(reference: &str, require_pin: bool) -> Result<(PathBuf, Option<String>)> {
+pub fn parse_profile_reference(
+    reference: &str,
+    require_pin: bool,
+) -> Result<(PathBuf, Option<String>)> {
     let (path, pin) = match reference.rsplit_once(':') {
-        Some((path, pin)) if !path.is_empty() && !pin.is_empty() => (path, Some(pin.to_ascii_lowercase())),
+        Some((path, pin)) if !path.is_empty() && !pin.is_empty() => {
+            (path, Some(pin.to_ascii_lowercase()))
+        }
         _ => (reference, None),
     };
-    if require_pin && pin.is_none() { bail!("ACDD_PROFILE_PIN_REQUIRED: use '<path>:<sha256_prefix>'"); }
+    if require_pin && pin.is_none() {
+        bail!("ACDD_PROFILE_PIN_REQUIRED: use '<path>:<sha256_prefix>'");
+    }
     if let Some(pin) = &pin {
         if pin.len() < 7 || !pin.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             bail!("ACDD_PROFILE_PIN_INVALID: SHA-256 prefix must contain at least 7 hexadecimal characters");
         }
     }
     let path = Path::new(path);
-    if path.is_absolute() || path.components().any(|component| !matches!(component, Component::Normal(_))) {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
         bail!("ACDD_PROFILE_PATH_INVALID: profile path must be relative and confined to the workspace");
     }
     Ok((path.to_path_buf(), pin))
@@ -522,13 +664,17 @@ pub fn parse_profile_reference(reference: &str, require_pin: bool) -> Result<(Pa
 fn load_profile_path(root: &Path, reference: &str, require_pin: bool) -> Result<GateProfile> {
     let (relative, pin) = parse_profile_reference(reference, require_pin)?;
     let path = crate::core::tasks::confined_path(root, &relative.to_string_lossy())?;
-    let contents = std::fs::read(&path).with_context(|| format!("ACDD_PROFILE_NOT_FOUND: {}", path.display()))?;
+    let contents = std::fs::read(&path)
+        .with_context(|| format!("ACDD_PROFILE_NOT_FOUND: {}", path.display()))?;
     if let Some(prefix) = pin {
         use sha2::{Digest, Sha256};
         let digest = format!("{:x}", Sha256::digest(&contents));
-        if !digest.starts_with(&prefix) { bail!("TASK_PROFILE_TAMPERED: profile SHA-256 does not match pinned prefix '{prefix}'"); }
+        if !digest.starts_with(&prefix) {
+            bail!("TASK_PROFILE_TAMPERED: profile SHA-256 does not match pinned prefix '{prefix}'");
+        }
     }
-    let text = std::str::from_utf8(&contents).context("ACDD_PROFILE_SCHEMA_INVALID: profile must be UTF-8 YAML")?;
+    let text = std::str::from_utf8(&contents)
+        .context("ACDD_PROFILE_SCHEMA_INVALID: profile must be UTF-8 YAML")?;
     parse_profile(text).with_context(|| format!("invalid profile in {}", path.display()))
 }
 
@@ -551,7 +697,11 @@ pub fn load_pinned_over(
 }
 
 /// Load a task profile override, then milestone override, then workspace profile.
-pub fn load_for_task(root: &Path, task_profile: Option<&str>, milestone_profile: Option<&str>) -> Result<Arc<GateProfile>> {
+pub fn load_for_task(
+    root: &Path,
+    task_profile: Option<&str>,
+    milestone_profile: Option<&str>,
+) -> Result<Arc<GateProfile>> {
     match task_profile.or(milestone_profile) {
         Some(reference) => load_pinned(root, reference),
         None => load_for_workspace(root),
@@ -563,20 +713,27 @@ pub fn load_for_workspace(root: &Path) -> Result<Arc<GateProfile>> {
     let mut base = (*compiled()).clone();
     let forge_config = root.join("forge-mcp.yaml");
     if forge_config.is_file() {
-        let text = std::fs::read_to_string(&forge_config).with_context(|| format!("failed to read {}", forge_config.display()))?;
-        let value: serde_yaml::Value = serde_yaml::from_str(&text).with_context(|| format!("invalid YAML in {}", forge_config.display()))?;
+        let text = std::fs::read_to_string(&forge_config)
+            .with_context(|| format!("failed to read {}", forge_config.display()))?;
+        let value: serde_yaml::Value = serde_yaml::from_str(&text)
+            .with_context(|| format!("invalid YAML in {}", forge_config.display()))?;
         if let Some(reference) = value.get("acdd_profile") {
-            let reference = reference.as_str().context("acdd_profile in forge-mcp.yaml must be a relative file path string")?;
+            let reference = reference
+                .as_str()
+                .context("acdd_profile in forge-mcp.yaml must be a relative file path string")?;
             base.merge_override(load_profile_path(root, reference, false)?);
             base.validate()?;
             return Ok(Arc::new(base));
         }
     }
-    let repository_profile =
-        crate::core::tasks::confined_path(root, ".forge/acdd/profile.yaml")?;
+    let repository_profile = crate::core::tasks::confined_path(root, ".forge/acdd/profile.yaml")?;
     if repository_profile.is_file() {
-        let text = std::fs::read_to_string(&repository_profile).with_context(|| format!("failed to read {}", repository_profile.display()))?;
-        base.merge_override(parse_profile(&text).with_context(|| format!("invalid profile in {}", repository_profile.display()))?);
+        let text = std::fs::read_to_string(&repository_profile)
+            .with_context(|| format!("failed to read {}", repository_profile.display()))?;
+        base.merge_override(
+            parse_profile(&text)
+                .with_context(|| format!("invalid profile in {}", repository_profile.display()))?,
+        );
     }
     base.validate()?;
     Ok(Arc::new(base))

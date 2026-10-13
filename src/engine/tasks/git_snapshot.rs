@@ -566,7 +566,7 @@ pub(super) fn commit_candidate_snapshot(
             }
         }
         bail!(
-            "TASK_DELIVERY_HOOK_REJECTED: {}",
+            "TASK_DELIVERY_HOOK_REJECTED: {}\n\nRecovery: The worktree must match the accepted candidate before rejecting delivery. Restore any modified files to the candidate snapshot (e.g. via git checkout/show from candidate SHA), then submit delivery rejection ('task submit --stage deliver --action reject') to return the task to build stage. Do not edit or format files during deliver stage.",
             String::from_utf8_lossy(&committed.stderr)
         );
     }

@@ -681,7 +681,7 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     let id = milestone.task_id(&milestone.tasks[0]);
     complete_task_through_engine(&fallback, &fallback_store, &id);
     let claim_time = fallback_store
-        .earliest_claim("forge-mcp/forge-mcp/m-fallback:")
+        .earliest_claim("forge-mcp/m-fallback:")
         .unwrap()
         .unwrap();
     drop(fallback_store);
@@ -996,12 +996,17 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
             .unwrap();
             let error = tasks::submit(&root.0, rejected).unwrap_err();
             assert!(
-                error.to_string().contains("TASK_CANDIDATE_BASELINE_MISMATCH"),
+                error
+                    .to_string()
+                    .contains("TASK_CANDIDATE_BASELINE_MISMATCH"),
                 "{error:#}"
             );
             assert_eq!(git_head(&root.0), moved_head);
             assert_eq!(run_git(&["diff", "--cached", "--binary"]), staged_before);
-            assert_eq!(std::fs::read(root.0.join(milestone_ref)).unwrap(), receipt_before);
+            assert_eq!(
+                std::fs::read(root.0.join(milestone_ref)).unwrap(),
+                receipt_before
+            );
             let task_after = store.inspect(&first).unwrap();
             assert_eq!(task_after.status, task_before.status);
             assert_eq!(task_after.stage, task_before.stage);
@@ -1023,7 +1028,11 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 .current_dir(&root.0)
                 .output()
                 .unwrap();
-            assert!(reset.status.success(), "{}", String::from_utf8_lossy(&reset.stderr));
+            assert!(
+                reset.status.success(),
+                "{}",
+                String::from_utf8_lossy(&reset.stderr)
+            );
             assert_eq!(git_head(&root.0), candidate_baseline);
         }
         let request: tasks::Submit = serde_json::from_value(json!({
@@ -1078,10 +1087,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     let document_receipt = persisted.receipt.as_ref().unwrap();
     assert!(document_receipt.commit.is_none());
     let mut database_receipt = receipt.clone();
-    database_receipt
-        .as_object_mut()
-        .unwrap()
-        .remove("commit");
+    database_receipt.as_object_mut().unwrap().remove("commit");
     assert_eq!(
         serde_json::to_value(document_receipt).unwrap(),
         database_receipt
@@ -1252,7 +1258,11 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
         .current_dir(&custom.0)
         .output()
         .unwrap();
-    assert!(staged.status.success(), "{}", String::from_utf8_lossy(&staged.stderr));
+    assert!(
+        staged.status.success(),
+        "{}",
+        String::from_utf8_lossy(&staged.stderr)
+    );
     let committed = std::process::Command::new("git")
         .args([
             "-c",
@@ -1278,7 +1288,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
         serde_json::from_value(json!({"action":"sync","milestone_ref":custom_ref})).unwrap(),
     )
     .unwrap();
-    let custom_id = "forge-mcp/forge-mcp/m-custom-review:custom";
+    let custom_id = "forge-mcp/m-custom-review:custom";
     let read_custom_task = || {
         let store = tasks::store(&custom.0).unwrap();
         let descriptor: String = store
@@ -1289,8 +1299,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 |row| row.get(0),
             )
             .unwrap();
-        serde_json::from_str::<contextunity_forge_mcp::db::tasks_store::Task>(&descriptor)
-            .unwrap()
+        serde_json::from_str::<contextunity_forge_mcp::db::tasks_store::Task>(&descriptor).unwrap()
     };
     let custom_baseline = git_head(&custom.0);
     let mut build_candidate: Option<String> = None;
@@ -1331,7 +1340,10 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 .as_ref()
                 .expect("the configured nearest snapshot gate must precede reviews");
             let first_candidate = build_candidate.as_ref().unwrap();
-            assert_ne!(first_candidate, expected, "the final snapshot must replace the prior candidate");
+            assert_ne!(
+                first_candidate, expected,
+                "the final snapshot must replace the prior candidate"
+            );
             let mut wrong_candidate = proof.clone();
             wrong_candidate.commit = Some(first_candidate.clone());
             let rejected: tasks::Submit = serde_json::from_value(json!({
@@ -1342,7 +1354,10 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
             }))
             .unwrap();
             let error = tasks::submit(&custom.0, rejected).unwrap_err();
-            assert!(error.to_string().contains("TASK_CANDIDATE_MISMATCH"), "{error:#}");
+            assert!(
+                error.to_string().contains("TASK_CANDIDATE_MISMATCH"),
+                "{error:#}"
+            );
             let unchanged = tasks::store(&custom.0).unwrap().inspect(custom_id).unwrap();
             assert_eq!(unchanged.status, "in_progress");
             assert_eq!(unchanged.stage, "review");
@@ -1385,11 +1400,26 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     let delivered: contextunity_forge_mcp::db::tasks_store::Task =
         serde_json::from_str(&delivered_descriptor).unwrap();
     let receipt = serde_json::to_value(delivered.receipt.unwrap()).unwrap();
-    assert_eq!(receipt["evidence"]["command_proof"]["command"], "cargo test --test acdd");
-    assert_eq!(receipt["review"]["review_sources"]["review"]["review_proof"]["decision"], "pass");
-    assert_eq!(receipt["review"]["review_sources"]["security_review"]["review_proof"]["decision"], "pass");
-    assert_eq!(receipt["rollup"]["review_summary"]["contours"]["review.paths"], "accepted");
-    assert_eq!(receipt["rollup"]["review_summary"]["contours"]["security_review.paths"], "accepted");
+    assert_eq!(
+        receipt["evidence"]["command_proof"]["command"],
+        "cargo test --test acdd"
+    );
+    assert_eq!(
+        receipt["review"]["review_sources"]["review"]["review_proof"]["decision"],
+        "pass"
+    );
+    assert_eq!(
+        receipt["review"]["review_sources"]["security_review"]["review_proof"]["decision"],
+        "pass"
+    );
+    assert_eq!(
+        receipt["rollup"]["review_summary"]["contours"]["review.paths"],
+        "accepted"
+    );
+    assert_eq!(
+        receipt["rollup"]["review_summary"]["contours"]["security_review.paths"],
+        "accepted"
+    );
     let stored_reviews: Vec<(String, String)> = {
         let mut statement = custom_store
             .connection
@@ -1407,7 +1437,10 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
         assert_eq!(evidence["commit"], candidate);
     }
     let reopened = tasks::store(&custom.0).unwrap().inspect(custom_id).unwrap();
-    assert_eq!(serde_json::to_value(reopened.receipt.unwrap()).unwrap(), receipt);
+    assert_eq!(
+        serde_json::to_value(reopened.receipt.unwrap()).unwrap(),
+        receipt
+    );
 
     let stale = ScopedWorkspace::new("forge_stale_review_source");
     stale.write("src/lib.rs", "pub fn candidate() { let _version = 1; }\n");
@@ -1465,7 +1498,11 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
         .current_dir(&stale.0)
         .output()
         .unwrap();
-    assert!(staged.status.success(), "{}", String::from_utf8_lossy(&staged.stderr));
+    assert!(
+        staged.status.success(),
+        "{}",
+        String::from_utf8_lossy(&staged.stderr)
+    );
     let committed = std::process::Command::new("git")
         .args([
             "-c",
@@ -1491,7 +1528,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
         serde_json::from_value(json!({"action":"sync","milestone_ref":stale_ref})).unwrap(),
     )
     .unwrap();
-    let stale_id = "forge-mcp/forge-mcp/m-stale-review:stale";
+    let stale_id = "forge-mcp/m-stale-review:stale";
     let read_stale_task = || {
         let store = tasks::store(&stale.0).unwrap();
         let descriptor: String = store
@@ -1502,8 +1539,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 |row| row.get(0),
             )
             .unwrap();
-        serde_json::from_str::<contextunity_forge_mcp::db::tasks_store::Task>(&descriptor)
-            .unwrap()
+        serde_json::from_str::<contextunity_forge_mcp::db::tasks_store::Task>(&descriptor).unwrap()
     };
     let stale_persisted_state = || {
         let store = tasks::store(&stale.0).unwrap();
@@ -1535,7 +1571,13 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 .unwrap();
             statement
                 .query_map([stale_id], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
                 })
                 .unwrap()
                 .collect::<rusqlite::Result<_>>()
@@ -1669,7 +1711,10 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                     .unwrap();
                 assert!(index_after.status.success());
                 assert_eq!(index_after.stdout, index_before.stdout);
-                assert_eq!(std::fs::read(stale.0.join(stale_ref)).unwrap(), document_before);
+                assert_eq!(
+                    std::fs::read(stale.0.join(stale_ref)).unwrap(),
+                    document_before
+                );
                 assert_eq!(stale_persisted_state(), state_before);
                 continue;
             }
@@ -2138,7 +2183,7 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
     let tasks_array = synced["tasks"].as_array().unwrap();
     assert_eq!(tasks_array.len(), 1);
     let task_id = tasks_array[0]["task_id"].as_str().unwrap();
-    assert!(task_id.contains("/extensions.commerce/"));
+    assert!(task_id.starts_with("extensions.commerce/"));
 
     // Verify milestones::list now shows task as synced (ready, not unsynced)
     let listed_after_sync =
@@ -2409,7 +2454,7 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
     };
 
     let crlf_path = "docs/milestones/015-crlf-activation.md";
-    let crlf_id = "forge-mcp/forge-mcp/m-crlf-activation:activate";
+    let crlf_id = "forge-mcp/m-crlf-activation:activate";
     let crlf_manifest = manifest(
         "m-crlf-activation",
         Some("planned"),
@@ -2520,7 +2565,7 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
     }
 
     let cancelled_path = "docs/milestones/040-cancelled.md";
-    let cancelled_id = "forge-mcp/forge-mcp/m-cancelled:retired";
+    let cancelled_id = "forge-mcp/m-cancelled:retired";
     root.write(
         cancelled_path,
         &manifest(
@@ -2541,7 +2586,7 @@ fn milestone_lifecycle_sync_validates_status_and_preserves_cancellation_and_subt
         1
     );
 
-    let remaining_id = "forge-mcp/forge-mcp/m-default:remaining";
+    let remaining_id = "forge-mcp/m-default:remaining";
     let store = TasksStore::open(&database_path).unwrap();
     let progress = tasks::manage(
         &root.0,
@@ -2742,20 +2787,29 @@ scope:
     // Initial commit
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "add", ".",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            ".",
         ])
         .current_dir(&root.0)
         .output()
         .unwrap();
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-m", "Initial milestone contract",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Initial milestone contract",
         ])
         .current_dir(&root.0)
         .output()
@@ -2787,10 +2841,15 @@ scope:
     root.write("src/lib.rs", "pub fn work() -> bool { false }\n// step 1\n");
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-am", "Intermediate commit before delivery",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-am",
+            "Intermediate commit before delivery",
         ])
         .current_dir(&root.0)
         .output()
@@ -2798,22 +2857,38 @@ scope:
     let c1_sha = git_head(&root.0);
 
     // Deliver task with final implementation in scope
-    root.write("src/lib.rs", "pub fn work() -> bool { true }\n// completed\n");
+    root.write(
+        "src/lib.rs",
+        "pub fn work() -> bool { true }\n// completed\n",
+    );
     complete_task_through_engine(&root, &store, &task.task_id);
     drop(store);
 
     // 3. Verify milestone markdown document was updated on disk with the receipt
-    let milestone_doc = std::fs::read_to_string(root.0.join("docs/milestones/010-repack.md")).unwrap();
-    assert!(milestone_doc.contains("receipt:"), "milestone document must have receipt written");
-    assert!(milestone_doc.contains("status: completed"), "milestone task must be completed");
+    let milestone_doc =
+        std::fs::read_to_string(root.0.join("docs/milestones/010-repack.md")).unwrap();
+    assert!(
+        milestone_doc.contains("receipt:"),
+        "milestone document must have receipt written"
+    );
+    assert!(
+        milestone_doc.contains("status: completed"),
+        "milestone task must be completed"
+    );
 
     // 4. Repack task commit via amend (reword commit message while preserving delivered scope tree)
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "--amend", "-m", "Repacked clean task commit",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--amend",
+            "-m",
+            "Repacked clean task commit",
         ])
         .current_dir(&root.0)
         .output()
@@ -2854,7 +2929,10 @@ scope:
         }))
         .unwrap(),
     );
-    assert!(tamper_sync.is_err(), "tampered receipt must be rejected by task sync");
+    assert!(
+        tamper_sync.is_err(),
+        "tampered receipt must be rejected by task sync"
+    );
 
     // 5b. Tamper passed_at: sync must reject
     let mut tampered_time = updated_receipt.clone();
@@ -2875,26 +2953,38 @@ scope:
         }))
         .unwrap(),
     );
-    assert!(tamper_time_sync.is_err(), "tampered passed_at must be rejected by task sync");
+    assert!(
+        tamper_time_sync.is_err(),
+        "tampered passed_at must be rejected by task sync"
+    );
 
     // 5c. Foreign commit touching files outside task scope: sync must reject
     root.write("tests/unrelated.rs", "fn foreign() {}\n");
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "add", "tests/unrelated.rs",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            "tests/unrelated.rs",
         ])
         .current_dir(&root.0)
         .output()
         .unwrap();
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-m", "Foreign commit outside scope",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Foreign commit outside scope",
         ])
         .current_dir(&root.0)
         .output()
@@ -2918,26 +3008,38 @@ scope:
         }))
         .unwrap(),
     );
-    assert!(foreign_sync.is_err(), "commit outside task scope must be rejected by task sync");
+    assert!(
+        foreign_sync.is_err(),
+        "commit outside task scope must be rejected by task sync"
+    );
 
     // 5d. Commit modifying protected profile without scope: sync must reject
     root.write(".forge/acdd/profile.yaml", "gates: []\n");
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "add", ".forge/acdd/profile.yaml",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            ".forge/acdd/profile.yaml",
         ])
         .current_dir(&root.0)
         .output()
         .unwrap();
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-m", "Modify protected profile without scope",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Modify protected profile without scope",
         ])
         .current_dir(&root.0)
         .output()
@@ -2961,7 +3063,10 @@ scope:
         }))
         .unwrap(),
     );
-    assert!(protected_sync.is_err(), "commit modifying protected profile must be rejected by task sync");
+    assert!(
+        protected_sync.is_err(),
+        "commit modifying protected profile must be rejected by task sync"
+    );
 
     // 5e. Obsolete ancestor commit: sync must reject
     let mut ancestor_receipt = updated_receipt.clone();
@@ -2982,7 +3087,10 @@ scope:
         }))
         .unwrap(),
     );
-    assert!(ancestor_sync.is_err(), "obsolete ancestor commit must be rejected by task sync");
+    assert!(
+        ancestor_sync.is_err(),
+        "obsolete ancestor commit must be rejected by task sync"
+    );
 
     // 5f. Divergent commit from the same baseline with different content in scope: sync must reject
     let divergent_sha = {
@@ -2990,13 +3098,21 @@ scope:
             .args(["checkout", "-q", &c1_sha])
             .current_dir(&root.0)
             .output();
-        root.write("src/lib.rs", "pub fn work() -> bool { false }\n// different code\n");
+        root.write(
+            "src/lib.rs",
+            "pub fn work() -> bool { false }\n// different code\n",
+        );
         let output = std::process::Command::new("git")
             .args([
-                "-c", "user.name=ACDD test",
-                "-c", "user.email=acdd-test@example.invalid",
-                "-c", "commit.gpgsign=false",
-                "commit", "-am", "Divergent commit from same baseline with different scope code",
+                "-c",
+                "user.name=ACDD test",
+                "-c",
+                "user.email=acdd-test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-am",
+                "Divergent commit from same baseline with different scope code",
             ])
             .current_dir(&root.0)
             .output()
@@ -3007,7 +3123,10 @@ scope:
             .args(["checkout", "-q", &protected_sha])
             .current_dir(&root.0)
             .output();
-        root.write("src/lib.rs", "pub fn work() -> bool { true }\n// completed\n");
+        root.write(
+            "src/lib.rs",
+            "pub fn work() -> bool { true }\n// completed\n",
+        );
         d_sha
     };
     let mut divergent_receipt = updated_receipt.clone();
@@ -3028,7 +3147,10 @@ scope:
         }))
         .unwrap(),
     );
-    assert!(divergent_sync.is_err(), "divergent commit with different code in scope must be rejected by task sync");
+    assert!(
+        divergent_sync.is_err(),
+        "divergent commit with different code in scope must be rejected by task sync"
+    );
 
     // 5g. Corrupted evidence in task_gates: sync and migrate verify must fail closed
     {
@@ -3055,9 +3177,15 @@ scope:
         }))
         .unwrap(),
     );
-    assert!(corrupt_sync.is_err(), "sync must fail closed when task_gates evidence is corrupted");
     assert!(
-        corrupt_sync.unwrap_err().to_string().contains("TASK_GATE_EVIDENCE_CORRUPTED"),
+        corrupt_sync.is_err(),
+        "sync must fail closed when task_gates evidence is corrupted"
+    );
+    assert!(
+        corrupt_sync
+            .unwrap_err()
+            .to_string()
+            .contains("TASK_GATE_EVIDENCE_CORRUPTED"),
         "expected TASK_GATE_EVIDENCE_CORRUPTED error"
     );
     let corrupt_verify = contextunity_forge_mcp::cli::migrate::run(
@@ -3066,7 +3194,10 @@ scope:
             milestone_ref: Some("docs/milestones/010-repack.md".into()),
         },
     );
-    assert!(corrupt_verify.is_err(), "migrate verify must fail closed when task_gates evidence is corrupted");
+    assert!(
+        corrupt_verify.is_err(),
+        "migrate verify must fail closed when task_gates evidence is corrupted"
+    );
 
     // Restore valid task_gates evidence
     {
@@ -3112,7 +3243,10 @@ scope:
     )
     .unwrap();
     let inspected = store2.inspect(&task.task_id).unwrap();
-    assert_eq!(inspected.receipt.unwrap().commit.as_deref(), Some(repacked_sha.as_str()));
+    assert_eq!(
+        inspected.receipt.unwrap().commit.as_deref(),
+        Some(repacked_sha.as_str())
+    );
     drop(store2);
 
     // 7. Verify migrate check passes without conflicts
@@ -3128,20 +3262,29 @@ scope:
     // Commit the milestone doc change before handoff
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "add", "docs/milestones/010-repack.md",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            "docs/milestones/010-repack.md",
         ])
         .current_dir(&root.0)
         .output()
         .unwrap();
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-m", "Record repacked SHA in milestone",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Record repacked SHA in milestone",
         ])
         .current_dir(&root.0)
         .output()
@@ -3151,10 +3294,18 @@ scope:
     // Merge divergent_sha into milestone branch so it becomes an ancestor of handoff_commit
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "merge", "-s", "ours", "-m", "Merge divergent branch for ancestry check", &divergent_sha,
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "-s",
+            "ours",
+            "-m",
+            "Merge divergent branch for ancestry check",
+            &divergent_sha,
         ])
         .current_dir(&root.0)
         .output()
@@ -3183,7 +3334,9 @@ scope:
     )
     .unwrap_err();
     assert!(
-        missing_err.to_string().contains("is not available in workspace Git repository"),
+        missing_err
+            .to_string()
+            .contains("is not available in workspace Git repository"),
         "expected missing commit error, got: {missing_err}"
     );
 
@@ -3208,7 +3361,9 @@ scope:
     )
     .unwrap_err();
     assert!(
-        foreign_err.to_string().contains("changes files outside task scope"),
+        foreign_err
+            .to_string()
+            .contains("changes files outside task scope"),
         "expected outside scope error, got: {foreign_err}"
     );
 
@@ -3233,7 +3388,9 @@ scope:
     )
     .unwrap_err();
     assert!(
-        doc_only_err.to_string().contains("does not touch task scope"),
+        doc_only_err
+            .to_string()
+            .contains("does not touch task scope"),
         "expected does not touch task scope error, got: {doc_only_err}"
     );
 
@@ -3270,7 +3427,10 @@ scope:
     )
     .unwrap_err();
     assert!(
-        ancestor_err.to_string().contains("TASK_COMMIT_OBSOLETE") || ancestor_err.to_string().contains("does not advance beyond baseline"),
+        ancestor_err.to_string().contains("TASK_COMMIT_OBSOLETE")
+            || ancestor_err
+                .to_string()
+                .contains("does not advance beyond baseline"),
         "expected obsolete ancestry error in handoff, got: {ancestor_err}"
     );
 
@@ -3295,7 +3455,9 @@ scope:
     )
     .unwrap_err();
     assert!(
-        protected_err.to_string().contains("changes files outside task scope"),
+        protected_err
+            .to_string()
+            .contains("changes files outside task scope"),
         "expected outside scope error for protected profile in handoff, got: {protected_err}"
     );
 
@@ -3320,7 +3482,9 @@ scope:
     )
     .unwrap_err();
     assert!(
-        divergent_err.to_string().contains("TASK_COMMIT_TREE_MISMATCH"),
+        divergent_err
+            .to_string()
+            .contains("TASK_COMMIT_TREE_MISMATCH"),
         "expected TASK_COMMIT_TREE_MISMATCH error in handoff, got: {divergent_err}"
     );
 
@@ -3334,7 +3498,10 @@ scope:
             milestone_ref: Some("docs/milestones/010-repack.md".into()),
         },
     );
-    assert!(verify_valid.is_ok(), "migrate verify must succeed for valid repacked SHA");
+    assert!(
+        verify_valid.is_ok(),
+        "migrate verify must succeed for valid repacked SHA"
+    );
 
     // 8. Run milestone handoff
     let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
@@ -3353,7 +3520,10 @@ scope:
     let archived_doc = std::fs::read_to_string(&archived_path).unwrap();
     let archived_milestone = Milestone::parse(&archived_doc, "forge-mcp").unwrap();
     assert_eq!(
-        archived_milestone.tasks[0].receipt.as_ref().and_then(|r| r.commit.as_deref()),
+        archived_milestone.tasks[0]
+            .receipt
+            .as_ref()
+            .and_then(|r| r.commit.as_deref()),
         Some(repacked_sha.as_str()),
         "archived receipt must preserve the repacked task commit"
     );
@@ -3389,20 +3559,29 @@ scope:
     // Initial commit
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "add", ".",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            ".",
         ])
         .current_dir(&root.0)
         .output()
         .unwrap();
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-m", "Initial milestone contract",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Initial milestone contract",
         ])
         .current_dir(&root.0)
         .output()
@@ -3427,19 +3606,29 @@ scope:
     )
     .unwrap();
     let task = store.list(None, "all", None).unwrap().pop().unwrap();
-    root.write("src/lib.rs", "pub fn work() -> bool { true }\n// direct delivered\n");
+    root.write(
+        "src/lib.rs",
+        "pub fn work() -> bool { true }\n// direct delivered\n",
+    );
     complete_task_through_engine(&root, &store, &task.task_id);
     drop(store);
 
-    let milestone_doc = std::fs::read_to_string(root.0.join("docs/milestones/010-direct.md")).unwrap();
+    let milestone_doc =
+        std::fs::read_to_string(root.0.join("docs/milestones/010-direct.md")).unwrap();
 
     // 3. Repack commit via amend (squash / reword commit message without modifying verified scope tree)
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "--amend", "-m", "Repacked direct task commit",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--amend",
+            "-m",
+            "Repacked direct task commit",
         ])
         .current_dir(&root.0)
         .output()
@@ -3466,20 +3655,29 @@ scope:
     // Commit the milestone doc change
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "add", "docs/milestones/010-direct.md",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            "docs/milestones/010-direct.md",
         ])
         .current_dir(&root.0)
         .output()
         .unwrap();
     std::process::Command::new("git")
         .args([
-            "-c", "user.name=ACDD test",
-            "-c", "user.email=acdd-test@example.invalid",
-            "-c", "commit.gpgsign=false",
-            "commit", "-m", "Record repacked SHA in milestone doc",
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Record repacked SHA in milestone doc",
         ])
         .current_dir(&root.0)
         .output()
@@ -3504,7 +3702,10 @@ scope:
     let archived_doc = std::fs::read_to_string(&archived_path).unwrap();
     let archived_milestone = Milestone::parse(&archived_doc, "forge-mcp").unwrap();
     assert_eq!(
-        archived_milestone.tasks[0].receipt.as_ref().and_then(|r| r.commit.as_deref()),
+        archived_milestone.tasks[0]
+            .receipt
+            .as_ref()
+            .and_then(|r| r.commit.as_deref()),
         Some(repacked_sha.as_str()),
         "archived receipt must preserve the repacked task commit from markdown"
     );

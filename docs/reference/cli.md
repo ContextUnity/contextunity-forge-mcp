@@ -142,7 +142,7 @@ status, `started_at`, task states, and the SQLite completion ratio. The default
 list reads current milestone files; `--archive` includes archived files, and
 `--status completed|cancelled` includes matching archived files. Status values
 are `planned`, `active`, `completed`, `cancelled`, and `all`. `milestone show`
-resolves a full ID or numeric file prefix and returns frontmatter, outcomes, and task metadata. `--full` includes
+resolves a full ID, tagged prefix (e.g. `P-001`, `EC-001`), or numeric file prefix and returns frontmatter, outcomes, and task metadata. `--full` includes
 the complete Markdown document.
 
 `milestone init` creates a numbered file in a configured milestone directory.

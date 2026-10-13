@@ -267,40 +267,61 @@ pub(super) fn context_bundle(
     let stage = if details.get("status").and_then(Value::as_str) == Some("completed") {
         "completed"
     } else {
-        details.get("stage").and_then(Value::as_str).context("task stage missing")?
+        details
+            .get("stage")
+            .and_then(Value::as_str)
+            .context("task stage missing")?
     };
     let active_index = if stage == "completed" {
         profile.gates.len()
     } else {
-        profile.index_of(stage).with_context(|| format!(
-            "TASK_STAGE_UNKNOWN: '{stage}' is not in the active profile; choose one of: {}",
-            profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
-        ))?
+        profile.index_of(stage).with_context(|| {
+            format!(
+                "TASK_STAGE_UNKNOWN: '{stage}' is not in the active profile; choose one of: {}",
+                profile
+                    .gates
+                    .iter()
+                    .map(|gate| gate.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?
     };
     let active_gate = profile.gates.get(active_index);
     let proof_kind = active_gate.and_then(|gate| gate.proof.kind());
-    let gate_history = details.get("gates").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    let gate_history = details
+        .get("gates")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     let evidence_for = |gate_id: &str, expected_state: &str| -> Option<Value> {
         gate_history.iter().rev().find_map(|entry| {
             (entry.get("stage").and_then(Value::as_str) == Some(gate_id)
                 && entry.get("state").and_then(Value::as_str) == Some(expected_state))
-                .then(|| entry.get("evidence").and_then(Value::as_str))
-                .flatten()
-                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .then(|| entry.get("evidence").and_then(Value::as_str))
+            .flatten()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
         })
     };
     let snapshot_for = |before_index: usize| -> Option<Value> {
-        profile.gates.iter().take(before_index).rev().find_map(|gate| {
-            if !gate.sha_snapshot { return None; }
-            let evidence = evidence_for(&gate.id, "passed")?;
-            let commit = evidence.get("commit")?.as_str()?;
-            Some(json!({
-                "stage": gate.id,
-                "commit": commit,
-                "candidate_baseline_head": evidence.get("candidate_baseline_head"),
-                "inspect_cmd": crate::core::tasks::snapshot_inspect_cmd(commit),
-            }))
-        })
+        profile
+            .gates
+            .iter()
+            .take(before_index)
+            .rev()
+            .find_map(|gate| {
+                if !gate.sha_snapshot {
+                    return None;
+                }
+                let evidence = evidence_for(&gate.id, "passed")?;
+                let commit = evidence.get("commit")?.as_str()?;
+                Some(json!({
+                    "stage": gate.id,
+                    "commit": commit,
+                    "candidate_baseline_head": evidence.get("candidate_baseline_head"),
+                    "inspect_cmd": crate::core::tasks::snapshot_inspect_cmd(commit),
+                }))
+            })
     };
     let scope: Vec<String> = details["allowed_write_scope"]
         .as_array()
@@ -323,15 +344,23 @@ pub(super) fn context_bundle(
     let covering_tests = find_covering_tests(&workspace.root, root, &scope);
 
     // Select proof context by configured gate taxonomy and references.
-    let contract_seam_test = profile.gates.iter().take(active_index).rev().find_map(|gate| {
-        if gate.proof.kind() != Some(crate::core::tasks::profile::ProofKind::Contract) { return None; }
-        let evidence = evidence_for(&gate.id, "passed")?;
-        evidence.get("proof")
-            .and_then(|proof| proof.get("contract_proof"))
-            .or_else(|| evidence.get("contract_proof"))
-            .and_then(|proof| proof.get("seam_test_ref"))
-            .cloned()
-    });
+    let contract_seam_test = profile
+        .gates
+        .iter()
+        .take(active_index)
+        .rev()
+        .find_map(|gate| {
+            if gate.proof.kind() != Some(crate::core::tasks::profile::ProofKind::Contract) {
+                return None;
+            }
+            let evidence = evidence_for(&gate.id, "passed")?;
+            evidence
+                .get("proof")
+                .and_then(|proof| proof.get("contract_proof"))
+                .or_else(|| evidence.get("contract_proof"))
+                .and_then(|proof| proof.get("seam_test_ref"))
+                .cloned()
+        });
 
     let unresolved_review_findings = active_gate.and_then(|_| {
         let active_id = stage;
@@ -342,17 +371,36 @@ pub(super) fn context_bundle(
             let rejected_stage = rejected.get("stage").and_then(Value::as_str)?;
             let gate = profile.by_stage(rejected_stage)?;
             if gate.reject_to.as_deref() != Some(active_id)
-                || !matches!(gate.proof.kind(), Some(crate::core::tasks::profile::ProofKind::Review | crate::core::tasks::profile::ProofKind::Delivery))
+                || !matches!(
+                    gate.proof.kind(),
+                    Some(
+                        crate::core::tasks::profile::ProofKind::Review
+                            | crate::core::tasks::profile::ProofKind::Delivery
+                    )
+                )
             {
                 return None;
             }
             let revision = rejected.get("claim_revision").and_then(Value::as_u64)?;
-            details.get("findings")?.as_array()?.iter().rev().find(|finding| {
-                finding.get("claim_revision").and_then(Value::as_u64) == Some(revision)
-            }).and_then(|finding| finding.get("findings")).and_then(|value| {
-                value.as_str().and_then(|raw| serde_json::from_str::<Value>(raw).ok().or_else(|| Some(json!(raw))))
-                    .or_else(|| Some(value.clone()))
-            })
+            details
+                .get("findings")?
+                .as_array()?
+                .iter()
+                .rev()
+                .find(|finding| {
+                    finding.get("claim_revision").and_then(Value::as_u64) == Some(revision)
+                })
+                .and_then(|finding| finding.get("findings"))
+                .and_then(|value| {
+                    value
+                        .as_str()
+                        .and_then(|raw| {
+                            serde_json::from_str::<Value>(raw)
+                                .ok()
+                                .or_else(|| Some(json!(raw)))
+                        })
+                        .or_else(|| Some(value.clone()))
+                })
         })
     });
 

@@ -392,13 +392,16 @@ impl Workspace {
         let pin = value
             .get("profile_pin")
             .and_then(Value::as_str)
-            .or_else(|| value.get("spec").and_then(|spec| spec.get("acdd_profile")).and_then(Value::as_str));
+            .or_else(|| {
+                value
+                    .get("spec")
+                    .and_then(|spec| spec.get("acdd_profile"))
+                    .and_then(Value::as_str)
+            });
         match pin {
-            Some(reference) => crate::core::tasks::profile::load_pinned_over(
-                &self.root,
-                reference,
-                &self.gates,
-            ),
+            Some(reference) => {
+                crate::core::tasks::profile::load_pinned_over(&self.root, reference, &self.gates)
+            }
             None => Ok(self.gates.clone()),
         }
     }
@@ -410,14 +413,17 @@ impl Workspace {
         } else {
             value["stage"].as_str().context("task stage missing")?
         };
-        let gate = if stage == "completed" {
-            None
-        } else {
-            Some(profile.by_stage(stage).with_context(|| format!(
+        let gate =
+            if stage == "completed" {
+                None
+            } else {
+                Some(profile.by_stage(stage).with_context(|| {
+                    format!(
                 "TASK_STAGE_UNKNOWN: '{stage}' is not in the active profile; choose one of: {}",
                 profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
-            ))?)
-        };
+            )
+                })?)
+            };
         let role_info = profile.role_for_stage(stage);
         let configured_role = role_info.map(|(name, _)| name);
         let role_def = role_info.map(|(_, def)| def);
@@ -434,7 +440,10 @@ impl Workspace {
         let gap = guidance_gap(&self.root, &self.guidance);
         let mut steps = Vec::new();
         if gap.is_none() {
-            let guidance_path = self.guidance.strip_prefix(&self.root).unwrap_or(&self.guidance);
+            let guidance_path = self
+                .guidance
+                .strip_prefix(&self.root)
+                .unwrap_or(&self.guidance);
             steps.push(format!(
                 "Read the task instructions and Git permissions at {}.",
                 guidance_path.display()
@@ -445,8 +454,13 @@ impl Workspace {
         } else {
             steps.extend(profile.completed.steps.iter().cloned());
         }
-        if matches!(proof_kind, Some(crate::core::tasks::profile::ProofKind::Review)) {
-            steps.push("Submit review proof for every contour in the configured contour set.".into());
+        if matches!(
+            proof_kind,
+            Some(crate::core::tasks::profile::ProofKind::Review)
+        ) {
+            steps.push(
+                "Submit review proof for every contour in the configured contour set.".into(),
+            );
         }
         let builder = value["gates"].as_array().and_then(|gates| {
             let prior = gate.and_then(|definition| definition.independent_from.as_deref())?;
@@ -459,7 +473,8 @@ impl Workspace {
                 parsed["worker_id"].as_str().map(str::to_owned)
             })
         });
-        let needs_independent_reviewer = gate.is_some_and(|definition| definition.independent_from.is_some());
+        let needs_independent_reviewer =
+            gate.is_some_and(|definition| definition.independent_from.is_some());
         let rejection = rejected_workflow_context(&value, &profile, stage, role_def);
         if let Some(rejection) = rejection.as_ref() {
             let rejected_from = rejection["rejected_from"].as_str().unwrap_or("prior");
@@ -497,15 +512,31 @@ impl Workspace {
         } else {
             Value::Null
         };
-        let review_policy = if needs_independent_reviewer { Some(profile.review_policy.clone()) } else { None };
+        let review_policy = if needs_independent_reviewer {
+            Some(profile.review_policy.clone())
+        } else {
+            None
+        };
         let review_contours = gate
-            .filter(|definition| matches!(definition.proof.kind(), Some(crate::core::tasks::profile::ProofKind::Review)))
+            .filter(|definition| {
+                matches!(
+                    definition.proof.kind(),
+                    Some(crate::core::tasks::profile::ProofKind::Review)
+                )
+            })
             .and_then(|definition| profile.contour_set(definition.contours.as_deref()))
-            .map(|contours| contours.iter().map(|(name, contour)| json!({
-                "name": name,
-                "description": contour.description,
-                "criteria": contour.criteria,
-            })).collect::<Vec<_>>())
+            .map(|contours| {
+                contours
+                    .iter()
+                    .map(|(name, contour)| {
+                        json!({
+                            "name": name,
+                            "description": contour.description,
+                            "criteria": contour.criteria,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         let mut workflow_guidance = json!({
             "active_stage": stage,
@@ -525,7 +556,9 @@ impl Workspace {
             workflow_guidance["mode"] = json!(def.effective_mode());
             let mut guide_parts = Vec::new();
             if let Some(guidance) = &def.guidance {
-                let adapted_guidance = if def.effective_mode() == crate::core::tasks::profile::RoleExecutionMode::Inline {
+                let adapted_guidance = if def.effective_mode()
+                    == crate::core::tasks::profile::RoleExecutionMode::Inline
+                {
                     if let Some(rest) = guidance.strip_prefix("Spawn a dedicated ") {
                         if let Some((_, action)) = rest.split_once(") to ") {
                             format!("Execute inline in the current agent to {action}")
@@ -579,10 +612,10 @@ impl Workspace {
                 if kind.is_dir() {
                     directories.push(entry.path());
                 } else if kind.is_file()
-                    && entry.file_name().to_str().is_some_and(|name| {
-                        name.as_bytes().first().is_some_and(u8::is_ascii_digit)
-                            && name.ends_with(".md")
-                    })
+                    && entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(crate::engine::milestones::is_milestone_manifest_name)
                 {
                     manifests.push(
                         entry
@@ -656,7 +689,18 @@ impl Workspace {
             let id = crate::engine::milestones::file_id(&path)
                 .with_context(|| format!("failed to read milestone id from '{manifest}'"))?;
 
-            if id.as_deref() == Some(reference) || stem == reference || file_name == reference {
+            let parts: Vec<&str> = stem.split('-').collect();
+            let tag_prefix = if parts.len() >= 2 {
+                Some(format!("{}-{}", parts[0], parts[1]))
+            } else {
+                None
+            };
+
+            if id.as_deref() == Some(reference)
+                || stem == reference
+                || file_name == reference
+                || tag_prefix.as_deref() == Some(reference)
+            {
                 exact_matches.push(manifest.clone());
                 continue;
             }
@@ -786,6 +830,7 @@ impl Registry {
             root: root.clone(),
         }];
         let mut names = BTreeSet::from([workspaces[0].name.clone()]);
+        let mut projects = BTreeSet::from([workspaces[0].project.clone()]);
         let mut namespaces = BTreeSet::from([(
             workspaces[0].repository.clone(),
             workspaces[0].project.clone(),
@@ -796,6 +841,7 @@ impl Registry {
             }
             if names.insert(sub_name.clone())
                 && namespaces.insert((repository.clone(), sub_name.clone()))
+                && projects.insert(sub_name.clone())
             {
                 workspaces.push(Workspace {
                     name: sub_name.clone(),
@@ -851,6 +897,9 @@ impl Registry {
             if !namespaces.insert((repository.clone(), project.clone())) {
                 bail!("TASK_WORKSPACE_INVALID: duplicate task namespace");
             }
+            if !projects.insert(project.clone()) {
+                bail!("TASK_WORKSPACE_INVALID: duplicate task project");
+            }
             workspaces.push(Workspace {
                 name: linked.name,
                 repository,
@@ -884,6 +933,9 @@ impl Registry {
         }
     }
     pub fn owner(&self, id: &str) -> Result<&Workspace> {
+        if id.contains(':') {
+            return self.owner_of_task(id);
+        }
         let mut components = id.split('/');
         let repository = components.next();
         let project = components.next();
@@ -894,6 +946,30 @@ impl Registry {
                     && Some(workspace.project.as_str()) == project
             })
             .context("TASK_PROJECT_MISMATCH")
+    }
+    /// Resolve a task id to its workspace.
+    /// Canonical ids are `{project}/{milestone}:{task}`.
+    /// Legacy ids are `{repository}/{project}/{milestone}:{task}`.
+    fn owner_of_task(&self, id: &str) -> Result<&Workspace> {
+        let (head, _) = id.split_once(':').context("invalid task identity")?;
+        let segments: Vec<&str> = head
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        let (repository, project) = match segments.as_slice() {
+            [project, _] => (None, *project),
+            [repository, project, _] => (Some(*repository), *project),
+            _ => bail!("invalid task identity"),
+        };
+        let mut matches = self.workspaces.iter().filter(|workspace| {
+            workspace.project == project
+                && repository.is_none_or(|name| workspace.repository == name)
+        });
+        let owner = matches.next().context("TASK_PROJECT_MISMATCH")?;
+        if matches.next().is_some() {
+            bail!("TASK_PROJECT_MISMATCH: project '{project}' is not unique");
+        }
+        Ok(owner)
     }
     pub fn check_worktree(&self, owner: &Workspace, worktree: &Path) -> Result<()> {
         if worktree.starts_with(&owner.root) {

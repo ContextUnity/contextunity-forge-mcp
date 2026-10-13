@@ -311,7 +311,7 @@ impl TasksStore {
             || message
                 .task_id
                 .as_deref()
-                .is_some_and(|task_id| !task_id.starts_with(&self.namespace))
+                .is_some_and(|task_id| !self.task_id_in_project(task_id))
         {
             return Ok(None);
         }

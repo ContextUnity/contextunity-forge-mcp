@@ -54,16 +54,13 @@ fn task_landed_commit(
             {
                 continue;
             }
-            let parent_line = crate::core::git::git_command(
-                root,
-                &["rev-list", "--parents", "-n", "1", commit],
-            )?;
+            let parent_line =
+                crate::core::git::git_command(root, &["rev-list", "--parents", "-n", "1", commit])?;
             let parent_fields = String::from_utf8(parent_line.stdout)?
                 .split_whitespace()
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
-            if parent_fields.len() >= 2 && git_changed(root, &parent_fields[1], commit, scope)?
-            {
+            if parent_fields.len() >= 2 && git_changed(root, &parent_fields[1], commit, scope)? {
                 return Ok(commit.clone());
             }
         }
@@ -96,7 +93,7 @@ pub fn handoff(
     store.set_profile(crate::core::tasks::profile::load_for_workspace(root)?);
     store.set_workspace_root(root);
     let stored = store.list(None, "all", None)?;
-    let prefix = format!("{}/{}/{}:", item.repository, item.project, item.id);
+    let prefix = format!("{}/{}:", item.project, item.id);
     let relevant: Vec<_> = stored
         .iter()
         .filter(|task| task.task_id.starts_with(&prefix))
@@ -175,7 +172,9 @@ pub fn handoff(
             .map(|(_, baseline)| baseline);
         let effective_delivery = match markdown_commit {
             Some(md_sha) => {
-                if !matches!(md_sha.len(), 40 | 64) || !md_sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                if !matches!(md_sha.len(), 40 | 64)
+                    || !md_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
                     bail!("TASK_RECEIPT_INVALID: milestone task receipt contains invalid Git commit '{md_sha}'");
                 }
                 if !crate::core::git::git_commit_exists(root, md_sha)? {
@@ -185,7 +184,11 @@ pub fn handoff(
                     if !git_ancestor(root, md_sha, &sha)? {
                         bail!("TASK_DELIVERY_COMMIT_INVALID: task receipt commit '{md_sha}' is not an ancestor of milestone handoff commit '{sha}'");
                     }
-                    let milestone_rel = item.path.strip_prefix(root).unwrap_or(&item.path).to_string_lossy();
+                    let milestone_rel = item
+                        .path
+                        .strip_prefix(root)
+                        .unwrap_or(&item.path)
+                        .to_string_lossy();
                     crate::core::tasks::validate_commit_for_task(
                         root,
                         md_sha,
@@ -198,12 +201,10 @@ pub fn handoff(
                 }
                 md_sha
             }
-            None => {
-                original
-                    .commit
-                    .as_deref()
-                    .context("TASK_RECEIPT_INVALID: completed task receipt has no delivery commit")?
-            }
+            None => original
+                .commit
+                .as_deref()
+                .context("TASK_RECEIPT_INVALID: completed task receipt has no delivery commit")?,
         };
         let landed_sha = task_landed_commit(
             root,

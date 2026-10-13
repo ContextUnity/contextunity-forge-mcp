@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use pulldown_cmark::{Event, Parser, Tag};
 
@@ -15,17 +15,16 @@ fn test_global_skill_matches_local_skill_when_present() {
         repo_skill.display()
     );
 
-    let global_skill =
-        if let Some(test_root) = std::env::var_os("CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR") {
-            PathBuf::from(test_root)
-        } else {
-            let home = std::env::var_os("HOME").unwrap_or_else(|| {
-                panic!(
-                    "HOME is not set; cannot locate the required global ContextUnity Forge skill."
-                )
-            });
-            PathBuf::from(home).join(".agents/skills/contextunity-forge")
-        };
+    let global_skill = if let Some(test_root) =
+        std::env::var_os("CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR")
+    {
+        PathBuf::from(test_root)
+    } else {
+        let home = std::env::var_os("HOME").unwrap_or_else(|| {
+            panic!("HOME is not set; cannot locate the required global ContextUnity Forge skill.")
+        });
+        PathBuf::from(home).join(".agents/skills/contextunity-forge")
+    };
     assert!(
         global_skill.is_dir(),
         "Required global ContextUnity Forge skill installation is missing at {}. Install the skill there or set CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR when running an isolated sync test.",
@@ -91,9 +90,9 @@ fn collect_skill_files(
         if file_type.is_dir() {
             collect_skill_files(root, &path, files)?;
         } else if file_type.is_file() {
-            let relative_path = path.strip_prefix(root).map_err(|error| {
-                io::Error::new(io::ErrorKind::InvalidData, error.to_string())
-            })?;
+            let relative_path = path
+                .strip_prefix(root)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
             files.insert(relative_path.to_path_buf(), fs::read(path)?);
         } else {
             return Err(io::Error::new(
@@ -189,10 +188,7 @@ fn validate_installed_skill_links(skill_root: &Path) -> Result<(), String> {
                 continue;
             }
 
-            let file_target = destination
-                .split(['#', '?'])
-                .next()
-                .unwrap_or_default();
+            let file_target = destination.split(['#', '?']).next().unwrap_or_default();
             if file_target.is_empty() {
                 continue;
             }
