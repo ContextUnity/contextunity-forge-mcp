@@ -15,6 +15,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 pub(crate) mod contracts;
+mod framework_relations;
 #[cfg(feature = "lang-html")]
 mod html_scripts;
 #[cfg(feature = "lang-html")]
@@ -261,7 +262,6 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
             }
         }
     }
-    let route_index = routes::RouteIndex::build(&nodes);
     let namespace_indexes =
         indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry);
     let borrowed_all = public_all.is_none().then(|| {
@@ -326,7 +326,7 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
     let value_flow =
         value_flow::ValueFlowIndex::build_parallel(all, nodes.clone(), &by_id, &semantic_context);
     mark("value flow");
-    let parts = resolution::resolve(resolution::ResolutionInput {
+    let mut parts = resolution::resolve(resolution::ResolutionInput {
         all,
         public_all,
         owners,
@@ -347,17 +347,21 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
         normalized_imports,
         modules_by_namespace,
         package_exports: &package_exports,
-        python_receivers: &python_receivers,
-        #[cfg(feature = "lang-rust")]
-        rust_members: &rust_members,
-        #[cfg(feature = "lang-typescript")]
-        typescript_members: &typescript_members,
         semantic_context: &semantic_context,
         module_nodes: &module_nodes,
         value_flow: &value_flow,
-        route_index: &route_index,
     });
     mark("reference linking");
+    parts.extend(framework_relations::compose(
+        all,
+        owners,
+        flows,
+        dependency_registry,
+        profiles,
+        &semantic_context,
+        &nodes,
+    ));
+    mark("framework relation composition");
     let mut result = Graph {
         edges: Vec::with_capacity(parts.iter().map(|g| g.edges.len()).sum()),
         coverage: Vec::with_capacity(parts.iter().map(|g| g.coverage.len()).sum()),

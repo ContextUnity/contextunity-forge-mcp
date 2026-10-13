@@ -26,15 +26,9 @@ pub(super) struct ResolutionInput<'a, F> {
     pub(super) normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
     pub(super) modules_by_namespace: &'a ModulesByNamespace<'a>,
     pub(super) package_exports: &'a HashMap<&'static str, PackageExports<'a>>,
-    pub(super) python_receivers: &'a languages::python_receivers::PythonReceivers<'a>,
-    #[cfg(feature = "lang-rust")]
-    pub(super) rust_members: &'a languages::rust::linker::RustMembers<'a>,
-    #[cfg(feature = "lang-typescript")]
-    pub(super) typescript_members: &'a languages::typescript::linker::TypeScriptMembers<'a>,
     pub(super) semantic_context: &'a semantic_context::Context<'a>,
     pub(super) module_nodes: &'a [&'a Node],
     pub(super) value_flow: &'a value_flow::ValueFlowIndex<'a>,
-    pub(super) route_index: &'a routes::RouteIndex<'a>,
 }
 
 pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>) -> Vec<Graph> {
@@ -59,16 +53,11 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
         normalized_imports,
         modules_by_namespace,
         package_exports,
-        python_receivers,
-        #[cfg(feature = "lang-rust")]
-        rust_members,
-        #[cfg(feature = "lang-typescript")]
-        typescript_members,
         semantic_context,
         module_nodes,
         value_flow,
-        route_index,
     } = input;
+    let member_lookup = semantic_context::LanguageMemberLookup::new(semantic_context);
     let _ = (public_all, root);
 
     let lookup =
@@ -83,15 +72,6 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
 
     #[cfg(feature = "lang-html")]
     let html_templates = html_templates::Registry::build(all, flows, dependency_registry);
-    #[cfg(feature = "lang-html")]
-    let html_expressions = html_templates::ExpressionRegistry::build(all);
-    #[cfg(feature = "lang-html")]
-    let render_contexts = html_templates::RenderContextRegistry::build(
-        all,
-        flows,
-        semantic_context,
-        dependency_registry,
-    );
     #[cfg(feature = "lang-html")]
     let jinja_roots = html_templates::JinjaRootRegistry::build(all, dependency_registry);
     #[cfg(feature = "lang-html")]
@@ -111,18 +91,6 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 edges: facts.edges.iter().map(Edge::from).collect(),
                 coverage: Vec::with_capacity(facts.references.len()),
             };
-            #[cfg(feature = "lang-html")]
-            for (provider, target) in render_contexts.targets(path) {
-                graph.edges.push(Edge {
-                    src: provider.source.id.clone(),
-                    dst: target.id.clone(),
-                    kind: "renders".into(),
-                    path: path.clone(),
-                    line: provider.context.position.line,
-                    evidence: format!("render target: {} from {}", target.path, provider.source.path),
-                    confidence: "exact".into(),
-                });
-            }
             let profile = profiles.get(path.as_str()).copied();
             #[cfg(feature = "lang-html")]
             let template_loads: Vec<&Reference> = if profile.is_some_and(|profile| profile.id() == "html") {
@@ -685,128 +653,6 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 }
             }
 
-            for r in facts
-                .references
-                .iter()
-                .filter(|r| r.kind == "calls_endpoint")
-            {
-                let (method, url) = r.expression.split_once(' ').unwrap_or(("ANY", &r.expression));
-                let (remote, _) = routes::normalize_client_url(url);
-                if remote {
-                    graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: r.line,
-                        expression: r.expression.clone(),
-                        status: "external".into(),
-                        evidence: "remote HTTP endpoint".into(),
-                    });
-                } else {
-                    match route_index.match_route(method, url) {
-                        Ok(Some(route)) => {
-                            graph.edges.push(Edge {
-                                src: r.source.clone(),
-                                dst: route.id.clone(),
-                                kind: "calls_endpoint".into(),
-                                path: path.clone(),
-                                line: r.line,
-                                evidence: r.expression.clone(),
-                                confidence: "exact".into(),
-                            });
-                            graph.coverage.push(Coverage {
-                                path: path.clone(),
-                                line: r.line,
-                                expression: r.expression.clone(),
-                                status: "resolved".into(),
-                                evidence: format!("endpoint route: {}", route.name),
-                            });
-                        }
-                        Ok(None) => {
-                            graph.coverage.push(Coverage {
-                                path: path.clone(),
-                                line: r.line,
-                                expression: r.expression.clone(),
-                                status: "unresolved".into(),
-                                evidence: format!("unmatched endpoint route: {}", r.expression),
-                            });
-                        }
-                        Err(()) => {
-                            graph.coverage.push(Coverage {
-                                path: path.clone(),
-                                line: r.line,
-                                expression: r.expression.clone(),
-                                status: "ambiguous".into(),
-                                evidence: format!("ambiguous endpoint route: {}", r.expression),
-                            });
-                        }
-                    }
-                }
-            }
-
-            #[cfg(feature = "lang-html")]
-            for htmx_node in facts
-                .nodes
-                .iter()
-                .filter(|node| node.kind == "htmx_request")
-            {
-                let (method, url) = htmx_node.name.split_once(' ').unwrap_or(("GET", &htmx_node.name));
-                let status = htmx_node.details["url_status"].as_str().unwrap_or("local_unverified");
-                if status == "remote" {
-                    graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: htmx_node.line,
-                        expression: htmx_node.name.clone(),
-                        status: "external".into(),
-                        evidence: "remote HTTP endpoint".into(),
-                    });
-                } else if status == "current_page" {
-                    graph.coverage.push(Coverage {
-                        path: path.clone(),
-                        line: htmx_node.line,
-                        expression: htmx_node.name.clone(),
-                        status: "resolved".into(),
-                        evidence: "current page form/action".into(),
-                    });
-                } else {
-                    match route_index.match_route(method, url) {
-                        Ok(Some(route)) => {
-                            graph.edges.push(Edge {
-                                src: htmx_node.id.clone(),
-                                dst: route.id.clone(),
-                                kind: "calls_endpoint".into(),
-                                path: path.clone(),
-                                line: htmx_node.line,
-                                evidence: htmx_node.name.clone(),
-                                confidence: "exact".into(),
-                            });
-                            graph.coverage.push(Coverage {
-                                path: path.clone(),
-                                line: htmx_node.line,
-                                expression: htmx_node.name.clone(),
-                                status: "resolved".into(),
-                                evidence: format!("endpoint route: {}", route.name),
-                            });
-                        }
-                        Ok(None) => {
-                            graph.coverage.push(Coverage {
-                                path: path.clone(),
-                                line: htmx_node.line,
-                                expression: htmx_node.name.clone(),
-                                status: "unresolved".into(),
-                                evidence: format!("unmatched endpoint route: {}", htmx_node.name),
-                            });
-                        }
-                        Err(()) => {
-                            graph.coverage.push(Coverage {
-                                path: path.clone(),
-                                line: htmx_node.line,
-                                expression: htmx_node.name.clone(),
-                                status: "ambiguous".into(),
-                                evidence: format!("ambiguous endpoint route: {}", htmx_node.name),
-                            });
-                        }
-                    }
-                }
-            }
             #[cfg(feature = "lang-html")]
             for load in &template_loads {
                 let library_rule = format!("template.library.{}", load.expression);
@@ -1005,67 +851,6 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 #[cfg(feature = "lang-html")]
                 if profile.is_some_and(|profile| profile.id() == "html") && r.kind == "references" {
                     if r.expression.starts_with("template.variable.") || r.expression.starts_with("template.macro.") {
-                        match html_expressions.resolve(path, r) {
-                            html_templates::Match::Unique { module, symbol } => {
-                                graph.edges.push(Edge {
-                                    src: r.source.clone(), dst: symbol.id.clone(), kind: "references".into(),
-                                    path: path.clone(), line: r.line,
-                                    evidence: format!("template binding from {} via {}", symbol.path, module.path),
-                                    confidence: "exact".into(),
-                                });
-                                graph.coverage.push(Coverage {
-                                    path: path.clone(), line: r.line, expression: r.expression.clone(),
-                                    status: "resolved".into(),
-                                    evidence: format!("template binding: {}", symbol.path),
-                                });
-                            }
-                            html_templates::Match::Ambiguous => graph.coverage.push(Coverage {
-                                path: path.clone(), line: r.line, expression: r.expression.clone(),
-                                status: "ambiguous".into(), evidence: "multiple template bindings".into(),
-                            }),
-                            html_templates::Match::Missing => {
-                                let key = r.expression.strip_prefix("template.variable.");
-                                let providers: Vec<_> = render_contexts.providers(path).collect();
-                                let matching_providers: Vec<_> = key
-                                    .map(|key| {
-                                        providers
-                                            .iter()
-                                            .copied()
-                                            .filter(|provider| {
-                                                provider.context.keys.iter().any(|item| item == key)
-                                            })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default();
-                                // Several views may render one template. A key present in only
-                                // one of those contexts is still not unique for that template.
-                                let (status, evidence) = match (providers.len(), matching_providers.as_slice()) {
-                                    (1, [provider]) => {
-                                        graph.edges.push(Edge {
-                                            src: r.source.clone(),
-                                            dst: provider.source.id.clone(),
-                                            kind: "context_provider".into(),
-                                            path: path.clone(),
-                                            line: r.line,
-                                            evidence: format!("render context: {}", provider.source.path),
-                                            confidence: "exact".into(),
-                                        });
-                                        ("resolved", format!("render context: {}", provider.source.path))
-                                    }
-                                    (provider_count, matching) if provider_count > 1 && !matching.is_empty() => {
-                                        ("ambiguous", "multiple render context providers".to_owned())
-                                    }
-                                    _ => ("unresolved", "no proven template binding".to_owned()),
-                                };
-                                graph.coverage.push(Coverage {
-                                    path: path.clone(),
-                                    line: r.line,
-                                    expression: r.expression.clone(),
-                                    status: status.into(),
-                                    evidence,
-                                });
-                            }
-                        }
                         continue;
                     }
                     let directive = r.expression.strip_prefix("template.tag.").map(|name| ("tag", name))
@@ -1278,7 +1063,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     if let Some(owner) = owner.filter(|owner| owner.details["receiver_name"].as_str().is_some_and(|name| matches!(name, "self" | "cls") && !node_rebindings.get(owner.id.as_str()).is_some_and(|bindings| bindings.contains(name)))) {
                                         if let Some((scope, _)) = owner.qualname.rsplit_once('.') {
                                             if let Some([class]) = by_qual.get(scope).map(Vec::as_slice) {
-                                                if class.kind == "class" && class.path == *path { computed = python_receivers.lookup(class, member, true); }
+                                                if class.kind == "class" && class.path == *path { computed = member_lookup.python(class, member, true); }
                                             }
                                         }
                                     }
@@ -1304,7 +1089,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                 }
                                 candidates.sort_by_key(|node| &node.id); candidates.dedup_by_key(|node| &node.id);
                                 if let [class] = candidates.as_slice() {
-                                    if class.kind == "class" { computed = python_receivers.lookup(class, member, false); }
+                                    if class.kind == "class" { computed = member_lookup.python(class, member, false); }
                                 }
                                 if candidates.is_empty() && !constructor_shadowed {
                                     if let Some((origin, import_line)) = external_for(head, owner, false).filter(|(_, line)| *line <= r.line) {
@@ -1491,7 +1276,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                             }
                             if let Some(class) = class {
                                 let associated = owner.details["is_static"] == true;
-                                let methods = typescript_members.lookup(class, tail, associated);
+                                let methods = member_lookup.typescript(class, tail, associated);
                                 let method = match methods {
                                     [method] if prototype_visible_at(method, path, r.line, r.column) => Some(*method),
                                     _ => None,
@@ -1606,13 +1391,13 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         || r.expression.starts_with("Self::")
                         || r.expression.starts_with("Self."))
                 {
-                    if let Some(receiver) = owner.and_then(|owner| rust_members.receiver_for(owner)) {
+                    if let Some(receiver) = owner.and_then(|owner| member_lookup.rust_receiver(owner)) {
                         let member = r
                             .expression
                             .strip_prefix("Self::")
                             .or_else(|| r.expression.strip_prefix("Self."));
                         if let Some(member) = member {
-                            let methods = rust_members.lookup(
+                            let methods = member_lookup.rust(
                                 receiver,
                                 member,
                                 true,
@@ -1847,7 +1632,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         }
                         let implicit_receiver = if known_receiver {
                             #[cfg(feature = "lang-rust")]
-                            let rust_receiver = rust_members.receiver_for(owner);
+                            let rust_receiver = member_lookup.rust_receiver(owner);
                             #[cfg(not(feature = "lang-rust"))]
                             let rust_receiver: Option<&Node> = None;
                             rust_receiver.or_else(|| owner.qualname.rsplit_once('.').and_then(|(scope, _)| by_qual.get(scope)).and_then(|nodes| {
@@ -1935,7 +1720,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         match classes { [class] if class.kind == "class" => Some(*class), _ => None }
                     } else { None }
                 } else { None };
-                let receiver_member = receiver_class.filter(|_| matches!(r.kind.as_str(), "calls" | "handles")).map(|class| python_receivers.lookup(class, tail, false));
+                let receiver_member = receiver_class.filter(|_| matches!(r.kind.as_str(), "calls" | "handles")).map(|class| member_lookup.python(class, tail, false));
                 if shadowed
                     && !known_receiver
                     && !typed_receiver.is_some_and(|receiver| !matches!(receiver, ReceiverType::Unknown))
@@ -2035,7 +1820,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                                 if let (Some(class), None) = (declarations.next(), declarations.next()) {
                                                     if class.kind == "class" {
                                                         if let receivers::Member::External(origin, line, provider) =
-                                                            python_receivers.lookup(class, member, false)
+                                                        member_lookup.python(class, member, false)
                                                         {
                                                             emit_inferred(
                                                                 &mut graph,

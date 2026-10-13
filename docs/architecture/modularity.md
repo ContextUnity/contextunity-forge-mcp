@@ -28,6 +28,7 @@ src/engine/
 └── linker/
     ├── traits.rs           # LanguageLinker contract
     ├── semantic_context.rs # Shared bounded symbol admission
+    ├── framework_relations.rs # Cross-language framework graph composition
     └── value_flow.rs       # Bounded static receiver reduction
 ```
 
@@ -54,6 +55,12 @@ Decouples language-specific import and receiver resolutions from the core SQLite
 - Standard library and external package classification, ensuring third-party symbols are properly marked `external_origin` rather than leaking into `unresolved`.
 - Framework receivers, builtins, filters, and routes come from typed `FrameworkManifest` data. Bundled tables live under `src/engine/languages/manifests/` and are embedded in the binary; workspace manifests load from `.forge/frameworks/` and activate only for declared dependencies. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
 - `DependencyRegistry` owns workspace dependency discovery and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs.
+
+## Language resolution ownership
+
+`semantic_context::LanguageMemberLookup` gives the shared resolver borrowed, read-only access to prebuilt Python, Rust, and TypeScript member indexes. Each language index retains its own lookup rules; the shared resolution input does not carry one field per language, and reference linking does not rebuild indexes or perform per-reference database reads.
+
+`framework_relations::compose` joins route, HTTP request, HTMX, and HTML template facts after ordinary reference resolution. It consumes the indexed facts, owner set, flow state, dependency registry, language profiles, semantic context, and route nodes, then returns graph edges and coverage. The linker merges those results and applies its existing deterministic graph ordering.
 
 ## Bounded semantic resolution ownership
 

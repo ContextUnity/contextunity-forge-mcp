@@ -43,6 +43,8 @@ Use `contextunity-forge-mcp --help` to inspect the installed binary. Enabling a 
 
 The index records declarations, imports, references, and relationships recoverable from source syntax. A resolved edge means the linker found a candidate within its indexed scope. An unresolved or external edge remains evidence of a reference, not evidence that the dependency is absent. Confirm behavior in the build system and runtime where it matters.
 
+Cross-language framework links use indexed source facts after language-level resolution. Route calls, HTMX requests, render targets, and template context bindings retain their source ownership and ambiguity status; they do not infer targets from shared names alone.
+
 | Profile group | Important static limit |
 | --- | --- |
 | Python and Ruby | Dynamic imports, metaprogramming, monkey patching, and runtime dispatch can escape syntax-level analysis. |

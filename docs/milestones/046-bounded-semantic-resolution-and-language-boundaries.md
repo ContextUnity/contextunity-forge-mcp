@@ -345,44 +345,102 @@ Verification: direct-proof via `cargo check --no-default-features --features lan
 
 ```yaml
 task_ref: language-resolution-ownership
-target: "Move language and framework decisions behind explicit ownership while preserving observable graph behavior"
+target: Move language and framework decisions behind explicit ownership while preserving observable graph behavior
 proof_policy: direct-proof
 contract_revision: 4
 scope:
-  - src/core/semantic.rs
-  - src/core/typed_facts.rs
-  - src/engine/linker.rs
-  - src/engine/linker/
-  - src/engine/languages/
-  - src/engine/ast/
-  - tests/linker/
-  - tests/receivers/
-  - tests/languages/
-  - tests/core/
-  - tests/incremental/
-  - tests/common/
-  - docs/architecture/modularity.md
-  - docs/architecture/indexing.md
-  - docs/reference/languages.md
-  - docs/testing/README.md
+- src/core/semantic.rs
+- src/core/typed_facts.rs
+- src/engine/linker.rs
+- src/engine/linker/
+- src/engine/languages/
+- src/engine/ast/
+- tests/linker/
+- tests/receivers/
+- tests/languages/
+- tests/core/
+- tests/incremental/
+- tests/common/
+- docs/architecture/modularity.md
+- docs/architecture/indexing.md
+- docs/reference/languages.md
+- docs/testing/README.md
 depends_on:
-  - language-feature-decoupling-and-isolated-compilation
+- language-feature-decoupling-and-isolated-compilation
 invariants:
-  - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
-  - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
-  - 'INV-OWNERSHIP: Language rules belong to language resolvers; cross-language framework relations use explicit composition passes; common scheduling and budgets remain shared.'
-  - 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
-status: planned
+- 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+- 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+- 'INV-OWNERSHIP: Language rules belong to language resolvers; cross-language framework relations use explicit composition passes; common scheduling and budgets remain shared.'
+- 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
+status: completed
 subtasks:
-  - subtask_ref: language-resolution-ownership-1
-    title: "Encapsulate language resolution state"
-    status: pending
-  - subtask_ref: language-resolution-ownership-2
-    title: "Separate cross-language framework passes"
-    status: pending
-  - subtask_ref: language-resolution-ownership-3
-    title: "Prove output and feature parity"
-    status: pending
+- subtask_ref: language-resolution-ownership-1
+  title: Encapsulate language resolution state
+  status: completed
+  evidence: Borrowed LanguageMemberLookup replaces per-language member-index fields in ResolutionInput; cargo test --test linker passed 93 tests.
+- subtask_ref: language-resolution-ownership-2
+  title: Separate cross-language framework passes
+  status: completed
+  evidence: framework_relations::compose owns route/HTMX/render/template/context-provider graph joins; cargo test --test linker passed 93 and cargo test --test languages passed 253, preserving final deterministic sort.
+- subtask_ref: language-resolution-ownership-3
+  title: Prove output and feature parity
+  status: completed
+  evidence: 'Parity proof passed: linker 93, languages 253, core 31 (1 ignored), incremental 23, commitment_integrity 14; feature cargo check matrix passed for Python/Rust/TypeScript/Vue with no defaults and default; strict Clippy, fmt, and diff checks passed.'
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-13T10:53:37.241895758+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test linker && cargo test --test languages && cargo test --test core && cargo test --test incremental && cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo fmt --all -- --check && git diff --check && cargo check --no-default-features --features lang-python && cargo check --no-default-features --features lang-rust && cargo check --no-default-features --features lang-typescript && cargo check --no-default-features --features lang-vue && cargo check
+      exit_code: 0
+      tests_passed: 414
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Candidate snapshot acef4e4 changes only docs/architecture/indexing.md, docs/architecture/modularity.md, docs/reference/languages.md, docs/testing/README.md, src/engine/linker.rs, src/engine/linker/resolution.rs, src/engine/linker/semantic_context.rs, and adds src/engine/linker/framework_relations.rs; all are within the admitted task scope. Worktree/snapshot blob hashes match, git diff --check passes, and no profile, repository configuration, credential, or neighboring-project path changed. Documentation governance conflict #136 is recorded at milestone scope: docs/AGENTS.md asks for skill/example updates, while 046 excludes those paths; the recorded disposition is to keep this task in scope and reconcile at handoff or a separate docs task.'
+        claims:
+          applicable: true
+          evidence: 'ResolutionInput no longer stores PythonReceivers, RustMembers, TypeScriptMembers, or RouteIndex. LanguageMemberLookup borrows the already-built Context indexes and directly forwards the same lookup arguments; its methods create no Vec/String or clone and preserve the previous member outcome and candidate precedence. framework_relations::compose owns calls_endpoint, HTMX, renders, template-reference, and context_provider output; its moved branches retain external/resolved/unresolved/ambiguous outcomes. linker.rs merges the composition graph before the unchanged sort_graph validation/order. HTML code remains lang-html-gated; Rust/TypeScript façade methods remain feature-gated. Existing public linker/language production tests cover receiver precedence, endpoint routes, HTMX, template targets, and ambiguous providers. Reviewer verification passed: cargo test --test linker (93 passed) and cargo test --test languages (253 passed), both exit 0.'
+        concurrency:
+          applicable: true
+          evidence: The patch changes no task store, transaction, locking, or receipt code. Forge accepted the build at claim revision 6 for candidate acef4e4 with candidate_baseline_head 479b49c380629ba35f9230f68bf5f5d5ca923cc2; the review is a separate worker claim at revision 7. Worktree HEAD remains that validated baseline and all captured snapshot file hashes still match after review tests, so no stale candidate or partial state was introduced.
+        project_isolation:
+          applicable: true
+          evidence: The task ID resolves to forge-mcp and the review ran from its declared isolated worktree. Every changed path is inside the task perimeter. framework_relations consumes the existing indexed facts, owner set, profile map, and nodes; it adds no filesystem/path resolution or linked-workspace access. No symlinks, traversal segments, repository roots, or task namespaces changed.
+        administration:
+          applicable: true
+          evidence: 'No migration, profile, protected .forge configuration, build script, or gate definition changed. Forge returned the configured review contour set and accepted build proof bound to the candidate baseline above. The active review precedes delivery, so Git hook execution and the landed task SHA remain delivery-gate checks; this proof does not assert a landed receipt exists yet. The skill/example omission is the already-deferred milestone finding #136, not scope added here.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
+    - 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
+    - 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
+    - 'INV-OWNERSHIP: Language rules belong to language resolvers; cross-language framework relations use explicit composition passes; common scheduling and budgets remain shared.'
+    - 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
+    - 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
+    - 'INV-PERF-NO-REGRESSION: Indexing and query throughput must not regress. Cold index build on a clean, isolated scratch copy of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) with scratch adapter pointing to clean isolated copies of linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7) must complete within 11.5 seconds wall-clock time using pre-compiled binary target/release/contextunity-forge-mcp build under a lightly loaded host (CPU load < 1.0). Median tool query latencies and RSS peak across benchmark scenarios must not regress against task 1 baseline.'
+    - 'INV-CONTROL-REPO-ISOLATION: Performance evaluations, benchmarks, and multi-workspace verifications must strictly operate on clean, isolated scratch/temporary copies of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) and clean copies of all linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7). The scratch adapter forge-mcp.yaml in the isolated commerce worktree must be rewritten to point linked_workspaces to those isolated clean scratch directories instead of primary repository trees. Never read from or modify primary baseline worktrees.'
+    - 'INV-DOCS: Keep milestone contracts outside doc_search; publish delivered semantic contracts in indexed ADR, architecture, and reference documents.'
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-OWNERSHIP: Language rules belong to language resolvers; cross-language framework relations use explicit composition passes; common scheduling and budgets remain shared.'
+    - 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

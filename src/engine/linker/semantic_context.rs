@@ -168,6 +168,66 @@ pub(super) struct Context<'a> {
     typescript: Option<&'a languages::typescript::linker::TypeScriptMembers<'a>>,
 }
 
+/// Borrowed read-only access to the language-owned member indexes.
+///
+/// The shared linker depends on this lookup seam instead of carrying one
+/// language-specific index field per profile. Each index remains built and
+/// owned by its language resolver; lookups only borrow that precomputed state.
+pub(super) struct LanguageMemberLookup<'ctx, 'a> {
+    context: &'ctx Context<'a>,
+}
+
+impl<'ctx, 'a> LanguageMemberLookup<'ctx, 'a> {
+    pub(super) fn new(context: &'ctx Context<'a>) -> Self {
+        Self { context }
+    }
+
+    pub(super) fn python(
+        &self,
+        class: &Node,
+        member: &str,
+        associated: bool,
+    ) -> super::receivers::Member<'a> {
+        self.context
+            .python
+            .map_or(super::receivers::Member::Unknown, |index| {
+                index.lookup(class, member, associated)
+            })
+    }
+
+    #[cfg(feature = "lang-rust")]
+    pub(super) fn rust_receiver(&self, owner: &Node) -> Option<&'a Node> {
+        self.context
+            .rust
+            .and_then(|index| index.receiver_for(owner))
+    }
+
+    #[cfg(feature = "lang-rust")]
+    pub(super) fn rust<'lookup>(
+        &'lookup self,
+        receiver: &Node,
+        member: &str,
+        associated: bool,
+        caller: &Node,
+    ) -> &'lookup [&'a Node] {
+        self.context.rust.map_or(&[], |index| {
+            index.lookup(receiver, member, associated, caller)
+        })
+    }
+
+    #[cfg(feature = "lang-typescript")]
+    pub(super) fn typescript<'lookup>(
+        &'lookup self,
+        class: &Node,
+        member: &str,
+        associated: bool,
+    ) -> &'lookup [&'a Node] {
+        self.context
+            .typescript
+            .map_or(&[], |index| index.lookup(class, member, associated))
+    }
+}
+
 impl<'a> Context<'a> {
     pub(super) fn exact_external_import(
         &self,

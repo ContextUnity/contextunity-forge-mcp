@@ -48,3 +48,7 @@ resolution and negative cases for unknown alternatives, unsupported syntax,
 incomplete joins, and candidate overflow; do not use name-only fixtures as proof
 of a unique target. The Milestone 046 admission baseline is recorded in
 [ADR 0008](../adr/0008-bounded-static-value-flow.md).
+
+For language resolution and cross-language framework composition, run the full
+`cargo test --test linker` and `cargo test --test languages` targets. The
+`incremental` target checks that cached and cold graph output remain equivalent.
