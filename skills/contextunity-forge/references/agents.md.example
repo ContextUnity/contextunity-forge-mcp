@@ -23,7 +23,7 @@ Worktrees live at `.worktrees/<milestone-prefix>-<slug>` for milestones and `.wo
 - Task repacking: Before milestone handoff, ensure exactly one commit per task, squashing intermediate commits if any. Record actual task commit SHAs in the milestone document.
 - Branch integration: Merge each delivered task branch into the milestone branch, delete the temporary task branch, and remove its worktree (`git worktree remove .worktrees/<milestone-prefix>-<task-slug>`).
 - Handoff commit: When all milestone tasks are delivered and verified, run `contextunity-forge-mcp milestone handoff` in the milestone worktree. Commit the archived milestone document, along with any out-of-scope adjustments, deferred fixes, and recorded findings, documenting them in the handoff commit message.
-- Milestone landing: In the primary worktree (`main`), fast-forward the milestone branch (`git merge --ff-only <milestone-branch>`), remove the milestone worktree (`git worktree remove .worktrees/<milestone-prefix>-<slug>`), and delete the milestone branch (`git branch -d <milestone-branch>`).
+- Milestone landing: In the primary worktree (`main`), fast-forward the milestone branch (`git merge --ff-only <milestone-branch>`), clean up untracked or obsolete pre-archive milestone working files (e.g. `docs/milestones/<id>-...md` archived to `docs/milestones/archive/`), remove the milestone worktree (`git worktree remove .worktrees/<milestone-prefix>-<slug>`), and delete the milestone branch (`git branch -d <milestone-branch>`).
 
 ### Operations requiring explicit user approval
 

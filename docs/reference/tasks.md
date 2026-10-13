@@ -298,6 +298,47 @@ be reopened if necessary using `contextunity-forge-mcp task reopen <task-id>`.
 
 Zero runtime backward compatibility applies strictly to SQLite runtime storage and active milestone manifests. Historical receipts archived in `docs/milestones/archive/` are read as-is and exempt from active profile receipt schema validation. Filtering by `--stage <id>` matches directly against the persistent `task.stage` string ID in SQLite; CLI argument validation checks that the stage ID is defined in the active profile of the workspace or open tasks. If a task references a stage missing from the active profile's `gates`, Forge fails closed with `TASK_STAGE_UNKNOWN`, naming mismatched gates and suggesting either migrating task records or pinning the intended profile via `acdd_profile: <path>:<sha256_prefix>`.
 
+## Task lifecycle diagnostics and error ergonomics
+
+Task lifecycle errors in Forge follow a deterministic single-line format providing exact facts and an imperative action:
+- Task-scoped errors: `{CODE}: {task_id}. {facts}. Do: {action}`
+- Action-scoped errors: `{CODE}: action '{action}'. {facts}. Do: {action}`
+- Milestone-scoped errors: `{CODE}: milestone '{milestone_ref}'. {facts}. Do: {action}`
+
+### Structured Authority Diagnostics (`AUTHORITY_GAP` and `TASK_AUTHORITY_MISSING`)
+
+Contract digests bind `repository`, `project`, `id`, `invariants`, `owners`, `depends_on`, optional `acdd_profile`, and the task body (excluding mutable runtime fields `receipt`, `status`, `subtasks`). When the file specification diverges from the database contract:
+- **Field Attribution**: Digest differences are decomposed into qualified field names: milestone frontmatter (`milestone.invariants`, `milestone.owners`, `milestone.depends_on`, `milestone.acdd_profile`, `milestone.id`) versus task YAML (`task.target`, `task.proof_policy`, `task.scope`, `task.scope_roots`, `task.invariants`, `task.depends_on`, etc.).
+- **Revision Comparisons**: Errors state whether `file revision <= stored` or `file revision > stored (unsynced)` and output the exact command to resolve divergence:
+  - If frontmatter diverged: revert the mutated milestone frontmatter fields (or declare task-level invariants inside `task.invariants`).
+  - If task YAML diverged: increment `contract_revision` in the task specification and run `contextunity-forge-mcp task sync`.
+- **Milestone ID Protection**: Pre-detects if `milestone.id` changed relative to stored tasks before syncing or claiming:
+  `AUTHORITY_GAP: milestone '{milestone_ref}'. milestone id changed from '{stored_id}' to '{file_id}'. Do: revert milestone id in {milestone_ref}. Task ids are {project}/{id}:{task_ref}; task cannot be resolved.`
+- **`TASK_AUTHORITY_MISSING`**: Emits distinct actionable errors when the entire milestone file is missing versus when a specific task block is absent from the file.
+
+### Lifecycle Error Codes
+
+- `TASK_CANDIDATE_MISMATCH`: The candidate snapshot from the build gate does not match current worktree state. Restore the worktree to the candidate snapshot before retrying delivery or submitting rejection.
+- `TASK_NOT_READY`: The task is blocked by unsatisfied dependencies or parent milestone state.
+- `TASK_ALREADY_CLAIMED`: The task gate is currently held under an active claim revision by another worker.
+- `TASK_STALE_SUBMISSION`: Submission evidence does not match the active gate, claim revision, or candidate snapshot baseline.
+- `TASK_REVIEW_NOT_INDEPENDENT`: Independent review contour requires a `worker_id` distinct from the accepted builder.
+- `TASK_SELECTOR_INVALID`: Unknown action or invalid field combination in `task_manage` or CLI commands.
+- `TASK_STALE_CLAIM`: Active claim revision diverged or open claim row is missing; release or reclaim the task.
+- `TASK_NOT_FOUND`: The requested task ID is not found in SQLite.
+- `TASK_SCOPE_INVALID`: Specified path falls outside admitted base roots (or traversal detected).
+- `TASK_SCOPE_CONFLICT`: Specified path belongs to an active, uncompleted sibling task in the milestone.
+- `TASK_SCOPE_PROTECTED`: Configuration paths under `.forge/acdd/**` require explicit admission in initial task scope.
+- `TASK_SCOPE_VIOLATION`: Dirty configuration or profile files detected in git status during claim or submission.
+
+### In-Context Guidance Guardrails
+
+Upon every `task_claim`, Forge injects standard operational rules directly into `workflow_guidance.rules` so agents receive runtime guardrails without relying on external documents:
+1. `PROTECTED`: Milestone `id`, `invariants`, `owners`, `depends_on`, and `acdd_profile` are immutable while tasks are active.
+2. `ISOLATION`: Develop exclusively inside the assigned dedicated worktree.
+3. `IMMUTABILITY`: Keep admitted scope unchanged after review pass and during deliver.
+4. `INDEPENDENCE`: Review stage requires a worker_id distinct from the accepted builder.
+
 ## Task blackboard
 
 `task_blackboard` stores messages in the configured task SQLite store with a

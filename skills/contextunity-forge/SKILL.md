@@ -95,9 +95,15 @@ The repository `AGENTS.md` names this skill, local verification instructions, an
 
 ### Documentation and instructions co-evolution
 
-A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates the corresponding documentation and agent instructions during its configured build stage.
+A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates the corresponding documentation and agent instructions during its configured build stage. Include affected documentation files in the task's initial `scope:` at milestone design time, or admit them via `extend_scope` before editing; do not defer documentation updates caused by the task's own contract.
 
-The active review guidance determines how documentation changes are checked. Include affected documentation in the admitted scope, or add it with `extend_scope` before editing. Respect the task's exclusive file claims.
+Task claims inject standing runtime guardrails into `workflow_guidance.rules`:
+- `PROTECTED`: Milestone `id`, `invariants`, `owners`, `depends_on`, and `acdd_profile` are immutable while tasks are active.
+- `ISOLATION`: Develop exclusively inside the assigned dedicated worktree.
+- `IMMUTABILITY`: Keep admitted scope unchanged after review pass and during deliver.
+- `INDEPENDENCE`: Review stage requires a worker_id distinct from the accepted builder.
+
+Lifecycle errors follow a deterministic single-line format: `{CODE}: {task_id}. {facts}. Do: {action}` (or action- and milestone-scoped equivalents). Structured `AUTHORITY_GAP` diagnostics distinguish milestone frontmatter divergence from task specification changes with exact remediation commands.
 
 ### Tests
 
@@ -136,7 +142,7 @@ contextunity-forge-mcp milestone handoff <id> \
   --tests-passed <N> --tests-failed 0
 ```
 
-`milestone handoff` is CLI-only. It resolves each task's landed commit from the milestone document or first-parent branch, verifies proofs and scopes against task records, records verified results, and archives the milestone; it does not run tests.
+`milestone handoff` is CLI-only. It resolves each task's landed commit from the milestone document or first-parent branch, verifies proofs and scopes against task records, records verified results, and archives the milestone; it does not run tests. On landing into `main`, fast-forward the milestone branch, clean up obsolete pre-archive working milestone files, and remove the milestone worktree and branch.
 
 
 ## Workspace Adapters (`forge-mcp.yaml`) & Default Behavior
@@ -197,21 +203,21 @@ response:
 - `task_blackboard`: Post/read/inspect messages at `milestone`, `task`, or `subtask` scope. Post/read may include `gate` to target or filter messages by an active profile gate. Runtime topics are `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`; the last two are copied to the existing `architectural_notes` receipt vector with topic labels. Claims include untagged messages plus those targeted to the active gate, with targeted messages also listed in `workflow_guidance.blackboard_messages` and a compact `blackboard_info` summary.
 
 ### Discovery & Search
-- `code_map_overview()`: Workspace component inventory, module hierarchy, indexing metrics, and coverage diagnostics.
+- `code_map_overview(include_gaps?, limit?, offset?, generation?)`: Workspace component inventory, module hierarchy, indexing metrics, coverage diagnostics, and paged `analysis_gaps`.
 - `code_map_search(pattern, kind?, detail?, limit?, offset?, generation?)`: Fast BM25 full-text and prefix symbol search.
 - `ast_grep_search(pattern, language, path?, limit?, offset?, generation?)`: Tree-sitter AST syntax matching with `$NAME` and `$$$ARGS` captures.
 - `search_docs(query, doc_type?, component?, limit?)`: Full-text search across documentation, guides, and ADRs.
 - `get_doc(path_or_id, section?)`: Read indexed markdown doc or exact heading anchor.
 
 ### Inspection & Hierarchy
-- `code_map_inspect(selector, include_coverage?, show_doc?, show_source?, leading_lines?, max_body_lines?)`: Symbol summary, receiver metadata, callers, and callees.
+- `code_map_inspect(selector, include_coverage?, show_doc?, show_source?, leading_lines?, max_body_lines?)`: Symbol summary, receiver metadata, exact callers/callees, paged `analysis_gaps` (e.g. `trait_object_dispatch`, `macro_expansion_not_analyzed`), and candidate dispatch targets (`possible_calls`).
 - `get_code_snippet(selector, leading_lines?, max_body_lines?, source_offset?, generation?)`: Bounded, digest-verified AST source preview.
-- `code_map_explain(selector, direction?, include_coverage?, show_doc?, show_source?)`: Direct relationships, symbol ownership, and architectural invariants.
-- `code_map_impact(selector, direction?, depth?, detail?, limit?, offset?, generation?)`: Inbound blast radius (`direction="inbound"`, default) or outbound dependencies.
+- `code_map_explain(selector, direction?, include_coverage?, show_doc?, show_source?)`: Direct relationships, candidate dispatch edges, symbol ownership, and architectural invariants.
+- `code_map_impact(selector, direction?, depth?, detail?, limit?, offset?, generation?)`: Inbound blast radius (`direction="inbound"`, default, traversing both exact `calls` and candidate `possible_calls`) or outbound dependencies.
 - `code_map_tests(selector, direction?, detail?, limit?, offset?, generation?)`: Find tests covering a target, or production dependencies of a test.
 
 ### Verification & Safety
-- `code_map_prove_removal(selector)`: Proves whether a symbol can be safely removed based on static references.
+- `code_map_prove_removal(selector)`: Proves whether a symbol can be safely removed based on static references; treats candidate callers (`possible_calls`) as potential incoming dependencies that block safe removal.
 - `code_map_analyze(target, lint?, include_cycles?)`:
   - `target=""`: Workspace-wide diagnostics and syntax errors.
   - `target="path/to/file.py"`: File-scoped diagnostics.

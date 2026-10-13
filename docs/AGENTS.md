@@ -78,8 +78,9 @@ execution commitments into `milestones/` and link plans and milestones both ways
 Plan 1-5 coherent feature-slice tasks initially. Add related discoveries to the
 active milestone while its goal, ownership, and invariants apply.
 
-Read the [task reference](reference/tasks.md) for registered task operations,
-lifecycle gates, and SQLite storage configuration.
+Rely on `workflow_guidance` returned by `task claim` for current gates, operational rules, and review criteria; use the [task reference](reference/tasks.md) for schema definitions and offline operations.
+
+When designing milestone tasks or authoring contracts that modify public interfaces, CLI/MCP tools, lifecycle diagnostics, or architecture, admit the corresponding documentation files (under `docs/`) directly in the task's initial `scope` so code and documentation co-evolve without scope extension friction. Do not defer documentation changes caused by the task's own contract.
 
 Include stale architecture or runbook pages in the authorized write scope and
 align them with verified source. Apply clear accepted rules autonomously;
@@ -92,14 +93,13 @@ branch merges. Obtain explicit approval for publication.
 ## Shared skill and example maintenance
 
 When modifying architecture, workflows, declarative profiles, schemas, CLI commands, or standing Git permissions:
-- Update the repository skill [`skills/contextunity-forge/SKILL.md`](../skills/contextunity-forge/SKILL.md) and all reference examples under [`skills/contextunity-forge/references/`](../skills/contextunity-forge/references/) (`acdd_profile.yaml.example`, `agents.md.example`, `forge-mcp.yaml.example`, `gitignore.example`) to match active system behavior and schemas.
+- Update the repository skill [`skills/contextunity-forge/SKILL.md`](../skills/contextunity-forge/SKILL.md) and reference examples under [`skills/contextunity-forge/references/`](../skills/contextunity-forge/references/) (`acdd_profile.yaml.example`, `agents.md.example`, `forge-mcp.yaml.example`, `gitignore.example`) to match active system behavior and schemas.
 - Ensure all example configurations parse cleanly and adhere to strict validation invariants (e.g. `deny_unknown_fields`, valid `guidance` keys, and accurate model specs).
-- Synchronize repository skill changes with the global skill (`~/.agents/skills/contextunity-forge/` and `~/.gemini/config/skills/contextunity-forge/`).
+- Do not write to external agent directories (`~/.agents/`) directly during task execution; external installation and distribution is handled via installer workflows and dedicated distribution commands.
 
 ## Delivery documentation
 
 Follow root [AGENTS.md](../AGENTS.md#worktrees-and-git-permissions) and [TESTS.md](../TESTS.md#milestone-handoff-gate) for verification,
 archival, integration, and worktree cleanup. Include changed reference,
-architecture, runbook, navigation pages, shared skills, and reference examples in the reviewed delivery scope.
-Verify that all profile and configuration examples parse and validate cleanly.
-Synchronize skill changes with the global installation and verify generated receipts and relative links before authorized publication.
+architecture, runbook pages, shared skills, and reference examples in the reviewed delivery scope.
+Verify that all profile and configuration examples parse and validate cleanly, and that documentation links and frontmatter validate before authorized publication.
