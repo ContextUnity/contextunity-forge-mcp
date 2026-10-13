@@ -461,6 +461,83 @@ fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
 }
 
 #[test]
+fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
+    );
+    fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
+    workspace.write(
+        "docs/milestones/010-guidance.md",
+        "---\nid: m-guidance\ntitle: Claim guidance\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: full\ntarget: Check full claim guidance\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: minimal\ntarget: Check minimal claim guidance\nproof_policy: seam-test-first\nscope: [tests/]\n```\n",
+    );
+
+    let mut client = Client::new(&workspace);
+    let synced = client.payload(
+        "task_manage",
+        json!({"action":"sync","milestone_ref":"docs/milestones/010-guidance.md"}),
+    );
+    let tasks = synced["tasks"].as_array().unwrap();
+    let full_id = tasks[0]["task_id"].as_str().unwrap();
+    let minimal_id = tasks[1]["task_id"].as_str().unwrap();
+    let worktree = workspace.0.to_str().unwrap();
+    let full_claim = client.payload(
+        "task_claim",
+        json!({"task_id":full_id,"stage":"contract","worker_id":"full-builder","worktree":worktree}),
+    );
+    let minimal_claim = client.payload(
+        "task_claim",
+        json!({"task_id":minimal_id,"stage":"contract","worker_id":"minimal-builder","worktree":worktree,"bundle":false}),
+    );
+
+    const PROTECTED_RULE: &str = "PROTECTED: milestone id, invariants, owners, depends_on, and acdd_profile are immutable while tasks are active. Declare task invariants inside task.invariants.";
+    let expected_rules = [
+        format!(
+            "ISOLATION: Develop exclusively inside dedicated worktree '{}'.",
+            workspace.0.display()
+        ),
+        "IMMUTABILITY: Keep admitted scope unchanged after review pass and during deliver."
+            .to_owned(),
+        "INDEPENDENCE: Review stage requires a worker_id distinct from the accepted builder."
+            .to_owned(),
+    ];
+    let assert_guidance = |claim: &Value, surface: &str| {
+        let guidance = &claim["workflow_guidance"];
+        let guidance_text = serde_json::to_string(guidance).unwrap();
+        let actual_rules = guidance["rules"].as_array().cloned().unwrap_or_default();
+        let missing_rules: Vec<_> = expected_rules
+            .iter()
+            .filter(|expected| {
+                !actual_rules
+                    .iter()
+                    .any(|actual| actual.as_str() == Some(expected.as_str()))
+            })
+            .collect();
+        assert!(
+            guidance_text.contains(PROTECTED_RULE) && missing_rules.is_empty(),
+            "{surface} claim omitted protected guidance or operational rules; missing {missing_rules:?}; guidance: {guidance}"
+        );
+    };
+    assert_guidance(&full_claim, "MCP full");
+    assert_guidance(&minimal_claim, "MCP minimal");
+
+    let (_, catalog) = client.request("tools/list", json!({}));
+    let catalog_text = serde_json::to_string(&catalog).unwrap();
+    assert!(
+        serde_json::to_vec(&catalog).unwrap().len() <= 65_536,
+        "MCP tool catalog exceeded the 64 KiB response budget"
+    );
+    assert!(!catalog_text.contains(PROTECTED_RULE));
+    for rule_prefix in ["ISOLATION:", "IMMUTABILITY:", "INDEPENDENCE:"] {
+        assert!(
+            !catalog_text.contains(rule_prefix),
+            "runtime claim guidance must not be duplicated in tool schema metadata: {rule_prefix}"
+        );
+    }
+}
+
+#[test]
 fn task_mcp_and_cli_share_ready_claim_reset_selectors_and_diagnostic() {
     let workspace = Workspace::new();
     workspace.write(

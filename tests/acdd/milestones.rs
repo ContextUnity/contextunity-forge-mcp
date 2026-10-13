@@ -1738,7 +1738,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     }
 }
 #[test]
-fn first_cli_task_claim_activates_planned_milestone_with_started_at() {
+fn first_cli_task_claim_includes_claim_guidance_and_activates_planned_milestone() {
     let root = ScopedWorkspace::new("forge_milestone_claim_start");
     root.write(
         "forge-mcp.yaml",
@@ -1773,6 +1773,33 @@ fn first_cli_task_claim_activates_planned_milestone_with_started_at() {
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    let claim: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let guidance = &claim["workflow_guidance"];
+    const PROTECTED_RULE: &str = "PROTECTED: milestone id, invariants, owners, depends_on, and acdd_profile are immutable while tasks are active. Declare task invariants inside task.invariants.";
+    let guidance_text = serde_json::to_string(guidance).unwrap();
+    let actual_rules = guidance["rules"].as_array().cloned().unwrap_or_default();
+    let expected_rules = [
+        format!(
+            "ISOLATION: Develop exclusively inside dedicated worktree '{}'.",
+            root.0.display()
+        ),
+        "IMMUTABILITY: Keep admitted scope unchanged after review pass and during deliver."
+            .to_owned(),
+        "INDEPENDENCE: Review stage requires a worker_id distinct from the accepted builder."
+            .to_owned(),
+    ];
+    let missing_rules: Vec<_> = expected_rules
+        .iter()
+        .filter(|expected| {
+            !actual_rules
+                .iter()
+                .any(|actual| actual.as_str() == Some(expected.as_str()))
+        })
+        .collect();
+    assert!(
+        guidance_text.contains(PROTECTED_RULE) && missing_rules.is_empty(),
+        "CLI claim omitted protected guidance or operational rules; missing {missing_rules:?}; guidance: {guidance}"
     );
     let text = std::fs::read_to_string(root.0.join("docs/milestones/010-start.md")).unwrap();
     let header = text

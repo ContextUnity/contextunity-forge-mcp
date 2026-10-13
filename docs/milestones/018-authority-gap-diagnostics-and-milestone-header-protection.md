@@ -303,11 +303,55 @@ target: Inject constant PROTECTED constraint and concise three-rule operational 
 proof_policy: seam-test-first
 contract_revision: 2
 depends_on:
-  - diagnostic-ergonomics
+- diagnostic-ergonomics
 scope:
-  - src/engine/tasks/workspaces.rs
-  - tests/acdd/milestones.rs
-  - tests/acdd/mcp.rs
+- src/engine/tasks/workspaces.rs
+- tests/acdd/milestones.rs
+- tests/acdd/mcp.rs
+status: completed
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-13T19:59:15.084798016+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test acdd
+      exit_code: 0
+      tests_passed: 85
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Candidate 2834e1c changes only src/engine/tasks/workspaces.rs, tests/acdd/milestones.rs, and tests/acdd/mcp.rs, all admitted paths. No staged or untracked files exist; git diff --check is clean, and current scoped files match the snapshot.
+        claims:
+          applicable: true
+          evidence: 'src/engine/tasks/workspaces.rs:541-558 emits the exact PROTECTED constant and the ISOLATION, IMMUTABILITY, and INDEPENDENCE rules in workflow_guidance. The CLI seam test asserts all four in the actual task claim response; the MCP seam test asserts them for both default/full and bundle=false claim responses. Fresh cargo test --test acdd exited 0: 85 passed, 0 failed.'
+        concurrency:
+          applicable: true
+          evidence: The change only constructs claim-response guidance; it adds no task state, database writes, or transaction changes. Existing concurrent claim/subtask coverage ran in the fresh ACDD suite; the claim guidance test also proves both claim bundle modes return the same operational rules.
+        project_isolation:
+          applicable: true
+          evidence: ISOLATION text is populated from the worktree already attached to the claim response (workspaces.rs:543-546); CLI and MCP tests verify the exact active workspace path appears. No workspace registry, path validation, task identity, or profile resolution code changed.
+        administration:
+          applicable: true
+          evidence: No profile, schema, configuration, migration, or generated-state files changed. The MCP tools/list test verifies the catalog is <=65,536 bytes and does not duplicate the protected or operational rule text in schema metadata (tests/acdd/mcp.rs:525-536). Strict cargo clippy --all-targets --all-features -- -D warnings exited 0.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-AUTHORITY-DIAGNOSTICS: Rejection of mismatched task specifications in sync and validate_authority must identify the task ID, file vs database contract revisions, and attribute divergence to milestone frontmatter fields and/or task YAML fields with distinct remediation actions.'
+    - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}", "{CODE}: action ''{action}''. {facts}. Do: {action}" for action-scoped errors, or "{CODE}: milestone ''{milestone_ref}''. {facts}. Do: {action}" for milestone-scoped errors. Facts name divergent tree paths, wrong commits, unsatisfied dependencies, claim holders with timestamps, or revision deltas. Each imperative states one action.'
+    - 'INV-CLAIM-GUIDANCE-PROTECTION: Task claim workflow guidance embeds the constant PROTECTED rule and three standing operational constraints (worktree isolation, snapshot immutability, independent reviewer) directly in guidance without tool schema bloat.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Contract and acceptance criteria

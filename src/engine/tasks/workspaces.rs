@@ -538,10 +538,24 @@ impl Workspace {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        const PROTECTED_RULE: &str = "PROTECTED: milestone id, invariants, owners, depends_on, and acdd_profile are immutable while tasks are active. Declare task invariants inside task.invariants.";
+        let mut rules = vec![PROTECTED_RULE.to_owned()];
+        if let Some(worktree) = value["worktree"].as_str() {
+            rules.push(format!(
+                "ISOLATION: Develop exclusively inside dedicated worktree '{worktree}'."
+            ));
+        }
+        rules.extend([
+            "IMMUTABILITY: Keep admitted scope unchanged after review pass and during deliver."
+                .to_owned(),
+            "INDEPENDENCE: Review stage requires a worker_id distinct from the accepted builder."
+                .to_owned(),
+        ]);
         let mut workflow_guidance = json!({
             "active_stage": stage,
             "role": subagent_role,
             "steps": steps,
+            "rules": rules,
             "independence_rule": needs_independent_reviewer.then_some("Use a reviewer worker_id different from the accepted build worker_id."),
             "independent_from_worker_id": if needs_independent_reviewer { builder } else { None },
             "rejection": rejection,
