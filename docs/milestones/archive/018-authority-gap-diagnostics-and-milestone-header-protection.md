@@ -2,7 +2,7 @@
 id: m-authority-gap-diagnostics-and-milestone-header-protection
 title: Authority gap diagnostic ergonomics, milestone header protection, and footgun elimination
 doc_type: contract
-status: active
+status: completed
 repository: forge-mcp
 project: forge-mcp
 depends_on:
@@ -19,6 +19,15 @@ invariants:
 - 'INV-CLAIM-GUIDANCE-PROTECTION: Task claim workflow guidance embeds the constant PROTECTED rule and three standing operational constraints (worktree isolation, snapshot immutability, independent reviewer) directly in guidance without tool schema bloat.'
 related_plans: []
 started_at: 2026-10-13T18:23:32+00:00
+handoff:
+  completed_at: 2026-10-13T20:08:11.888341742+00:00
+  duration: 1h 44m
+  commit: 5a640468f18ecbfb51173192b60090d63b79d652
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 699
+    tests_failed: 0
 ---
 
 # Authority gap diagnostic ergonomics, milestone header protection, and footgun elimination
@@ -56,6 +65,7 @@ scope:
 - tests/acdd/tasks.rs
 status: completed
 receipt:
+  commit: 16b2675140af7d610945fc7db240235363c6f09d
   contract_revision: 2
   passed_at: 2026-10-13T18:52:39.116314731+00:00
   evidence:
@@ -178,6 +188,7 @@ scope:
 - tests/acdd/mcp.rs
 status: completed
 receipt:
+  commit: 6a7cc9b7d1e2f9205bdd2b8f92804b8518ef8890
   contract_revision: 2
   passed_at: 2026-10-13T19:45:08.307487333+00:00
   evidence:
@@ -310,6 +321,7 @@ scope:
 - tests/acdd/mcp.rs
 status: completed
 receipt:
+  commit: 5a640468f18ecbfb51173192b60090d63b79d652
   contract_revision: 2
   passed_at: 2026-10-13T19:59:15.084798016+00:00
   evidence:
