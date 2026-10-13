@@ -1641,6 +1641,95 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                             })).map(value_flow::TypeTarget::Local)
                         } else { None };
                         let inferred = implicit_receiver.as_ref().or_else(|| value_flow.lookup(owner, first, at));
+                        if let Some(value_flow::TypeTarget::Candidates {
+                            targets,
+                            complete,
+                            exhausted,
+                        }) = inferred
+                        {
+                            if r.kind == "calls" {
+                                let (fields, member) = tail.rsplit_once('.').unwrap_or(("", tail));
+                                let mut candidates = Vec::new();
+                                let mut member_complete = *complete && !*exhausted && fields.is_empty();
+                                if fields.is_empty() && !member.is_empty() && !exhausted {
+                                    for class in targets {
+                                        match semantic_context.lookup_member_mode(
+                                            &value_flow::TypeTarget::Local(class),
+                                            member,
+                                            owner,
+                                            false,
+                                        ) {
+                                            semantic_context::Member::Local(method)
+                                                if method.kind == "method"
+                                                    && prototype_visible_at(method, path, r.line, r.column) =>
+                                            {
+                                                candidates.push(method.id.clone());
+                                            }
+                                            _ => member_complete = false,
+                                        }
+                                    }
+                                }
+                                candidates.sort();
+                                candidates.dedup();
+                                let candidate_names = targets
+                                    .iter()
+                                    .map(|target| target.qualname.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let (status, evidence) = if *exhausted {
+                                    (
+                                        "unresolved",
+                                        format!(
+                                            "candidate branch join overflow: more than {} distinct declarations; Unknown/Incomplete; no truncated target set emitted",
+                                            value_flow::MAX_CANDIDATE_BRANCH_JOINS
+                                        ),
+                                    )
+                                } else if member_complete && candidates.len() > 1 {
+                                    (
+                                        "ambiguous",
+                                        format!(
+                                            "complete local branch join (K={}) possible receiver types: {candidate_names}",
+                                            value_flow::MAX_CANDIDATE_BRANCH_JOINS
+                                        ),
+                                    )
+                                } else if member_complete {
+                                    (
+                                        "unresolved",
+                                        format!(
+                                            "complete local branch join (K={}) has one possible call target: {candidate_names}",
+                                            value_flow::MAX_CANDIDATE_BRANCH_JOINS
+                                        ),
+                                    )
+                                } else {
+                                    (
+                                        "unresolved",
+                                        format!(
+                                            "incomplete local branch join (K={}); unknown or unsupported alternatives retained; known receiver types: {candidate_names}",
+                                            value_flow::MAX_CANDIDATE_BRANCH_JOINS
+                                        ),
+                                    )
+                                };
+                                graph.coverage.push(Coverage {
+                                    path: path.into(),
+                                    line: r.line,
+                                    expression: r.expression.clone(),
+                                    status: status.into(),
+                                    evidence,
+                                });
+                                for target in candidates {
+                                    graph.edges.push(Edge {
+                                        src: r.source.clone(),
+                                        dst: target,
+                                        kind: "possible_calls".into(),
+                                        path: path.into(),
+                                        line: r.line,
+                                        evidence: r.expression.clone(),
+                                        confidence: "possible".into(),
+                                    });
+                                }
+                                continue;
+                            }
+                        }
                         if let Some(receiver) = inferred.filter(|receiver| !matches!(receiver, value_flow::TypeTarget::Unknown)) {
                             if tail.is_empty() {
                                 if let value_flow::TypeTarget::Callable(callable) = receiver {

@@ -44,6 +44,23 @@ fn delta_document_suffix_links_match_cold_after_edit_and_restore() {
     assert_eq!(doc_edges(&workspace.db()), baseline);
 }
 
+#[test]
+fn delta_and_cold_roots_match_after_document_rowid_changes() {
+    let workspace = Workspace::new();
+    workspace.write("docs/guide.md", "# Guide\nKeep the first token.\n");
+    workspace.write("docs/zzz.md", "# Later\nKeep the final document rowid.\n");
+    workspace.build();
+
+    workspace.write("docs/guide.md", "# Guide\nReplace the first token.\n");
+    let delta = workspace.delta(&["docs/guide.md"]);
+    let cold = workspace.build_to(workspace.path(".forge/cold.sqlite"));
+
+    assert_eq!(
+        delta["output_root"], cold["output_root"],
+        "document FTS commitments must use stable document identities, not SQLite rowids"
+    );
+}
+
 #[cfg(feature = "lang-python")]
 #[test]
 fn source_delta_relinks_affected_docs_with_bare_suffix_references() {

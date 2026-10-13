@@ -224,6 +224,19 @@ impl<'a> Contracts<'a> {
                     json!({"kind": "unknown"})
                 }
             }
+            ValueExpr::BranchJoin { alternatives } => json!({
+                "branch_join": {
+                    "max_candidate_branch_joins": super::value_flow::MAX_CANDIDATE_BRANCH_JOINS,
+                    "alternatives": alternatives.iter().map(|alternative| self.value_contract(
+                        owner,
+                        flow,
+                        alternative,
+                        at,
+                        stack,
+                        depth + 1,
+                    )).collect::<Vec<_>>(),
+                }
+            }),
             ValueExpr::Await { value } => json!({"await": self.value_contract(
                 owner,
                 flow,

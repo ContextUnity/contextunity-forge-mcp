@@ -460,55 +460,119 @@ Verification: direct-proof via `cargo test --test linker`, `cargo test --test la
 
 ```yaml
 task_ref: bounded-candidate-evidence
-target: "Retain finite candidate evidence or formalize fail-closed branch truncation based on ADR 0008 decision"
+target: Retain finite candidate evidence or formalize fail-closed branch truncation based on ADR 0008 decision
 proof_policy: seam-test-first
-contract_revision: 4
+contract_revision: 6
 scope:
-  - src/core/semantic.rs
-  - src/core/typed_facts.rs
-  - src/core/models.rs
-  - src/core/models/
-  - src/core/commitments/
-  - src/engine/linker.rs
-  - src/engine/linker/
-  - src/engine/languages/
-  - src/engine/scanner/
-  - src/core/schema.rs
-  - src/db/writer.rs
-  - src/db/reader.rs
-  - src/db/reader/
-  - src/db/delta.rs
-  - src/db/ingest.rs
-  - tests/linker/
-  - tests/receivers/
-  - tests/languages/
-  - tests/core/
-  - tests/incremental/
-  - tests/commitment_integrity/
-  - tests/common/
-  - docs/architecture/modularity.md
-  - docs/architecture/indexing.md
-  - docs/reference/languages.md
-  - docs/testing/README.md
+- src/core/semantic.rs
+- src/core/typed_facts.rs
+- src/core/models.rs
+- src/core/models/
+- src/core/commitments/
+- src/engine/linker.rs
+- src/engine/linker/
+- src/engine/languages/
+- src/engine/scanner/
+- src/core/schema.rs
+- src/db/writer.rs
+- src/db/reader.rs
+- src/db/reader/
+- src/db/delta.rs
+- src/db/ingest.rs
+- src/db/symbols/search.rs
+- src/db/symbols/test_discovery.rs
+- tests/linker/
+- tests/receivers/
+- tests/languages/
+- tests/core/
+- tests/incremental/
+- tests/commitment_integrity/
+- tests/commitment_integrity.rs
+- tests/common/
+- docs/architecture/modularity.md
+- docs/architecture/indexing.md
+- docs/reference/languages.md
+- docs/testing/README.md
+- docs/milestones/046-bounded-semantic-resolution-and-language-boundaries.md
 depends_on:
-  - language-resolution-ownership
+- language-resolution-ownership
 invariants:
-  - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
-  - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
-  - 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
-  - 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
-  - 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
-status: planned
+- 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+- 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+- 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
+- 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
+- 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
+status: completed
 subtasks:
-  - subtask_ref: bounded-candidate-evidence-1
-    title: "Implement bounded candidate domain and joins (or formalize fail-closed branch truncation)"
-    status: pending
-  - subtask_ref: bounded-candidate-evidence-2
-    title: "Persist compact provenance and compatible facts"
-    status: pending
-  - subtask_ref: bounded-candidate-evidence-3
-    title: "Prove deterministic exhaustion and delta parity"
-    status: pending
+- subtask_ref: bounded-candidate-evidence-1
+  title: Implement bounded candidate domain and joins (or formalize fail-closed branch truncation)
+  status: completed
+  evidence: 'cargo test --test linker: 97 passed. Complete Python branch joins preserve source BindingFact cardinality, stable candidate order/identity, Unknown alternatives, K=8 accepted as ambiguous, K=9 widened to Unknown/Incomplete with no partial candidate prefix; later alias reads receive possible_calls only, never exact calls.'
+- subtask_ref: bounded-candidate-evidence-2
+  title: Persist compact provenance and compatible facts
+  status: completed
+  evidence: 'cargo test --test linker: 97 passed, including receiver production-path persistence/retrieval coverage showing possible_calls provenance persists while exact calls remain absent. cargo test --test commitment_integrity: 15 passed; logical FTS postings and configuration are committed and tampering/query-only verification are covered.'
+- subtask_ref: bounded-candidate-evidence-3
+  title: Prove deterministic exhaustion and delta parity
+  status: completed
+  evidence: 'cargo test --test incremental: 24 passed, including branch-join cold/delta parity and deterministic exhaustion diagnostics. ADR 0004 bit-identical root parity is preserved; final combined five-target suite passed 420, failed 0, ignored 1.'
+receipt:
+  contract_revision: 6
+  passed_at: 2026-10-13T13:02:01.816263128+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test linker --test languages --test core --test incremental --test commitment_integrity --quiet
+      exit_code: 0
+      tests_passed: 421
+      tests_failed: 0
+      log: 'Targets: linker 97; languages 253; core 31 passed, 1 ignored; incremental 25; commitment_integrity 15. cargo clippy --all-targets --all-features -- -D warnings passed; cargo fmt --check passed; git diff --check passed. No benchmarks run.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: The 21 changed paths are within the admitted scope, including src/core/commitments.rs and tests/incremental/doc_parity.rs. No staged or untracked source/config files were present. git diff --check passed, and explicit git diff --exit-code ed89a45 -- <all 21 changed paths> returned clean, confirming the reviewed contents match candidate snapshot ed89a45.
+        claims:
+          applicable: true
+          evidence: 'Python branch joins remain separate transfer facts, preserve source binding cardinality, deduplicate local declaration identities deterministically, retain unknown alternatives, accept K=8, and widen K>8 to Unknown/Incomplete without a partial prefix. Resolution persists candidates only as possible_calls. FTS v2 hashes node postings by nodes.node_hash and document postings by doc_sections.doc_id, checks postings have owners, and validates active docsize token counts. tests/incremental/doc_parity.rs now edits an earlier document while a later section retains the maximum rowid and asserts delta/cold output roots match. Reviewer command `cargo test --test linker --test languages --test core --test incremental --test commitment_integrity --test query_context --quiet` exited 0: 461 passed, 0 failed, 1 ignored. No benchmarks run, as instructed.'
+        concurrency:
+          applicable: true
+          evidence: FTS vocabulary views remain connection-local; snapshot hashing uses separate read-only connections, restores query_only after temporary view creation, and installs commitments transactionally. The fix adds only deterministic owner joins during digesting and does not alter task claim or shared task-state operations. No concurrency defect found.
+        project_isolation:
+          applicable: true
+          evidence: All changed paths are in this repository's admitted source, test, and documentation scope. FTS vocabulary queries are explicitly bound to main.node_search/main.doc_search and map postings to owner identities in the same database. No workspace adapter, linked-workspace path, or project configuration changed.
+        administration:
+          applicable: true
+          evidence: The logical FTS format remains explicitly versioned as forge-owner-sha256-v2. No task store, gate profile, credentials, hooks, or delivery/migration behavior changed. No administration-specific defect found.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
+    - 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
+    - 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
+    - 'INV-OWNERSHIP: Language rules belong to language resolvers; cross-language framework relations use explicit composition passes; common scheduling and budgets remain shared.'
+    - 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
+    - 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
+    - 'INV-PERF-NO-REGRESSION: Indexing and query throughput must not regress. Cold index build on a clean, isolated scratch copy of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) with scratch adapter pointing to clean isolated copies of linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7) must complete within 11.5 seconds wall-clock time using pre-compiled binary target/release/contextunity-forge-mcp build under a lightly loaded host (CPU load < 1.0). Median tool query latencies and RSS peak across benchmark scenarios must not regress against task 1 baseline.'
+    - 'INV-CONTROL-REPO-ISOLATION: Performance evaluations, benchmarks, and multi-workspace verifications must strictly operate on clean, isolated scratch/temporary copies of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) and clean copies of all linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7). The scratch adapter forge-mcp.yaml in the isolated commerce worktree must be rewritten to point linked_workspaces to those isolated clean scratch directories instead of primary repository trees. Never read from or modify primary baseline worktrees.'
+    - 'INV-DOCS: Keep milestone contracts outside doc_search; publish delivered semantic contracts in indexed ADR, architecture, and reference documents.'
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
+    - 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
+    - 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

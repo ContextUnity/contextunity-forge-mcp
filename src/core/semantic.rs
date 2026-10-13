@@ -100,6 +100,11 @@ pub enum ValueExpr {
         /// Exclusive end of the lexical block.
         body_end: SourcePosition,
     },
+    /// Values from every explicitly enumerated local control-flow path.
+    BranchJoin {
+        /// Each path's value, including `Unknown` for an unproven alternative.
+        alternatives: Vec<ValueExpr>,
+    },
     /// Value obtained from a receiver member.
     Field {
         /// Receiver expression.
@@ -148,6 +153,21 @@ pub struct BindingFact {
     pub value: ValueExpr,
     #[serde(default, skip_serializing_if = "is_false")]
     /// Whether conditional applies.
+    pub conditional: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// A control-flow transfer value kept separately from source assignment facts.
+pub struct BranchJoinFact {
+    /// The joined local binding name.
+    pub name: String,
+    /// Position after the joined control-flow statement.
+    pub position: SourcePosition,
+    /// Values retained for each local control-flow alternative.
+    pub value: ValueExpr,
+    #[serde(default, skip_serializing_if = "is_false")]
+    /// Whether the join is scoped to a conditional parent block.
     pub conditional: bool,
 }
 
@@ -251,6 +271,9 @@ pub struct ValueFlowFacts {
     /// The bindings value.
     pub bindings: Vec<BindingFact>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// Control-flow transfer facts, separate from source assignment writes.
+    pub branch_joins: Vec<BranchJoinFact>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     /// Positions of completed immutable lexical initializers.
     pub immutable_initializers: Vec<SourcePosition>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -342,6 +365,11 @@ impl ValueFlowFacts {
                 ValueExpr::Await { value } => value_keys(value, visit, depth + 1),
                 ValueExpr::LoopElement { iterable, .. } => visit(iterable),
                 ValueExpr::Scoped { value, .. } => value_keys(value, visit, depth + 1),
+                ValueExpr::BranchJoin { alternatives } => {
+                    for alternative in alternatives {
+                        value_keys(alternative, visit, depth + 1);
+                    }
+                }
                 ValueExpr::Alias { name } => visit(name),
                 ValueExpr::Field { receiver, member } => {
                     visit(receiver);
@@ -372,6 +400,7 @@ impl ValueFlowFacts {
             .return_value
             .iter()
             .chain(self.bindings.iter().map(|fact| &fact.value))
+            .chain(self.branch_joins.iter().map(|fact| &fact.value))
             .chain(self.fields.iter().map(|fact| &fact.value))
         {
             value_keys(value, &mut visit, 0);
@@ -440,6 +469,17 @@ impl ValueFlowFacts {
                 }
                 return;
             }
+            if value.get("kind").and_then(serde_json::Value::as_str) == Some("branch_join") {
+                if let Some(alternatives) = value
+                    .get("alternatives")
+                    .and_then(serde_json::Value::as_array)
+                {
+                    for alternative in alternatives {
+                        value_keys(alternative, visit, depth + 1);
+                    }
+                }
+                return;
+            }
             let fields: &[&str] = match value.get("kind").and_then(serde_json::Value::as_str) {
                 Some("annotated") => {
                     if let Some(ty) = value.get("type_expr") {
@@ -492,7 +532,7 @@ impl ValueFlowFacts {
         if let Some(value) = flow.get("return_value") {
             value_keys(value, &mut visit, 0);
         }
-        for key in ["bindings", "fields"] {
+        for key in ["bindings", "branch_joins", "fields"] {
             if let Some(facts) = flow.get(key).and_then(serde_json::Value::as_array) {
                 for fact in facts {
                     if let Some(value) = fact.get("value") {
@@ -506,6 +546,7 @@ impl ValueFlowFacts {
     /// Reports whether empty applies.
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
+            && self.branch_joins.is_empty()
             && self.immutable_initializers.is_empty()
             && self.collection_elements.is_empty()
             && self.vue_slots.is_empty()
@@ -529,6 +570,7 @@ impl ValueFlowFacts {
             .bindings
             .iter_mut()
             .map(|fact| &mut fact.position)
+            .chain(self.branch_joins.iter_mut().map(|fact| &mut fact.position))
             .chain(self.immutable_initializers.iter_mut())
             .chain(
                 self.collection_elements
@@ -565,6 +607,11 @@ impl ValueFlowFacts {
                 ValueExpr::Scoped { value, .. } | ValueExpr::Project { value, .. } => {
                     offset_members(value, offset);
                 }
+                ValueExpr::BranchJoin { alternatives } => {
+                    for alternative in alternatives {
+                        offset_members(alternative, offset);
+                    }
+                }
                 _ => {}
             }
         }
@@ -572,6 +619,7 @@ impl ValueFlowFacts {
             .bindings
             .iter_mut()
             .map(|fact| &mut fact.value)
+            .chain(self.branch_joins.iter_mut().map(|fact| &mut fact.value))
             .chain(self.fields.iter_mut().map(|fact| &mut fact.value))
             .chain(self.return_value.iter_mut())
         {
@@ -612,6 +660,10 @@ mod tests {
                 {"value":{"kind":"field", "receiver":"client", "member":"run"}},
                 {"value":{"kind":"unknown", "callee":"invented"}}
             ],
+            "branch_joins": [{"value":{"kind":"branch_join", "alternatives":[
+                {"kind":"construct", "callee":"JoinTarget"},
+                {"kind":"unknown"}
+            ]}}],
             "fields": [{"value":{"kind":"annotated", "type_expr":{"kind":"named", "name":"FieldType"}}}]
         }});
         let mut keys = std::collections::BTreeSet::new();
@@ -623,6 +675,7 @@ mod tests {
             [
                 "AliasTarget",
                 "FieldType",
+                "JoinTarget",
                 "client",
                 "pkg.Factory",
                 "pkg.Worker",
@@ -653,6 +706,11 @@ mod tests {
         );
         assert!(serde_json::from_str::<ValueFlowFacts>("{}")
             .unwrap()
+            .is_empty());
+        let legacy = serde_json::json!({"bindings": [], "fields": []});
+        assert!(serde_json::from_value::<ValueFlowFacts>(legacy)
+            .unwrap()
+            .branch_joins
             .is_empty());
         assert!(serde_json::from_str::<ValueFlowFacts>(r#"{"guessed_type":"Worker"}"#).is_err());
     }

@@ -64,6 +64,19 @@ fn node(conn: &Connection, id: &str, path: &str) {
     .unwrap();
 }
 
+fn search_nodes(conn: &Connection, count: i64) {
+    let path_id = owner_id(conn, "src/fts.rs");
+    for node_hash in 1..=count {
+        let id = format!("fts:{node_hash}");
+        conn.execute(
+            "INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) \
+             VALUES(?1,'function',?1,?1,?2,1,1,0,'rust',0,'{}',?3,?2)",
+            params![id, path_id, node_hash],
+        )
+        .unwrap();
+    }
+}
+
 fn assert_seal_rejects(conn: &Connection, reason: &str) {
     let error = commitments::seal(conn).expect_err("malformed graph reference must fail sealing");
     assert!(error.to_string().contains(reason), "{error:#}");
@@ -82,6 +95,43 @@ fn fts_postings(conn: &Connection, vocab: &str) -> Vec<(String, i64, String, i64
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap()
+}
+
+#[test]
+fn read_only_query_only_verification_uses_temporary_logical_fts_views() {
+    let workspace = Workspace::new();
+    let path = workspace.path("fts-commitments.sqlite");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(SCHEMA_DDL).unwrap();
+    search_nodes(&conn, 1);
+    conn.execute(
+        "INSERT INTO node_search(rowid,search_text) VALUES(1,'stable node posting')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO doc_sections(doc_id,path,section_title,doc_type,content,invariants,referenced_symbols,mtime,size) \
+         VALUES('doc-17','docs/17.md','Stable title','guide','stable content','stable invariant','',0,0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO doc_search(rowid,section_title,content,invariants) \
+         SELECT rowid,section_title,content,invariants FROM doc_sections",
+        [],
+    )
+    .unwrap();
+    commitments::seal(&conn).unwrap();
+    drop(conn);
+
+    let reader =
+        Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    reader.pragma_update(None, "query_only", true).unwrap();
+    commitments::verify(&reader).unwrap();
+    let query_only: i64 = reader
+        .query_row("PRAGMA query_only", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(query_only, 1, "verification restores query_only mode");
 }
 
 #[test]
@@ -197,8 +247,9 @@ fn sealing_rejects_shared_owners_with_missing_owner_or_key() {
 }
 
 #[test]
-fn fts_shadow_commitments_are_stable_across_scan_order_and_vacuum() {
+fn logical_fts_commitments_are_stable_and_reject_semantic_tampering() {
     let conn = connection();
+    search_nodes(&conn, 2048);
     conn.execute_batch(
         "INSERT INTO node_search(node_search,rank) VALUES('pgsz',256);
          WITH RECURSIVE nums(x) AS (
@@ -241,55 +292,51 @@ fn fts_shadow_commitments_are_stable_across_scan_order_and_vacuum() {
 
     let expected = commitments::seal(&conn).unwrap();
 
-    let shadow_mutations = [
+    let fts_mutations = [
         (
-            "node_search_data",
-            "UPDATE node_search_data SET block=CAST(block || X'00' AS BLOB) \
-             WHERE id=(SELECT id FROM node_search_data ORDER BY id LIMIT 1)",
-        ),
-        (
-            "node_search_idx",
-            "UPDATE node_search_idx SET pgno=pgno+1 \
-             WHERE (segid,term)=(SELECT segid,term FROM node_search_idx LIMIT 1)",
+            "node_search_postings",
+            "INSERT INTO node_search(rowid,search_text) \
+             VALUES(9000001,'logicalpostingtamper')",
+            "node_search_postings",
         ),
         (
             "node_search_docsize",
             "UPDATE node_search_docsize SET sz=CAST(sz || X'00' AS BLOB) \
              WHERE id=(SELECT id FROM node_search_docsize ORDER BY id LIMIT 1)",
+            "node_search_docsize",
         ),
         (
             "node_search_config",
             "UPDATE node_search_config SET v=CAST(v || 'x' AS BLOB) \
              WHERE k=(SELECT k FROM node_search_config ORDER BY k LIMIT 1)",
+            "node_search_config",
         ),
         (
-            "doc_search_data",
-            "UPDATE doc_search_data SET block=CAST(block || X'00' AS BLOB) \
-             WHERE id=(SELECT id FROM doc_search_data ORDER BY id LIMIT 1)",
-        ),
-        (
-            "doc_search_idx",
-            "UPDATE doc_search_idx SET pgno=pgno+1 \
-             WHERE (segid,term)=(SELECT segid,term FROM doc_search_idx LIMIT 1)",
+            "doc_search_postings",
+            "INSERT INTO doc_search(rowid,section_title,content,invariants) \
+             VALUES(9000001,'logical posting tamper','','')",
+            "doc_search_postings",
         ),
         (
             "doc_search_docsize",
             "UPDATE doc_search_docsize SET sz=CAST(sz || X'00' AS BLOB) \
              WHERE id=(SELECT id FROM doc_search_docsize ORDER BY id LIMIT 1)",
+            "doc_search_docsize",
         ),
         (
             "doc_search_config",
             "UPDATE doc_search_config SET v=CAST(v || 'x' AS BLOB) \
              WHERE k=(SELECT k FROM doc_search_config ORDER BY k LIMIT 1)",
+            "doc_search_config",
         ),
     ];
-    for (table, mutation) in shadow_mutations {
+    for (table, mutation, commitment) in fts_mutations {
         conn.execute_batch("SAVEPOINT fts_shadow_tamper").unwrap();
         assert_eq!(conn.execute(mutation, []).unwrap(), 1, "{table}");
         let error = commitments::verify(&conn).expect_err(&format!(
-            "tampering with {table} must invalidate the stored seal"
+            "tampering with {table} must invalidate the stored logical seal"
         ));
-        assert!(error.to_string().contains(table), "{error:#}");
+        assert!(error.to_string().contains(commitment), "{error:#}");
         conn.execute_batch("ROLLBACK TO fts_shadow_tamper; RELEASE fts_shadow_tamper;")
             .unwrap();
         commitments::verify(&conn).unwrap();
@@ -314,6 +361,7 @@ fn fts_shadow_commitments_are_stable_across_scan_order_and_vacuum() {
 #[test]
 fn fts_sealing_survives_valid_rebuild_reindex_and_vacuum() {
     let conn = connection();
+    search_nodes(&conn, 512);
     conn.execute_batch(
         "INSERT INTO node_search(node_search,rank) VALUES('pgsz',256);
          WITH RECURSIVE nums(x) AS (
@@ -369,7 +417,7 @@ fn fts_sealing_survives_valid_rebuild_reindex_and_vacuum() {
     let maintained_root = commitments::seal(&conn).unwrap();
     assert_eq!(
         maintained_root, rebuilt_root,
-        "REINDEX, ANALYZE, and VACUUM must preserve the physical FTS commitment root"
+        "REINDEX, ANALYZE, and VACUUM must preserve the logical FTS commitment root"
     );
     commitments::verify(&conn).unwrap();
     assert_eq!(commitments::seal(&conn).unwrap(), maintained_root);

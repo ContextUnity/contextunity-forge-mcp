@@ -45,6 +45,8 @@ The index records declarations, imports, references, and relationships recoverab
 
 Cross-language framework links use indexed source facts after language-level resolution. Route calls, HTMX requests, render targets, and template context bindings retain their source ownership and ambiguity status; they do not infer targets from shared names alone.
 
+For Python, a complete local `if`/`elif`/`else` join can expose method targets through `possible_calls` edges. These edges list bounded possibilities and are not exact runtime calls. Unknown paths remain incomplete; more than eight distinct local declarations widens the whole result without emitting a truncated set. Possible edges remain dependency evidence for removal assessments.
+
 | Profile group | Important static limit |
 | --- | --- |
 | Python and Ruby | Dynamic imports, metaprogramming, monkey patching, and runtime dispatch can escape syntax-level analysis. |

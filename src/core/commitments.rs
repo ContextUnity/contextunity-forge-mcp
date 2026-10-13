@@ -10,7 +10,7 @@ mod snapshot;
 
 pub(crate) use snapshot::seal_snapshot;
 /// Domain-separated owner commitment algorithm persisted in index metadata.
-pub const ALGORITHM: &str = "forge-owner-sha256-v1";
+pub const ALGORITHM: &str = "forge-owner-sha256-v2";
 /// Logical table domains included in the deterministic output root.
 pub const DOMAINS: &[&str] = &[
     "source_inventory",
@@ -28,13 +28,9 @@ pub const DOMAINS: &[&str] = &[
     "doc_sections",
 ];
 const FTS: &[(&str, &str)] = &[
-    ("node_search_data", "id"),
-    ("node_search_idx", "segid,term"),
-    ("node_search_docsize", "id"),
+    ("node_search_postings", "term,doc,col,offset"),
     ("node_search_config", "k"),
-    ("doc_search_data", "id"),
-    ("doc_search_idx", "segid,term"),
-    ("doc_search_docsize", "id"),
+    ("doc_search_postings", "term,doc,col,offset"),
     ("doc_search_config", "k"),
 ];
 /// Returns a lowercase SHA-256 digest of the supplied bytes.
@@ -163,8 +159,172 @@ fn leaves(
     domain_leaves::leaves_generic(conn, table, owners)
 }
 
+fn ensure_fts_vocab(conn: &Connection, index: &str) -> Result<&'static str> {
+    let (table, create_sql) = match index {
+        "node_search" => (
+            "node_search_commit_vocab",
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.node_search_commit_vocab \
+             USING fts5vocab(main,node_search,'instance')",
+        ),
+        "doc_search" => (
+            "doc_search_commit_vocab",
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.doc_search_commit_vocab \
+             USING fts5vocab(main,doc_search,'instance')",
+        ),
+        _ => anyhow::bail!("unsupported FTS commitment index: {index}"),
+    };
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )?;
+    if exists {
+        return Ok(table);
+    }
+
+    // Snapshot hashing opens read-only connections and marks them query-only.
+    // SQLite permits a temp vocab view on a read-only main database, but only
+    // when query_only is briefly disabled while the temp object is created.
+    let query_only: i64 = conn.query_row("PRAGMA query_only", [], |row| row.get(0))?;
+    if query_only != 0 {
+        conn.pragma_update(None, "query_only", false)?;
+    }
+    let create_result = conn.execute_batch(create_sql);
+    let restore_result = if query_only != 0 {
+        conn.pragma_update(None, "query_only", true)
+    } else {
+        Ok(())
+    };
+    create_result?;
+    restore_result?;
+    Ok(table)
+}
+
+fn decode_fts5_size_array(bytes: &[u8], columns: usize) -> Result<Vec<u32>> {
+    let mut offset = 0;
+    let mut sizes = Vec::with_capacity(columns);
+    for _ in 0..columns {
+        let mut value = 0u32;
+        let mut encoded_bytes = 0;
+        loop {
+            let byte = *bytes
+                .get(offset)
+                .context("truncated FTS5 document-size vector")?;
+            offset += 1;
+            encoded_bytes += 1;
+            anyhow::ensure!(encoded_bytes <= 5, "oversized FTS5 document-size value");
+            value = value
+                .checked_mul(128)
+                .and_then(|value| value.checked_add(u32::from(byte & 0x7f)))
+                .context("FTS5 document-size value overflow")?;
+            if byte & 0x80 == 0 {
+                break;
+            }
+        }
+        sizes.push(value);
+    }
+    anyhow::ensure!(
+        offset == bytes.len(),
+        "FTS5 document-size vector has trailing bytes"
+    );
+    Ok(sizes)
+}
+
+fn validate_fts_docsize(conn: &Connection, index: &str, vocab: &str) -> Result<()> {
+    let (docsize_table, fts_table, owner_table, owner_key, columns): (
+        &str,
+        &str,
+        &str,
+        &str,
+        &[&str],
+    ) = match index {
+        "node_search" => (
+            "node_search_docsize",
+            "node_search",
+            "nodes",
+            "node_hash",
+            &["search_text"],
+        ),
+        "doc_search" => (
+            "doc_search_docsize",
+            "doc_search",
+            "doc_sections",
+            "rowid",
+            &["section_title", "content", "invariants"],
+        ),
+        _ => anyhow::bail!("unsupported FTS commitment index: {index}"),
+    };
+    let has_orphan_postings: bool = conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM temp.{vocab} AS v \
+             LEFT JOIN {owner_table} AS o ON o.{owner_key}=v.doc \
+             WHERE o.{owner_key} IS NULL)"
+        ),
+        [],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        !has_orphan_postings,
+        "FTS5 postings refer to missing owner rows: {index}_postings"
+    );
+
+    let mut token_counts = BTreeMap::new();
+    let mut counts = conn.prepare(&format!(
+        "SELECT doc,col,count(*) FROM temp.{vocab} GROUP BY doc,col ORDER BY doc,col"
+    ))?;
+    for row in counts.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })? {
+        let (doc, column, count) = row?;
+        token_counts.insert((doc, column), count);
+    }
+
+    let mut docs = conn.prepare(&format!("SELECT rowid FROM {fts_table} ORDER BY rowid"))?;
+    let mut sizes = conn.prepare(&format!("SELECT sz FROM {docsize_table} WHERE id=?1"))?;
+    for row in docs.query_map([], |row| row.get::<_, i64>(0))? {
+        let doc = row?;
+        let size_blob: Vec<u8> = sizes
+            .query_row([doc], |row| row.get(0))
+            .with_context(|| format!("missing active FTS5 docsize row: {docsize_table}:{doc}"))?;
+        let actual = decode_fts5_size_array(&size_blob, columns.len())
+            .with_context(|| format!("invalid FTS5 document sizes: {docsize_table}:{doc}"))?;
+        for (column_index, column) in columns.iter().enumerate() {
+            let expected = u32::try_from(
+                token_counts
+                    .get(&(doc, (*column).to_owned()))
+                    .copied()
+                    .unwrap_or_default(),
+            )
+            .context("FTS5 token count exceeds document-size range")?;
+            anyhow::ensure!(
+                actual[column_index] == expected,
+                "FTS5 document size mismatch: {docsize_table}:{doc} column {column}"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> {
-    let mut stmt = conn.prepare(&format!("SELECT * FROM {table} ORDER BY {order_by}"))?;
+    let mut stmt = if let Some(index) = table.strip_suffix("_postings") {
+        let vocab = ensure_fts_vocab(conn, index)?;
+        validate_fts_docsize(conn, index, vocab)?;
+        let (identity, join) = match index {
+            "node_search" => ("n.node_hash", "JOIN nodes AS n ON n.node_hash=v.doc"),
+            "doc_search" => ("s.doc_id", "JOIN doc_sections AS s ON s.rowid=v.doc"),
+            _ => anyhow::bail!("unsupported FTS commitment index: {index}"),
+        };
+        conn.prepare(&format!(
+            "SELECT v.term,{identity},v.col,v.offset FROM temp.{vocab} AS v {join} \
+             ORDER BY v.term,{identity},v.col,v.offset"
+        ))?
+    } else {
+        conn.prepare(&format!("SELECT * FROM {table} ORDER BY {order_by}"))?
+    };
     let columns = stmt.column_count();
     let mut rows = stmt.query([])?;
     let mut h = Sha256::new();

@@ -69,7 +69,7 @@ pub fn search_with_options(
                 options,
             )?
         } else {
-            let sql = format!("SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM node_search JOIN nodes n ON n.node_id=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY pd.path,n.line,n.id");
+            let sql = format!("SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY pd.path,n.line,n.id");
             paging::query(
                 conn,
                 &sql,
@@ -96,7 +96,7 @@ pub fn search_with_options(
             .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_alphanumeric() || c == '_'))
         {
             let query = format!("\"{prefix}\"*");
-            let from = "FROM node_search JOIN nodes n ON n.node_id=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown')";
+            let from = "FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown')";
             let probe = format!("SELECT n.node_id {from} LIMIT 1001");
             let sql = format!(
                 "WITH fts_scored AS MATERIALIZED (
@@ -167,11 +167,11 @@ pub fn search_with_options(
             "WITH
             fts AS MATERIALIZED (
                 SELECT n.node_id,pd.path,n.line,n.id,({fts_score}) AS score
-                FROM node_search JOIN nodes n ON n.node_id=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
+                FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
                 WHERE node_search MATCH ?1 AND {filters}
                 ORDER BY score DESC,pd.path,n.line,n.id LIMIT ?9
             ), fts_probe AS MATERIALIZED (
-                SELECT n.node_id FROM node_search JOIN nodes n ON n.node_id=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
+                SELECT n.node_id FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id
                 WHERE node_search MATCH ?1 AND {filters} LIMIT 1001
             ), structural_all AS MATERIALIZED (
                 SELECT n.node_id,pd.path,n.line,n.id,({structural_score}) AS score

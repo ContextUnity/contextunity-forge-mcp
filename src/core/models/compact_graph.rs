@@ -19,6 +19,7 @@ impl CompactTag {
     fn known(value: &str) -> Option<&'static str> {
         Some(match value {
             "calls" => "calls",
+            "possible_calls" => "possible_calls",
             "imports" => "imports",
             "contains" => "contains",
             "references" => "references",
@@ -31,6 +32,7 @@ impl CompactTag {
             "registers" => "registers",
             "exact" => "exact",
             "inferred" => "inferred",
+            "possible" => "possible",
             "heuristic" => "heuristic",
             "resolved" => "resolved",
             "external" => "external",

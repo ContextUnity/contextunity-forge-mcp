@@ -1,5 +1,6 @@
 use super::{
-    aggregate, batch_insert_commitments, fts_digest, leaves, root, seal, ALGORITHM, DOMAINS, FTS,
+    aggregate, batch_insert_commitments, ensure_fts_vocab, fts_digest, leaves, root, seal,
+    ALGORITHM, DOMAINS, FTS,
 };
 use anyhow::Result;
 use rayon::prelude::*;
@@ -42,6 +43,12 @@ fn hash_snapshot(path: &str) -> Result<SnapshotCommitments> {
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )?;
             reader.busy_timeout(std::time::Duration::from_secs(5))?;
+            if index >= DOMAINS.len() {
+                let (table, _) = FTS[index - DOMAINS.len()];
+                if let Some(fts_index) = table.strip_suffix("_postings") {
+                    ensure_fts_vocab(&reader, fts_index)?;
+                }
+            }
             reader.execute_batch(
                 "PRAGMA query_only=ON; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-4096; PRAGMA mmap_size=268435456;",
             )?;

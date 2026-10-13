@@ -721,7 +721,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                 fallback_symbols.insert(symbol.as_str());
             }
         }
-        let mut st = admitted.prepare("SELECT n.id,n.qualname FROM node_search s JOIN nodes n ON n.node_id=s.rowid WHERE node_search MATCH ?1")?;
+        let mut st = admitted.prepare("SELECT n.id,n.qualname FROM node_search s JOIN nodes n ON n.node_hash=s.rowid WHERE node_search MATCH ?1")?;
         for chunk in terms.into_iter().collect::<Vec<_>>().chunks(32) {
             let query = chunk
                 .iter()
@@ -1041,7 +1041,7 @@ fn delete_file(tx: &Connection, path_cache: &mut PathDictionaryCache, path: &str
     let owner_id = path_cache.get_or_insert(tx, path)?;
     cached(
         tx,
-        "DELETE FROM node_search WHERE rowid IN(SELECT node_id FROM nodes WHERE owner_path_id=?1)",
+        "DELETE FROM node_search WHERE rowid IN(SELECT node_hash FROM nodes WHERE owner_path_id=?1)",
         [owner_id],
     )?;
     cached(tx,"INSERT INTO doc_search(doc_search,rowid,section_title,content,invariants)SELECT 'delete',rowid,section_title,content,invariants FROM doc_sections WHERE path=?1",[path])?;

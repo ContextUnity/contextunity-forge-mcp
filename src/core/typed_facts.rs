@@ -64,7 +64,8 @@ struct ClassicFlow<'a> {
 impl Serialize for ClassicFlow<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(
-            2 + usize::from(!self.facts.immutable_initializers.is_empty()),
+            2 + usize::from(!self.facts.immutable_initializers.is_empty())
+                + usize::from(!self.facts.branch_joins.is_empty()),
         ))?;
         let bindings = (!self.facts.bindings.is_empty()).then_some(&self.facts.bindings);
         let fields = (!self.facts.fields.is_empty()).then_some(&self.facts.fields);
@@ -78,6 +79,9 @@ impl Serialize for ClassicFlow<'_> {
         if !self.facts.immutable_initializers.is_empty() {
             map.serialize_entry("immutable_initializers", &self.facts.immutable_initializers)?;
         }
+        if !self.facts.branch_joins.is_empty() {
+            map.serialize_entry("branch_joins", &self.facts.branch_joins)?;
+        }
         map.end()
     }
 }
@@ -87,8 +91,9 @@ pub(crate) struct FlowStore {
     entries: HashMap<String, FlowState>,
 }
 
-const SCOPE_FACT_KEYS: [&str; 8] = [
+const SCOPE_FACT_KEYS: [&str; 9] = [
     "bindings",
+    "branch_joins",
     "immutable_initializers",
     "collection_elements",
     "template_contexts",
@@ -98,11 +103,12 @@ const SCOPE_FACT_KEYS: [&str; 8] = [
     "fields",
 ];
 
-/// Returns the total count of all scope facts across all 8 fact categories.
+/// Returns the total count of all scope facts across all 9 fact categories.
 pub fn scope_fact_count(facts: &ValueFlowFacts) -> usize {
     facts
         .bindings
         .len()
+        .saturating_add(facts.branch_joins.len())
         .saturating_add(facts.immutable_initializers.len())
         .saturating_add(facts.collection_elements.len())
         .saturating_add(facts.template_contexts.len())
@@ -112,7 +118,7 @@ pub fn scope_fact_count(facts: &ValueFlowFacts) -> usize {
         .saturating_add(facts.fields.len())
 }
 
-/// Counts the same eight arrays on a persisted value-flow object.
+/// Counts the same nine arrays on a persisted value-flow object.
 pub fn encoded_scope_fact_count(encoded: &Value) -> usize {
     SCOPE_FACT_KEYS
         .into_iter()

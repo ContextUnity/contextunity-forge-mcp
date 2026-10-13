@@ -256,7 +256,7 @@ pub(super) fn persist_files(
                 let mut search = reusable_search_buffers.pop().unwrap_or_default();
                 write_node_search_text(&mut search, n, f);
                 owned_search_batch.push(SearchRow {
-                    node_id,
+                    search_id: stable_hash64(&n.id),
                     text: search,
                 });
                 if owned_search_batch.len()
@@ -271,7 +271,8 @@ pub(super) fn persist_files(
             } else {
                 write_node_search_text(&mut incremental_search_buffer, n, f);
                 if let Some(stmt_node_search) = stmt_node_search.as_mut() {
-                    stmt_node_search.execute(params![node_id, &incremental_search_buffer])?;
+                    stmt_node_search
+                        .execute(params![stable_hash64(&n.id), &incremental_search_buffer])?;
                 }
                 incremental_search_buffer.clear();
             }
@@ -424,7 +425,7 @@ fn write_node_search_text(search: &mut String, node: &Node, facts: &Facts) {
 }
 
 struct SearchRow {
-    node_id: i64,
+    search_id: i64,
     text: String,
 }
 
@@ -437,7 +438,7 @@ fn flush_owned_search_batch(
         .iter()
         .map(|row| {
             [
-                BorrowedSqlValue::Integer(row.node_id),
+                BorrowedSqlValue::Integer(row.search_id),
                 BorrowedSqlValue::Text(&row.text),
             ]
         })

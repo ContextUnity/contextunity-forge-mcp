@@ -1,7 +1,7 @@
 use crate::{
     core::semantic::{
-        AnnotationReferenceFact, BindingFact, CollectionElementFact, FieldFact, GuardImportFact,
-        SourcePosition, TypeExpr, TypeOnlyImportFact, ValueExpr, ValueFlowFacts,
+        AnnotationReferenceFact, BindingFact, BranchJoinFact, CollectionElementFact, FieldFact,
+        GuardImportFact, SourcePosition, TypeExpr, TypeOnlyImportFact, ValueExpr, ValueFlowFacts,
     },
     engine::ast::{field, text},
 };
@@ -542,6 +542,59 @@ fn value(node: Node<'_>, source: &str) -> ValueExpr {
     }
 }
 
+fn direct_assignment<'tree>(
+    block: Node<'tree>,
+    source: &str,
+) -> Result<Option<(String, Node<'tree>)>, ()> {
+    let mut assignment = None;
+    let mut cursor = block.walk();
+    for statement in block.named_children(&mut cursor) {
+        let statement = if statement.kind() == "expression_statement" {
+            let Some(expression) = statement.named_child(0) else {
+                return Err(());
+            };
+            expression
+        } else {
+            statement
+        };
+        match statement.kind() {
+            "comment" | "pass_statement" => {}
+            "assignment" => {
+                let Some(left) = statement
+                    .child_by_field_name("left")
+                    .filter(|left| left.kind() == "identifier")
+                else {
+                    return Err(());
+                };
+                if assignment.is_some() {
+                    return Err(());
+                }
+                assignment = Some((text(left, source).to_owned(), statement));
+            }
+            _ => return Err(()),
+        }
+    }
+    Ok(assignment)
+}
+
+fn branch_blocks<'tree>(node: Node<'tree>) -> Option<(Vec<Node<'tree>>, bool)> {
+    let consequence = node.child_by_field_name("consequence")?;
+    let mut branches = vec![consequence];
+    let mut has_else = false;
+    let mut cursor = node.walk();
+    for alternative in node.children_by_field_name("alternative", &mut cursor) {
+        match alternative.kind() {
+            "elif_clause" => branches.push(alternative.child_by_field_name("consequence")?),
+            "else_clause" => {
+                branches.push(alternative.child_by_field_name("body")?);
+                has_else = true;
+            }
+            _ => return None,
+        }
+    }
+    Some((branches, has_else))
+}
+
 struct Collector<'a> {
     source: &'a str,
     has_django_shortcuts_import: bool,
@@ -611,6 +664,96 @@ impl Collector<'_> {
         }
     }
 
+    fn bind_if_join(&mut self, node: Node<'_>, inherited_conditional: bool) {
+        let Some((branches, has_else)) = branch_blocks(node) else {
+            return;
+        };
+        let mut branch_assignments = Vec::with_capacity(branches.len());
+        let mut joined_name: Option<String> = None;
+        for branch in branches {
+            let assignment = match direct_assignment(branch, self.source) {
+                Ok(assignment) => assignment,
+                Err(()) => return,
+            };
+            if let Some((name, _)) = &assignment {
+                if joined_name.as_ref().is_some_and(|joined| joined != name) {
+                    return;
+                }
+                joined_name.get_or_insert_with(|| name.clone());
+            }
+            branch_assignments.push(assignment);
+        }
+        let Some(name) = joined_name else {
+            return;
+        };
+
+        let start = node.start_position();
+        let prior_binding = self
+            .facts
+            .bindings
+            .iter()
+            .filter(|binding| {
+                binding.name == name
+                    && !binding.conditional
+                    && (binding.position.line, binding.position.column) < (start.row + 1, start.column)
+            })
+            .map(|binding| (binding.position, &binding.value));
+        let prior_join = self
+            .facts
+            .branch_joins
+            .iter()
+            .filter(|join| {
+                join.name == name
+                    && !join.conditional
+                    && (join.position.line, join.position.column)
+                        < (start.row + 1, start.column)
+            })
+            .map(|join| (join.position, &join.value));
+        let incoming = prior_binding
+            .into_iter()
+            .chain(prior_join)
+            .max_by_key(|(position, _)| (position.line, position.column))
+            .map(|(_, value)| value.clone())
+            .unwrap_or(ValueExpr::Unknown);
+        let mut alternatives = branch_assignments
+            .into_iter()
+            .map(|assignment| match assignment {
+                Some((_, statement)) => {
+                    let right = statement.child_by_field_name("right");
+                    let literal = right.and_then(literal_value);
+                    if let Some(literal) = literal {
+                        literal
+                    } else {
+                        right.map_or(ValueExpr::Unknown, |right| value(right, self.source))
+                    }
+                }
+                None => incoming.clone(),
+            })
+            .collect::<Vec<_>>();
+        if !has_else {
+            alternatives.push(incoming);
+        }
+
+        let mut joined = ValueExpr::BranchJoin { alternatives };
+        if inherited_conditional {
+            let Some(body_end) = direct_branch_end(node) else {
+                return;
+            };
+            joined = ValueExpr::Scoped {
+                value: Box::new(joined),
+                body_end,
+            };
+        }
+        let mut at = position(node);
+        at.column = at.column.saturating_add(1);
+        self.facts.branch_joins.push(BranchJoinFact {
+            name,
+            value: joined,
+            position: at,
+            conditional: inherited_conditional,
+        });
+    }
+
     fn visit(
         &mut self,
         node: Node<'_>,
@@ -618,6 +761,7 @@ impl Collector<'_> {
         collect_facts: bool,
         lexical_scope: bool,
     ) {
+        let inherited_conditional = conditional;
         if self.collect_summary {
             if self.collect_return_summary
                 && matches!(
@@ -837,6 +981,13 @@ impl Collector<'_> {
                 collect_facts && !nested_scope,
                 lexical_scope && !nested_scope,
             );
+        }
+        if collect_facts
+            && self.local_scope
+            && !self.class_scope
+            && node.kind() == "if_statement"
+        {
+            self.bind_if_join(node, inherited_conditional);
         }
     }
 }

@@ -12,6 +12,8 @@ type NamedNodes<'a> = HashMap<(&'a str, &'a str), Vec<&'a Node>>;
 type CollectionElements<'a> =
     HashMap<&'a str, HashMap<String, Vec<(SourcePosition, TypeTarget<'a>)>>>;
 
+pub(crate) const MAX_CANDIDATE_BRANCH_JOINS: usize = 8;
+
 fn normalize_dotted_expression(expression: &str) -> Cow<'_, str> {
     let expression = expression.trim();
     if !expression.contains('.') {
@@ -70,6 +72,15 @@ pub enum TypeTarget<'a> {
     Builtin(String),
     /// Represents the object case.
     Object(Arc<HashMap<String, &'a Node>>),
+    /// Finite local alternatives from a complete or partially unknown branch join.
+    Candidates {
+        /// Stable, declaration-identity-deduplicated local type declarations.
+        targets: Vec<&'a Node>,
+        /// Whether every local control-flow alternative was proven.
+        complete: bool,
+        /// Whether more than the supported candidate bound was observed.
+        exhausted: bool,
+    },
     /// Represents the ambiguous case.
     Ambiguous,
     /// Represents the unknown case.
@@ -191,6 +202,15 @@ struct Binding<'a> {
     target: TypeTarget<'a>,
     valid_until: Option<SourcePosition>,
     restores_previous: bool,
+    immutable_initializer: bool,
+}
+
+#[derive(Clone, Copy)]
+struct BindingEvent<'a> {
+    name: &'a str,
+    position: SourcePosition,
+    value: &'a ValueExpr,
+    conditional: bool,
     immutable_initializer: bool,
 }
 
@@ -621,13 +641,34 @@ impl<'a> ValueFlowIndex<'a> {
             }
         }
         for owner in &owners {
-            let mut bindings: Vec<_> = raw[owner.id.as_str()].bindings.iter().collect();
+            let facts = &raw[owner.id.as_str()];
+            let mut bindings: Vec<_> = facts
+                .bindings
+                .iter()
+                .map(|binding| BindingEvent {
+                    name: &binding.name,
+                    position: binding.position,
+                    value: &binding.value,
+                    conditional: binding.conditional,
+                    immutable_initializer: facts
+                        .immutable_initializers
+                        .binary_search(&binding.position)
+                        .is_ok(),
+                })
+                .chain(facts.branch_joins.iter().map(|join| BindingEvent {
+                    name: &join.name,
+                    position: join.position,
+                    value: &join.value,
+                    conditional: join.conditional,
+                    immutable_initializer: false,
+                }))
+                .collect();
             bindings.sort_by_key(|binding| binding.position);
             let mut events = Vec::with_capacity(bindings.len());
             for binding in bindings {
-                let loop_element = matches!(&binding.value, ValueExpr::LoopElement { .. });
-                let guarded_python = owner.language == "python"
-                    && matches!(&binding.value, ValueExpr::Scoped { .. });
+                let loop_element = matches!(binding.value, ValueExpr::LoopElement { .. });
+                let guarded_python =
+                    owner.language == "python" && matches!(binding.value, ValueExpr::Scoped { .. });
                 let target = if (binding.conditional && !loop_element && !guarded_python)
                     || index.scopes[owner.id.as_str()].invalid
                 {
@@ -635,7 +676,7 @@ impl<'a> ValueFlowIndex<'a> {
                 } else {
                     index.evaluate(
                         owner,
-                        &binding.value,
+                        binding.value,
                         binding.position,
                         resolver,
                         Some(&definitions),
@@ -648,7 +689,7 @@ impl<'a> ValueFlowIndex<'a> {
                             if matches!(name.as_str(), "list" | "List" | "Sequence" | "Iterable")
                     )
                 {
-                    let call = match &binding.value {
+                    let call = match binding.value {
                         ValueExpr::Call { callee } => Some((callee.as_str(), false)),
                         ValueExpr::Await { value } => match value.as_ref() {
                             ValueExpr::Call { callee } => Some((callee.as_str(), true)),
@@ -675,7 +716,7 @@ impl<'a> ValueFlowIndex<'a> {
                                 !index
                                     .collection_elements
                                     .get(owner.id.as_str())
-                                    .and_then(|names| names.get(&binding.name))
+                                    .and_then(|names| names.get(binding.name))
                                     .is_some_and(|elements| {
                                         elements
                                             .iter()
@@ -688,7 +729,7 @@ impl<'a> ValueFlowIndex<'a> {
                                 .collection_elements
                                 .entry(owner.id.as_str())
                                 .or_default()
-                                .entry(binding.name.clone())
+                                .entry(binding.name.to_owned())
                                 .or_default()
                                 .push((binding.position, element));
                         }
@@ -699,23 +740,20 @@ impl<'a> ValueFlowIndex<'a> {
                     .get_mut(owner.id.as_str())
                     .expect("scope indexed")
                     .bindings
-                    .entry(binding.name.clone())
+                    .entry(binding.name.to_owned())
                     .or_default();
                 events.push((binding, writes.len()));
                 writes.push(Binding {
                     position: binding.position,
                     target,
-                    valid_until: match &binding.value {
+                    valid_until: match binding.value {
                         ValueExpr::LoopElement { body_end, .. } => Some(*body_end),
                         ValueExpr::Scoped { body_end, .. } => Some(*body_end),
                         _ => None,
                     },
                     restores_previous: owner.language != "python"
-                        && matches!(&binding.value, ValueExpr::Scoped { .. }),
-                    immutable_initializer: raw[owner.id.as_str()]
-                        .immutable_initializers
-                        .binary_search(&binding.position)
-                        .is_ok(),
+                        && matches!(binding.value, ValueExpr::Scoped { .. }),
+                    immutable_initializer: binding.immutable_initializer,
                 });
             }
             ordered.insert(owner.id.as_str(), events);
@@ -753,25 +791,25 @@ impl<'a> ValueFlowIndex<'a> {
         // Replay in source order so aliases of field-derived values see the summaries.
         for owner in &owners {
             for (binding, event_index) in &ordered[owner.id.as_str()] {
-                let guarded_python = owner.language == "python"
-                    && matches!(&binding.value, ValueExpr::Scoped { .. });
+                let guarded_python =
+                    owner.language == "python" && matches!(binding.value, ValueExpr::Scoped { .. });
                 if (!binding.conditional || guarded_python)
                     && !index.scopes[owner.id.as_str()].invalid
                 {
-                    let writes = &index.scopes[owner.id.as_str()].bindings[&binding.name];
+                    let writes = &index.scopes[owner.id.as_str()].bindings[binding.name];
                     if duplicate_position(writes, *event_index) {
                         index
                             .scopes
                             .get_mut(owner.id.as_str())
                             .expect("scope indexed")
                             .bindings
-                            .get_mut(&binding.name)
+                            .get_mut(binding.name)
                             .expect("binding indexed")[*event_index]
                             .target = TypeTarget::Unknown;
-                    } else if flow_dependent(&binding.value) {
+                    } else if flow_dependent(binding.value) {
                         let target = index.evaluate(
                             owner,
-                            &binding.value,
+                            binding.value,
                             binding.position,
                             resolver,
                             Some(&definitions),
@@ -781,7 +819,7 @@ impl<'a> ValueFlowIndex<'a> {
                             .get_mut(owner.id.as_str())
                             .expect("scope indexed")
                             .bindings
-                            .get_mut(&binding.name)
+                            .get_mut(binding.name)
                             .expect("binding indexed")[*event_index]
                             .target = target;
                     }
@@ -811,8 +849,8 @@ impl<'a> ValueFlowIndex<'a> {
                     .filter(|(binding, _)| {
                         (!binding.conditional
                             || (owner.language == "python"
-                                && matches!(&binding.value, ValueExpr::Scoped { .. })))
-                            && flow_dependent(&binding.value)
+                                && matches!(binding.value, ValueExpr::Scoped { .. })))
+                            && flow_dependent(binding.value)
                     })
                     .map(move |(binding, event_index)| (*owner, *binding, *event_index))
             })
@@ -867,14 +905,14 @@ impl<'a> ValueFlowIndex<'a> {
                 if reads.as_ref().is_some_and(|reads| !reads.dirty(&epochs)) {
                     continue;
                 }
-                let writes = &index.scopes[owner.id.as_str()].bindings[&binding.name];
+                let writes = &index.scopes[owner.id.as_str()].bindings[binding.name];
                 let trace = ReadTrace::new(&epochs, reads.take().unwrap_or_default());
                 let target = if duplicate_position(writes, *event_index) {
                     TypeTarget::Unknown
                 } else {
                     index.evaluate_tracked(
                         owner,
-                        &binding.value,
+                        binding.value,
                         binding.position,
                         resolver,
                         Some(&definitions),
@@ -887,7 +925,7 @@ impl<'a> ValueFlowIndex<'a> {
                     .get_mut(owner.id.as_str())
                     .expect("scope indexed")
                     .bindings
-                    .get_mut(&binding.name)
+                    .get_mut(binding.name)
                     .expect("binding indexed")[*event_index]
                     .target;
                 if !same_target(previous, &target) {
@@ -1422,6 +1460,67 @@ impl<'a> ValueFlowIndex<'a> {
             ValueExpr::Scoped { value, .. } => {
                 self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
             }
+            ValueExpr::BranchJoin { alternatives } => {
+                let mut targets = BTreeMap::<String, &'a Node>::new();
+                let mut complete = true;
+                let mut exhausted = false;
+                for alternative in alternatives {
+                    let result =
+                        self.evaluate_tracked(owner, alternative, at, resolver, definitions, trace);
+                    match result {
+                        TypeTarget::Local(node)
+                            if matches!(
+                                node.kind.as_str(),
+                                "class" | "struct" | "interface" | "enum"
+                            ) =>
+                        {
+                            targets.insert(node.id.clone(), node);
+                        }
+                        TypeTarget::Candidates {
+                            targets: nested,
+                            complete: nested_complete,
+                            exhausted: nested_exhausted,
+                        } => {
+                            complete &= nested_complete;
+                            exhausted |= nested_exhausted;
+                            for node in nested {
+                                targets.insert(node.id.clone(), node);
+                            }
+                        }
+                        TypeTarget::Unknown | TypeTarget::Ambiguous => {
+                            complete = false;
+                        }
+                        _ => {
+                            complete = false;
+                        }
+                    }
+                    if targets.len() > MAX_CANDIDATE_BRANCH_JOINS {
+                        exhausted = true;
+                        complete = false;
+                        targets.clear();
+                    }
+                }
+                if exhausted {
+                    return TypeTarget::Candidates {
+                        targets: Vec::new(),
+                        complete: false,
+                        exhausted: true,
+                    };
+                }
+                if targets.is_empty() {
+                    TypeTarget::Candidates {
+                        targets: Vec::new(),
+                        complete: false,
+                        exhausted: false,
+                    }
+                } else {
+                    TypeTarget::Candidates {
+                        targets: targets.into_values().collect(),
+                        complete,
+                        exhausted: false,
+                    }
+                }
+            }
             ValueExpr::Call { callee } => {
                 if owner.language == "python" {
                     let constructor =
@@ -1906,6 +2005,24 @@ fn merge<'a>(left: &TypeTarget<'a>, right: &TypeTarget<'a>) -> TypeTarget<'a> {
             },
         ) if a == b && x == y => left.clone(),
         (TypeTarget::Builtin(a), TypeTarget::Builtin(b)) if a == b => left.clone(),
+        (
+            TypeTarget::Candidates {
+                targets: a,
+                complete: ac,
+                exhausted: ae,
+            },
+            TypeTarget::Candidates {
+                targets: b,
+                complete: bc,
+                exhausted: be,
+            },
+        ) if ac == bc
+            && ae == be
+            && a.len() == b.len()
+            && a.iter().zip(b).all(|(left, right)| left.id == right.id) =>
+        {
+            left.clone()
+        }
         (TypeTarget::Unknown, _) | (_, TypeTarget::Unknown) => TypeTarget::Unknown,
         _ => TypeTarget::Ambiguous,
     }
@@ -1943,6 +2060,23 @@ fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
             },
         ) => a == b && x == y,
         (TypeTarget::Builtin(a), TypeTarget::Builtin(b)) => a == b,
+        (
+            TypeTarget::Candidates {
+                targets: a,
+                complete: ac,
+                exhausted: ae,
+            },
+            TypeTarget::Candidates {
+                targets: b,
+                complete: bc,
+                exhausted: be,
+            },
+        ) => {
+            ac == bc
+                && ae == be
+                && a.len() == b.len()
+                && a.iter().zip(b).all(|(left, right)| left.id == right.id)
+        }
         (TypeTarget::Object(a), TypeTarget::Object(b)) => {
             a.len() == b.len()
                 && a.iter()
@@ -1957,6 +2091,9 @@ fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
 fn flow_dependent(value: &ValueExpr) -> bool {
     if let ValueExpr::Scoped { value, .. } | ValueExpr::Await { value } = value {
         return flow_dependent(value);
+    }
+    if matches!(value, ValueExpr::BranchJoin { .. }) {
+        return true;
     }
     matches!(
         value,
@@ -2015,6 +2152,13 @@ fn valid_facts(facts: &ValueFlowFacts, limits: SemanticLimits) -> bool {
                 value: inner,
                 body_end,
             } => body_end.line > 0 && value(inner, limits, depth + 1),
+            ValueExpr::BranchJoin { alternatives } => {
+                !alternatives.is_empty()
+                    && alternatives.len() <= limits.facts_per_scope
+                    && alternatives
+                        .iter()
+                        .all(|alternative| value(alternative, limits, depth + 1))
+            }
             ValueExpr::Field { receiver, member } => text(receiver) && text(member),
             ValueExpr::Project {
                 value: inner,
@@ -2032,6 +2176,7 @@ fn valid_facts(facts: &ValueFlowFacts, limits: SemanticLimits) -> bool {
         && facts
             .bindings
             .len()
+            .saturating_add(facts.branch_joins.len())
             .saturating_add(facts.fields.len())
             .saturating_add(facts.collection_elements.len())
             .saturating_add(facts.vue_slots.len())
@@ -2047,6 +2192,11 @@ fn valid_facts(facts: &ValueFlowFacts, limits: SemanticLimits) -> bool {
         })
         && facts
             .bindings
+            .iter()
+            .all(|fact| text(&fact.name) && fact.position.line > 0 && value(&fact.value, limits, 0))
+        && facts.branch_joins.len() <= limits.facts_per_scope
+        && facts
+            .branch_joins
             .iter()
             .all(|fact| text(&fact.name) && fact.position.line > 0 && value(&fact.value, limits, 0))
         && facts

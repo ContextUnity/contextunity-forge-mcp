@@ -104,7 +104,7 @@ pub(crate) fn tests_paged_with_path(
         if !lexical_query.is_empty() {
             nodes = paging::query(
                 conn,
-                &format!("SELECT {} FROM node_search JOIN nodes n ON n.node_id=node_search.rowid JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE node_search MATCH ?1 AND n.is_test=1 AND f.is_test=1 AND n.kind IN('function','method','class','struct') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")),
+                &format!("SELECT {} FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE node_search MATCH ?1 AND n.is_test=1 AND f.is_test=1 AND n.kind IN('function','method','class','struct') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")),
                 &[&lexical_query, &id, &name, &snake],
                 options,
             )?;
