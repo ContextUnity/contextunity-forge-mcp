@@ -199,13 +199,37 @@ pub struct TasksStore {
 
 #[derive(Debug)]
 /// Represents task already claimed data.
-pub struct TaskAlreadyClaimed;
+pub struct TaskAlreadyClaimed {
+    /// Identifier of the task that already has an active claim.
+    pub task_id: String,
+    /// Worker identifier recorded by the active claim.
+    pub worker_id: String,
+    /// Worktree recorded by the active claim.
+    pub worktree: String,
+    /// Revision recorded by the active claim.
+    pub revision: u64,
+    /// Unix timestamp when the active claim was opened.
+    pub claimed_at: i64,
+}
 impl std::fmt::Display for TaskAlreadyClaimed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("TASK_ALREADY_CLAIMED")
+        write!(
+            f,
+            "TASK_ALREADY_CLAIMED: task '{}' is claimed by worker '{}' in worktree '{}' (revision {}, claimed at {}). Do: submit the active claim from worker '{}' before opening another.",
+            self.task_id,
+            self.worker_id,
+            self.worktree,
+            self.revision,
+            self.claimed_at,
+            self.worker_id
+        )
     }
 }
 impl std::error::Error for TaskAlreadyClaimed {}
+
+pub(crate) fn task_not_found_message(id: &str) -> String {
+    format!("TASK_NOT_FOUND: task '{id}' not found in tasks database. Do: verify task id and sync milestone.")
+}
 
 fn stored_task_id_for_milestone(
     connection: &Connection,
@@ -510,7 +534,7 @@ impl TasksStore {
     /// Performs inspect.
     pub fn inspect(&self, id: &str) -> Result<Task> {
         self.assert_id(id)?;
-        let mut task = load(&self.connection, id)?.context("TASK_NOT_FOUND")?;
+        let mut task = load(&self.connection, id)?.context(task_not_found_message(id))?;
         let profile = self.profile_for_task(&task)?;
         self.set_runtime_gate(&mut task, &profile)?;
         Ok(task)
@@ -1226,14 +1250,27 @@ pub(crate) fn end_claim(conn: &Connection, id: &str) -> Result<()> {
     )?;
     Ok(())
 }
-pub(crate) fn check_stage(active_gate: &str, stage: &str) -> Result<()> {
+pub(crate) fn check_stage(task_id: &str, active_gate: &str, stage: &str) -> Result<()> {
     if active_gate != stage {
-        bail!("TASK_STAGE_INVALID");
+        bail!("TASK_STAGE_INVALID: task '{task_id}'. submitted stage '{stage}' does not match active stage '{active_gate}'. Do: submit for active stage '{active_gate}'.");
     }
     Ok(())
 }
+pub(crate) fn unsatisfied_dependencies(conn: &Connection, id: &str) -> Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT d.dependency_id FROM task_dependencies d \
+         LEFT JOIN tasks t ON t.task_id=d.dependency_id \
+         WHERE d.task_id=?1 AND d.satisfied=0 \
+           AND (t.task_id IS NULL OR json_extract(t.descriptor,'$.status')!='completed') \
+         ORDER BY d.dependency_id",
+    )?;
+    let dependencies = statement
+        .query_map([id], |row| row.get(0))?
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(dependencies)
+}
 fn dependencies_ready(conn: &Connection, id: &str) -> Result<bool> {
-    Ok(conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM task_dependencies d LEFT JOIN tasks t ON t.task_id=d.dependency_id WHERE d.task_id=?1 AND d.satisfied=0 AND (t.task_id IS NULL OR json_extract(t.descriptor,'$.status')!='completed'))",[id],|r|r.get(0))?)
+    Ok(unsatisfied_dependencies(conn, id)?.is_empty())
 }
 /// Performs now.
 pub fn now() -> i64 {

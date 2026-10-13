@@ -461,7 +461,7 @@ fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
 }
 
 #[test]
-fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
+fn task_mcp_and_cli_share_ready_claim_reset_selectors_and_diagnostic() {
     let workspace = Workspace::new();
     workspace.write(
         "forge-mcp.yaml",
@@ -490,11 +490,24 @@ fn task_mcp_and_cli_share_ready_claim_reset_and_selectors() {
     let args =
         json!({"task_id":id,"stage":"contract","worker_id":"builder","worktree":workspace.0});
     let claimed = client.payload("task_claim", args.clone());
+    let direct_error = contextunity_forge_mcp::engine::tasks::claim(
+        &workspace.0,
+        contextunity_forge_mcp::engine::tasks::Claim {
+            task_id: id.to_owned(),
+            stage: "contract".into(),
+            worker_id: "builder".into(),
+            worktree: workspace.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
     let (_, collision) = client.call("task_claim", args);
     assert_eq!(collision["result"]["isError"], true);
     let error: Value =
         serde_json::from_str(collision["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "TASK_ALREADY_CLAIMED");
+    assert_eq!(error["error"]["message"], direct_error);
     assert_eq!(client.payload("task_list", json!({}))["tasks"], json!([]));
     let active = client.payload("task_list", json!({"status":"in_progress"}));
     assert_eq!(active["tasks"][0]["task_id"], id);

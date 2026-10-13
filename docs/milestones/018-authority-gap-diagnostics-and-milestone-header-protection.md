@@ -166,16 +166,61 @@ target: Replace bare uninformative task lifecycle errors with single-line fact/a
 proof_policy: seam-test-first
 contract_revision: 2
 depends_on:
-  - authority-gap-diagnostics
+- authority-gap-diagnostics
 scope:
-  - src/db/tasks_store/mod.rs
-  - src/db/tasks_store/lifecycle.rs
-  - src/engine/tasks/lifecycle.rs
-  - src/engine/tasks/gates.rs
-  - src/engine/tasks/mod.rs
-  - src/mcp/response.rs
-  - tests/acdd/tasks.rs
-  - tests/acdd/mcp.rs
+- src/db/tasks_store/mod.rs
+- src/db/tasks_store/lifecycle.rs
+- src/engine/tasks/lifecycle.rs
+- src/engine/tasks/gates.rs
+- src/engine/tasks/mod.rs
+- src/mcp/response.rs
+- tests/acdd/tasks.rs
+- tests/acdd/mcp.rs
+status: completed
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-13T19:45:08.307487333+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test acdd
+      exit_code: 0
+      tests_passed: 84
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Compared the full candidate snapshot 5919993 against the worktree: the only changed files are the eight admitted paths; no staged or untracked files are present, git diff --check is clean, and all admitted source/test files match snapshot 5919993. The only delta from prior candidate de75d6c is the raw Git runner replacement in src/engine/tasks/mod.rs.'
+        claims:
+          applicable: true
+          evidence: 'Traced each enumerated diagnostic through TasksStore, engine claim/submit/manage flows, and MCP response propagation. The exact-message tests use real stores and engine/MCP paths, including candidate mismatch, dependency/status precedence, stale claim/submission, selector validation, and MCP claim-holder text. Fresh cargo test --test acdd exited 0: 84 passed, 0 failed. The prior runner finding is fixed: candidate path inspection uses crate::core::git::git_command at src/engine/tasks/mod.rs:551 and :564.'
+        concurrency:
+          applicable: true
+          evidence: Claim and submission mutations remain fenced by IMMEDIATE SQLite transactions (src/db/tasks_store/lifecycle.rs:48-50; src/engine/tasks/gates.rs:203-205). Submission compares active stage/profile, claim revision, and the ordered evidence identity fields before persistence; the existing delivery flow retains candidate-baseline and rollback checks. Strict cargo clippy --all-targets --all-features -- -D warnings exited 0.
+        project_isolation:
+          applicable: true
+          evidence: Candidate inspection uses the validated claimed worktree as cwd through core::git::git_command and passes task scope only after '--' (src/engine/tasks/mod.rs:548-551,561-564). Task and dependency queries are keyed by full task_id; existing linked-workspace and nested-repository ACDD cases passed in the fresh 84-test run.
+        administration:
+          applicable: true
+          evidence: No schema, migration, profile, repository configuration, credentials, or generated files changed. Existing profile pins, review independence, delivery checks, and receipt handling remain intact; the auto_commit=false candidate-commit regression passed. Strict Clippy exited 0.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-AUTHORITY-DIAGNOSTICS: Rejection of mismatched task specifications in sync and validate_authority must identify the task ID, file vs database contract revisions, and attribute divergence to milestone frontmatter fields and/or task YAML fields with distinct remediation actions.'
+    - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}", "{CODE}: action ''{action}''. {facts}. Do: {action}" for action-scoped errors, or "{CODE}: milestone ''{milestone_ref}''. {facts}. Do: {action}" for milestone-scoped errors. Facts name divergent tree paths, wrong commits, unsatisfied dependencies, claim holders with timestamps, or revision deltas. Each imperative states one action.'
+    - 'INV-CLAIM-GUIDANCE-PROTECTION: Task claim workflow guidance embeds the constant PROTECTED rule and three standing operational constraints (worktree isolation, snapshot immutability, independent reviewer) directly in guidance without tool schema bloat.'
+    architectural_notes:
+    - 'deferred: Milestone 018 changes observable task lifecycle diagnostics, but the task scopes do not include docs/reference/tasks.md. An attempted Forge extend_scope for that path was rejected with TASK_SCOPE_INVALID, so no documentation file was changed. Defer the reference documentation update to a follow-up task after milestone delivery.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Contract and acceptance criteria

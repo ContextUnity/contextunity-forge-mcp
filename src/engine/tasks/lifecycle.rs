@@ -110,6 +110,222 @@ pub fn reset(root: &Path, id: &str) -> Result<Task> {
 pub fn reopen(root: &Path, id: &str) -> Result<Task> {
     reset(root, id)
 }
+
+fn manage_action_name(action: &ManageAction) -> &'static str {
+    match action {
+        ManageAction::Create => "create",
+        ManageAction::Sync => "sync",
+        ManageAction::Inspect => "inspect",
+        ManageAction::Delete => "delete",
+        ManageAction::ExtendScope => "extend_scope",
+        ManageAction::SubtaskAdd => "subtask_add",
+        ManageAction::SubtaskUpdate => "subtask_update",
+        ManageAction::SubtaskList => "subtask_list",
+        ManageAction::Reset => "reset",
+        ManageAction::Reopen => "reopen",
+        ManageAction::Context => "context",
+    }
+}
+
+fn selector_invalid_fields(p: &Manage) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    let has_id = p
+        .task_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_milestone = p
+        .milestone_ref
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_task_ref = p
+        .task_ref
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_workspace = p
+        .workspace
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_paths = p.paths.as_ref().is_some_and(|paths| !paths.is_empty());
+    let mut invalid = |field| {
+        if !fields.contains(&field) {
+            fields.push(field);
+        }
+    };
+    {
+        match &p.action {
+            ManageAction::Create => {
+                if p.task_id.is_some() {
+                    invalid("task_id");
+                }
+                if !has_milestone {
+                    invalid("milestone_ref");
+                }
+                if !has_task_ref {
+                    invalid("task_ref");
+                }
+                if p.paths.is_some() {
+                    invalid("paths");
+                }
+                if p.force {
+                    invalid("force");
+                }
+            }
+            ManageAction::Sync => {
+                if p.task_id.is_some() {
+                    invalid("task_id");
+                }
+                if p.task_ref.is_some() {
+                    invalid("task_ref");
+                }
+                if p.paths.is_some() {
+                    invalid("paths");
+                }
+                if p.force {
+                    invalid("force");
+                }
+                if !has_milestone && !has_workspace {
+                    invalid("milestone_ref");
+                    invalid("workspace");
+                } else {
+                    if p.milestone_ref.is_some() && !has_milestone {
+                        invalid("milestone_ref");
+                    }
+                    if p.workspace.is_some() && !has_workspace {
+                        invalid("workspace");
+                    }
+                }
+            }
+            ManageAction::Inspect | ManageAction::Context => {
+                if !has_id {
+                    invalid("task_id");
+                }
+                if p.milestone_ref.is_some() {
+                    invalid("milestone_ref");
+                }
+                if p.task_ref.is_some() {
+                    invalid("task_ref");
+                }
+                if p.paths.is_some() {
+                    invalid("paths");
+                }
+                if p.force {
+                    invalid("force");
+                }
+                if p.workspace.is_some() {
+                    invalid("workspace");
+                }
+            }
+            ManageAction::Delete => {
+                if p.task_id.is_some() == p.milestone_ref.is_some() {
+                    invalid("task_id");
+                    invalid("milestone_ref");
+                }
+                if p.task_id.is_some() && !has_id {
+                    invalid("task_id");
+                }
+                if p.milestone_ref.is_some() && !has_milestone {
+                    invalid("milestone_ref");
+                }
+                if p.task_ref.is_some() {
+                    invalid("task_ref");
+                }
+                if p.paths.is_some() {
+                    invalid("paths");
+                }
+                if p.task_id.is_some() && p.workspace.is_some() {
+                    invalid("workspace");
+                }
+                if p.workspace.is_some() && !has_workspace {
+                    invalid("workspace");
+                }
+            }
+            ManageAction::ExtendScope => {
+                if !has_id {
+                    invalid("task_id");
+                }
+                if p.milestone_ref.is_some() {
+                    invalid("milestone_ref");
+                }
+                if p.task_ref.is_some() {
+                    invalid("task_ref");
+                }
+                if !has_paths {
+                    invalid("paths");
+                }
+                if p.force {
+                    invalid("force");
+                }
+                if p.workspace.is_some() {
+                    invalid("workspace");
+                }
+            }
+            ManageAction::SubtaskAdd => {
+                if !has_id {
+                    invalid("task_id");
+                }
+                if p.subtask_ref
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    invalid("subtask_ref");
+                }
+                if p.title
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    invalid("title");
+                }
+                if p.force {
+                    invalid("force");
+                }
+            }
+            ManageAction::SubtaskUpdate => {
+                if !has_id {
+                    invalid("task_id");
+                }
+                if p.subtask_ref
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    invalid("subtask_ref");
+                }
+                if p.force {
+                    invalid("force");
+                }
+            }
+            ManageAction::SubtaskList => {
+                if !has_id {
+                    invalid("task_id");
+                }
+                if p.force {
+                    invalid("force");
+                }
+            }
+            ManageAction::Reset | ManageAction::Reopen => {
+                if !has_id {
+                    invalid("task_id");
+                }
+                if p.milestone_ref.is_some() {
+                    invalid("milestone_ref");
+                }
+                if p.task_ref.is_some() {
+                    invalid("task_ref");
+                }
+                if p.paths.is_some() {
+                    invalid("paths");
+                }
+                if p.force {
+                    invalid("force");
+                }
+                if p.workspace.is_some() {
+                    invalid("workspace");
+                }
+            }
+        }
+    }
+    fields
+}
+
 /// Performs manage.
 pub fn manage(root: &Path, mut p: Manage) -> Result<Value> {
     let id = p.task_id.as_deref();
@@ -117,55 +333,10 @@ pub fn manage(root: &Path, mut p: Manage) -> Result<Value> {
     let task_ref = p.task_ref.as_deref();
     let paths = p.paths.as_deref();
     let workspace = p.workspace.as_deref();
-    let valid = match p.action {
-        ManageAction::Create => {
-            id.is_none() && milestone.is_some() && task_ref.is_some() && paths.is_none() && !p.force
-        }
-        ManageAction::Sync => {
-            id.is_none()
-                && task_ref.is_none()
-                && paths.is_none()
-                && !p.force
-                && (milestone.is_some() || workspace.is_some())
-        }
-        ManageAction::Inspect | ManageAction::Context => {
-            id.is_some()
-                && milestone.is_none()
-                && task_ref.is_none()
-                && paths.is_none()
-                && !p.force
-                && workspace.is_none()
-        }
-        ManageAction::Delete => {
-            id.is_some() != milestone.is_some()
-                && task_ref.is_none()
-                && paths.is_none()
-                && (id.is_none() || workspace.is_none())
-        }
-        ManageAction::ExtendScope => {
-            id.is_some()
-                && milestone.is_none()
-                && task_ref.is_none()
-                && paths.is_some_and(|p| !p.is_empty())
-                && !p.force
-                && workspace.is_none()
-        }
-        ManageAction::SubtaskAdd => {
-            id.is_some() && p.subtask_ref.is_some() && p.title.is_some() && !p.force
-        }
-        ManageAction::SubtaskUpdate => id.is_some() && p.subtask_ref.is_some() && !p.force,
-        ManageAction::SubtaskList => id.is_some() && !p.force,
-        ManageAction::Reset | ManageAction::Reopen => {
-            id.is_some()
-                && milestone.is_none()
-                && task_ref.is_none()
-                && paths.is_none()
-                && !p.force
-                && workspace.is_none()
-        }
-    };
-    if !valid {
-        bail!("TASK_SELECTOR_INVALID");
+    let invalid_fields = selector_invalid_fields(&p);
+    if !invalid_fields.is_empty() {
+        let action = manage_action_name(&p.action);
+        bail!("TASK_SELECTOR_INVALID: action '{action}'. missing or invalid fields: [{}]. Do: pass required fields for '{action}'.", invalid_fields.join(", "));
     }
     let registry = Registry::load(root)?;
     let (workspace, resolved_milestone) = if let Some(id) = id {
@@ -209,7 +380,16 @@ pub fn manage(root: &Path, mut p: Manage) -> Result<Value> {
                     continue;
                 }
                 if task_ref.is_some_and(|r| !parsed.tasks.iter().any(|t| t.task_ref == r)) {
-                    bail!("TASK_NOT_FOUND");
+                    let task_id = format!(
+                        "{}/{}:{}",
+                        parsed.project,
+                        parsed.id,
+                        task_ref.unwrap_or_default()
+                    );
+                    bail!(
+                        "{}",
+                        crate::db::tasks_store::task_not_found_message(&task_id)
+                    );
                 }
                 for spec in parsed
                     .tasks

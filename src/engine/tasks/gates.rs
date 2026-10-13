@@ -193,7 +193,7 @@ impl TasksStore {
     ) -> Result<Task> {
         self.assert_id(id)?;
         if evidence.stage != stage {
-            bail!("TASK_STAGE_INVALID");
+            bail!("TASK_STAGE_INVALID: task '{id}'. evidence.stage '{}' != submitted stage '{stage}'. Do: set evidence.stage to '{stage}'.", evidence.stage);
         }
         if !matches!(action, "pass" | "reject") {
             bail!("invalid submission action");
@@ -203,9 +203,10 @@ impl TasksStore {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        let mut task =
+            load(&tx, id)?.context(crate::db::tasks_store::task_not_found_message(id))?;
         if task.profile_pin != observed_task.profile_pin || task.stage != observed_task.stage {
-            bail!("TASK_STALE_SUBMISSION");
+            bail!("TASK_STALE_SUBMISSION: task '{id}'. stage or profile_pin changed concurrently. Do: retry submission.");
         }
         let mut document_update = None;
         let mut auto_delivery: Option<(String, String, std::path::PathBuf)> = None;
@@ -226,7 +227,7 @@ impl TasksStore {
                 before_persist(&accepted.task)?;
                 return Ok(accepted.task);
             }
-            bail!("TASK_STALE_SUBMISSION");
+            bail!("TASK_STALE_SUBMISSION: task '{id}'. claim_revision {} already submitted with different evidence. Do: resubmit the accepted evidence for claim_revision {}.", evidence.claim_revision, evidence.claim_revision);
         }
         let gate_index =
             profile.index_of(&task.stage).with_context(|| {
@@ -243,24 +244,53 @@ impl TasksStore {
             .get(gate_index)
             .cloned()
             .context("TASK_STAGE_UNKNOWN")?;
-        check_stage(&gate_def.id, stage)?;
-        if task.status != "in_progress"
-            || task.claim_revision != evidence.claim_revision
-            || task.contract_revision != evidence.contract_revision
-            || task.task_id != evidence.task_id
-            || task.worker_id.as_deref() != Some(&evidence.worker_id)
-            || task.worktree.as_deref() != Some(&evidence.worktree)
-            || evidence.stage != gate_def.id
-        {
-            bail!("TASK_STALE_SUBMISSION");
+        check_stage(id, &gate_def.id, stage)?;
+        if task.status != "in_progress" {
+            bail!("TASK_STALE_SUBMISSION: task '{id}'. status is '{}'. Do: claim the task before submitting.", task.status);
         }
-        if evidence.proof.is_null()
-            || evidence
-                .commit
-                .as_ref()
-                .is_some_and(|c| c.trim().is_empty())
+        let stale_field = if task.claim_revision != evidence.claim_revision {
+            Some((
+                "claim_revision",
+                evidence.claim_revision.to_string(),
+                task.claim_revision.to_string(),
+            ))
+        } else if task.contract_revision != evidence.contract_revision {
+            Some((
+                "contract_revision",
+                evidence.contract_revision.to_string(),
+                task.contract_revision.to_string(),
+            ))
+        } else if task.task_id != evidence.task_id {
+            Some(("task_id", evidence.task_id.clone(), task.task_id.clone()))
+        } else if task.worker_id.as_deref() != Some(&evidence.worker_id) {
+            Some((
+                "worker_id",
+                evidence.worker_id.clone(),
+                task.worker_id.clone().unwrap_or_default(),
+            ))
+        } else if task.worktree.as_deref() != Some(&evidence.worktree) {
+            Some((
+                "worktree",
+                evidence.worktree.clone(),
+                task.worktree.clone().unwrap_or_default(),
+            ))
+        } else {
+            None
+        };
+        if let Some((field, evidence_value, active_value)) = stale_field {
+            bail!("TASK_STALE_SUBMISSION: task '{id}'. evidence {field} {evidence_value} != active {active_value}. Do: resubmit with active {field} {active_value}.");
+        }
+        if evidence.proof.is_null() {
+            bail!("TASK_EVIDENCE_INVALID: task '{id}' for stage '{stage}'. proof is null. Do: provide non-empty proof for stage '{stage}'.");
+        }
+        if evidence
+            .commit
+            .as_ref()
+            .is_some_and(|commit| commit.trim().is_empty())
         {
-            bail!("TASK_EVIDENCE_INVALID");
+            let snapshot = candidate_snapshot(&tx, id, &profile, gate_index)?
+                .unwrap_or_else(|| "unavailable".into());
+            bail!("TASK_EVIDENCE_INVALID: task '{id}' for stage '{stage}'. commit field is empty. Do: set commit to candidate snapshot {snapshot}.");
         }
         validate_gate_proof(
             &evidence.proof,
@@ -276,11 +306,14 @@ impl TasksStore {
                 |r| r.get(0),
             )?;
             if builder == evidence.worker_id {
-                bail!("TASK_REVIEW_NOT_INDEPENDENT");
+                bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. reviewer worker '{}' matches builder '{builder}'. Do: submit review with a worker_id other than '{builder}'.", evidence.worker_id);
             }
             let build = accepted(&tx, id, prior)?;
-            if build.commit != evidence.commit {
-                bail!("TASK_CANDIDATE_MISMATCH");
+            if gate_def.proof.kind() != Some(ProofKind::Delivery) && build.commit != evidence.commit
+            {
+                let supplied = evidence.commit.as_deref().unwrap_or("missing");
+                let snapshot = build.commit.as_deref().unwrap_or("missing");
+                bail!("TASK_CANDIDATE_MISMATCH: task '{id}'. supplied commit {supplied} != candidate snapshot {snapshot}. Do: resubmit with commit {snapshot}.");
             }
         }
         if gate_def.proof.kind() == Some(ProofKind::Delivery) && action == "pass" {
@@ -290,10 +323,11 @@ impl TasksStore {
                 .find(|gate| gate.sha_snapshot)
                 .context("TASK_GATES_INVALID: delivery requires a prior sha_snapshot gate")?;
             let build = accepted(&tx, id, &snapshot_gate.id)?;
+            let candidate_snapshot = build.commit.as_deref().unwrap_or("missing");
             let receipt_commit = evidence
                 .commit
                 .as_deref()
-                .context("TASK_EVIDENCE_INVALID: delivery requires a commit")?;
+                .context(format!("TASK_EVIDENCE_INVALID: task '{id}' for stage 'deliver'. delivery evidence missing required commit. Do: set commit to candidate snapshot {candidate_snapshot}."))?;
             let candidate_baseline = build.candidate_baseline_head.as_deref().context(
                 "TASK_CANDIDATE_BASELINE_INVALID: accepted candidate has no captured baseline",
             )?;
@@ -301,13 +335,13 @@ impl TasksStore {
                 bail!("TASK_CANDIDATE_BASELINE_MISMATCH: delivery baseline differs from the accepted candidate");
             }
             if !gate_def.auto_commit && build.commit.as_deref() != Some(receipt_commit) {
-                bail!("TASK_CANDIDATE_MISMATCH: delivery commit must reference the accepted candidate snapshot");
+                bail!("TASK_CANDIDATE_MISMATCH: task '{id}'. supplied commit {receipt_commit} != candidate snapshot {candidate_snapshot}. Do: resubmit with commit {candidate_snapshot}.");
             }
             let mut review_proofs = Vec::with_capacity(gate_def.review_sources.len());
             for review_name in &gate_def.review_sources {
                 let review = accepted(&tx, id, review_name)?;
                 if review.commit != build.commit {
-                    bail!("TASK_CANDIDATE_MISMATCH: review source '{review_name}' does not match the candidate snapshot");
+                    bail!("TASK_CANDIDATE_MISMATCH: task '{id}'. review source '{review_name}' commit != candidate snapshot {candidate_snapshot}. Do: resubmit review evidence with commit {candidate_snapshot}.");
                 }
                 let review_gate = profile
                     .by_stage(review_name)
@@ -456,7 +490,9 @@ impl TasksStore {
                 params![id, task.claim_revision, serde_json::to_string(findings)?],
             )?;
             if let Some(target) = gate_def.reject_to.as_deref() {
-                task.gate = profile.index_of(target).context("TASK_STAGE_INVALID")?;
+                task.gate = profile.index_of(target).with_context(|| {
+                    format!("TASK_STAGE_INVALID: task '{id}'. reject target stage '{target}' not defined in profile. Do: set reject_to to a stage that exists in the profile.")
+                })?;
                 task.stage = target.to_owned();
             }
             task.status = "ready".into();
@@ -590,6 +626,35 @@ struct Submission {
 fn accepted(conn: &rusqlite::Connection, id: &str, gate: &str) -> Result<Evidence> {
     let json: String = conn.query_row("SELECT evidence FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed' ORDER BY revision DESC LIMIT 1",params![id,gate],|r|r.get(0))?;
     Ok(serde_json::from_str(&json)?)
+}
+
+fn candidate_snapshot(
+    conn: &rusqlite::Connection,
+    id: &str,
+    profile: &crate::core::tasks::profile::GateProfile,
+    gate_index: usize,
+) -> Result<Option<String>> {
+    let Some(snapshot_gate) = profile.gates[..gate_index]
+        .iter()
+        .rev()
+        .find(|gate| gate.sha_snapshot)
+    else {
+        return Ok(None);
+    };
+    let serialized: Option<String> = conn
+        .query_row(
+            "SELECT evidence FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed' ORDER BY revision DESC LIMIT 1",
+            params![id, snapshot_gate.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    serialized
+        .map(|json| {
+            let evidence: Evidence = serde_json::from_str(&json)?;
+            Ok(evidence.commit)
+        })
+        .transpose()
+        .map(Option::flatten)
 }
 
 fn validate_receipt(

@@ -7,16 +7,22 @@ impl TasksStore {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
-        if task.status != "in_progress" || task.claim_revision != revision {
-            bail!("TASK_STALE_CLAIM");
+        let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
+        if task.status != "in_progress" {
+            bail!(
+                "TASK_STALE_CLAIM: task '{id}'. status is '{}'. Do: leave the claim unchanged.",
+                task.status
+            );
+        }
+        if task.claim_revision != revision {
+            bail!("TASK_STALE_CLAIM: task '{id}'. active claim_revision {} != requested {revision}. Do: release claim_revision {}.", task.claim_revision, task.claim_revision);
         }
         if tx.execute(
             "DELETE FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0",
             params![id, revision],
         )? != 1
         {
-            bail!("TASK_STALE_CLAIM");
+            bail!("TASK_STALE_CLAIM: task '{id}'. claim_revision {revision} has no open claim row. Do: claim the task again before modifying it.");
         }
         task.claim_revision = next_revision(&tx, id)?;
         task.worker_id = None;
@@ -42,7 +48,7 @@ impl TasksStore {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
         let profile = resolve_task_profile(workspace_root.as_deref(), &base_profile, &task)?;
         if let Some(root) = self.workspace_root.as_deref() {
             verify_dirty_acdd_scope(root, &task.initial_scope)?;
@@ -51,10 +57,26 @@ impl TasksStore {
             }
         }
         if task.worker_id.is_some() {
-            return Err(TaskAlreadyClaimed.into());
+            let (worker_id, active_worktree, claimed_at): (String, String, i64) = tx.query_row(
+                "SELECT worker_id,worktree,claimed_at FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0",
+                params![id, task.claim_revision],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            return Err(TaskAlreadyClaimed {
+                task_id: task.task_id,
+                worker_id,
+                worktree: active_worktree,
+                revision: task.claim_revision,
+                claimed_at,
+            }
+            .into());
         }
-        if task.status != "ready" || !dependencies_ready(&tx, id)? {
-            bail!("TASK_NOT_READY");
+        if task.status != "ready" {
+            bail!("TASK_NOT_READY: task '{id}'. status is '{}' (active stage '{}'). Do: claim only ready tasks at their active stage.", task.status, task.stage);
+        }
+        let dependencies = unsatisfied_dependencies(&tx, id)?;
+        if !dependencies.is_empty() {
+            bail!("TASK_NOT_READY: task '{id}' has unsatisfied dependencies: [{}]. Do: complete dependencies before claiming stage '{}'.", dependencies.join(", "), task.stage);
         }
         let task_gate =
             profile.index_of(&task.stage).with_context(|| {
@@ -65,7 +87,7 @@ impl TasksStore {
             profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
         )
             })?;
-        check_stage(&task.stage, stage)?;
+        check_stage(id, &task.stage, stage)?;
         task.gate = task_gate;
         let my_scope_paths: Vec<PathBuf> = tx
             .prepare("SELECT path FROM task_scope_paths WHERE task_id=?1")?
@@ -118,7 +140,7 @@ impl TasksStore {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
         let profile = resolve_task_profile(workspace_root.as_deref(), &base_profile, &task)?;
         if task.status == "completed" {
             task.gate = 0;
@@ -156,7 +178,7 @@ impl TasksStore {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+        let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
         if task.status == "completed" {
             bail!("TASK_TERMINAL: cannot extend scope of completed task; reopen or reset the task first (e.g. `task reset <task-id>`)");
         }
@@ -287,7 +309,7 @@ impl TasksStore {
             .collect();
         let mut revoked_claims = 0;
         for id in &targets {
-            let task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+            let task = load(&tx, id)?.context(task_not_found_message(id))?;
             if !force
                 && (task.status != "completed"
                     || task.worker_id.is_some()
@@ -300,7 +322,7 @@ impl TasksStore {
             revoked_claims += usize::from(task.worker_id.is_some());
         }
         for id in &targets {
-            let task = load(&tx, id)?.context("TASK_NOT_FOUND")?;
+            let task = load(&tx, id)?.context(task_not_found_message(id))?;
             if task.status == "completed" {
                 tx.execute(
                     "UPDATE task_dependencies SET satisfied=1 WHERE dependency_id=?1",

@@ -71,8 +71,17 @@ pub(crate) fn result_with_symbol(
                 });
                 return CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]);
             }
-            if error.is::<crate::db::tasks_store::TaskAlreadyClaimed>() {
-                return CallToolResult::error(vec![ContentBlock::text(serde_json::json!({"error":{"code":"TASK_ALREADY_CLAIMED","message":"Task already has an active claim"}}).to_string())]);
+            if let Some(claim) = error.downcast_ref::<crate::db::tasks_store::TaskAlreadyClaimed>()
+            {
+                return CallToolResult::error(vec![ContentBlock::text(
+                    serde_json::json!({
+                        "error": {
+                            "code": "TASK_ALREADY_CLAIMED",
+                            "message": claim.to_string(),
+                        }
+                    })
+                    .to_string(),
+                )]);
             }
             let interrupted = error.chain().any(|cause| {
                 matches!(

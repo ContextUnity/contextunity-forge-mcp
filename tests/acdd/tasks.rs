@@ -1182,7 +1182,7 @@ fn linked_worktree_resolves_tasks_db_to_primary_worktree_root() {
     }
 }
 #[test]
-fn tasks_coordinate_claims_dependencies_reset_and_scope() {
+fn tasks_coordinate_claims_dependencies_reset_scope_and_claim_diagnostic() {
     let (root, mut store, milestone) = fixture();
     let id = milestone.task_id(&milestone.tasks[0]);
     let listed = tasks::list(
@@ -1217,10 +1217,25 @@ fn tasks_coordinate_claims_dependencies_reset_and_scope() {
         .collect();
     let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    let winner = store.inspect(&id).unwrap();
+    let claimed_at: i64 = store
+        .connection
+        .query_row(
+            "SELECT claimed_at FROM task_claims WHERE task_id=?1 AND ended=0",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let winner_id = winner.worker_id.as_deref().unwrap();
+    let expected_collision = format!(
+        "TASK_ALREADY_CLAIMED: task '{id}' is claimed by worker '{winner_id}' in worktree '{}' (revision {}, claimed at {claimed_at}). Do: submit the active claim from worker '{winner_id}' before opening another.",
+        winner.worktree.as_deref().unwrap(),
+        winner.claim_revision,
+    );
     assert!(results
         .iter()
         .filter_map(|r| r.as_ref().err())
-        .all(|e| e.to_string() == "TASK_ALREADY_CLAIMED"));
+        .all(|e| e.to_string() == expected_collision));
     assert!(milestone.acdd_profile.is_none());
     assert!(milestone.tasks[0].acdd_profile.is_none());
     let before_sync = store.inspect(&id).unwrap();
@@ -2566,6 +2581,26 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     let stored = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
     let mut ev = evidence(&stored);
     ev.commit = None;
+    ev.commit = Some("caller-selected-commit".into());
+    let scoped_snapshot_error = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "build".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&ev).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        scoped_snapshot_error,
+        format!(
+            "TASK_CANDIDATE_MISMATCH: task '{task_id}'. supplied commit caller-selected-commit != scoped snapshot {contract_snap}. Do: resubmit with commit {contract_snap}."
+        )
+    );
+    ev.commit = None;
     let build_res = tasks::submit(
         &root.0,
         tasks::Submit {
@@ -2613,7 +2648,35 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         "root snapshots must not include a branch parent"
     );
 
-    // 3. Independent review
+    // 3. Independent review: the gate rejects reusing the builder's worker id.
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "review".into(),
+            worker_id: "builder".into(),
+            worktree: root.0.to_str().unwrap().into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let mut review_store = tasks::store(&root.0).unwrap();
+    let same_worker = review_store.inspect(task_id).unwrap();
+    let same_worker_evidence = evidence(&same_worker);
+    assert_eq!(
+        review_store
+            .submit(task_id, "review", &same_worker_evidence, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_REVIEW_NOT_INDEPENDENT: task '{task_id}'. reviewer worker 'builder' matches builder 'builder'. Do: submit review with a worker_id other than 'builder'."
+        )
+    );
+    review_store
+        .release_failed_claim(task_id, same_worker.claim_revision)
+        .unwrap();
+    drop(review_store);
     tasks::claim(
         &root.0,
         tasks::Claim {
@@ -2625,6 +2688,38 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         },
     )
     .unwrap();
+
+    let mut review_store = tasks::store(&root.0).unwrap();
+    let review_task = review_store.inspect(task_id).unwrap();
+    let mut wrong_review_commit = evidence(&review_task);
+    wrong_review_commit.commit = Some("caller-selected-commit".into());
+    assert_eq!(
+        review_store
+            .submit(task_id, "review", &wrong_review_commit, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_CANDIDATE_MISMATCH: task '{task_id}'. supplied commit caller-selected-commit != candidate snapshot {build_snap}. Do: resubmit with commit {build_snap}."
+        )
+    );
+    let explicit_review_commit_error = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "review".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&wrong_review_commit).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        explicit_review_commit_error,
+        format!(
+            "TASK_CANDIDATE_MISMATCH: task '{task_id}'. supplied commit caller-selected-commit != candidate snapshot {build_snap}. Do: resubmit with commit {build_snap}."
+        )
+    );
 
     // Verify: If worktree diverges after build, review fails with TASK_CANDIDATE_MISMATCH!
     root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 99 }\n");
@@ -2642,9 +2737,13 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         },
     )
     .unwrap_err();
-    assert!(
-        mismatch_err.to_string().contains("TASK_CANDIDATE_MISMATCH"),
-        "Expected TASK_CANDIDATE_MISMATCH on diverged worktree, got: {mismatch_err}"
+    assert_eq!(
+        mismatch_err.to_string(),
+        format!(
+            "TASK_CANDIDATE_MISMATCH: task '{task_id}' diverged from snapshot {}. D src/new_feature.rs, ?? src/new_feature.rs. Do: restore those paths to snapshot {}.",
+            &build_snap[..7],
+            &build_snap[..7]
+        )
     );
 
     // Restore worktree to match candidate
@@ -2677,6 +2776,59 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     )
     .unwrap();
 
+    let mut delivery_store = tasks::store(&root.0).unwrap();
+    let delivery_task = delivery_store.inspect(task_id).unwrap();
+    let missing_delivery_commit = evidence(&delivery_task);
+    let (candidate_snapshot, _) = delivery_store
+        .build_snapshot_candidate(task_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        delivery_store
+            .submit(task_id, "deliver", &missing_delivery_commit, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_EVIDENCE_INVALID: task '{task_id}' for stage 'deliver'. delivery evidence missing required commit. Do: set commit to candidate snapshot {candidate_snapshot}."
+        )
+    );
+
+    delivery_store
+        .connection
+        .execute(
+            "UPDATE task_gates SET evidence=json_set(evidence, '$.commit', ?1) \
+             WHERE task_id=?2 AND gate='review' AND state='passed'",
+            rusqlite::params!["tampered-review-commit", task_id],
+        )
+        .unwrap();
+    let review_source_error = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "deliver".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(&missing_delivery_commit).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        review_source_error,
+        format!(
+            "TASK_CANDIDATE_MISMATCH: task '{task_id}'. review source 'review' commit != candidate snapshot {candidate_snapshot}. Do: resubmit review evidence with commit {candidate_snapshot}."
+        )
+    );
+    delivery_store
+        .connection
+        .execute(
+            "UPDATE task_gates SET evidence=json_set(evidence, '$.commit', ?1) \
+             WHERE task_id=?2 AND gate='review' AND state='passed'",
+            rusqlite::params![candidate_snapshot, task_id],
+        )
+        .unwrap();
+    drop(delivery_store);
+
     // Verify: If worktree diverges after review, delivery fails!
     root.write(
         "src/new_feature.rs",
@@ -2696,9 +2848,13 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         },
     )
     .unwrap_err();
-    assert!(
-        deliver_err.to_string().contains("TASK_CANDIDATE_MISMATCH"),
-        "Expected TASK_CANDIDATE_MISMATCH on diverged delivery worktree, got: {deliver_err}"
+    assert_eq!(
+        deliver_err.to_string(),
+        format!(
+            "TASK_CANDIDATE_MISMATCH: task '{task_id}' diverged from snapshot {}. D src/new_feature.rs, ?? src/new_feature.rs. Do: restore those paths to snapshot {}.",
+            &build_snap[..7],
+            &build_snap[..7]
+        )
     );
 
     // Restore worktree to match candidate
@@ -2865,11 +3021,6 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     )
     .unwrap();
 
-    assert_eq!(deliver_res["status"], "completed");
-    assert_eq!(
-        deliver_res["snapshot"]["commit"], deliver_res["receipt"]["commit"],
-        "delivery returns the auto-created commit SHA"
-    );
     let delivered_task = tasks::store(&root.0).unwrap().inspect(task_id).unwrap();
     let delivery_commit = delivered_task
         .receipt
@@ -2877,6 +3028,30 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .and_then(|receipt| receipt.commit.as_deref())
         .unwrap()
         .to_owned();
+    ev.commit = Some("caller-selected-commit".into());
+    assert_eq!(
+        tasks::submit(
+            &root.0,
+            tasks::Submit {
+                task_id: task_id.into(),
+                stage: "deliver".into(),
+                action: tasks::Action::Pass,
+                evidence: serde_json::to_value(&ev).unwrap(),
+                findings: None,
+            },
+        )
+        .unwrap_err()
+        .to_string(),
+        format!(
+            "TASK_CANDIDATE_MISMATCH: task '{task_id}'. supplied commit caller-selected-commit != accepted receipt commit {delivery_commit}. Do: resubmit with commit {delivery_commit}."
+        )
+    );
+
+    assert_eq!(deliver_res["status"], "completed");
+    assert_eq!(
+        deliver_res["snapshot"]["commit"], deliver_res["receipt"]["commit"],
+        "delivery returns the auto-created commit SHA"
+    );
     assert_eq!(delivery_commit.len(), 40);
     assert_ne!(delivery_commit, build_snap);
     assert_eq!(deliver_res["snapshot"]["commit"], &delivery_commit[..7]);
@@ -5456,7 +5631,7 @@ scope:
 }
 
 #[test]
-fn cross_milestone_task_dependencies_gate_readiness_and_claim() {
+fn cross_milestone_dependency_diagnostic_gates_readiness_and_claim() {
     let root = ScopedWorkspace::new("forge_cross_milestone");
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     let m1_text = "---\nid: m-first\ntitle: First\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\ninvariants: [isolated]\n---\n# First\n```yaml\ntask_ref: producer\ntarget: Deliver producer\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
@@ -5479,12 +5654,45 @@ fn cross_milestone_task_dependencies_gate_readiness_and_claim() {
     assert_eq!(producer_task.status, "ready");
     assert_eq!(consumer_task.status, "blocked");
 
-    // Attempting to claim consumer should fail because its dependency is not ready
+    // Persist the computed blocked state so the claim seam can exercise status precedence.
+    store
+        .connection
+        .execute(
+            "UPDATE tasks SET descriptor = json_set(descriptor, '$.status', 'blocked') WHERE task_id = ?1",
+            [&consumer_id],
+        )
+        .unwrap();
+
+    // Attempting to claim consumer should fail because its status is not ready.
     let worktree = root.0.to_string_lossy().into_owned();
-    let claim_err = store
+    let status_err = store
         .claim(&consumer_id, "contract", "worker-1", &worktree)
         .unwrap_err();
-    assert_eq!(claim_err.to_string(), "TASK_NOT_READY");
+    let status_message = status_err.to_string();
+
+    // Exercise the dependency-specific diagnostic after status becomes ready.
+    store
+        .connection
+        .execute(
+            "UPDATE tasks SET descriptor = json_set(descriptor, '$.status', 'ready') WHERE task_id = ?1",
+            [&consumer_id],
+        )
+        .unwrap();
+    let dependency_err = store
+        .claim(&consumer_id, "contract", "worker-1", &worktree)
+        .unwrap_err();
+    let dependency_message = dependency_err.to_string();
+    let expected_status_message = format!(
+        "TASK_NOT_READY: task '{consumer_id}'. status is 'blocked' (active stage 'contract'). Do: claim only ready tasks at their active stage."
+    );
+    let expected_dependency_message = format!(
+        "TASK_NOT_READY: task '{consumer_id}' has unsatisfied dependencies: [{producer_id}]. Do: complete dependencies before claiming stage 'contract'."
+    );
+    assert!(
+        status_message == expected_status_message
+            && dependency_message == expected_dependency_message,
+        "unexpected TASK_NOT_READY diagnostics; status: {status_message:?}; dependencies: {dependency_message:?}"
+    );
 
     // Complete producer task
     store.connection.execute(
@@ -5506,4 +5714,510 @@ fn cross_milestone_task_dependencies_gate_readiness_and_claim() {
         .unwrap();
     assert_eq!(claimed.task_id, consumer_id);
     assert_eq!(claimed.status, "in_progress");
+}
+
+#[test]
+fn task_manage_selector_diagnostics_report_fields_before_resolution() {
+    let root = ScopedWorkspace::new("forge_selector_diagnostics");
+    let cases = [
+        (
+            tasks::Manage {
+                action: tasks::ManageAction::Inspect,
+                ..Default::default()
+            },
+            "inspect",
+            "task_id",
+        ),
+        (
+            tasks::Manage {
+                action: tasks::ManageAction::Inspect,
+                task_id: Some("forge-mcp/m-missing:task".into()),
+                milestone_ref: Some("docs/010-test.md".into()),
+                ..Default::default()
+            },
+            "inspect",
+            "milestone_ref",
+        ),
+        (
+            tasks::Manage {
+                action: tasks::ManageAction::Sync,
+                ..Default::default()
+            },
+            "sync",
+            "milestone_ref, workspace",
+        ),
+        (
+            tasks::Manage {
+                action: tasks::ManageAction::ExtendScope,
+                task_id: Some("forge-mcp/m-test:first".into()),
+                paths: Some(Vec::new()),
+                ..Default::default()
+            },
+            "extend_scope",
+            "paths",
+        ),
+    ];
+
+    for (request, action, fields) in cases {
+        let error = tasks::manage(&root.0, request).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            format!(
+                "TASK_SELECTOR_INVALID: action '{action}'. missing or invalid fields: [{fields}]. Do: pass required fields for '{action}'."
+            )
+        );
+    }
+}
+
+#[test]
+fn task_store_diagnostics_cover_not_found_stale_claim_and_submission_precedence() {
+    let (root, mut store, milestone) = fixture();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    let missing_id = "forge-mcp/m-test:missing";
+    let expected_not_found = format!(
+        "TASK_NOT_FOUND: task '{missing_id}' not found in tasks database. Do: verify task id and sync milestone."
+    );
+    assert_eq!(
+        store.inspect(missing_id).unwrap_err().to_string(),
+        expected_not_found
+    );
+    let not_found_evidence = Evidence {
+        task_id: missing_id.into(),
+        stage: "contract".into(),
+        claim_revision: 1,
+        contract_revision: 1,
+        worker_id: "diagnostic-builder".into(),
+        worktree: root.0.to_string_lossy().into_owned(),
+        commit: None,
+        candidate_baseline_head: None,
+        proof: json!({"contract_proof":{"seam_test_ref":"tests/acdd/tasks.rs","red_exit_code":101}}),
+    };
+    assert_eq!(
+        store
+            .claim(
+                missing_id,
+                "contract",
+                "diagnostic-builder",
+                &not_found_evidence.worktree
+            )
+            .unwrap_err()
+            .to_string(),
+        expected_not_found
+    );
+    assert_eq!(
+        store.reset(missing_id).unwrap_err().to_string(),
+        expected_not_found
+    );
+    assert_eq!(
+        store
+            .release_failed_claim(missing_id, 1)
+            .unwrap_err()
+            .to_string(),
+        expected_not_found
+    );
+    assert_eq!(
+        store
+            .extend_scope(missing_id, &["src/other.rs".into()], &root.0)
+            .unwrap_err()
+            .to_string(),
+        expected_not_found
+    );
+    assert_eq!(
+        store
+            .submit(missing_id, "contract", &not_found_evidence, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        expected_not_found
+    );
+    assert_eq!(
+        tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: missing_id.into(),
+                stage: "contract".into(),
+                worker_id: "diagnostic-builder".into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            }
+        )
+        .unwrap_err()
+        .to_string(),
+        expected_not_found
+    );
+    for action in [
+        tasks::ManageAction::Inspect,
+        tasks::ManageAction::ExtendScope,
+    ] {
+        let error = tasks::manage(
+            &root.0,
+            tasks::Manage {
+                action,
+                task_id: Some(missing_id.into()),
+                paths: (action == tasks::ManageAction::ExtendScope)
+                    .then(|| vec!["src/other.rs".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, expected_not_found);
+    }
+    assert_eq!(
+        tasks::manage(
+            &root.0,
+            tasks::Manage {
+                action: tasks::ManageAction::Create,
+                milestone_ref: Some("docs/010-test.md".into()),
+                task_ref: Some("missing".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string(),
+        expected_not_found
+    );
+
+    let ready = store.inspect(&id).unwrap();
+    assert_eq!(
+        store
+            .release_failed_claim(&id, ready.claim_revision)
+            .unwrap_err()
+            .to_string(),
+        format!("TASK_STALE_CLAIM: task '{id}'. status is 'ready'. Do: leave the claim unchanged.")
+    );
+
+    let worktree = root.0.to_string_lossy().into_owned();
+    let claimed = store
+        .claim(&id, "contract", "diagnostic-builder", &worktree)
+        .unwrap();
+    let wrong_revision = claimed.claim_revision + 1;
+    assert_eq!(
+        store
+            .release_failed_claim(&id, wrong_revision)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_STALE_CLAIM: task '{id}'. active claim_revision {} != requested {wrong_revision}. Do: release claim_revision {}.",
+            claimed.claim_revision, claimed.claim_revision
+        )
+    );
+    store
+        .connection
+        .execute(
+            "UPDATE task_claims SET ended = 1 WHERE task_id = ?1 AND revision = ?2",
+            rusqlite::params![id, claimed.claim_revision],
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .release_failed_claim(&id, claimed.claim_revision)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_STALE_CLAIM: task '{id}'. claim_revision {} has no open claim row. Do: claim the task again before modifying it.",
+            claimed.claim_revision
+        )
+    );
+    store.reset(&id).unwrap();
+    drop(store);
+
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    let mut active = store
+        .claim(&id, "contract", "diagnostic-builder", &worktree)
+        .unwrap();
+    let mut stage_evidence = evidence(&active);
+    stage_evidence.stage = "build".into();
+    assert_eq!(
+        store
+            .submit(&id, "contract", &stage_evidence, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_STAGE_INVALID: task '{id}'. evidence.stage 'build' != submitted stage 'contract'. Do: set evidence.stage to 'contract'."
+        )
+    );
+
+    let mut empty_commit = evidence(&active);
+    empty_commit.commit = Some(" \t".into());
+    assert_eq!(
+        store
+            .submit(&id, "contract", &empty_commit, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_EVIDENCE_INVALID: task '{id}' for stage 'contract'. commit field is empty. Do: set commit to candidate snapshot unavailable."
+        )
+    );
+
+    for (value, expected) in [
+        (
+            Value::Null,
+            format!(
+                "TASK_EVIDENCE_INVALID: task '{id}'. evidence is not a valid JSON object. Do: pass evidence as a JSON object."
+            ),
+        ),
+        (
+            json!({}),
+            format!(
+                "TASK_EVIDENCE_INVALID: task '{id}'. evidence JSON does not match the evidence object. Do: pass the evidence fields required by stage 'contract'."
+            ),
+        ),
+    ] {
+        assert_eq!(
+            tasks::submit(
+                &root.0,
+                tasks::Submit {
+                    task_id: id.clone(),
+                    stage: "contract".into(),
+                    action: tasks::Action::Pass,
+                    evidence: value,
+                    findings: None,
+                }
+            )
+            .unwrap_err()
+            .to_string(),
+            expected
+        );
+    }
+    let mut submitted_evidence = evidence(&active);
+    submitted_evidence.stage = "build".into();
+    assert_eq!(
+        store
+            .submit(&id, "build", &submitted_evidence, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_STAGE_INVALID: task '{id}'. submitted stage 'build' does not match active stage 'contract'. Do: submit for active stage 'contract'."
+        )
+    );
+
+    store
+        .connection
+        .execute(
+            "UPDATE tasks SET descriptor = json_set(descriptor, '$.status', 'ready') WHERE task_id = ?1",
+            [&id],
+        )
+        .unwrap();
+    let ready_with_claim = store.inspect(&id).unwrap();
+    let ready_evidence = evidence(&ready_with_claim);
+    assert_eq!(
+        store
+            .submit(&id, "contract", &ready_evidence, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_STALE_SUBMISSION: task '{id}'. status is 'ready'. Do: claim the task before submitting."
+        )
+    );
+    store
+        .connection
+        .execute(
+            "UPDATE tasks SET descriptor = json_set(descriptor, '$.status', 'in_progress') WHERE task_id = ?1",
+            [&id],
+        )
+        .unwrap();
+    active = store.inspect(&id).unwrap();
+
+    let active_revision = active.claim_revision;
+    let active_contract_revision = active.contract_revision;
+    let active_worker = active.worker_id.clone().unwrap();
+    let active_worktree = active.worktree.clone().unwrap();
+    let cases = vec![
+        {
+            let mut supplied = evidence(&active);
+            supplied.claim_revision += 1;
+            (
+                "claim_revision",
+                supplied.claim_revision.to_string(),
+                active_revision.to_string(),
+                supplied,
+            )
+        },
+        {
+            let mut supplied = evidence(&active);
+            supplied.contract_revision += 1;
+            (
+                "contract_revision",
+                supplied.contract_revision.to_string(),
+                active_contract_revision.to_string(),
+                supplied,
+            )
+        },
+        {
+            let mut supplied = evidence(&active);
+            supplied.task_id = "forge-mcp/m-other:task".into();
+            ("task_id", supplied.task_id.clone(), id.clone(), supplied)
+        },
+        {
+            let mut supplied = evidence(&active);
+            supplied.worker_id = "other-worker".into();
+            (
+                "worker_id",
+                supplied.worker_id.clone(),
+                active_worker,
+                supplied,
+            )
+        },
+        {
+            let mut supplied = evidence(&active);
+            supplied.worktree = "/other/worktree".into();
+            (
+                "worktree",
+                supplied.worktree.clone(),
+                active_worktree,
+                supplied,
+            )
+        },
+    ];
+    for (field, evidence_value, active_value, supplied) in cases {
+        assert_eq!(
+            store
+                .submit(&id, "contract", &supplied, "pass", None)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "TASK_STALE_SUBMISSION: task '{id}'. evidence {field} {evidence_value} != active {active_value}. Do: resubmit with active {field} {active_value}."
+            )
+        );
+    }
+
+    let mut invalid_proof = evidence(&active);
+    invalid_proof.proof = Value::Null;
+    assert_eq!(
+        store
+            .submit(&id, "contract", &invalid_proof, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_EVIDENCE_INVALID: task '{id}' for stage 'contract'. proof is null. Do: provide non-empty proof for stage 'contract'."
+        )
+    );
+
+    let accepted = evidence(&active);
+    store
+        .submit(&id, "contract", &accepted, "pass", None)
+        .unwrap();
+    let mut different = accepted;
+    different.proof =
+        json!({"contract_proof":{"seam_test_ref":"tests/acdd/other.rs","red_exit_code":101}});
+    assert_eq!(
+        store
+            .submit(&id, "contract", &different, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_STALE_SUBMISSION: task '{id}'. claim_revision {} already submitted with different evidence. Do: resubmit the accepted evidence for claim_revision {}.",
+            active.claim_revision, active.claim_revision
+        )
+    );
+}
+
+#[test]
+fn delivery_rejects_commit_that_differs_from_candidate_when_auto_commit_is_disabled() {
+    let root = ScopedWorkspace::new("forge_delivery_candidate_diagnostic");
+    root.write("src/lib.rs", "pub fn candidate() -> bool { true }\n");
+    root.write(
+        "forge-mcp.yaml",
+        "tasks_db: .forge/tasks.sqlite\nacdd_profile: custom_profile.yaml\n",
+    );
+    root.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
+    root.write(
+        "custom_profile.yaml",
+        r#"
+gates:
+  - id: contract
+    role: contract_author
+    proof: contract
+  - id: build
+    role: builder
+    proof: command
+    sha_snapshot: true
+  - id: review
+    role: independent_reviewer
+    proof: review
+    reject_to: build
+    independent_from: build
+    contours: standard
+  - id: deliver
+    role: delivery_reviewer
+    proof: delivery
+    review_sources: [review]
+    reject_to: build
+    auto_commit: false
+"#,
+    );
+    root.write(
+        "docs/010-candidate.md",
+        "---\nid: m-candidate\ntitle: Candidate diagnostics\ndoc_type: contract\nstatus: active\ninvariants: [isolated]\n---\n# Candidate diagnostics\n```yaml\ntask_ref: candidate\ntarget: Verify delivery candidate diagnostics\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
+    );
+    tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some("docs/010-candidate.md".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let task_id = "forge-mcp/m-candidate:candidate";
+    for (stage, worker) in [
+        ("contract", "author"),
+        ("build", "builder"),
+        ("review", "reviewer"),
+    ] {
+        tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: task_id.into(),
+                stage: stage.into(),
+                worker_id: worker.into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let task = tasks::store_for_task(&root.0, task_id)
+            .unwrap()
+            .inspect(task_id)
+            .unwrap();
+        tasks::submit(
+            &root.0,
+            tasks::Submit {
+                task_id: task_id.into(),
+                stage: stage.into(),
+                action: tasks::Action::Pass,
+                evidence: serde_json::to_value(evidence(&task)).unwrap(),
+                findings: None,
+            },
+        )
+        .unwrap();
+    }
+    tasks::claim(
+        &root.0,
+        tasks::Claim {
+            task_id: task_id.into(),
+            stage: "deliver".into(),
+            worker_id: "delivery".into(),
+            worktree: root.0.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let mut store = tasks::store_for_task(&root.0, task_id).unwrap();
+    let task = store.inspect(task_id).unwrap();
+    let (candidate_snapshot, baseline) = store.build_snapshot_candidate(task_id).unwrap().unwrap();
+    let mut supplied = evidence(&task);
+    supplied.commit = Some("caller-selected-commit".into());
+    supplied.candidate_baseline_head = Some(baseline);
+    assert_eq!(
+        store
+            .submit(task_id, "deliver", &supplied, "pass", None)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "TASK_CANDIDATE_MISMATCH: task '{task_id}'. supplied commit caller-selected-commit != candidate snapshot {candidate_snapshot}. Do: resubmit with commit {candidate_snapshot}."
+        )
+    );
 }

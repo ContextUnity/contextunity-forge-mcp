@@ -537,6 +537,50 @@ fn validate_authority(
     }
     Ok(())
 }
+
+fn candidate_divergence_diagnostic(
+    worktree: &Path,
+    task_id: &str,
+    scope: &[String],
+    snapshot: &str,
+) -> Result<String> {
+    let short = &snapshot[..snapshot.len().min(7)];
+    let diff_args = ["diff", "--name-status", "--no-renames", snapshot, "--"];
+    let mut diff_args = diff_args.to_vec();
+    diff_args.extend(scope.iter().map(String::as_str));
+    let output = crate::core::git::git_command(worktree, &diff_args)?;
+    if !output.status.success() {
+        bail!("TASK_CANDIDATE_MISMATCH: could not inspect candidate paths");
+    }
+    let mut paths_with_status = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.replace('\t', " ").replace(['\r', '\n'], "\\n"))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+
+    let untracked_args = ["ls-files", "--others", "--exclude-standard", "--"];
+    let mut untracked_args = untracked_args.to_vec();
+    untracked_args.extend(scope.iter().map(String::as_str));
+    let output = crate::core::git::git_command(worktree, &untracked_args)?;
+    if !output.status.success() {
+        bail!("TASK_CANDIDATE_MISMATCH: could not inspect untracked candidate paths");
+    }
+    paths_with_status.extend(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|path| format!("?? {}", path.replace(['\r', '\n'], "\\n")))
+            .filter(|path| path != "?? "),
+    );
+    let paths_with_status = if paths_with_status.is_empty() {
+        "no changed scoped paths reported".to_owned()
+    } else {
+        paths_with_status.join(", ")
+    };
+    Ok(format!(
+        "TASK_CANDIDATE_MISMATCH: task '{task_id}' diverged from snapshot {short}. {paths_with_status}. Do: restore those paths to snapshot {short}."
+    ))
+}
+
 /// Performs store for task.
 pub fn store_for_task(root: &Path, id: &str) -> Result<TasksStore> {
     let registry = Registry::load(root)?;
@@ -571,13 +615,13 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
     };
     let task = store.inspect(&p.task_id)?;
     if task.stage != observed_task.stage || task.profile_pin != observed_task.profile_pin {
-        bail!("TASK_STALE_SUBMISSION");
+        bail!("TASK_STALE_SUBMISSION: task '{}'. stage or profile_pin changed concurrently. Do: retry submission.", p.task_id);
     }
     if !p.evidence.is_object() {
-        bail!("TASK_EVIDENCE_INVALID: evidence must be a JSON object");
+        bail!("TASK_EVIDENCE_INVALID: task '{}'. evidence is not a valid JSON object. Do: pass evidence as a JSON object.", p.task_id);
     }
     let mut evidence: Evidence = serde_json::from_value(p.evidence)
-        .context("TASK_EVIDENCE_INVALID: expected a structured JSON evidence object")?;
+        .context(format!("TASK_EVIDENCE_INVALID: task '{}'. evidence JSON does not match the evidence object. Do: pass the evidence fields required by stage '{}'.", p.task_id, p.stage))?;
     // This value is derived from the accepted snapshot, never from caller-supplied evidence.
     evidence.candidate_baseline_head = None;
     registry.check_worktree(workspace, Path::new(&evidence.worktree))?;
@@ -611,7 +655,8 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
             .as_ref()
             .is_some_and(|commit| commit != &snapshot)
         {
-            bail!("TASK_CANDIDATE_MISMATCH: supplied commit does not match the scoped snapshot");
+            let supplied = explicit_commit.as_deref().unwrap_or("missing");
+            bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != scoped snapshot {snapshot}. Do: resubmit with commit {snapshot}.", p.task_id);
         }
         evidence.commit = Some(snapshot);
         evidence.candidate_baseline_head = Some(baseline);
@@ -633,7 +678,8 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
                     .as_deref()
                     .is_some_and(|commit| commit != delivered)
                 {
-                    bail!("TASK_CANDIDATE_MISMATCH: supplied delivery commit differs from the accepted receipt");
+                    let supplied = explicit_commit.as_deref().unwrap_or("missing");
+                    bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != accepted receipt commit {delivered}. Do: resubmit with commit {delivered}.", p.task_id);
                 }
                 evidence.commit = Some(delivered.to_owned());
             } else {
@@ -651,7 +697,15 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
                             "TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree",
                         )?;
                 if current != candidate {
-                    bail!("TASK_CANDIDATE_MISMATCH: worktree has diverged from accepted candidate");
+                    bail!(
+                        "{}",
+                        candidate_divergence_diagnostic(
+                            worktree,
+                            &p.task_id,
+                            &task.spec.scope,
+                            &candidate
+                        )?
+                    );
                 }
                 evidence.commit = Some(candidate.clone());
             }
@@ -660,7 +714,8 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
                 .as_ref()
                 .is_some_and(|commit| commit != &candidate)
             {
-                bail!("TASK_CANDIDATE_MISMATCH: supplied commit does not match accepted candidate");
+                let supplied = explicit_commit.as_deref().unwrap_or("missing");
+                bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != candidate snapshot {candidate}. Do: resubmit with commit {candidate}.", p.task_id);
             }
             evidence.commit = Some(candidate.clone());
             if matches!(
@@ -676,7 +731,15 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
                             "TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree",
                         )?;
                 if current != candidate {
-                    bail!("TASK_CANDIDATE_MISMATCH: worktree has diverged from accepted candidate");
+                    bail!(
+                        "{}",
+                        candidate_divergence_diagnostic(
+                            worktree,
+                            &p.task_id,
+                            &task.spec.scope,
+                            &candidate
+                        )?
+                    );
                 }
             }
         }
