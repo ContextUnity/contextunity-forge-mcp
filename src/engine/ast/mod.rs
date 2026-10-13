@@ -14,6 +14,16 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node as Syntax, Parser};
+
+#[cfg(feature = "lang-typescript")]
+fn commonjs_default_callable(node: tree_sitter::Node<'_>, source: &str) -> bool {
+    crate::engine::languages::typescript::commonjs_default_callable(node, source)
+}
+
+#[cfg(not(feature = "lang-typescript"))]
+fn commonjs_default_callable(_node: tree_sitter::Node<'_>, _source: &str) -> bool {
+    false
+}
 /// Performs parser.
 pub fn parser(language: &str, path: &str) -> Result<Parser> {
     languages::require(language)?.create_parser(path)
@@ -503,9 +513,7 @@ impl Extraction<'_> {
             if prototype_owner.is_some() {
                 details["prototype"] = json!(true);
             }
-            if language == "javascript"
-                && crate::engine::languages::typescript::commonjs_default_callable(node, source)
-            {
+            if language == "javascript" && commonjs_default_callable(node, source) {
                 details["commonjs_default_callable"] = json!(true);
             }
             if let Some(is_method) = metadata.is_method {

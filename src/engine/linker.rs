@@ -3,7 +3,9 @@ use crate::core::models::{
     compact_graph::{Coverage, Edge, Graph},
     Graph as PublicGraph,
 };
-use crate::engine::languages::{self, module_name, ImportPath, LanguageFamily};
+#[cfg(feature = "lang-html")]
+use crate::engine::languages::ImportPath;
+use crate::engine::languages::{self, module_name, LanguageFamily};
 use crate::engine::linker::traits::{
     ImportContext, ImportResolution, LanguageLinker, GENERIC_LINKER,
 };
@@ -39,6 +41,31 @@ fn prototype_visible_at(node: &Node, path: &str, line: usize, column: usize) -> 
         .or_else(|| node.details["column"].as_u64())
         .unwrap_or(0) as usize;
     (assigned_line, assigned_column) <= (line, column)
+}
+
+#[cfg(not(feature = "lang-typescript"))]
+fn prototype_visible_at(_node: &Node, _path: &str, _line: usize, _column: usize) -> bool {
+    true
+}
+
+#[cfg(feature = "lang-typescript")]
+fn typed_dom_receiver(name: &str) -> Option<&'static str> {
+    languages::typescript::typed_dom_receiver(name)
+}
+
+#[cfg(not(feature = "lang-typescript"))]
+fn typed_dom_receiver(_name: &str) -> Option<&'static str> {
+    None
+}
+
+#[cfg(feature = "lang-typescript")]
+fn typed_dom_property(receiver: &str, property: &str) -> Option<&'static str> {
+    languages::typescript::typed_dom_property(receiver, property)
+}
+
+#[cfg(not(feature = "lang-typescript"))]
+fn typed_dom_property(_receiver: &str, _property: &str) -> Option<&'static str> {
+    None
 }
 
 /// Performs needs reference identity.

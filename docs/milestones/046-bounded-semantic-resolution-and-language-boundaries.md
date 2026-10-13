@@ -235,38 +235,97 @@ Verification: unfiltered `linker`, `languages`, `incremental` targets for change
 
 ```yaml
 task_ref: language-feature-decoupling-and-isolated-compilation
-target: "Isolate cross-language linker and AST dependencies behind proper cfg-gates so single-language feature sets compile cleanly"
+target: Isolate cross-language linker and AST dependencies behind proper cfg-gates so single-language feature sets compile cleanly
 proof_policy: direct-proof
 contract_revision: 4
 scope:
-  - src/engine/ast/mod.rs
-  - src/engine/linker.rs
-  - src/engine/linker/resolution.rs
-  - src/engine/linker/semantic_context.rs
-  - src/engine/linker/value_flow.rs
-  - src/engine/languages/
-  - Cargo.toml
-  - tests/languages/
+- src/engine/ast/mod.rs
+- src/engine/linker.rs
+- src/engine/linker/resolution.rs
+- src/engine/linker/semantic_context.rs
+- src/engine/linker/value_flow.rs
+- src/engine/languages/
+- Cargo.toml
+- tests/languages/
 depends_on:
-  - contract-and-quality-oracle
+- contract-and-quality-oracle
 invariants:
-  - 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
-  - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
-  - 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
-status: planned
+- 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
+- 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+- 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
+status: completed
 subtasks:
-  - subtask_ref: cfg-gate-typescript-dom-bindings
-    title: "Enclose typed_dom_property, typed_dom_receiver, and prototype_visible_at in src/engine/linker/resolution.rs, value_flow.rs, and linker.rs under cfg(feature = 'lang-typescript') with fallback no-op stubs"
-    status: pending
-  - subtask_ref: cfg-gate-commonjs-callables
-    title: "Enclose commonjs_default_callable in src/engine/ast/mod.rs under cfg(feature = 'lang-typescript') with fallback no-op stub"
-    status: pending
-  - subtask_ref: cfg-gate-typescript-members-context
-    title: "Enclose TypeScriptMembers in src/engine/linker/semantic_context.rs, resolution.rs, and linker.rs under cfg(feature = 'lang-typescript')"
-    status: pending
-  - subtask_ref: verify-isolated-language-compilation
-    title: "Verify clean compilation across isolated feature sets: lang-python, lang-rust, lang-typescript, lang-vue (--no-default-features), and default"
-    status: pending
+- subtask_ref: cfg-gate-typescript-dom-bindings
+  title: Enclose typed_dom_property, typed_dom_receiver, and prototype_visible_at in src/engine/linker/resolution.rs, value_flow.rs, and linker.rs under cfg(feature = 'lang-typescript') with fallback no-op stubs
+  status: completed
+  evidence: 'Completed: linker.rs now exposes lang-typescript-only typed DOM wrappers with None fallback stubs; resolution.rs and value_flow.rs route through those wrappers. prototype_visible_at has an always-available no-TypeScript fallback returning true. Verified `cargo check --no-default-features --features lang-python` exits 0.'
+- subtask_ref: cfg-gate-commonjs-callables
+  title: Enclose commonjs_default_callable in src/engine/ast/mod.rs under cfg(feature = 'lang-typescript') with fallback no-op stub
+  status: completed
+  evidence: 'Completed: ast/mod.rs routes CommonJS callable detection through a lang-typescript-gated helper with a false fallback when TypeScript is disabled. Verified isolated Python check exits 0.'
+- subtask_ref: verify-isolated-language-compilation
+  title: 'Verify clean compilation across isolated feature sets: lang-python, lang-rust, lang-typescript, lang-vue (--no-default-features), and default'
+  status: completed
+  evidence: 'Completed: all pass (exit 0): `cargo check --no-default-features --features lang-python`; `cargo check --no-default-features --features lang-rust`; `cargo check --no-default-features --features lang-typescript`; `cargo check --no-default-features --features lang-vue`; `cargo check`.'
+- subtask_ref: cfg-gate-typescript-members-context
+  title: Enclose TypeScriptMembers in src/engine/linker/semantic_context.rs, resolution.rs, and linker.rs under cfg(feature = 'lang-typescript')
+  status: completed
+  evidence: 'Completed: TypeScriptMembers context declaration/call paths were already guarded by lang-typescript cfg at semantic_context.rs, resolution.rs, and linker.rs; verified in the isolated Python, Rust, Vue and default compilation matrix.'
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-13T10:08:39.633869372+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test languages
+      exit_code: 0
+      tests_passed: 253
+      tests_failed: 0
+      log: 'Also passed: cargo check --no-default-features --features lang-python; lang-rust; lang-typescript; lang-vue; cargo check; cargo clippy --all-targets --all-features -- -D warnings; cargo fmt -- --check; git diff --check (all exit 0).'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Compared the worktree status and candidate snapshot: only the five modified files are src/engine/ast/mod.rs, src/engine/linker.rs, src/engine/linker/resolution.rs, src/engine/linker/semantic_context.rs, and src/engine/linker/value_flow.rs, all admitted by task scope. No staged or untracked files, Cargo.toml change, profile/configuration change, or neighboring-project path change. Every path in snapshot 5433c5f blob-hash-matches the review worktree.'
+        claims:
+          applicable: true
+          evidence: 'The TypeScript CommonJS helper is called only through a lang-typescript-gated wrapper with false fallback; DOM property/receiver helpers route through wrappers with None fallbacks; prototype visibility has a no-TypeScript true fallback. TypeScriptMembers storage/setup paths are cfg-gated, and the Rust Self::/Self. branch is now wholly lang-rust-gated. Cargo declares optional TypeScript and JavaScript grammars under lang-typescript and lang-vue depends on lang-typescript. Accepted build proof is bound to snapshot 5433c5f and records Python, Rust, TypeScript, Vue, and default checks plus strict all-feature Clippy, all exit 0. Reviewer reran the complete target: cargo test --test languages, exit 0, 253 passed, 0 failed. Coverage limitation: fallback semantics are compile-checked by the feature matrix; no new standalone test asserts the false/None stub values.'
+        concurrency:
+          applicable: true
+          evidence: No task store, transaction, lock, receipt, or shared-state code changed. Forge records the accepted build at claim revision 6 against baseline head 5a619aee2a8a4c5a47b267fd3fead051399e13c8 and candidate 5433c5f; this review is independently claimed at revision 7. Candidate file hashes still match the snapshot after review verification, so no stale candidate or partial publication was introduced.
+        project_isolation:
+          applicable: true
+          evidence: The task ID and milestone resolve to repository forge-mcp, and the review claim uses its declared isolated task worktree. All modified paths are within that task's allowed scope; no linked workspace, task namespace, profile path, symlink, traversal, or repository-root handling was changed.
+        administration:
+          applicable: true
+          evidence: No profile, migration, hook configuration, build script, or generated registry was modified; the protected .forge/acdd profile is clean. The active claim returned the compiled standard five-contour review policy, and the build receipt preserves the validated candidate baseline. Hook execution and the landed task SHA are delivery-stage checks; this review makes no claim that a delivery receipt already exists.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
+    - 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
+    - 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
+    - 'INV-OWNERSHIP: Language rules belong to language resolvers; cross-language framework relations use explicit composition passes; common scheduling and budgets remain shared.'
+    - 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
+    - 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
+    - 'INV-PERF-NO-REGRESSION: Indexing and query throughput must not regress. Cold index build on a clean, isolated scratch copy of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) with scratch adapter pointing to clean isolated copies of linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7) must complete within 11.5 seconds wall-clock time using pre-compiled binary target/release/contextunity-forge-mcp build under a lightly loaded host (CPU load < 1.0). Median tool query latencies and RSS peak across benchmark scenarios must not regress against task 1 baseline.'
+    - 'INV-CONTROL-REPO-ISOLATION: Performance evaluations, benchmarks, and multi-workspace verifications must strictly operate on clean, isolated scratch/temporary copies of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) and clean copies of all linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7). The scratch adapter forge-mcp.yaml in the isolated commerce worktree must be rewritten to point linked_workspaces to those isolated clean scratch directories instead of primary repository trees. Never read from or modify primary baseline worktrees.'
+    - 'INV-DOCS: Keep milestone contracts outside doc_search; publish delivered semantic contracts in indexed ADR, architecture, and reference documents.'
+    - 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

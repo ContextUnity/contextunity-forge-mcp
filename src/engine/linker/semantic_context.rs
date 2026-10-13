@@ -1252,11 +1252,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                     return self.resolve_symbol(owner, receiver, at, SymbolRole::Type);
                 }
             }
+            #[cfg(feature = "lang-rust")]
             if let Some(member) = name
                 .strip_prefix("Self::")
                 .or_else(|| name.strip_prefix("Self."))
             {
-                #[cfg(feature = "lang-rust")]
                 if let Some(receiver) = self.rust.and_then(|members| members.receiver_for(owner)) {
                     let methods = self.rust.map_or(&[] as &[&'a Node], |m| {
                         m.lookup(receiver, member, true, owner)

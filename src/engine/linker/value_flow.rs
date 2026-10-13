@@ -1502,9 +1502,7 @@ impl<'a> ValueFlowIndex<'a> {
                 }
                 if let TypeTarget::Builtin(name) = &receiver_type {
                     if matches!(owner.language.as_str(), "javascript" | "typescript") {
-                        if let Some(prop_type) =
-                            crate::engine::languages::typescript::typed_dom_property(name, member)
-                        {
+                        if let Some(prop_type) = super::typed_dom_property(name, member) {
                             return TypeTarget::Builtin(prop_type.to_owned());
                         }
                     }
@@ -1617,10 +1615,8 @@ impl<'a> ValueFlowIndex<'a> {
                                 self.field_type_tracked(class, field, trace).cloned()
                             }
                             Some(TypeTarget::Builtin(name)) => {
-                                crate::engine::languages::typescript::typed_dom_property(
-                                    name, field,
-                                )
-                                .map(|n| TypeTarget::Builtin(n.to_owned()))
+                                super::typed_dom_property(name, field)
+                                    .map(|n| TypeTarget::Builtin(n.to_owned()))
                             }
                             _ => None,
                         };
@@ -1645,8 +1641,7 @@ impl<'a> ValueFlowIndex<'a> {
                     "querySelector" | "closest" | "appendChild" | "removeChild" | "cloneNode"
                     | "insertBefore" | "replaceChild",
                 ) if matches!(name.as_str(), "Element" | "HTMLElement" | "Node")
-                    || crate::engine::languages::typescript::typed_dom_receiver(name)
-                        == Some("Element") =>
+                    || super::typed_dom_receiver(name) == Some("Element") =>
                 {
                     Some("Element")
                 }

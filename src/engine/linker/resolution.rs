@@ -271,7 +271,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     let mut valid = false;
                                     let mut parts = tail.split('.').peekable();
                                     while let Some(part) = parts.next() {
-                                        if let Some(next_type) = languages::typescript::typed_dom_property(current, part) {
+                                        if let Some(next_type) = super::typed_dom_property(current, part) {
                                             current = next_type;
                                             if parts.peek().is_none() {
                                                 valid = true;
@@ -1109,7 +1109,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     let next = match nested_receiver.as_ref() {
                                         value_flow::TypeTarget::Local(class) => value_flow.field_type(class, field).map(Cow::Borrowed),
                                         value_flow::TypeTarget::Builtin(name) if active_profile.is_some_and(|profile| matches!(profile.id(), "typescript" | "javascript")) =>
-                                            languages::typescript::typed_dom_property(name, field)
+                                            super::typed_dom_property(name, field)
                                                 .map(|name| Cow::Owned(value_flow::TypeTarget::Builtin(name.to_owned()))),
                                         _ => None,
                                     };
@@ -1126,7 +1126,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     };
                                     let origin = match resolved_receiver {
                                         value_flow::TypeTarget::Builtin(name)
-                                            if (name == "Web.Response" || languages::typescript::typed_dom_receiver(name).is_some())
+                                            if (name == "Web.Response" || super::typed_dom_receiver(name).is_some())
                                                 && active_profile.is_some_and(|profile| matches!(profile.id(), "javascript" | "typescript")) => Some("builtin:web_api"),
                                         _ => builtin_origin,
                                     };
@@ -1870,7 +1870,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     let next = match nested_receiver.as_ref() {
                                         value_flow::TypeTarget::Local(class) => value_flow.field_type(class, field).map(Cow::Borrowed),
                                         value_flow::TypeTarget::Builtin(name) if profile.is_some_and(|profile| matches!(profile.id(), "typescript" | "javascript")) =>
-                                            languages::typescript::typed_dom_property(name, field)
+                                            super::typed_dom_property(name, field)
                                                 .map(|name| Cow::Owned(value_flow::TypeTarget::Builtin(name.to_owned()))),
                                         _ => None,
                                     };
@@ -1910,7 +1910,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                             Some("builtin:sqlite3")
                                         }
                                         value_flow::TypeTarget::Builtin(name)
-                                            if (name == "Web.Response" || languages::typescript::typed_dom_receiver(name).is_some())
+                                            if (name == "Web.Response" || super::typed_dom_receiver(name).is_some())
                                                 && active_profile.is_some_and(|profile| matches!(profile.id(), "javascript" | "typescript")) =>
                                         {
                                             Some("builtin:web_api")
