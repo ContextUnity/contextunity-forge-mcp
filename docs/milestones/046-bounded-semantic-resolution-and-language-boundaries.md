@@ -44,7 +44,7 @@ invariants:
 - 'INV-OWNERSHIP: Language rules belong to language resolvers; cross-language framework relations use explicit composition passes; common scheduling and budgets remain shared.'
 - 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
 - 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
-- 'INV-PERF-NO-REGRESSION: Indexing and query throughput must not regress. Cold index build on a clean, isolated scratch copy of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) with scratch adapter pointing to clean isolated copies of linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7) must complete within 11.5 seconds wall-clock time using pre-compiled binary target/release/contextunity-forge-mcp build under a lightly loaded host (CPU load < 1.0). Median tool query latencies and RSS peak across benchmark scenarios must not regress against task 1 baseline.'
+- 'INV-PERF-NO-REGRESSION: Indexing and query throughput must not regress. Cold index build on a clean, isolated scratch copy of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) with scratch adapter pointing to clean isolated copies of linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7) must complete within 11.5 seconds wall-clock time using pre-compiled binary target/release/contextunity-forge-mcp build under a lightly loaded host (CPU load < 4). Median tool query latencies and RSS peak across benchmark scenarios must not regress against task 1 baseline.'
 - 'INV-CONTROL-REPO-ISOLATION: Performance evaluations, benchmarks, and multi-workspace verifications must strictly operate on clean, isolated scratch/temporary copies of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) and clean copies of all linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7). The scratch adapter forge-mcp.yaml in the isolated commerce worktree must be rewritten to point linked_workspaces to those isolated clean scratch directories instead of primary repository trees. Never read from or modify primary baseline worktrees.'
 - 'INV-DOCS: Keep milestone contracts outside doc_search; publish delivered semantic contracts in indexed ADR, architecture, and reference documents.'
 related_plans: []
@@ -102,7 +102,7 @@ The contract strictly distinguishes:
 > Invariant: `ValueFlowIndex` retains unknown alternatives and deterministic exhaustion. Candidate evidence assists navigation and conservative impact analysis; it never certifies removal safety.
 
 > [!IMPORTANT]
-> Invariant: Cold index build on a clean, isolated scratch copy of the control repository (`commerce-release-update` at commit `cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd`) with scratch adapter pointing to clean isolated copies of linked workspaces (`traverse` at commit `39a1b8065b3d2356727e06fee47c1b5c8c7f04e3`, `grid-view-spec` at commit `d5f8f43e63c012c78af680af3391d04ea4855be7`) must complete within 11.5 seconds wall-clock time on a pre-built release binary (`target/release/contextunity-forge-mcp build <isolated-copy>`) on a lightly loaded host (CPU load < 1.0) without throughput regression.
+> Invariant: Cold index build on a clean, isolated scratch copy of the control repository (`commerce-release-update` at commit `cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd`) with scratch adapter pointing to clean isolated copies of linked workspaces (`traverse` at commit `39a1b8065b3d2356727e06fee47c1b5c8c7f04e3`, `grid-view-spec` at commit `d5f8f43e63c012c78af680af3391d04ea4855be7`) must complete within 11.5 seconds wall-clock time on a pre-built release binary (`target/release/contextunity-forge-mcp build <isolated-copy>`) on a lightly loaded host (CPU load < 4) without throughput regression. The owner clarified on 2026-10-13 that `<4` supersedes the earlier `<1.0` threshold.
 
 ## Execution order and shared scope
 
@@ -154,8 +154,9 @@ subtasks:
 - subtask_ref: contract-and-quality-oracle-3
   title: Establish public-seam ground truth and baseline performance on isolated copy of control repository
   status: completed
-  evidence: 'Task 1 baseline complete. Corrected isolated comparison exited 0 at pre-run load 0.95 (2026-10-13T06:21:57.965812681Z) on pinned clean scratch copies: commerce-release-update cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd, traverse 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec d5f8f43e63c012c78af680af3391d04ea4855be7. Receipt: /tmp/contextunity-forge-m046-baseline/results/task1-baseline-verified-20261013/comparison.json. Task worktree release binary SHA-256 4d6f52fcdf30a75df55582a96e536e6c904c745a25f8301869189c5f3d0ba8e2. Comparison cold builds wall/CPU/peak RSS: Forge 10,995.749 ms / 48,665.935 ms / 1,378,116 KiB; Codebase Memory 25,738.266 ms / 112,234.788 ms / 4,110,080 KiB (startup 4,203.668 ms). Flattening all raw request runs by backend and process state gives medians (wall/CPU): Forge cold 100.792/147.559 ms (85 samples), warm 3.120/3.024 ms (85 samples); Codebase Memory cold 77.761795/41.511023 ms (90 samples), warm 86.205175/39.824425 ms (90 samples). Maximum sampled request RSS: Forge 64,496 KiB, Codebase Memory 1,113,128 KiB. Separate standalone build of the same precompiled release binary on the isolated Commerce copy exited 0 at 2026-10-13T09:02:54Z, pre-run load average 1.86 (<4 per owner clarification, milestone blackboard decision 137); Python stdlib subprocess + monotonic clock + resource.getrusage(RUSAGE_CHILDREN) measured wall 10.589928868 s, child CPU 48.634931 s, max RSS 1,358,348 KiB. SHA-256 matches the task release binary. Receipt: /tmp/contextunity-forge-m046-baseline/results/task1-baseline-verified-20261013/standalone-build-measurement.json; stdout/stderr are standalone-build-stdout.json and standalone-build-stderr.txt in the same directory. Owner clarification superseding the milestone''s prior <1.0 wording is recorded in milestone blackboard message 137.'
+  evidence: 'Task 1 baseline complete. Corrected isolated comparison exited 0 at pre-run load 0.95 (2026-10-13T06:21:57.965812681Z) on pinned clean scratch copies: commerce-release-update cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd, traverse 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec d5f8f43e63c012c78af680af3391d04ea4855be7. Receipt: /tmp/contextunity-forge-m046-baseline/results/task1-baseline-verified-20261013/comparison.json. Task worktree release binary SHA-256 4d6f52fcdf30a75df55582a96e536e6c904c745a25f8301869189c5f3d0ba8e2. Comparison cold builds wall/CPU/peak RSS: Forge 10,995.749 ms / 48,665.935 ms / 1,378,116 KiB; Codebase Memory 25,738.266 ms / 112,234.788 ms / 4,110,080 KiB (startup 4,203.668 ms). Flattening all raw request runs by backend and process state gives medians (wall/CPU): Forge cold 100.792/147.559 ms (85 samples), warm 3.120/3.024 ms (85 samples); Codebase Memory cold 77.761795/41.511023 ms (90 samples), warm 86.205175/39.824425 ms (90 samples). Maximum sampled request RSS: Forge 64,496 KiB, Codebase Memory 1,113,128 KiB.'
 receipt:
+  commit: 5a619aee2a8a4c5a47b267fd3fead051399e13c8
   contract_revision: 4
   passed_at: 2026-10-13T09:27:19.590298396+00:00
   evidence:
@@ -272,6 +273,7 @@ subtasks:
   status: completed
   evidence: 'Completed: TypeScriptMembers context declaration/call paths were already guarded by lang-typescript cfg at semantic_context.rs, resolution.rs, and linker.rs; verified in the isolated Python, Rust, Vue and default compilation matrix.'
 receipt:
+  commit: 479b49c380629ba35f9230f68bf5f5d5ca923cc2
   contract_revision: 4
   passed_at: 2026-10-13T10:08:39.633869372+00:00
   evidence:
@@ -387,6 +389,7 @@ subtasks:
   status: completed
   evidence: 'Parity proof passed: linker 93, languages 253, core 31 (1 ignored), incremental 23, commitment_integrity 14; feature cargo check matrix passed for Python/Rust/TypeScript/Vue with no defaults and default; strict Clippy, fmt, and diff checks passed.'
 receipt:
+  commit: c575b6284f35b1bcbad54592983f7c620119156c
   contract_revision: 4
   passed_at: 2026-10-13T10:53:37.241895758+00:00
   evidence:
@@ -517,6 +520,7 @@ subtasks:
   status: completed
   evidence: 'cargo test --test incremental: 24 passed, including branch-join cold/delta parity and deterministic exhaustion diagnostics. ADR 0004 bit-identical root parity is preserved; final combined five-target suite passed 420, failed 0, ignored 1.'
 receipt:
+  commit: e75639c3437b65f2badcfd8626d906599f31a866
   contract_revision: 6
   passed_at: 2026-10-13T13:02:01.816263128+00:00
   evidence:
@@ -726,53 +730,123 @@ Verification: `linker`, `query_context`, `impact_context`, `mcp`, `incremental`.
 
 ```yaml
 task_ref: integration-and-flavor-parity
-target: "Verify end-to-end semantic contracts across isolated Cargo feature sets, verify control repository performance, and publish durable indexed guidance"
+target: Verify end-to-end semantic contracts across isolated Cargo feature sets, verify control repository performance, and publish durable indexed guidance
 proof_policy: deferred-final-test
-contract_revision: 4
+contract_revision: 8
 scope:
-  - Cargo.toml
-  - Cargo.lock
-  - build.rs
-  - tests/languages/features.rs
-  - tests/languages/
-  - tests/linker/
-  - tests/receivers/
-  - tests/incremental/
-  - tests/mcp/
-  - tests/core/
-  - tests/common/
-  - tests/commitment_integrity/
-  - docs/architecture/
-  - docs/reference/languages.md
-  - docs/reference/mcp-tools.md
-  - docs/reference/mcp-setup.md
-  - docs/reference/cli.md
-  - docs/testing/README.md
-  - docs/milestones/README.md
-  - docs/README.md
-  - README.md
-  - TESTS.md
+- Cargo.toml
+- Cargo.lock
+- build.rs
+- src/core/commitments.rs
+- src/db/ingest.rs
+- tests/languages/features.rs
+- tests/languages/
+- tests/linker/
+- tests/receivers/
+- tests/incremental/
+- tests/mcp/
+- tests/core/
+- tests/common/
+- tests/commitment_integrity/
+- tests/commitment_integrity.rs
+- docs/architecture/
+- docs/reference/languages.md
+- docs/reference/mcp-tools.md
+- docs/reference/mcp-setup.md
+- docs/reference/cli.md
+- docs/testing/README.md
+- docs/milestones/README.md
+- docs/README.md
+- README.md
+- TESTS.md
+- docs/milestones/046-bounded-semantic-resolution-and-language-boundaries.md
 depends_on:
-  - dispatch-and-opacity-navigation
+- dispatch-and-opacity-navigation
 invariants:
-  - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
-  - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
-  - 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
-  - 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
-  - 'INV-PERF-NO-REGRESSION: Indexing and query throughput must not regress. Cold index build on a clean, isolated scratch copy of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) with scratch adapter pointing to clean isolated copies of linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7) must complete within 11.5 seconds wall-clock time using pre-compiled binary target/release/contextunity-forge-mcp build under a lightly loaded host (CPU load < 1.0). Median tool query latencies and RSS peak across benchmark scenarios must not regress against task 1 baseline.'
-  - 'INV-CONTROL-REPO-ISOLATION: Performance evaluations, benchmarks, and multi-workspace verifications must strictly operate on clean, isolated scratch/temporary copies of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) and clean copies of all linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7). The scratch adapter forge-mcp.yaml in the isolated commerce worktree must be rewritten to point linked_workspaces to those isolated clean scratch directories instead of primary repository trees. Never read from or modify primary baseline worktrees.'
-  - 'INV-DOCS: Keep milestone contracts outside doc_search; publish delivered semantic contracts in indexed ADR, architecture, and reference documents.'
-status: planned
+- 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+- 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+- 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
+- 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
+- 'INV-PERF-NO-REGRESSION: Indexing and query throughput must not regress. Cold index build on a clean, isolated scratch copy of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) with scratch adapter pointing to clean isolated copies of linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7) must complete within 11.5 seconds wall-clock time using pre-compiled binary target/release/contextunity-forge-mcp build under a lightly loaded host (CPU load < 4). Median tool query latencies and RSS peak across benchmark scenarios must not regress against task 1 baseline.'
+- 'INV-CONTROL-REPO-ISOLATION: Performance evaluations, benchmarks, and multi-workspace verifications must strictly operate on clean, isolated scratch/temporary copies of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) and clean copies of all linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7). The scratch adapter forge-mcp.yaml in the isolated commerce worktree must be rewritten to point linked_workspaces to those isolated clean scratch directories instead of primary repository trees. Never read from or modify primary baseline worktrees.'
+- 'INV-DOCS: Keep milestone contracts outside doc_search; publish delivered semantic contracts in indexed ADR, architecture, and reference documents.'
+status: completed
 subtasks:
-  - subtask_ref: integration-and-flavor-parity-1
-    title: "Prove end-to-end cold/delta/query behavior and Merkle integrity"
-    status: pending
-  - subtask_ref: integration-and-flavor-parity-2
-    title: "Verify clean compilation and test behavior across modular Cargo features"
-    status: pending
-  - subtask_ref: integration-and-flavor-parity-3
-    title: "Verify performance on isolated copy of control repository (cold build <= 11.5s) and publish guidance"
-    status: pending
+- subtask_ref: integration-and-flavor-parity-1
+  title: Prove end-to-end cold/delta/query behavior and Merkle integrity
+  status: completed
+  evidence: 'Completed: cargo test --test commitment_integrity 16/16, cargo test --test incremental 25/25, and cargo test --all-targets passed (672 passed, 0 failed, 1 ignored). Review approved production-seam implementation at snapshot d808c6f; cold/delta results and commitment integrity are covered.'
+- subtask_ref: integration-and-flavor-parity-2
+  title: Verify clean compilation and test behavior across modular Cargo features
+  status: completed
+  evidence: 'Completed: cargo check passed for no-default lang-python, lang-rust, lang-typescript, lang-vue and default features; all-target tests passed. Existing feature-off dead-code warnings are disclosed in the build proof.'
+- subtask_ref: integration-and-flavor-parity-3
+  title: Verify performance on isolated copy of control repository (cold build <= 11.5s) and publish guidance
+  status: completed
+  evidence: 'Completed: isolated benchmark receipts compare Task 6 with Task 1. Bash builtin time cold build 11.330s at pre-run load 2.64 (<4), exit 0. Forge query medians improved cold 98.38→96.64ms and warm 3.12→2.53ms; max sampled Forge RSS improved cold 60,260→59,924KiB and warm 64,496→63,036KiB. Codebase comparator cold median increased 12.3% and warm decreased 2.5%; disclosed in receipt. No timing reruns.'
+- subtask_ref: integration-and-flavor-parity-4
+  title: Remediate measured cold-build regression in logical FTS commitment and ingest paths
+  status: completed
+  evidence: 'Completed: src/core/commitments.rs and src/db/ingest.rs remediate the measured logical FTS commitment/ingest cold-build cost while preserving deterministic commitments; tests/commitment_integrity.rs verifies insertion-order invariance. Approved isolated Bash build was 11.330s (<11.5s).'
+receipt:
+  contract_revision: 8
+  passed_at: 2026-10-13T18:07:48.648317973+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test commitment_integrity; cargo test --test incremental; cargo clippy --all-targets --all-features -- -D warnings; cargo test --all-targets; cargo check --no-default-features --features lang-python; cargo check --no-default-features --features lang-rust; cargo check --no-default-features --features lang-typescript; cargo check --no-default-features --features lang-vue; cargo check; cargo fmt --all -- --check; git diff --check; Bash builtin time precompiled release build on isolated scratch copy
+      exit_code: 0
+      tests_passed: 672
+      tests_failed: 0
+      log: 'Task 6 rev8 scope now explicitly admits the active milestone file; the updated candidate snapshot also includes tests/commitment_integrity.rs. This revision adds only task-scope/contract metadata and fixes indentation in the already completed Task 4 YAML block so Forge can parse the manifest; production code and test sources are unchanged from the full rev7 validation. `git diff --check` passes on the exact rev8 worktree. Focused commitment_integrity was rerun after rev7: 16/16; focused incremental: 25/25. Strict Clippy passed. cargo test --all-targets: unit 43; main 0; acdd 74; cli_roots 7; commitment_integrity 16; core 31 passed/1 ignored; impact_context 4; incremental 25; languages 253; linked_workspaces 2; linker 97; mcp 78; query_context 42; total 672 passed, 0 failed, 1 ignored. All five feature checks passed: lang-python, lang-rust, lang-typescript, lang-vue with no defaults, and default cargo check. Feature-off builds emit existing unused/dead-code warnings; default is warning-free. cargo fmt --all -- --check passed. Cold-build receipt is the approved Bash builtin `time` measurement (no external timer): /tmp/contextunity-forge-m046-final/results/task6/hot-loop-cold-build-bash-time.log. Clean isolated Commerce scratch copy; immediate pre-run load 2.64 (<4); exit 0; elapsed 11.330s, within 11.5s by 0.170s. Binary SHA256 d798cd5b7e415e8d5a3ec795e90e275b990c902b7cab023609109878543716d7; output root 2c39820507fa50ab53008442e247b20cd25fbe8a2d077007ed0425a7f4229258. Five-repeat comparison receipt /tmp/contextunity-forge-m046-final/results/task6/hot-loop-comparison/comparison.json against Task1 baseline /tmp/contextunity-forge-m046-baseline/results/task1-baseline-verified-20261013/comparison.json: aggregate Forge query medians cold 98.38→96.64ms (-1.8%), warm 3.12→2.53ms (-18.8%); maximum sampled Forge RSS across scenarios improved cold 60,260→59,924 KiB and warm 64,496→63,036 KiB. Individual scenario timings/RSS are preserved in the receipt. Codebase comparator cold median 77.69→87.22ms (+12.3%), warm 83.61→81.51ms (-2.5%); this is the comparator backend, not Forge. Profile-reported Forge index-build measurement is 11,557.6ms wall / 51,378.8ms CPU / 1,418,036KiB RSS; it is disclosed separately from the acceptance''s direct Bash timing. No timing reruns were performed.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Verified against contract rev8 and allowed_write_scope. `git status --short` in the task worktree lists only docs/milestones/046-bounded-semantic-resolution-and-language-boundaries.md, src/core/commitments.rs, src/db/ingest.rs, and tests/commitment_integrity.rs. All four are admitted; `git diff d808c6f -- <these paths>` is empty, so the worktree content matches the frozen candidate. Snapshot d808c6f contains the active milestone file (blob 1aa407241efdd203ffd058b2c8a342685dc3758c) and standalone tests/commitment_integrity.rs (blob c874dc30990a36770bb5efbea6089a6751840a8d). The baseline-to-candidate functional diff is confined to those four admitted paths; `git diff --check` is clean. No profile, credential, generated-state, or neighboring-project path changed.
+        claims:
+          applicable: true
+          evidence: The code keeps ALGORITHM at `forge-owner-sha256-v2`. `append_fts_posting` emits the same 0xff row marker and t/i type tags and payload encoding as `encode_row`; term, owner, column, and offset sort keys preserve the prior logical SQL order while doc_search hashes stable doc_sections.doc_id and node_search hashes nodes.node_hash. The implementation rejects unknown columns/terms, missing FTS documents or owner identities, missing/invalid docsize rows, and token-count mismatches. The admitted production-seam coverage includes tests/commitment_integrity.rs::logical_fts_commitments_ignore_physical_insertion_order, read_only_query_only_verification_uses_temporary_logical_fts_views, logical_fts_commitments_are_stable_and_reject_semantic_tampering, and fts_sealing_survives_valid_rebuild_reindex_and_vacuum; tests/incremental/doc_parity.rs::delta_and_cold_roots_match_after_document_rowid_changes exercises cold/delta parity with changing document rowids. Forge build claim 19 binds to d808c6f and records commitment_integrity 16/16, incremental 25/25, all targets 672 passed/0 failed/1 ignored, strict Clippy, formatting/diff checks, and Python/Rust/TypeScript/Vue no-default plus default Cargo checks. Query comparison receipts report Forge cold median 98.38→96.64 ms, warm 3.12→2.53 ms, and lower maximum sampled query RSS for both states.
+        concurrency:
+          applicable: true
+          evidence: No task-store, revision fencing, receipt, lock, or cross-task code changes are in the candidate. In ingest.rs the code computes stable search_id once and reuses it within the existing transaction/connection path; only the already-owned FTS batch is sorted before flush. Commitment verification remains read-only apart from the existing temporary logical FTS vocabulary views, with query_only restoration covered by the production test. There is no newly introduced shared mutable state or partial publication path.
+        project_isolation:
+          applicable: true
+          evidence: The review claim and worktree identify the owning forge-mcp project and milestone worktree. No workspace or path-routing logic changed. The dedicated timing receipt runs the candidate release binary against `/tmp/contextunity-forge-m046-final/task6-hot-loop-20261013-commerce`; its scratch forge-mcp.yaml points traverse and gridviewspec to isolated `/tmp/contextunity-forge-m046-final/task6-optimized-20261013-*` copies. The comparison receipt records a disposable workspace root and disposable Forge/Codebase indexes; the build proof identifies pinned clean baseline repositories and states primary baseline worktrees were not modified.
+        administration:
+          applicable: true
+          evidence: The active milestone path is now part of contract revision 8 and is present in snapshot d808c6f. Reviewer worker codex-046-integration-flavor-review-r8 is distinct from build worker codex-046-root-build-rev8; this review is claim revision 20 bound to contract revision 8, candidate d808c6f, and baseline eeaa282e83cc0d380b36ea2eafdffa20458aad54. No Cargo feature configuration, profile pin, migration, protected config, credential, Git hook, or task administration source changed. Delivery/landed-SHA receipt remains governed by the subsequent deliver stage.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
+    - 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
+    - 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
+    - 'INV-OWNERSHIP: Language rules belong to language resolvers; cross-language framework relations use explicit composition passes; common scheduling and budgets remain shared.'
+    - 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
+    - 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
+    - 'INV-PERF-NO-REGRESSION: Indexing and query throughput must not regress. Cold index build on a clean, isolated scratch copy of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) with scratch adapter pointing to clean isolated copies of linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7) must complete within 11.5 seconds wall-clock time using pre-compiled binary target/release/contextunity-forge-mcp build under a lightly loaded host (CPU load < 4). Median tool query latencies and RSS peak across benchmark scenarios must not regress against task 1 baseline.'
+    - 'INV-CONTROL-REPO-ISOLATION: Performance evaluations, benchmarks, and multi-workspace verifications must strictly operate on clean, isolated scratch/temporary copies of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) and clean copies of all linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7). The scratch adapter forge-mcp.yaml in the isolated commerce worktree must be rewritten to point linked_workspaces to those isolated clean scratch directories instead of primary repository trees. Never read from or modify primary baseline worktrees.'
+    - 'INV-DOCS: Keep milestone contracts outside doc_search; publish delivered semantic contracts in indexed ADR, architecture, and reference documents.'
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
+    - 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
+    - 'INV-PERF-NO-REGRESSION: Indexing and query throughput must not regress. Cold index build on a clean, isolated scratch copy of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) with scratch adapter pointing to clean isolated copies of linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7) must complete within 11.5 seconds wall-clock time using pre-compiled binary target/release/contextunity-forge-mcp build under a lightly loaded host (CPU load < 4). Median tool query latencies and RSS peak across benchmark scenarios must not regress against task 1 baseline.'
+    - 'INV-CONTROL-REPO-ISOLATION: Performance evaluations, benchmarks, and multi-workspace verifications must strictly operate on clean, isolated scratch/temporary copies of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) and clean copies of all linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7). The scratch adapter forge-mcp.yaml in the isolated commerce worktree must be rewritten to point linked_workspaces to those isolated clean scratch directories instead of primary repository trees. Never read from or modify primary baseline worktrees.'
+    - 'INV-DOCS: Keep milestone contracts outside doc_search; publish delivered semantic contracts in indexed ADR, architecture, and reference documents.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
@@ -781,10 +855,11 @@ subtasks:
 2. Check default, all-languages, and targeted single-feature builds (`cargo test --no-default-features --features lang-python`, etc.). Confirm unsupported languages appear as capability limits rather than successful empty analysis.
 3. Record ground-truth counts before/after on the characterization corpus (distinguishing exact versus candidate precision and recall if ADR 0008 approved; or exact resolution versus explicit analysis gaps if declined). Do not count heuristic/candidate edges as exact improvements.
 4. Measure cold build and query throughput against a clean, isolated scratch copy of the control repository (`commerce-release-update` at commit `cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd`) with scratch adapter pointing to clean isolated copies of linked workspaces (`traverse` at commit `39a1b8065b3d2356727e06fee47c1b5c8c7f04e3`, `grid-view-spec` at commit `d5f8f43e63c012c78af680af3391d04ea4855be7`):
-   - Measure cold build wall-clock time using pre-compiled binary: `/usr/bin/time -v target/release/contextunity-forge-mcp build <isolated-copy>` on a host with CPU load < 1.0; cold build must complete in $\le 11.5$s wall-clock time without regression against task 1 baseline.
+   - Measure cold-build elapsed, user, and system time with Bash's built-in timer: `TIMEFORMAT='elapsed=%3R user=%3U system=%3S'; time target/release/contextunity-forge-mcp build <isolated-copy>`. Record pre-run `/proc/loadavg`; the host load average must be <4 and the cold build must complete in $\le 11.5$s wall-clock time. Compare elapsed time with task 1's isolated baseline and retain the timer output as diagnostic evidence.
    - Run tool comparison benchmark via `python benchmarks/run_benchmarks.py --profile benchmarks/profiles/commerce-release-update.json --mode comparison --workspace <isolated-copy>`; median tool latencies (cold and warm process wall time) and median RSS peak across profile scenarios must not regress against the baseline recorded in task 1. Measurements must strictly use isolated workspace copies with rewritten scratch adapter paths, leaving primary baseline checkouts untouched.
-5. Reconcile MCP schemas and reference documentation. Skill distribution to home directories remains deferred to Milestone 044.
-6. Validate frontmatter, relative links, backticked symbol linkage, and invariant callouts. Verify updated indexed architecture/reference sections are retrievable.
+5. If the measured cold build exceeds 11.5 seconds, profile and remediate the hot path within `src/core/commitments.rs` and `src/db/ingest.rs`. Preserve the versioned logical FTS commitment, tamper/query-only validation, stable document identity, and bit-identical cold/delta roots; add production-seam regression coverage in `tests/commitment_integrity.rs` or `tests/incremental/`, then repeat the isolated cold-build measurement and comparison benchmark.
+6. Reconcile MCP schemas and reference documentation. Skill distribution to home directories remains deferred to Milestone 044.
+7. Validate frontmatter, relative links, backticked symbol linkage, and invariant callouts. Verify updated indexed architecture/reference sections are retrievable.
 
 Verification: relevant unfiltered domain targets, strict Clippy, and final handoff gate:
 ```bash

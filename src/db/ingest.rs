@@ -198,6 +198,7 @@ pub(super) fn persist_files(
         }
         for n in &f.nodes {
             node_id += 1;
+            let search_id = stable_hash64(&n.id);
             let node_path_id = if n.path == file.path {
                 owner_id
             } else {
@@ -220,7 +221,7 @@ pub(super) fn persist_files(
                     BorrowedSqlValue::Text(&n.language),
                     BorrowedSqlValue::Integer(i64::from(n.generated)),
                     BorrowedSqlValue::OwnedJsonText(details),
-                    BorrowedSqlValue::Integer(stable_hash64(&n.id)),
+                    BorrowedSqlValue::Integer(search_id),
                     BorrowedSqlValue::Integer(owner_id),
                 ]);
                 if node_batch.len() == node_batch_rows.context("missing cold node batch size")? {
@@ -248,7 +249,7 @@ pub(super) fn persist_files(
                         n.language,
                         n.generated,
                         details,
-                        stable_hash64(&n.id),
+                        search_id,
                         owner_id
                     ])?;
             }
@@ -256,7 +257,7 @@ pub(super) fn persist_files(
                 let mut search = reusable_search_buffers.pop().unwrap_or_default();
                 write_node_search_text(&mut search, n, f);
                 owned_search_batch.push(SearchRow {
-                    search_id: stable_hash64(&n.id),
+                    search_id,
                     text: search,
                 });
                 if owned_search_batch.len()
@@ -271,8 +272,7 @@ pub(super) fn persist_files(
             } else {
                 write_node_search_text(&mut incremental_search_buffer, n, f);
                 if let Some(stmt_node_search) = stmt_node_search.as_mut() {
-                    stmt_node_search
-                        .execute(params![stable_hash64(&n.id), &incremental_search_buffer])?;
+                    stmt_node_search.execute(params![search_id, &incremental_search_buffer])?;
                 }
                 incremental_search_buffer.clear();
             }
@@ -434,6 +434,7 @@ fn flush_owned_search_batch(
     batch: &mut Vec<SearchRow>,
     reusable_buffers: &mut Vec<String>,
 ) -> Result<f64> {
+    batch.sort_unstable_by_key(|row| row.search_id);
     let rows: Vec<_> = batch
         .iter()
         .map(|row| {

@@ -68,6 +68,31 @@ fn encode_row(
     }
     Ok(())
 }
+fn append_text(buffer: &mut Vec<u8>, text: &[u8]) {
+    buffer.push(b't');
+    buffer.extend_from_slice(&(text.len() as u64).to_le_bytes());
+    buffer.extend_from_slice(text);
+}
+fn append_integer(buffer: &mut Vec<u8>, value: i64) {
+    buffer.push(b'i');
+    buffer.extend_from_slice(&value.to_le_bytes());
+}
+fn append_fts_posting(
+    buffer: &mut Vec<u8>,
+    term: &[u8],
+    identity: FtsRowIdentityRef<'_>,
+    column: &[u8],
+    offset: i64,
+) {
+    buffer.push(0xff);
+    append_text(buffer, term);
+    match identity {
+        FtsRowIdentityRef::NodeHash(node_hash) => append_integer(buffer, node_hash),
+        FtsRowIdentityRef::DocId(doc_id) => append_text(buffer, doc_id),
+    }
+    append_text(buffer, column);
+    append_integer(buffer, offset);
+}
 fn new_leaf_hasher(table: &str, owner: &str) -> Sha256 {
     let mut h = Sha256::new();
     h.update(ALGORITHM);
@@ -230,79 +255,177 @@ fn decode_fts5_size_array(bytes: &[u8], columns: usize) -> Result<Vec<u32>> {
     Ok(sizes)
 }
 
-fn validate_fts_docsize(conn: &Connection, index: &str, vocab: &str) -> Result<()> {
-    let (docsize_table, fts_table, owner_table, owner_key, columns): (
-        &str,
-        &str,
-        &str,
-        &str,
-        &[&str],
-    ) = match index {
-        "node_search" => (
-            "node_search_docsize",
-            "node_search",
-            "nodes",
-            "node_hash",
-            &["search_text"],
-        ),
-        "doc_search" => (
-            "doc_search_docsize",
-            "doc_search",
-            "doc_sections",
-            "rowid",
-            &["section_title", "content", "invariants"],
-        ),
-        _ => anyhow::bail!("unsupported FTS commitment index: {index}"),
-    };
-    let has_orphan_postings: bool = conn.query_row(
-        &format!(
-            "SELECT EXISTS(SELECT 1 FROM temp.{vocab} AS v \
-             LEFT JOIN {owner_table} AS o ON o.{owner_key}=v.doc \
-             WHERE o.{owner_key} IS NULL)"
-        ),
-        [],
-        |row| row.get(0),
-    )?;
-    anyhow::ensure!(
-        !has_orphan_postings,
-        "FTS5 postings refer to missing owner rows: {index}_postings"
-    );
+struct FtsCommitmentSpec {
+    docsize_table: &'static str,
+    fts_table: &'static str,
+    owner_join: &'static str,
+    identity: &'static str,
+    identity_kind: FtsIdentityKind,
+    columns: &'static [&'static str],
+}
 
-    let mut token_counts = BTreeMap::new();
-    let mut counts = conn.prepare(&format!(
-        "SELECT doc,col,count(*) FROM temp.{vocab} GROUP BY doc,col ORDER BY doc,col"
+#[derive(Clone, Copy)]
+enum FtsIdentityKind {
+    NodeHash,
+    DocId,
+}
+
+enum FtsRowIdentity {
+    NodeHash(i64),
+    DocId(Vec<u8>),
+}
+
+enum FtsRowIdentityRef<'a> {
+    NodeHash(i64),
+    DocId(&'a [u8]),
+}
+
+struct FtsDocument {
+    identity_sort_key: Option<i64>,
+    size_blob: Vec<u8>,
+    token_counts: [u32; 3],
+}
+
+type FtsDocumentMap = HashMap<i64, FtsDocument>;
+type FtsOwnerIds = Vec<Vec<u8>>;
+type FtsTerms = Vec<Vec<u8>>;
+type FtsTermRanks = HashMap<Vec<u8>, u32>;
+
+struct FtsPosting {
+    term: u32,
+    identity_sort_key: i64,
+    column_index: u8,
+    column_sort_key: u8,
+    offset: i64,
+}
+
+fn fts_commitment_spec(index: &str) -> Result<FtsCommitmentSpec> {
+    Ok(match index {
+        "node_search" => FtsCommitmentSpec {
+            docsize_table: "node_search_docsize",
+            fts_table: "node_search",
+            owner_join: "LEFT JOIN nodes AS n ON n.node_hash=f.rowid",
+            identity: "n.node_hash",
+            identity_kind: FtsIdentityKind::NodeHash,
+            columns: &["search_text"],
+        },
+        "doc_search" => FtsCommitmentSpec {
+            docsize_table: "doc_search_docsize",
+            fts_table: "doc_search",
+            owner_join: "LEFT JOIN doc_sections AS s ON s.rowid=f.rowid",
+            identity: "s.doc_id",
+            identity_kind: FtsIdentityKind::DocId,
+            columns: &["section_title", "content", "invariants"],
+        },
+        _ => anyhow::bail!("unsupported FTS commitment index: {index}"),
+    })
+}
+
+fn load_fts_documents(
+    conn: &Connection,
+    spec: &FtsCommitmentSpec,
+) -> Result<(FtsDocumentMap, FtsOwnerIds)> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT f.rowid,{identity},d.sz
+         FROM {fts} AS f
+         {owner_join}
+         LEFT JOIN {docsize} AS d ON d.id=f.rowid",
+        identity = spec.identity,
+        fts = spec.fts_table,
+        owner_join = spec.owner_join,
+        docsize = spec.docsize_table,
     ))?;
-    for row in counts.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-        ))
-    })? {
-        let (doc, column, count) = row?;
-        token_counts.insert((doc, column), count);
+    let mut rows = stmt.query([])?;
+    let mut documents = Vec::new();
+    while let Some(row) = rows.next()? {
+        let doc: i64 = row.get(0)?;
+        let identity = match (spec.identity_kind, row.get_ref(1)?) {
+            (FtsIdentityKind::NodeHash, ValueRef::Integer(node_hash)) => {
+                Some(FtsRowIdentity::NodeHash(node_hash))
+            }
+            (FtsIdentityKind::DocId, ValueRef::Text(doc_id)) => {
+                Some(FtsRowIdentity::DocId(doc_id.to_vec()))
+            }
+            (_, ValueRef::Null) => None,
+            _ => anyhow::bail!("invalid FTS5 owner identity: {}:{doc}", spec.fts_table),
+        };
+        let size_blob: Option<Vec<u8>> = row.get(2)?;
+        let size_blob = size_blob.with_context(|| {
+            format!(
+                "missing active FTS5 docsize row: {}:{doc}",
+                spec.docsize_table
+            )
+        })?;
+        documents.push((doc, identity, size_blob));
     }
 
-    let mut docs = conn.prepare(&format!("SELECT rowid FROM {fts_table} ORDER BY rowid"))?;
-    let mut sizes = conn.prepare(&format!("SELECT sz FROM {docsize_table} WHERE id=?1"))?;
-    for row in docs.query_map([], |row| row.get::<_, i64>(0))? {
-        let doc = row?;
-        let size_blob: Vec<u8> = sizes
-            .query_row([doc], |row| row.get(0))
-            .with_context(|| format!("missing active FTS5 docsize row: {docsize_table}:{doc}"))?;
-        let actual = decode_fts5_size_array(&size_blob, columns.len())
-            .with_context(|| format!("invalid FTS5 document sizes: {docsize_table}:{doc}"))?;
-        for (column_index, column) in columns.iter().enumerate() {
-            let expected = u32::try_from(
-                token_counts
-                    .get(&(doc, (*column).to_owned()))
-                    .copied()
-                    .unwrap_or_default(),
-            )
-            .context("FTS5 token count exceeds document-size range")?;
+    let mut owner_ids: Vec<Vec<u8>> = documents
+        .iter()
+        .filter_map(|(_, identity, _)| match identity {
+            Some(FtsRowIdentity::DocId(doc_id)) => Some(doc_id.clone()),
+            _ => None,
+        })
+        .collect();
+    owner_ids.sort_unstable();
+    owner_ids.dedup();
+    let owner_ranks: HashMap<Vec<u8>, i64> = owner_ids
+        .iter()
+        .enumerate()
+        .map(|(rank, doc_id)| Ok((doc_id.clone(), i64::try_from(rank)?)))
+        .collect::<Result<_>>()?;
+
+    let mut by_doc = HashMap::with_capacity(documents.len());
+    for (doc, identity, size_blob) in documents {
+        let identity_sort_key = match identity.as_ref() {
+            Some(FtsRowIdentity::NodeHash(node_hash)) => Some(*node_hash),
+            Some(FtsRowIdentity::DocId(doc_id)) => owner_ranks.get(doc_id).copied(),
+            None => None,
+        };
+        by_doc.insert(
+            doc,
+            FtsDocument {
+                identity_sort_key,
+                size_blob,
+                token_counts: [0; 3],
+            },
+        );
+    }
+    Ok((by_doc, owner_ids))
+}
+
+fn load_fts_terms(conn: &Connection, vocab: &str) -> Result<(FtsTerms, FtsTermRanks)> {
+    let mut stmt = conn.prepare(&format!("SELECT DISTINCT term FROM temp.{vocab}"))?;
+    let mut rows = stmt.query([])?;
+    let mut terms = Vec::new();
+    while let Some(row) = rows.next()? {
+        match row.get_ref(0)? {
+            ValueRef::Text(term) => terms.push(term.to_vec()),
+            _ => anyhow::bail!("invalid FTS5 vocabulary term: {vocab}"),
+        }
+    }
+    terms.sort_unstable();
+    let term_ranks = terms
+        .iter()
+        .enumerate()
+        .map(|(rank, term)| Ok((term.clone(), u32::try_from(rank)?)))
+        .collect::<Result<_>>()?;
+    Ok((terms, term_ranks))
+}
+
+fn validate_fts_docsize(
+    spec: &FtsCommitmentSpec,
+    documents: &HashMap<i64, FtsDocument>,
+) -> Result<()> {
+    for (doc, document) in documents {
+        let actual =
+            decode_fts5_size_array(&document.size_blob, spec.columns.len()).with_context(|| {
+                format!("invalid FTS5 document sizes: {}:{doc}", spec.docsize_table)
+            })?;
+        for (column_index, column) in spec.columns.iter().enumerate() {
             anyhow::ensure!(
-                actual[column_index] == expected,
-                "FTS5 document size mismatch: {docsize_table}:{doc} column {column}"
+                actual[column_index] == document.token_counts[column_index],
+                "FTS5 document size mismatch: {}:{doc} column {column}",
+                spec.docsize_table
             );
         }
     }
@@ -310,27 +433,111 @@ fn validate_fts_docsize(conn: &Connection, index: &str, vocab: &str) -> Result<(
 }
 
 fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> {
-    let mut stmt = if let Some(index) = table.strip_suffix("_postings") {
-        let vocab = ensure_fts_vocab(conn, index)?;
-        validate_fts_docsize(conn, index, vocab)?;
-        let (identity, join) = match index {
-            "node_search" => ("n.node_hash", "JOIN nodes AS n ON n.node_hash=v.doc"),
-            "doc_search" => ("s.doc_id", "JOIN doc_sections AS s ON s.rowid=v.doc"),
-            _ => anyhow::bail!("unsupported FTS commitment index: {index}"),
-        };
-        conn.prepare(&format!(
-            "SELECT v.term,{identity},v.col,v.offset FROM temp.{vocab} AS v {join} \
-             ORDER BY v.term,{identity},v.col,v.offset"
-        ))?
-    } else {
-        conn.prepare(&format!("SELECT * FROM {table} ORDER BY {order_by}"))?
-    };
-    let columns = stmt.column_count();
-    let mut rows = stmt.query([])?;
     let mut h = Sha256::new();
     h.update(table);
-    while let Some(row) = rows.next()? {
-        encode_row(&mut h, row, columns)?;
+    if let Some(index) = table.strip_suffix("_postings") {
+        let vocab = ensure_fts_vocab(conn, index)?;
+        let spec = fts_commitment_spec(index)?;
+        let (mut documents, owner_ids) = load_fts_documents(conn, &spec)?;
+        let (terms, term_ranks) = load_fts_terms(conn, vocab)?;
+        let mut column_order: Vec<usize> = (0..spec.columns.len()).collect();
+        column_order.sort_unstable_by_key(|column| spec.columns[*column].as_bytes());
+        let mut column_sort_keys = vec![0; spec.columns.len()];
+        for (rank, column) in column_order.into_iter().enumerate() {
+            column_sort_keys[column] = u8::try_from(rank)?;
+        }
+        let mut stmt = conn.prepare(&format!(
+            "SELECT v.term,v.col,v.offset,v.doc FROM temp.{vocab} AS v"
+        ))?;
+        let mut rows = stmt.query([])?;
+        let mut postings = Vec::new();
+        while let Some(row) = rows.next()? {
+            let term = match row.get_ref(0)? {
+                ValueRef::Text(term) => term,
+                _ => anyhow::bail!("invalid FTS5 vocabulary term in {table}"),
+            };
+            let term_rank = term_ranks
+                .get(term)
+                .copied()
+                .with_context(|| format!("FTS5 vocabulary term was not interned: {table}"))?;
+            let column = match row.get_ref(1)? {
+                ValueRef::Text(column) => column,
+                _ => anyhow::bail!("invalid FTS5 document-size column in {table}"),
+            };
+            let column_index = spec
+                .columns
+                .iter()
+                .position(|candidate| candidate.as_bytes() == column)
+                .with_context(|| {
+                    format!(
+                        "unknown FTS5 document-size column: {index}:{}",
+                        String::from_utf8_lossy(column)
+                    )
+                })?;
+            let doc: i64 = row.get(3)?;
+            let document = documents
+                .get_mut(&doc)
+                .with_context(|| format!("FTS5 postings refer to missing owner rows: {table}"))?;
+            let identity_sort_key = document
+                .identity_sort_key
+                .with_context(|| format!("FTS5 postings refer to missing owner rows: {table}"))?;
+            document.token_counts[column_index] = document.token_counts[column_index]
+                .checked_add(1)
+                .context("FTS5 token count exceeds document-size range")?;
+            postings.push(FtsPosting {
+                term: term_rank,
+                identity_sort_key,
+                column_index: u8::try_from(column_index)?,
+                column_sort_key: column_sort_keys[column_index],
+                offset: row.get(2)?,
+            });
+        }
+        drop(rows);
+        drop(stmt);
+        postings.sort_unstable_by_key(|posting| {
+            (
+                posting.term,
+                posting.identity_sort_key,
+                posting.column_sort_key,
+                posting.offset,
+            )
+        });
+        let mut encoded_rows = Vec::with_capacity(256 * 1024);
+        for posting in postings {
+            let identity = match spec.identity_kind {
+                FtsIdentityKind::NodeHash => FtsRowIdentityRef::NodeHash(posting.identity_sort_key),
+                FtsIdentityKind::DocId => {
+                    let rank = usize::try_from(posting.identity_sort_key)?;
+                    FtsRowIdentityRef::DocId(
+                        owner_ids
+                            .get(rank)
+                            .context("sorted FTS5 posting lost its document identity")?,
+                    )
+                }
+            };
+            append_fts_posting(
+                &mut encoded_rows,
+                terms
+                    .get(posting.term as usize)
+                    .context("sorted FTS5 posting lost its term")?,
+                identity,
+                spec.columns[posting.column_index as usize].as_bytes(),
+                posting.offset,
+            );
+            if encoded_rows.len() >= 256 * 1024 {
+                h.update(&encoded_rows);
+                encoded_rows.clear();
+            }
+        }
+        h.update(&encoded_rows);
+        validate_fts_docsize(&spec, &documents)?;
+    } else {
+        let mut stmt = conn.prepare(&format!("SELECT * FROM {table} ORDER BY {order_by}"))?;
+        let columns = stmt.column_count();
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            encode_row(&mut h, row, columns)?;
+        }
     }
     Ok(hex::encode(h.finalize()))
 }

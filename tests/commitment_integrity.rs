@@ -134,6 +134,69 @@ fn read_only_query_only_verification_uses_temporary_logical_fts_views() {
     assert_eq!(query_only, 1, "verification restores query_only mode");
 }
 
+fn logical_fts_root_for_insert_order(reverse: bool) -> String {
+    let conn = connection();
+    search_nodes(&conn, 64);
+    for rowid in 1..=16 {
+        conn.execute(
+            "INSERT INTO doc_sections(doc_id,path,section_title,doc_type,content,invariants,referenced_symbols,mtime,size) \
+             VALUES(?1,?2,?3,'guide',?4,?5,'',0,0)",
+            params![
+                format!("doc-{rowid}"),
+                format!("docs/{rowid}.md"),
+                format!("Section {rowid}"),
+                format!("content token {rowid}"),
+                format!("invariant token {rowid}")
+            ],
+        )
+        .unwrap();
+    }
+
+    let mut rowids: Vec<_> = (1..=64).collect();
+    if reverse {
+        rowids.reverse();
+    }
+    for rowid in rowids {
+        conn.execute(
+            "INSERT INTO node_search(rowid,search_text) VALUES(?1,?2)",
+            params![rowid, format!("node token {rowid}")],
+        )
+        .unwrap();
+    }
+
+    let mut doc_rowids: Vec<_> = (1..=16).collect();
+    if reverse {
+        doc_rowids.reverse();
+    }
+    for rowid in doc_rowids {
+        let (title, content, invariants): (String, String, String) = conn
+            .query_row(
+                "SELECT section_title,content,invariants FROM doc_sections WHERE rowid=?1",
+                [rowid],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO doc_search(rowid,section_title,content,invariants) VALUES(?1,?2,?3,?4)",
+            params![rowid, title, content, invariants],
+        )
+        .unwrap();
+    }
+
+    let root = commitments::seal(&conn).unwrap();
+    commitments::verify(&conn).unwrap();
+    root
+}
+
+#[test]
+fn logical_fts_commitments_ignore_physical_insertion_order() {
+    assert_eq!(
+        logical_fts_root_for_insert_order(false),
+        logical_fts_root_for_insert_order(true),
+        "node_search and doc_search logical postings must seal identically regardless of insertion order"
+    );
+}
+
 #[test]
 fn sealing_rejects_edges_with_missing_owner_or_node_endpoints() {
     for missing in ["owner", "source", "destination"] {
