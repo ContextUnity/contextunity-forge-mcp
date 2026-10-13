@@ -602,3 +602,226 @@ fn selector_propagates_candidate_enrichment_row_budget_errors() {
         "expected the candidate enrichment budget error to propagate, got: {error}"
     );
 }
+
+#[test]
+fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "dispatch.rs",
+        "trait Work { fn run(&self); }\n\
+         struct Alpha;\n\
+         struct Beta;\n\
+         impl Work for Alpha { fn run(&self) {} }\n\
+         impl Work for Beta { fn run(&self) {} }\n\
+         macro_rules! invoke { ($value:expr) => { $value.run() }; }\n\
+         fn caller(value: &dyn Work) {\n\
+             value.run();\n\
+             invoke!(value);\n\
+         }\n",
+    );
+    let conn = workspace.build();
+    let macro_id: String = conn
+        .query_row(
+            "SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='dispatch.rs' AND n.name='invoke' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let implementation_ids = {
+        let mut statement = conn
+            .prepare(
+                "SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='dispatch.rs' AND n.name='run' AND n.kind='method'",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert!(implementation_ids.len() >= 2);
+
+    let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
+    let mut page = options(20);
+    page.detail = Detail::Full;
+    let explained = symbols::explain_with_options(
+        &conn,
+        &workspace.0,
+        "caller",
+        &symbols::ExplainOptions {
+            direction: Some("outgoing"),
+            show_doc: false,
+            source: &source,
+            coverage: CoverageOptions::default(),
+            page: &page,
+        },
+    )
+    .unwrap();
+    let outgoing = explained["outgoing"]["items"].as_array().unwrap();
+    assert!(
+        outgoing
+            .iter()
+            .any(|edge| edge["kind"] == "calls" && edge["dst_public_id"] == macro_id),
+        "the macro invocation should remain linked to its declaration: {explained}"
+    );
+    assert!(
+        !outgoing.iter().any(|edge| {
+            edge["kind"] == "calls"
+                && implementation_ids
+                    .iter()
+                    .any(|id| edge["dst_public_id"] == *id)
+        }),
+        "opaque trait-object dispatch must not become an exact implementation call: {explained}"
+    );
+
+    let gaps = explained["analysis_gaps"]["items"]
+        .as_array()
+        .expect("explain should expose paged analysis gaps");
+    let caller_details: String = conn
+        .query_row(
+            "SELECT details FROM nodes WHERE id=(SELECT id FROM nodes WHERE name='caller' AND kind='function' LIMIT 1)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        explained["analysis_gaps"]["total"], 2,
+        "gaps={gaps:?}; caller_details={caller_details}"
+    );
+    assert!(
+        gaps.iter().any(|gap| {
+            gap["reason"] == "trait_object_dispatch"
+                && gap["path"] == "dispatch.rs"
+                && gap["line"] == 8
+        }),
+        "trait-object uncertainty should point to the dispatch site: {gaps:?}"
+    );
+    assert!(
+        gaps.iter().any(|gap| {
+            gap["reason"] == "macro_expansion_not_analyzed"
+                && gap["path"] == "dispatch.rs"
+                && gap["line"] == 9
+        }),
+        "opaque macro expansion should point to its invocation: {gaps:?}"
+    );
+
+    let mut gap_page_options = options(1);
+    let first_gap_page = symbols::explain_with_options(
+        &conn,
+        &workspace.0,
+        "caller",
+        &symbols::ExplainOptions {
+            direction: Some("outgoing"),
+            show_doc: false,
+            source: &source,
+            coverage: CoverageOptions::default(),
+            page: &gap_page_options,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        first_gap_page["analysis_gaps"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(first_gap_page["analysis_gaps"]["has_more"], true);
+    assert!(continue_page(
+        &mut gap_page_options,
+        &first_gap_page["analysis_gaps"]
+    ));
+    let second_gap_page = symbols::explain_with_options(
+        &conn,
+        &workspace.0,
+        "caller",
+        &symbols::ExplainOptions {
+            direction: Some("outgoing"),
+            show_doc: false,
+            source: &source,
+            coverage: CoverageOptions::default(),
+            page: &gap_page_options,
+        },
+    )
+    .unwrap();
+    assert_eq!(second_gap_page["analysis_gaps"]["total"], 2);
+    assert_eq!(
+        second_gap_page["analysis_gaps"]["items"][0]["reason"],
+        "macro_expansion_not_analyzed"
+    );
+
+    let inspected = symbols::inspect_with_options(
+        &conn,
+        &workspace.0,
+        "caller",
+        &symbols::InspectOptions {
+            show_doc: false,
+            source: &source,
+            coverage: CoverageOptions::default(),
+            page: &options(20),
+        },
+    )
+    .unwrap();
+    assert_eq!(inspected["analysis_gaps"]["total"], 2);
+    assert!(inspected.get("coverage").is_none());
+}
+
+#[test]
+fn explain_pages_possible_calls_as_distinct_navigation_edges() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "branch.py",
+        "class Alpha:\n    def execute(self): pass\nclass Beta:\n    def execute(self): pass\ndef run(condition):\n    if condition:\n        receiver = Alpha()\n    else:\n        receiver = Beta()\n    receiver.execute()\n",
+    );
+    let conn = workspace.build();
+    let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
+    let mut page_options = options(1);
+
+    let first = symbols::explain_with_options(
+        &conn,
+        &workspace.0,
+        "run",
+        &symbols::ExplainOptions {
+            direction: Some("outgoing"),
+            show_doc: false,
+            source: &source,
+            coverage: CoverageOptions::default(),
+            page: &page_options,
+        },
+    )
+    .unwrap();
+    assert_eq!(first["outgoing"]["total"], 4);
+    assert_eq!(first["outgoing"]["has_more"], true);
+    let mut pages = vec![first["outgoing"]["items"][0].clone()];
+    let mut current = first;
+    while continue_page(&mut page_options, &current["outgoing"]) {
+        current = symbols::explain_with_options(
+            &conn,
+            &workspace.0,
+            "run",
+            &symbols::ExplainOptions {
+                direction: Some("outgoing"),
+                show_doc: false,
+                source: &source,
+                coverage: CoverageOptions::default(),
+                page: &page_options,
+            },
+        )
+        .unwrap();
+        pages.extend(
+            current["outgoing"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
+    }
+    assert_eq!(pages.len(), 4);
+    let possible = pages
+        .iter()
+        .filter(|edge| edge["kind"] == "possible_calls")
+        .collect::<Vec<_>>();
+    assert_eq!(possible.len(), 2);
+    assert!(possible.iter().all(|edge| edge["confidence"] == "possible"));
+    assert_ne!(possible[0]["dst_public_id"], possible[1]["dst_public_id"]);
+}

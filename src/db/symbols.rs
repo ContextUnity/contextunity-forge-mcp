@@ -284,6 +284,7 @@ pub(crate) fn inspect_paged_response(
     } else {
         inspect_without_coverage(conn, selector, path, show_doc, options)?
     };
+    let result = with_analysis_gaps(conn, result, options)?;
     summarize_symbol(conn, result, coverage.include_coverage, options.detail)
 }
 
@@ -310,7 +311,40 @@ pub(crate) fn explain_paged_response(
     } else {
         explain_without_coverage(conn, selector, path, direction, show_doc, options)?
     };
+    let result = with_analysis_gaps(conn, result, options)?;
     summarize_symbol(conn, result, coverage.include_coverage, options.detail)
+}
+
+fn with_analysis_gaps(
+    conn: &Connection,
+    mut result: Value,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let node = &result["node"];
+    let scope_symbol = node["id"].as_str().context("invalid selected node id")?;
+    let path = node["path"]
+        .as_str()
+        .context("invalid selected node path")?;
+    let start = node["line"]
+        .as_i64()
+        .context("invalid selected start line")?;
+    let end = node["end_line"]
+        .as_i64()
+        .context("invalid selected end line")?;
+    result["analysis_gaps"] = paging::query(
+        conn,
+        "SELECT p.path,c.line,x.expression AS reason,v.evidence,?4 AS scope_symbol \
+         FROM resolution_coverage c \
+         JOIN path_dictionary p ON p.path_id=c.path_id \
+         JOIN coverage_expressions x ON x.expression_id=c.expression_id \
+         JOIN coverage_evidence v ON v.evidence_id=c.evidence_id \
+         WHERE c.path_id=(SELECT path_id FROM path_dictionary WHERE path=?1) \
+           AND c.line BETWEEN ?2 AND ?3 AND v.evidence LIKE 'analysis gap:%' \
+         ORDER BY c.line,x.expression,v.evidence",
+        &[&path, &start, &end, &scope_symbol],
+        options,
+    )?;
+    Ok(result)
 }
 
 fn inspect_without_coverage(

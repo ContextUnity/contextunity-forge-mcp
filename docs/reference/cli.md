@@ -45,6 +45,8 @@ contextunity-forge-mcp query run slice 'src/module.py:parse' --depth 1 --limit 3
 
 The CLI `query inspect --show-source` returns the indexed symbol's full source range after checking the file digest. MCP source previews are bounded; see [limits and freshness](../runbooks/limits-and-freshness.md).
 
+`query inspect` and `query explain` include paged `analysis_gaps` for the selected source span. Each gap names its reason, path, line, scope symbol, and resolver evidence. Rust trait-object calls report `trait_object_dispatch`; indexed macro invocations report `macro_expansion_not_analyzed` while retaining their macro-declaration navigation edge. Exact call edges use `calls`; bounded branch-join navigation uses `possible_calls` with confidence `possible`. Inbound impact follows possible calls, and removal analysis treats candidate callers as incoming dependencies.
+
 ## Documentation and syntax search
 
 ```sh

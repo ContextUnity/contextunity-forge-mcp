@@ -841,7 +841,43 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     "calls" | "inherits" | "implements" | "bases" | "decorates" | "mutates" | "handles" | "references"
                 )
             }) {
+                let owner = by_id.get(r.source.as_str()).copied();
                 let active_profile = reference_profile(r);
+                if r.kind == "calls"
+                    && active_profile.is_some_and(|profile| profile.id() == "rust")
+                    && owner.is_some_and(|owner| {
+                        r.expression.split_once('.').is_some_and(|(receiver, _)| {
+                            owner
+                                .details
+                                .get("param_types")
+                                .and_then(|types| types.get(receiver))
+                                .and_then(|value| value.as_str())
+                                .is_some_and(|ty| ty.split_whitespace().any(|part| part == "dyn"))
+                                || matches!(
+                                    value_flow.lookup(
+                                        owner,
+                                        receiver,
+                                        crate::core::semantic::SourcePosition {
+                                            line: r.line,
+                                            column: r.column,
+                                        }
+                                    ),
+                                    Some(value_flow::TypeTarget::Local(target)) if target.kind == "trait"
+                                )
+                        })
+                    })
+                {
+                    graph.coverage.push(Coverage {
+                        path: path.clone(),
+                        line: r.line,
+                        expression: "trait_object_dispatch".into(),
+                        status: "unresolved".into(),
+                        evidence: format!(
+                            "analysis gap: Rust trait-object call through {} may dispatch to multiple implementations; concrete runtime target is unknown",
+                            r.expression.split_once('.').map_or("an opaque receiver", |(receiver, _)| receiver)
+                        ),
+                    });
+                }
                 let builtin_origin = match active_profile.map(|profile| profile.id()) {
                     Some("rust") => Some("Rust standard library"),
                     Some("python") => Some("Python standard library"),
@@ -2012,6 +2048,21 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 candidates.sort_by(|a, b| a.id.cmp(&b.id));
                 candidates.dedup_by_key(|n| &n.id);
                 crate::engine::linker::traits::filter_stubs_and_overloads(&mut candidates);
+                if r.kind == "calls"
+                    && profile.is_some_and(|profile| profile.id() == "rust")
+                    && candidates.iter().any(|candidate| candidate.kind == "macro")
+                {
+                    graph.coverage.push(Coverage {
+                        path: path.clone(),
+                        line: r.line,
+                        expression: "macro_expansion_not_analyzed".into(),
+                        status: "unresolved".into(),
+                        evidence: format!(
+                            "analysis gap: Rust macro invocation {} is linked to its declaration, but its expansion is not analyzed",
+                            r.expression
+                        ),
+                    });
+                }
                 if candidates.is_empty()
                     && !shadowed
                     && profile.is_some_and(|p| matches!(p.id(), "vue" | "typescript" | "javascript"))

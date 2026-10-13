@@ -483,8 +483,14 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
             table_name: "resolution_coverage",
-            ..
-        } => Authorization::Deny,
+            column_name,
+        } if !matches!(
+            column_name,
+            "line" | "path_id" | "expression_id" | "evidence_id"
+        ) =>
+        {
+            Authorization::Deny
+        }
         _ => Authorization::Allow,
     }));
     let compact = symbols::inspect_with_options(
@@ -500,6 +506,7 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     )
     .unwrap();
     assert!(compact.get("coverage").is_none());
+    assert_eq!(compact["analysis_gaps"]["total"], 0);
     let explained = symbols::explain_with_options(
         &conn,
         &workspace.0,

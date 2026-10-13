@@ -301,3 +301,66 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     );
     Ok(())
 }
+
+#[test]
+fn candidate_only_callers_appear_in_impact_and_block_removal() -> Result<()> {
+    let workspace = Workspace::new();
+    workspace.write(
+        "branch.py",
+        "class Alpha:\n    def execute(self): pass\nclass Beta:\n    def execute(self): pass\ndef run(condition):\n    if condition:\n        receiver = Alpha()\n    else:\n        receiver = Beta()\n    receiver.execute()\n",
+    );
+    workspace.build();
+    let conn = workspace.open();
+    let target_id: String = conn.query_row(
+        "SELECT id FROM nodes WHERE name='execute' AND kind='method' AND qualname LIKE '%Alpha.execute'",
+        [],
+        |row| row.get(0),
+    )?;
+    let caller_id: String = conn.query_row(
+        "SELECT id FROM nodes WHERE name='run' AND kind='function'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    let impact = traversal::traverse_with_options(
+        &conn,
+        &target_id,
+        &traversal::TraversalOptions {
+            depth: 1,
+            inbound: true,
+            mode: None,
+            edge_types: None,
+            page: &options(10, 0, Detail::Full)?,
+        },
+    )?;
+    assert!(
+        impact["nodes"]["items"]
+            .as_array()
+            .expect("impact page")
+            .iter()
+            .any(|node| node["id"] == caller_id),
+        "candidate caller appears in inbound impact"
+    );
+    let exact_call_count: usize = conn.query_row(
+        "SELECT count(*) FROM edges WHERE src_hash=?1 AND dst_hash=?2 AND kind='calls'",
+        [stable_hash64(&caller_id), stable_hash64(&target_id)],
+        |row| row.get(0),
+    )?;
+    assert_eq!(
+        exact_call_count, 0,
+        "fixture must have only a candidate caller"
+    );
+
+    let removal = traversal::removal_paged(&conn, &target_id, &options(10, 0, Detail::Full)?)?;
+    assert_eq!(removal["safe_to_remove"], false);
+    assert_eq!(removal["assessment"]["verdict"], "blocked");
+    let incoming = removal["incoming_dependencies"]["items"]
+        .as_array()
+        .expect("incoming dependency page");
+    assert!(incoming.iter().any(|edge| {
+        edge["src_public_id"] == caller_id
+            && edge["kind"] == "possible_calls"
+            && edge["confidence"] == "possible"
+    }));
+    Ok(())
+}

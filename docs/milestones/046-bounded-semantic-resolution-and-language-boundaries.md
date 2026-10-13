@@ -600,53 +600,112 @@ receipt:
 
 ```yaml
 task_ref: dispatch-and-opacity-navigation
-target: "Expose declaration targets, possible dispatch and analysis gaps consistently to coding agents"
+target: Expose declaration targets, possible dispatch and analysis gaps consistently to coding agents
 proof_policy: seam-test-first
 contract_revision: 4
 scope:
-  - src/core/models.rs
-  - src/core/models/
-  - src/core/response.rs
-  - src/engine/linker/
-  - src/engine/languages/rust/
-  - src/db/reader.rs
-  - src/db/reader/
-  - src/db/symbols.rs
-  - src/db/traversal.rs
-  - src/mcp/tools.rs
-  - src/mcp/server.rs
-  - src/cli/mod.rs
-  - tests/linker/
-  - tests/receivers/
-  - tests/query_context/
-  - tests/impact_context.rs
-  - tests/mcp/
-  - tests/incremental/
-  - tests/common/
-  - docs/reference/mcp-tools.md
-  - docs/reference/cli.md
-  - docs/architecture/modularity.md
-  - docs/architecture/indexing.md
-  - docs/reference/languages.md
-  - docs/testing/README.md
+- src/core/models.rs
+- src/core/models/
+- src/core/response.rs
+- src/engine/linker/
+- src/engine/languages/rust/
+- src/db/reader.rs
+- src/db/reader/
+- src/db/symbols.rs
+- src/db/traversal.rs
+- src/mcp/tools.rs
+- src/mcp/server.rs
+- src/cli/mod.rs
+- tests/linker/
+- tests/receivers/
+- tests/query_context/
+- tests/impact_context.rs
+- tests/mcp/
+- tests/incremental/
+- tests/common/
+- docs/reference/mcp-tools.md
+- docs/reference/cli.md
+- docs/architecture/modularity.md
+- docs/architecture/indexing.md
+- docs/reference/languages.md
+- docs/testing/README.md
 depends_on:
-  - bounded-candidate-evidence
+- bounded-candidate-evidence
 invariants:
-  - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
-  - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
-  - 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
-  - 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
-status: planned
+- 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+- 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+- 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
+- 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
+status: completed
 subtasks:
-  - subtask_ref: dispatch-and-opacity-navigation-1
-    title: "Expose trait and macro uncertainty"
-    status: pending
-  - subtask_ref: dispatch-and-opacity-navigation-2
-    title: "Integrate conservative query/removal semantics"
-    status: pending
-  - subtask_ref: dispatch-and-opacity-navigation-3
-    title: "Keep CLI MCP and reference documentation aligned"
-    status: pending
+- subtask_ref: dispatch-and-opacity-navigation-1
+  title: Expose trait and macro uncertainty
+  status: completed
+  evidence: Rust dyn parameter value-flow facts identify the declared trait receiver; resolver emits trait_object_dispatch gap while preserving macro invocation -> declaration calls edge and emits macro_expansion_not_analyzed. Proven by rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps in query_context.
+- subtask_ref: dispatch-and-opacity-navigation-2
+  title: Integrate conservative query/removal semantics
+  status: completed
+  evidence: possible_calls remains a separate confidence=possible edge. Inbound traversal includes candidate-only callers and removal lists the possible_calls dependency and blocks safety. Proven by explain_pages_possible_calls_as_distinct_navigation_edges and candidate_only_callers_appear_in_impact_and_block_removal.
+- subtask_ref: dispatch-and-opacity-navigation-3
+  title: Keep CLI MCP and reference documentation aligned
+  status: completed
+  evidence: Updated MCP/CLI, language, architecture, and testing references for paged analysis_gaps, possible_calls impact/removal behavior, and Rust trait/macro limits; fmt and diff checks pass.
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-13T14:40:06.551851294+00:00
+  evidence:
+    command_proof:
+      command: cargo test
+      exit_code: 0
+      tests_passed: 672
+      tests_failed: 0
+      log: 'Exit 0; 672 passed, 0 failed, 1 ignored across default targets. Affected domain targets independently passed: linker 97, query_context 42, impact_context 4, mcp 78, incremental 25. `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt -- --check`, and `git diff --check` passed. No standalone receivers test target exists; receiver coverage is included in linker.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Inspected candidate snapshot 3e9e5e78c6ce283f1d3c86998223abaface70c29 and the worktree diff. All 13 changed files are within the admitted task scope; no staged or untracked changes, profile/repository configuration, generated state, or neighboring project paths changed. `git diff --check` passes, and the current worktree content matches the candidate snapshot.
+        claims:
+          applicable: true
+          evidence: 'Traced Rust dyn receiver type facts through trait_object_name/type_expr_inner and the Rust resolver: trait-object dispatch emits unresolved `trait_object_dispatch` coverage without selecting concrete impl calls. Resolved macro candidates keep the calls edge to the declaration and emit `macro_expansion_not_analyzed`. `with_analysis_gaps` returns deterministically ordered, generation-fenced paged evidence. `possible_calls` remains a distinct `confidence=possible` edge; inbound traversal includes it and removal assesses it as a blocker. Named tests use temporary workspaces, production indexing, SQLite persistence, and query/traversal readers. Reviewer commands passed: `cargo test --test linker` (97), `cargo test --test query_context` (42), `cargo test --test impact_context` (4), `cargo test --test mcp` (78), and `cargo test --test incremental` (25); total 246 passed, 0 failed.'
+        concurrency:
+          applicable: true
+          evidence: The change adds per-file graph-local coverage and read-only SQL paging through the existing connection/paging generation checks; it introduces no shared mutable state, lock, transaction, task claim, or receipt writes. Resolver lookup uses the already-built immutable value-flow index. No concurrency-sensitive mutation path changed.
+        project_isolation:
+          applicable: true
+          evidence: Gap queries bind the selected indexed node's workspace-relative path and line span as SQL parameters against the current index connection. The new tests create isolated temporary workspaces and exercise the production writer/reader paths. No adapter, linked-workspace configuration, or filesystem path resolution changed.
+        administration:
+          applicable: true
+          evidence: No task-store, migration, profile-pin, Git hook, candidate-delivery, or receipt code/configuration changed. Snapshot and scope checks found no administrative or protected-path modifications.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
+    - 'INV-DELTA: Cold build and incremental rebuild of identical admitted inputs expose identical semantic results and valid commitments.'
+    - 'INV-LAYERS: Keep core a leaf and preserve the frozen engine/database dependency boundary in ADR 0018.'
+    - 'INV-OWNERSHIP: Language rules belong to language resolvers; cross-language framework relations use explicit composition passes; common scheduling and budgets remain shared.'
+    - 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
+    - 'INV-FEATURE-ISOLATION: Language profiles and tree-sitter bindings must be strictly decoupled; disabling lang-typescript must never break compilation of independent profiles (lang-python, lang-rust, etc.), while dependent profiles like lang-vue explicitly declare their lang-typescript dependency.'
+    - 'INV-PERF-NO-REGRESSION: Indexing and query throughput must not regress. Cold index build on a clean, isolated scratch copy of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) with scratch adapter pointing to clean isolated copies of linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7) must complete within 11.5 seconds wall-clock time using pre-compiled binary target/release/contextunity-forge-mcp build under a lightly loaded host (CPU load < 1.0). Median tool query latencies and RSS peak across benchmark scenarios must not regress against task 1 baseline.'
+    - 'INV-CONTROL-REPO-ISOLATION: Performance evaluations, benchmarks, and multi-workspace verifications must strictly operate on clean, isolated scratch/temporary copies of the control repository (commerce-release-update at commit cbe26dbfcda03f9f42ef92b0cb52680e4727c1bd) and clean copies of all linked workspaces (traverse at commit 39a1b8065b3d2356727e06fee47c1b5c8c7f04e3, grid-view-spec at commit d5f8f43e63c012c78af680af3391d04ea4855be7). The scratch adapter forge-mcp.yaml in the isolated commerce worktree must be rewritten to point linked_workspaces to those isolated clean scratch directories instead of primary repository trees. Never read from or modify primary baseline worktrees.'
+    - 'INV-DOCS: Keep milestone contracts outside doc_search; publish delivered semantic contracts in indexed ADR, architecture, and reference documents.'
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases, selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-UNCERTAINTY: Candidate evidence never becomes an exact runtime-call claim; unsupported paths, unknown writes, overflow, and opaque expansion retain explicit uncertainty.'
+    - 'INV-BOUNDS: Candidate sets, inference propagation, retrieval, and serialized responses have deterministic limits and observable exhaustion.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

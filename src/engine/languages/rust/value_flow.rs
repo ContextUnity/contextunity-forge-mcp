@@ -29,6 +29,9 @@ fn type_expr_inner(
         };
         node = inner;
     }
+    if let Some(name) = trait_object_name(node, source) {
+        return TypeExpr::Named { name };
+    }
     if matches!(
         node.kind(),
         "type_identifier" | "scoped_type_identifier" | "primitive_type"
@@ -74,6 +77,23 @@ fn type_expr_inner(
         }
     }
     TypeExpr::Unknown
+}
+
+fn trait_object_name(node: Node<'_>, source: &str) -> Option<String> {
+    let mut syntax = text(node, source).trim();
+    while syntax.starts_with('(') && syntax.ends_with(')') {
+        syntax = syntax[1..syntax.len().checked_sub(1)?].trim();
+    }
+    let bounds = syntax.strip_prefix("dyn ")?;
+    let principal = bounds.split('+').next()?.trim();
+    if principal.is_empty()
+        || !principal
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '_' | ':'))
+    {
+        return None;
+    }
+    Some(principal.to_owned())
 }
 
 fn generic_root(mut node: Node<'_>, source: &str, names: &HashSet<&str>) -> bool {
