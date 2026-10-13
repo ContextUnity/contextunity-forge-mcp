@@ -6,6 +6,7 @@ This document defines the rules for placing, creating, refactoring, and maintain
 - Tests prove observable positive contracts, formal specifications, valid boundaries, and real fail-closed error states.
 - Verify defect fixes through existing domain contract seams. Structure tests around permanent specification requirements rather than transient historical incidents.
 - Prove admitted milestone requirements. Do not add a test that invents an uncontracted requirement in order to justify a new subsystem.
+- For semantic receiver evidence, cover exact resolution separately from possible targets. Exercise complete and incomplete joins, unknown alternatives, overflow, and later unconditional writes through the linker and persisted query seam; possible targets must not appear as exact `calls` edges.
 
 ## 2. Compilation and Binary Budget (Coherent Domain Modules)
 - In Cargo, every `.rs` file directly in `tests/` is compiled and linked as an independent test executable.

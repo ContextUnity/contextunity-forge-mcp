@@ -55,6 +55,12 @@ Decouples language-specific import and receiver resolutions from the core SQLite
 - Framework receivers, builtins, filters, and routes come from typed `FrameworkManifest` data. Bundled tables live under `src/engine/languages/manifests/` and are embedded in the binary; workspace manifests load from `.forge/frameworks/` and activate only for declared dependencies. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
 - `DependencyRegistry` owns workspace dependency discovery and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs.
 
+## Bounded semantic resolution ownership
+
+Under the accepted extension in [ADR 0008](../adr/0008-bounded-static-value-flow.md), language profiles and `LanguageLinker` implementations will decide which language-specific syntax can provide a complete local branch join. The shared value-flow reducer will own declaration-identity deduplication, deterministic candidate ordering, cardinality limits, and widening when evidence is incomplete. Cross-language candidates will require an explicit framework composition pass that supplies their ownership and provenance; shared spelling is not enough. The current implementation remains fail-closed at conditional joins.
+
+Exact receiver resolution and possible-target evidence remain separate outcomes. A possible-target result is navigation evidence and must not be stored as an exact `calls` edge. The accepted contract in [ADR 0008](../adr/0008-bounded-static-value-flow.md) bounds future candidate sets at eight distinct declarations and requires unknown alternatives to remain incomplete. The type-expression parser depth guard (eight), alias depth (default 64), reducer iteration limits, and candidate cardinality are independent bounds. These rules add no runtime evaluation and do not activate disabled language profiles.
+
 ## Documentation Invariants
 
 - **Rust Code**: Standard Rustdoc (`///` with Markdown, `# Arguments`, `# Returns`, `# Errors`, `# Panics`). Every public trait, struct, enum variant, and method must have self-contained documentation explaining ownership, invariants, and performance complexity.

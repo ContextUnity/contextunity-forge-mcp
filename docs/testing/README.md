@@ -38,3 +38,13 @@ Performance-sensitive changes also use the benchmark procedure in root
 instructions. Record the exact binary, workspace inventory, commands, and results
 with the owning work. Documentation changes use metadata, link, scan-admission,
 and retrieval checks as their focused proof.
+
+## Semantic resolution evidence
+
+Exercise receiver and candidate contracts through the linker and, when they
+affect persisted or public results, through indexing and query readers. Keep
+exact call edges distinct from possible-target evidence. Assert both positive
+resolution and negative cases for unknown alternatives, unsupported syntax,
+incomplete joins, and candidate overflow; do not use name-only fixtures as proof
+of a unique target. The Milestone 046 admission baseline is recorded in
+[ADR 0008](../adr/0008-bounded-static-value-flow.md).
