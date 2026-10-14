@@ -142,7 +142,7 @@ contextunity-forge-mcp milestone handoff <id> \
   --tests-passed <N> --tests-failed 0
 ```
 
-`milestone handoff` is CLI-only. It resolves each task's landed commit from the milestone document or first-parent branch, verifies proofs and scopes against task records, records verified results, and archives the milestone; it does not run tests. On landing into `main`, fast-forward the milestone branch, clean up obsolete pre-archive working milestone files, and remove the milestone worktree and branch.
+`milestone handoff` is CLI-only. It resolves each task's landed commit from the milestone document or first-parent branch, verifies proofs and scopes against task records, records verified results, and archives the milestone; it does not run tests. When creating the handoff commit, stage the archived manifest in `archive/` and the removal of the pre-archive working manifest, ensuring any untracked pre-archive working files are unlinked. On landing into `main`, fast-forward the milestone branch, and remove the milestone worktree and branch.
 
 
 ## Workspace Adapters (`forge-mcp.yaml`) & Default Behavior

@@ -1,12 +1,27 @@
 # Workspace override. Unspecified gates, commands, policies, and contours use
 # the embedded defaults in src/core/tasks/acdd.default.yaml.
 roles:
-  builder:
-    models:
-      - 'gpt6-luna:xhigh'
-  independent_reviewer:
+  contract_author:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "Use a reviewer worker that is independent from the task builder."
+    guidance: "Spawn a dedicated contract author subagent to define the sensitive failing seam test and contract bounds."
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt6-luna:xhigh'
+    guidance: "Spawn a fresh builder subagent to implement the approved contract inside the declared allowed_write_scope and verify tests."
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'sol-6.1:xhigh'
+    guidance: "Use a reviewer worker that is independent from the task builder. Submit review proof across contours, and upon pass claim and submit deliver in the same session."
+  delivery_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'sol-6.1:xhigh'
+    guidance: "Execute delivery under the same independent reviewer authority."

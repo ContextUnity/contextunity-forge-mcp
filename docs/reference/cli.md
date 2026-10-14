@@ -170,7 +170,7 @@ record to that SHA before archiving. It requires `status: completed` and a
 at handoff, or the supplied `--commit`, alongside `completed_at`, `duration`,
 and the verification `command`, `tests_passed`, and `tests_failed` fields. The
 CLI archives the milestone and updates SQLite task references. Commit the
-archived milestone afterward; that archive commit SHA is not recorded in the
+archived milestone afterward, staging both the archived file in `archive/` and the removal of the pre-archive working manifest, and unlinking any untracked pre-archive copies; that archive commit SHA is not recorded in the
 handoff or any task `receipt.commit`. An omitted `--commit` uses the current Git
 `HEAD`. See [repository tasks](tasks.md) for task claims, receipts, and
 activation timing.

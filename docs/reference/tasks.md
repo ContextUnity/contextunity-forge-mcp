@@ -422,7 +422,7 @@ with `completed_at`, `duration` as `Xh Ym`, and `verification` containing
 at frontmatter `started_at`, or the earliest SQLite claim timestamp for an
 older active document. The command sets frontmatter `status: completed`, moves
 the document to the selected directory's `archive/`, and updates the stored
-`milestone_ref` of its tasks. The subsequent milestone archive commit occurs after handoff and is excluded from `receipt.commit`, avoiding any hash cycle. Follow root [AGENTS.md](../../AGENTS.md#worktrees-and-git-permissions) and [TESTS.md](../../TESTS.md#milestone-handoff-gate) for the final
+`milestone_ref` of its tasks. The subsequent milestone archive commit occurs after handoff and is excluded from `receipt.commit`, avoiding any hash cycle. When creating the handoff commit, stage both the newly archived document in `archive/` and the removal of the pre-archive working document in `docs/milestones/`; ensure any untracked or stale pre-archive working copies remaining in the repository or main worktree are unlinked so that landing into `main` encounters no duplicate or untracked files. Follow root [AGENTS.md](../../AGENTS.md#worktrees-and-git-permissions) and [TESTS.md](../../TESTS.md#milestone-handoff-gate) for the final
 verification gate, handoff, and archiving.
 
 ### Deferred and out-of-scope defects

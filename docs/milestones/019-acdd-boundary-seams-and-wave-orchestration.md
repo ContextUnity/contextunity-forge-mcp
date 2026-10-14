@@ -1,0 +1,234 @@
+---
+id: m-acdd-boundary-seams-and-wave-orchestration
+title: ACDD receipt canonicalization, tiered role profile (contract/build/review+deliver), blackboard handoff, seam guards, and wave dispatch
+doc_type: contract
+status: planned
+repository: forge-mcp
+project: forge-mcp
+depends_on:
+  - m-authority-gap-diagnostics-and-milestone-header-protection
+owners:
+  - .forge/acdd/profile.yaml
+  - AGENTS.md
+  - TESTS.md
+  - src/core/tasks/
+  - src/db/tasks_store/
+  - src/engine/tasks/
+  - src/engine/milestones/
+  - src/mcp/
+  - src/cli/
+  - skills/
+  - docs/reference/acdd.md
+  - docs/reference/profiles.md
+  - docs/reference/tasks.md
+  - docs/reference/mcp-tools.md
+  - docs/reference/cli.md
+  - tests/acdd/
+invariants:
+  - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+  - 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
+  - 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
+  - 'INV-TIERED-SUBAGENT-PROFILE: Default ACDD profile defines three tiered subagent roles—contract_author (sol-6.1:high for contract seam design), builder (gpt6-luna:xhigh for build code implementation connected via gate-targeted task_blackboard notes), and independent_reviewer (sol-6.1:xhigh governing review and deliver gates in a single reviewer subagent session)—while forbidding preflight subagents.'
+  - 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
+  - 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
+  - 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
+  - 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
+  - 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
+  - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+related_plans: []
+---
+
+# ACDD receipt canonicalization, tiered role profile (contract/build/review+deliver), blackboard handoff, seam guards, and wave dispatch
+
+## Outcome and purpose
+
+Based on production rollout telemetry (`rollout-2026-10-14T08-02-19`) and direct code inspection of `src/core/tasks/mod.rs`, `src/core/tasks/profile.rs`, `src/core/tasks/gates.rs`, `src/engine/tasks/gates.rs`, `src/engine/tasks/blackboard.rs`, `src/engine/tasks/context.rs`, and `src/engine/tasks/workspaces.rs`, this milestone resolves receipt synchronization loops, profile command/linter bottlenecks, and subagent orchestration overhead using Forge's existing canonical mechanisms:
+
+1. **Fix `receipt.commit` 40-char vs 7-char Mismatch, Manual YAML Edits & Blackboard `inspect` Errors:**
+   - **Root Cause (`src/core/tasks/mod.rs` lines 32–49)**: `shorten_task_response_commits` recursively rewrites every `"commit"` field in JSON responses (including `receipt.commit` and `candidate_snapshot.commit`) to 7 chars (`"e8b893f"`), while the milestone file on disk stores the full 40-char SHA (`"e8b893f104a7a269aa268bc0c1d3ba86720c4fc0"`). Agents see `source != accepted` and edit the markdown file by hand, breaking YAML indentation and triggering `AUTHORITY_GAP`.
+   - **Root Cause (`src/engine/tasks/blackboard.rs` lines 360–374)**: `validate_blackboard_request` rejects `BlackboardAction::Inspect` with `TASK_BLACKBOARD_INVALID: inspect accepts only message_id` whenever an agent passes `task_id` or `scope` alongside `message_id`.
+   - **Solution**: Keep full 40-char SHAs in `receipt.commit`, `candidate_snapshot.commit`, and `latest_snapshot.commit` (shortening only human display strings like `inspect_cmd`), normalize 7-to-40 char commit prefixes in `gates.rs`, add `NEVER_EDIT_RECEIPTS` to `workflow_guidance.rules`, and make `blackboard(action="inspect")` ignore redundant context fields or fall back to `read` when `message_id` is omitted.
+
+2. **Configure Tiered ACDD Roles (`contract_author`, `builder`, `independent_reviewer`), Blackboard `contract -> build` Handoff & Canonical `commands`:**
+   - **Model Tiering by Cognitive Demand (`src/core/tasks/acdd.default.yaml` & `.forge/acdd/profile.yaml`)**:
+     - Model tiering preserves architectural contract quality without overspending on mechanical implementation:
+       - **`contract_author` (`sol-6.1:high`, `mode: subagent`)**: Explores the seam, authors the sensitive failing seam test, posts distilled implementation context to `task_blackboard` (`topic: "draft"`, `gate: "build"`), and submits `contract_proof`.
+       - **`builder` (`gpt6-luna:xhigh`, `mode: subagent`)**: Starts with a clean context window, receives the `gate: "build"` blackboard note + `contract_seam_test` + `invariants_summary` in `context_bundle`, implements the fix inside `allowed_write_scope`, runs the registered profile command (static checks + scoped test), and submits `command_proof`.
+       - **`independent_reviewer` (`sol-6.1:xhigh`, `mode: subagent`, `worker_id != builder`)**: Combines review and delivery into one role/model. Evaluates the 5 review contours, submits `review_proof`, and upon `pass` immediately claims and submits `deliver` in the same session without spawning a redundant delivery worker.
+       - **Coordinator**: Never spawns throwaway 1–2 minute "preflight" subagents just to run `git status` or read 1 file (`NO_PREFLIGHT_SUBAGENTS`).
+   - **Canonical `commands` Without Schema Changes (`src/core/tasks/gates.rs` lines 119–128)**:
+     - `validate_command` already accepts any command that starts with a registered `commands.<name>.command` prefix followed by whitespace (`proof.command.strip_prefix(command)`).
+     - By registering `command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"` (or `"ruff check && pyright && pytest -q --tb=line -o strict_markers=false"` in Python profiles), static checks run automatically before every `build` closure while agents still append the specific test target (`... && cargo test --test acdd` or `... && pytest -q --tb=line -o strict_markers=false tests/unit/test_seam.py`) at the end.
+     - `context_bundle` (`src/engine/tasks/context.rs`) synthesizes ready-to-copy `workflow_guidance.scoped_commands` by appending `contract_seam_test` / `covering_tests` to the active profile's registered `commands`.
+
+3. **Enforce 1-Hop Boundary Seam/Signature Guards & Conflict-Free Wave Dispatch:**
+   - Add `external_callers` and 2-hop `covering_tests` to `context_bundle`, enforce `TASK_SEAM_DISCONNECTED` and `TASK_SCOPE_INCOMPLETE` in `src/engine/tasks/gates.rs`, auto-infer top-down `task_dependencies` ($i < j$) and `wave_index` during `TasksStore::sync`, and add `ManageAction::Next` (`task next`) with worktree-preserving `extend_scope` parking.
+
+---
+
+## Tasks in this milestone
+
+### task: receipt-sha-canonicalization-and-blackboard-ergonomics
+
+```yaml
+task_ref: receipt-sha-canonicalization-and-blackboard-ergonomics
+target: "Preserve canonical 40-char commit SHAs in receipts and snapshots, accept short SHA prefixes in gate submissions, forbid manual receipt YAML edits, and make task_blackboard inspect tolerant of scope parameters"
+proof_policy: seam-test-first
+contract_revision: 1
+scope:
+  - src/core/tasks/mod.rs
+  - src/engine/tasks/gates.rs
+  - src/engine/tasks/blackboard.rs
+  - src/engine/tasks/workspaces.rs
+  - docs/reference/tasks.md
+  - docs/reference/mcp-tools.md
+  - tests/acdd/tasks.rs
+  - tests/acdd/blackboard.rs
+  - tests/acdd/mcp.rs
+depends_on: []
+invariants:
+  - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+  - 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
+  - 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
+  - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+status: planned
+subtasks:
+  - subtask_ref: preserve-full-sha-in-receipts-and-snapshots
+    title: "Update shorten_task_response_commits in src/core/tasks/mod.rs and prefix matching in src/engine/tasks/gates.rs so receipt.commit and candidate_snapshot.commit remain 40-char SHAs while accepting 7-char prefixes on submit"
+    status: pending
+  - subtask_ref: relax-blackboard-inspect-parameter-validation
+    title: "Update validate_blackboard_request in src/engine/tasks/blackboard.rs so action=inspect ignores redundant scope/task_id/milestone_ref parameters when message_id is present and routes to scoped read when message_id is absent"
+    status: pending
+  - subtask_ref: inject-never-edit-receipts-guardrail
+    title: "Add NEVER_EDIT_RECEIPTS rule to workflow_guidance.rules in src/engine/tasks/workspaces.rs instructing agents never to hand-edit receipt: or status: YAML in docs/milestones/*.md"
+    status: pending
+```
+
+#### Acceptance
+
+1. In `src/core/tasks/mod.rs` (lines 32–49), update `shorten_task_response_commits` so `receipt.commit`, `candidate_snapshot.commit`, and `latest_snapshot.commit` retain their canonical 40-character Git SHA (matching the milestone Markdown document on disk), keeping 7-char formatting strictly inside `"inspect_cmd"` or a separate `"short_commit"` field.
+2. In `src/engine/tasks/gates.rs`, when `evidence.commit` is a 7–39 hex-character prefix of the 40-character `build.commit` (or resolves via `git rev-parse --verify`), normalize `evidence.commit` to the full 40-character SHA before comparison and persistence.
+3. In `src/engine/tasks/blackboard.rs` (lines 360–374), update `validate_blackboard_request` for `BlackboardAction::Inspect` so optional `scope`, `task_id`, `subtask_ref`, and `milestone_ref` parameters are ignored when `message_id` is supplied, and requests with `message_id == None` and a valid `task_id` or `milestone_ref` automatically dispatch to `BlackboardAction::Read`.
+4. In `src/engine/tasks/workspaces.rs`, inject `NEVER_EDIT_RECEIPTS: Never manually edit receipt: or status: blocks in docs/milestones/*.md; task_submit(stage=deliver) writes and commits receipts automatically.` into `workflow_guidance.rules`.
+
+---
+
+### task: tiered-profile-and-boundary-seam-gates
+
+```yaml
+task_ref: tiered-profile-and-boundary-seam-gates
+target: "Configure tiered ACDD roles (contract_author with sol-6.1:high, builder with gpt6-luna:xhigh, independent_reviewer with sol-6.1:xhigh for chained review+deliver), configure canonical check+test commands, inline ADR invariant summaries, and enforce static seam/signature gates"
+proof_policy: seam-test-first
+contract_revision: 1
+scope:
+  - .forge/acdd/profile.yaml
+  - AGENTS.md
+  - TESTS.md
+  - src/core/tasks/acdd.default.yaml
+  - src/core/tasks/profile.rs
+  - src/core/tasks/gates.rs
+  - src/engine/tasks/context.rs
+  - src/engine/tasks/gates.rs
+  - src/engine/tasks/workspaces.rs
+  - skills/contextunity-forge/SKILL.md
+  - skills/contextunity-forge/references/acdd_profile.yaml.example
+  - docs/reference/acdd.md
+  - docs/reference/profiles.md
+  - docs/reference/tasks.md
+  - tests/acdd/tasks.rs
+  - tests/acdd/milestones.rs
+  - tests/acdd/mcp.rs
+depends_on:
+  - receipt-sha-canonicalization-and-blackboard-ergonomics
+invariants:
+  - 'INV-TIERED-SUBAGENT-PROFILE: Default ACDD profile defines three tiered subagent roles—contract_author (sol-6.1:high for contract seam design), builder (gpt6-luna:xhigh for build code implementation connected via gate-targeted task_blackboard notes), and independent_reviewer (sol-6.1:xhigh governing review and deliver gates in a single reviewer subagent session)—while forbidding preflight subagents.'
+  - 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
+  - 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
+  - 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
+status: planned
+subtasks:
+  - subtask_ref: tiered-profile-and-canonical-commands
+    title: "Configure tiered roles in acdd.default.yaml, .forge/acdd/profile.yaml, and workspaces.rs (contract_author with sol-6.1:high, builder with gpt6-luna:xhigh, independent_reviewer with sol-6.1:xhigh for review and deliver), configure check+test commands, and synthesize workflow_guidance.scoped_commands in context.rs"
+    status: pending
+  - subtask_ref: blackboard-contract-handoff-and-inline-adr-invariants
+    title: "Update contract gate steps to post gate=build blackboard notes, chain review+deliver in independent_reviewer guidance, add NO_PREFLIGHT_SUBAGENTS to workflow_guidance.rules, and inline ADR invariants_summary + expected_evidence_template in context.rs"
+    status: pending
+  - subtask_ref: external-callers-and-static-seam-signature-gates
+    title: "Add 1-hop external_callers and 2-hop covering_tests to context.rs and enforce TASK_SEAM_DISCONNECTED and TASK_SCOPE_INCOMPLETE in src/engine/tasks/gates.rs"
+    status: pending
+```
+
+#### Acceptance
+
+1. **Tiered Subagent Roles (`contract_author`, `builder`, `independent_reviewer`) & Blackboard Handoff (`src/core/tasks/acdd.default.yaml`, `.forge/acdd/profile.yaml`, `src/engine/tasks/workspaces.rs`)**:
+   - In `src/core/tasks/acdd.default.yaml`, `.forge/acdd/profile.yaml`, and `src/engine/tasks/workspaces.rs` (`default_subagent_role`), configure 3 tiered roles:
+     - `contract_author` (`mode: subagent`, `models: ['sol-6.1:high']`, `reuse_on_reject: true`): Assigned to `contract`.
+       - Spawn a dedicated `contract_author` subagent with `sol-6.1:high` reasoning to author the sensitive failing seam test, post distilled target/seam notes to `task_blackboard(topic="draft", gate="build")`, and submit `contract_proof`.
+     - `builder` (`mode: subagent`, `models: ['gpt6-luna:xhigh']`, `reuse_on_reject: true`): Assigned to `build`.
+       - Spawn a fresh `builder` subagent with high-throughput coding model `gpt6-luna:xhigh` that reads the `gate="build"` blackboard note from `context_bundle`, implements the contract inside `allowed_write_scope`, runs the registered profile command, and submits `command_proof`.
+     - `independent_reviewer` (`mode: subagent`, `models: ['sol-6.1:xhigh']`, `reuse_on_reject: true`): Assigned to `review` and `deliver` (combining review + delivery into one role/model).
+       - Spawn one `independent_reviewer` subagent (`worker_id != builder`) to evaluate all review contours with `sol-6.1:xhigh`, submit `review_proof`, and upon `pass` immediately claim and submit `deliver` in the same session without spawning a redundant delivery worker.
+   - In `src/engine/tasks/workspaces.rs`, add `NO_PREFLIGHT_SUBAGENTS: Coordinator executes task_list, task_manage, and worktree setup directly; never spawn throwaway preflight subagents just to run git status or read a single file.` to `workflow_guidance.rules`.
+2. **Canonical Profile `commands` & Self-Contained Context (`src/core/tasks/acdd.default.yaml`, `.forge/acdd/profile.yaml`, `src/engine/tasks/context.rs`)**:
+   - Use the existing `CommandDef { command, description }` schema (no new fields in `CommandDef`): configure `commands` in `.forge/acdd/profile.yaml` and `acdd_profile.yaml.example` so static checks precede the test runner (`"cargo clippy --all-targets --all-features -- -D warnings && cargo test"` for Rust; `"ruff check && pyright && pytest -q --tb=line -o strict_markers=false"` for Python), leveraging `validate_command`'s existing `strip_prefix` check to accept appended test targets.
+   - In `src/engine/tasks/context.rs`:
+     - Synthesize `workflow_guidance.scoped_commands` by pairing `profile.commands` with `contract_seam_test` / `covering_tests`.
+     - Extract `invariants_summary: Vec<String>` (up to 5 invariant/decision lines per matched ADR) in `scan_adrs` and inject `expected_evidence_template` into `workflow_guidance`.
+3. **1-Hop Boundary Context & Static Seam/Signature Gates (`src/engine/tasks/context.rs`, `src/engine/tasks/gates.rs`)**:
+   - `query_external_callers` queries `.forge/code-map.sqlite` for up to 25 non-test symbols outside `allowed_scope` with 1-hop `calls`, `possible_calls`, `implements`, or `overrides` edges into `allowed_scope`.
+   - On `ProofKind::Contract` submission with `seam_test_ref`, verify via `ast::extract_typed` and `.forge/code-map.sqlite` that the referenced test file/symbol has a 1–2 hop edge into `allowed_scope`, or reject with `TASK_SEAM_DISCONNECTED`.
+   - On `contract` or `build` submission, if a modified symbol in `allowed_scope` changed its `details["signature"]` while having 1-hop `external_callers` outside `allowed_scope`, reject with `TASK_SCOPE_INCOMPLETE`.
+
+---
+
+### task: top-down-wave-sync-and-priority-task-next
+
+```yaml
+task_ref: top-down-wave-sync-and-priority-task-next
+target: "Auto-infer top-down task_dependencies and wave_index during task sync for overlapping scopes, add atomic task next dispatcher, and support worktree-preserving parking on extend_scope conflicts"
+proof_policy: seam-test-first
+contract_revision: 1
+scope:
+  - src/core/tasks/mod.rs
+  - src/db/tasks_store/mod.rs
+  - src/db/tasks_store/lifecycle.rs
+  - src/engine/tasks/mod.rs
+  - src/engine/tasks/lifecycle.rs
+  - src/mcp/tools.rs
+  - src/mcp/tools/inputs.rs
+  - src/cli/task.rs
+  - src/cli/milestone.rs
+  - docs/reference/mcp-tools.md
+  - docs/reference/cli.md
+  - docs/reference/tasks.md
+  - tests/acdd/tasks.rs
+  - tests/acdd/milestones.rs
+  - tests/acdd/mcp.rs
+depends_on:
+  - tiered-profile-and-boundary-seam-gates
+invariants:
+  - 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
+  - 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
+  - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+status: planned
+subtasks:
+  - subtask_ref: auto-infer-topdown-scope-dependencies
+    title: "During TasksStore::sync in src/db/tasks_store/mod.rs, add top-down task_dependencies edges (i < j) whenever two tasks in the same milestone share overlapping scope paths and compute wave_index"
+    status: pending
+  - subtask_ref: atomic-task-next-dispatcher
+    title: "Implement ManageAction::Next (CLI task next and MCP task_manage action=next) selecting deliver -> review (builder != worker) -> unblocked parked task -> lowest wave_index ready task"
+    status: pending
+  - subtask_ref: worktree-preserving-extend-scope-parking
+    title: "When extend_scope hits a path locked by an in_progress sibling task, add the holder to task_dependencies, mark parked_worker_id/parked_worktree, post a blockers blackboard note, and release the active claim"
+    status: pending
+```
+
+#### Acceptance
+
+1. In `src/db/tasks_store/mod.rs` (`sync`), for every pair of tasks $(T_i, T_j)$ ($i < j$) in `parsed.tasks` whose `scope` entries overlap via `crate::core::tasks::path_matches_scope_entry`, insert $T_i \to T_j$ into `task_dependencies` (without mutating `TaskSpec.depends_on` in the authority digest) and compute `wave_index` (`0` for unblocked tasks, `max(dep.wave_index) + 1` otherwise).
+2. `ManageAction::Next` (`contextunity-forge-mcp task next --worker <id> --worktree <path>` and MCP `task_manage` with `action: "next"`) atomically claims and returns the `context_bundle` for the highest-priority eligible `ready` task:
+   - Priority 1: `stage == "deliver"` where `builder != worker_id`.
+   - Priority 2: `stage == "review"` where `builder != worker_id`.
+   - Priority 3: `ready` task previously parked by `worker_id` (`parked_worker_id == worker_id`) whose blocking dependency is now `completed`.
+   - Priority 4: `ready` task at `build` or `contract` ordered by `wave_index ASC, task_id ASC` with no active claim scope overlap.
+3. In `TasksStore::extend_scope`, if a requested path conflicts with an `in_progress` task `holder_id`, `extend_scope` appends the path to `task_scope_paths`, inserts `holder_id -> task_id` into `task_dependencies`, stores `parked_worker_id` and `parked_worktree` in the descriptor, posts a `"blockers"` note to `task_blackboard`, ends the open claim row, and returns `{ "status": "parked", "blocked_by": holder_id }`.
