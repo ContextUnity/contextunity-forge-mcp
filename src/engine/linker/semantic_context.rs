@@ -283,6 +283,7 @@ impl<'a> Context<'a> {
 
     fn unshadowed_global(&self, owner: &'a Node, name: &str, at: SourcePosition) -> bool {
         let mut scope = owner.qualname.as_str();
+        let mut lookup_key = String::with_capacity(128);
         loop {
             if self.by_qual.get(scope).into_iter().flatten().any(|node| {
                 node.path == owner.path
@@ -308,7 +309,7 @@ impl<'a> Context<'a> {
                         }))
             }) || self
                 .by_qual
-                .get(format!("{scope}.{name}").as_str())
+                .get(super::qualified(&mut lookup_key, scope, name))
                 .into_iter()
                 .flatten()
                 .any(|node| node.path == owner.path)
@@ -837,10 +838,14 @@ impl<'a> Context<'a> {
             });
         }
         let _ = (associated, caller);
-        let qualified = format!("{}.{}", receiver.qualname, member);
+        let mut lookup_key = String::with_capacity(128);
         self.classify(
             self.by_qual
-                .get(qualified.as_str())
+                .get(super::qualified(
+                    &mut lookup_key,
+                    &receiver.qualname,
+                    member,
+                ))
                 .into_iter()
                 .flatten()
                 .copied()
@@ -1377,9 +1382,9 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             }
         }
         let mut scope = owner.qualname.as_str();
+        let mut lookup_key = String::with_capacity(128);
         loop {
             let scope_nodes = self.by_qual.get(scope);
-            let qualified = format!("{scope}.{name}");
             if let Some(nodes) = scope_nodes {
                 for node in nodes.iter().copied().filter(|node| node.path == owner.path) {
                     if node.details["rebindings"]
@@ -1402,7 +1407,7 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                         if let Some(imported_at) = imported_at {
                             let local = self
                                 .by_qual
-                                .get(qualified.as_str())
+                                .get(super::qualified(&mut lookup_key, scope, &name))
                                 .into_iter()
                                 .flatten()
                                 .copied()
@@ -1489,10 +1494,13 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                                             }
                                             continue;
                                         }
-                                        let qualified = format!("{}.{}", target.qualname, member);
                                         nodes.extend(
                                             self.by_qual
-                                                .get(qualified.as_str())
+                                                .get(super::qualified(
+                                                    &mut lookup_key,
+                                                    &target.qualname,
+                                                    member,
+                                                ))
                                                 .into_iter()
                                                 .flatten()
                                                 .copied()
@@ -1581,10 +1589,9 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 }
             }
             if !member.is_empty() && matches!(role, SymbolRole::Callable) {
-                let qualified = format!("{scope}.{head}");
                 if let Symbol::Type(TypeTarget::Local(receiver)) = self.classify(
                     self.by_qual
-                        .get(qualified.as_str())
+                        .get(super::qualified(&mut lookup_key, scope, head))
                         .into_iter()
                         .flatten()
                         .copied()
@@ -1598,7 +1605,7 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             }
             let local = self
                 .by_qual
-                .get(qualified.as_str())
+                .get(super::qualified(&mut lookup_key, scope, &name))
                 .into_iter()
                 .flatten()
                 .copied()

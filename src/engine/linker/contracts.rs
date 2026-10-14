@@ -357,8 +357,8 @@ impl<'a> Contracts<'a> {
     fn local(&self, owner: &Node, name: &str, at: SourcePosition) -> Option<&'a Node> {
         let head = name.split('.').next()?;
         let mut scope = owner.qualname.as_str();
+        let mut lookup_key = String::with_capacity(128);
         loop {
-            let qualified = format!("{scope}.{name}");
             if let Some(nodes) = self.symbols.get(&(owner.path.as_str(), scope)) {
                 if nodes.iter().any(|node| {
                     node.details["rebindings"]
@@ -368,7 +368,10 @@ impl<'a> Contracts<'a> {
                     return None;
                 }
             }
-            if let Some(nodes) = self.symbols.get(&(owner.path.as_str(), qualified.as_str())) {
+            if let Some(nodes) = self.symbols.get(&(
+                owner.path.as_str(),
+                super::qualified(&mut lookup_key, scope, name),
+            )) {
                 let mut visible = nodes.iter().copied().filter(|node| {
                     node.language == owner.language
                         && (owner.language != "python"
@@ -405,12 +408,12 @@ impl<'a> Contracts<'a> {
     fn builtin_unshadowed(&self, owner: &Node, name: &str) -> bool {
         let head = name.split('.').next().unwrap_or(name);
         let mut scope = owner.qualname.as_str();
+        let mut lookup_key = String::with_capacity(128);
         loop {
-            let qualified = format!("{scope}.{head}");
-            if self
-                .symbols
-                .contains_key(&(owner.path.as_str(), qualified.as_str()))
-            {
+            if self.symbols.contains_key(&(
+                owner.path.as_str(),
+                super::qualified(&mut lookup_key, scope, head),
+            )) {
                 return false;
             }
             if self

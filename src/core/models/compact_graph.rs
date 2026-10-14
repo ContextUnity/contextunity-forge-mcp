@@ -1,5 +1,6 @@
 use super::{Coverage as PublicCoverage, Edge as PublicEdge, Graph as PublicGraph};
 use serde::{Serialize, Serializer};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 
 #[derive(Debug, Clone)]
@@ -139,7 +140,7 @@ pub(crate) struct Coverage {
     pub line: usize,
     pub expression: String,
     pub status: CompactTag,
-    pub evidence: String,
+    pub evidence: Cow<'static, str>,
 }
 
 impl From<Coverage> for PublicCoverage {
@@ -149,7 +150,7 @@ impl From<Coverage> for PublicCoverage {
             line: coverage.line,
             expression: coverage.expression,
             status: coverage.status.into_string(),
-            evidence: coverage.evidence,
+            evidence: coverage.evidence.into_owned(),
         }
     }
 }

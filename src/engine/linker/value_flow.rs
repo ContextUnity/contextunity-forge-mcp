@@ -205,18 +205,58 @@ struct Binding<'a> {
     immutable_initializer: bool,
 }
 
+enum BindingList<'a> {
+    One(Binding<'a>),
+    Many(Vec<Binding<'a>>),
+}
+
+impl<'a> BindingList<'a> {
+    fn push(&mut self, binding: Binding<'a>) {
+        match self {
+            Self::Many(bindings) => bindings.push(binding),
+            Self::One(_) => {
+                let Self::One(first) = std::mem::replace(self, Self::Many(Vec::new())) else {
+                    unreachable!("single binding was replaced");
+                };
+                *self = Self::Many(vec![first, binding]);
+            }
+        }
+    }
+}
+
+impl<'a> std::ops::Deref for BindingList<'a> {
+    type Target = [Binding<'a>];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::One(binding) => std::slice::from_ref(binding),
+            Self::Many(bindings) => bindings,
+        }
+    }
+}
+
+impl std::ops::DerefMut for BindingList<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::One(binding) => std::slice::from_mut(binding),
+            Self::Many(bindings) => bindings,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
-struct BindingEvent<'a> {
-    name: &'a str,
+struct BindingEvent<'facts, 'arena> {
+    // Decoded fallback values are temporary; names stay in the original facts arena.
+    name: &'arena str,
     position: SourcePosition,
-    value: &'a ValueExpr,
+    value: &'facts ValueExpr,
     conditional: bool,
     immutable_initializer: bool,
 }
 
 struct Scope<'a> {
     parents: Vec<&'a str>,
-    bindings: HashMap<String, Vec<Binding<'a>>>,
+    bindings: HashMap<&'a str, BindingList<'a>>,
     declared_at: SourcePosition,
     invalid: bool,
     module: bool,
@@ -369,14 +409,14 @@ fn initialize_scope<'a>(
             for name in names.iter().filter_map(serde_json::Value::as_str) {
                 if name.len() <= limits.name_bytes {
                     bindings.insert(
-                        name.to_owned(),
-                        vec![Binding {
+                        name,
+                        BindingList::One(Binding {
                             position: node_position(node),
                             target: TypeTarget::Unknown,
                             valid_until: None,
                             restores_previous: false,
                             immutable_initializer: false,
-                        }],
+                        }),
                     );
                 }
             }
@@ -396,14 +436,14 @@ fn initialize_scope<'a>(
                     })
             };
             bindings.insert(
-                name.clone(),
-                vec![Binding {
+                name.as_str(),
+                BindingList::One(Binding {
                     position,
                     target,
                     valid_until: None,
                     restores_previous: false,
                     immutable_initializer: false,
-                }],
+                }),
             );
         }
     }
@@ -642,11 +682,20 @@ impl<'a> ValueFlowIndex<'a> {
         }
         for owner in &owners {
             let facts = &raw[owner.id.as_str()];
+            let typed = resolver.value_flow(owner);
             let mut bindings: Vec<_> = facts
                 .bindings
                 .iter()
-                .map(|binding| BindingEvent {
-                    name: &binding.name,
+                .enumerate()
+                .map(|(event_index, binding)| BindingEvent {
+                    name: typed.map_or_else(
+                        || {
+                            owner.details["value_flow"]["bindings"][event_index]["name"]
+                                .as_str()
+                                .expect("decoded binding name remains in arena")
+                        },
+                        |facts| facts.bindings[event_index].name.as_str(),
+                    ),
                     position: binding.position,
                     value: &binding.value,
                     conditional: binding.conditional,
@@ -655,13 +704,26 @@ impl<'a> ValueFlowIndex<'a> {
                         .binary_search(&binding.position)
                         .is_ok(),
                 })
-                .chain(facts.branch_joins.iter().map(|join| BindingEvent {
-                    name: &join.name,
-                    position: join.position,
-                    value: &join.value,
-                    conditional: join.conditional,
-                    immutable_initializer: false,
-                }))
+                .chain(
+                    facts
+                        .branch_joins
+                        .iter()
+                        .enumerate()
+                        .map(|(event_index, join)| BindingEvent {
+                            name: typed.map_or_else(
+                                || {
+                                    owner.details["value_flow"]["branch_joins"][event_index]["name"]
+                                        .as_str()
+                                        .expect("decoded branch-join name remains in arena")
+                                },
+                                |facts| facts.branch_joins[event_index].name.as_str(),
+                            ),
+                            position: join.position,
+                            value: &join.value,
+                            conditional: join.conditional,
+                            immutable_initializer: false,
+                        }),
+                )
                 .collect();
             bindings.sort_by_key(|binding| binding.position);
             let mut events = Vec::with_capacity(bindings.len());
@@ -735,15 +797,7 @@ impl<'a> ValueFlowIndex<'a> {
                         }
                     }
                 }
-                let writes = index
-                    .scopes
-                    .get_mut(owner.id.as_str())
-                    .expect("scope indexed")
-                    .bindings
-                    .entry(binding.name.to_owned())
-                    .or_default();
-                events.push((binding, writes.len()));
-                writes.push(Binding {
+                let write = Binding {
                     position: binding.position,
                     target,
                     valid_until: match binding.value {
@@ -754,7 +808,27 @@ impl<'a> ValueFlowIndex<'a> {
                     restores_previous: owner.language != "python"
                         && matches!(binding.value, ValueExpr::Scoped { .. }),
                     immutable_initializer: binding.immutable_initializer,
-                });
+                };
+                use hashbrown::hash_map::Entry;
+                let event_index = match index
+                    .scopes
+                    .get_mut(owner.id.as_str())
+                    .expect("scope indexed")
+                    .bindings
+                    .entry(binding.name)
+                {
+                    Entry::Vacant(entry) => {
+                        entry.insert(BindingList::One(write));
+                        0
+                    }
+                    Entry::Occupied(mut entry) => {
+                        let writes = entry.get_mut();
+                        let event_index = writes.len();
+                        writes.push(write);
+                        event_index
+                    }
+                };
+                events.push((binding, event_index));
             }
             ordered.insert(owner.id.as_str(), events);
         }

@@ -2,45 +2,46 @@
 id: m-indexer-allocation-delta-and-dispatch-precision
 title: Zero-allocation linker hot paths, bounded delta frontier, and explicit unwrap/polymorphic resolution
 doc_type: contract
-status: planned
+status: active
 repository: forge-mcp
 project: forge-mcp
 depends_on:
-  - m-bounded-semantic-resolution-and-language-boundaries
+- m-bounded-semantic-resolution-and-language-boundaries
 owners:
-  - src/core/models/compact_graph.rs
-  - src/core/semantic.rs
-  - src/core/schema.rs
-  - src/engine/linker.rs
-  - src/engine/linker/indexing.rs
-  - src/engine/linker/resolution.rs
-  - src/engine/linker/semantic_context.rs
-  - src/engine/linker/value_flow.rs
-  - src/engine/linker/contracts.rs
-  - src/engine/languages/rust.rs
-  - src/engine/languages/rust/linker.rs
-  - src/engine/languages/rust/value_flow.rs
-  - src/engine/languages/typescript/value_flow.rs
-  - src/db/delta.rs
-  - src/db/ingest.rs
-  - src/db/writer.rs
-  - docs/architecture/indexing.md
-  - docs/architecture/performance.md
-  - docs/reference/languages.md
-  - tests/linker/
-  - tests/incremental/
-  - tests/languages/
-  - tests/receivers/
-  - tests/query_context/
+- src/core/models/compact_graph.rs
+- src/core/semantic.rs
+- src/core/schema.rs
+- src/engine/linker.rs
+- src/engine/linker/indexing.rs
+- src/engine/linker/resolution.rs
+- src/engine/linker/semantic_context.rs
+- src/engine/linker/value_flow.rs
+- src/engine/linker/contracts.rs
+- src/engine/languages/rust.rs
+- src/engine/languages/rust/linker.rs
+- src/engine/languages/rust/value_flow.rs
+- src/engine/languages/typescript/value_flow.rs
+- src/db/delta.rs
+- src/db/ingest.rs
+- src/db/writer.rs
+- docs/architecture/indexing.md
+- docs/architecture/performance.md
+- docs/reference/languages.md
+- tests/linker/
+- tests/incremental/
+- tests/languages/
+- tests/receivers/
+- tests/query_context/
 invariants:
-  - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
-  - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
-  - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
-  - 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage.'
-  - 'INV-UNCERTAINTY: Candidate evidence (possible_calls, confidence=possible) never becomes an exact calls edge on concrete trait implementors or certifies removal safety; overflow beyond K=8 widens to Unknown/Incomplete while retaining analysis_gaps.'
-  - 'INV-ZERO-ALLOC-LOOKUP: Qualified symbol lookups across resolution, semantic_context, contracts, and delta reuse scratch String buffers or prefix strips instead of per-iteration format! heap allocations, with zero new Cargo dependencies.'
-  - 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
+- 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+- 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+- 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+- 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage.'
+- 'INV-UNCERTAINTY: Candidate evidence (possible_calls, confidence=possible) never becomes an exact calls edge on concrete trait implementors or certifies removal safety; overflow beyond K=8 widens to Unknown/Incomplete while retaining analysis_gaps.'
+- 'INV-ZERO-ALLOC-LOOKUP: Qualified symbol lookups across resolution, semantic_context, contracts, and delta reuse scratch String buffers or prefix strips instead of per-iteration format! heap allocations, with zero new Cargo dependencies.'
+- 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
 related_plans: []
+started_at: 2026-10-14T17:05:07+00:00
 ---
 
 # Zero-allocation linker hot paths, bounded delta frontier, and explicit unwrap/polymorphic resolution
@@ -79,37 +80,92 @@ Following direct code and test-suite verification of commit `3bb9cdbcf7ae4fcbd7c
 
 ```yaml
 task_ref: zero-alloc-linker-and-value-flow-buffers
-target: "Eliminate per-file and per-lookup String/Vec heap allocations across resolution.rs, semantic_context.rs, value_flow.rs, contracts.rs, delta.rs, and compact_graph.rs without adding external dependencies"
+target: Eliminate per-file and per-lookup String/Vec heap allocations across resolution.rs, semantic_context.rs, value_flow.rs, contracts.rs, delta.rs, and compact_graph.rs without adding external dependencies
 proof_policy: seam-test-first
 contract_revision: 1
 scope:
-  - src/core/models/compact_graph.rs
-  - src/engine/linker.rs
-  - src/engine/linker/indexing.rs
-  - src/engine/linker/resolution.rs
-  - src/engine/linker/semantic_context.rs
-  - src/engine/linker/value_flow.rs
-  - src/engine/linker/contracts.rs
-  - src/db/delta.rs
-  - docs/architecture/performance.md
-  - tests/linker/optimizations.rs
+- src/core/models/compact_graph.rs
+- src/engine/linker.rs
+- src/engine/linker/indexing.rs
+- src/engine/linker/resolution.rs
+- src/engine/linker/semantic_context.rs
+- src/engine/linker/value_flow.rs
+- src/engine/linker/contracts.rs
+- src/db/delta.rs
+- docs/architecture/performance.md
+- tests/linker/optimizations.rs
 depends_on: []
 invariants:
-  - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
-  - 'INV-ZERO-ALLOC-LOOKUP: Qualified symbol lookups across resolution, semantic_context, contracts, and delta reuse scratch String buffers or prefix strips instead of per-iteration format! heap allocations, with zero new Cargo dependencies.'
-  - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
-  - 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
-status: planned
+- 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+- 'INV-ZERO-ALLOC-LOOKUP: Qualified symbol lookups across resolution, semantic_context, contracts, and delta reuse scratch String buffers or prefix strips instead of per-iteration format! heap allocations, with zero new Cargo dependencies.'
+- 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+- 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
+status: completed
 subtasks:
-  - subtask_ref: borrowed-alias-maps-in-resolution
-    title: "Convert aliases, external_aliases, and type_only_aliases in src/engine/linker/resolution.rs (lines 274-276) from owned String keys to borrowed &'a str slices and replace format! at line 2110 with qualified(&mut lookup_key, ...)"
-    status: pending
-  - subtask_ref: scratch-qualified-lookup-buffers
-    title: "Replace format!(\"{scope}.{name}\") heap allocations in semantic_context.rs (lines 311, 840, 1382, 1492, 1584), contracts.rs (lines 361, 409), and delta.rs (lines 199-204, 243-248) with scratch buffers and prefix checks"
-    status: pending
-  - subtask_ref: inline-binding-list-and-cow-coverage-evidence
-    title: "Use borrowed &'a str keys and inline BindingList<'a> (One | Many) in value_flow::Scope::bindings (lines 217-223) and Cow<'static, str> for static evidence in compact_graph::Coverage (line 142)"
-    status: pending
+- subtask_ref: borrowed-alias-maps-in-resolution
+  title: Convert aliases, external_aliases, and type_only_aliases in src/engine/linker/resolution.rs (lines 274-276) from owned String keys to borrowed &'a str slices and replace format! at line 2110 with qualified(&mut lookup_key, ...)
+  status: completed
+  evidence: 'Borrowed alias names and owner scopes replace per-import String clones; external provenance payload remains owned. Synthetic file_module fallback scopes retain borrowed local storage with inferred key lifetime. Imported implementation member lookup uses qualified scratch. Focused `cargo test --test linker linker_borrows_arena_keys_and_reuses_qualified_lookup_storage -- --nocapture`: exit 0, 1 passed / 0 failed / 97 filtered. Full `cargo test --test linker`: exit 0, 98 passed / 0 failed. Strict Clippy exit 0.'
+- subtask_ref: scratch-qualified-lookup-buffers
+  title: Replace format!("{scope}.{name}") heap allocations in semantic_context.rs (lines 311, 840, 1382, 1492, 1584), contracts.rs (lines 361, 409), and delta.rs (lines 199-204, 243-248) with scratch buffers and prefix checks
+  status: completed
+  evidence: Lexical and member lookup sites in semantic_context and contracts reuse 128-byte String scratch through super::qualified; resolution imported and class-field lookups reuse the file scratch. Delta top-level checks use exact prefix/dot strips. Focused seam exit 0, 1 passed / 0 failed; full linker target exit 0, 98 passed / 0 failed; `cargo clippy --all-targets --all-features -- -D warnings` exit 0.
+- subtask_ref: inline-binding-list-and-cow-coverage-evidence
+  title: Use borrowed &'a str keys and inline BindingList<'a> (One | Many) in value_flow::Scope::bindings (lines 217-223) and Cow<'static, str> for static evidence in compact_graph::Coverage (line 142)
+  status: completed
+  evidence: Scope keys borrow typed facts or original node JSON; One stores a single Binding inline and Many promotion retains order and mutation indexing. Compact evidence is Cow<static,str>, diagnostic literals borrow, public conversion uses into_owned. Mechanical Cow consumers in framework_relations, dictionary, ingest, and writer fixture are converted. Focused seam exit 0, 1 passed / 0 failed, including parameter shadow evidence and single/multiple receiver write cases; full linker target exit 0, 98 passed / 0 failed; strict Clippy exit 0.
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-14T17:46:36.913022270+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test linker linker_borrows_arena_keys_and_reuses_qualified_lookup_storage -- --nocapture
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+      log: 'Final focused seam: exit 0; 1 passed, 0 failed, 97 filtered. Full affected-target gate: cargo test --test linker; exit 0; 98 passed, 0 failed, 0 filtered; finished in 2.81s. Rust gate: cargo clippy --all-targets --all-features -- -D warnings; exit 0; no diagnostics; finished in 18.23s; contributes no tests. Standalone rustfmt --edition 2021 over changed Rust source/fixture files and git diff --check exit 0. All three subtasks are completed with evidence. No Cargo dependencies added. No benchmarks run, so whole-repository latency/peak-allocation invariant is not measured here. Implementation preserves synthetic missing-owner file_module fallback with inferred borrowed scope-key lifetime; actual owner scopes and alias names borrow Facts. Accepted contract red runtime seam evidence is blackboard 141 (1 failed/97 filtered, exit 101). The first build compile attempt found two Cow consumers and the first Clippy found the fixture/type alias/extra borrow; all were repaired within Forge-approved scope expansions before the final green commands.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Candidate ce9e7727898c5e11c1d6fec0a08baa07c93b2c08 vs baseline cac453e3b62cccb5796a290a9a9ad2bd92563518 has exactly14 files in admitted scope, including approved Cow consumer extensions. All candidate-scoped files match current worktree (scoped git diff empty). Each implementation change serves borrowed maps, qualified buffers, BindingList or Cow acceptance; indexing.rs is unchanged but included by scoped snapshot. Only other worktree difference is previously known Forge milestone-start status/started_at/YAML frontmatter normalization. No dependency/config/credential/neighbor changes.
+        claims:
+          applicable: true
+          evidence: 'All five concrete acceptance items verified in actual candidate diff/source: borrowed alias/external/type-only names and owner scopes preserve missing-owner file_module fallback; imported implementation/class-field candidates use qualified scratch; semantic lexical/import/member and contract lookup sites reuse128-byte buffers; delta prefix+dot strips equal previous exact qualification checks. BindingList One->Many preserves order, slice mutation and replay event indices; fallback names borrow original successfully decoded JSON, typed names borrow FlowState. Compact Coverage Cow borrows static diagnostics; public into_owned and dictionary/ingest as_ref preserve text and persistence keys. Core leaf imports unchanged. Named seam exercises actual AST+linker; original intended red alias1/param1/scope4 budgets; submitted final focused1/0, complete linker98/0, strict all-targets/all-features Clippy exit0. Docs truthfully limit allocation measurements. Whole-repository cold11.5s/delta50ms/peak heap invariant remains unmeasured pending authorized benchmark verification, explicitly not certified by this review; limitation recorded in blackboard142.'
+        concurrency:
+          applicable: true
+          evidence: Maps/scratch remain local to existing per-file parallel resolution closure or resolver invocation; Facts/typed arenas remain immutable, lifetime-checked borrows. Inline history promotion retains ordered writes and unchanged epoch/replay logic. No shared mutable cache, locks, transactions, revision fencing or publication path change. Test allocator delegates System with const thread-local counter and RAII reset; private one-thread Rayon pool excludes other test threads. Submitted full linker98/0.
+        project_isolation:
+          applicable: true
+          evidence: Borrowing preserves string key content and all existing path/workspace filters. Delta exact prefix-dot-name strips preserve prior comparison including empty/Unicode components. Cow adapters preserve per-owner dictionary and persistence namespaces. No repository-root/path admission, task identifiers, linked-workspace profiles, filesystem, symlink or traversal handling changes.
+        administration:
+          applicable: false
+          evidence: No migration/schema/profile pin/lifecycle/credentials/privileged delivery change. Extensions admitted by Forge current scope. Current HEAD equals accepted baseline cac453e3b62cccb5796a290a9a9ad2bd92563518; candidate scoped tree unchanged. Hooks, landed SHA and durable receipt remain governed by unchanged deliver gate; delivery not performed by this review.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage.'
+    - 'INV-UNCERTAINTY: Candidate evidence (possible_calls, confidence=possible) never becomes an exact calls edge on concrete trait implementors or certifies removal safety; overflow beyond K=8 widens to Unknown/Incomplete while retaining analysis_gaps.'
+    - 'INV-ZERO-ALLOC-LOOKUP: Qualified symbol lookups across resolution, semantic_context, contracts, and delta reuse scratch String buffers or prefix strips instead of per-iteration format! heap allocations, with zero new Cargo dependencies.'
+    - 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+    - 'INV-ZERO-ALLOC-LOOKUP: Qualified symbol lookups across resolution, semantic_context, contracts, and delta reuse scratch String buffers or prefix strips instead of per-iteration format! heap allocations, with zero new Cargo dependencies.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: not_applicable
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

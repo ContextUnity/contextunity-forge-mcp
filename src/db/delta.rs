@@ -197,11 +197,19 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                     .map(|(_, r)| module_name(r))
                     .or_else(|| local_path.strip_prefix("src/").map(module_name));
                 let is_top = qual == name
-                    || qual == format!("{mod_name}.{name}")
-                    || qual == format!("{local_module}.{name}")
-                    || src_module
-                        .as_ref()
-                        .is_some_and(|m| qual == format!("{m}.{name}"));
+                    || qual
+                        .strip_prefix(mod_name.as_str())
+                        .and_then(|s| s.strip_prefix('.'))
+                        == Some(name.as_str())
+                    || qual
+                        .strip_prefix(local_module.as_str())
+                        .and_then(|s| s.strip_prefix('.'))
+                        == Some(name.as_str())
+                    || src_module.as_ref().is_some_and(|m| {
+                        qual.strip_prefix(m.as_str())
+                            .and_then(|s| s.strip_prefix('.'))
+                            == Some(name.as_str())
+                    });
                 if is_top {
                     names.insert(name);
                 }
@@ -241,11 +249,20 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                 names.insert(n.qualname.clone());
                 if !matches!(n.kind.as_str(), "field" | "method" | "route" | "document") {
                     let is_top = n.qualname == n.name
-                        || n.qualname == format!("{mod_name}.{}", n.name)
-                        || n.qualname == format!("{local_module}.{}", n.name)
-                        || src_module
-                            .as_ref()
-                            .is_some_and(|m| n.qualname == format!("{m}.{}", n.name));
+                        || n.qualname
+                            .strip_prefix(mod_name.as_str())
+                            .and_then(|s| s.strip_prefix('.'))
+                            == Some(n.name.as_str())
+                        || n.qualname
+                            .strip_prefix(local_module.as_str())
+                            .and_then(|s| s.strip_prefix('.'))
+                            == Some(n.name.as_str())
+                        || src_module.as_ref().is_some_and(|m| {
+                            n.qualname
+                                .strip_prefix(m.as_str())
+                                .and_then(|s| s.strip_prefix('.'))
+                                == Some(n.name.as_str())
+                        });
                     if is_top {
                         names.insert(n.name.clone());
                     }

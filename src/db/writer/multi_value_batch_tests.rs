@@ -311,7 +311,7 @@ fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
                 line: 3,
                 expression: format!("call_{status}_λ'\0"),
                 status: status.into(),
-                evidence: format!("evidence {status}"),
+                evidence: format!("evidence {status}").into(),
             });
         }
     }

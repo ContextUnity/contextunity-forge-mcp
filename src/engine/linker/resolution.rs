@@ -5,6 +5,8 @@ use crate::engine::languages::{
 };
 use crate::engine::linker::traits::{ModulesByNamespace, PackageExports};
 
+type ExternalAliases<'a> = HashMap<&'a str, Option<(String, usize)>>;
+
 pub(super) struct ResolutionInput<'a, F> {
     pub(super) all: &'a BTreeMap<String, F>,
     pub(super) public_all: Option<&'a BTreeMap<String, Facts>>,
@@ -271,9 +273,9 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 .find(|n| n.kind == "module")
                 .map(|n| n.qualname.clone())
                 .unwrap_or_else(|| profile.map_or_else(|| module_name(path), |p| p.module_name(path)));
-            let mut aliases: HashMap<String, HashMap<String, Vec<&Node>>> = HashMap::new();
-            let mut external_aliases: HashMap<String, HashMap<String, Option<(String, usize)>>> = HashMap::new();
-            let mut type_only_aliases: HashMap<String, HashSet<String>> = HashMap::new();
+            let mut aliases: HashMap<&str, HashMap<&'a str, Vec<&'a Node>>> = HashMap::new();
+            let mut external_aliases: HashMap<&str, ExternalAliases<'a>> = HashMap::new();
+            let mut type_only_aliases: HashMap<&str, HashSet<&'a str>> = HashMap::new();
             let mut lookup_key = String::new();
             for r in facts.references.iter().filter(|r| r.kind == "imports") {
                 let normalized = normalized_imports.get(&(path.as_str(), r.module.as_deref().unwrap_or(&r.expression))).expect("imports are normalized before parallel resolution");
@@ -328,7 +330,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 } else {
                     None
                 };
-                let scope = by_id.get(r.source.as_str()).map(|n| n.qualname.clone()).unwrap_or_else(|| file_module.clone());
+                let scope = by_id.get(r.source.as_str()).map_or(file_module.as_str(), |n| n.qualname.as_str());
                 let mut imported_targets = Vec::new();
                 let is_wildcard = r.alias.as_deref() == Some("*")
                     || (r.expression == "*" && r.alias.is_none());
@@ -337,7 +339,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         if let Some(module_nodes) = by_module.get(target_module.path.as_str()) {
                             for n in module_nodes {
                                 if n.kind != "module" && !n.name.is_empty() {
-                                    aliases.entry(scope.clone()).or_default().entry(n.name.clone()).or_default().push(n);
+                                    aliases.entry(scope).or_default().entry(n.name.as_str()).or_default().push(n);
                                 }
                             }
                         }
@@ -381,20 +383,20 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                         })
                                         .collect();
                                     if !local_providers.is_empty() {
-                                        aliases.entry(scope.clone()).or_default().entry(alias.to_owned()).or_default().extend(local_providers);
+                                        aliases.entry(scope).or_default().entry(alias).or_default().extend(local_providers);
                                     } else if !provider.relative
-                                        && !aliases.get(&scope).is_some_and(|entries| entries.contains_key(alias))
+                                        && !aliases.get(scope).is_some_and(|entries| entries.contains_key(alias))
                                         && profile.and_then(|profile| dependency_registry.classification_for_path(profile, module, &target_module.path)).is_some()
                                     {
-                                        aliases.entry(scope.clone()).or_default().entry(alias.to_owned()).or_default();
-                                        external_aliases.entry(scope.clone()).or_default().insert(alias.to_owned(), Some((provider.namespace.clone(), r.line)));
+                                        aliases.entry(scope).or_default().entry(alias).or_default();
+                                        external_aliases.entry(scope).or_default().insert(alias, Some((provider.namespace.clone(), r.line)));
                                     }
                                 }
                             }
                         }
                     }
-                } else if let Some(alias) = &r.alias {
-                    let local_declaration = by_qual.get(qualified(&mut lookup_key, &scope, alias)).is_some_and(|nodes| nodes.iter().any(|n| n.path == *path));
+                } else if let Some(alias) = r.alias.as_deref() {
+                    let local_declaration = by_qual.get(qualified(&mut lookup_key, scope, alias)).is_some_and(|nodes| nodes.iter().any(|n| n.path == *path));
                     let mut targets = if local_declaration { Vec::new() } else { candidates.clone() };
                     let symbol_name = symbol.rsplit('.').next().unwrap_or(&symbol);
                     if targets.is_empty() && !local_declaration {
@@ -409,16 +411,16 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                             }
                         }
                         if let Some(target_ext) = inherited_ext {
-                            external_aliases.entry(scope.clone()).or_default().insert(alias.clone(), Some(target_ext));
+                            external_aliases.entry(scope).or_default().insert(alias, Some(target_ext));
                         }
                     }
-                    let alias_taken = aliases.get(&scope).is_some_and(|entries| entries.contains_key(alias));
+                    let alias_taken = aliases.get(scope).is_some_and(|entries| entries.contains_key(alias));
                     if alias_taken {
-                        if let Some(provenance) = external_aliases.get_mut(&scope).and_then(|entries| entries.get_mut(alias)) {
+                        if let Some(provenance) = external_aliases.get_mut(scope).and_then(|entries| entries.get_mut(alias)) {
                             *provenance = None;
                         }
                     } else if external.is_some() && !local_declaration {
-                        external_aliases.entry(scope.clone()).or_default().insert(alias.clone(), Some((symbol.clone(), r.line)));
+                        external_aliases.entry(scope).or_default().insert(alias, Some((symbol.clone(), r.line)));
                     }
                     let export_type_only = modules.first().is_some_and(|m| {
                         m.details["exports"].as_array().is_some_and(|bindings| {
@@ -429,10 +431,10 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     let unproven_guard = is_type_only && profile.is_some_and(|p| p.id() == "python")
                 && !python_has_proven_type_checking(path, facts, modules_by_namespace, dependency_registry, profile.unwrap().family());
                     if is_type_only && !unproven_guard {
-                        type_only_aliases.entry(scope.clone()).or_default().insert(alias.clone());
+                        type_only_aliases.entry(scope).or_default().insert(alias);
                     }
                     if !unproven_guard {
-                        aliases.entry(scope.clone()).or_default().entry(alias.clone()).or_default().extend(targets.clone());
+                        aliases.entry(scope).or_default().entry(alias).or_default().extend(targets.clone());
                         imported_targets = targets;
                     }
                 }
@@ -445,22 +447,22 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 let unproven_guard = is_type_only && profile.is_some_and(|p| p.id() == "python")
                 && !python_has_proven_type_checking(path, facts, modules_by_namespace, dependency_registry, profile.unwrap().family());
                 let resolved = !unproven_guard && modules.len() == 1 && (r.alias.is_none() || is_wildcard || candidates.len() == 1 || imported_targets.len() == 1);
-                let is_external_alias = r.alias.as_ref().is_some_and(|a| external_aliases.get(&scope).and_then(|e| e.get(a)).is_some_and(Option::is_some));
+                let is_external_alias = r.alias.as_deref().is_some_and(|a| external_aliases.get(scope).and_then(|e| e.get(a)).is_some_and(Option::is_some));
                 let status = if unproven_guard { "unresolved" } else if resolved { "resolved" } else if modules.len() > 1 || candidates.len() > 1 || imported_targets.len() > 1 { "ambiguous" } else if external.is_some() || is_external_alias { "external" } else { "unresolved" };
-                let evidence = if unproven_guard {
+                let evidence: Cow<'static, str> = if unproven_guard {
                     "type guard condition is unproven or shadowed".into()
                 } else if is_wildcard && resolved {
-                    format!("wildcard import from {symbol}: imported from {}", modules[0].path)
+                    format!("wildcard import from {symbol}: imported from {}", modules[0].path).into()
                 } else if reexport_symbol {
-                    format!("import {symbol}: explicit local package re-export")
+                    format!("import {symbol}: explicit local package re-export").into()
                 } else if stub_symbol {
-                    format!("import {symbol}: declaration from paired type stub; runtime declaration not indexed")
+                    format!("import {symbol}: declaration from paired type stub; runtime declaration not indexed").into()
                 } else if let Some(kind)=external {
-                    format!("{kind}; no indexed provider for {symbol}")
+                    format!("{kind}; no indexed provider for {symbol}").into()
                 } else if modules.is_empty() && normalized.as_ref().is_some_and(|n| !n.relative) {
-                    format!("no indexed provider for absolute import {symbol}; external dependency or missing source remains unverified")
+                    format!("no indexed provider for absolute import {symbol}; external dependency or missing source remains unverified").into()
                 } else {
-                    format!("import {symbol}: {} modules, {} alias targets",modules.len(),candidates.len())
+                    format!("import {symbol}: {} modules, {} alias targets",modules.len(),candidates.len()).into()
                 };
                 graph.coverage.push(Coverage {
                     path: path.clone(),
@@ -640,7 +642,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         line: r.line,
                         expression: r.expression.clone(),
                         status: "resolved".into(),
-                        evidence: format!("template target: {}", target.path),
+                        evidence: format!("template target: {}", target.path).into(),
                     });
                 } else {
                     graph.coverage.push(Coverage {
@@ -648,7 +650,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         line: r.line,
                         expression: r.expression.clone(),
                         status: "unresolved".into(),
-                        evidence: format!("template '{}' not found", r.expression),
+                        evidence: format!("template '{}' not found", r.expression).into(),
                     });
                 }
             }
@@ -669,7 +671,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     graph.coverage.push(Coverage {
                         path: path.clone(), line: load.line, expression: load.expression.clone(),
                         status: "external".into(),
-                        evidence: format!("builtin:django_template_library {}", load.expression),
+                        evidence: format!("builtin:django_template_library {}", load.expression).into(),
                     });
                     continue;
                 }
@@ -683,13 +685,13 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         });
                         graph.coverage.push(Coverage {
                             path: path.clone(), line: load.line, expression: load.expression.clone(),
-                            status: "resolved".into(), evidence: format!("template library: {}", module.path),
+                            status: "resolved".into(), evidence: format!("template library: {}", module.path).into(),
                         });
                     }
                     outcome => graph.coverage.push(Coverage {
                         path: path.clone(), line: load.line, expression: load.expression.clone(),
                         status: if matches!(outcome, html_templates::Match::Ambiguous) { "ambiguous" } else { "unresolved" }.into(),
-                        evidence: format!("template library {} has no unique registered provider", load.expression),
+                        evidence: format!("template library {} has no unique registered provider", load.expression).into(),
                     }),
                 }
             }
@@ -875,7 +877,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         evidence: format!(
                             "analysis gap: Rust trait-object call through {} may dispatch to multiple implementations; concrete runtime target is unknown",
                             r.expression.split_once('.').map_or("an opaque receiver", |(receiver, _)| receiver)
-                        ),
+                        ).into(),
                     });
                 }
                 let builtin_origin = match active_profile.map(|profile| profile.id()) {
@@ -903,7 +905,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                 graph.coverage.push(Coverage {
                                     path: path.clone(), line: r.line, expression: r.expression.clone(),
                                     status: "resolved".into(),
-                                    evidence: format!("template {kind} registered in {}", symbol.path),
+                                    evidence: format!("template {kind} registered in {}", symbol.path).into(),
                                 });
                                 continue;
                             }
@@ -911,7 +913,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                 graph.coverage.push(Coverage {
                                     path: path.clone(), line: r.line, expression: r.expression.clone(),
                                     status: "ambiguous".into(),
-                                    evidence: format!("template {kind} {name} has multiple registered providers"),
+                                    evidence: format!("template {kind} {name} has multiple registered providers").into(),
                                 });
                                 continue;
                             }
@@ -980,7 +982,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                 graph.coverage.push(Coverage {
                                     path: path.clone(), line: r.line, expression: r.expression.clone(),
                                     status: "resolved".into(),
-                                    evidence: format!("Nuxt components directory: {}", component.path),
+                                    evidence: format!("Nuxt components directory: {}", component.path).into(),
                                 });
                                 continue;
                             }
@@ -1005,7 +1007,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                             graph.coverage.push(Coverage {
                                 path: path.clone(), line: r.line, expression: r.expression.clone(),
                                 status: "external".into(),
-                                evidence: format!("{origin} component registered for this project"),
+                                evidence: format!("{origin} component registered for this project").into(),
                             });
                             continue;
                         }
@@ -1029,7 +1031,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                             graph.coverage.push(Coverage {
                                 path: path.clone(), line: r.line, expression: r.expression.clone(),
                                 status: "resolved".into(),
-                                evidence: format!("Vue script setup typed defineProps field {}", field.qualname),
+                                evidence: format!("Vue script setup typed defineProps field {}", field.qualname).into(),
                             });
                             continue;
                         }
@@ -1150,14 +1152,14 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                             None => {}
                         }
                     }
-                    let (status, evidence) = match computed {
+                    let (status, evidence): (&str, Cow<'static, str>) = match computed {
                         receivers::Member::Local(method) if matches!(method.kind.as_str(), "method" | "function") => {
                             graph.edges.push(Edge { src: r.source.clone(), dst: method.id.clone(), kind: r.kind.as_str().into(), path: path.clone(), line: r.line, evidence: r.expression.clone(), confidence: "inferred".into() });
-                            ("resolved", format!("computed receiver has statically proven member {}", method.qualname))
+                            ("resolved", format!("computed receiver has statically proven member {}", method.qualname).into())
                         }
-                        receivers::Member::External(module, line, Some(provider)) => ("external", format!("finite Python framework member of {provider}: {} via external import {module} at line {line}", r.expression)),
-                        receivers::Member::External(module, _, None) => ("external", format!("call through external import {module}; callable target unverified")),
-                        _ if literal_builtin => ("resolved", format!("standard library or built-in callee: {}", r.expression)),
+                        receivers::Member::External(module, line, Some(provider)) => ("external", format!("finite Python framework member of {provider}: {} via external import {module} at line {line}", r.expression).into()),
+                        receivers::Member::External(module, _, None) => ("external", format!("call through external import {module}; callable target unverified").into()),
+                        _ if literal_builtin => ("resolved", format!("standard library or built-in callee: {}", r.expression).into()),
                         _ => ("unresolved", "computed receiver or dynamic callee; callable identity is unknown".into()),
                     };
                     graph.coverage.push(Coverage {
@@ -1247,7 +1249,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     graph.coverage.push(Coverage {
                                         path: path.clone(), line: r.line, expression: r.expression.clone(),
                                         status: "resolved".into(),
-                                        evidence: format!("same-file object member {}", member.qualname),
+                                        evidence: format!("same-file object member {}", member.qualname).into(),
                                     });
                                     continue;
                                 }
@@ -1317,8 +1319,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     [method] if prototype_visible_at(method, path, r.line, r.column) => Some(*method),
                                     _ => None,
                                 };
-                                let field_qualname = format!("{}.{}", class.qualname, tail);
-                                let mut fields = by_qual.get(field_qualname.as_str()).into_iter()
+                                let mut fields = by_qual.get(qualified(&mut lookup_key, &class.qualname, tail)).into_iter()
                                     .flatten().copied().filter(|field| {
                                         field.path == *path && field.kind == "field"
                                             && (field.details["is_static"] == true) == associated
@@ -1344,7 +1345,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     graph.coverage.push(Coverage {
                                         path: path.clone(), line: r.line, expression: r.expression.clone(),
                                         status: "resolved".into(),
-                                        evidence: format!("lexically captured this member {}", target.qualname),
+                                        evidence: format!("lexically captured this member {}", target.qualname).into(),
                                     });
                                     continue;
                                 }
@@ -1359,7 +1360,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     graph.coverage.push(Coverage {
                                         path: path.clone(), line: r.line, expression: r.expression.clone(),
                                         status: "resolved".into(),
-                                        evidence: format!("lexically captured this method {}", method.qualname),
+                                        evidence: format!("lexically captured this method {}", method.qualname).into(),
                                     });
                                     continue;
                                 }
@@ -1386,7 +1387,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         graph.coverage.push(Coverage {
                             path: path.clone(), line: r.line, expression: r.expression.clone(),
                             status: "external".into(),
-                            evidence: format!("{origin} callable from this file's Vue script setup binding"),
+                            evidence: format!("{origin} callable from this file's Vue script setup binding").into(),
                         });
                         continue;
                     }
@@ -1416,7 +1417,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         graph.coverage.push(Coverage {
                             path: path.clone(), line: r.line, expression: r.expression.clone(),
                             status: "resolved".into(),
-                            evidence: format!("Vue template lexical binding in {}", binding.qualname),
+                            evidence: format!("Vue template lexical binding in {}", binding.qualname).into(),
                         });
                         continue;
                     }
@@ -1457,7 +1458,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     evidence: format!(
                                         "Self::{member} resolves to constructor on {}",
                                         receiver.qualname
-                                    ),
+                                    ).into(),
                                 });
                                 continue;
                             } else if member == "new" || member == "default" {
@@ -1478,7 +1479,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     evidence: format!(
                                         "Self::{member} constructs receiver type {}",
                                         receiver.qualname
-                                    ),
+                                    ).into(),
                                 });
                                 continue;
                             }
@@ -1500,7 +1501,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                 evidence: format!(
                                     "Self refers to indexed receiver type {}",
                                     receiver.qualname
-                                ),
+                                ).into(),
                             });
                             continue;
                         }
@@ -1712,13 +1713,13 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                     .map(|target| target.qualname.as_str())
                                     .collect::<Vec<_>>()
                                     .join(", ");
-                                let (status, evidence) = if *exhausted {
+                                let (status, evidence): (&str, Cow<'static, str>) = if *exhausted {
                                     (
                                         "unresolved",
                                         format!(
                                             "candidate branch join overflow: more than {} distinct declarations; Unknown/Incomplete; no truncated target set emitted",
                                             value_flow::MAX_CANDIDATE_BRANCH_JOINS
-                                        ),
+                                        ).into(),
                                     )
                                 } else if member_complete && candidates.len() > 1 {
                                     (
@@ -1726,7 +1727,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                         format!(
                                             "complete local branch join (K={}) possible receiver types: {candidate_names}",
                                             value_flow::MAX_CANDIDATE_BRANCH_JOINS
-                                        ),
+                                        ).into(),
                                     )
                                 } else if member_complete {
                                     (
@@ -1734,7 +1735,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                         format!(
                                             "complete local branch join (K={}) has one possible call target: {candidate_names}",
                                             value_flow::MAX_CANDIDATE_BRANCH_JOINS
-                                        ),
+                                        ).into(),
                                     )
                                 } else {
                                     (
@@ -1742,7 +1743,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                         format!(
                                             "incomplete local branch join (K={}); unknown or unsupported alternatives retained; known receiver types: {candidate_names}",
                                             value_flow::MAX_CANDIDATE_BRANCH_JOINS
-                                        ),
+                                        ).into(),
                                     )
                                 };
                                 graph.coverage.push(Coverage {
@@ -2060,7 +2061,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         evidence: format!(
                             "analysis gap: Rust macro invocation {} is linked to its declaration, but its expansion is not analyzed",
                             r.expression
-                        ),
+                        ).into(),
                     });
                 }
                 if candidates.is_empty()
@@ -2107,7 +2108,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         let (head, rest) = clean.split_once('.').unwrap_or((&clean, ""));
                         let mut types: Vec<&Node> = if let Some(imported) = alias_for(head, owner, true) {
                             if rest.is_empty() { imported.clone() } else {
-                                imported.iter().flat_map(|n| lookup(&format!("{}.{}", n.qualname, rest)).iter().copied().filter(move |target|target.path==n.path)).collect()
+                                imported.iter().flat_map(|n| lookup(qualified(&mut lookup_key, &n.qualname, rest)).iter().copied().filter(move |target|target.path==n.path)).collect()
                             }
                         } else {
                             lookup(qualified(&mut lookup_key, &file_module, &clean)).to_vec()
@@ -2262,42 +2263,42 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     }
                     _ => None,
                 };
-                let evidence = if let Some(stub_path) = stub_target {
-                    format!("type-stub declaration at {stub_path}; runtime implementation not statically indexed")
+                let evidence: Cow<'static, str> = if let Some(stub_path) = stub_target {
+                    format!("type-stub declaration at {stub_path}; runtime implementation not statically indexed").into()
                 } else if rust_stdlib_builtin {
-                    format!("Rust standard library prelude: {expression}")
+                    format!("Rust standard library prelude: {expression}").into()
                 } else if python_stdlib_builtin {
-                    format!("Python standard library built-in: {expression}")
+                    format!("Python standard library built-in: {expression}").into()
                 } else if let Some(origin) = js_builtin_origin {
-                    format!("{origin} built-in: {expression}")
+                    format!("{origin} built-in: {expression}").into()
                 } else if html_template_builtin {
-                    format!("{html_builtin_origin} {expression}")
+                    format!("{html_builtin_origin} {expression}").into()
                 } else if let Some(origin) = vue_builtin_origin {
-                    format!("{origin} built-in: {expression}")
+                    format!("{origin} built-in: {expression}").into()
                 } else if let Some((module, import_line)) = external_origin {
                     if let Some(provider) = framework_provider {
-                        format!("finite Python framework member {provider}.{tail} via external import {module} at line {import_line}")
+                        format!("finite Python framework member {provider}.{tail} via external import {module} at line {import_line}").into()
                     } else if profile.is_some_and(|profile| {
                         matches!(profile.id(), "javascript" | "typescript")
                             && profile.is_stdlib(module)
                     }) {
-                        format!("builtin:node import {module}: {expression}")
+                        format!("builtin:node import {module}: {expression}").into()
                     } else {
                     match (r.kind == "calls", profile.is_some_and(|profile| profile.id() == "rust") && import_line > 0) {
-                        (true, true) => format!("call through external import {module} at line {import_line}; callable target unverified"),
-                        (true, false) => format!("call through external import {module}; callable target unverified"),
-                        (false, true) => format!("reference through external import {module} at line {import_line}; target unverified"),
-                        (false, false) => format!("reference through external import {module}; target unverified"),
+                        (true, true) => format!("call through external import {module} at line {import_line}; callable target unverified").into(),
+                        (true, false) => format!("call through external import {module}; callable target unverified").into(),
+                        (false, true) => format!("reference through external import {module} at line {import_line}; target unverified").into(),
+                        (false, false) => format!("reference through external import {module}; target unverified").into(),
                     }
                     }
                 } else if let Some(ReceiverType::Local(receiver)) = typed_receiver {
-                    format!("parameter receiver type {}; {} statically inferred candidates", receiver.qualname, candidates.len())
+                    format!("parameter receiver type {}; {} statically inferred candidates", receiver.qualname, candidates.len()).into()
                 } else if matches!(typed_receiver, Some(ReceiverType::Ambiguous)) {
                     "parameter receiver type has ambiguous declarations".into()
                 } else if is_builtin {
-                    format!("standard library or built-in callee: {expression}")
+                    format!("standard library or built-in callee: {expression}").into()
                 } else {
-                    format!("{} lexically justified candidates; implementor resolved={}, heuristic={source_heuristic}", candidates.len(), source.is_some())
+                    format!("{} lexically justified candidates; implementor resolved={}, heuristic={source_heuristic}", candidates.len(), source.is_some()).into()
                 };
                 graph.coverage.push(Coverage {
                     path: path.clone(),

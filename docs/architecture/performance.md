@@ -38,6 +38,14 @@ By default, Forge verifies workspace freshness before executing tool requests. F
 - **Target-Scoped Evaluation**: Checks unresolved calls and references only where the referenced expression matches the target or exists within modules directly depending on the target.
 - **Independent Safety Flag**: Returns `safe_to_remove: bool` from the selected nodes' incoming dependencies and target-scoped unresolved references and parse errors. It does not include unrelated workspace-wide diagnostics.
 
+### Linker lookup storage
+
+Per-file import maps borrow scope and alias names instead of cloning them for each import. Qualified symbol lookup reuses local scratch strings across lexical scope walks and imported member candidates; delta top-level checks compare a stripped module prefix without constructing a qualified name.
+
+Value-flow scopes borrow binding names from typed facts or the original node details when flows are decoded locally. A single write stays inline in `BindingList::One`; a second write promotes the history to `Many` while preserving source order and reaching-write behavior. Compact coverage borrows static diagnostic literals with `Cow<'static, str>`. Conversion to the public graph retains its owned evidence strings and serialization format.
+
+The linker regression seam counts successful allocations of selected name and scope sizes during linking in a private one-thread Rayon pool. Parsing, pool setup, warmup, serialization, and assertions are outside the measured operation. This verifies the specific lookup storage changes without setting a whole-linker allocation or latency budget.
+
 ### 4. Database Storage Compaction and Density Guidance
 Around 45 KiB per source file or 3 KiB per node are useful reference values when comparing candidates. These are not general acceptance gates; milestone 030 owns its storage gate.
 - **Zstandard Compression**: `local_facts` stores complete AST and analysis facts as buffered streaming level-1 Zstd frames. A ratio around 3.5:1 and compressed fact storage around 15 KiB per source file are recommended references. Navigation rows omit `value_flow`, `bindings`, `rebindings`, `param_types`, and empty optional fields; delta resolution contracts hydrate complete facts from `local_facts`.

@@ -495,13 +495,13 @@ fn emit_inferred(
     result: semantic_context::Member<'_>,
     builtin_origin: Option<&str>,
 ) {
-    let (status, evidence) = match &result {
-        semantic_context::Member::Local(node) => ("resolved", format!("statically inferred value receiver: {}", node.qualname)),
-        semantic_context::Member::External(module, line, Some(provider)) => ("external", format!("finite Python framework member from {provider} via external import {module} at line {line}; receiver origin statically inferred")),
-        semantic_context::Member::External(module, line, None) => ("external", format!("call through external import {module} at line {line}; receiver origin statically inferred")),
+    let (status, evidence): (&str, Cow<'static, str>) = match &result {
+        semantic_context::Member::Local(node) => ("resolved", format!("statically inferred value receiver: {}", node.qualname).into()),
+        semantic_context::Member::External(module, line, Some(provider)) => ("external", format!("finite Python framework member from {provider} via external import {module} at line {line}; receiver origin statically inferred").into()),
+        semantic_context::Member::External(module, line, None) => ("external", format!("call through external import {module} at line {line}; receiver origin statically inferred").into()),
         semantic_context::Member::Builtin => match builtin_origin {
-            Some(origin) => ("external", format!("{origin} built-in: {}", reference.expression)),
-            None => ("resolved", format!("standard library or built-in callee: {}", reference.expression)),
+            Some(origin) => ("external", format!("{origin} built-in: {}", reference.expression).into()),
+            None => ("resolved", format!("standard library or built-in callee: {}", reference.expression).into()),
         },
         semantic_context::Member::Ambiguous => ("ambiguous", "statically inferred receiver has multiple method candidates".into()),
         semantic_context::Member::Unknown => ("unresolved", "statically inferred receiver has no verified method candidate".into()),
