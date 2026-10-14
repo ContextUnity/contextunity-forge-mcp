@@ -113,6 +113,18 @@ pub enum SubtaskCommand {
 #[derive(Debug, Subcommand)]
 /// Enumerates the supported task command values.
 pub enum TaskCommand {
+    /// Atomically claim the highest-priority eligible task gate.
+    Next {
+        /// Worker receiving the selected claim.
+        #[arg(long)]
+        worker: String,
+        /// Requested worktree, overridden by retained parking affinity.
+        #[arg(long)]
+        worktree: String,
+        /// Optional configured task workspace.
+        #[arg(long)]
+        workspace: Option<String>,
+    },
     /// Manage iterative subtasks for a task.
     Subtask {
         #[command(subcommand)]
@@ -134,7 +146,7 @@ pub enum TaskCommand {
         /// Optional milestone value.
         milestone: Option<String>,
         #[arg(long, value_enum)]
-        /// Optional status value.
+        /// Task status: ready (default), in_progress, blocked, parked, completed, or all.
         status: Option<Status>,
         #[arg(long)]
         /// Filter by any gate identifier in the active workflow profile.
@@ -257,6 +269,16 @@ pub enum TaskCommand {
 pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
     let mut manage = Manage::default();
     match command {
+        TaskCommand::Next {
+            worker,
+            worktree,
+            workspace,
+        } => {
+            manage.action = ManageAction::Next;
+            manage.worker_id = Some(worker);
+            manage.worktree = Some(worktree);
+            manage.workspace = workspace;
+        }
         TaskCommand::Blackboard { command } => {
             return match command {
                 BlackboardCommand::Post {

@@ -305,42 +305,99 @@ receipt:
 
 ```yaml
 task_ref: top-down-wave-sync-and-priority-task-next
-target: "Auto-infer top-down task_dependencies and wave_index during task sync for overlapping scopes, add atomic task next dispatcher, and support worktree-preserving parking on extend_scope conflicts"
+target: Auto-infer top-down task_dependencies and wave_index during task sync for overlapping scopes, add atomic task next dispatcher, and support worktree-preserving parking on extend_scope conflicts
 proof_policy: seam-test-first
 contract_revision: 1
 scope:
-  - src/core/tasks/mod.rs
-  - src/db/tasks_store/mod.rs
-  - src/db/tasks_store/lifecycle.rs
-  - src/engine/tasks/mod.rs
-  - src/engine/tasks/lifecycle.rs
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - src/cli/task.rs
-  - src/cli/milestone.rs
-  - docs/reference/mcp-tools.md
-  - docs/reference/cli.md
-  - docs/reference/tasks.md
-  - tests/acdd/tasks.rs
-  - tests/acdd/milestones.rs
-  - tests/acdd/mcp.rs
+- src/core/tasks/mod.rs
+- src/db/tasks_store/mod.rs
+- src/db/tasks_store/lifecycle.rs
+- src/engine/tasks/mod.rs
+- src/engine/tasks/lifecycle.rs
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- src/cli/task.rs
+- src/cli/milestone.rs
+- docs/reference/mcp-tools.md
+- docs/reference/cli.md
+- docs/reference/tasks.md
+- tests/acdd/tasks.rs
+- tests/acdd/milestones.rs
+- tests/acdd/mcp.rs
 depends_on:
-  - tiered-profile-and-boundary-seam-gates
+- tiered-profile-and-boundary-seam-gates
 invariants:
-  - 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
-  - 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
-  - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
-status: planned
+- 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
+- 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
+- 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+status: completed
 subtasks:
-  - subtask_ref: auto-infer-topdown-scope-dependencies
-    title: "During TasksStore::sync in src/db/tasks_store/mod.rs, add top-down task_dependencies edges (i < j) whenever two tasks in the same milestone share overlapping scope paths and compute wave_index"
-    status: pending
-  - subtask_ref: atomic-task-next-dispatcher
-    title: "Implement ManageAction::Next (CLI task next and MCP task_manage action=next) selecting deliver -> review (builder != worker) -> unblocked parked task -> lowest wave_index ready task"
-    status: pending
-  - subtask_ref: worktree-preserving-extend-scope-parking
-    title: "When extend_scope hits a path locked by an in_progress sibling task, add the holder to task_dependencies, mark parked_worker_id/parked_worktree, post a blockers blackboard note, and release the active claim"
-    status: pending
+- subtask_ref: auto-infer-topdown-scope-dependencies
+  title: During TasksStore::sync in src/db/tasks_store/mod.rs, add top-down task_dependencies edges (i < j) whenever two tasks in the same milestone share overlapping scope paths and compute wave_index
+  status: completed
+  evidence: 'Production seam tests/acdd/mcp.rs::wave_sync_and_atomic_next_preserve_parked_worktrees: focused cargo test --test acdd wave_sync_and_atomic_next_preserve_parked_worktrees -- --nocapture exit 0, 1 passed/0 failed; complete cargo test --test acdd exit 0, 94 passed/0 failed; cargo clippy --all-targets --all-features -- -D warnings exit 0. Atomic SQLite, declaration-order waves, gate priority/independence, original worktree affinity/bytes, and canonical MCP error propagation verified.'
+- subtask_ref: atomic-task-next-dispatcher
+  title: Implement ManageAction::Next (CLI task next and MCP task_manage action=next) selecting deliver -> review (builder != worker) -> unblocked parked task -> lowest wave_index ready task
+  status: completed
+  evidence: 'Production seam tests/acdd/mcp.rs::wave_sync_and_atomic_next_preserve_parked_worktrees: focused cargo test --test acdd wave_sync_and_atomic_next_preserve_parked_worktrees -- --nocapture exit 0, 1 passed/0 failed; complete cargo test --test acdd exit 0, 94 passed/0 failed; cargo clippy --all-targets --all-features -- -D warnings exit 0. Atomic SQLite, declaration-order waves, gate priority/independence, original worktree affinity/bytes, and canonical MCP error propagation verified.'
+- subtask_ref: worktree-preserving-extend-scope-parking
+  title: When extend_scope hits a path locked by an in_progress sibling task, add the holder to task_dependencies, mark parked_worker_id/parked_worktree, post a blockers blackboard note, and release the active claim
+  status: completed
+  evidence: 'Production seam tests/acdd/mcp.rs::wave_sync_and_atomic_next_preserve_parked_worktrees: focused cargo test --test acdd wave_sync_and_atomic_next_preserve_parked_worktrees -- --nocapture exit 0, 1 passed/0 failed; complete cargo test --test acdd exit 0, 94 passed/0 failed; cargo clippy --all-targets --all-features -- -D warnings exit 0. Atomic SQLite, declaration-order waves, gate priority/independence, original worktree affinity/bytes, and canonical MCP error propagation verified.'
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-14T19:55:27.605222363+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test acdd
+      exit_code: 0
+      tests_passed: 94
+      tests_failed: 0
+      log: 'M019-T3-R1 scoped repair: Status::Parked and name mapping admit parked in serde/MCP schema/Clap; updated public task-list help and reference docs. Real production MCP/CLI regression checks exact parked and all legacy filter selections after actual parking; default remains ready; schema catalog includes parked. Pre-fix shipped CLI task list --status parked failed exit 2. Focused: cargo test --test acdd wave_sync_and_atomic_next_preserve_parked_worktrees; exit 0; 1 passed, 0 failed, 93 filtered (1.25s). Required full affected target: cargo test --test acdd; exit 0; 94 passed, 0 failed, 0 filtered (7.61s). Required static check: cargo clippy --all-targets --all-features -- -D warnings; exit 0 (10.11s), no test count. Native rustfmt and git diff --check passed. Scope unchanged; repair trace/mutation matrix blackboard 153 and current closure evidence in review blackboard. Ready for stable independent review confirmation; no additional findings addressed.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Candidate ed68b63 changes exactly 12 files, all in the admitted 15-path task scope; status shows no staged or untracked files. The seven-file repair delta from b23315c is confined to the two status surfaces, the MCP/CLI/docs descriptions, and the ACDD MCP regression test. `git diff --check` is clean and the worktree matches the candidate snapshot across all changed paths.
+        claims:
+          applicable: true
+          evidence: 'The parked status is admitted by engine `Status::Parked` and `Status::name`, which drive both serde/Schemars MCP input and Clap CLI parsing. MCP task_list description, CLI help, and task/CLI/MCP reference docs list parked semantics. The production-seam regression creates an actual parked task through extend_scope, checks exact parked/ready/in_progress/blocked/completed/all selections through MCP stdio and the shipped CLI, and verifies default ready behavior excludes parked tasks. `cargo test --test acdd` exited 0: 94 passed, 0 failed, 0 ignored, 0 measured, 0 filtered; 8.11s test phase.'
+        concurrency:
+          applicable: true
+          evidence: Selection and claim occur inside one SQLite IMMEDIATE transaction; claim revision is advanced and persisted with the open claim row before commit. The ACDD seam test races two MCP server processes at a barrier and verifies exactly one receives the task and exactly one open claim is persisted. Parking writes status, owner dependency, retained worker/worktree, claim closure, and blocker note in one transaction; resume remains revision-fenced.
+        project_isolation:
+          applicable: true
+          evidence: Dispatch selects from the active workspace store, filters candidate task IDs by the owning repository/project, and validates the chosen worktree, task authority, and scope through the workspace registry before claiming. Parked resumption uses the stored canonical worktree and same worker; direct claim enforces both. No workspace, project, profile, or path configuration is changed by this candidate.
+        administration:
+          applicable: true
+          evidence: No profile, schema migration, repository configuration, credential, or protected milestone file is changed. The store schema stays at version 5; the implementation uses the existing task tables and transactional receipt/delivery path. Candidate snapshot remains unchanged after the review test; no delivery or commit has yet been performed.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+    - 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
+    - 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
+    - 'INV-TIERED-SUBAGENT-PROFILE: Default ACDD profile defines three tiered subagent roles—contract_author (sol-6.1:high for contract seam design), builder (gpt6-luna:xhigh for build code implementation connected via gate-targeted task_blackboard notes), and independent_reviewer (sol-6.1:xhigh governing review and deliver gates in a single reviewer subagent session)—while forbidding preflight subagents.'
+    - 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
+    - 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
+    - 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
+    - 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
+    - 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
+    - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+    - 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
+    - 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
+    - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

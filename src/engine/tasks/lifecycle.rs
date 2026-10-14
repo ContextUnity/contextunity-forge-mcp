@@ -3,6 +3,11 @@ use std::fs::{File, OpenOptions};
 
 /// Performs claim.
 pub fn claim(root: &Path, p: Claim) -> Result<Value> {
+    let id = p.task_id.clone();
+    claim_inner(root, p).map_err(|error| lifecycle_error(&id, error))
+}
+
+fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     let worktree = crate::core::tasks::claim_worktree(&p.worktree)?;
     let registry = Registry::load(root)?;
     let workspace = registry.owner(&p.task_id)?;
@@ -12,8 +17,25 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
     validate_authority(&task, &worktree, &workspace.repository, &workspace.project)?;
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
     let claimed = store.claim(&p.task_id, &p.stage, &p.worker_id, &p.worktree)?;
+    finish_claim(root, workspace, &mut store, claimed, p.bundle)
+}
+
+fn finish_claim(
+    root: &Path,
+    workspace: &workspaces::Workspace,
+    store: &mut TasksStore,
+    claimed: Task,
+    bundle: Option<bool>,
+) -> Result<Value> {
+    let id = &claimed.task_id;
+    let worktree = Path::new(
+        claimed
+            .worktree
+            .as_deref()
+            .context("claim worktree missing")?,
+    );
     let activation = (|| {
-        let milestone_prefix = p
+        let milestone_prefix = claimed
             .task_id
             .split_once(':')
             .context("invalid task identity")?
@@ -23,18 +45,18 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
         let claimed_at = store
             .earliest_claim(&milestone_prefix)?
             .context("task claim timestamp missing")?;
-        crate::engine::milestones::activate_on_claim(&worktree, &claimed.milestone_ref, claimed_at)
+        crate::engine::milestones::activate_on_claim(worktree, &claimed.milestone_ref, claimed_at)
     })();
     if let Err(error) = activation {
         store
-            .release_failed_claim(&p.task_id, claimed.claim_revision)
+            .release_failed_claim(id, claimed.claim_revision)
             .context("failed to release claim after milestone activation error")?;
         return Err(error);
     }
     let response = (|| {
-        let details = workspace.guidance_envelope(store.inspect_details(&p.task_id)?)?;
-        if p.bundle.unwrap_or(true) {
-            context_bundle(root, workspace, &p.task_id, details)
+        let details = workspace.guidance_envelope(store.inspect_details(id)?)?;
+        if bundle.unwrap_or(true) {
+            context_bundle(root, workspace, id, details)
         } else {
             let mut minimal = details;
             if let Some(obj) = minimal.as_object_mut() {
@@ -61,8 +83,10 @@ pub fn claim(root: &Path, p: Claim) -> Result<Value> {
     })();
     if response.is_err() {
         store
-            .release_failed_claim(&p.task_id, claimed.claim_revision)
+            .release_failed_claim(id, claimed.claim_revision)
             .context("failed to release claim after context error")?;
+    } else {
+        store.finish_resume(id, claimed.claim_revision)?;
     }
     response
 }
@@ -80,6 +104,10 @@ pub(super) fn lock_receipts(database: &Path) -> Result<File> {
 
 /// Resets or reopens a task back to ready state at contract gate, clearing terminal receipt and updating milestone text if needed.
 pub fn reset(root: &Path, id: &str) -> Result<Task> {
+    reset_inner(root, id).map_err(|error| lifecycle_error(id, error))
+}
+
+fn reset_inner(root: &Path, id: &str) -> Result<Task> {
     let registry = Registry::load(root)?;
     let workspace = registry.owner(id)?;
     let mut store = workspace.open(&registry.database)?;
@@ -113,6 +141,7 @@ pub fn reopen(root: &Path, id: &str) -> Result<Task> {
 
 fn manage_action_name(action: &ManageAction) -> &'static str {
     match action {
+        ManageAction::Next => "next",
         ManageAction::Create => "create",
         ManageAction::Sync => "sync",
         ManageAction::Inspect => "inspect",
@@ -151,8 +180,45 @@ fn selector_invalid_fields(p: &Manage) -> Vec<&'static str> {
             fields.push(field);
         }
     };
+    if p.action != ManageAction::Next {
+        if p.worker_id.is_some() {
+            invalid("worker_id");
+        }
+        if p.worktree.is_some() {
+            invalid("worktree");
+        }
+    }
     {
         match &p.action {
+            ManageAction::Next => {
+                if p.worker_id
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    invalid("worker_id");
+                }
+                if p.worktree
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    invalid("worktree");
+                }
+                for (field, supplied) in [
+                    ("task_id", p.task_id.is_some()),
+                    ("milestone_ref", p.milestone_ref.is_some()),
+                    ("task_ref", p.task_ref.is_some()),
+                    ("paths", p.paths.is_some()),
+                    ("subtask_ref", p.subtask_ref.is_some()),
+                    ("title", p.title.is_some()),
+                    ("subtask_status", p.subtask_status.is_some()),
+                    ("evidence", p.evidence.is_some()),
+                    ("force", p.force),
+                ] {
+                    if supplied {
+                        invalid(field);
+                    }
+                }
+            }
             ManageAction::Create => {
                 if p.task_id.is_some() {
                     invalid("task_id");
@@ -328,12 +394,21 @@ fn selector_invalid_fields(p: &Manage) -> Vec<&'static str> {
 
 /// Performs manage.
 pub fn manage(root: &Path, mut p: Manage) -> Result<Value> {
+    let id = p
+        .task_id
+        .clone()
+        .or_else(|| p.milestone_ref.clone())
+        .unwrap_or_else(|| "unselected".into());
+    manage_inner(root, &mut p).map_err(|error| lifecycle_error(&id, error))
+}
+
+fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
     let id = p.task_id.as_deref();
     let milestone = p.milestone_ref.as_deref();
     let task_ref = p.task_ref.as_deref();
     let paths = p.paths.as_deref();
     let workspace = p.workspace.as_deref();
-    let invalid_fields = selector_invalid_fields(&p);
+    let invalid_fields = selector_invalid_fields(p);
     if !invalid_fields.is_empty() {
         let action = manage_action_name(&p.action);
         bail!("TASK_SELECTOR_INVALID: action '{action}'. missing or invalid fields: [{}]. Do: pass required fields for '{action}'.", invalid_fields.join(", "));
@@ -353,6 +428,19 @@ pub fn manage(root: &Path, mut p: Manage) -> Result<Value> {
     let milestone = p.milestone_ref.as_deref();
     let mut store = workspace.open(&registry.database)?;
     match p.action {
+        ManageAction::Next => {
+            let worker = p.worker_id.as_deref().context("worker_id required")?;
+            let worktree = p.worktree.as_deref().context("worktree required")?;
+            let claimed = store.next(worker, worktree, |task, selected| {
+                registry.check_worktree(workspace, selected)?;
+                validate_authority(task, selected, &workspace.repository, &workspace.project)?;
+                registry.check_scope(workspace, &task.spec.scope, Some(selected))
+            })?;
+            match claimed {
+                Some(claimed) => finish_claim(root, workspace, &mut store, claimed, Some(true)),
+                None => workspace.envelope(json!({"status":"idle","worker_id":worker})),
+            }
+        }
         ManageAction::Create | ManageAction::Sync => {
             let references = if let Some(reference) = milestone {
                 vec![reference.to_owned()]

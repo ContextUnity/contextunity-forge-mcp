@@ -50,6 +50,18 @@ pub struct Task {
     /// Active declarative gate identifier persisted in the task descriptor.
     #[serde(default)]
     pub stage: String,
+    /// Longest dependency distance derived during milestone sync.
+    #[serde(default)]
+    pub wave_index: u64,
+    /// Builder affinity retained while an active scope owner blocks this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_worker_id: Option<String>,
+    /// Original worktree retained until the parked builder resumes successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_worktree: Option<String>,
+    /// First active owner blocking a parked scope extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by: Option<String>,
     /// Effective pinned profile reference copied from task or milestone metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_pin: Option<String>,
@@ -215,7 +227,7 @@ impl std::fmt::Display for TaskAlreadyClaimed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "TASK_ALREADY_CLAIMED: task '{}' is claimed by worker '{}' in worktree '{}' (revision {}, claimed at {}). Do: submit the active claim from worker '{}' before opening another.",
+            "TASK_ALREADY_CLAIMED: {}. Claimed by worker '{}' in worktree '{}' (revision {}, claimed at {}). Do: submit the active claim from worker '{}' before opening another.",
             self.task_id,
             self.worker_id,
             self.worktree,
@@ -909,6 +921,10 @@ impl TasksStore {
                     claim_revision: archived.unwrap_or(0),
                     status: "completed".into(),
                     stage: last_gate.clone(),
+                    wave_index: 0,
+                    parked_worker_id: None,
+                    parked_worktree: None,
+                    blocked_by: None,
                     profile_pin: profile_pin.clone(),
                     authority_snapshot: Some(AuthoritySnapshot::capture(milestone, spec)),
                     initial_scope: spec.scope.clone(),
@@ -936,6 +952,10 @@ impl TasksStore {
                 claim_revision: revision,
                 status: if completed { "completed" } else { "ready" }.into(),
                 stage: if completed { last_gate } else { first_gate },
+                wave_index: 0,
+                parked_worker_id: None,
+                parked_worktree: None,
+                blocked_by: None,
                 profile_pin: profile_pin.clone(),
                 authority_snapshot: Some(AuthoritySnapshot::capture(milestone, spec)),
                 initial_scope: spec.scope.clone(),
@@ -1070,6 +1090,36 @@ impl TasksStore {
                 }
             }
             result.push(task);
+        }
+        for (index, predecessor) in milestone.tasks.iter().enumerate() {
+            let predecessor_id = milestone.task_id(predecessor);
+            let Some(owner) = load(&tx, &predecessor_id)? else {
+                continue;
+            };
+            for successor in &milestone.tasks[index + 1..] {
+                let successor_id = milestone.task_id(successor);
+                if load(&tx, &successor_id)?.is_none() {
+                    continue;
+                }
+                if predecessor.scope.iter().any(|left| {
+                    successor.scope.iter().any(|right| {
+                        crate::core::tasks::path_matches_scope_entry(left, right)
+                            || crate::core::tasks::path_matches_scope_entry(right, left)
+                    })
+                }) {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO task_dependencies VALUES(?1,?2,?3)",
+                        params![successor_id, predecessor_id, owner.status == "completed"],
+                    )?;
+                }
+            }
+        }
+        let mut waves = std::collections::BTreeMap::new();
+        for task in &mut result {
+            task.wave_index = dependency_wave(&tx, &task.task_id, &mut waves, &mut Vec::new())?;
+            if load(&tx, &task.task_id)?.is_some() {
+                save(&tx, task)?;
+            }
         }
         tx.commit()?;
         Ok(result)
@@ -1239,6 +1289,32 @@ pub(crate) fn save(conn: &Connection, task: &Task) -> Result<()> {
         params![task.task_id, task.milestone_ref, serde_json::to_string(task)?],
     )?;
     Ok(())
+}
+
+fn dependency_wave(
+    conn: &Connection,
+    id: &str,
+    waves: &mut std::collections::BTreeMap<String, u64>,
+    visiting: &mut Vec<String>,
+) -> Result<u64> {
+    if let Some(wave) = waves.get(id) {
+        return Ok(*wave);
+    }
+    if visiting.iter().any(|ancestor| ancestor == id) {
+        bail!("TASK_DEPENDENCY_CYCLE: {id}. Derived scope dependencies form a cycle. Do: order overlapping owners before their consumers.");
+    }
+    visiting.push(id.to_owned());
+    let dependencies: Vec<String> = conn
+        .prepare("SELECT dependency_id FROM task_dependencies WHERE task_id=?1")?
+        .query_map([id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut wave = 0;
+    for dependency in dependencies {
+        wave = wave.max(dependency_wave(conn, &dependency, waves, visiting)? + 1);
+    }
+    visiting.pop();
+    waves.insert(id.to_owned(), wave);
+    Ok(wave)
 }
 pub(crate) fn next_revision(conn: &Connection, id: &str) -> Result<u64> {
     Ok(conn.query_row("INSERT INTO task_revisions VALUES(?1,1) ON CONFLICT(task_id) DO UPDATE SET revision=revision+1 RETURNING revision",[id],|r|r.get(0))?)

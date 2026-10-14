@@ -27,110 +27,136 @@ impl TasksStore {
         task.claim_revision = next_revision(&tx, id)?;
         task.worker_id = None;
         task.worktree = None;
-        task.status = "ready".into();
+        task.status = if task.parked_worker_id.is_some() {
+            "parked"
+        } else {
+            "ready"
+        }
+        .into();
         save(&tx, &task)?;
         tx.commit()?;
         Ok(())
     }
-    /// Performs claim.
-    pub fn claim(&mut self, id: &str, stage: &str, worker: &str, worktree: &str) -> Result<Task> {
-        self.assert_id(id)?;
-        if worker.trim().is_empty() {
-            bail!("worker_id must be nonempty");
-        }
-        let worktree = crate::core::tasks::claim_worktree(worktree)?;
-        let repository = self.repository.clone();
-        let project = self.project.clone();
-        let id_prefix = self.id_prefix.clone();
-        let namespace = self.namespace.clone();
-        let workspace_root = self.workspace_root.clone();
-        let base_profile = self.profile.clone();
+    /// Clear resume metadata only after activation and context construction succeed.
+    pub(crate) fn finish_resume(&mut self, id: &str, revision: u64) -> Result<()> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
-        let profile = resolve_task_profile(workspace_root.as_deref(), &base_profile, &task)?;
-        if let Some(root) = self.workspace_root.as_deref() {
-            verify_dirty_acdd_scope(root, &task.initial_scope)?;
-            if worktree != root {
-                verify_dirty_acdd_scope(&worktree, &task.initial_scope)?;
-            }
+        if task.status != "in_progress" || task.claim_revision != revision {
+            bail!("TASK_STALE_CLAIM: {id}. Claim changed while finishing dispatch. Do: inspect the active owner before retrying.");
         }
-        if task.worker_id.is_some() {
-            let (worker_id, active_worktree, claimed_at): (String, String, i64) = tx.query_row(
-                "SELECT worker_id,worktree,claimed_at FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0",
-                params![id, task.claim_revision],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?;
-            return Err(TaskAlreadyClaimed {
-                task_id: task.task_id,
-                worker_id,
-                worktree: active_worktree,
-                revision: task.claim_revision,
-                claimed_at,
-            }
-            .into());
+        if task.parked_worker_id.is_some() {
+            task.parked_worker_id = None;
+            task.parked_worktree = None;
+            task.blocked_by = None;
+            save(&tx, &task)?;
         }
-        if task.status != "ready" {
-            bail!("TASK_NOT_READY: task '{id}'. status is '{}' (active stage '{}'). Do: claim only ready tasks at their active stage.", task.status, task.stage);
-        }
-        let dependencies = unsatisfied_dependencies(&tx, id)?;
-        if !dependencies.is_empty() {
-            bail!("TASK_NOT_READY: task '{id}' has unsatisfied dependencies: [{}]. Do: complete dependencies before claiming stage '{}'.", dependencies.join(", "), task.stage);
-        }
-        let task_gate =
-            profile.index_of(&task.stage).with_context(|| {
-                format!(
-            "TASK_STAGE_UNKNOWN: task '{}' is stored at unknown stage '{}'; active gates: {}",
-            task.task_id,
-            task.stage,
-            profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
-        )
-            })?;
-        check_stage(id, &task.stage, stage)?;
-        task.gate = task_gate;
-        let my_scope_paths: Vec<PathBuf> = tx
-            .prepare("SELECT path FROM task_scope_paths WHERE task_id=?1")?
-            .query_map([id], |row| row.get::<_, String>(0).map(PathBuf::from))?
-            .collect::<std::result::Result<_, _>>()?;
-        let other_scopes: Vec<(String, PathBuf)> = tx
-            .prepare(
-                "SELECT p.task_id, p.path FROM task_scope_paths p \
-                 JOIN tasks t ON t.task_id = p.task_id \
-                 WHERE p.task_id != ?1 AND t.milestone_ref = ?2 \
-                   AND (substr(p.task_id, 1, length(?3)) = ?3 OR substr(p.task_id, 1, length(?4)) = ?4) \
-                   AND json_extract(t.descriptor, '$.status') != 'completed' \
-                   AND NOT EXISTS (SELECT 1 FROM task_dependencies d \
-                     LEFT JOIN tasks dependency ON dependency.task_id = d.dependency_id \
-                     WHERE d.task_id = t.task_id AND d.satisfied = 0 \
-                       AND (dependency.task_id IS NULL OR json_extract(dependency.descriptor, '$.status') != 'completed'))",
-            )?
-            .query_map(params![id, task.milestone_ref, id_prefix, namespace], |row| {
-                Ok((row.get(0)?, PathBuf::from(row.get::<_, String>(1)?)))
-            })?
-            .collect::<std::result::Result<_, _>>()?;
-        let other_scopes: Vec<(String, PathBuf)> = other_scopes
-            .into_iter()
-            .filter(|(owner, _)| task_belongs_to(&repository, &project, owner))
-            .collect();
-        for my_path in &my_scope_paths {
-            for (owner, other_path) in &other_scopes {
-                if my_path == other_path
-                    || my_path.starts_with(other_path)
-                    || other_path.starts_with(my_path)
-                {
-                    bail!("TASK_SCOPE_CONFLICT: path '{}' belongs to task '{owner}'; reopen that task instead", my_path.display());
-                }
-            }
-        }
-        task.claim_revision = next_revision(&tx, id)?;
-        task.worker_id = Some(worker.into());
-        task.worktree = Some(worktree.to_string_lossy().into_owned());
-        task.status = "in_progress".into();
-        tx.execute("INSERT INTO task_claims(task_id,revision,worker_id,worktree,claimed_at) VALUES(?1,?2,?3,?4,?5)",params![id,task.claim_revision,worker,task.worktree,now()])?;
-        save(&tx, &task)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Claim one task under the same immediate transaction used by dispatch.
+    pub fn claim(&mut self, id: &str, stage: &str, worker: &str, worktree: &str) -> Result<Task> {
+        self.assert_id(id)?;
+        let context = ClaimContext::from_store(self);
+        let worktree = crate::core::tasks::claim_worktree(worktree)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = context.claim(&tx, id, stage, worker, &worktree)?;
         tx.commit()?;
         Ok(task)
+    }
+
+    /// Select and claim eligible work without allowing a second dispatcher to race.
+    pub fn next(
+        &mut self,
+        worker: &str,
+        worktree: &str,
+        mut validate: impl FnMut(&Task, &Path) -> Result<()>,
+    ) -> Result<Option<Task>> {
+        if worker.trim().is_empty() {
+            bail!("TASK_WORKER_INVALID: unselected. worker_id is empty. Do: supply a worker identity.");
+        }
+        let context = ClaimContext::from_store(self);
+        let requested_worktree = crate::core::tasks::claim_worktree(worktree)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let descriptors: Vec<String> = tx
+            .prepare("SELECT descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 OR substr(task_id,1,length(?2))=?2")?
+            .query_map(params![context.id_prefix, context.namespace], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut candidates = Vec::new();
+        for descriptor in descriptors {
+            let task: Task = serde_json::from_str(&descriptor)?;
+            if !task_belongs_to(&context.repository, &context.project, &task.task_id)
+                || task.worker_id.is_some()
+                || !matches!(task.status.as_str(), "ready" | "parked")
+                || !dependencies_ready(&tx, &task.task_id)?
+            {
+                continue;
+            }
+            let profile =
+                resolve_task_profile(context.workspace_root.as_deref(), &context.profile, &task)?;
+            let gate = profile
+                .gates
+                .iter()
+                .find(|gate| gate.id == task.stage)
+                .context("TASK_STAGE_UNKNOWN: dispatch candidate stage is not in its profile")?;
+            let independent = gate
+                .independent_from
+                .as_deref()
+                .or_else(|| matches!(task.stage.as_str(), "review" | "deliver").then_some("build"));
+            if let Some(from) = independent {
+                let owner: Option<String> = tx.query_row(
+                    "SELECT json_extract(evidence,'$.worker_id') FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed' ORDER BY revision DESC LIMIT 1",
+                    params![task.task_id, from], |row| row.get(0)).optional()?.flatten();
+                if owner.as_deref() == Some(worker) {
+                    continue;
+                }
+            }
+            let priority = if task.stage == "deliver" {
+                0
+            } else if task.stage == "review" {
+                1
+            } else if task.status == "parked" {
+                if task.parked_worker_id.as_deref() != Some(worker) {
+                    continue;
+                }
+                2
+            } else {
+                3
+            };
+            if scope_locked(&tx, &task, &context.repository, &context.project)? {
+                continue;
+            }
+            candidates.push((priority, task));
+        }
+        candidates.sort_by(|(left_priority, left), (right_priority, right)| {
+            (left_priority, left.wave_index, &left.task_id).cmp(&(
+                right_priority,
+                right.wave_index,
+                &right.task_id,
+            ))
+        });
+        let Some((_, task)) = candidates.into_iter().next() else {
+            tx.commit()?;
+            return Ok(None);
+        };
+        let selected_worktree = if task.status == "parked" {
+            PathBuf::from(
+                task.parked_worktree
+                    .as_deref()
+                    .context("TASK_WORKTREE_AFFINITY: parked worktree is missing")?,
+            )
+        } else {
+            requested_worktree
+        };
+        validate(&task, &selected_worktree)?;
+        let claimed = context.claim(&tx, &task.task_id, &task.stage, worker, &selected_worktree)?;
+        tx.commit()?;
+        Ok(Some(claimed))
     }
     /// Performs reset.
     pub fn reset(&mut self, id: &str) -> Result<Task> {
@@ -153,6 +179,9 @@ impl TasksStore {
         task.worker_id = None;
         task.worktree = None;
         task.status = "ready".into();
+        task.parked_worker_id = None;
+        task.parked_worktree = None;
+        task.blocked_by = None;
         tx.execute(
             "INSERT INTO task_gates VALUES(?1,?2,?3,'pending',NULL)",
             params![id, profile.gate_id(task.gate), task.claim_revision],
@@ -206,30 +235,31 @@ impl TasksStore {
                 Ok(PathBuf::from(p))
             })?
             .collect::<std::result::Result<_, _>>()?;
-        let other_scopes: Vec<(String, PathBuf)> = tx
+        let other_scopes: Vec<(String, PathBuf, String)> = tx
             .prepare(
-                "SELECT p.task_id, p.path FROM task_scope_paths p \
+                "SELECT p.task_id, p.path, json_extract(t.descriptor, '$.status') FROM task_scope_paths p \
                  JOIN tasks t ON t.task_id = p.task_id \
                  WHERE p.task_id != ?1 AND t.milestone_ref = ?2 \
                    AND (substr(p.task_id, 1, length(?3)) = ?3 OR substr(p.task_id, 1, length(?4)) = ?4) \
-                   AND json_extract(t.descriptor, '$.status') != 'completed'",
+                   AND json_extract(t.descriptor, '$.status') != 'completed' ORDER BY p.task_id",
             )?
             .query_map(params![id, task.milestone_ref, id_prefix, namespace], |r| {
                 let owner: String = r.get(0)?;
                 let p: String = r.get(1)?;
-                Ok((owner, PathBuf::from(p)))
+                Ok((owner, PathBuf::from(p), r.get(2)?))
             })?
             .collect::<std::result::Result<_, _>>()?;
-        let other_scopes: Vec<(String, PathBuf)> = other_scopes
+        let other_scopes: Vec<(String, PathBuf, String)> = other_scopes
             .into_iter()
-            .filter(|(owner, _)| task_belongs_to(&repository, &project, owner))
+            .filter(|(owner, _, _)| task_belongs_to(&repository, &project, owner))
             .collect();
+        let mut blockers = std::collections::BTreeSet::new();
         for value in paths {
             let path = crate::core::tasks::relative_path(value)?;
             if protected_acdd_path(&path) {
                 bail!("TASK_SCOPE_PROTECTED: paths under .forge/acdd/** must be admitted in the initial task contract scope");
             }
-            for (owner, other_path) in &other_scopes {
+            for (owner, other_path, status) in &other_scopes {
                 let is_conflict = if path == *other_path {
                     true
                 } else if path.starts_with(other_path) {
@@ -242,7 +272,11 @@ impl TasksStore {
                     false
                 };
                 if is_conflict {
-                    bail!("TASK_SCOPE_CONFLICT: path '{value}' belongs to task '{owner}'; reopen that task instead");
+                    if status == "in_progress" && task.status == "in_progress" {
+                        blockers.insert(owner.clone());
+                    } else {
+                        bail!("TASK_SCOPE_CONFLICT: {id}. Path '{value}' belongs to task '{owner}'. Do: complete the scope owner before extending this task.");
+                    }
                 }
             }
             let matched_base = bases
@@ -274,6 +308,21 @@ impl TasksStore {
             if !task.spec.scope.contains(&normalized) {
                 task.spec.scope.push(normalized);
             }
+        }
+        if !blockers.is_empty() {
+            task.parked_worker_id = task.worker_id.take();
+            task.parked_worktree = task.worktree.take();
+            task.blocked_by = blockers.first().cloned();
+            task.status = "parked".into();
+            end_claim(&tx, id)?;
+            task.claim_revision = next_revision(&tx, id)?;
+            for holder in &blockers {
+                tx.execute(
+                    "INSERT OR IGNORE INTO task_dependencies VALUES(?1,?2,0)",
+                    params![id, holder],
+                )?;
+            }
+            tx.execute("INSERT INTO task_blackboard(milestone_ref,task_id,gate,author,topic,payload,created_at) VALUES(?1,?2,?3,?4,'blockers',?5,?6)", params![format!("{namespace}{}", task.milestone_ref), id, task.stage, task.parked_worker_id, format!("Scope extension parked behind active owners: {}. Resume in {} after their completion.", blockers.into_iter().collect::<Vec<_>>().join(", "), task.parked_worktree.as_deref().unwrap_or_default()), now()])?;
         }
         save(&tx, &task)?;
         tx.commit()?;
@@ -357,4 +406,144 @@ impl TasksStore {
         }
         Ok(deleted)
     }
+}
+
+struct ClaimContext {
+    repository: String,
+    project: String,
+    id_prefix: String,
+    namespace: String,
+    workspace_root: Option<PathBuf>,
+    profile: std::sync::Arc<crate::core::tasks::profile::GateProfile>,
+}
+
+impl ClaimContext {
+    fn from_store(store: &TasksStore) -> Self {
+        Self {
+            repository: store.repository.clone(),
+            project: store.project.clone(),
+            id_prefix: store.id_prefix.clone(),
+            namespace: store.namespace.clone(),
+            workspace_root: store.workspace_root.clone(),
+            profile: store.profile.clone(),
+        }
+    }
+
+    fn claim(
+        &self,
+        tx: &Connection,
+        id: &str,
+        stage: &str,
+        worker: &str,
+        worktree: &Path,
+    ) -> Result<Task> {
+        if worker.trim().is_empty() {
+            bail!("TASK_WORKER_INVALID: {id}. worker_id is empty. Do: supply a worker identity.");
+        }
+        let mut task = load(tx, id)?.context(task_not_found_message(id))?;
+        let profile = resolve_task_profile(self.workspace_root.as_deref(), &self.profile, &task)?;
+        if task.status == "parked"
+            && (task.parked_worker_id.as_deref() != Some(worker)
+                || task.parked_worktree.as_deref().map(Path::new) != Some(worktree))
+        {
+            bail!("TASK_WORKTREE_AFFINITY: {id}. Parked for worker '{}' in worktree '{}'. Do: resume with the preserved worker and worktree.", task.parked_worker_id.as_deref().unwrap_or_default(), task.parked_worktree.as_deref().unwrap_or_default());
+        }
+        if let Some(root) = self.workspace_root.as_deref() {
+            verify_dirty_acdd_scope(root, &task.initial_scope)?;
+            if worktree != root {
+                verify_dirty_acdd_scope(worktree, &task.initial_scope)?;
+            }
+        }
+        if task.worker_id.is_some() {
+            let (worker_id, active_worktree, claimed_at): (String, String, i64) = tx.query_row(
+                "SELECT worker_id,worktree,claimed_at FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0",
+                params![id, task.claim_revision],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            return Err(TaskAlreadyClaimed {
+                task_id: task.task_id,
+                worker_id,
+                worktree: active_worktree,
+                revision: task.claim_revision,
+                claimed_at,
+            }
+            .into());
+        }
+        if task.status != "ready" && task.status != "parked" {
+            bail!("TASK_NOT_READY: task '{id}'. status is '{}' (active stage '{}'). Do: claim only ready tasks at their active stage.", task.status, task.stage);
+        }
+        let dependencies = unsatisfied_dependencies(tx, id)?;
+        if !dependencies.is_empty() {
+            bail!("TASK_NOT_READY: task '{id}' has unsatisfied dependencies: [{}]. Do: complete dependencies before claiming stage '{}'.", dependencies.join(", "), task.stage);
+        }
+        let task_gate =
+            profile.index_of(&task.stage).with_context(|| {
+                format!(
+            "TASK_STAGE_UNKNOWN: task '{}' is stored at unknown stage '{}'; active gates: {}",
+            task.task_id,
+            task.stage,
+            profile.gates.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>().join(", ")
+        )
+            })?;
+        check_stage(id, &task.stage, stage)?;
+        task.gate = task_gate;
+        let my_scope_paths: Vec<PathBuf> = tx
+            .prepare("SELECT path FROM task_scope_paths WHERE task_id=?1")?
+            .query_map([id], |row| row.get::<_, String>(0).map(PathBuf::from))?
+            .collect::<std::result::Result<_, _>>()?;
+        let other_scopes: Vec<(String, PathBuf)> = tx
+            .prepare(
+                "SELECT p.task_id, p.path FROM task_scope_paths p \
+                 JOIN tasks t ON t.task_id = p.task_id \
+                 WHERE p.task_id != ?1 AND t.milestone_ref = ?2 \
+                   AND (substr(p.task_id, 1, length(?3)) = ?3 OR substr(p.task_id, 1, length(?4)) = ?4) \
+                   AND json_extract(t.descriptor, '$.status') = 'in_progress'",
+            )?
+            .query_map(params![id, task.milestone_ref, self.id_prefix, self.namespace], |row| {
+                Ok((row.get(0)?, PathBuf::from(row.get::<_, String>(1)?)))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        let other_scopes: Vec<(String, PathBuf)> = other_scopes
+            .into_iter()
+            .filter(|(owner, _)| task_belongs_to(&self.repository, &self.project, owner))
+            .collect();
+        for my_path in &my_scope_paths {
+            for (owner, other_path) in &other_scopes {
+                if my_path == other_path
+                    || my_path.starts_with(other_path)
+                    || other_path.starts_with(my_path)
+                {
+                    bail!("TASK_SCOPE_CONFLICT: path '{}' belongs to task '{owner}'; reopen that task instead", my_path.display());
+                }
+            }
+        }
+        task.claim_revision = next_revision(tx, id)?;
+        task.worker_id = Some(worker.into());
+        task.worktree = Some(worktree.to_string_lossy().into_owned());
+        task.status = "in_progress".into();
+        tx.execute("INSERT INTO task_claims(task_id,revision,worker_id,worktree,claimed_at) VALUES(?1,?2,?3,?4,?5)",params![id,task.claim_revision,worker,task.worktree,now()])?;
+        save(tx, &task)?;
+
+        Ok(task)
+    }
+}
+
+fn scope_locked(conn: &Connection, task: &Task, repository: &str, project: &str) -> Result<bool> {
+    let owners: Vec<String> = conn.prepare("SELECT descriptor FROM tasks WHERE milestone_ref=?1 AND task_id!=?2 AND json_extract(descriptor,'$.status')='in_progress'")?
+        .query_map(params![task.milestone_ref, task.task_id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for owner in owners {
+        let owner: Task = serde_json::from_str(&owner)?;
+        if !task_belongs_to(repository, project, &owner.task_id) {
+            continue;
+        }
+        if owner.spec.scope.iter().any(|left| {
+            task.spec.scope.iter().any(|right| {
+                crate::core::tasks::path_matches_scope_entry(left, right)
+                    || crate::core::tasks::path_matches_scope_entry(right, left)
+            })
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

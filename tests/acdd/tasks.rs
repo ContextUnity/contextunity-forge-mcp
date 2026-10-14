@@ -2619,7 +2619,7 @@ fn tasks_coordinate_claims_dependencies_reset_scope_and_claim_diagnostic() {
         .unwrap();
     let winner_id = winner.worker_id.as_deref().unwrap();
     let expected_collision = format!(
-        "TASK_ALREADY_CLAIMED: task '{id}' is claimed by worker '{winner_id}' in worktree '{}' (revision {}, claimed at {claimed_at}). Do: submit the active claim from worker '{winner_id}' before opening another.",
+        "TASK_ALREADY_CLAIMED: {id}. Claimed by worker '{winner_id}' in worktree '{}' (revision {}, claimed at {claimed_at}). Do: submit the active claim from worker '{winner_id}' before opening another.",
         winner.worktree.as_deref().unwrap(),
         winner.claim_revision,
     );
@@ -2826,7 +2826,7 @@ fn claim_reports_structured_authority_gap_for_frontmatter_and_task_drift() {
     assert_eq!(
         error,
         format!(
-            "AUTHORITY_GAP: task '{id}'. file revision 1 <= stored 1; frontmatter fields [milestone.owners], task fields [task.target]. Do: revert [milestone.owners] in docs/010-test.md, set contract_revision above 1, and run contextunity-forge-mcp task sync."
+            "AUTHORITY_GAP: {id}. task '{id}'. file revision 1 <= stored 1; frontmatter fields [milestone.owners], task fields [task.target]. Do: revert [milestone.owners] in docs/010-test.md, set contract_revision above 1, and run contextunity-forge-mcp task sync."
         )
     );
 }
@@ -2866,7 +2866,7 @@ fn authority_gap_attributes_milestone_invariants_and_owners_with_specific_repair
         assert_eq!(
             error,
             format!(
-                "AUTHORITY_GAP: task '{id}'. file revision 1 <= stored 1; digest fields [{expected_fields}]. Do: revert [{expected_fields}] in docs/010-test.md{advice}."
+                "AUTHORITY_GAP: {id}. task '{id}'. file revision 1 <= stored 1; digest fields [{expected_fields}]. Do: revert [{expected_fields}] in docs/010-test.md{advice}."
             )
         );
     }
@@ -2921,7 +2921,7 @@ fn milestone_id_change_is_rejected_before_sync_admission_and_claim_lookup() {
     .to_string();
     assert_eq!(
         claim_error,
-        "AUTHORITY_GAP: milestone 'docs/010-test.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/010-test.md. Task ids are forge-mcp/m-renamed:first; task cannot be resolved."
+        "AUTHORITY_GAP: forge-mcp/m-test:first. milestone 'docs/010-test.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/010-test.md. Task ids are forge-mcp/m-renamed:first; task cannot be resolved."
     );
 }
 
@@ -2976,7 +2976,9 @@ fn claim_distinguishes_missing_milestone_file_from_missing_task() {
     .to_string();
     assert_eq!(
         missing_file,
-        "TASK_AUTHORITY_MISSING: milestone file 'docs/010-test.md' is missing. Do: restore milestone file 'docs/010-test.md'."
+        format!(
+            "TASK_AUTHORITY_MISSING: {id}. milestone file 'docs/010-test.md' is missing. Do: restore milestone file 'docs/010-test.md'."
+        )
     );
 
     let (root, _, milestone) = fixture();
@@ -3002,7 +3004,7 @@ fn claim_distinguishes_missing_milestone_file_from_missing_task() {
     assert_eq!(
         missing_task,
         format!(
-            "TASK_AUTHORITY_MISSING: task '{id}' not found in milestone document 'docs/010-test.md'. Do: restore task '{id}' in 'docs/010-test.md'."
+            "TASK_AUTHORITY_MISSING: {id}. task '{id}' not found in milestone document 'docs/010-test.md'. Do: restore task '{id}' in 'docs/010-test.md'."
         )
     );
 }
@@ -3033,7 +3035,7 @@ fn unsynced_higher_revision_with_header_drift_reports_header_and_sync_action() {
     assert_eq!(
         error,
         format!(
-            "AUTHORITY_GAP: task '{id}'. file revision 2 > stored 1 (unsynced); digest fields [milestone.owners]. Do: revert [milestone.owners] in docs/010-test.md and run contextunity-forge-mcp task sync."
+            "AUTHORITY_GAP: {id}. task '{id}'. file revision 2 > stored 1 (unsynced); digest fields [milestone.owners]. Do: revert [milestone.owners] in docs/010-test.md and run contextunity-forge-mcp task sync."
         )
     );
     assert!(!error.contains("task.contract_revision"));
@@ -3988,7 +3990,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     assert_eq!(
         scoped_snapshot_error,
         format!(
-            "TASK_CANDIDATE_MISMATCH: task '{task_id}'. supplied commit caller-selected-commit != scoped snapshot {contract_snap}. Do: resubmit with commit {contract_snap}."
+            "TASK_CANDIDATE_MISMATCH: {task_id}. task '{task_id}'. supplied commit caller-selected-commit != scoped snapshot {contract_snap}. Do: resubmit with commit {contract_snap}."
         )
     );
     ev.commit = None;
@@ -4108,7 +4110,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     assert_eq!(
         explicit_review_commit_error,
         format!(
-            "TASK_CANDIDATE_MISMATCH: task '{task_id}'. supplied commit caller-selected-commit != candidate snapshot {build_snap}. Do: resubmit with commit {build_snap}."
+            "TASK_CANDIDATE_MISMATCH: {task_id}. task '{task_id}'. supplied commit caller-selected-commit != candidate snapshot {build_snap}. Do: resubmit with commit {build_snap}."
         )
     );
 
@@ -4131,7 +4133,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     assert_eq!(
         mismatch_err.to_string(),
         format!(
-            "TASK_CANDIDATE_MISMATCH: task '{task_id}' diverged from snapshot {}. D src/new_feature.rs, ?? src/new_feature.rs. Do: restore those paths to snapshot {}.",
+            "TASK_CANDIDATE_MISMATCH: {task_id}. task '{task_id}' diverged from snapshot {}. D src/new_feature.rs, ?? src/new_feature.rs. Do: restore those paths to snapshot {}.",
             &build_snap[..7],
             &build_snap[..7]
         )
@@ -4207,7 +4209,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     assert_eq!(
         review_source_error,
         format!(
-            "TASK_CANDIDATE_MISMATCH: task '{task_id}'. review source 'review' commit != candidate snapshot {candidate_snapshot}. Do: resubmit review evidence with commit {candidate_snapshot}."
+            "TASK_CANDIDATE_MISMATCH: {task_id}. task '{task_id}'. review source 'review' commit != candidate snapshot {candidate_snapshot}. Do: resubmit review evidence with commit {candidate_snapshot}."
         )
     );
     delivery_store
@@ -4242,7 +4244,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     assert_eq!(
         deliver_err.to_string(),
         format!(
-            "TASK_CANDIDATE_MISMATCH: task '{task_id}' diverged from snapshot {}. D src/new_feature.rs, ?? src/new_feature.rs. Do: restore those paths to snapshot {}.",
+            "TASK_CANDIDATE_MISMATCH: {task_id}. task '{task_id}' diverged from snapshot {}. D src/new_feature.rs, ?? src/new_feature.rs. Do: restore those paths to snapshot {}.",
             &build_snap[..7],
             &build_snap[..7]
         )
@@ -4434,7 +4436,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .unwrap_err()
         .to_string(),
         format!(
-            "TASK_CANDIDATE_MISMATCH: task '{task_id}'. supplied commit caller-selected-commit != accepted receipt commit {delivery_commit}. Do: resubmit with commit {delivery_commit}."
+            "TASK_CANDIDATE_MISMATCH: {task_id}. task '{task_id}'. supplied commit caller-selected-commit != accepted receipt commit {delivery_commit}. Do: resubmit with commit {delivery_commit}."
         )
     );
 
@@ -4963,7 +4965,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         assert_eq!(admitted["status"], "in_progress");
     }
 
-    // Dynamic extension (frozen = 0) by task_b is now owned by task_b; task_a claiming it must conflict
+    // Dynamic extensions stay owned; an inactive requester must still fail closed.
     tasks::claim(
         &root.0,
         tasks::Claim {
@@ -4975,6 +4977,8 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         },
     )
     .unwrap();
+
+    store.reset(task_a_id).unwrap();
 
     let dynamic_count: i64 = store
         .connection
@@ -5055,7 +5059,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     )
     .unwrap_err()
     .to_string();
-    assert!(claim_error.contains("TASK_SCOPE_CONFLICT"), "{claim_error}");
+    assert!(claim_error.contains("TASK_NOT_READY"), "{claim_error}");
     assert!(claim_error.contains(owner_id), "{claim_error}");
 
     let release_root = ScopedWorkspace::new("forge_completed_scope_release");
@@ -6327,9 +6331,9 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
         )
         .expect_err("pinned profile symlink escape must fail closed");
         assert!(
-            error
-                .to_string()
-                .contains("TASK_SCOPE_INVALID: symlink escape"),
+            error.to_string().contains(
+                "TASK_SCOPE_INVALID: docs/milestones/010-profile.md. symlink escape. Do:"
+            ),
             "{name} symlink should be rejected as an escape: {error}"
         );
     }
@@ -6457,7 +6461,7 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
         } else {
             assert!(
                 String::from_utf8_lossy(&sync.stderr)
-                    .contains("TASK_SCOPE_INVALID: symlink escape"),
+                    .contains("TASK_SCOPE_INVALID: docs/milestones/010-profile.md. symlink escape. Do:"),
                 "automatic default {name} symlink should fail as an escape: {}",
                 String::from_utf8_lossy(&sync.stderr)
             );
@@ -7153,11 +7157,17 @@ fn task_manage_selector_diagnostics_report_fields_before_resolution() {
     ];
 
     for (request, action, fields) in cases {
+        let selector = request
+            .task_id
+            .as_deref()
+            .or(request.milestone_ref.as_deref())
+            .unwrap_or("unselected")
+            .to_owned();
         let error = tasks::manage(&root.0, request).unwrap_err().to_string();
         assert_eq!(
             error,
             format!(
-                "TASK_SELECTOR_INVALID: action '{action}'. missing or invalid fields: [{fields}]. Do: pass required fields for '{action}'."
+                "TASK_SELECTOR_INVALID: {selector}. action '{action}'. missing or invalid fields: [{fields}]. Do: pass required fields for '{action}'."
             )
         );
     }
@@ -7236,7 +7246,9 @@ fn task_store_diagnostics_cover_not_found_stale_claim_and_submission_precedence(
         )
         .unwrap_err()
         .to_string(),
-        expected_not_found
+        format!(
+            "TASK_NOT_FOUND: {missing_id}. task '{missing_id}' not found in tasks database. Do: verify task id and sync milestone."
+        )
     );
     for action in [
         tasks::ManageAction::Inspect,
@@ -7254,7 +7266,12 @@ fn task_store_diagnostics_cover_not_found_stale_claim_and_submission_precedence(
         )
         .unwrap_err()
         .to_string();
-        assert_eq!(error, expected_not_found);
+        assert_eq!(
+            error,
+            format!(
+                "TASK_NOT_FOUND: {missing_id}. task '{missing_id}' not found in tasks database. Do: verify task id and sync milestone."
+            )
+        );
     }
     assert_eq!(
         tasks::manage(
@@ -7268,7 +7285,9 @@ fn task_store_diagnostics_cover_not_found_stale_claim_and_submission_precedence(
         )
         .unwrap_err()
         .to_string(),
-        expected_not_found
+        format!(
+            "TASK_NOT_FOUND: docs/010-test.md. task '{missing_id}' not found in tasks database. Do: verify task id and sync milestone."
+        )
     );
 
     let ready = store.inspect(&id).unwrap();
@@ -7347,13 +7366,13 @@ fn task_store_diagnostics_cover_not_found_stale_claim_and_submission_precedence(
         (
             Value::Null,
             format!(
-                "TASK_EVIDENCE_INVALID: task '{id}'. evidence is not a valid JSON object. Do: pass evidence as a JSON object."
+                "TASK_EVIDENCE_INVALID: {id}. task '{id}'. evidence is not a valid JSON object. Do: pass evidence as a JSON object."
             ),
         ),
         (
             json!({}),
             format!(
-                "TASK_EVIDENCE_INVALID: task '{id}'. evidence JSON does not match the evidence object. Do: pass the evidence fields required by stage 'contract'."
+                "TASK_EVIDENCE_INVALID: {id}. task '{id}'. evidence JSON does not match the evidence object. Do: pass the evidence fields required by stage 'contract'."
             ),
         ),
     ] {

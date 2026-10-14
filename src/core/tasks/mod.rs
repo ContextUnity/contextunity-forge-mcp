@@ -102,6 +102,31 @@ pub fn normalize_repo_path(path: &str) -> String {
     p.trim_matches('/').to_string()
 }
 
+/// Render lifecycle failures consistently at the engine's public boundary.
+pub fn task_lifecycle_diagnostic(id: &str, message: &str) -> String {
+    let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (code, facts) = message
+        .split_once(": ")
+        .filter(|(code, _)| {
+            !code.is_empty()
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
+        })
+        .unwrap_or(("TASK_OPERATION_FAILED", &message));
+    if facts.starts_with(&format!("{id}. ")) && facts.contains(". Do: ") {
+        return message;
+    }
+    let (facts, action) = facts.split_once(". Do: ").unwrap_or((
+        facts,
+        "inspect task authority and retry with valid lifecycle inputs.",
+    ));
+    format!(
+        "{code}: {id}. {}. Do: {action}",
+        facts.trim_end_matches('.')
+    )
+}
+
 /// Check whether a path represents an internal Forge runtime/scratch artifact
 /// (e.g. SQLite databases, locks, logs, tasks runtime directory, or checkpoints).
 /// Project configuration paths under `.forge/acdd/**` and `.forge/frameworks/**`

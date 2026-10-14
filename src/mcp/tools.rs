@@ -167,7 +167,7 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "List tasks. The default is ready, unclaimed tasks with satisfied dependencies in the primary workspace. milestone_status defaults to active and accepts active, planned, completed, or all; a targeted milestone_ref defaults to all statuses. Subtask listings are compact by default; set detail=full to include titles and verification evidence."
+        description = "List tasks. The default is ready, unclaimed tasks with satisfied dependencies in the primary workspace. status accepts ready, in_progress, blocked, parked, completed, or all. milestone_status defaults to active and accepts active, planned, completed, or all; a targeted milestone_ref defaults to all statuses. Subtask listings are compact by default; set detail=full to include titles and verification evidence."
     )]
     fn task_list(&self, Parameters(p): Parameters<super::tasks::List>) -> CallToolResult {
         self.responding(|_, _| super::tasks::list(&self.root, p))
@@ -185,7 +185,7 @@ impl Server {
         self.responding(|_, _| super::tasks::submit(&self.root, p))
     }
     #[tool(
-        description = "Run one task-store action: create, sync, inspect, delete, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, or context. sync without milestone_ref imports the workspace milestone directory."
+        description = "Run one task-store action: next, create, sync, inspect, delete, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, or context. next atomically claims eligible work and returns its context bundle; sync without milestone_ref imports the workspace milestone directory."
     )]
     fn task_manage(&self, Parameters(p): Parameters<super::tasks::Manage>) -> CallToolResult {
         self.responding(|_, _| super::tasks::manage(&self.root, p))

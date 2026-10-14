@@ -75,12 +75,26 @@ references/statuses. Use `--milestone-status planned|completed|all` or the
 mutually exclusive `--planned`, `--completed`, and `--all` shorthands to select
 other milestone sets. A targeted `--milestone REF` defaults to all milestone
 statuses. Use `--full` to include subtask titles and verification evidence.
+Task `--status` accepts `ready` (default), `in_progress`, `blocked`, `parked`,
+`completed`, or `all`. Use `--status parked` to list tasks retaining their worker
+and worktree while waiting for a scope owner; `--status all` includes them.
 
 ```sh
 contextunity-forge-mcp task claim TASK_ID --stage deliver --worker REVIEWER --worktree PATH [--bundle]
 contextunity-forge-mcp task submit TASK_ID --stage deliver --action pass --evidence '<JSON_OBJECT>'
 contextunity-forge-mcp task context TASK_ID
 ```
+
+Dispatch the highest-priority eligible gate atomically:
+
+```sh
+contextunity-forge-mcp task next --worker WORKER --worktree PATH [--workspace WS]
+```
+
+The command returns the claim and context bundle, or `status: "idle"` when no
+work is eligible. Independent delivery precedes review, then the worker's
+unblocked parked work, then ordinary ready work by wave and task ID. A parked
+task resumes in its preserved worktree. See [task dispatch](tasks.md#five-flat-mcp-tools).
 
 `task claim` includes context by default. Context follows the active gate:
 contract/build receive symbols and test seams; review receives the candidate

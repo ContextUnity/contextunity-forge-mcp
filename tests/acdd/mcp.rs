@@ -1369,6 +1369,18 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
         assert!(status_schema.contains(status));
     }
     assert!(!status_schema.contains("cancelled"));
+    let task_status_schema =
+        serde_json::to_string(&task_list["inputSchema"]["properties"]["status"]).unwrap();
+    for status in [
+        "ready",
+        "in_progress",
+        "blocked",
+        "parked",
+        "completed",
+        "all",
+    ] {
+        assert!(task_status_schema.contains(status));
+    }
     assert!(task_list["inputSchema"]["properties"]
         .get("include_archived")
         .is_none());
@@ -1835,5 +1847,462 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     assert_eq!(
         completed_context["context_bundle"]["latest_snapshot"]["commit"],
         build_commit
+    );
+}
+
+#[test]
+fn wave_sync_and_atomic_next_preserve_parked_worktrees() {
+    use super::support::{evidence, tasks, TasksStore};
+    use std::sync::Barrier;
+
+    let mut failures = Vec::new();
+    let mut check = |condition: bool, requirement: &str| {
+        if !condition {
+            failures.push(requirement.to_owned());
+        }
+    };
+    let call = |client: &mut Client, tool: &str, args: Value| {
+        let response = client.call(tool, args).1;
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .unwrap_or(response)
+    };
+    let fixture = |name: &str, specs: &[(&str, &str)]| {
+        let workspace = Workspace::new();
+        workspace.write(
+            "forge-mcp.yaml",
+            "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
+        );
+        let mut manifest = format!(
+            "---\nid: m-{name}\ntitle: Dispatch\ndoc_type: contract\nstatus: active\ninvariants: [isolated]\n---\n"
+        );
+        for (reference, scope) in specs {
+            manifest.push_str(&format!(
+                "```yaml\ntask_ref: {reference}\ntarget: Deliver {reference}\nproof_policy: seam-test-first\nscope: [{scope}]\nscope_roots: [src/]\n```\n"
+            ));
+            let file = if scope.ends_with('/') {
+                format!("{scope}lib.rs")
+            } else {
+                (*scope).to_owned()
+            };
+            workspace.write(&file, "pub fn seam() {}\n");
+        }
+        workspace.write("docs/milestones/010-dispatch.md", &manifest);
+        let mut client = Client::new(&workspace);
+        let synced = client.payload(
+            "task_manage",
+            json!({"action":"sync","milestone_ref":"docs/milestones/010-dispatch.md"}),
+        );
+        let ids: Vec<String> = specs
+            .iter()
+            .map(|(reference, _)| {
+                synced["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|task| task["spec"]["task_ref"] == *reference)
+                    .unwrap()["task_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        (workspace, client, ids)
+    };
+    let advance =
+        |workspace: &Workspace, client: &mut Client, id: &str, stage: &str, worker: &str| {
+            client.payload(
+                "task_claim",
+                json!({"task_id":id,"stage":stage,"worker_id":worker,"worktree":workspace.0}),
+            );
+            let store = TasksStore::open(&workspace.0.join("tasks.sqlite")).unwrap();
+            let proof = evidence(&store.inspect(id).unwrap());
+            client.payload(
+                "task_submit",
+                json!({"task_id":id,"stage":stage,"action":"pass","evidence":proof}),
+            )
+        };
+
+    // Declaration order, rather than lexical identity, determines overlap edges.
+    let (waves, mut client, ids) = fixture(
+        "waves",
+        &[
+            ("z-first", "src/shared/"),
+            ("b-second", "src/shared/lib.rs"),
+            ("a-third", "src/shared/lib.rs"),
+            ("a-independent", "src/other.rs"),
+        ],
+    );
+    let store = TasksStore::open(&waves.0.join("tasks.sqlite")).unwrap();
+    let originals: Vec<_> = ids.iter().map(|id| store.inspect(id).unwrap()).collect();
+    let mut statement = store
+        .connection
+        .prepare(
+            "SELECT task_id, dependency_id FROM task_dependencies ORDER BY task_id, dependency_id",
+        )
+        .unwrap();
+    let edges: Vec<(String, String)> = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let mut expected = vec![
+        (ids[1].clone(), ids[0].clone()),
+        (ids[2].clone(), ids[0].clone()),
+        (ids[2].clone(), ids[1].clone()),
+    ];
+    expected.sort();
+    check(
+        edges == expected,
+        "sync must persist only top-down overlap dependencies",
+    );
+    for (id, wave) in ids.iter().zip([0, 1, 2, 0]) {
+        let inspected = client.payload("task_manage", json!({"action":"inspect","task_id":id}));
+        check(
+            inspected["wave_index"] == wave,
+            "sync must expose longest-dependency wave indexes",
+        );
+    }
+    client.payload(
+        "task_manage",
+        json!({"action":"sync","milestone_ref":"docs/milestones/010-dispatch.md"}),
+    );
+    for original in &originals {
+        let current = store.inspect(&original.task_id).unwrap();
+        check(
+            current.spec.depends_on.is_empty(),
+            "derived dependencies must not rewrite TaskSpec.depends_on",
+        );
+        check(
+            current.digest == original.digest,
+            "repeat sync must preserve authority digests",
+        );
+    }
+    let first = call(
+        &mut client,
+        "task_manage",
+        json!({"action":"next","worker_id":"wave-worker","worktree":waves.0}),
+    );
+    check(
+        first["task_id"] == ids[3],
+        "equal-wave contract dispatch must sort by task_id",
+    );
+    let second = call(
+        &mut client,
+        "task_manage",
+        json!({"action":"next","worker_id":"wave-worker-2","worktree":waves.0}),
+    );
+    check(
+        second["task_id"] == ids[0],
+        "inferred dependencies must permit the first overlapping owner to claim",
+    );
+    check(
+        second["context_bundle"].is_object(),
+        "next must return the claimed zero-shot context bundle",
+    );
+
+    // Independent deliver/review gates outrank contract work, while the builder
+    // remains ineligible to review or deliver its own accepted candidate.
+    let (priority, mut client, ids) = fixture(
+        "priority",
+        &[
+            ("z-deliver", "src/deliver.rs"),
+            ("b-review", "src/review.rs"),
+            ("a-contract", "src/contract.rs"),
+        ],
+    );
+    for id in &ids[..2] {
+        advance(&priority, &mut client, id, "contract", "builder");
+        advance(&priority, &mut client, id, "build", "builder");
+    }
+    advance(&priority, &mut client, &ids[0], "review", "reviewer");
+    let excluded = call(
+        &mut client,
+        "task_manage",
+        json!({"action":"next","worker_id":"builder","worktree":priority.0}),
+    );
+    check(
+        excluded["task_id"] == ids[2],
+        "next must skip the builder's own review and deliver gates",
+    );
+    for (id, stage) in [(&ids[0], "deliver"), (&ids[1], "review")] {
+        let selected = call(
+            &mut client,
+            "task_manage",
+            json!({"action":"next","worker_id":"independent","worktree":priority.0}),
+        );
+        check(
+            selected["task_id"] == *id && selected["stage"] == stage,
+            "next must prioritize independent deliver, then review",
+        );
+    }
+
+    let (parking, mut client, ids) = fixture(
+        "parking",
+        &[
+            ("holder", "src/holder.rs"),
+            ("parked", "src/parked.rs"),
+            ("ordinary", "src/ordinary.rs"),
+        ],
+    );
+    parking.write(
+        "src/parked.rs",
+        "pub fn unfinished_work_is_preserved() {}\n",
+    );
+    let unfinished = fs::read(parking.0.join("src/parked.rs")).unwrap();
+    for (id, worker) in [(&ids[0], "holder-worker"), (&ids[1], "park-worker")] {
+        advance(&parking, &mut client, id, "contract", worker);
+        client.payload(
+            "task_claim",
+            json!({"task_id":id,"stage":"build","worker_id":worker,"worktree":parking.0}),
+        );
+    }
+    let parked = call(
+        &mut client,
+        "task_manage",
+        json!({"action":"extend_scope","task_id":ids[1],"paths":["src/holder.rs"]}),
+    );
+    check(
+        parked["status"] == "parked" && parked["blocked_by"] == ids[0],
+        "extend_scope must park behind the active holder",
+    );
+    if parked["status"] == "parked" {
+        let task_ids = |payload: &Value| {
+            let mut listed: Vec<String> = payload["tasks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|task| task["task_id"].as_str().unwrap().to_owned())
+                .collect();
+            listed.sort();
+            listed
+        };
+        let mut all_ids = ids.clone();
+        all_ids.sort();
+        for (status, expected) in [
+            ("parked", vec![ids[1].clone()]),
+            ("ready", vec![ids[2].clone()]),
+            ("in_progress", vec![ids[0].clone()]),
+            ("blocked", Vec::new()),
+            ("completed", Vec::new()),
+            ("all", all_ids),
+        ] {
+            let listed = call(&mut client, "task_list", json!({"status":status}));
+            check(
+                task_ids(&listed) == expected,
+                &format!(
+                    "MCP status={status} must preserve the exact task selection after parking"
+                ),
+            );
+            let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+                .args([
+                    "--root",
+                    parking.0.to_str().unwrap(),
+                    "task",
+                    "list",
+                    "--status",
+                    status,
+                ])
+                .output()
+                .unwrap();
+            let listed = serde_json::from_slice::<Value>(&output.stdout).unwrap_or(Value::Null);
+            check(
+                output.status.success() && task_ids(&listed) == expected,
+                &format!(
+                    "CLI --status {status} must preserve the exact task selection after parking"
+                ),
+            );
+        }
+        check(
+            task_ids(&call(&mut client, "task_list", json!({}))) == vec![ids[2].clone()],
+            "default MCP status must remain ready and exclude parked work",
+        );
+        let default_cli = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args(["--root", parking.0.to_str().unwrap(), "task", "list"])
+            .output()
+            .unwrap();
+        let listed = serde_json::from_slice::<Value>(&default_cli.stdout).unwrap_or(Value::Null);
+        check(
+            default_cli.status.success() && task_ids(&listed) == vec![ids[2].clone()],
+            "default CLI status must remain ready and exclude parked work",
+        );
+        let store = TasksStore::open(&parking.0.join("tasks.sqlite")).unwrap();
+        let descriptor = serde_json::to_value(store.inspect(&ids[1]).unwrap()).unwrap();
+        check(
+            descriptor["parked_worker_id"] == "park-worker",
+            "parking must retain the builder identity",
+        );
+        check(
+            descriptor["parked_worktree"] == parking.0.to_str().unwrap(),
+            "parking must retain the original worktree",
+        );
+        check(
+            descriptor["spec"]["scope"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("src/holder.rs")),
+            "parking must admit the requested scope",
+        );
+        let open: i64 = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM task_claims WHERE task_id=?1 AND ended=0",
+                [&ids[1]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        check(
+            open == 0,
+            "parking must release its active claim atomically",
+        );
+        let blocked: i64 = store.connection.query_row("SELECT COUNT(*) FROM task_dependencies WHERE task_id=?1 AND dependency_id=?2 AND satisfied=0", [&ids[1], &ids[0]], |row| row.get(0)).unwrap();
+        check(
+            blocked == 1,
+            "parking must persist its unsatisfied holder dependency",
+        );
+        let notes: i64 = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM task_blackboard WHERE task_id=?1 AND topic='blockers'",
+                [&ids[1]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        check(notes > 0, "parking must publish a blocker blackboard note");
+        let foreign = call(
+            &mut client,
+            "task_manage",
+            json!({"action":"next","worker_id":"foreign","worktree":parking.0}),
+        );
+        check(
+            foreign["task_id"] == ids[2],
+            "another worker must not steal blocked parked work",
+        );
+        let active = store.inspect(&ids[0]).unwrap();
+        client.payload(
+            "task_submit",
+            json!({"task_id":ids[0],"stage":"build","action":"pass","evidence":evidence(&active)}),
+        );
+        advance(&parking, &mut client, &ids[0], "review", "holder-reviewer");
+        advance(&parking, &mut client, &ids[0], "deliver", "holder-reviewer");
+        let ordinary = store.inspect(&ids[2]).unwrap();
+        client.payload("task_submit", json!({"task_id":ids[2],"stage":"contract","action":"pass","evidence":evidence(&ordinary)}));
+        let another_worktree = Workspace::new();
+        let resumed = call(
+            &mut client,
+            "task_manage",
+            json!({"action":"next","worker_id":"park-worker","worktree":another_worktree.0}),
+        );
+        check(
+            resumed["task_id"] == ids[1] && resumed["stage"] == "build",
+            "same-worker parked work must outrank ordinary build work after unblocking",
+        );
+        check(
+            resumed["worktree"] == parking.0.to_str().unwrap(),
+            "resume must use the preserved worktree rather than the dispatch argument",
+        );
+        check(
+            fs::read(parking.0.join("src/parked.rs")).unwrap() == unfinished,
+            "parking and resume must preserve unfinished source bytes",
+        );
+    }
+
+    // Two real MCP server processes compete for one durable claim.
+    let (race, _client, ids) = fixture("race", &[("only", "src/only.rs")]);
+    let barrier = Barrier::new(2);
+    let outcomes = std::thread::scope(|scope| {
+        let handles: Vec<_> = ["racer-a", "racer-b"]
+            .into_iter()
+            .map(|worker| {
+                let workspace = &race;
+                let barrier = &barrier;
+                let call = &call;
+                scope.spawn(move || {
+                    let mut client = Client::new(workspace);
+                    barrier.wait();
+                    call(
+                        &mut client,
+                        "task_manage",
+                        json!({"action":"next","worker_id":worker,"worktree":workspace.0}),
+                    )
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    check(
+        outcomes
+            .iter()
+            .filter(|result| result["task_id"] == ids[0])
+            .count()
+            == 1,
+        "concurrent next requests must return exactly one successful claim",
+    );
+    let store = TasksStore::open(&race.0.join("tasks.sqlite")).unwrap();
+    let open: i64 = store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM task_claims WHERE task_id=?1 AND ended=0",
+            [&ids[0]],
+            |row| row.get(0),
+        )
+        .unwrap();
+    check(
+        open == 1,
+        "concurrent next must persist exactly one open claim",
+    );
+
+    let (cli, _client, ids) = fixture("cli-next", &[("only", "src/only.rs")]);
+    let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            cli.0.to_str().unwrap(),
+            "task",
+            "next",
+            "--worker",
+            "cli-worker",
+            "--worktree",
+            cli.0.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let selected: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    check(
+        output.status.success()
+            && selected["task_id"] == ids[0]
+            && selected["context_bundle"].is_object(),
+        "CLI task next must expose the same atomic claim and context seam",
+    );
+
+    // The engine owns diagnostic text; MCP must carry it verbatim.
+    let (errors, mut client, ids) = fixture("diagnostics", &[("only", "src/only.rs")]);
+    client.payload(
+        "task_claim",
+        json!({"task_id":ids[0],"stage":"contract","worker_id":"owner","worktree":errors.0}),
+    );
+    let args = json!({"task_id":ids[0],"stage":"contract","worker_id":"other","worktree":errors.0});
+    let engine_error = tasks::claim(&errors.0, serde_json::from_value(args.clone()).unwrap())
+        .unwrap_err()
+        .to_string();
+    let propagated = call(&mut client, "task_claim", args);
+    check(
+        propagated["error"]["message"] == engine_error,
+        "MCP must propagate the engine lifecycle diagnostic verbatim",
+    );
+    check(
+        engine_error.starts_with(&format!("TASK_ALREADY_CLAIMED: {}. ", ids[0]))
+            && engine_error.contains(". Do: ")
+            && !engine_error.contains('\n'),
+        "lifecycle diagnostics must use CODE: task_id. facts. Do: action on one line",
+    );
+
+    assert!(
+        failures.is_empty(),
+        "wave/dispatch contract failures:\n{}",
+        failures.join("\n")
     );
 }

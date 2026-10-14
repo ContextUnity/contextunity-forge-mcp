@@ -33,6 +33,8 @@ pub enum Status {
     InProgress,
     /// Tasks blocked by incomplete dependencies or open blockers.
     Blocked,
+    /// Tasks waiting for a scope owner while retaining worker and worktree affinity.
+    Parked,
     /// Completed tasks with durable receipts.
     Completed,
     /// Query tasks across all statuses.
@@ -45,6 +47,7 @@ impl Status {
             Self::Ready => "ready",
             Self::InProgress => "in_progress",
             Self::Blocked => "blocked",
+            Self::Parked => "parked",
             Self::Completed => "completed",
             Self::All => "all",
         }
@@ -118,7 +121,7 @@ pub struct List {
     pub milestone_ref: Option<String>,
     /// Filter by milestone lifecycle status: 'active' (default), 'planned', 'completed', or 'all'. A milestone_ref without this filter selects all statuses.
     pub milestone_status: Option<MilestoneStatusFilter>,
-    /// Filter by task status: ready (default), in_progress, blocked, completed, or all.
+    /// Filter by task status: ready (default), in_progress, blocked, parked, completed, or all.
     pub status: Option<Status>,
     /// Filter by any gate identifier in the active workflow profile.
     pub stage: Option<String>,
@@ -176,6 +179,8 @@ fn evidence_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 #[serde(rename_all = "snake_case")]
 /// Administrative actions for task management.
 pub enum ManageAction {
+    /// Atomically dispatch the highest-priority eligible gate.
+    Next,
     /// Create a new root task specification in SQLite.
     Create,
     /// Synchronize task specifications from milestone markdown documents.
@@ -204,9 +209,13 @@ pub enum ManageAction {
 #[serde(deny_unknown_fields)]
 /// Parameters for administrative task management in .forge/tasks.sqlite.
 pub struct Manage {
+    /// Worker receiving an atomic next claim.
+    pub worker_id: Option<String>,
+    /// Worktree used for next, unless a parked task retains its original worktree.
+    pub worktree: Option<String>,
     /// Workspace or repository name (defaults to primary configured workspace).
     pub workspace: Option<String>,
-    /// Administrative action to perform: inspect, sync, create, delete, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, context.
+    /// Administrative action to perform: next, inspect, sync, create, delete, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, context.
     pub action: ManageAction,
     /// Task identifier for inspect, delete, subtask operations, reset, or reopen.
     pub task_id: Option<String>,
@@ -589,6 +598,21 @@ pub fn store_for_task(root: &Path, id: &str) -> Result<TasksStore> {
 
 /// Performs submit.
 pub fn submit(root: &Path, p: Submit) -> Result<Value> {
+    let id = p.task_id.clone();
+    submit_inner(root, p).map_err(|error| lifecycle_error(&id, error))
+}
+
+fn lifecycle_error(id: &str, error: anyhow::Error) -> anyhow::Error {
+    let message = error.to_string();
+    let normalized = crate::core::tasks::task_lifecycle_diagnostic(id, &message);
+    if normalized == message {
+        error
+    } else {
+        anyhow::anyhow!(normalized)
+    }
+}
+
+fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     let registry = Registry::load(root)?;
     let workspace = registry.owner(&p.task_id)?;
     let mut store = workspace.open(&registry.database)?;

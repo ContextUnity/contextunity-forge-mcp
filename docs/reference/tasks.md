@@ -98,8 +98,8 @@ perimeter cannot claim a foreign task.
 
 Every task contract declares an explicit file perimeter (`scope`) bounding allowable writes. Forge guards these write boundaries in SQLite (`task_scope_paths` table):
 
-- **Exclusive Scope Locks and Sibling Conflicts**: Declared task scope paths are registered as frozen write locks (`frozen = 1`) upon milestone initialization and synchronization. At `task_claim`, Forge compares a task's paths with sibling locks in the same milestone. Exact, ancestor, or descendant overlaps with a non-completed sibling fail closed with `TASK_SCOPE_CONFLICT`. Dynamic extensions use the same milestone lock registry and reject paths owned by active siblings.
-- **Dynamic Extension (`extend_scope`)**: During an open task, a claimed task can dynamically extend its write perimeter to unowned files or tests (`frozen = 0`) via `task extend-scope <task_id> <path>...` (or MCP `task_manage(action: "extend_scope", ...)`).
+- **Exclusive Scope Locks and Sibling Conflicts**: Declared scope paths are registered with `frozen = 1`. During sync, overlapping task scopes create predecessor-to-successor dependencies in task declaration order. These SQLite edges preserve `TaskSpec.depends_on` and authority digests. `wave_index` is zero without dependencies, otherwise one plus the greatest predecessor wave. An active sibling with exact, ancestor, or descendant overlap blocks a claim with `TASK_SCOPE_CONFLICT`.
+- **Dynamic Extension (`extend_scope`)**: A claimed task extends its perimeter within admitted base roots via `task extend-scope <task_id> <path>...` or MCP `task_manage(action: "extend_scope", ...)`. If an active sibling holds the requested scope, one transaction admits the paths, adds holder dependencies, publishes a `blockers` note, ends the claim, and returns `status: "parked"` with `blocked_by`. The descriptor retains `parked_worker_id` and `parked_worktree`; the same worker resumes in that worktree after the holders complete. Conflicts with other nonterminal owners remain fail-closed.
 - **Completed Task Scope Release**: Once a task reaches `completed`, both `task_claim` and `extend_scope` exclude its rows from scope-conflict checks (`json_extract(t.descriptor, '$.status') != 'completed'`). Forge retains the completed task's `task_scope_paths` history while allowing successor tasks to claim or extend into those paths.
 - **Protected System Scopes and Dirty File Prohibition**: System configuration and workflow profile files (`.forge/acdd/**` and profile definitions) are protected system paths (`TASK_SCOPE_PROTECTED`). Regular tasks cannot claim or extend into these paths via `extend_scope`. Furthermore, during `task_claim`, gate execution, and `task_submit`, the compiled binary inspects the worktree git status: if any file under `.forge/acdd/**` is dirty (modified, unstaged, staged, or untracked) and is not explicitly admitted in `task.spec.scope`, Forge fails closed with `TASK_SCOPE_VIOLATION`. This guarantees that agents cannot mutate workflow profiles, weaken review contours, or bypass test gates on the fly. Legitimate profile updates are performed either directly outside task cycles or within dedicated configuration tasks whose explicit scope admits `.forge/acdd/profile.yaml`.
 - **Documentation Co-Evolution Planning**: Shared documentation (such as `docs/reference/tasks.md`, `README.md`, or architecture documents) frequently evolves across multiple milestone tasks. When multiple tasks in a milestone must update the same documentation or common shared modules, dependencies must be sequenced via `depends_on`. Once the predecessor task completes, the successor task gains lawful access to extend into and evolve the shared documentation. Alternatively, documentation changes can be planned alongside code changes within the owning task's build gate, ensuring documentation and implementation remain synchronized without scope friction.
@@ -109,10 +109,10 @@ Every task contract declares an explicit file perimeter (`scope`) bounding allow
 
 | Tool | Arguments and behavior |
 | --- | --- |
-| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `completed`, and `all`. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
+| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
-| `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. Selectors follow the table below. |
+| `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. `next` additionally requires `worker_id` and `worktree`; other actions reject these fields. Selectors follow the table below. |
 | `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires canonical `topic` and `payload`, accepts `author` and optional active-profile `gate`, and returns an ID. Read accepts `topic`, optional active-profile `gate`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect with `message_id` returns that message including payload and gate, ignoring optional `scope`, `task_id`, and `milestone_ref`; without `message_id`, inspect returns the scoped read page. |
 
 Unknown fields are rejected. Ready tasks are unclaimed and nonterminal, with
@@ -121,6 +121,7 @@ Null stage matches all gates.
 
 | Manage action | Required fields | Other constraints |
 | --- | --- | --- |
+| `next` | `worker_id`, `worktree` | Optional workspace; omit task/milestone/subtask selectors, paths, evidence, and force. Returns a claim with context bundle, or `status: "idle"` when no task is eligible. |
 | `create` | `milestone_ref`, `task_ref` | Optional workspace; omit task_id/paths; force=false. |
 | `sync` | `milestone_ref` or `workspace` | Optional explicit file within workspace; omit task_id/task_ref/paths; force=false. |
 | `inspect` | `task_id` | Omit workspace/milestone_ref/task_ref/paths; force=false. |
@@ -141,6 +142,15 @@ an interrupted process between updates requires manual reconciliation.
 Reset and task delivery serialize receipt edits through one advisory file lock
 beside the task database, so concurrent tasks cannot overwrite each other's
 milestone receipts.
+
+`task_manage(action: "next")` selects and writes one claim under an immediate
+SQLite transaction. Priority is independent delivery, independent review,
+unblocked parked work belonging to the requesting worker, then ordinary ready
+contract/build work. Ordinary work sorts by `wave_index`, then `task_id`.
+Review and delivery exclude the accepted builder; all candidates require satisfied
+dependencies and no active scope overlap. Parked work uses its retained worktree
+even when the dispatcher receives another path. Authority and worktree validation
+run before the claim is persisted; activation or context failures release it.
 
 Create reads the selected task; sync reads all task blocks atomically per file. Repeated
 creation preserves state. Changed specifications require a larger Git task
@@ -325,10 +335,10 @@ Zero runtime backward compatibility applies strictly to SQLite runtime storage a
 
 ## Task lifecycle diagnostics and error ergonomics
 
-Task lifecycle errors in Forge follow a deterministic single-line format providing exact facts and an imperative action:
-- Task-scoped errors: `{CODE}: {task_id}. {facts}. Do: {action}`
-- Action-scoped errors: `{CODE}: action '{action}'. {facts}. Do: {action}`
-- Milestone-scoped errors: `{CODE}: milestone '{milestone_ref}'. {facts}. Do: {action}`
+Claim, submit, manage, and reset errors use one single-line format:
+`{CODE}: {task_id}. {facts}. Do: {action}`. Operations without a task selector use
+the milestone reference or `unselected` in that position. The engine owns this
+text and MCP propagates it verbatim.
 
 ### Structured Authority Diagnostics (`AUTHORITY_GAP` and `TASK_AUTHORITY_MISSING`)
 
