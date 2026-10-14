@@ -2,40 +2,41 @@
 id: m-acdd-boundary-seams-and-wave-orchestration
 title: ACDD receipt canonicalization, tiered role profile (contract/build/review+deliver), blackboard handoff, seam guards, and wave dispatch
 doc_type: contract
-status: planned
+status: active
 repository: forge-mcp
 project: forge-mcp
 depends_on:
-  - m-authority-gap-diagnostics-and-milestone-header-protection
+- m-authority-gap-diagnostics-and-milestone-header-protection
 owners:
-  - .forge/acdd/profile.yaml
-  - AGENTS.md
-  - TESTS.md
-  - src/core/tasks/
-  - src/db/tasks_store/
-  - src/engine/tasks/
-  - src/engine/milestones/
-  - src/mcp/
-  - src/cli/
-  - skills/
-  - docs/reference/acdd.md
-  - docs/reference/profiles.md
-  - docs/reference/tasks.md
-  - docs/reference/mcp-tools.md
-  - docs/reference/cli.md
-  - tests/acdd/
+- .forge/acdd/profile.yaml
+- AGENTS.md
+- TESTS.md
+- src/core/tasks/
+- src/db/tasks_store/
+- src/engine/tasks/
+- src/engine/milestones/
+- src/mcp/
+- src/cli/
+- skills/
+- docs/reference/acdd.md
+- docs/reference/profiles.md
+- docs/reference/tasks.md
+- docs/reference/mcp-tools.md
+- docs/reference/cli.md
+- tests/acdd/
 invariants:
-  - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
-  - 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
-  - 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
-  - 'INV-TIERED-SUBAGENT-PROFILE: Default ACDD profile defines three tiered subagent roles—contract_author (sol-6.1:high for contract seam design), builder (gpt6-luna:xhigh for build code implementation connected via gate-targeted task_blackboard notes), and independent_reviewer (sol-6.1:xhigh governing review and deliver gates in a single reviewer subagent session)—while forbidding preflight subagents.'
-  - 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
-  - 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
-  - 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
-  - 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
-  - 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
-  - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+- 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+- 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
+- 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
+- 'INV-TIERED-SUBAGENT-PROFILE: Default ACDD profile defines three tiered subagent roles—contract_author (sol-6.1:high for contract seam design), builder (gpt6-luna:xhigh for build code implementation connected via gate-targeted task_blackboard notes), and independent_reviewer (sol-6.1:xhigh governing review and deliver gates in a single reviewer subagent session)—while forbidding preflight subagents.'
+- 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
+- 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
+- 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
+- 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
+- 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
+- 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
 related_plans: []
+started_at: 2026-10-14T15:41:30+00:00
 ---
 
 # ACDD receipt canonicalization, tiered role profile (contract/build/review+deliver), blackboard handoff, seam guards, and wave dispatch
@@ -72,42 +73,103 @@ Based on production rollout telemetry (`rollout-2026-10-14T08-02-19`) and direct
 
 ```yaml
 task_ref: receipt-sha-canonicalization-and-blackboard-ergonomics
-target: "Preserve canonical 40-char commit SHAs in receipts and snapshots, accept short SHA prefixes in gate submissions, forbid manual receipt YAML edits, and make task_blackboard inspect tolerant of scope parameters"
+target: Preserve canonical 40-char commit SHAs in receipts and snapshots, accept short SHA prefixes in gate submissions, forbid manual receipt YAML edits, and make task_blackboard inspect tolerant of scope parameters
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 3
 scope:
-  - src/core/tasks/mod.rs
-  - src/engine/tasks/gates.rs
-  - src/engine/tasks/blackboard.rs
-  - src/engine/tasks/workspaces.rs
-  - docs/reference/tasks.md
-  - docs/reference/mcp-tools.md
-  - tests/acdd/tasks.rs
-  - tests/acdd/blackboard.rs
-  - tests/acdd/mcp.rs
+- src/core/tasks/mod.rs
+- src/engine/tasks/gates.rs
+- src/engine/tasks/mod.rs
+- src/engine/tasks/blackboard.rs
+- src/engine/tasks/workspaces.rs
+- tests/acdd/milestones.rs
+- docs/reference/tasks.md
+- docs/reference/mcp-tools.md
+- tests/acdd/tasks.rs
+- tests/acdd/blackboard.rs
+- tests/acdd/mcp.rs
 depends_on: []
 invariants:
-  - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
-  - 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
-  - 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
-  - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
-status: planned
+- 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+- 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
+- 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
+- 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+status: completed
 subtasks:
-  - subtask_ref: preserve-full-sha-in-receipts-and-snapshots
-    title: "Update shorten_task_response_commits in src/core/tasks/mod.rs and prefix matching in src/engine/tasks/gates.rs so receipt.commit and candidate_snapshot.commit remain 40-char SHAs while accepting 7-char prefixes on submit"
-    status: pending
-  - subtask_ref: relax-blackboard-inspect-parameter-validation
-    title: "Update validate_blackboard_request in src/engine/tasks/blackboard.rs so action=inspect ignores redundant scope/task_id/milestone_ref parameters when message_id is present and routes to scoped read when message_id is absent"
-    status: pending
-  - subtask_ref: inject-never-edit-receipts-guardrail
-    title: "Add NEVER_EDIT_RECEIPTS rule to workflow_guidance.rules in src/engine/tasks/workspaces.rs instructing agents never to hand-edit receipt: or status: YAML in docs/milestones/*.md"
-    status: pending
+- subtask_ref: preserve-full-sha-in-receipts-and-snapshots
+  title: Preserve full receipt and snapshot SHAs in src/core/tasks/mod.rs and tests/acdd/milestones.rs, and normalize short SHA prefixes in src/engine/tasks/mod.rs and src/engine/tasks/gates.rs before gate comparison
+  status: completed
+  evidence: 'cargo test --test acdd deferred_final_task_context_survives_delivery_and_prunes_blackboard -- --nocapture: exit 0, 1 passed, 0 failed; cargo test --test acdd: exit 0, 85 passed, 0 failed; cargo clippy --all-targets --all-features -- -D warnings: exit 0. Full SHA receipt/snapshot/gate assertions updated.'
+- subtask_ref: relax-blackboard-inspect-parameter-validation
+  title: Update validate_blackboard_request in src/engine/tasks/blackboard.rs so action=inspect ignores redundant scope/task_id/milestone_ref parameters when message_id is present and routes to scoped read when message_id is absent
+  status: completed
+  evidence: 'Before fix: cargo test --test acdd linked_task_mcp_and_cli_resolve_repository_roots_and_guidance -- --nocapture exited 101, failing only isolated subtask_ref and combined context-selector cases through the production MCP path. After fix: focused seam passed 1/0; cargo test --test acdd passed 85/0; cargo clippy --all-targets --all-features -- -D warnings exited 0; fmt and diff checks passed. Inspect with message_id ignores scope, task_id, milestone_ref, and subtask_ref.'
+- subtask_ref: inject-never-edit-receipts-guardrail
+  title: 'Add NEVER_EDIT_RECEIPTS rule to workflow_guidance.rules in src/engine/tasks/workspaces.rs instructing agents never to hand-edit receipt: or status: YAML in docs/milestones/*.md'
+  status: completed
+  evidence: 'cargo test --test acdd: exit 0, 85 passed, 0 failed. MCP workflow-guidance test asserts the NEVER_EDIT_RECEIPTS rule.'
+receipt:
+  contract_revision: 3
+  passed_at: 2026-10-14T16:18:51.135568048+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test acdd
+      exit_code: 0
+      tests_passed: 85
+      tests_failed: 0
+      log: 'Review finding M019-T1-R1 regression: before fix, `cargo test --test acdd linked_task_mcp_and_cli_resolve_repository_roots_and_guidance -- --nocapture` exited 101, failing isolated and combined subtask_ref cases. After fix, same focused MCP seam passed 1/0. Full `cargo test --test acdd`: exit 0, 85 passed, 0 failed. `cargo clippy --all-targets --all-features -- -D warnings`: exit 0. `cargo fmt --all -- --check` and `git diff --check`: exit 0.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed full HEAD diff and dc8ab6a..e35f0b2 remediation delta. All 11 admitted candidate paths match the worktree byte-for-byte; git status has only admitted implementation/docs/tests plus coordinated milestone authority activation/amendment. git diff --check exits 0. No profiles/credentials/untracked changes.
+        claims:
+          applicable: true
+          evidence: 'Canonical SHA response helper preserves all machine commit/evidence values; display inspect_cmd remains abbreviated. canonical_commit_from_prefix enforces 7..=40 ASCII hex prefixes against expected full SHA; public submit and transactional store normalize before comparison/persistence. Existing MCP lifecycle proves 7-char review submission and full snapshot/receipt/stored evidence; helper cases cover 7/12/39/40. Blackboard inspect ignores scope/task_id/milestone_ref/subtask_ref with message_id and otherwise uses resolved scoped Read and schema filters. Exact NEVER_EDIT_RECEIPTS rule is injected. M019-T1-R1 closed by removal of subtask_ref reject predicate, standalone/combined MCP cases, and updated docs. Independent cargo test --test acdd linked_task_mcp_and_cli_resolve_repository_roots_and_guidance -- --nocapture: exit 0, 1 passed, 0 failed; accepted builder verification records full affected suite 85/0 and strict Clippy exit 0.'
+        concurrency:
+          applicable: true
+          evidence: Reviewed engine submit and TasksStore submit_with_pre_persist. Normalization occurs within existing revision/worker/worktree fencing and before accepted-evidence persistence. Prefix matching binds only the selected candidate, not arbitrary Git references. Baseline checks, candidate validation, gate ordering, independent reviewer enforcement and atomic receipt rollback remain intact. Blackboard tolerance modifies validation/read routing without changing transactions or lock order.
+        project_isolation:
+          applicable: true
+          evidence: Inspect-by-message retains configured Registry workspace lookup; fallback reuses resolve_blackboard_context, owner/project checks and active profile schema. Existing linked MCP/CLI production lifecycle and traversal rejection pass. No root/symlink confinement, database namespace, task identifier or linked-profile resolution changes.
+        administration:
+          applicable: true
+          evidence: No migrations/profile pins/protected configuration changed. Core helper imports no engine/db/mcp/cli. Candidate remains e35f0b2f3bce779420f32658a75d1e7793af7b92 on captured baseline cac453e3b62cccb5796a290a9a9ad2bd92563518. Auto delivery commit/hook path and canonical durable receipt writer remain existing authority. Milestone receipt/status were not manually edited during review.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+    - 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
+    - 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
+    - 'INV-TIERED-SUBAGENT-PROFILE: Default ACDD profile defines three tiered subagent roles—contract_author (sol-6.1:high for contract seam design), builder (gpt6-luna:xhigh for build code implementation connected via gate-targeted task_blackboard notes), and independent_reviewer (sol-6.1:xhigh governing review and deliver gates in a single reviewer subagent session)—while forbidding preflight subagents.'
+    - 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
+    - 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
+    - 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
+    - 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
+    - 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
+    - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+    - 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
+    - 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
+    - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
 
 1. In `src/core/tasks/mod.rs` (lines 32–49), update `shorten_task_response_commits` so `receipt.commit`, `candidate_snapshot.commit`, and `latest_snapshot.commit` retain their canonical 40-character Git SHA (matching the milestone Markdown document on disk), keeping 7-char formatting strictly inside `"inspect_cmd"` or a separate `"short_commit"` field.
-2. In `src/engine/tasks/gates.rs`, when `evidence.commit` is a 7–39 hex-character prefix of the 40-character `build.commit` (or resolves via `git rev-parse --verify`), normalize `evidence.commit` to the full 40-character SHA before comparison and persistence.
+   Update the affected existing assertion in `tests/acdd/milestones.rs` so API response checks expect the same canonical full SHA.
+2. In `src/engine/tasks/mod.rs` and `src/engine/tasks/gates.rs`, when `evidence.commit` is a 7–39 hex-character prefix of the 40-character `build.commit` (or resolves via `git rev-parse --verify`), normalize it to the full 40-character SHA before candidate comparison and gate persistence.
 3. In `src/engine/tasks/blackboard.rs` (lines 360–374), update `validate_blackboard_request` for `BlackboardAction::Inspect` so optional `scope`, `task_id`, `subtask_ref`, and `milestone_ref` parameters are ignored when `message_id` is supplied, and requests with `message_id == None` and a valid `task_id` or `milestone_ref` automatically dispatch to `BlackboardAction::Read`.
 4. In `src/engine/tasks/workspaces.rs`, inject `NEVER_EDIT_RECEIPTS: Never manually edit receipt: or status: blocks in docs/milestones/*.md; task_submit(stage=deliver) writes and commits receipts automatically.` into `workflow_guidance.rules`.
 

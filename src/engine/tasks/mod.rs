@@ -1,7 +1,7 @@
 use crate::{
     core::tasks::{
-        confined_path, gates::Evidence, shorten_task_response_commits, snapshot_inspect_cmd,
-        Milestone,
+        canonical_commit_from_prefix, confined_path, gates::Evidence,
+        shorten_task_response_commits, snapshot_inspect_cmd, Milestone,
     },
     db::tasks_store::{BlackboardPageRequest, BlackboardPostInput, Task, TasksStore},
 };
@@ -651,12 +651,12 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
         let (snapshot, baseline) =
             git_snapshot::capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
                 .context("TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree")?;
-        if explicit_commit
-            .as_ref()
-            .is_some_and(|commit| commit != &snapshot)
-        {
-            let supplied = explicit_commit.as_deref().unwrap_or("missing");
-            bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != scoped snapshot {snapshot}. Do: resubmit with commit {snapshot}.", p.task_id);
+        if let Some(supplied) = explicit_commit.as_deref() {
+            if let Some(canonical) = canonical_commit_from_prefix(supplied, &snapshot) {
+                evidence.commit = Some(canonical);
+            } else {
+                bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != scoped snapshot {snapshot}. Do: resubmit with commit {snapshot}.", p.task_id);
+            }
         }
         evidence.commit = Some(snapshot);
         evidence.candidate_baseline_head = Some(baseline);
@@ -674,12 +674,10 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
                     .as_ref()
                     .and_then(|receipt| receipt.commit.as_deref())
                     .context("TASK_RECEIPT_INVALID: completed task has no delivery commit")?;
-                if explicit_commit
-                    .as_deref()
-                    .is_some_and(|commit| commit != delivered)
-                {
-                    let supplied = explicit_commit.as_deref().unwrap_or("missing");
-                    bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != accepted receipt commit {delivered}. Do: resubmit with commit {delivered}.", p.task_id);
+                if let Some(supplied) = explicit_commit.as_deref() {
+                    if canonical_commit_from_prefix(supplied, delivered).is_none() {
+                        bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != accepted receipt commit {delivered}. Do: resubmit with commit {delivered}.", p.task_id);
+                    }
                 }
                 evidence.commit = Some(delivered.to_owned());
             } else {
@@ -710,12 +708,10 @@ pub fn submit(root: &Path, p: Submit) -> Result<Value> {
                 evidence.commit = Some(candidate.clone());
             }
         } else {
-            if explicit_commit
-                .as_ref()
-                .is_some_and(|commit| commit != &candidate)
-            {
-                let supplied = explicit_commit.as_deref().unwrap_or("missing");
-                bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != candidate snapshot {candidate}. Do: resubmit with commit {candidate}.", p.task_id);
+            if let Some(supplied) = explicit_commit.as_deref() {
+                if canonical_commit_from_prefix(supplied, &candidate).is_none() {
+                    bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != candidate snapshot {candidate}. Do: resubmit with commit {candidate}.", p.task_id);
+                }
             }
             evidence.commit = Some(candidate.clone());
             if matches!(

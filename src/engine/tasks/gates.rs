@@ -1,4 +1,5 @@
 use crate::core::tasks::{
+    canonical_commit_from_prefix,
     gates::{
         review_rollup_summary, validate_durable_receipt_with_profile, validate_gate_proof, Evidence,
     },
@@ -309,11 +310,21 @@ impl TasksStore {
                 bail!("TASK_REVIEW_NOT_INDEPENDENT: task '{id}'. reviewer worker '{}' matches builder '{builder}'. Do: submit review with a worker_id other than '{builder}'.", evidence.worker_id);
             }
             let build = accepted(&tx, id, prior)?;
-            if gate_def.proof.kind() != Some(ProofKind::Delivery) && build.commit != evidence.commit
-            {
-                let supplied = evidence.commit.as_deref().unwrap_or("missing");
-                let snapshot = build.commit.as_deref().unwrap_or("missing");
-                bail!("TASK_CANDIDATE_MISMATCH: task '{id}'. supplied commit {supplied} != candidate snapshot {snapshot}. Do: resubmit with commit {snapshot}.");
+            if gate_def.proof.kind() != Some(ProofKind::Delivery) {
+                let canonical = evidence.commit.as_deref().and_then(|supplied| {
+                    build
+                        .commit
+                        .as_deref()
+                        .and_then(|snapshot| canonical_commit_from_prefix(supplied, snapshot))
+                });
+                if let Some(canonical) = canonical {
+                    evidence.commit = Some(canonical);
+                }
+                if build.commit != evidence.commit {
+                    let supplied = evidence.commit.as_deref().unwrap_or("missing");
+                    let snapshot = build.commit.as_deref().unwrap_or("missing");
+                    bail!("TASK_CANDIDATE_MISMATCH: task '{id}'. supplied commit {supplied} != candidate snapshot {snapshot}. Do: resubmit with commit {snapshot}.");
+                }
             }
         }
         if gate_def.proof.kind() == Some(ProofKind::Delivery) && action == "pass" {
@@ -324,6 +335,14 @@ impl TasksStore {
                 .context("TASK_GATES_INVALID: delivery requires a prior sha_snapshot gate")?;
             let build = accepted(&tx, id, &snapshot_gate.id)?;
             let candidate_snapshot = build.commit.as_deref().unwrap_or("missing");
+            if !gate_def.auto_commit {
+                let canonical = evidence.commit.as_deref().and_then(|supplied| {
+                    canonical_commit_from_prefix(supplied, candidate_snapshot)
+                });
+                if let Some(canonical) = canonical {
+                    evidence.commit = Some(canonical);
+                }
+            }
             let receipt_commit = evidence
                 .commit
                 .as_deref()

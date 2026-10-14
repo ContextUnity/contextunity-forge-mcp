@@ -1971,7 +1971,7 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
         if let Some(candidate) = candidate_commit.as_deref() {
             if matches!(index, 1 | 2) {
                 let short_candidate = &candidate[..7];
-                assert_eq!(submitted["snapshot"]["commit"], short_candidate);
+                assert_eq!(submitted["snapshot"]["commit"], candidate);
                 assert_eq!(
                     submitted["snapshot"]["inspect_cmd"],
                     format!("git show {short_candidate}")
@@ -1981,9 +1981,8 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
         if index == stages.len() - 1 {
             assert_eq!(submitted["status"], "completed");
             let landed = git_head(&root.0);
-            let short_landed = &landed[..7];
-            assert_eq!(submitted["snapshot"]["commit"], short_landed);
-            assert_eq!(submitted["receipt"]["commit"], short_landed);
+            assert_eq!(submitted["snapshot"]["commit"], landed);
+            assert_eq!(submitted["receipt"]["commit"], landed);
             delivery_commit = Some(landed);
         }
     }
@@ -1994,7 +1993,7 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
         .unwrap();
     let candidate = candidate_commit.as_deref().unwrap();
     let short_candidate = &candidate[..7];
-    assert_eq!(details["latest_snapshot"]["commit"], short_candidate);
+    assert_eq!(details["latest_snapshot"]["commit"], candidate);
     assert_eq!(
         details["latest_snapshot"]["inspect_cmd"],
         format!("git show {short_candidate}")

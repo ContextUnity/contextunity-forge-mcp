@@ -40,7 +40,7 @@ pub struct BlackboardRequest {
     pub task_id: Option<String>,
     /// Subtask reference used by subtask scope.
     pub subtask_ref: Option<String>,
-    /// Message identifier required by inspect.
+    /// Message identifier for payload inspection; when omitted, inspect returns a scoped read page.
     pub message_id: Option<u64>,
     /// Posting worker identifier. Defaults to the active task owner or transport.
     pub author: Option<String>,
@@ -354,25 +354,23 @@ fn validate_blackboard_request(request: &BlackboardRequest) -> Result<()> {
             }
         }
         BlackboardAction::Inspect => {
-            if request.message_id.is_none() {
-                bail!("TASK_BLACKBOARD_INVALID: inspect requires message_id");
-            }
-            if request.scope.is_some()
-                || request.milestone_ref.is_some()
-                || request.task_id.is_some()
-                || request.subtask_ref.is_some()
-                || request.author.is_some()
-                || request.topic.is_some()
-                || request.gate.is_some()
-                || request.payload.is_some()
-                || request.limit.is_some()
-                || request.offset.is_some()
-            {
-                bail!("TASK_BLACKBOARD_INVALID: inspect accepts only message_id");
+            if request.message_id.is_some() {
+                if request.author.is_some()
+                    || request.topic.is_some()
+                    || request.gate.is_some()
+                    || request.payload.is_some()
+                    || request.limit.is_some()
+                    || request.offset.is_some()
+                {
+                    bail!("TASK_BLACKBOARD_INVALID: inspect with message_id accepts only scope, task_id, milestone_ref, and subtask_ref context");
+                }
+            } else if request.author.is_some() || request.payload.is_some() {
+                bail!("TASK_BLACKBOARD_INVALID: inspect without message_id rejects author and payload");
             }
         }
     }
-    if request.offset.is_some() && request.action != BlackboardAction::Read {
+    let scoped_read = request.action == BlackboardAction::Inspect && request.message_id.is_none();
+    if request.offset.is_some() && request.action != BlackboardAction::Read && !scoped_read {
         bail!("TASK_BLACKBOARD_INVALID: offset is only valid for read");
     }
     Ok(())
@@ -429,7 +427,7 @@ fn validate_blackboard_schema(
             blackboard_schema_hint(profile, "post requires a payload")
         );
     }
-    if request.action != BlackboardAction::Inspect {
+    if request.action != BlackboardAction::Inspect || request.message_id.is_none() {
         if request.action == BlackboardAction::Post && request.topic.is_none() {
             bail!(
                 "{}",
@@ -464,7 +462,7 @@ pub fn blackboard(root: &Path, request: BlackboardRequest, transport: &str) -> R
     validate_blackboard_request(&request)?;
     let registry = Registry::load(root)?;
     match request.action {
-        BlackboardAction::Inspect => {
+        BlackboardAction::Inspect if request.message_id.is_some() => {
             let message_id = request
                 .message_id
                 .context("TASK_BLACKBOARD_INVALID: message_id is required")?;
@@ -510,7 +508,7 @@ pub fn blackboard(root: &Path, request: BlackboardRequest, transport: &str) -> R
                 })?;
             Ok(json!({"id":id}))
         }
-        BlackboardAction::Read => {
+        BlackboardAction::Read | BlackboardAction::Inspect => {
             let context = resolve_blackboard_context(&registry, &request)?;
             let profile = blackboard_profile(&context)?;
             validate_blackboard_schema(&request, &profile)?;

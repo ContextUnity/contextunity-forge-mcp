@@ -546,6 +546,8 @@ impl Workspace {
             ));
         }
         rules.extend([
+            "NEVER_EDIT_RECEIPTS: Never manually edit receipt: or status: blocks in docs/milestones/*.md; task_submit(stage=deliver) writes and commits receipts automatically."
+                .to_owned(),
             "IMMUTABILITY: Keep admitted scope unchanged after review pass and during deliver."
                 .to_owned(),
             "INDEPENDENCE: Review stage requires a worker_id distinct from the accepted builder."

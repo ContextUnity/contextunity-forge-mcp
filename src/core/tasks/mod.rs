@@ -28,33 +28,27 @@ pub fn short_candidate_commit(commit: &str) -> String {
     }
 }
 
-/// Shorten candidate IDs in agent-visible task responses without changing stored evidence.
-pub fn shorten_task_response_commits(value: &mut serde_json::Value) {
-    fn shorten(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Object(object) => {
-                if let Some(serde_json::Value::String(commit)) = object.get_mut("commit") {
-                    *commit = short_candidate_commit(commit);
-                }
-                if let Some(serde_json::Value::String(evidence)) = object.get_mut("evidence") {
-                    if let Ok(mut parsed) = serde_json::from_str(evidence) {
-                        shorten(&mut parsed);
-                        if let Ok(encoded) = serde_json::to_string(&parsed) {
-                            *evidence = encoded;
-                        }
-                    }
-                }
-                for child in object.values_mut() {
-                    shorten(child);
-                }
-            }
-            serde_json::Value::Array(items) => items.iter_mut().for_each(shorten),
-            _ => {}
-        }
+/// Resolve a supplied 7-to-40-character hexadecimal SHA prefix to its known full commit.
+///
+/// Callers compare against a commit already selected by the task state machine, so
+/// this avoids accepting unrelated values while ensuring persisted evidence stays canonical.
+pub fn canonical_commit_from_prefix(supplied: &str, expected: &str) -> Option<String> {
+    let supplied_len = supplied.len();
+    if !(7..=40).contains(&supplied_len)
+        || expected.len() != 40
+        || !supplied.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !expected.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !expected[..supplied_len].eq_ignore_ascii_case(supplied)
+    {
+        return None;
     }
-
-    shorten(value);
+    Some(expected.to_owned())
 }
+
+/// Preserve canonical commit IDs in task responses; abbreviations belong in display commands.
+///
+/// This public helper remains for compatibility with existing response assembly call sites.
+pub fn shorten_task_response_commits(_value: &mut serde_json::Value) {}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 /// Represents receipt data.

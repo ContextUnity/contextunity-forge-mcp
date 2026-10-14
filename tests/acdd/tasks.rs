@@ -565,7 +565,7 @@ fn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {
     assert_eq!(stored, expected);
     let snapshot_commit = stored["commit"].as_str().unwrap();
     assert_eq!(snapshot_commit.len(), 40);
-    assert_eq!(&snapshot_commit[..7], submitted["snapshot"]["commit"]);
+    assert_eq!(snapshot_commit, submitted["snapshot"]["commit"]);
     assert_eq!(stored["candidate_baseline_head"], git_head(&root.0));
     let submission: String = store
         .connection
@@ -648,7 +648,7 @@ fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
     assert_eq!(stored, expected);
     let snapshot_commit = stored["commit"].as_str().unwrap();
     assert_eq!(snapshot_commit.len(), 40);
-    assert_eq!(&snapshot_commit[..7], result["snapshot"]["commit"]);
+    assert_eq!(snapshot_commit, result["snapshot"]["commit"]);
     assert_eq!(stored["candidate_baseline_head"], git_head(&root.0));
 }
 
@@ -2545,7 +2545,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
 
     let contract_snap = pinned_candidate(&root.0, task_id);
     assert_eq!(contract_snap.len(), 40);
-    assert_eq!(contract_res["snapshot"]["commit"], &contract_snap[..7]);
+    assert_eq!(contract_res["snapshot"]["commit"], contract_snap);
     assert_eq!(
         contract_res["snapshot"]["inspect_cmd"],
         format!("git show {}", &contract_snap[..7])
@@ -2615,7 +2615,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
 
     let build_snap = pinned_candidate(&root.0, task_id);
     assert_eq!(build_snap.len(), 40);
-    assert_eq!(build_res["snapshot"]["commit"], &build_snap[..7]);
+    assert_eq!(build_res["snapshot"]["commit"], build_snap);
     assert_eq!(
         build_snap, contract_snap,
         "an unrelated sibling commit must not change the scoped candidate SHA"
@@ -2761,7 +2761,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     .unwrap();
 
     // Review snapshot matches build candidate snapshot
-    assert_eq!(review_res["snapshot"]["commit"], &build_snap[..7]);
+    assert_eq!(review_res["snapshot"]["commit"], build_snap);
 
     // 4. Delivery
     tasks::claim(
@@ -3054,11 +3054,10 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     );
     assert_eq!(delivery_commit.len(), 40);
     assert_ne!(delivery_commit, build_snap);
-    assert_eq!(deliver_res["snapshot"]["commit"], &delivery_commit[..7]);
-    assert_eq!(deliver_res["receipt"]["commit"], &delivery_commit[..7]);
+    assert_eq!(deliver_res["snapshot"]["commit"], delivery_commit);
+    assert_eq!(deliver_res["receipt"]["commit"], delivery_commit);
     assert_eq!(
-        deliver_res["receipt"]["commit"],
-        &delivery_commit[..7],
+        deliver_res["receipt"]["commit"], delivery_commit,
         "the returned receipt must carry the delivery commit"
     );
     let delivery_message = std::process::Command::new("git")
@@ -3156,8 +3155,8 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .unwrap()
         .inspect_details(task_id)
         .unwrap();
-    assert_eq!(details["receipt"]["commit"], &delivery_commit[..7]);
-    assert_eq!(details["latest_snapshot"]["commit"], &build_snap[..7]);
+    assert_eq!(details["receipt"]["commit"], delivery_commit);
+    assert_eq!(details["latest_snapshot"]["commit"], build_snap);
     assert_eq!(
         details["latest_snapshot"]["inspect_cmd"],
         format!("git show {}", &build_snap[..7])
@@ -3166,9 +3165,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         let evidence: serde_json::Value =
             serde_json::from_str(gate["evidence"].as_str().unwrap()).unwrap();
         let expected = if gate["stage"] == "deliver" {
-            &delivery_commit[..7]
+            delivery_commit.as_str()
         } else {
-            &build_snap[..7]
+            build_snap.as_str()
         };
         assert_eq!(gate["commit"], expected);
         assert_eq!(evidence["commit"], expected);

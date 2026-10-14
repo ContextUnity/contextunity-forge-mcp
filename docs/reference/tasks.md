@@ -113,7 +113,7 @@ Every task contract declares an explicit file perimeter (`scope`) bounding allow
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. Selectors follow the table below. |
-| `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires canonical `topic` and `payload`, accepts `author` and optional active-profile `gate`, and returns an ID. Read accepts `topic`, optional active-profile `gate`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect requires `message_id` and returns that message including payload and gate. |
+| `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires canonical `topic` and `payload`, accepts `author` and optional active-profile `gate`, and returns an ID. Read accepts `topic`, optional active-profile `gate`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect with `message_id` returns that message including payload and gate, ignoring optional `scope`, `task_id`, and `milestone_ref`; without `message_id`, inspect returns the scoped read page. |
 
 Unknown fields are rejected. Ready tasks are unclaimed and nonterminal, with
 satisfied local prerequisites. Missing or amended authority blocks open work.
@@ -271,7 +271,7 @@ limited to 64 KiB. Review proof is wrapped in `review_proof` and requires a
 boolean `applicable` and nonempty `evidence`, including a rationale when
 inapplicable. Other gates carry non-null proof. Identical accepted retries return
 the stored result; changed or revoked evidence fails closed. The validated JSON
-is retained in `task_gates.evidence` without reading an evidence file.
+is retained in `task_gates.evidence` without reading an evidence file. Supplied SHA values may be 7-to-40-character hexadecimal prefixes of the expected commit; Forge resolves them to the full canonical SHA before comparison and persistence. Task API responses retain full SHAs in receipt and snapshot fields, while `inspect_cmd` may use a short display form.
 
 At passing task delivery (`deliver`), Forge validates the current task
 specification and accepted build and review proof, then writes
@@ -338,6 +338,7 @@ Upon every `task_claim`, Forge injects standard operational rules directly into 
 2. `ISOLATION`: Develop exclusively inside the assigned dedicated worktree.
 3. `IMMUTABILITY`: Keep admitted scope unchanged after review pass and during deliver.
 4. `INDEPENDENCE`: Review stage requires a worker_id distinct from the accepted builder.
+5. `NEVER_EDIT_RECEIPTS`: Never edit `receipt:` or `status:` blocks in `docs/milestones/*.md` manually. `task_submit(stage=deliver)` writes and commits receipts automatically.
 
 ## Task blackboard
 
@@ -356,8 +357,7 @@ deferred findings retained in the delivery receipt. Post requires a canonical
 topic and payload. An omitted author
 uses the task owner when the resolved context has one, or the current transport
 (`mcp` or `cli`). Post rejects read-only pagination fields; read rejects
-`author` and `payload`. Post and read use the resolved task project. Inspect
-searches configured task workspaces by `message_id` and returns the first match.
+`author` and `payload`. Post and read use the resolved task project. Inspect with `message_id` searches configured task workspaces and returns the first match. In this form, `scope`, `task_id`, `milestone_ref`, and `subtask_ref` are ignored so callers can reuse scoped request objects. Without `message_id`, inspect resolves the requested hierarchy scope and returns the same payload-free page as read, including topic, gate, limit, and offset filters.
 Post and read accept optional `gate`, which must name a gate in the active task
 profile. A gate on a post targets that message; a gate on a read filters for that
 gate. Without a read gate, the requested scope returns messages from all gates.
@@ -374,7 +374,7 @@ Read returns one page of payload-free summaries, ordered by `created_at DESC`
 and `id DESC`. The default `limit` is 10, the maximum is 50, and `offset` selects
 the next page using the returned pagination metadata. Use `action: "inspect"`
 with a `message_id` from a post or read result to retrieve the full message and
-payload. A claim or context bundle includes untagged messages and messages
+payload. Without `message_id`, inspect behaves like a scoped read. A claim or context bundle includes untagged messages and messages
 targeted to its active gate. Gate-targeted messages also appear under
 `workflow_guidance.blackboard_messages`; compact `blackboard_info` reports the
 active gate, message ids, count, and topic counts. Invalid topics or gate ids

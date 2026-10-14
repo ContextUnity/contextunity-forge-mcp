@@ -121,6 +121,73 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     );
     assert_eq!(claimed["agents_guidance"], inspected["agents_guidance"]);
     assert_eq!(claimed["applicable_invariants"], json!(["local-rules"]));
+    let mut boundary_failures = Vec::new();
+    if !claimed["workflow_guidance"]["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|rule| {
+            rule.as_str().is_some_and(|rule| {
+                rule.starts_with("NEVER_EDIT_RECEIPTS:")
+                    && rule.contains("receipt:")
+                    && rule.contains("status:")
+                    && rule.contains("docs/milestones/")
+            })
+        })
+    {
+        boundary_failures.push(
+            "claim guidance must forbid hand editing milestone receipts and status".to_owned(),
+        );
+    }
+    let posted = client.payload(
+        "task_blackboard",
+        json!({"action":"post","scope":"task","task_id":id,"topic":"notes","payload":"canonical candidate coordination"}),
+    );
+    let message_id = &posted["id"];
+    let message = client.payload(
+        "task_blackboard",
+        json!({"action":"inspect","message_id":message_id}),
+    );
+    for extra in [
+        json!({"scope":"task"}),
+        json!({"task_id":id}),
+        json!({"milestone_ref":"docs/milestones/010-linked.md"}),
+        json!({"subtask_ref":"ignored-subtask"}),
+        json!({"scope":"task","task_id":id,"milestone_ref":"docs/milestones/010-linked.md"}),
+        json!({"scope":"task","task_id":id,"milestone_ref":"docs/milestones/010-linked.md","subtask_ref":"ignored-subtask"}),
+    ] {
+        let mut args = json!({"action":"inspect","message_id":message_id});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let (_, response) = client.call("task_blackboard", args.clone());
+        if response["result"]["isError"] == true || response.get("error").is_some() {
+            boundary_failures.push(format!(
+                "inspect must tolerate redundant context selectors: {args}: {response}"
+            ));
+        } else {
+            assert_eq!(crate::common::assertions::mcp_payload(&response), message);
+        }
+    }
+    for scope in [
+        json!({"scope":"task","task_id":id}),
+        json!({"scope":"milestone","milestone_ref":"docs/milestones/010-main.md"}),
+    ] {
+        let mut read = scope.clone();
+        read["action"] = json!("read");
+        read["limit"] = json!(1);
+        read["offset"] = json!(0);
+        let expected = client.payload("task_blackboard", read.clone());
+        read["action"] = json!("inspect");
+        let (_, response) = client.call("task_blackboard", read.clone());
+        if response["result"]["isError"] == true || response.get("error").is_some() {
+            boundary_failures.push(format!(
+                "inspect without message_id must use scoped read: {read}: {response}"
+            ));
+        } else {
+            assert_eq!(crate::common::assertions::mcp_payload(&response), expected);
+        }
+    }
     let (_, traversal) = client.call(
         "task_manage",
         json!({"action":"extend_scope","task_id":id,"paths":["../foreign.rs"]}),
@@ -171,7 +238,37 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         } else {
             &build_proof
         };
-        let evidence = json!({"task_id":id,"stage":stage,"claim_revision":claim["claim_revision"],"contract_revision":1,"worker_id":worker,"worktree":linked.0,"proof":proof});
+        let mut evidence = json!({"task_id":id,"stage":stage,"claim_revision":claim["claim_revision"],"contract_revision":1,"worker_id":worker,"worktree":linked.0,"proof":proof});
+        if gate == 2 {
+            let candidate = contextunity_forge_mcp::core::git::git_stdout(
+                &linked.0,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    candidate_commit.as_deref().unwrap(),
+                ],
+                "TEST_GIT",
+            )
+            .unwrap();
+            if claim["context_bundle"]["candidate_snapshot"]["commit"] != candidate {
+                boundary_failures.push(format!(
+                    "candidate_snapshot.commit must preserve the full SHA: {}",
+                    claim["context_bundle"]["candidate_snapshot"]
+                ));
+            }
+            for length in [7, 12, 39, 40] {
+                assert_eq!(
+                    contextunity_forge_mcp::core::tasks::canonical_commit_from_prefix(
+                        &candidate[..length],
+                        &candidate
+                    )
+                    .as_deref(),
+                    Some(candidate.as_str()),
+                    "{length}-character SHA prefixes resolve to the canonical candidate"
+                );
+            }
+            evidence["commit"] = json!(&candidate[..7]);
+        }
         let result = client.payload(
             "task_submit",
             json!({"task_id":id,"stage":stage,"evidence":evidence,"action":"pass"}),
@@ -183,10 +280,22 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         if gate == 3 {
             delivery_commit = Some(snapshot.to_owned());
             assert_eq!(result["receipt"]["commit"], snapshot);
+            let landed = contextunity_forge_mcp::core::git::git_stdout(
+                &linked.0,
+                &["rev-parse", "--verify", "HEAD"],
+                "TEST_GIT",
+            )
+            .unwrap();
+            if result["receipt"]["commit"] != landed {
+                boundary_failures.push(format!(
+                    "receipt.commit must preserve the full SHA: {}",
+                    result["receipt"]["commit"]
+                ));
+            }
         } else {
             assert_eq!(
                 result["snapshot"]["inspect_cmd"],
-                format!("git show {snapshot}")
+                contextunity_forge_mcp::core::tasks::snapshot_inspect_cmd(snapshot)
             );
         }
         assert_eq!(
@@ -204,7 +313,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert_eq!(restored["latest_snapshot"]["commit"], candidate_commit);
     assert_eq!(
         restored["latest_snapshot"]["inspect_cmd"],
-        format!("git show {candidate_commit}")
+        contextunity_forge_mcp::core::tasks::snapshot_inspect_cmd(&candidate_commit)
     );
     for gate in restored["gates"].as_array().unwrap() {
         let gate_commit = gate["commit"].as_str().unwrap();
@@ -213,9 +322,24 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         assert_eq!(evidence["commit"], gate["commit"]);
     }
     assert_eq!(restored["agents_guidance"], inspected["agents_guidance"]);
+    let landed = contextunity_forge_mcp::core::git::git_stdout(
+        &linked.0,
+        &["rev-parse", "--verify", "HEAD"],
+        "TEST_GIT",
+    )
+    .unwrap();
+    if restored["receipt"]["commit"] != landed {
+        boundary_failures
+            .push("persisted receipt API must preserve the full delivery SHA".to_owned());
+    }
     assert_eq!(
         client.payload("task_list", json!({"repository":"traverse"}))["tasks"],
         json!([])
+    );
+    assert!(
+        boundary_failures.is_empty(),
+        "{}",
+        boundary_failures.join("\n")
     );
 }
 
@@ -363,7 +487,7 @@ scope: [src/]
         } else {
             assert_eq!(
                 submitted["snapshot"]["inspect_cmd"],
-                format!("git show {snapshot}")
+                contextunity_forge_mcp::core::tasks::snapshot_inspect_cmd(snapshot)
             );
         }
         assert_eq!(
@@ -1562,7 +1686,7 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     );
     assert_eq!(
         review_claim2["context_bundle"]["candidate_snapshot"]["commit"],
-        &build_commit[..7]
+        build_commit
     );
 
     // Pass review
