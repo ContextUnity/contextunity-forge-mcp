@@ -2,7 +2,7 @@
 id: m-acdd-boundary-seams-and-wave-orchestration
 title: ACDD receipt canonicalization, tiered role profile (contract/build/review+deliver), blackboard handoff, seam guards, and wave dispatch
 doc_type: contract
-status: active
+status: completed
 repository: forge-mcp
 project: forge-mcp
 depends_on:
@@ -37,6 +37,15 @@ invariants:
 - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
 related_plans: []
 started_at: 2026-10-14T15:41:30+00:00
+handoff:
+  completed_at: 2026-10-14T20:37:39.562533016+00:00
+  duration: 4h 56m
+  commit: 1a226240873ba3310c32a69fb0d4fee668aad86f
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 692
+    tests_failed: 0
 ---
 
 # ACDD receipt canonicalization, tiered role profile (contract/build/review+deliver), blackboard handoff, seam guards, and wave dispatch
@@ -109,6 +118,7 @@ subtasks:
   status: completed
   evidence: 'cargo test --test acdd: exit 0, 85 passed, 0 failed. MCP workflow-guidance test asserts the NEVER_EDIT_RECEIPTS rule.'
 receipt:
+  commit: 05bdbe7f97d63f01309bb7c2251575645749b660
   contract_revision: 3
   passed_at: 2026-10-14T16:18:51.135568048+00:00
   evidence:
@@ -222,6 +232,7 @@ subtasks:
   status: completed
   evidence: Added non-test external caller context and covering-test graph; contract/build gates enforce seam reachability and stable-baseline signature boundaries. Focused regression seam passed; final cargo test --test acdd passed (87/87); strict Clippy passed (exit 0).
 receipt:
+  commit: 9deb19646c665f2732ac72c787ad2ed6997ceb1d
   contract_revision: 1
   passed_at: 2026-10-14T18:55:07.125070867+00:00
   evidence:
@@ -345,6 +356,7 @@ subtasks:
   status: completed
   evidence: 'Production seam tests/acdd/mcp.rs::wave_sync_and_atomic_next_preserve_parked_worktrees: focused cargo test --test acdd wave_sync_and_atomic_next_preserve_parked_worktrees -- --nocapture exit 0, 1 passed/0 failed; complete cargo test --test acdd exit 0, 94 passed/0 failed; cargo clippy --all-targets --all-features -- -D warnings exit 0. Atomic SQLite, declaration-order waves, gate priority/independence, original worktree affinity/bytes, and canonical MCP error propagation verified.'
 receipt:
+  commit: 1a226240873ba3310c32a69fb0d4fee668aad86f
   contract_revision: 1
   passed_at: 2026-10-14T19:55:27.605222363+00:00
   evidence:
