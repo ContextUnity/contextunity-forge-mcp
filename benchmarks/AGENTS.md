@@ -35,6 +35,7 @@ All benchmark runs are driven by declarative JSON profiles located in `benchmark
 - `benchmarks/mcp_tool_comparison_benchmark.py`: Measures tool latency, RSS/HWM memory, and CPU utilization across MCP servers.
 - `benchmarks/mcp_tool_quality_benchmark.py`: Evaluates tool answer completeness and schema compliance.
 - `benchmarks/mcp_adapter_single_load.py`: Linux inotify probe verifying that adapter configurations (`forge-mcp.yaml`) are not redundantly re-read on every request.
+- `benchmarks/cold_test_coverage_benchmark.py`: Sequentially compares cold builds and graph coverage from fresh temporary databases while honoring the selected workspace's `forge-mcp.yaml` and linked workspaces.
 
 ## Staged Lifecycle
 

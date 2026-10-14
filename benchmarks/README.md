@@ -3,6 +3,21 @@
 These runners preserve paired baseline/candidate profiling outside Cargo's test inventory.
 Run them from the repository root with the release profile for meaningful timings.
 
+Use `cold_test_coverage_benchmark.py` to compare fresh database builds on a configured
+workspace. It reads that workspace's `forge-mcp.yaml` directly, so its enabled
+`linked_workspaces` are indexed using their configured paths. Every run gets a new
+database under the system temporary directory, and the script removes it after
+collecting graph counts, resolution coverage, elapsed time, CPU, peak RSS, and database
+size. Builds run one at a time and alternate baseline/candidate order.
+
+```sh
+python3 benchmarks/cold_test_coverage_benchmark.py \
+  --repo /path/to/workspace \
+  --baseline-binary /path/to/older/contextunity-forge-mcp \
+  --candidate-binary /path/to/newer/contextunity-forge-mcp \
+  --repeats 5
+```
+
 ```sh
 FORGE_BENCH_ROOT=/path/to/workspace \
 FORGE_BENCH_BASELINE=/path/to/baseline/contextunity-forge-mcp \
