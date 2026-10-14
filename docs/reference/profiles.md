@@ -9,6 +9,8 @@ An **ACDD Profile** (`profile.yaml`) defines the governance model for a task or 
 
 By separating workflow governance from code and task specifications, profiles allow teams to enforce strict multi-agent compliance (e.g. mandatory independent reviewer separation, TDD seam-first gates, and SHA-256 anti-tampering verification).
 
+The embedded profile uses three subagent roles: `contract_author` (`sol-6.1:high`), `builder` (`gpt6-luna:xhigh`), and `independent_reviewer` (`sol-6.1:xhigh`). The contract author targets a draft to `build` on the task blackboard. The independent reviewer keeps the same worker session through `review` and `deliver`, remaining distinct from the builder. Claim guidance includes `NO_PREFLIGHT_SUBAGENTS` so gates start without preflight agents.
+
 ---
 
 ## Profile Loading Precedence
@@ -58,6 +60,7 @@ contours:
 roles:
   builder:
     mode: subagent
+    reuse_on_reject: true
     models:
       - 'gpt6-luna:xhigh'
       - 'claude-3-7-sonnet'
@@ -71,10 +74,23 @@ roles:
       - 'o3-mini'
     guidance: "Audit the candidate diff across the 5 quality contours."
 
+commands:
+  rust-check-and-test:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    description: "Run strict Rust checks followed by the repository's test suite."
+
 policies:
   auto_commit: true
   worker_reuse_on_reject: true
 ```
+
+The embedded profile also registers `test: cargo test` for compatibility with
+legacy task evidence. Workflow guidance selects `rust-check-and-test`, the
+canonical strict Clippy-plus-test command. A scoped command appends the
+supported `--test <target>` suffix to its final `cargo test`. Claim context derives
+`workflow_guidance.scoped_commands` from the indexed contract seam and covering
+tests, and provides `expected_evidence_template` bound to the active task,
+stage, revisions, worker, and worktree.
 
 ---
 
@@ -96,8 +112,20 @@ Each gate declares a stable identifier (`id`) and a proof specification (`proof`
 - **`reuse_on_reject`**: If `true`, rejection guidance directs the task back to the original builder worker ID to remediate defects.
 - **`mode`**: `subagent` (launches an isolated agent context) or `inline` (runs within the parent agent).
 - **`models`**: Ordered list of recommended LLM models and reasoning tiers for that specific role.
+- The embedded `independent_reviewer` owns both review and delivery, so continue the same reviewer session through those gates. Its `NO_PREFLIGHT_SUBAGENTS` workflow rule prohibits launching preliminary subagents before the active gate work.
 
-### 3. Anti-Tampering & SHA-256 Pinning
+### 3. Boundary Context and Static Gates
+
+Contract and build context exposes indexed `external_callers`, one-hop indexed
+callers outside scope, plus `covering_tests`, which includes direct and two-hop
+test dependencies. ADR entries include up to five invariant-summary lines.
+`workflow_guidance.expected_evidence_template` carries the active claim identity
+and proof shape. Contract submission rejects a seam that does not reach an
+in-scope production symbol with `TASK_SEAM_DISCONNECTED`; contract and build
+reject changed public signatures with out-of-scope indexed callers using
+`TASK_SCOPE_INCOMPLETE`.
+
+### 4. Anti-Tampering & SHA-256 Pinning
 
 For auditability and protection against prompt injection or rogue agents altering workflow rules mid-execution:
 - Pin custom profiles at planning time using the format `<path>:<sha256_prefix>`:

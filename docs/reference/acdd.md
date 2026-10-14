@@ -11,6 +11,8 @@ The active profile names the gates, their order, the proof each gate requires, t
 
 Claiming a gate returns two kinds of context. `workflow_guidance` names the role, the steps, and the tools that fit the gate. The context bundle carries the material for that role: scope and symbols on contract and build, the candidate snapshot on review, the receipt rules on deliver. Recent blackboard notes ride along. Historical gate logs stay in SQLite until someone asks `task inspect` for them. [Task operations](tasks.md) specifies the arguments, evidence objects, and receipts. [ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md) records why the bundle changes by gate.
 
+The embedded profile assigns contract author, builder, and independent reviewer roles. The contract author posts the draft as a blackboard `draft` targeted to `build`; the reviewer continues from review through delivery in the same worker session. Workflow guidance includes `NO_PREFLIGHT_SUBAGENTS`, the registered combined Rust command, and scoped test commands. Contract and build context includes indexed scope symbols, external callers, covering tests, ADR invariant summaries, and a task-bound expected evidence template. The task engine rejects disconnected contract seams and public signature changes whose indexed callers fall outside admitted scope.
+
 The shared [contextunity-forge skill](../../skills/contextunity-forge/SKILL.md#acdd) is what an agent loads for tool choice and delivery. The claim's `workflow_guidance` is what that agent follows for the current gate. [CLI commands](cli.md) lists the terminal forms, including milestone commands, which stay CLI-only.
 
 ## Documentation and instructions co-evolution

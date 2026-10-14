@@ -227,18 +227,34 @@ Each accepted submission releases ownership. Review requires a worker different 
 accepted builder and verifying the same candidate commit. Review/delivery rejection records
 findings and returns the task to remediation at `gate.reject_to` (defaulting to `build` in standard profile).
 
+The embedded profile assigns `contract_author`, `builder`, and
+`independent_reviewer` subagents. The contract author posts a blackboard `draft`
+targeted to `build`; the independent reviewer continues in the same worker
+session through delivery. Claim guidance includes the `NO_PREFLIGHT_SUBAGENTS`
+rule and `workflow_guidance.expected_evidence_template`, which is bound to the
+active task, stage, claim and contract revisions, worker, and worktree.
+
 ### Context bundle matrix by proof taxonomy
 
 When claiming a gate with `task_claim`, Forge returns tailored context bundles based on the gate's closed `proof` taxonomy:
 
 | Proof Kind | Claim Context Bundle Content | Primary Role Guidance |
 |---|---|---|
-| `contract` | Admitted target, invariants, declared scope paths, proof policy, seam test template/reference. | Contract Author: write red public-seam test, submit non-zero red exit code. |
-| `command` | Target, invariants, admitted scope paths, verified contract proof (seam test ref & exit code), command to execute. | Implementer: implement within scope, make seam test pass, submit passing command proof. |
+| `contract` | Admitted target, invariants, declared scope paths, proof policy, seam test template/reference, indexed scope symbols, external callers, covering tests, and ADR summaries. | Contract Author: write red public-seam test, post a build-targeted draft, submit non-zero red exit code. |
+| `command` | Target, invariants, admitted scope paths, verified contract proof, indexed scope symbols, external callers, covering tests, ADR summaries, scoped commands, and evidence template. | Implementer: implement within scope, make seam test pass, and submit passing command proof. |
 | `review` | Target, invariants, scope paths, candidate snapshot SHA (from predecessor `sha_snapshot: true` gate), git diff against baseline HEAD, contour checklist with operational criteria from `gate.contours`. | Independent Reviewer: verify candidate diff against contour checklist, submit review proof with decision. |
 | `delivery` | Target, invariants, verified candidate snapshot SHA, all passing review proofs from `review_sources`, completed subtasks summary, receipt template. | Deliverer: verify rollup proofs and invariant checks, finalize receipt. |
 | `none` | Target, invariants, admitted scope paths, informational guidance. | Worker: perform non-verified informational step. |
 | `scheme` | Target, invariants, admitted scope paths, recursive JSON schema definition for expected proof payload. | Schema Worker: submit structured payload matching configured recursive schema. |
+
+For contract and build proofs, the context bundle adds `scope_symbols`,
+`external_callers`, and `covering_tests`. External callers are indexed one-hop
+`calls` or `imports` edges from production symbols in scope to caller files
+outside the admitted scope. Covering tests include direct and two-hop indexed
+test dependencies. Each ADR context item includes up to five `invariants_summary`
+lines. `workflow_guidance.scoped_commands` combines registered command prefixes
+with the contract seam or indexed covering-test targets, while
+`expected_evidence_template` supplies the claim-bound evidence shape.
 
 `evidence` is a direct JSON object bound to the active claim. The `commit` field can be omitted; Forge automatically captures the scoped candidate snapshot SHA on predecessor gates with `sha_snapshot: true` (e.g. `contract` and `build`), and inherits it on downstream gates (`review` and `deliver`). For example, a passing build submission contains:
 
@@ -272,6 +288,15 @@ boolean `applicable` and nonempty `evidence`, including a rationale when
 inapplicable. Other gates carry non-null proof. Identical accepted retries return
 the stored result; changed or revoked evidence fails closed. The validated JSON
 is retained in `task_gates.evidence` without reading an evidence file. Supplied SHA values may be 7-to-40-character hexadecimal prefixes of the expected commit; Forge resolves them to the full canonical SHA before comparison and persistence. Task API responses retain full SHAs in receipt and snapshot fields, while `inspect_cmd` may use a short display form.
+
+When a code map is available, passing contract and build submissions also
+enforce indexed task boundaries. Contract proof returns
+`TASK_SEAM_DISCONNECTED` if its test reference does not reach a production
+symbol inside admitted scope within two `calls`/`imports` edges. A changed
+indexed public function or method signature with a caller outside admitted
+scope returns `TASK_SCOPE_INCOMPLETE`, allowing the task to admit that caller or
+preserve the signature. These checks use the claimed worktree and the
+workspace's read-only code-map database.
 
 At passing task delivery (`deliver`), Forge validates the current task
 specification and accepted build and review proof, then writes

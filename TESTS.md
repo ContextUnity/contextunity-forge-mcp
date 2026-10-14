@@ -27,6 +27,11 @@ in the evidence without changing or omitting the required command.
 For Rust task builds, also run
 `cargo clippy --all-targets --all-features -- -D warnings`. Record its exact
 command and exit code with the build evidence; Clippy contributes no test count.
+The embedded ACDD profile registers the combined command
+`cargo clippy --all-targets --all-features -- -D warnings && cargo test`.
+Claim context supplies `workflow_guidance.scoped_commands` with the contract
+seam and indexed covering-test targets appended as `--test <target>`; use the
+command matching the affected proof and record its exact string.
 
 ## Milestone handoff gate
 

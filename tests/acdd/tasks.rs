@@ -1,5 +1,1396 @@
 use super::support::*;
 
+fn commit_fixture_baseline(root: &ScopedWorkspace) {
+    let added = std::process::Command::new("git")
+        .args(["add", "--all"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(added.status.success());
+    let committed = std::process::Command::new("git")
+        .args(["commit", "--quiet", "-m", "fixture source baseline"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(
+        committed.status.success(),
+        "could not commit fixture baseline: {}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+}
+
+fn add_boundary_edge_fixtures(root: &ScopedWorkspace) {
+    let connection = rusqlite::Connection::open(root.0.join(".forge/code-map.sqlite")).unwrap();
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES('acdd boundary fixture')",
+            [],
+        )
+        .unwrap();
+    let evidence: i64 = connection
+        .query_row(
+            "SELECT evidence_id FROM coverage_evidence WHERE evidence='acdd boundary fixture'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for (path, name, relation) in [
+        ("src/possible.rs", "possible_route", "possible_calls"),
+        ("src/implements.rs", "implements_route", "implements"),
+        ("src/overrides.rs", "overrides_route", "overrides"),
+    ] {
+        let inserted = connection
+            .execute(
+                "INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) \
+                 SELECT caller.node_hash,?1,target.node_hash,caller.path_id,caller.line,?2,?2,1 \
+                 FROM nodes caller JOIN path_dictionary caller_path ON caller_path.path_id=caller.path_id \
+                 JOIN nodes target ON target.name='route_task' AND target.line=1 \
+                 JOIN path_dictionary target_path ON target_path.path_id=target.path_id \
+                 WHERE caller_path.path=?3 AND caller.name=?4 AND target_path.path='src/routing.rs'",
+                rusqlite::params![relation, evidence, path, name],
+            )
+            .unwrap();
+        assert_eq!(
+            inserted, 1,
+            "fixture relation {relation} must target the public route_task symbol"
+        );
+    }
+}
+
+#[test]
+fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
+    let mut failures = Vec::new();
+    for (stage, seam, change_signature, admit_caller, expected_error) in [
+        (
+            "contract",
+            "tests/disconnected.rs",
+            false,
+            false,
+            Some("TASK_SEAM_DISCONNECTED"),
+        ),
+        (
+            "contract",
+            "src/routing.rs::test_unrelated",
+            false,
+            false,
+            Some("TASK_SEAM_DISCONNECTED"),
+        ),
+        (
+            "contract",
+            "src/routing.rs::test_missing",
+            false,
+            false,
+            Some("TASK_SEAM_DISCONNECTED"),
+        ),
+        (
+            "contract",
+            "tests/deleted.rs::test_deleted",
+            false,
+            false,
+            Some("TASK_SEAM_DISCONNECTED"),
+        ),
+        (
+            "contract",
+            "src/routing.rs::test_connected",
+            true,
+            false,
+            Some("TASK_SCOPE_INCOMPLETE"),
+        ),
+        (
+            "build",
+            "src/routing.rs::test_connected",
+            true,
+            false,
+            Some("TASK_SCOPE_INCOMPLETE"),
+        ),
+        ("build", "src/routing.rs::test_connected", true, true, None),
+    ] {
+        let root = ScopedWorkspace::new("forge_tiered_boundary");
+        root.write("src/lib.rs", "pub mod routing;\npub mod caller;\npub mod possible;\npub mod implements;\npub mod overrides;\n");
+        root.write("src/routing.rs", "pub fn route_task() -> usize { 1 }\npub mod archive { pub fn route_task() -> usize { 2 } }\npub fn test_only_route() -> usize { 3 }\n#[cfg(test)]\nmod tests {\n    use crate::routing::route_task;\n    #[test]\n    fn test_connected() {\n        let actual = route_task();\n        assert_eq!(actual, 1);\n    }\n    #[test]\n    fn test_unrelated() {\n        let actual = 3;\n        assert_eq!(actual, 3);\n    }\n}\n");
+        root.write(
+            "Cargo.toml",
+            "[package]\nname = \"tiered_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        root.write(
+            "src/caller.rs",
+            "use crate::routing::route_task;\npub fn invoke_route() -> usize { route_task() }\n#[cfg(test)]\nmod tests {\n    use crate::caller::invoke_route;\n    #[test]\n    fn test_indirect() {\n        let actual = invoke_route();\n        assert_eq!(actual, 1);\n    }\n}\n",
+        );
+        root.write(
+            "src/possible.rs",
+            "pub fn possible_route() -> usize { 1 }\n",
+        );
+        root.write(
+            "src/implements.rs",
+            "pub fn implements_route() -> usize { 1 }\n",
+        );
+        root.write(
+            "src/overrides.rs",
+            "pub fn overrides_route() -> usize { 1 }\n",
+        );
+        root.write("tests/connected.rs", "use tiered_fixture::routing::route_task;\n#[test]\nfn test_connected() { let actual = route_task(); assert_eq!(actual, 1); }\n");
+        root.write("tests/acdd.rs", "mod tasks;\n");
+        root.write("tests/acdd/tasks.rs", "use tiered_fixture::routing::route_task;\n#[test]\nfn test_nested_connected() { let actual = route_task(); assert_eq!(actual, 1); }\n");
+        root.write(
+            "tests/disconnected.rs",
+            "#[test]\nfn test_disconnected() { assert_eq!(1, 1); }\n",
+        );
+        root.write("tests/external.rs", "use tiered_fixture::routing::test_only_route;\n#[test]\nfn external_test_only_caller() { let actual = test_only_route(); assert_eq!(actual, 3); }\n");
+        root.write(
+            "AGENTS.md",
+            "# Instructions\nLoad the contextunity-forge skill.\n",
+        );
+        root.write(
+            ".agents/skills/contextunity-forge/SKILL.md",
+            "# ContextUnity Forge\n",
+        );
+        root.write(
+            "forge-mcp.yaml",
+            "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        );
+        root.write("docs/adr/001-routing.md", "---\ntitle: Routing invariants\nstatus: accepted\n---\n# Routing invariants\n- INV-ROUTING: Routing remains observable through the public seam.\n- Decision: Admit every caller before changing the public signature.\n");
+        let caller_scope = if admit_caller {
+            ", src/caller.rs, src/possible.rs, src/implements.rs, src/overrides.rs"
+        } else {
+            ""
+        };
+        let specification = format!("---\nid: m-tiered\ntitle: Tiered boundary gates\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: routing\ntarget: Preserve the routing boundary\nproof_policy: seam-test-first\nscope: [src/routing.rs, tests/connected.rs, tests/acdd/tasks.rs{caller_scope}]\nscope_roots: [src/, tests/]\n```\n");
+        root.write("docs/milestones/010-tiered.md", &specification);
+        commit_fixture_baseline(&root);
+        writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+        add_boundary_edge_fixtures(&root);
+        tasks::manage(
+            &root.0,
+            serde_json::from_value(
+                json!({"action":"sync","milestone_ref":"docs/milestones/010-tiered.md"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let task_id = "forge-mcp/m-tiered:routing";
+        let profile =
+            contextunity_forge_mcp::core::tasks::profile::load_for_workspace(&root.0).unwrap();
+        let canonical_command =
+            "cargo clippy --all-targets --all-features -- -D warnings && cargo test";
+        if !profile
+            .commands
+            .values()
+            .any(|command| command.command() == canonical_command)
+        {
+            failures.push(format!("{stage}/{seam}: default Rust profile must register static checks before cargo test"));
+        }
+        if !profile
+            .commands
+            .get("test")
+            .is_some_and(|command| command.command() == "cargo test")
+        {
+            failures.push(format!("{stage}/{seam}: default Rust profile must retain the registered cargo test compatibility command"));
+        }
+        if profile.roles.len() != 3 {
+            failures.push(format!(
+                "{stage}/{seam}: default profile must have exactly three execution roles"
+            ));
+        }
+        for (gate, role, model) in [
+            ("contract", "contract_author", "sol-6.1:high"),
+            ("build", "builder", "gpt6-luna:xhigh"),
+            ("review", "independent_reviewer", "sol-6.1:xhigh"),
+            ("deliver", "independent_reviewer", "sol-6.1:xhigh"),
+        ] {
+            let role_definition = profile.role_for_stage(gate);
+            if !role_definition.is_some_and(|(name, definition)| {
+                name == role
+                    && definition.effective_reuse_on_reject()
+                    && definition.effective_mode()
+                        == contextunity_forge_mcp::core::tasks::profile::RoleExecutionMode::Subagent
+                    && definition
+                        .models
+                        .iter()
+                        .any(|entry| entry.formatted() == model)
+            }) {
+                failures.push(format!("{stage}/{seam}: {gate} must use {role} with {model} and reusable worker authority"));
+            }
+        }
+        let mut claim = tasks::claim(&root.0, serde_json::from_value(json!({"task_id":task_id,"stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap()).unwrap();
+        let guidance = &claim["workflow_guidance"];
+        if !guidance["rules"].as_array().unwrap().iter().any(|rule| {
+            rule.as_str()
+                .is_some_and(|rule| rule.starts_with("NO_PREFLIGHT_SUBAGENTS:"))
+        }) {
+            failures.push(format!(
+                "{stage}/{seam}: task guidance must prohibit preflight subagents"
+            ));
+        }
+        if !guidance["steps"].as_array().unwrap().iter().any(|step| {
+            step.as_str()
+                .is_some_and(|step| step.contains("gate=\"build\"") || step.contains("gate=build"))
+        }) {
+            failures.push(format!(
+                "{stage}/{seam}: contract steps must require the build-targeted blackboard handoff"
+            ));
+        }
+        let template = &guidance["expected_evidence_template"];
+        if !template.is_object() || !template.to_string().contains(task_id) {
+            failures.push(format!(
+                "{stage}/{seam}: claim must contain a task-bound expected evidence template"
+            ));
+        }
+        let bundle = &claim["context_bundle"];
+        if !bundle["adrs"].as_array().unwrap().iter().any(|adr| {
+            adr["invariants_summary"].as_array().is_some_and(|summary| {
+                summary.len() <= 5
+                    && summary.iter().any(|line| {
+                        line.as_str()
+                            .is_some_and(|line| line.contains("INV-ROUTING"))
+                    })
+                    && summary
+                        .iter()
+                        .any(|line| line.as_str().is_some_and(|line| line.contains("Decision:")))
+            })
+        }) {
+            failures.push(format!(
+                "{stage}/{seam}: governing ADR invariants must be inlined"
+            ));
+        }
+        let callers = bundle["external_callers"].as_array().unwrap();
+        if callers
+            .iter()
+            .any(|caller| caller["path"] == "tests/external.rs")
+        {
+            failures.push(format!(
+                "{stage}/{seam}: external boundary context must omit test callers"
+            ));
+        }
+        if !admit_caller
+            && ![
+                "src/caller.rs",
+                "src/possible.rs",
+                "src/implements.rs",
+                "src/overrides.rs",
+            ]
+            .iter()
+            .all(|path| callers.iter().any(|caller| caller["path"] == *path))
+        {
+            failures.push(format!(
+                "{stage}/{seam}: boundary context must include callers across all indexed edge kinds"
+            ));
+        }
+        if !bundle["covering_tests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|test| test["path"] == "src/caller.rs")
+        {
+            failures.push(format!(
+                "{stage}/{seam}: covering tests must follow two-hop production calls"
+            ));
+        }
+        tasks::blackboard(&root.0, serde_json::from_value(json!({"action":"post","task_id":task_id,"topic":"draft","gate":"build","payload":"Keep route_task callers in scope when changing its signature; use tests/connected.rs."})).unwrap(), "contract-author").unwrap();
+        if stage == "build" {
+            let task = tasks::store_for_task(&root.0, task_id)
+                .unwrap()
+                .inspect(task_id)
+                .unwrap();
+            let mut proof = evidence(&task);
+            proof.proof = json!({"contract_proof":{"seam_test_ref":"src/routing.rs::test_connected","red_exit_code":101}});
+            tasks::submit(
+                &root.0,
+                tasks::Submit {
+                    task_id: task_id.into(),
+                    stage: "contract".into(),
+                    action: tasks::Action::Pass,
+                    evidence: serde_json::to_value(proof).unwrap(),
+                    findings: None,
+                },
+            )
+            .unwrap();
+            claim = tasks::claim(&root.0, serde_json::from_value(json!({"task_id":task_id,"stage":"build","worker_id":"builder","worktree":root.0})).unwrap()).unwrap();
+            if !claim["workflow_guidance"]["blackboard_messages"]
+                .as_array()
+                .is_some_and(|messages| {
+                    messages
+                        .iter()
+                        .any(|message| message["gate"] == "build" && message["topic"] == "draft")
+                })
+            {
+                failures.push(format!(
+                    "{stage}/{seam}: builder must receive the contract author's targeted handoff"
+                ));
+            }
+            let scoped = &claim["workflow_guidance"]["scoped_commands"];
+            if scoped.is_null()
+                || !scoped.to_string().contains("connected")
+                || !scoped.to_string().contains("--test acdd")
+                || !scoped.to_string().contains(canonical_command)
+                || !scoped.as_array().is_some_and(|entries| {
+                    !entries.is_empty()
+                        && entries.iter().all(|entry| {
+                            entry["name"] == "rust-check-and-test"
+                                && entry["command"].as_str().is_some_and(|command| {
+                                    command.starts_with(canonical_command)
+                                        && (command.ends_with("--test connected")
+                                            || command.ends_with("--test acdd")
+                                            || command.ends_with("--lib"))
+                                })
+                        })
+                        && entries.iter().any(|entry| {
+                            entry["test_path"] == "tests/acdd/tasks.rs"
+                                && entry["command"]
+                                    .as_str()
+                                    .is_some_and(|command| command.ends_with("--test acdd"))
+                        })
+                })
+            {
+                failures.push(format!("{stage}/{seam}: scoped commands must append seam and covering-test suffixes only to the canonical combined command"));
+            }
+        }
+        if change_signature {
+            root.write(
+                "src/routing.rs",
+                "pub fn route_task(value: usize) -> usize { value + 1 }\npub fn test_only_route(value: usize) -> usize { value + 3 }\n#[cfg(test)]\nmod tests {\n    use crate::routing::route_task;\n    #[test]\n    fn test_connected() {\n        let actual = route_task(0);\n        assert_eq!(actual, 1);\n    }\n}\n",
+            );
+            root.write("tests/connected.rs", "use tiered_fixture::routing::route_task;\n#[test]\nfn test_connected() { let actual = route_task(0); assert_eq!(actual, 1); }\n");
+            root.write("tests/external.rs", "use tiered_fixture::routing::test_only_route;\n#[test]\nfn external_test_only_caller() { let actual = test_only_route(0); assert_eq!(actual, 3); }\n");
+            if admit_caller {
+                root.write("src/caller.rs", "use crate::routing::route_task;\npub fn invoke_route() -> usize { route_task(0) }\n#[cfg(test)]\nmod tests {\n    use crate::caller::invoke_route;\n    #[test]\n    fn test_indirect() {\n        let actual = invoke_route();\n        assert_eq!(actual, 1);\n    }\n}\n");
+            }
+        }
+        let store = tasks::store_for_task(&root.0, task_id).unwrap();
+        let task = store.inspect(task_id).unwrap();
+        let mut proof = evidence(&task);
+        if stage == "contract" {
+            proof.proof = json!({"contract_proof":{"seam_test_ref":seam,"red_exit_code":101}});
+        } else {
+            let command = profile
+                .commands
+                .values()
+                .find(|command| command.command() == canonical_command)
+                .or_else(|| profile.commands.values().next())
+                .unwrap()
+                .command();
+            proof.proof = json!({"command_proof":{"command":format!("{command} --test connected"),"exit_code":0,"tests_passed":1,"tests_failed":0}});
+        }
+        let result = tasks::submit(
+            &root.0,
+            tasks::Submit {
+                task_id: task_id.into(),
+                stage: stage.into(),
+                action: tasks::Action::Pass,
+                evidence: serde_json::to_value(proof).unwrap(),
+                findings: None,
+            },
+        );
+        match (expected_error, result) {
+            (Some(code), Err(error)) => {
+                assert!(error.to_string().contains(code), "{stage}/{seam}: {error}");
+                if change_signature && !admit_caller {
+                    for path in [
+                        "src/caller.rs",
+                        "src/possible.rs",
+                        "src/implements.rs",
+                        "src/overrides.rs",
+                    ] {
+                        assert!(
+                            error.to_string().contains(path),
+                            "{stage}/{seam}: signature gate omitted {path}: {error}"
+                        );
+                    }
+                    assert!(
+                        !error.to_string().contains("tests/external.rs"),
+                        "test callers must not cause boundary rejection: {error}"
+                    );
+                }
+                assert_eq!(
+                    store.inspect(task_id).unwrap().stage,
+                    stage,
+                    "a rejected boundary must preserve the active gate"
+                );
+            }
+            (Some(code), Ok(_)) => {
+                failures.push(format!("{stage}/{seam}: must reject with {code}"))
+            }
+            (None, Err(error)) => failures.push(format!(
+                "{stage}/{seam}: admitted caller signature change must pass: {error}"
+            )),
+            (None, Ok(_)) => {}
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn method_caller_edge_count(root: &ScopedWorkspace) -> i64 {
+    let connection = rusqlite::Connection::open(root.0.join(".forge/code-map.sqlite")).unwrap();
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM edges edge \
+             JOIN nodes target ON target.node_hash=edge.dst_hash AND target.kind='method' AND target.name='route_task' \
+             JOIN path_dictionary target_path ON target_path.path_id=target.path_id \
+             JOIN nodes caller ON caller.node_hash=edge.src_hash AND caller.name='invoke_route' AND caller.is_test=0 \
+             JOIN path_dictionary caller_path ON caller_path.path_id=caller.path_id \
+             WHERE target_path.path='src/routing.rs' AND caller_path.path='src/caller.rs' \
+               AND edge.kind IN ('calls','imports','possible_calls','implements','overrides')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+fn function_caller_edge_count(root: &ScopedWorkspace, path: &str, name: &str) -> i64 {
+    let connection = rusqlite::Connection::open(root.0.join(".forge/code-map.sqlite")).unwrap();
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM edges edge \
+             JOIN nodes target ON target.node_hash=edge.dst_hash AND target.kind='function' AND target.name=?2 \
+             JOIN path_dictionary target_path ON target_path.path_id=target.path_id \
+             JOIN nodes caller ON caller.node_hash=edge.src_hash AND caller.is_test=0 \
+             JOIN path_dictionary caller_path ON caller_path.path_id=caller.path_id \
+              WHERE target_path.path=?1 AND caller_path.path IN ('src/client.rs','src/client.ts','src/client.js','src/client.py') \
+               AND edge.kind IN ('calls','imports','possible_calls','implements','overrides')",
+            rusqlite::params![path, name],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn signature_boundary_uses_exact_method_baseline_across_body_edits_and_reindex() {
+    let routing_baseline = r#"pub fn route_task() -> usize { 1 }
+pub struct Router;
+impl Router {
+    pub fn route_task(&self) -> usize { 10 }
+}
+pub struct Archive;
+impl Archive {
+    pub fn route_task(&self) -> usize { 20 }
+}
+pub fn test_only_route() -> usize { 3 }
+#[cfg(test)]
+mod tests {
+    use crate::routing::route_task;
+
+    #[test]
+    fn test_connected() {
+        let connected_target = route_task();
+        let router = crate::routing::Router;
+        let actual = router.route_task();
+        assert_eq!(connected_target, 1);
+        assert_eq!(actual, 10);
+    }
+}
+"#;
+    let caller_baseline = "use crate::routing::Router;\nimpl Router {\n    pub fn invoke_route(&self) -> usize { self.route_task() }\n}\n";
+    let connected_test_baseline = "#[test]\nfn test_connected() { let router = tiered_fixture::routing::Router; let actual = router.route_task(); assert_eq!(actual, 10); }\n";
+
+    for (case, expected_error, refresh_index) in [
+        ("same_named_methods", Some("TASK_SCOPE_INCOMPLETE"), false),
+        ("body_only", None, false),
+        ("refreshed_index", Some("TASK_SCOPE_INCOMPLETE"), true),
+    ] {
+        let root = ScopedWorkspace::new("forge_tiered_signature_identity");
+        root.write("src/lib.rs", "pub mod routing;\npub mod caller;\n");
+        root.write("src/routing.rs", routing_baseline);
+        root.write("src/caller.rs", caller_baseline);
+        root.write(
+            "Cargo.toml",
+            "[package]\nname = \"tiered_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        root.write("tests/connected.rs", connected_test_baseline);
+        root.write("tests/acdd.rs", "mod tasks;\n");
+        root.write(
+            "tests/acdd/tasks.rs",
+            "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
+        );
+        root.write(
+            "AGENTS.md",
+            "# Instructions\nLoad the contextunity-forge skill.\n",
+        );
+        root.write(
+            ".agents/skills/contextunity-forge/SKILL.md",
+            "# ContextUnity Forge\n",
+        );
+        root.write(
+            "forge-mcp.yaml",
+            "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        );
+        root.write(
+            "docs/milestones/010-tiered.md",
+            "---\nid: m-tiered-signature\ntitle: Tiered signature boundary\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: route-task\ntarget: Protect the exact public method signature\nproof_policy: seam-test-first\nscope: [src/routing.rs, tests/connected.rs, tests/acdd/tasks.rs]\nscope_roots: [src/, tests/]\n```\n",
+        );
+        commit_fixture_baseline(&root);
+        writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+        let original_caller_edges = method_caller_edge_count(&root);
+        assert!(
+            original_caller_edges > 0,
+            "fixture must index the external call to Router::route_task"
+        );
+        tasks::manage(
+            &root.0,
+            serde_json::from_value(
+                json!({"action":"sync","milestone_ref":"docs/milestones/010-tiered.md"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let task_id = "forge-mcp/m-tiered-signature:route-task";
+        tasks::claim(
+            &root.0,
+            serde_json::from_value(json!({"task_id":task_id,"stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap(),
+        )
+        .unwrap();
+        let task = tasks::store_for_task(&root.0, task_id)
+            .unwrap()
+            .inspect(task_id)
+            .unwrap();
+        let mut contract_evidence = evidence(&task);
+        contract_evidence.proof = json!({"contract_proof":{"seam_test_ref":"src/routing.rs::test_connected","red_exit_code":101}});
+        tasks::submit(
+            &root.0,
+            tasks::Submit {
+                task_id: task_id.into(),
+                stage: "contract".into(),
+                action: tasks::Action::Pass,
+                evidence: serde_json::to_value(contract_evidence).unwrap(),
+                findings: None,
+            },
+        )
+        .unwrap();
+        let claim = tasks::claim(
+            &root.0,
+            serde_json::from_value(
+                json!({"task_id":task_id,"stage":"build","worker_id":"builder","worktree":root.0}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(claim["stage"], "build");
+
+        let mut routing = routing_baseline.to_owned();
+        let mut caller = caller_baseline.to_owned();
+        let mut connected_test = connected_test_baseline.to_owned();
+        match case {
+            "same_named_methods" | "refreshed_index" => {
+                routing = routing.replace(
+                    "impl Router {\n    pub fn route_task(&self) -> usize { 10 }",
+                    "impl Router {\n    pub fn route_task(&self, value: usize) -> usize { 10 + value }",
+                );
+                assert_ne!(routing, routing_baseline, "Router method must change");
+                caller = caller.replace("self.route_task()", "self.route_task(0)");
+                connected_test =
+                    connected_test.replace("router.route_task()", "router.route_task(0)");
+            }
+            "body_only" => {
+                routing = routing.replace(
+                    "impl Router {\n    pub fn route_task(&self) -> usize { 10 }",
+                    "impl Router {\n    pub fn route_task(&self) -> usize { 11 }",
+                );
+                assert_ne!(routing, routing_baseline, "Router method body must change");
+                connected_test =
+                    connected_test.replace("assert_eq!(actual, 10)", "assert_eq!(actual, 11)");
+            }
+            _ => unreachable!("all signature scenarios are listed above"),
+        }
+        assert!(
+            routing.contains("impl Archive {\n    pub fn route_task(&self) -> usize { 20 }"),
+            "{case}: unchanged same-named Archive method must remain in the fixture"
+        );
+        if case == "body_only" {
+            assert!(
+                routing.contains("impl Router {\n    pub fn route_task(&self) -> usize { 11 }"),
+                "body-only case must preserve Router's qualified signature"
+            );
+        } else {
+            assert!(
+                routing.contains(
+                    "impl Router {\n    pub fn route_task(&self, value: usize) -> usize { 10 + value }"
+                ),
+                "{case}: only the externally called Router method signature changes"
+            );
+        }
+        root.write("src/routing.rs", &routing);
+        root.write("src/caller.rs", &caller);
+        root.write("tests/connected.rs", &connected_test);
+
+        if refresh_index {
+            writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+            let refreshed_caller_edges = method_caller_edge_count(&root);
+            assert!(
+                refreshed_caller_edges >= original_caller_edges,
+                "reindex must preserve the external Router::route_task caller edge: before={original_caller_edges}, after={refreshed_caller_edges}"
+            );
+        }
+
+        let task = tasks::store_for_task(&root.0, task_id)
+            .unwrap()
+            .inspect(task_id)
+            .unwrap();
+        let mut build_evidence = evidence(&task);
+        let profile =
+            contextunity_forge_mcp::core::tasks::profile::load_for_workspace(&root.0).unwrap();
+        let command = profile.commands.get("test").unwrap().command();
+        build_evidence.proof = json!({"command_proof":{"command":format!("{command} --test connected"),"exit_code":0,"tests_passed":1,"tests_failed":0}});
+        let result = tasks::submit(
+            &root.0,
+            tasks::Submit {
+                task_id: task_id.into(),
+                stage: "build".into(),
+                action: tasks::Action::Pass,
+                evidence: serde_json::to_value(build_evidence).unwrap(),
+                findings: None,
+            },
+        );
+        match (expected_error, result) {
+            (Some(code), Err(error)) => {
+                assert!(error.to_string().contains(code), "{case}: {error}");
+                assert!(
+                    error.to_string().contains("src/caller.rs"),
+                    "{case}: external method caller must remain in the rejection: {error}"
+                );
+            }
+            (Some(code), Ok(_)) => panic!("{case}: expected rejection with {code}"),
+            (None, Err(error)) => panic!("{case}: body-only edit must pass: {error}"),
+            (None, Ok(_)) => {}
+        }
+    }
+}
+
+#[test]
+fn signature_boundary_keeps_contract_acceptance_callers_after_symbol_rename_and_reindex() {
+    let root = ScopedWorkspace::new("forge_tiered_renamed_boundary");
+    root.write("src/lib.rs", "pub mod api;\npub mod client;\n");
+    root.write(
+        "src/api.rs",
+        "pub fn fetch(id: usize) -> usize { id }\n#[cfg(test)]\nmod tests { use crate::api::fetch; #[test] fn test_connected() { let actual = fetch(1); assert_eq!(actual, 1); } }\n",
+    );
+    root.write(
+        "src/client.rs",
+        "use crate::api::fetch;\npub fn load() -> usize { fetch(0) }\n",
+    );
+    root.write(
+        "Cargo.toml",
+        "[package]\nname = \"tiered_rename_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    root.write("tests/connected.rs", "use tiered_rename_fixture::api::fetch;\n#[test]\nfn test_connected() { let actual = fetch(1); assert_eq!(actual, 1); }\n");
+    root.write("tests/acdd.rs", "mod tasks;\n");
+    root.write(
+        "tests/acdd/tasks.rs",
+        "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
+    );
+    root.write(
+        "AGENTS.md",
+        "# Instructions\nLoad the contextunity-forge skill.\n",
+    );
+    root.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write(
+        "docs/milestones/010-tiered-rename.md",
+        "---\nid: m-tiered-rename\ntitle: Renamed API boundary\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: rename-fetch\ntarget: Preserve every caller when renaming a public API\nproof_policy: seam-test-first\nscope: [src/api.rs, tests/connected.rs, tests/acdd/tasks.rs]\nscope_roots: [src/, tests/]\n```\n",
+    );
+    commit_fixture_baseline(&root);
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    let baseline_edges = function_caller_edge_count(&root, "src/api.rs", "fetch");
+    assert!(
+        baseline_edges > 0,
+        "baseline index must include src/client.rs -> fetch"
+    );
+    tasks::manage(
+        &root.0,
+        serde_json::from_value(
+            json!({"action":"sync","milestone_ref":"docs/milestones/010-tiered-rename.md"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let task_id = "forge-mcp/m-tiered-rename:rename-fetch";
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(json!({"task_id":task_id,"stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap(),
+    )
+    .unwrap();
+    let task = tasks::store_for_task(&root.0, task_id)
+        .unwrap()
+        .inspect(task_id)
+        .unwrap();
+    let mut contract = evidence(&task);
+    contract.proof = json!({"contract_proof":{"seam_test_ref":"src/api.rs::test_connected","red_exit_code":101}});
+    tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "contract".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(contract).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+    let task_store = rusqlite::Connection::open(root.0.join(".forge/tasks.sqlite")).unwrap();
+    let accepted_contract: String = task_store
+        .query_row(
+            "SELECT result FROM task_submissions WHERE task_id=?1 ORDER BY revision DESC LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let accepted_contract: serde_json::Value = serde_json::from_str(&accepted_contract).unwrap();
+    assert!(
+        accepted_contract["boundary_callers"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["path"] == "src/api.rs"
+                    && entry["name"] == "fetch"
+                    && entry["caller_paths"]
+                        .as_array()
+                        .is_some_and(|paths| paths.iter().any(|path| path == "src/client.rs"))
+            }),
+        "contract acceptance must persist the stable-baseline external caller path"
+    );
+    let baseline = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(baseline.status.success());
+    assert_eq!(
+        accepted_contract["boundary_callers"]["baseline_commit"],
+        String::from_utf8_lossy(&baseline.stdout).trim(),
+        "caller evidence must be pinned to the Git baseline accepted by the contract gate"
+    );
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(
+            json!({"task_id":task_id,"stage":"build","worker_id":"builder","worktree":root.0}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    root.write(
+        "src/api.rs",
+        "pub fn fetch_by_id(id: usize) -> usize { id }\n#[cfg(test)]\nmod tests { use crate::api::fetch_by_id; #[test] fn test_connected() { let actual = fetch_by_id(1); assert_eq!(actual, 1); } }\n",
+    );
+    root.write("tests/connected.rs", "use tiered_rename_fixture::api::fetch_by_id;\n#[test]\nfn test_connected() { let actual = fetch_by_id(1); assert_eq!(actual, 1); }\n");
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    let old_edges_after_reindex = function_caller_edge_count(&root, "src/api.rs", "fetch");
+    assert_eq!(
+        old_edges_after_reindex, 0,
+        "reindex must remove every edge to the renamed fetch symbol before boundary validation"
+    );
+
+    let task = tasks::store_for_task(&root.0, task_id)
+        .unwrap()
+        .inspect(task_id)
+        .unwrap();
+    let mut build = evidence(&task);
+    let profile =
+        contextunity_forge_mcp::core::tasks::profile::load_for_workspace(&root.0).unwrap();
+    let command = profile.commands.get("test").unwrap().command();
+    build.proof = json!({"command_proof":{"command":format!("{command} --test connected"),"exit_code":0,"tests_passed":1,"tests_failed":0}});
+    let result = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "build".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(build).unwrap(),
+            findings: None,
+        },
+    );
+    let error = result.expect_err(
+        "contract-accepted external callers must survive an API rename and index rebuild",
+    );
+    assert!(
+        error.to_string().contains("TASK_SCOPE_INCOMPLETE"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("src/client.rs"),
+        "saved baseline caller path must explain the rejection: {error}"
+    );
+}
+
+#[test]
+fn signature_boundary_covers_exported_typescript_callables() {
+    let root = ScopedWorkspace::new("forge_tiered_typescript_boundary");
+    root.write("src/lib.rs", "pub mod routing;\n");
+    root.write("src/routing.rs", "pub fn route_task() -> usize { 1 }\n#[cfg(test)]\nmod tests { use crate::routing::route_task; #[test] fn test_connected() { let actual = route_task(); assert_eq!(actual, 1); } }\n");
+    root.write(
+        "src/api.ts",
+        "export function submit(id: number): number { return id; }\n",
+    );
+    root.write(
+        "src/client.ts",
+        "import { submit } from './api';\nexport function load(): number { return submit(1); }\n",
+    );
+    root.write(
+        "Cargo.toml",
+        "[package]\nname = \"tiered_typescript_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    root.write("tests/connected.rs", "use tiered_typescript_fixture::routing::route_task;\n#[test]\nfn test_connected() { let actual = route_task(); assert_eq!(actual, 1); }\n");
+    root.write("tests/acdd.rs", "mod tasks;\n");
+    root.write(
+        "tests/acdd/tasks.rs",
+        "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
+    );
+    root.write(
+        "AGENTS.md",
+        "# Instructions\nLoad the contextunity-forge skill.\n",
+    );
+    root.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write(
+        "docs/milestones/010-tiered-typescript.md",
+        "---\nid: m-tiered-typescript\ntitle: TypeScript API boundary\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: protect-submit\ntarget: Protect exported TypeScript callable signatures\nproof_policy: seam-test-first\nscope: [src/routing.rs, src/api.ts, tests/connected.rs, tests/acdd/tasks.rs]\nscope_roots: [src/, tests/]\n```\n",
+    );
+    commit_fixture_baseline(&root);
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    assert!(
+        function_caller_edge_count(&root, "src/api.ts", "submit") > 0,
+        "baseline index must resolve the TypeScript external caller"
+    );
+    tasks::manage(
+        &root.0,
+        serde_json::from_value(
+            json!({"action":"sync","milestone_ref":"docs/milestones/010-tiered-typescript.md"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let task_id = "forge-mcp/m-tiered-typescript:protect-submit";
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(json!({"task_id":task_id,"stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap(),
+    )
+    .unwrap();
+    let task = tasks::store_for_task(&root.0, task_id)
+        .unwrap()
+        .inspect(task_id)
+        .unwrap();
+    let mut contract = evidence(&task);
+    contract.proof = json!({"contract_proof":{"seam_test_ref":"src/routing.rs::test_connected","red_exit_code":101}});
+    tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "contract".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(contract).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(
+            json!({"task_id":task_id,"stage":"build","worker_id":"builder","worktree":root.0}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    root.write(
+        "src/api.ts",
+        "export function submit(id: string): number { return id.length; }\n",
+    );
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    assert!(
+        function_caller_edge_count(&root, "src/api.ts", "submit") > 0,
+        "reindex must retain the caller edge to the same exported symbol"
+    );
+    let task = tasks::store_for_task(&root.0, task_id)
+        .unwrap()
+        .inspect(task_id)
+        .unwrap();
+    let mut build = evidence(&task);
+    let profile =
+        contextunity_forge_mcp::core::tasks::profile::load_for_workspace(&root.0).unwrap();
+    let command = profile.commands.get("test").unwrap().command();
+    build.proof = json!({"command_proof":{"command":format!("{command} --test connected"),"exit_code":0,"tests_passed":1,"tests_failed":0}});
+    let result = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "build".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(build).unwrap(),
+            findings: None,
+        },
+    );
+    let error =
+        result.expect_err("exported TypeScript API changes must consult indexed external callers");
+    assert!(
+        error.to_string().contains("TASK_SCOPE_INCOMPLETE"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("src/client.ts"),
+        "external TypeScript caller must explain the rejection: {error}"
+    );
+}
+
+#[test]
+fn signature_boundary_covers_public_python_callables() {
+    let root = ScopedWorkspace::new("forge_tiered_python_boundary");
+    root.write("src/lib.rs", "pub mod routing;\n");
+    root.write("src/routing.rs", "pub fn route_task() -> usize { 1 }\n#[cfg(test)]\nmod tests { use crate::routing::route_task; #[test] fn test_connected() { let actual = route_task(); assert_eq!(actual, 1); } }\n");
+    root.write(
+        "src/api.py",
+        "def fetch(id: int) -> int:\n    return id\n\ndef test_connected():\n    actual = fetch(1)\n    assert actual == 1\n",
+    );
+    root.write(
+        "src/client.py",
+        "from api import fetch\n\ndef load():\n    return fetch(0)\n",
+    );
+    root.write(
+        "Cargo.toml",
+        "[package]\nname = \"tiered_python_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    root.write("tests/connected.rs", "use tiered_python_fixture::routing::route_task;\n#[test]\nfn test_connected() { let actual = route_task(); assert_eq!(actual, 1); }\n");
+    root.write("tests/acdd.rs", "mod tasks;\n");
+    root.write(
+        "tests/acdd/tasks.rs",
+        "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
+    );
+    root.write(
+        "AGENTS.md",
+        "# Instructions\nLoad the contextunity-forge skill.\n",
+    );
+    root.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write(
+        "docs/milestones/010-tiered-python.md",
+        "---\nid: m-tiered-python\ntitle: Python API boundary\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: protect-fetch\ntarget: Protect public Python callable signatures\nproof_policy: seam-test-first\nscope: [src/routing.rs, src/api.py, tests/connected.rs, tests/acdd/tasks.rs]\nscope_roots: [src/, tests/]\n```\n",
+    );
+    commit_fixture_baseline(&root);
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    assert!(
+        function_caller_edge_count(&root, "src/api.py", "fetch") > 0,
+        "baseline index must resolve the Python external caller"
+    );
+    tasks::manage(
+        &root.0,
+        serde_json::from_value(
+            json!({"action":"sync","milestone_ref":"docs/milestones/010-tiered-python.md"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let task_id = "forge-mcp/m-tiered-python:protect-fetch";
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(json!({"task_id":task_id,"stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap(),
+    )
+    .unwrap();
+    let task = tasks::store_for_task(&root.0, task_id)
+        .unwrap()
+        .inspect(task_id)
+        .unwrap();
+    let mut contract = evidence(&task);
+    contract.proof = json!({"contract_proof":{"seam_test_ref":"src/routing.rs::test_connected","red_exit_code":101}});
+    tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "contract".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(contract).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(
+            json!({"task_id":task_id,"stage":"build","worker_id":"builder","worktree":root.0}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    root.write(
+        "src/api.py",
+        "def fetch(id: str) -> int:\n    return len(id)\n\ndef test_connected():\n    actual = fetch(\"1\")\n    assert actual == 1\n",
+    );
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    assert!(
+        function_caller_edge_count(&root, "src/api.py", "fetch") > 0,
+        "reindex must retain the caller edge to the same public Python callable"
+    );
+    let task = tasks::store_for_task(&root.0, task_id)
+        .unwrap()
+        .inspect(task_id)
+        .unwrap();
+    let mut build = evidence(&task);
+    let profile =
+        contextunity_forge_mcp::core::tasks::profile::load_for_workspace(&root.0).unwrap();
+    let command = profile.commands.get("test").unwrap().command();
+    build.proof = json!({"command_proof":{"command":format!("{command} --test connected"),"exit_code":0,"tests_passed":1,"tests_failed":0}});
+    let result = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "build".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(build).unwrap(),
+            findings: None,
+        },
+    );
+    let error =
+        result.expect_err("public Python API changes must consult indexed external callers");
+    assert!(
+        error.to_string().contains("TASK_SCOPE_INCOMPLETE"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("src/client.py"),
+        "external Python caller must explain the rejection: {error}"
+    );
+}
+
+#[test]
+fn signature_boundary_covers_exported_javascript_callables() {
+    let root = ScopedWorkspace::new("forge_tiered_javascript_boundary");
+    root.write("src/lib.rs", "pub mod routing;\n");
+    root.write("src/routing.rs", "pub fn route_task() -> usize { 1 }\n#[cfg(test)]\nmod tests { use crate::routing::route_task; #[test] fn test_connected() { let actual = route_task(); assert_eq!(actual, 1); } }\n");
+    root.write("src/api.js", "export function submit(id) { return id; }\n");
+    root.write(
+        "src/client.js",
+        "import { submit } from './api.js';\nexport function load() { return submit(1); }\n",
+    );
+    root.write(
+        "Cargo.toml",
+        "[package]\nname = \"tiered_javascript_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    root.write("tests/connected.rs", "use tiered_javascript_fixture::routing::route_task;\n#[test]\nfn test_connected() { let actual = route_task(); assert_eq!(actual, 1); }\n");
+    root.write("tests/acdd.rs", "mod tasks;\n");
+    root.write(
+        "tests/acdd/tasks.rs",
+        "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
+    );
+    root.write(
+        "AGENTS.md",
+        "# Instructions\nLoad the contextunity-forge skill.\n",
+    );
+    root.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write(
+        "docs/milestones/010-tiered-javascript.md",
+        "---\nid: m-tiered-javascript\ntitle: JavaScript API boundary\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: protect-submit\ntarget: Protect exported JavaScript callable signatures\nproof_policy: seam-test-first\nscope: [src/routing.rs, src/api.js, tests/connected.rs, tests/acdd/tasks.rs]\nscope_roots: [src/, tests/]\n```\n",
+    );
+    commit_fixture_baseline(&root);
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    assert!(
+        function_caller_edge_count(&root, "src/api.js", "submit") > 0,
+        "baseline index must resolve the JavaScript external caller"
+    );
+    tasks::manage(
+        &root.0,
+        serde_json::from_value(
+            json!({"action":"sync","milestone_ref":"docs/milestones/010-tiered-javascript.md"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let task_id = "forge-mcp/m-tiered-javascript:protect-submit";
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(json!({"task_id":task_id,"stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap(),
+    )
+    .unwrap();
+    let task = tasks::store_for_task(&root.0, task_id)
+        .unwrap()
+        .inspect(task_id)
+        .unwrap();
+    let mut contract = evidence(&task);
+    contract.proof = json!({"contract_proof":{"seam_test_ref":"src/routing.rs::test_connected","red_exit_code":101}});
+    tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "contract".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(contract).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(
+            json!({"task_id":task_id,"stage":"build","worker_id":"builder","worktree":root.0}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    root.write(
+        "src/api.js",
+        "export function submit(id, label) { return id; }\n",
+    );
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    assert!(
+        function_caller_edge_count(&root, "src/api.js", "submit") > 0,
+        "reindex must retain the caller edge to the same exported JavaScript callable"
+    );
+    let task = tasks::store_for_task(&root.0, task_id)
+        .unwrap()
+        .inspect(task_id)
+        .unwrap();
+    let mut build = evidence(&task);
+    let profile =
+        contextunity_forge_mcp::core::tasks::profile::load_for_workspace(&root.0).unwrap();
+    let command = profile.commands.get("test").unwrap().command();
+    build.proof = json!({"command_proof":{"command":format!("{command} --test connected"),"exit_code":0,"tests_passed":1,"tests_failed":0}});
+    let result = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "build".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(build).unwrap(),
+            findings: None,
+        },
+    );
+    let error =
+        result.expect_err("exported JavaScript API changes must consult indexed external callers");
+    assert!(
+        error.to_string().contains("TASK_SCOPE_INCOMPLETE"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("src/client.js"),
+        "external JavaScript caller must explain the rejection: {error}"
+    );
+}
+
+#[test]
+fn seam_scope_directory_prefix_treats_sql_wildcards_as_literal() {
+    for (case, scope_dir, actual_dir) in [
+        ("underscore", "api_v1", "apiXv1"),
+        ("percent", "api%v1", "apiXYZv1"),
+    ] {
+        let root = ScopedWorkspace::new(&format!("forge_tiered_literal_scope_{case}"));
+        root.write("src/lib.rs", &format!("pub mod {actual_dir};\n"));
+        root.write(
+            &format!("src/{scope_dir}/allowed.rs"),
+            "pub fn placeholder() {}\n",
+        );
+        root.write(&format!("src/{actual_dir}/mod.rs"), "pub mod hidden;\n");
+        root.write(
+            &format!("src/{actual_dir}/hidden.rs"),
+            &format!(
+                "pub fn route_task() -> usize {{ 1 }}\n#[cfg(test)]\nmod tests {{ use crate::{actual_dir}::hidden::route_task; #[test] fn test_connected() {{ let actual = route_task(); assert_eq!(actual, 1); }} }}\n"
+            ),
+        );
+        root.write(
+            "Cargo.toml",
+            "[package]\nname = \"tiered_literal_scope_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        root.write("tests/acdd.rs", "mod tasks;\n");
+        root.write(
+            "tests/acdd/tasks.rs",
+            "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
+        );
+        root.write(
+            "AGENTS.md",
+            "# Instructions\nLoad the contextunity-forge skill.\n",
+        );
+        root.write(
+            ".agents/skills/contextunity-forge/SKILL.md",
+            "# ContextUnity Forge\n",
+        );
+        root.write(
+            "forge-mcp.yaml",
+            "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        );
+        let milestone_ref = format!("docs/milestones/010-tiered-literal-{case}.md");
+        let milestone_id = format!("m-tiered-literal-{case}");
+        let task_ref = format!("literal-scope-{case}");
+        root.write(
+            &milestone_ref,
+            &format!(
+                "---\nid: {milestone_id}\ntitle: Literal directory scope\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: {task_ref}\ntarget: Keep directory scope matching literal\nproof_policy: seam-test-first\nscope: [src/{scope_dir}/, tests/acdd/tasks.rs]\nscope_roots: [src/, tests/]\n```\n"
+            ),
+        );
+        commit_fixture_baseline(&root);
+        writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+        tasks::manage(
+            &root.0,
+            serde_json::from_value(json!({"action":"sync","milestone_ref":milestone_ref})).unwrap(),
+        )
+        .unwrap();
+        let task_id = format!("forge-mcp/{milestone_id}:{task_ref}");
+        tasks::claim(
+            &root.0,
+            serde_json::from_value(json!({"task_id":task_id,"stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap(),
+        )
+        .unwrap();
+        let task = tasks::store_for_task(&root.0, &task_id)
+            .unwrap()
+            .inspect(&task_id)
+            .unwrap();
+        let mut contract = evidence(&task);
+        contract.proof = json!({"contract_proof":{"seam_test_ref":format!("src/{actual_dir}/hidden.rs::test_connected"),"red_exit_code":101}});
+        let result = tasks::submit(
+            &root.0,
+            tasks::Submit {
+                task_id: task_id.clone(),
+                stage: "contract".into(),
+                action: tasks::Action::Pass,
+                evidence: serde_json::to_value(contract).unwrap(),
+                findings: None,
+            },
+        );
+        let error = result.expect_err(&format!(
+            "src/{actual_dir}/ must not match literal directory src/{scope_dir}/"
+        ));
+        assert!(
+            error.to_string().contains("TASK_SEAM_DISCONNECTED"),
+            "{case}: {error}"
+        );
+    }
+}
+
+#[test]
+fn boundary_guards_follow_configured_proof_kinds_and_non_cargo_commands_keep_paths() {
+    let root = ScopedWorkspace::new("forge_tiered_alias_proof_kinds");
+    root.write(
+        "Cargo.toml",
+        "[package]\nname = \"tiered_alias_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    root.write("src/lib.rs", "pub mod routing;\npub mod caller;\n");
+    root.write("src/routing.rs", "pub fn route_task() -> usize { 1 }\n#[cfg(test)]\nmod tests {\n    use crate::routing::route_task;\n    #[test]\n    fn test_connected() { let actual = route_task(); assert_eq!(actual, 1); }\n}\n");
+    root.write(
+        "src/caller.rs",
+        "use crate::routing::route_task;\npub fn invoke_route() -> usize { route_task() }\n",
+    );
+    root.write("tests/connected.rs", "use tiered_alias_fixture::routing::route_task;\n#[test]\nfn test_connected() { let actual = route_task(); assert_eq!(actual, 1); }\n");
+    root.write(
+        "AGENTS.md",
+        "# Instructions\nLoad the contextunity-forge skill.\n",
+    );
+    root.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    root.write("forge-mcp.yaml", "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nacdd_profile: custom_profile.yaml\n");
+    root.write(
+        "custom_profile.yaml",
+        "gates:\n  - id: spec\n    role: contract_author\n    proof: contract\n    sha_snapshot: true\n  - id: implement\n    role: builder\n    proof: command\n    sha_snapshot: true\n  - id: inspect\n    role: independent_reviewer\n    proof: review\n    reject_to: implement\n    independent_from: implement\n    contours: standard\n  - id: archive\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [inspect]\n    reject_to: implement\ncommands:\n  rust-check-and-test:\n    command: pytest\n    description: Preserve ordinary scoped paths for non-Cargo profiles.\n",
+    );
+    let milestone = "---\nid: m-tiered-alias\ntitle: Proof-kind aliases\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: routing\ntarget: Preserve routing API boundaries\nproof_policy: seam-test-first\nscope: [src/routing.rs, tests/connected.rs]\nscope_roots: [src/, tests/]\n```\n";
+    root.write("docs/milestones/010-tiered-alias.md", milestone);
+    commit_fixture_baseline(&root);
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    tasks::manage(
+        &root.0,
+        serde_json::from_value(
+            json!({"action":"sync","milestone_ref":"docs/milestones/010-tiered-alias.md"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let task_id = "forge-mcp/m-tiered-alias:routing";
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(
+            json!({"task_id":task_id,"stage":"spec","worker_id":"spec-author","worktree":root.0}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let store = tasks::store_for_task(&root.0, task_id).unwrap();
+    let task = store.inspect(task_id).unwrap();
+    let mut proof = evidence(&task);
+    proof.proof = json!({"contract_proof":{"seam_test_ref":"src/routing.rs::test_connected","red_exit_code":101}});
+    tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "spec".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(proof).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap();
+
+    let claim = tasks::claim(
+        &root.0,
+        serde_json::from_value(
+            json!({"task_id":task_id,"stage":"implement","worker_id":"builder","worktree":root.0}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let scoped = &claim["workflow_guidance"]["scoped_commands"];
+    assert!(
+        scoped.as_array().is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                entry["name"] == "rust-check-and-test"
+                    && entry["test_path"] == "src/routing.rs"
+                    && entry["command"] == "pytest src/routing.rs"
+            })
+        }),
+        "non-Cargo scoped commands must retain the ordinary test path: {scoped}"
+    );
+
+    root.write(
+        "src/routing.rs",
+        "pub fn route_task(value: usize) -> usize { value + 1 }\n#[cfg(test)]\nmod tests {\n    use crate::routing::route_task;\n    #[test]\n    fn test_connected() { let actual = route_task(0); assert_eq!(actual, 1); }\n}\n",
+    );
+    root.write("tests/connected.rs", "use tiered_alias_fixture::routing::route_task;\n#[test]\nfn test_connected() { let actual = route_task(0); assert_eq!(actual, 1); }\n");
+    let task = store.inspect(task_id).unwrap();
+    let mut proof = evidence(&task);
+    proof.proof = json!({"command_proof":{"command":"pytest src/routing.rs","exit_code":0,"tests_passed":1,"tests_failed":0}});
+    let error = tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: "implement".into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(proof).unwrap(),
+            findings: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("TASK_SCOPE_INCOMPLETE"),
+        "{error}"
+    );
+    assert_eq!(store.inspect(task_id).unwrap().stage, "implement");
+}
+
 const CANONICAL_FORGE_GITIGNORE: &str = concat!(
     "target/\n",
     "!/.forge/\n",
@@ -4261,7 +5652,10 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     let reviewer_value = serde_json::to_value(reviewer_role).unwrap();
     assert_eq!(reviewer_value["mode"], serde_json::json!("subagent"));
     assert_eq!(reviewer_value["reuse_on_reject"], serde_json::json!(true));
-    assert_eq!(reviewer_value["models"], serde_json::json!([]));
+    assert_eq!(
+        reviewer_value["models"],
+        serde_json::json!([{"model":"sol-6.1","reasoning":"xhigh"}])
+    );
     assert!(
         reviewer_value.get("model").is_none(),
         "model belongs to ModelSpec"
@@ -4439,7 +5833,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     independent_from: work
     contours: standard
   - id: deliver
-    role: delivery_reviewer
+    role: independent_reviewer
     proof: delivery
     receipt_review: review
     review_sources: [review]
@@ -4583,7 +5977,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
     }
 
     let empty_registry = parse_profile(
-        "roles:\n  builder: {}\n  independent_reviewer: {}\n  delivery_reviewer: {}\ncommands: {}\ngates:\n  - id: work\n    role: builder\n    proof: command\n  - id: review\n    role: independent_reviewer\n    proof: review\n  - id: deliver\n    role: delivery_reviewer\n    proof: delivery\n    review_sources: [review]\n",
+        "roles:\n  builder: {}\n  independent_reviewer: {}\ncommands: {}\ngates:\n  - id: work\n    role: builder\n    proof: command\n  - id: review\n    role: independent_reviewer\n    proof: review\n  - id: deliver\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [review]\n",
     )
     .unwrap();
     let error = empty_registry.validate().unwrap_err();
@@ -4646,7 +6040,7 @@ gates:
     reject_to: schema_input
     contours: standard
   - id: deliver
-    role: delivery_reviewer
+    role: independent_reviewer
     proof: delivery
     receipt_review: review
     review_sources: [review]
@@ -5494,7 +6888,7 @@ gates:
     independent_from: build
     contours: standard
   - id: deliver
-    role: delivery_reviewer
+    role: independent_reviewer
     proof: delivery
     review_sources: [review]
     reject_to: build
@@ -5502,6 +6896,7 @@ roles:
   independent_reviewer:
     mode: inline
     reuse_on_reject: true
+    guidance: "Spawn a dedicated reviewer subagent to review candidate diff across contours."
 "#;
     root.write("custom_profile.yaml", profile_yaml);
 
@@ -6138,7 +7533,7 @@ gates:
     independent_from: build
     contours: standard
   - id: deliver
-    role: delivery_reviewer
+    role: independent_reviewer
     proof: delivery
     review_sources: [review]
     reject_to: build

@@ -102,6 +102,9 @@ Task claims inject standing runtime guardrails into `workflow_guidance.rules`:
 - `ISOLATION`: Develop exclusively inside the assigned dedicated worktree.
 - `IMMUTABILITY`: Keep admitted scope unchanged after review pass and during deliver.
 - `INDEPENDENCE`: Review stage requires a worker_id distinct from the accepted builder.
+- `NO_PREFLIGHT_SUBAGENTS`: Start the active gate work without launching preflight subagents.
+
+The embedded profile has `contract_author`, `builder`, and `independent_reviewer` subagent roles. The contract author posts the draft on the task blackboard with `topic=draft` and `gate=build`; the same independent reviewer session continues through review and delivery. Registered command guidance includes scoped test commands, and `expected_evidence_template` is bound to the active task, stage, revisions, worker, and worktree. Contract/build context carries indexed `external_callers`, direct and two-hop `covering_tests`, and ADR invariant summaries. Contract seams must reach an in-scope production symbol; changed public signatures with out-of-scope indexed callers fail with `TASK_SEAM_DISCONNECTED` or `TASK_SCOPE_INCOMPLETE` as applicable.
 
 Lifecycle errors follow a deterministic single-line format: `{CODE}: {task_id}. {facts}. Do: {action}` (or action- and milestone-scoped equivalents). Structured `AUTHORITY_GAP` diagnostics distinguish milestone frontmatter divergence from task specification changes with exact remediation commands.
 

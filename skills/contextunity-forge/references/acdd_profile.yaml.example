@@ -4,8 +4,13 @@
 
 roles:
   contract_author:
+    mode: subagent
+    reuse_on_reject: true
+    models: ['sol-6.1:high']
     guidance: "Define a production-seam contract and submit its red proof."
   builder:
+    mode: subagent
+    reuse_on_reject: true
     models:
       - 'gpt6-luna:xhigh'
     guidance: "Implement the accepted contract and run the registered command."
@@ -17,13 +22,14 @@ roles:
     guidance: "Review the candidate independently against every configured contour."
   schema_author:
     guidance: "Submit structured evidence that matches the gate's recursive schema."
-  delivery_reviewer:
-    guidance: "Verify accepted review evidence and deliver the pinned candidate."
 
 commands:
-  cargo-test:
-    command: "cargo test --test acdd tasks"
-    description: "Run the task workflow seam suite."
+  rust-check-and-test:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    description: "Run strict Rust checks followed by the repository's test suite."
+  test:
+    command: "cargo test"
+    description: "Compatibility command for legacy task evidence; workflow guidance selects rust-check-and-test."
 
 policies:
   proof:
@@ -44,6 +50,7 @@ gates:
     tools: ["task_claim", "code_map_inspect"]
     steps:
       - "Write or identify one production-seam test for the task contract."
+      - "Post the draft to task_blackboard with topic=draft and gate=build."
       - "Submit contract_proof with seam_test_ref and red_exit_code."
 
   - id: implement
@@ -53,7 +60,7 @@ gates:
     tools: ["ast_grep_search", "code_map_inspect", "task_submit"]
     steps:
       - "Implement the accepted contract within the admitted scope."
-      - "Run the registered cargo-test command and submit command_proof."
+      - "Run the registered Rust check-and-test command, optionally scoped with --test <target>, and submit command_proof."
 
   - id: review
     role: independent_reviewer
@@ -86,7 +93,7 @@ gates:
       - "Submit scheme_proof with summary and changed_files."
 
   - id: deliver
-    role: delivery_reviewer
+    role: independent_reviewer
     proof: delivery
     auto_commit: true
     independent_from: implement
@@ -96,6 +103,7 @@ gates:
     contours: standard
     tools: ["task_submit", "milestone show"]
     steps:
+      - "Continue in the same independent reviewer session used for review; do not launch preflight subagents."
       - "Verify the candidate and accepted review proof."
       - "Submit delivery_proof; Forge writes the receipt and commits the candidate tree with hooks enabled."
 

@@ -20,6 +20,8 @@
 
 Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that provides the needed operation. Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, roles, models, review contours, and profile-specific behavior. Task builds run the affected test target and strict Clippy. Follow [TESTS.md](TESTS.md) for the exact task and milestone verification commands and count rules.
 
+The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. Use its `workflow_guidance.scoped_commands` entry for an affected test target and submit the task-bound `expected_evidence_template` with completed proof fields.
+
 ## Worktrees and Git permissions
 
 Worktrees live at `.worktrees/<milestone-prefix>-<slug>` for milestones and `.worktrees/<milestone-prefix>-<task-slug>` for concurrent tasks.

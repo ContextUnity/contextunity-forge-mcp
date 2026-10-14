@@ -432,7 +432,7 @@ impl Workspace {
             Some(crate::core::tasks::profile::ProofKind::Contract) => "contract_author",
             Some(crate::core::tasks::profile::ProofKind::Command) => "builder",
             Some(crate::core::tasks::profile::ProofKind::Review) => "independent_reviewer",
-            Some(crate::core::tasks::profile::ProofKind::Delivery) => "delivery_reviewer",
+            Some(crate::core::tasks::profile::ProofKind::Delivery) => "independent_reviewer",
             _ if stage == "completed" => "completed",
             _ => "worker",
         };
@@ -546,6 +546,8 @@ impl Workspace {
             ));
         }
         rules.extend([
+            "NO_PREFLIGHT_SUBAGENTS: Run contract seam proof within the contract author role; do not spawn preflight subagents."
+                .to_owned(),
             "NEVER_EDIT_RECEIPTS: Never manually edit receipt: or status: blocks in docs/milestones/*.md; task_submit(stage=deliver) writes and commits receipts automatically."
                 .to_owned(),
             "IMMUTABILITY: Keep admitted scope unchanged after review pass and during deliver."

@@ -6,22 +6,16 @@ roles:
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "Spawn a dedicated contract author subagent to define the sensitive failing seam test and contract bounds."
+    guidance: "As contract author, define the production-seam contract and red proof, then post a build-targeted draft for the builder."
   builder:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'gpt6-luna:xhigh'
-    guidance: "Spawn a fresh builder subagent to implement the approved contract inside the declared allowed_write_scope and verify tests."
+    guidance: "Implement the approved contract inside the declared allowed_write_scope and verify tests."
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'sol-6.1:xhigh'
-    guidance: "Use a reviewer worker that is independent from the task builder. Submit review proof across contours, and upon pass claim and submit deliver in the same session."
-  delivery_reviewer:
-    mode: subagent
-    reuse_on_reject: true
-    models:
-      - 'sol-6.1:xhigh'
-    guidance: "Execute delivery under the same independent reviewer authority."
+    guidance: "Use a reviewer worker independent from the builder. Submit review proof across contours, then claim and submit deliver in the same reviewer session."

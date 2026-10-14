@@ -112,11 +112,27 @@ fn scan_adrs(workspace_root: &Path, root: &Path, tokens: &BTreeSet<String>) -> V
                 continue;
             }
 
+            let invariants_summary = text
+                .lines()
+                .map(str::trim)
+                .filter(|line| {
+                    line.contains("Invariant:")
+                        || line.contains("INV-")
+                        || line
+                            .trim_start_matches(['-', '*'])
+                            .trim_start()
+                            .starts_with("Decision:")
+                })
+                .take(5)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+
             results.push(json!({
                 "path": rel_path,
                 "title": title,
                 "status": status,
                 "relevance": "direct",
+                "invariants_summary": invariants_summary,
             }));
         }
     }
@@ -236,7 +252,7 @@ fn find_covering_tests(workspace_root: &Path, root: &Path, scope: &[String]) -> 
                 } else {
                     "np.path = ?1"
                 };
-                let sql = format!("SELECT DISTINCT tp.path,t.name FROM nodes n JOIN path_dictionary np ON np.path_id=n.path_id JOIN edges e ON e.dst_hash=n.node_hash AND e.kind IN ('calls','imports') JOIN nodes t ON t.node_hash=e.src_hash JOIN path_dictionary tp ON tp.path_id=t.path_id WHERE {predicate} AND t.is_test=1 ORDER BY tp.path,t.name LIMIT 15");
+                let sql = format!("SELECT DISTINCT tp.path,t.name FROM nodes n JOIN path_dictionary np ON np.path_id=n.path_id JOIN edges e ON e.dst_hash=n.node_hash AND e.kind IN ('calls','imports','possible_calls','implements','overrides') JOIN nodes t ON t.node_hash=e.src_hash JOIN path_dictionary tp ON tp.path_id=t.path_id WHERE {predicate} AND t.is_test=1 ORDER BY tp.path,t.name LIMIT 15");
                 if let Ok(mut stmt) = conn.prepare(&sql) {
                     if let Ok(rows) = stmt.query_map([scope_path], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -248,12 +264,202 @@ fn find_covering_tests(workspace_root: &Path, root: &Path, scope: &[String]) -> 
                         }
                     }
                 }
+
+                let indirect_sql = format!(
+                    "SELECT DISTINCT tp.path,t.name FROM nodes target \
+                     JOIN path_dictionary np ON np.path_id=target.path_id \
+                     JOIN edges second ON second.dst_hash=target.node_hash AND second.kind IN ('calls','imports','possible_calls','implements','overrides') \
+                     JOIN nodes intermediate ON intermediate.node_hash=second.src_hash \
+                     JOIN edges first ON first.dst_hash=intermediate.node_hash AND first.kind IN ('calls','imports','possible_calls','implements','overrides') \
+                     JOIN nodes t ON t.node_hash=first.src_hash AND t.is_test=1 \
+                     JOIN path_dictionary tp ON tp.path_id=t.path_id \
+                     WHERE {predicate} ORDER BY tp.path,t.name LIMIT 15"
+                );
+                if let Ok(mut stmt) = conn.prepare(&indirect_sql) {
+                    if let Ok(rows) = stmt.query_map([scope_path], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    }) {
+                        for row in rows.flatten() {
+                            if seen.insert(row.0.clone()) {
+                                covering.push(json!({"path":row.0,"name":row.1,"kind":"test_symbol","match_reason":"two_hop_indexed_dependency"}));
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
     covering.truncate(15);
     covering
+}
+
+/// Return indexed one-hop callers outside the task's admitted paths.
+fn find_external_callers(workspace_root: &Path, root: &Path, scope: &[String]) -> Vec<Value> {
+    let db_path = [
+        workspace_root.join(".forge/code-map.sqlite"),
+        root.join(".forge/code-map.sqlite"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file());
+    let Some(db_path) = db_path else {
+        return Vec::new();
+    };
+    let Ok(conn) =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return Vec::new();
+    };
+
+    let mut callers = Vec::new();
+    let mut seen = BTreeSet::new();
+    for scope_path in scope.iter().filter(|path| !path.starts_with("tests/")) {
+        let predicate = if scope_path.ends_with('/') {
+            "np.path LIKE ?1 || '%'"
+        } else {
+            "np.path = ?1"
+        };
+        let sql = format!(
+            "SELECT DISTINCT cp.path,c.name,target.name,target.kind,c.details \
+             FROM nodes target JOIN path_dictionary np ON np.path_id=target.path_id \
+             JOIN edges e ON e.dst_hash=target.node_hash AND e.kind IN ('calls','imports','possible_calls','implements','overrides') \
+             JOIN nodes c ON c.node_hash=e.src_hash AND c.is_test=0 \
+             JOIN path_dictionary cp ON cp.path_id=c.path_id \
+             WHERE {predicate} ORDER BY cp.path,c.name,target.name LIMIT 100"
+        );
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            continue;
+        };
+        let Ok(rows) = stmt.query_map([scope_path], |row| {
+            let caller_details: String = row.get(4)?;
+            let signature = serde_json::from_str::<Value>(&caller_details)
+                .ok()
+                .and_then(|details| details.get("signature").cloned());
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                signature,
+            ))
+        }) else {
+            continue;
+        };
+        for row in rows.flatten() {
+            let (path, caller, target, kind, signature) = row;
+            let is_in_scope = scope.iter().any(|admitted| {
+                if admitted.ends_with('/') {
+                    path.starts_with(admitted)
+                } else {
+                    path.as_str() == admitted.as_str()
+                }
+            });
+            if is_in_scope || !seen.insert((path.clone(), caller.clone(), target.clone())) {
+                continue;
+            }
+            callers.push(json!({
+                "path": path,
+                "caller": caller,
+                "target": target,
+                "kind": kind,
+                "signature": signature,
+            }));
+        }
+    }
+    callers.truncate(25);
+    callers
+}
+
+fn reference_path(reference: &Value) -> Option<String> {
+    let reference = reference.as_str()?.trim();
+    let path = reference.split("::").next().unwrap_or(reference);
+    let path = path.split('#').next().unwrap_or(path);
+    (!path.is_empty()).then(|| path.to_owned())
+}
+
+fn cargo_test_target(root: &Path, reference: &Value) -> Option<(String, String)> {
+    let path = reference_path(reference)?;
+    let test_path = Path::new(&path);
+    if test_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("rs")
+        || !root.join(test_path).is_file()
+    {
+        return None;
+    }
+    if path.starts_with("src/") {
+        return Some((path, "--lib".to_owned()));
+    }
+
+    let tests_root = test_path
+        .ancestors()
+        .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some("tests"))?;
+    let mut directory = test_path.parent()?;
+    while directory != tests_root {
+        let target_root = directory.with_extension("rs");
+        if root.join(&target_root).is_file() {
+            let target = target_root.file_stem()?.to_str()?;
+            return Some((path, format!("--test {target}")));
+        }
+        directory = directory.parent()?;
+    }
+    if test_path.parent()? == tests_root {
+        return Some((
+            path.clone(),
+            format!("--test {}", test_path.file_stem()?.to_str()?),
+        ));
+    }
+    None
+}
+
+fn scoped_commands(
+    root: &Path,
+    commands: &std::collections::BTreeMap<String, crate::core::tasks::profile::CommandDef>,
+    seam: Option<&Value>,
+    covering_tests: &[Value],
+) -> Vec<Value> {
+    let selected_commands = commands
+        .get("rust-check-and-test")
+        .map(|definition| vec![("rust-check-and-test", definition)])
+        .unwrap_or_else(|| {
+            commands
+                .iter()
+                .map(|(name, definition)| (name.as_str(), definition))
+                .collect()
+        });
+    let mut targets = BTreeSet::new();
+    if let Some(seam) = seam.and_then(reference_path) {
+        targets.insert((seam, "contract_seam_test"));
+    }
+    for test in covering_tests {
+        if let Some(path) = test.get("path").and_then(Value::as_str) {
+            targets.insert((path.to_owned(), "covering_test"));
+        }
+    }
+
+    targets
+        .into_iter()
+        .flat_map(|(path, source)| {
+            selected_commands.iter().map(move |(name, definition)| {
+                let command = definition.command();
+                let suffix = if command.contains("cargo") {
+                    cargo_test_target(root, &json!(path))
+                        .map(|(_, target)| target)
+                        .unwrap_or_else(|| path.clone())
+                } else {
+                    path.clone()
+                };
+                json!({
+                    "name": name,
+                    "source": source,
+                    "test_path": path.clone(),
+                    "command": format!("{command} {suffix}"),
+                })
+            })
+        })
+        .take(30)
+        .collect()
 }
 
 /// Builds the comprehensive, zero-shot task context bundle.
@@ -342,6 +548,7 @@ pub(super) fn context_bundle(
 
     // 3. Covering test seams
     let covering_tests = find_covering_tests(&workspace.root, root, &scope);
+    let external_callers = find_external_callers(&workspace.root, root, &scope);
 
     // Select proof context by configured gate taxonomy and references.
     let contract_seam_test = profile
@@ -500,6 +707,54 @@ pub(super) fn context_bundle(
             .cloned()
             .collect::<Vec<_>>();
         guidance_map.insert("blackboard_messages".into(), json!(targeted_messages));
+        guidance_map.insert(
+            "scoped_commands".into(),
+            json!(scoped_commands(
+                details
+                    .get("worktree")
+                    .and_then(Value::as_str)
+                    .map(Path::new)
+                    .unwrap_or(&workspace.root),
+                &profile.commands,
+                contract_seam_test.as_ref(),
+                &covering_tests,
+            )),
+        );
+        let proof_template = match proof_kind {
+            Some(crate::core::tasks::profile::ProofKind::Contract) => json!({
+                "contract_proof": {
+                    "seam_test_ref": "<indexed test file or symbol>",
+                    "red_exit_code": 101,
+                }
+            }),
+            Some(crate::core::tasks::profile::ProofKind::Command) => json!({
+                "command_proof": {
+                    "command": "<registered command with scoped test target>",
+                    "exit_code": 0,
+                    "tests_passed": 1,
+                    "tests_failed": 0,
+                }
+            }),
+            Some(crate::core::tasks::profile::ProofKind::Review) => json!({
+                "review_proof": {"decision": "pass", "contours": "<one result per configured contour>"}
+            }),
+            Some(crate::core::tasks::profile::ProofKind::Delivery) => {
+                json!({"delivery_proof": {"delivered": true}})
+            }
+            _ => json!({}),
+        };
+        guidance_map.insert(
+            "expected_evidence_template".into(),
+            json!({
+                "task_id": task_id,
+                "stage": stage,
+                "claim_revision": details["claim_revision"],
+                "contract_revision": details["contract_revision"],
+                "worker_id": details["worker_id"],
+                "worktree": details["worktree"],
+                "proof": proof_template,
+            }),
+        );
     }
     let mut topic_counts = serde_json::Map::new();
     let mut targeted_count = 0usize;
@@ -567,6 +822,7 @@ pub(super) fn context_bundle(
     ) {
         bundle_map.insert("scope_symbols".into(), json!(scope_symbols));
         bundle_map.insert("covering_tests".into(), json!(covering_tests));
+        bundle_map.insert("external_callers".into(), json!(external_callers));
     }
     if proof_kind == Some(crate::core::tasks::profile::ProofKind::Command) {
         if let Some(seam) = contract_seam_test {

@@ -12,7 +12,559 @@ use crate::db::tasks_store::{
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+};
+
+fn code_map_connection(
+    store: &TasksStore,
+    worktree: &Path,
+) -> Result<Option<rusqlite::Connection>> {
+    let database_path = store
+        .connection
+        .query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2))
+        .ok()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let primary_index = database_path
+        .as_deref()
+        .and_then(Path::parent)
+        .map(|directory| directory.join("code-map.sqlite"));
+    let index_path = [primary_index, Some(worktree.join(".forge/code-map.sqlite"))]
+        .into_iter()
+        .flatten()
+        .find(|path| path.is_file());
+    let Some(index_path) = index_path else {
+        return Ok(None);
+    };
+    rusqlite::Connection::open_with_flags(index_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map(Some)
+        .context("TASK_CODE_MAP_INVALID: indexed task boundary data is unavailable")
+}
+
+fn scoped_path_predicate(
+    alias: &str,
+    scope: &[String],
+    first_parameter: usize,
+) -> (String, Vec<String>) {
+    if scope.is_empty() {
+        return ("0".into(), Vec::new());
+    }
+    let mut values = Vec::with_capacity(scope.len());
+    let predicate = scope
+        .iter()
+        .enumerate()
+        .map(|(offset, path)| {
+            values.push(path.clone());
+            let parameter = first_parameter + offset;
+            if path.ends_with('/') {
+                format!("substr({alias}, 1, length(?{parameter})) = ?{parameter}")
+            } else {
+                format!("{alias} = ?{parameter}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    (format!("({predicate})"), values)
+}
+
+fn normalized_signature(signature: &str) -> String {
+    signature.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_public_signature(signature: &str) -> bool {
+    let signature = signature.trim_start();
+    signature.starts_with("pub ") || signature.starts_with("pub(")
+}
+
+fn language_for_source_path(path: &str) -> Option<&'static str> {
+    match Path::new(path).extension()?.to_str()? {
+        "rs" => Some("rust"),
+        "py" => Some("python"),
+        "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+        "ts" | "tsx" => Some("typescript"),
+        _ => None,
+    }
+}
+
+fn module_export_names(nodes: &[crate::core::models::Node]) -> BTreeSet<String> {
+    nodes
+        .iter()
+        .filter(|node| node.kind == "module")
+        .filter_map(|node| node.details["exports"].as_array())
+        .flatten()
+        .filter(|export| {
+            export["module"].is_null() && export["type_only"] != serde_json::Value::Bool(true)
+        })
+        .filter_map(|export| export["local"].as_str().map(str::to_owned))
+        .collect()
+}
+
+fn exported_callable(node: &crate::core::models::Node, exports: &BTreeSet<String>) -> bool {
+    match node.language.as_str() {
+        "rust" => node.details["signature"]
+            .as_str()
+            .is_some_and(is_public_signature),
+        "python" => {
+            !node.name.starts_with('_')
+                || exports.contains(&node.name)
+                || node.qualname.rsplit_once('.').is_some_and(|(owner, _)| {
+                    exports.contains(owner.rsplit('.').next().unwrap_or(owner))
+                })
+        }
+        "javascript" | "typescript" => {
+            node.details["default_export"] == serde_json::Value::Bool(true)
+                || exports.contains(&node.name)
+                || (node.kind == "method"
+                    && node.qualname.rsplit_once('.').is_some_and(|(owner, _)| {
+                        exports.contains(owner.rsplit('.').next().unwrap_or(owner))
+                    }))
+        }
+        _ => false,
+    }
+}
+
+fn typed_source_nodes(path: &str, source: &str) -> Result<Vec<crate::core::models::Node>> {
+    let language = language_for_source_path(path)
+        .context("TASK_CODE_MAP_INVALID: source language is unavailable")?;
+    Ok(crate::engine::ast::extract_typed(path, language, source)?
+        .facts
+        .nodes)
+}
+
+fn public_callable_nodes(path: &str, source: &str) -> Result<Vec<crate::core::models::Node>> {
+    let nodes = typed_source_nodes(path, source)?;
+    let exports = module_export_names(&nodes);
+    Ok(nodes
+        .into_iter()
+        .filter(|node| {
+            matches!(node.kind.as_str(), "function" | "method")
+                && !node.is_test
+                && exported_callable(node, &exports)
+        })
+        .collect())
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct BaselineBoundaryCallers {
+    baseline_commit: String,
+    entries: Vec<BaselineCallerEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct BaselineCallerEntry {
+    path: String,
+    kind: String,
+    name: String,
+    qualname: String,
+    caller_paths: BTreeSet<String>,
+}
+
+fn accepted_boundary_callers(
+    conn: &rusqlite::Connection,
+    id: &str,
+    profile: &crate::core::tasks::profile::GateProfile,
+    gate_index: usize,
+) -> Result<Option<BaselineBoundaryCallers>> {
+    let Some(contract_gate) = profile.gates[..gate_index]
+        .iter()
+        .rev()
+        .find(|gate| gate.proof.kind() == Some(ProofKind::Contract))
+    else {
+        return Ok(None);
+    };
+    let submission: Option<String> = conn
+        .query_row(
+            "SELECT submission.result FROM task_gates gate \
+             JOIN task_submissions submission ON submission.task_id=gate.task_id AND submission.revision=gate.revision \
+             WHERE gate.task_id=?1 AND gate.gate=?2 AND gate.state='passed' \
+             ORDER BY gate.revision DESC LIMIT 1",
+            params![id, contract_gate.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(submission) = submission else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str::<Submission>(&submission)?.boundary_callers)
+}
+
+fn baseline_scope_files(worktree: &Path, baseline: &str, scope: &[String]) -> Result<Vec<String>> {
+    if scope.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["ls-tree", "-r", "-z", "--name-only", baseline, "--"];
+    args.extend(scope.iter().map(String::as_str));
+    let output = crate::core::git::git_command(worktree, &args)?;
+    if !output.status.success() {
+        bail!("TASK_CANDIDATE_BASELINE_INVALID: could not enumerate baseline source files");
+    }
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8(path.to_vec()).context("baseline path is not UTF-8"))
+        .collect()
+}
+
+fn current_scope_files(worktree: &Path, scope: &[String]) -> Result<Vec<String>> {
+    let output =
+        crate::core::git::git_command(worktree, &["ls-files", "-co", "--exclude-standard", "-z"])?;
+    if !output.status.success() {
+        bail!("TASK_SCOPE_INCOMPLETE: could not enumerate current scoped source files");
+    }
+    let mut files = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8(path.to_vec()).context("current path is not UTF-8"))
+        .collect::<Result<Vec<_>>>()?;
+    files.retain(|path| path_is_in_scope(path, scope));
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+fn baseline_source(worktree: &Path, baseline: &str, path: &str) -> Result<Option<String>> {
+    let object = format!("{baseline}:{path}");
+    let output = crate::core::git::git_command(worktree, &["show", &object])?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8(output.stdout).context(
+        "TASK_CANDIDATE_BASELINE_INVALID: source is not UTF-8",
+    )?))
+}
+
+fn indexed_caller_paths(
+    connection: &rusqlite::Connection,
+    symbol: &crate::core::models::Node,
+) -> Result<BTreeSet<String>> {
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT caller_path.path FROM nodes target \
+         JOIN path_dictionary target_path ON target_path.path_id=target.path_id \
+         JOIN edges ON edges.dst_hash=target.node_hash \
+           AND edges.kind IN ('calls','imports','possible_calls','implements','overrides') \
+         JOIN nodes caller ON caller.node_hash=edges.src_hash AND caller.is_test=0 \
+         JOIN path_dictionary caller_path ON caller_path.path_id=caller.path_id \
+         WHERE target_path.path=?1 AND target.kind=?2 AND target.name=?3 AND target.qualname=?4 \
+         ORDER BY caller_path.path",
+    )?;
+    let callers = statement
+        .query_map(
+            params![symbol.path, symbol.kind, symbol.name, symbol.qualname],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()
+        .map_err(anyhow::Error::from)?;
+    Ok(callers)
+}
+
+fn capture_baseline_boundary_callers(
+    connection: &rusqlite::Connection,
+    worktree: &Path,
+    scope: &[String],
+    captured_baseline: Option<&str>,
+) -> Result<BaselineBoundaryCallers> {
+    let baseline = match captured_baseline {
+        Some(captured) => captured.to_owned(),
+        None => crate::core::git::git_stdout(
+            worktree,
+            &["rev-parse", "--verify", "HEAD"],
+            "TASK_CANDIDATE_BASELINE_INVALID",
+        )?,
+    };
+    let mut entries = Vec::new();
+    for path in baseline_scope_files(worktree, &baseline, scope)? {
+        if language_for_source_path(&path).is_none() {
+            continue;
+        }
+        let Some(source) = baseline_source(worktree, &baseline, &path)? else {
+            continue;
+        };
+        for symbol in public_callable_nodes(&path, &source).map_err(|error| {
+            anyhow::anyhow!(
+                "TASK_CANDIDATE_BASELINE_INVALID: could not parse '{path}' at {baseline}: {error}"
+            )
+        })? {
+            entries.push(BaselineCallerEntry {
+                path: symbol.path.clone(),
+                kind: symbol.kind.clone(),
+                name: symbol.name.clone(),
+                qualname: symbol.qualname.clone(),
+                caller_paths: indexed_caller_paths(connection, &symbol)?,
+            });
+        }
+    }
+    Ok(BaselineBoundaryCallers {
+        baseline_commit: baseline,
+        entries,
+    })
+}
+
+fn path_is_in_scope(path: &str, scope: &[String]) -> bool {
+    scope.iter().any(|admitted| {
+        if admitted.ends_with('/') {
+            path.starts_with(admitted)
+        } else {
+            path == admitted
+        }
+    })
+}
+
+#[derive(Debug)]
+struct SeamReference {
+    path: String,
+    symbol: Option<String>,
+    line: Option<usize>,
+}
+
+fn parse_seam_reference(reference: &str) -> Option<SeamReference> {
+    let reference = reference.trim();
+    let (without_line, line) = match reference.split_once('#') {
+        Some((reference, suffix)) => {
+            let line = suffix.strip_prefix('L').unwrap_or(suffix).parse().ok()?;
+            (reference, Some(line))
+        }
+        None => (reference, None),
+    };
+    let (path, symbol) = match without_line.split_once("::") {
+        Some((path, symbol)) if !symbol.trim().is_empty() => (path, Some(symbol.trim().to_owned())),
+        Some(_) => return None,
+        None => (without_line, None),
+    };
+    let path = Path::new(path);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(SeamReference {
+        path: path.to_string_lossy().replace('\\', "/"),
+        symbol,
+        line,
+    })
+}
+
+fn seam_symbol_matches(node: &crate::core::models::Node, symbol: &str) -> bool {
+    let normalized = symbol.replace("::", ".");
+    if symbol.contains("::") || symbol.contains('.') {
+        node.qualname == normalized
+    } else {
+        node.name == symbol
+    }
+}
+
+fn indexed_test_hashes(
+    connection: &rusqlite::Connection,
+    reference: &SeamReference,
+    nodes: &[crate::core::models::Node],
+) -> Result<Vec<i64>> {
+    let mut hashes = BTreeSet::new();
+    let mut statement = connection.prepare(
+        "SELECT node.node_hash FROM nodes node \
+         JOIN path_dictionary path ON path.path_id=node.path_id \
+         WHERE path.path=?1 AND node.kind=?2 AND node.name=?3 \
+           AND node.qualname=?4 AND node.is_test=1",
+    )?;
+    for node in nodes {
+        let hash = statement
+            .query_row(
+                params![reference.path, node.kind, node.name, node.qualname],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if let Some(hash) = hash {
+            hashes.insert(hash);
+        }
+    }
+    Ok(hashes.into_iter().collect())
+}
+
+fn validate_seam_reachability(
+    connection: &rusqlite::Connection,
+    task_id: &str,
+    worktree: &Path,
+    scope: &[String],
+    reference: &str,
+) -> Result<()> {
+    let Some(reference) = parse_seam_reference(reference) else {
+        bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{reference}' is not a confined indexed test path. Do: submit an indexed test file or symbol connected to the admitted production scope.");
+    };
+    let source_path = super::confined_path(worktree, &reference.path).map_err(|_| {
+        anyhow::anyhow!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' is not present in the claimed worktree.", reference.path)
+    })?;
+    let source = std::fs::read_to_string(&source_path).map_err(|_| {
+        anyhow::anyhow!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' is not readable in the claimed worktree.", reference.path)
+    })?;
+    let nodes = typed_source_nodes(&reference.path, &source).map_err(|_| {
+        anyhow::anyhow!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' cannot be parsed as a supported test file.", reference.path)
+    })?;
+    let test_nodes = nodes
+        .into_iter()
+        .filter(|node| {
+            node.is_test
+                && matches!(node.kind.as_str(), "function" | "method")
+                && reference.line.is_none_or(|line| node.line == line)
+                && reference
+                    .symbol
+                    .as_deref()
+                    .is_none_or(|symbol| seam_symbol_matches(node, symbol))
+        })
+        .collect::<Vec<_>>();
+    if test_nodes.is_empty() {
+        bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' does not identify a current test symbol in the claimed worktree. Do: submit a current indexed test file or exact test symbol.", reference.path);
+    }
+    if reference.symbol.is_some() && test_nodes.len() != 1 {
+        bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' does not identify one unambiguous current test symbol in the claimed worktree. Do: use its exact qualified symbol or line.", reference.path);
+    }
+    let test_hashes = indexed_test_hashes(connection, &reference, &test_nodes)?;
+    if test_hashes.is_empty() {
+        bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no exact indexed test symbol. Do: refresh the index and submit the current test file or symbol.", reference.path);
+    }
+
+    let (scope_predicate, scope_values) = scoped_path_predicate("target_path.path", scope, 2);
+    let sql = format!(
+        "WITH RECURSIVE reachable(node_hash, depth) AS (\
+             SELECT ?1, 0 \
+             UNION \
+             SELECT edge.dst_hash, reachable.depth+1 FROM reachable \
+             JOIN edges edge ON edge.src_hash=reachable.node_hash \
+             WHERE reachable.depth < 2 AND edge.kind IN ('calls','imports','possible_calls','implements','overrides')\
+         ) \
+         SELECT EXISTS(SELECT 1 FROM reachable \
+             JOIN nodes target ON target.node_hash=reachable.node_hash \
+             JOIN path_dictionary target_path ON target_path.path_id=target.path_id \
+             WHERE reachable.depth BETWEEN 1 AND 2 AND target.is_test=0 \
+               AND {scope_predicate})"
+    );
+    let mut connected = false;
+    for hash in test_hashes {
+        let mut values = vec![rusqlite::types::Value::Integer(hash)];
+        values.extend(
+            scope_values
+                .iter()
+                .cloned()
+                .map(rusqlite::types::Value::Text),
+        );
+        connected |= connection
+            .query_row(&sql, rusqlite::params_from_iter(values.iter()), |row| {
+                row.get::<_, bool>(0)
+            })
+            .context("TASK_CODE_MAP_INVALID: could not verify contract seam reachability")?;
+        if connected {
+            break;
+        }
+    }
+    if !connected {
+        bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no indexed one- or two-hop path into admitted production scope. Do: choose a connected test seam or admit its production dependency.", reference.path);
+    }
+    Ok(())
+}
+
+fn validate_public_signature_scope(
+    connection: &rusqlite::Connection,
+    task_id: &str,
+    worktree: &Path,
+    scope: &[String],
+    captured_baseline: Option<&str>,
+    captured_callers: Option<&BaselineBoundaryCallers>,
+) -> Result<()> {
+    let baseline = if let Some(captured) = captured_baseline {
+        captured.to_owned()
+    } else {
+        crate::core::git::git_stdout(
+            worktree,
+            &["rev-parse", "--verify", "HEAD"],
+            "TASK_CANDIDATE_BASELINE_INVALID",
+        )?
+    };
+    if captured_callers.is_some_and(|snapshot| snapshot.baseline_commit != baseline) {
+        bail!("TASK_CANDIDATE_BASELINE_MISMATCH: accepted contract caller evidence is tied to a different Git baseline");
+    }
+    let baseline_files = baseline_scope_files(worktree, &baseline, scope)?;
+    let current_files = current_scope_files(worktree, scope)?;
+    let mut baseline_symbols = Vec::new();
+    for path in &baseline_files {
+        if language_for_source_path(path).is_none() {
+            continue;
+        }
+        let Some(source) = baseline_source(worktree, &baseline, path)? else {
+            continue;
+        };
+        let symbols = public_callable_nodes(path, &source).map_err(|error| {
+            anyhow::anyhow!(
+                "TASK_CANDIDATE_BASELINE_INVALID: could not parse '{path}' at {baseline}: {error}"
+            )
+        })?;
+        baseline_symbols.extend(symbols);
+    }
+
+    let mut current_by_identity: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    for path in &current_files {
+        if language_for_source_path(path).is_none() {
+            continue;
+        }
+        let source_path = super::confined_path(worktree, path).map_err(|error| {
+            anyhow::anyhow!("TASK_SCOPE_INCOMPLETE: {task_id}. current source '{path}' is not confined: {error}")
+        })?;
+        let source = std::fs::read_to_string(source_path).map_err(|error| {
+            anyhow::anyhow!("TASK_SCOPE_INCOMPLETE: {task_id}. current source '{path}' cannot be read for signature validation: {error}")
+        })?;
+        let symbols = public_callable_nodes(path, &source).map_err(|error| {
+            anyhow::anyhow!("TASK_SCOPE_INCOMPLETE: {task_id}. could not parse current source '{path}' for signature validation: {error}")
+        })?;
+        for node in symbols {
+            current_by_identity
+                .entry((node.path, node.kind, node.qualname))
+                .or_default()
+                .push(normalized_signature(
+                    node.details["signature"].as_str().unwrap_or_default(),
+                ));
+        }
+    }
+
+    for baseline_node in baseline_symbols {
+        let signature = baseline_node.details["signature"]
+            .as_str()
+            .context("TASK_CANDIDATE_BASELINE_INVALID: public symbol has no typed signature")?;
+        let key = (
+            baseline_node.path.clone(),
+            baseline_node.kind.clone(),
+            baseline_node.qualname.clone(),
+        );
+        let signature = normalized_signature(signature);
+        if current_by_identity
+            .get(&key)
+            .is_some_and(|signatures| signatures.iter().any(|current| current == &signature))
+        {
+            continue;
+        }
+        let mut callers = captured_callers
+            .into_iter()
+            .flat_map(|snapshot| snapshot.entries.iter())
+            .find(|entry| {
+                entry.path == baseline_node.path
+                    && entry.kind == baseline_node.kind
+                    && entry.name == baseline_node.name
+                    && entry.qualname == baseline_node.qualname
+            })
+            .map(|entry| entry.caller_paths.clone())
+            .unwrap_or_default();
+        callers.extend(indexed_caller_paths(connection, &baseline_node)?);
+        let external = callers
+            .into_iter()
+            .filter(|caller| !path_is_in_scope(caller, scope))
+            .collect::<BTreeSet<_>>();
+        if !external.is_empty() {
+            bail!("TASK_SCOPE_INCOMPLETE: {task_id}. public signature for '{}' in '{}' changed with indexed non-test callers outside admitted scope: {}. Do: admit every caller path or preserve the public signature.", baseline_node.name, baseline_node.path, external.into_iter().collect::<Vec<_>>().join(", "));
+        }
+    }
+    Ok(())
+}
 
 fn commit_tree_and_parent(worktree: &Path, commit: &str) -> Result<(String, String)> {
     let output =
@@ -201,6 +753,21 @@ impl TasksStore {
         }
         let observed_task = self.inspect(id)?;
         let profile = self.profile_for_task(&observed_task)?;
+        let code_map = if action == "pass"
+            && profile.by_stage(stage).is_some_and(|gate| {
+                gate.proof
+                    .kind()
+                    .is_some_and(|kind| matches!(kind, ProofKind::Contract | ProofKind::Command))
+            }) {
+            observed_task
+                .worktree
+                .as_deref()
+                .map(|worktree| code_map_connection(self, Path::new(worktree)))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -300,6 +867,53 @@ impl TasksStore {
             action == "pass",
             &task.spec.proof_policy,
         )?;
+        let mut boundary_callers_snapshot = None;
+        if action == "pass"
+            && matches!(
+                gate_def.proof.kind(),
+                Some(ProofKind::Contract | ProofKind::Command)
+            )
+        {
+            let worktree = Path::new(&evidence.worktree);
+            if let Some(index) = code_map.as_ref() {
+                if gate_def.proof.kind() == Some(ProofKind::Contract) {
+                    let seam_test_ref = evidence
+                        .proof
+                        .get("contract_proof")
+                        .and_then(|proof| proof.get("seam_test_ref"))
+                        .and_then(serde_json::Value::as_str)
+                        .context("TASK_EVIDENCE_INVALID: seam test reference required")?;
+                    validate_seam_reachability(
+                        index,
+                        id,
+                        worktree,
+                        &task.spec.scope,
+                        seam_test_ref,
+                    )?;
+                }
+                let captured_callers = if gate_def.proof.kind() == Some(ProofKind::Command) {
+                    accepted_boundary_callers(&tx, id, &profile, gate_index)?
+                } else {
+                    None
+                };
+                validate_public_signature_scope(
+                    index,
+                    id,
+                    worktree,
+                    &task.spec.scope,
+                    evidence.candidate_baseline_head.as_deref(),
+                    captured_callers.as_ref(),
+                )?;
+                if gate_def.proof.kind() == Some(ProofKind::Contract) {
+                    boundary_callers_snapshot = Some(capture_baseline_boundary_callers(
+                        index,
+                        worktree,
+                        &task.spec.scope,
+                        evidence.candidate_baseline_head.as_deref(),
+                    )?);
+                }
+            }
+        }
         if let Some(prior) = gate_def.independent_from.as_deref() {
             let builder: String = tx.query_row(
                 "SELECT json_extract(evidence,'$.worker_id') FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='passed' ORDER BY revision DESC LIMIT 1",
@@ -601,6 +1215,7 @@ impl TasksStore {
             action: action.into(),
             findings: findings.cloned(),
             task: task.clone(),
+            boundary_callers: boundary_callers_snapshot.clone(),
         };
         tx.execute(
             "INSERT INTO task_submissions VALUES(?1,?2,?3)",
@@ -640,6 +1255,8 @@ struct Submission {
     action: String,
     findings: Option<serde_json::Value>,
     task: Task,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    boundary_callers: Option<BaselineBoundaryCallers>,
 }
 
 fn accepted(conn: &rusqlite::Connection, id: &str, gate: &str) -> Result<Evidence> {

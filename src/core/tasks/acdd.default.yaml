@@ -17,24 +17,29 @@ roles:
   contract_author:
     mode: subagent
     reuse_on_reject: true
-    guidance: "Spawn a dedicated contract author subagent to define the failing seam test and contract bounds."
+    models:
+      - 'sol-6.1:high'
+    guidance: "As contract author, define the production-seam contract and red proof, then post a build-targeted draft for the builder."
   builder:
     mode: subagent
     reuse_on_reject: true
-    guidance: "Spawn a dedicated builder subagent to implement the approved contract inside the declared allowed_write_scope and verify tests."
+    models:
+      - 'gpt6-luna:xhigh'
+    guidance: "Implement the approved contract inside the declared allowed_write_scope and verify tests."
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
-    guidance: "Spawn a dedicated independent reviewer subagent (distinct model/worker) to review candidate diff across contours."
-  delivery_reviewer:
-    mode: subagent
-    reuse_on_reject: true
-    guidance: "Spawn a dedicated delivery reviewer subagent to verify receipts and submit delivery proof."
+    models:
+      - 'sol-6.1:xhigh'
+    guidance: "Review independently, then claim and submit delivery in the same reviewer session."
 
 commands:
+  rust-check-and-test:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    description: "Run strict Rust checks followed by the repository's test suite. Append --test <target> to focus the test command."
   test:
     command: "cargo test"
-    description: "Run the repository's focused test suite."
+    description: "Compatibility command for legacy task evidence; workflow guidance selects rust-check-and-test."
 
 policies:
   proof:
@@ -92,6 +97,7 @@ gates:
       - "code_map_inspect"
     steps:
       - "Author a sensitive failing seam test in the designated test suite (or verify existing seam directly with exit code 0 if proof_policy: direct-proof or deferred-final-test)."
+      - "Post the contract draft to task_blackboard with topic=draft and gate=\"build\" so the builder receives a targeted handoff."
       - "Submit contract proof with seam test and red_exit_code."
 
   - id: "build"
@@ -126,7 +132,7 @@ gates:
       - "Accept legitimate defect fixes within scope and submit review proof."
 
   - id: "deliver"
-    role: "delivery_reviewer"
+    role: "independent_reviewer"
     proof: "delivery"
     sha_snapshot: false
     auto_commit: true
@@ -140,7 +146,7 @@ gates:
       - "task_submit"
       - "milestone show"
     steps:
-      - "Verify delivery worker is distinct from builder."
+      - "Continue with the same independent reviewer subagent session used for review; keep its worker_id distinct from the builder."
       - "Submit delivery proof first; Forge verifies proofs, writes typed receipt into milestone, and clears blackboard."
       - "With auto_commit enabled, Forge commits the candidate tree and receipt automatically; with auto_commit disabled, create one scoped delivery commit."
 

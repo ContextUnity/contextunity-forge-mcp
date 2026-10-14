@@ -1235,7 +1235,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     reject_to: candidate_final
     contours: standard
   - id: deliver
-    role: delivery_reviewer
+    role: independent_reviewer
     proof: delivery
     receipt_review: security_review
     review_sources: [review, security_review]
@@ -1475,7 +1475,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     reject_to: candidate_final
     contours: standard
   - id: deliver
-    role: delivery_reviewer
+    role: independent_reviewer
     proof: delivery
     receipt_review: security_review
     review_sources: [review, security_review]
