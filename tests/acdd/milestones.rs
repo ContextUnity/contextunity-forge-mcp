@@ -3750,3 +3750,469 @@ scope:
         "SQLite receipt must be updated by handoff with the landed commit"
     );
 }
+
+#[test]
+fn record_task_commits_false_archives_commitless_markdown_receipt_and_syncs_cleanly() {
+    let root = ScopedWorkspace::new("forge_commitless_handoff");
+    root.write(
+        "forge-mcp.yaml",
+        "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/AGENTS.md\nrecord_task_commits: false\n",
+    );
+    root.write("docs/AGENTS.md", "# Agent Guidance\n");
+    root.write("src/lib.rs", "pub fn work() -> bool { true }\n");
+
+    let milestone_content = r#"---
+id: m-commitless
+title: Commitless test
+doc_type: contract
+---
+# Commitless test
+
+```yaml
+task_ref: work
+target: Complete work task
+proof_policy: seam-test-first
+scope:
+  - src/lib.rs
+```
+"#;
+    root.write("docs/milestones/010-commitless.md", milestone_content);
+
+    // Initial commit
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            ".",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Initial milestone contract",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+
+    // 1. Sync milestone
+    contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-commitless.md"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    // 2. Complete task through engine with implementation in scope
+    root.write(
+        "src/lib.rs",
+        "pub fn work() -> bool { true }\n// implementation\n",
+    );
+    let store = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    let task = store.list(None, "all", None).unwrap().pop().unwrap();
+    complete_task_through_engine(&root, &store, &task.task_id);
+    drop(store);
+
+    let handoff_commit = git_head(&root.0);
+
+    // 3. Run milestone handoff
+    let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-commitless",
+        Some(&handoff_commit),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap();
+    assert_eq!(handoff_res["id"], "m-commitless");
+
+    // 4. Verify the archived document has a commitless receipt (no commit SHA in markdown)
+    let archived_path = root.0.join("docs/milestones/archive/010-commitless.md");
+    assert!(archived_path.exists());
+    let archived_doc = std::fs::read_to_string(&archived_path).unwrap();
+    let archived_milestone = Milestone::parse(&archived_doc, "forge-mcp").unwrap();
+    assert!(
+        archived_milestone.tasks[0]
+            .receipt
+            .as_ref()
+            .unwrap()
+            .commit
+            .is_none(),
+        "archived receipt must be commitless in Markdown when record_task_commits is false"
+    );
+
+    // 5. Verify SQLite retained the landed commit
+    let store2 = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    let inspected = store2.inspect(&task.task_id).unwrap();
+    assert!(
+        inspected.receipt.unwrap().commit.is_some(),
+        "SQLite receipt must retain the commit locally for tracking"
+    );
+
+    // 6. Verify sync on the archived commitless document succeeds without error
+    let sync_res = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/archive/010-commitless.md"
+        }))
+        .unwrap(),
+    );
+    assert!(
+        sync_res.is_ok(),
+        "task sync must accept matching commitless receipts from markdown without error: {:?}",
+        sync_res.err()
+    );
+
+    // 7. Verify SQLite still retained its commit after sync
+    let store3 = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    let inspected3 = store3.inspect(&task.task_id).unwrap();
+    assert!(
+        inspected3.receipt.unwrap().commit.is_some(),
+        "SQLite receipt must keep its commit even after commitless markdown sync"
+    );
+    drop(store3);
+
+    // 8. Verify migrate verify succeeds with 0 conflicts on the commitless archive
+    let migrate_res = contextunity_forge_mcp::cli::migrate::run(
+        &root.0,
+        contextunity_forge_mcp::cli::migrate::MigrateCommand::Verify {
+            milestone_ref: Some("docs/milestones/archive/010-commitless.md".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        migrate_res["conflicts"].as_array().unwrap().len(),
+        0,
+        "migrate verify must pass for commitless archive"
+    );
+}
+
+#[test]
+fn squashed_or_rebased_milestone_commit_passes_handoff_via_scoped_tree_match() {
+    let root = ScopedWorkspace::new("forge_squashed_handoff");
+    root.write(
+        "forge-mcp.yaml",
+        "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/AGENTS.md\n",
+    );
+    root.write("docs/AGENTS.md", "# Agent Guidance\n");
+    root.write("src/lib.rs", "pub fn work() -> bool { true }\n");
+
+    let milestone_content = r#"---
+id: m-squash
+title: Squash test
+doc_type: contract
+---
+# Squash test
+
+```yaml
+task_ref: work
+target: Complete work task
+proof_policy: seam-test-first
+scope:
+  - src/lib.rs
+```
+"#;
+    root.write("docs/milestones/010-squash.md", milestone_content);
+
+    // Initial commit
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            ".",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Initial milestone contract",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+
+    // 1. Sync milestone
+    contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-squash.md"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    // 2. Complete task through engine
+    let store = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    let task = store.list(None, "all", None).unwrap().pop().unwrap();
+    complete_task_through_engine(&root, &store, &task.task_id);
+    drop(store);
+
+    // 3. Simulate a squash commit via reset/recommit (so delivery is not an ancestor)
+    let delivery_sha = git_head(&root.0);
+    std::process::Command::new("git")
+        .args(["reset", "--soft", "HEAD~1"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Squashed release commit containing task implementation",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+
+    let squashed_sha = git_head(&root.0);
+    assert_ne!(delivery_sha, squashed_sha);
+
+    // 4. Create an additional commit on top (e.g. docs commit)
+    root.write("docs/notes.md", "release documentation\n");
+    std::process::Command::new("git")
+        .args(["add", "docs/notes.md"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Documentation commit on top of squash",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    let tip_sha = git_head(&root.0);
+    assert_ne!(squashed_sha, tip_sha);
+
+    // 5. Handoff at tip succeeds and correctly resolves squashed_sha (introducing commit), NOT tip_sha!
+    let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-squash",
+        Some(&tip_sha),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap();
+    assert_eq!(handoff_res["id"], "m-squash");
+
+    let store2 = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    let inspected = store2.inspect(&task.task_id).unwrap();
+    assert_eq!(
+        inspected.receipt.as_ref().and_then(|r| r.commit.as_deref()),
+        Some(squashed_sha.as_str()),
+        "handoff must record the squashed commit that introduced the scoped changes, not the tip commit on top"
+    );
+}
+
+#[test]
+fn handoff_rejects_commit_when_task_scope_differs_with_actionable_diagnostic() {
+    let root = ScopedWorkspace::new("forge_scoped_diff_rejection");
+    root.write(
+        "forge-mcp.yaml",
+        "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/AGENTS.md\n",
+    );
+    root.write("docs/AGENTS.md", "# Agent Guidance\n");
+    root.write("src/lib.rs", "pub fn work() -> bool { true }\n");
+
+    let milestone_content = r#"---
+id: m-differ
+title: Differ test
+doc_type: contract
+---
+# Differ test
+
+```yaml
+task_ref: work
+target: Complete work task
+proof_policy: seam-test-first
+scope:
+  - src/lib.rs
+```
+"#;
+    root.write("docs/milestones/010-differ.md", milestone_content);
+
+    // Initial commit
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "add",
+            ".",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Initial milestone contract",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+
+    contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({
+            "action": "sync",
+            "milestone_ref": "docs/milestones/010-differ.md"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let store = TasksStore::open_project(
+        &root.0.join(".forge/tasks.sqlite"),
+        "forge-mcp",
+        "forge-mcp",
+    )
+    .unwrap();
+    let task = store.list(None, "all", None).unwrap().pop().unwrap();
+    complete_task_through_engine(&root, &store, &task.task_id);
+    drop(store);
+
+    // Modify scoped file after delivery
+    root.write("src/lib.rs", "pub fn work() -> bool { false /* diverged */ }\n");
+    std::process::Command::new("git")
+        .args(["add", "src/lib.rs"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=ACDD test",
+            "-c",
+            "user.email=acdd-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Accidental scoped divergence",
+        ])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+
+    let divergent_head = git_head(&root.0);
+    let err = contextunity_forge_mcp::engine::milestones::handoff(
+        &root.0,
+        "m-differ",
+        Some(&divergent_head),
+        "cargo test",
+        1,
+        0,
+    )
+    .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(msg.contains("TASK_LANDED_COMMIT_NOT_FOUND"), "{msg}");
+    assert!(msg.contains("Differing paths in task scope:\n  - src/lib.rs"), "{msg}");
+    assert!(msg.contains("git checkout"), "{msg}");
+    assert!(msg.contains("src/lib.rs"), "{msg}");
+}
+
+#[test]
+fn task_settings_parses_various_commit_tracking_formats() {
+    let yaml_bool: contextunity_forge_mcp::engine::tasks::TaskSettings =
+        serde_yaml::from_str("commit_tracking: off\n").unwrap();
+    assert!(!yaml_bool.records_task_commits());
+
+    let yaml_str: contextunity_forge_mcp::engine::tasks::TaskSettings =
+        serde_yaml::from_str("commit_tracking: \"milestone_only\"\n").unwrap();
+    assert!(!yaml_str.records_task_commits());
+
+    let yaml_record_false: contextunity_forge_mcp::engine::tasks::TaskSettings =
+        serde_yaml::from_str("record_task_commits: false\n").unwrap();
+    assert!(!yaml_record_false.records_task_commits());
+
+    let yaml_default: contextunity_forge_mcp::engine::tasks::TaskSettings =
+        serde_yaml::from_str("").unwrap();
+    assert!(yaml_default.records_task_commits());
+}
+

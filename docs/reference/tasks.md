@@ -37,6 +37,8 @@ tasks_db: .forge/tasks.sqlite
 task_repository: forge-mcp
 task_project: forge-mcp
 agents_guidance: AGENTS.md
+record_task_commits: true # or false to disable writing task commit hashes into Markdown receipts
+# commit_tracking: milestone_only # optional alternative: all (default) | milestone_only | off
 ```
 
 ## Linked repository tasks
@@ -458,7 +460,7 @@ or cancelled status filters include archived contracts.
 `--full` includes the complete task descriptions.
 
 `milestone handoff` validates completion of every task belonging to the selected
-milestone in SQLite. For each completed task, handoff resolves its landed commit in the milestone branch (the commit by which that task landed in the branch, whether via fast-forward or merge commit) and rewrites `receipt.commit` in each task block and SQLite to this landed SHA. The command records
+milestone in SQLite. For each completed task, handoff resolves its landed commit in the milestone branch (the commit by which that task landed in the branch, whether via fast-forward, merge commit, or squashed introducing commit) and rewrites `receipt.commit` in SQLite (and in Markdown task blocks unless `record_task_commits: false`) to this landed SHA. The command records
 the supplied implementation commit (default: current HEAD) in a YAML `handoff` block
 with `completed_at`, `duration` as `Xh Ym`, and `verification` containing
 `command`, `status: passed`, `tests_passed`, and `tests_failed`. Duration starts

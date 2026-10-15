@@ -243,24 +243,71 @@ pub struct Manage {
 }
 
 #[derive(Deserialize)]
-struct TaskSettings {
+/// Configuration for repository tasks.
+pub struct TaskSettings {
     #[serde(default = "default_tasks_db")]
     tasks_db: std::path::PathBuf,
     #[serde(default = "default_repository")]
     task_repository: String,
     task_project: Option<String>,
-    pub(crate) agents_guidance: Option<String>,
+    /// Optional path to agents guidance file.
+    pub agents_guidance: Option<String>,
     #[allow(dead_code)]
     #[serde(default)]
-    pub(crate) gates: Option<String>,
+    /// Optional gates configuration path.
+    pub gates: Option<String>,
     #[allow(dead_code)]
     #[serde(default = "default_milestones")]
-    pub(crate) milestones: Vec<String>,
+    /// Configured milestone directories.
+    pub milestones: Vec<String>,
     #[allow(dead_code)]
     #[serde(default = "default_plans")]
-    pub(crate) plans: Vec<String>,
+    /// Configured plan directories.
+    pub plans: Vec<String>,
     #[serde(default)]
     linked_workspaces: Vec<workspaces::LinkedConfig>,
+    #[serde(default = "default_record_task_commits")]
+    /// Whether to record task commits in milestone Markdown documents.
+    pub record_task_commits: bool,
+    #[serde(default)]
+    /// Commit tracking mode override.
+    pub commit_tracking: Option<CommitTrackingSetting>,
+}
+fn default_record_task_commits() -> bool {
+    true
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+/// Configures task commit tracking.
+pub enum CommitTrackingSetting {
+    /// Boolean toggle.
+    Bool(bool),
+    /// Mode string.
+    Text(String),
+}
+
+impl CommitTrackingSetting {
+    /// Returns true if commit tracking is enabled.
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            Self::Bool(b) => *b,
+            Self::Text(s) => !matches!(
+                s.trim().to_lowercase().as_str(),
+                "off" | "none" | "false" | "milestone_only" | "milestone-only" | "disabled"
+                    | "untracked"
+            ),
+        }
+    }
+}
+
+impl TaskSettings {
+    /// Returns true if task commit SHAs should be written to milestone Markdown receipts.
+    pub fn records_task_commits(&self) -> bool {
+        if let Some(tracking) = &self.commit_tracking {
+            return tracking.is_enabled();
+        }
+        self.record_task_commits
+    }
 }
 fn default_tasks_db() -> std::path::PathBuf {
     ".forge/tasks.sqlite".into()
@@ -300,7 +347,7 @@ fn primary_worktree_root(root: &Path) -> Option<std::path::PathBuf> {
     }
 }
 impl TaskSettings {
-    fn load(root: &Path) -> Result<Self> {
+    pub(crate) fn load(root: &Path) -> Result<Self> {
         let config = std::fs::read_to_string(root.join("forge-mcp.yaml"))
             .or_else(|_| {
                 if let Some(base) = primary_worktree_root(root) {

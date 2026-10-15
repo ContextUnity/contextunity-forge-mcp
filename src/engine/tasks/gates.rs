@@ -18,29 +18,29 @@ use std::{
 };
 
 fn code_map_connection(
-    store: &TasksStore,
+    _store: &TasksStore,
     worktree: &Path,
 ) -> Result<Option<rusqlite::Connection>> {
-    let database_path = store
-        .connection
-        .query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2))
-        .ok()
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from);
-    let primary_index = database_path
-        .as_deref()
-        .and_then(Path::parent)
-        .map(|directory| directory.join("code-map.sqlite"));
-    let index_path = [primary_index, Some(worktree.join(".forge/code-map.sqlite"))]
-        .into_iter()
-        .flatten()
-        .find(|path| path.is_file());
-    let Some(index_path) = index_path else {
+    let index_path = worktree.join(".forge/code-map.sqlite");
+    if !index_path.is_file() {
         return Ok(None);
-    };
-    rusqlite::Connection::open_with_flags(index_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map(Some)
-        .context("TASK_CODE_MAP_INVALID: indexed task boundary data is unavailable")
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        &index_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .context("TASK_CODE_MAP_INVALID: indexed task boundary data is unavailable")?;
+    let has_path_dict: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='path_dictionary')",
+            [],
+            |row| row.get(0),
+        )
+        .context("TASK_CODE_MAP_INVALID: unable to inspect indexed task boundary tables")?;
+    if !has_path_dict {
+        anyhow::bail!("TASK_CODE_MAP_INVALID: table 'path_dictionary' is missing from indexed code map");
+    }
+    Ok(Some(connection))
 }
 
 fn normalized_signature(signature: &str) -> String {

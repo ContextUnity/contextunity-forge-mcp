@@ -146,6 +146,35 @@ fn reconcile(root: &Path, reference: &str, mode: &str) -> Result<Value> {
                                         )
                                         .is_ok()
                                     }
+                                    None => {
+                                        if let Some(db_commit) = t_r.commit.as_deref() {
+                                            if matches!(db_commit.len(), 40 | 64)
+                                                && db_commit.bytes().all(|b| b.is_ascii_hexdigit())
+                                            {
+                                                let baseline = match connection.as_ref() {
+                                                    Some(conn) => {
+                                                        crate::db::tasks_store::task_candidate_baseline(
+                                                            conn, &id,
+                                                        )?
+                                                    }
+                                                    None => None,
+                                                };
+                                                crate::core::tasks::validate_commit_for_task(
+                                                    root,
+                                                    db_commit,
+                                                    &task.spec.scope,
+                                                    Some(reference),
+                                                    None,
+                                                    baseline.as_deref(),
+                                                )
+                                                .is_ok()
+                                            } else {
+                                                false
+                                            }
+                                        } else {
+                                            true
+                                        }
+                                    }
                                     _ => false,
                                 }
                             }

@@ -162,19 +162,44 @@ pub fn commit_files_within_scope(
     scope: &[String],
     milestone_ref: Option<&str>,
 ) -> bool {
+    commit_files_outside_scope(changed_files, scope, milestone_ref).is_empty()
+}
+
+/// Return all files in `changed_files` that fall outside the task's scope and milestone reference.
+pub fn commit_files_outside_scope(
+    changed_files: &[String],
+    scope: &[String],
+    milestone_ref: Option<&str>,
+) -> Vec<String> {
     let m_norm = milestone_ref.map(normalize_repo_path);
-    changed_files.iter().all(|file| {
-        let f_norm = normalize_repo_path(file);
-        if is_forge_runtime_file(&f_norm) {
-            return true;
-        }
-        if let Some(m_path) = &m_norm {
-            if &f_norm == m_path {
-                return true;
+    let m_filename = m_norm
+        .as_deref()
+        .and_then(|p| Path::new(p).file_name()?.to_str().map(str::to_owned));
+    changed_files
+        .iter()
+        .filter(|file| {
+            let f_norm = normalize_repo_path(file);
+            if is_forge_runtime_file(&f_norm) {
+                return false;
             }
-        }
-        scope.iter().any(|s| path_matches_scope_entry(file, s))
-    })
+            if let Some(m_path) = &m_norm {
+                if &f_norm == m_path {
+                    return false;
+                }
+                // Allow both active (docs/milestones/X.md) and archived (docs/milestones/archive/X.md) paths
+                if let Some(fname) = &m_filename {
+                    if (f_norm.starts_with("docs/milestones/") || f_norm.starts_with("milestones/"))
+                        && Path::new(&f_norm).file_name().and_then(|n| n.to_str())
+                            == Some(fname.as_str())
+                    {
+                        return false;
+                    }
+                }
+            }
+            !scope.iter().any(|s| path_matches_scope_entry(file, s))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Validate that a commit modifies files within task scope, actually touches task scope,
@@ -196,35 +221,62 @@ pub fn validate_commit_for_task(
     if changed.is_empty() {
         bail!("TASK_COMMIT_EMPTY: commit '{commit}' contains no changed files");
     }
-    if !commit_files_within_scope(&changed, scope, milestone_ref) {
-        bail!("TASK_COMMIT_OUTSIDE_SCOPE: commit '{commit}' changes files outside task scope");
+    let outside = commit_files_outside_scope(&changed, scope, milestone_ref);
+    if !outside.is_empty() {
+        bail!(
+            "TASK_COMMIT_OUTSIDE_SCOPE: commit '{commit}' changes files outside task scope.\n\
+             Files outside scope:\n  - {}\n\
+             Admitted task scope:\n  - {}\n\
+             Do: either expand the task contract scope in the milestone document, or remove out-of-scope files from the commit.",
+            outside.join("\n  - "),
+            scope.join("\n  - ")
+        );
     }
     let touches_scope = changed
         .iter()
         .any(|f| scope.iter().any(|s| path_matches_scope_entry(f, s)));
     if !touches_scope {
-        bail!("TASK_COMMIT_IGNORES_SCOPE: commit '{commit}' does not touch task scope");
+        bail!(
+            "TASK_COMMIT_IGNORES_SCOPE: commit '{commit}' does not touch task scope.\n\
+             Changed files in commit:\n  - {}\n\
+             Admitted task scope:\n  - {}\n\
+             Do: ensure the commit modifies at least one file within the admitted task scope.",
+            changed.join("\n  - "),
+            scope.join("\n  - ")
+        );
     }
     if let Some(accepted) = accepted_delivery {
         if commit != accepted {
             if crate::core::git::git_ancestor(worktree, commit, accepted)? {
-                bail!("TASK_COMMIT_OBSOLETE: commit '{commit}' is an ancestor of accepted delivery '{accepted}'");
+                bail!("TASK_COMMIT_OBSOLETE: commit '{commit}' is an ancestor of accepted delivery '{accepted}'. Do: update commit reference to the latest delivery or repacked SHA.");
             }
             if crate::core::git::git_scoped_tree_changed(worktree, accepted, commit, scope)? {
-                bail!("TASK_COMMIT_TREE_MISMATCH: commit '{commit}' scoped tree differs from accepted delivery '{accepted}'");
+                let differing = crate::core::git::git_scoped_differing_files(worktree, accepted, commit, scope)
+                    .unwrap_or_default();
+                let detail = if !differing.is_empty() {
+                    format!("\nDiffering paths in scope:\n  - {}", differing.join("\n  - "))
+                } else {
+                    String::new()
+                };
+                bail!(
+                    "TASK_COMMIT_TREE_MISMATCH: commit '{commit}' scoped tree differs from accepted delivery '{accepted}'.{detail}\n\
+                     Do: ensure the repacked commit preserves the exact code tree accepted during task delivery."
+                );
             }
         }
     }
     if let Some(base) = baseline {
         if commit == base || crate::core::git::git_ancestor(worktree, commit, base)? {
             bail!(
-                "TASK_COMMIT_OBSOLETE: commit '{commit}' does not advance beyond baseline '{base}'"
+                "TASK_COMMIT_OBSOLETE: commit '{commit}' does not advance beyond baseline '{base}'. Do: advance task branch beyond the baseline before committing."
             );
         }
         if commit != accepted_delivery.unwrap_or("")
             && !crate::core::git::git_ancestor(worktree, base, commit)?
         {
-            bail!("TASK_COMMIT_UNRELATED: commit '{commit}' does not descend from task baseline '{base}'");
+            bail!(
+                "TASK_COMMIT_UNRELATED: commit '{commit}' does not descend from task baseline '{base}'. Do: rebase or merge the task branch on top of baseline '{base}'."
+            );
         }
     }
     Ok(())

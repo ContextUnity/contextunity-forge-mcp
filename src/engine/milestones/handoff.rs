@@ -25,6 +25,7 @@ fn task_landed_commit(
     delivery: &str,
     candidate_baseline_head: Option<&str>,
     scope: &[String],
+    task_ref: &str,
 ) -> Result<String> {
     let history =
         crate::core::git::git_command(root, &["rev-list", "--first-parent", "--reverse", handoff])?;
@@ -35,37 +36,96 @@ fn task_landed_commit(
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    if git_changed(root, delivery, handoff, scope)? {
+        let differing = crate::core::git::git_scoped_differing_files(root, delivery, handoff, scope)
+            .unwrap_or_default();
+        let detail = if !differing.is_empty() {
+            format!("\nDiffering paths in task scope:\n  - {}", differing.join("\n  - "))
+        } else {
+            String::new()
+        };
+        let restore_cmd = if !differing.is_empty() {
+            format!("git checkout {delivery} -- {}", differing.join(" "))
+        } else {
+            format!("git checkout {delivery} -- <paths>")
+        };
+        bail!(
+            "TASK_LANDED_COMMIT_NOT_FOUND: task '{task_ref}'. No task-specific landing commit contains the accepted delivery '{delivery}' in milestone branch '{handoff}'.{detail}\n\
+             Do: ensure task changes are merged into milestone branch '{handoff}' without conflicting modifications to scoped files.\n\
+             To restore scoped files from delivery, run: {restore_cmd}"
+        );
+    }
+
     for commit in &commits {
         if git_ancestor(root, delivery, commit)? {
             return Ok(commit.clone());
         }
     }
 
-    // With auto_commit disabled, the accepted candidate snapshot is a root
-    // snapshot rather than an ancestor of the user's landing commit. Resolve
-    // its first scoped-tree match after the candidate's recorded baseline.
-    if let Some(baseline) = candidate_baseline_head {
-        for commit in &commits {
-            if commit == baseline || !git_ancestor(root, baseline, commit)? {
-                continue;
-            }
-            if !git_changed(root, baseline, commit, scope)?
-                || git_changed(root, delivery, commit, scope)?
-            {
-                continue;
-            }
-            let parent_line =
-                crate::core::git::git_command(root, &["rev-list", "--parents", "-n", "1", commit])?;
-            let parent_fields = String::from_utf8(parent_line.stdout)?
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            if parent_fields.len() >= 2 && git_changed(root, &parent_fields[1], commit, scope)? {
-                return Ok(commit.clone());
+    // With auto_commit disabled or when commits were squashed / rebased, the delivery
+    // commit is not an ancestor. Resolve the earliest commit in the milestone history
+    // that introduces the delivered scoped tree.
+    let baseline_is_ancestor = candidate_baseline_head
+        .and_then(|b| git_ancestor(root, b, handoff).ok())
+        .unwrap_or(false);
+
+    for commit in &commits {
+        if baseline_is_ancestor {
+            if let Some(baseline) = candidate_baseline_head {
+                if commit == baseline || !git_ancestor(root, baseline, commit)? {
+                    continue;
+                }
             }
         }
+        if git_changed(root, delivery, commit, scope)? {
+            continue;
+        }
+        let parent_line =
+            crate::core::git::git_command(root, &["rev-list", "--parents", "-n", "1", commit])?;
+        let parent_fields = String::from_utf8(parent_line.stdout)?
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let introduced = if parent_fields.len() >= 2 {
+            git_changed(root, &parent_fields[1], commit, scope)?
+        } else {
+            true
+        };
+        if introduced {
+            return Ok(commit.clone());
+        }
     }
-    bail!("TASK_LANDED_COMMIT_NOT_FOUND: no task-specific landing commit contains the accepted delivery")
+
+    for commit in &commits {
+        if baseline_is_ancestor {
+            if let Some(baseline) = candidate_baseline_head {
+                if commit == baseline || !git_ancestor(root, baseline, commit)? {
+                    continue;
+                }
+            }
+        }
+        if !git_changed(root, delivery, commit, scope)? {
+            return Ok(commit.clone());
+        }
+    }
+
+    let differing = crate::core::git::git_scoped_differing_files(root, delivery, handoff, scope)
+        .unwrap_or_default();
+    let detail = if !differing.is_empty() {
+        format!("\nDiffering paths in task scope:\n  - {}", differing.join("\n  - "))
+    } else {
+        String::new()
+    };
+    let restore_cmd = if !differing.is_empty() {
+        format!("git checkout {delivery} -- {}", differing.join(" "))
+    } else {
+        format!("git checkout {delivery} -- <paths>")
+    };
+    bail!(
+        "TASK_LANDED_COMMIT_NOT_FOUND: task '{task_ref}'. No task-specific landing commit contains the accepted delivery '{delivery}' in milestone branch '{handoff}'.{detail}\n\
+         Do: ensure task changes are merged into milestone branch '{handoff}' without conflicting modifications to scoped files.\n\
+         To restore scoped files from delivery, run: {restore_cmd}"
+    )
 }
 
 /// Verifies completion, writes a handoff receipt, and archives the milestone.
@@ -141,6 +201,8 @@ pub fn handoff(
     if !verified_commit.success() {
         bail!("handoff commit is not available in the workspace Git object database");
     }
+    let settings = crate::engine::tasks::TaskSettings::load(root).ok();
+    let record_task_commits = settings.as_ref().map(|s| s.records_task_commits()).unwrap_or(true);
     let mut original_receipts = BTreeMap::new();
     let mut landed_receipts = BTreeMap::new();
     let mut handoff_text = item.text.replace("\r\n", "\n");
@@ -182,7 +244,10 @@ pub fn handoff(
                 }
                 if original.commit.as_deref() != Some(md_sha) {
                     if !git_ancestor(root, md_sha, &sha)? {
-                        bail!("TASK_DELIVERY_COMMIT_INVALID: task receipt commit '{md_sha}' is not an ancestor of milestone handoff commit '{sha}'");
+                        bail!(
+                            "TASK_DELIVERY_COMMIT_INVALID: task '{task_ref}' receipt commit '{md_sha}' is not an ancestor of milestone handoff commit '{sha}'.\n\
+                             Do: merge '{md_sha}' into '{sha}', or update the milestone markdown receipt to the repacked commit SHA."
+                        );
                     }
                     let milestone_rel = item
                         .path
@@ -212,9 +277,14 @@ pub fn handoff(
             effective_delivery,
             candidate_baseline.as_deref(),
             &task.spec.scope,
+            task_ref,
         )?;
-        landed.commit = Some(landed_sha);
-        handoff_text = render_task_receipt(&handoff_text, task_ref, &landed, &task.spec.subtasks)?;
+        landed.commit = Some(landed_sha.clone());
+        let mut doc_receipt = landed.clone();
+        if !record_task_commits {
+            doc_receipt.commit = None;
+        }
+        handoff_text = render_task_receipt(&handoff_text, task_ref, &doc_receipt, &task.spec.subtasks)?;
         original_receipts.insert(task.task_id.clone(), original.clone());
         landed_receipts.insert(task.task_id.clone(), landed);
     }

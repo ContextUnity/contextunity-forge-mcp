@@ -787,19 +787,35 @@ impl TasksStore {
                             bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
                         }
                         if existing.receipt != spec.receipt {
-                            let baseline = task_candidate_baseline(&tx, &id)?;
-                            if !Self::is_repack_receipt_update(
-                                root,
-                                &existing.receipt,
-                                &spec.receipt,
-                                &existing.spec.scope,
-                                &existing.milestone_ref,
-                                baseline.as_deref(),
-                            )? {
-                                bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
+                            let matches_proofs = existing
+                                .receipt
+                                .as_ref()
+                                .zip(spec.receipt.as_ref())
+                                .map(|(e, s)| e.matches_proofs(s))
+                                .unwrap_or(false);
+                            let doc_is_commitless = spec
+                                .receipt
+                                .as_ref()
+                                .and_then(|r| r.commit.as_ref())
+                                .is_none();
+                            if matches_proofs && doc_is_commitless {
+                                // The markdown receipt is commitless and matches all accepted proofs.
+                                // Retain the existing SQLite receipt (with its commit) and proceed.
+                            } else {
+                                let baseline = task_candidate_baseline(&tx, &id)?;
+                                if !Self::is_repack_receipt_update(
+                                    root,
+                                    &existing.receipt,
+                                    &spec.receipt,
+                                    &existing.spec.scope,
+                                    &existing.milestone_ref,
+                                    baseline.as_deref(),
+                                )? {
+                                    bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
+                                }
+                                existing.receipt = spec.receipt.clone();
+                                existing.spec.receipt = spec.receipt.clone();
                             }
-                            existing.receipt = spec.receipt.clone();
-                            existing.spec.receipt = spec.receipt.clone();
                         }
                     }
                     for sub in &spec.subtasks {

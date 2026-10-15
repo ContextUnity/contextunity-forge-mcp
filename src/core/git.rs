@@ -117,3 +117,30 @@ pub fn git_scoped_tree_changed(
         ),
     }
 }
+
+/// Return the list of files differing between two commits within the given scope.
+pub fn git_scoped_differing_files(
+    worktree: &Path,
+    commit_a: &str,
+    commit_b: &str,
+    scope: &[String],
+) -> Result<Vec<String>> {
+    let mut args = vec!["diff", "--name-only", commit_a, commit_b];
+    if !scope.is_empty() {
+        args.push("--");
+        args.extend(scope.iter().map(String::as_str));
+    }
+    let output = git_command(worktree, &args)?;
+    if !output.status.success() {
+        bail!(
+            "TASK_DIFF_FAILED: unable to list differing files between {commit_a} and {commit_b}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
