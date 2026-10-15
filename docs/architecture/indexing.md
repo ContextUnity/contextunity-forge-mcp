@@ -83,6 +83,8 @@ Canonical HTML classic scopes preserve their empty `bindings` and `fields` JSON 
 
 Incremental dependency keys include value-flow types, constructors, aliases, return expressions, computed-call hints, and export facts. A changed provider expands the consumer frontier before the language linker hydrates required facts. Full and incremental indexing share the same reducer and symbol admission rules.
 
+Delta compares resolution identities for non-component nodes as a sorted set of 16-byte SHA-256 digests. Each digest covers the admitted node identity tuple and `Contracts::details`, so source positions do not trigger resolution invalidation while normalized contracts do. Direct importers of a changed provider are always refreshed. Later hops expand only when indexed exports or return contracts show that the importer exposes the changed provider; missing or ambiguous facts expand conservatively. Import syntax comes from extracted facts, and delta reads no source files. Rust importers use the same frontier, with changed trait implementation shapes also refreshing persisted trait-object dispatch candidates.
+
 Body edits refresh the changed owner's facts, call edges, coverage, and commitments. Consumer invalidation compares semantic return and field contracts, signatures, exports, and import identities rather than body-local positions. Changes to inferred factory types, scoped imports, or inference validity limits expand the consumer frontier; equivalent internal call changes retain the existing consumer links.
 
 `FORGE_PROFILE_LINKER=1` writes phase timings to stderr for namespace/export indexing, inheritance, semantic admission, value flow, reference linking, and graph sorting. It leaves graph facts and commitments unchanged.

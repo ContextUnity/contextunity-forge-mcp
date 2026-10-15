@@ -5,9 +5,42 @@ use crate::core::typed_facts::{FlowState, FlowStore, TypedFacts};
 use crate::engine::languages;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{borrow::Cow, collections::HashMap};
+use sha2::{Digest, Sha256};
+use std::{
+    borrow::Cow,
+    collections::{BTreeSet, HashMap},
+    io::{self, Write},
+};
 
 const MAX_DEPTH: usize = 8;
+
+struct ResolutionHasher(Sha256);
+
+impl Default for ResolutionHasher {
+    fn default() -> Self {
+        Self(Sha256::new())
+    }
+}
+
+impl Write for ResolutionHasher {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl ResolutionHasher {
+    fn finish(self) -> [u8; 16] {
+        let digest = self.0.finalize();
+        let mut truncated = [0; 16];
+        truncated.copy_from_slice(&digest[..16]);
+        truncated
+    }
+}
 
 pub(crate) struct Contracts<'a> {
     symbols: HashMap<(&'a str, &'a str), Vec<&'a Node>>,
@@ -19,6 +52,30 @@ pub(crate) struct Contracts<'a> {
 impl<'a> Contracts<'a> {
     pub(crate) fn new_typed(facts: &'a TypedFacts) -> Self {
         Self::with_flows(&facts.facts, Some(&facts.flows))
+    }
+
+    /// Hashes resolution-relevant node identities as a sorted set of fixed-size digests.
+    pub(crate) fn resolution_digest(&self, facts: &'a Facts) -> anyhow::Result<BTreeSet<[u8; 16]>> {
+        let mut digests = BTreeSet::new();
+        for node in facts.nodes.iter().filter(|node| node.kind != "component") {
+            let mut hasher = ResolutionHasher::default();
+            serde_json::to_writer(
+                &mut hasher,
+                &(
+                    &node.id,
+                    &node.kind,
+                    &node.name,
+                    &node.qualname,
+                    &node.path,
+                    node.is_test,
+                    &node.language,
+                    node.generated,
+                    self.details(node),
+                ),
+            )?;
+            digests.insert(hasher.finish());
+        }
+        Ok(digests)
     }
 
     fn with_flows(facts: &'a Facts, typed_flows: Option<&'a FlowStore>) -> Self {
@@ -460,4 +517,67 @@ fn opaque_bindings(flow: &ValueFlowFacts) -> Vec<Value> {
         "value": binding.value, "conditional": binding.conditional})
         })
         .collect()
+}
+
+#[cfg(test)]
+mod resolution_digest_tests {
+    use super::Contracts;
+    use crate::core::{
+        models::{Facts, Node},
+        typed_facts::TypedFacts,
+    };
+    use serde_json::json;
+
+    fn module(line: usize, details: serde_json::Value) -> Node {
+        Node {
+            id: "module:src/lib.py".into(),
+            kind: "module".into(),
+            name: "lib.py".into(),
+            qualname: "lib".into(),
+            path: "src/lib.py".into(),
+            line,
+            end_line: line,
+            is_test: false,
+            language: "python".into(),
+            generated: false,
+            details,
+        }
+    }
+
+    fn component() -> Node {
+        Node {
+            id: "component:src".into(),
+            kind: "component".into(),
+            name: "src".into(),
+            qualname: "src".into(),
+            path: "src".into(),
+            line: 0,
+            end_line: 0,
+            is_test: false,
+            language: "unknown".into(),
+            generated: false,
+            details: json!({}),
+        }
+    }
+
+    fn digest(nodes: Vec<Node>) -> std::collections::BTreeSet<[u8; 16]> {
+        let typed = TypedFacts::from_public(Facts {
+            nodes,
+            ..Facts::default()
+        });
+        Contracts::new_typed(&typed)
+            .resolution_digest(&typed.facts)
+            .unwrap()
+    }
+
+    #[test]
+    fn resolution_digest_is_order_stable_ignores_positions_and_tracks_details() {
+        let details = json!({"exports": ["alpha"]});
+        let first = digest(vec![module(2, details.clone())]);
+        let reordered_with_component = digest(vec![component(), module(27, details)]);
+        assert_eq!(first, reordered_with_component);
+
+        let changed_details = digest(vec![module(2, json!({"exports": ["beta"]}))]);
+        assert_ne!(first, changed_details);
+    }
 }

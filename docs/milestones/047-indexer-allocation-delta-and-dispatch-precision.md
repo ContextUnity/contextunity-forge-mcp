@@ -368,17 +368,73 @@ invariants:
 - 'INV-DELTA-NO-SOURCE-IO: src/db/delta.rs must not perform file I/O (std::fs), string parsing, or regex on source files; all decisions must rely on indexed Facts and Contracts.'
 - 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage.'
 - 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
-status: planned
+status: completed
 subtasks:
 - subtask_ref: streaming-resolution-identity-digest
   title: Add Contracts::resolution_digest in src/engine/linker/contracts.rs and use exact sorted node digest set equality in src/db/delta.rs (lines 1002-1042) instead of serializing every node to serde_json::Value and BTreeSet<String>
-  status: pending
-- subtask_ref: rust-import-frontier-and-trait-invalidation
-  title: Include Rust in src/db/delta.rs import_frontier and dirty callers of changed trait implementors guaranteeing identical graph edges to cold builds
-  status: pending
+  status: completed
+  evidence: 'Strict `cargo clippy --all-targets --all-features -- -D warnings` passed; `cargo test --lib` 49/49 includes `resolution_digest_is_order_stable_ignores_positions_and_tracks_details`; `cargo test --test incremental` 30/30 includes `resolution_digest_matches_exact_contract_changes`: body-only edit => affected_owners=1, loaded_fact_files=0; First→Second return annotation => affected_owners=2, loaded_fact_files=1; cold parity verified at both states.'
 - subtask_ref: universal-reexport-gated-import-frontier
   title: Bound import_frontier in src/db/delta.rs so hop 1 always relinks and hop 2+ expands only from indexed details.exports or value_flow.return_contract, with missing exports and unknown imports fail-safe
-  status: pending
+  status: completed
+  evidence: Strict Clippy passed; `cargo test --lib` 49/49 includes `return_contract_and_known_private_import_bound_the_python_frontier` for positive return-contract, known stop, and conservative missing-contract behavior; `cargo test --test incremental` 30/30 includes `indexed_reexport_frontier_matches_cold_build`, semicolon/continuation import facts, and missing-export fail-safe cold parity.
+- subtask_ref: rust-import-frontier-and-trait-invalidation
+  title: Include Rust in src/db/delta.rs import_frontier and dirty callers of changed trait implementors guaranteeing identical graph edges to cold builds
+  status: completed
+  evidence: Strict Clippy passed; `cargo test --test incremental` 30/30 includes `dyn_trait_dispatch_add_change_and_remove_impls_match_cold_builds` for add/change/remove with cold parity; `cargo test --lib` 49/49 includes `added_trait_implementor_refreshes_unchanged_caller_candidates`.
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-15T04:46:41.897982824+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test incremental resolution_identity::resolution_digest_matches_exact_contract_changes -- --exact && cargo clippy --all-targets --all-features -- -D warnings && cargo test --test incremental && cargo test --lib && cargo fmt --all -- --check && git diff --check
+      exit_code: 0
+      tests_passed: 80
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Candidate 06a14e76fadb0bc9a33b1be3ad1d2671082377b7 matches the worktree snapshot. The six changed paths are src/db/delta.rs, src/engine/linker/contracts.rs, docs/architecture/indexing.md, docs/architecture/performance.md, tests/incremental/scope.rs, and tests/incremental/resolution_identity.rs; all are within the declared scope, with no config, credential, generated, or neighboring-project changes.
+        claims:
+          applicable: true
+          evidence: 'R3 is closed by tests/incremental/resolution_identity.rs::resolution_digest_matches_exact_contract_changes: a body-only edit asserts affected_owners=1 and loaded_fact_files=0; changing build()''s return annotation First→Second asserts affected_owners=2 and loaded_fact_files=1; assert_cold_equivalent runs after both states. Independent `cargo test --test incremental` passed 30/30. Prior findings are closed: src/db/delta.rs gates hop 2+ only on module details.exports or Contracts::details(...).value_flow.return_contract, not details.bindings; `return_contract_and_known_private_import_bound_the_python_frontier` covers positive, known-stop, and conservative helper behavior; `indexed_reexport_frontier_matches_cold_build` covers indexed re-export parity. No production source reads, parsing, or regex occur in the delta frontier; R2/#168 is honored. Digest set equality uses ordered 16-byte hashes. Strict Clippy and `cargo test --lib` (49/49) passed.'
+        concurrency:
+          applicable: true
+          evidence: The resolution digest is a sorted BTreeSet of fixed-width hashes, and candidate/frontier operations are deterministically ordered. No shared mutable concurrent state or task lifecycle implementation was added. Forge fenced this review to claim rev26 and the frozen candidate snapshot; the incremental target passed 30/30.
+        project_isolation:
+          applicable: true
+          evidence: The candidate introduces no project-boundary or linked-workspace configuration changes. The full incremental target passed, including linked_body_edit_preserves_cross_workspace_consumers; delta decisions remain based on the active database's indexed facts.
+        administration:
+          applicable: false
+          evidence: No task administration, profile, schema, migration, credential, or privileged delivery code changed. Delivery is a separate authorized Forge gate.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage.'
+    - 'INV-UNCERTAINTY: Candidate evidence (possible_calls, confidence=possible) never becomes an exact calls edge on concrete trait implementors or certifies removal safety; overflow beyond K=8 widens to Unknown/Incomplete while retaining analysis_gaps.'
+    - 'INV-ZERO-ALLOC-LOOKUP: Qualified symbol lookups across resolution, semantic_context, contracts, and delta reuse scratch String buffers or prefix strips instead of per-iteration format! heap allocations, with zero new Cargo dependencies.'
+    - 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
+    - 'INV-DELTA-NO-SOURCE-IO: src/db/delta.rs must not perform file I/O (std::fs), string parsing, or regex on source files; all decisions must rely on indexed Facts and Contracts.'
+    - 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage.'
+    - 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
+    architectural_notes:
+    - 'decisions: M047-T3-R2 authority boundary: The parity failure is admitted, but source-text parsing or file reads in src/db/delta.rs are not. Milestone INV-DELTA-NO-SOURCE-IO and the rev5 Task 3 contract require hop decisions from indexed facts only. Preserve valid Python semicolon/continuation imports through extracted Facts; when import/export kind or source facts are unavailable/ambiguous, expand conservatively for cold/delta parity. Do not reintroduce the review packet''s source parser/read-line approach.'
+    - 'decisions: {"id":"M047-T3-R3-closed","message":"The final frozen candidate 06a14e76fadb0bc9a33b1be3ad1d2671082377b7 closes R3. The required tests/incremental/resolution_identity.rs::resolution_digest_matches_exact_contract_changes integration seam proves a body-only edit keeps affected_owners=1 and loaded_fact_files=0, then a First→Second return-contract change yields affected_owners=2 and loaded_fact_files=1; assert_cold_equivalent passes after both states. Prior R1/R2 findings are closed: hop gates use only details.exports or Contracts::details(...).value_flow.return_contract, never details.bindings; the positive return-contract helper seam and indexed_reexport_frontier_matches_cold_build test are present. R2/#168 is honored: delta hop decisions use indexed facts/contracts, with no source parsing, reads, or regex. Independent evidence: strict Clippy passed, cargo test --lib 49/49, cargo test --test incremental 30/30."}'
+    - 'deferred: {"id":"M047-T3-performance-measurement-deferred","message":"INV-PERF-NO-REGRESSION timing and peak-allocation claims were not benchmarked in this task because no explicit benchmark authorization was given. Do not claim the 11.5s cold-build, reduced peak allocations, or sub-50ms delta measurements as verified; benchmark evidence remains deferred."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: not_applicable
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

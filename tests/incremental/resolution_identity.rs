@@ -129,6 +129,41 @@ fn body_edits_refresh_owner_without_relinking_consumers_and_line_moves_relink() 
 }
 
 #[test]
+fn resolution_digest_matches_exact_contract_changes() {
+    let w = Workspace::new();
+    w.write(
+        "provider.ts",
+        "export class First { constructor(value: number) {} }\nexport class Second { constructor(value: number) {} }\nexport function build(): First { return new First(1); }\n",
+    );
+    w.write(
+        "consumer.ts",
+        "import { build } from './provider';\nexport function consume() { return build(); }\n",
+    );
+    w.build();
+
+    w.write(
+        "provider.ts",
+        "export class First { constructor(value: number) {} }\nexport class Second { constructor(value: number) {} }\nexport function build(): First { return new First(2); }\n",
+    );
+    let unchanged = w.delta(&["provider.ts"]);
+    assert_eq!(unchanged["affected_owners"], 1, "{unchanged}");
+    assert_eq!(unchanged["loaded_fact_files"], 0, "{unchanged}");
+    assert_cold_equivalent(&w);
+
+    w.write(
+        "provider.ts",
+        "export class First { constructor(value: number) {} }\nexport class Second { constructor(value: number) {} }\nexport function build(): Second { return new Second(2); }\n",
+    );
+    let changed = w.delta(&["provider.ts"]);
+    assert_eq!(changed["affected_owners"], 2, "{changed}");
+    assert_eq!(
+        changed["loaded_fact_files"], 1,
+        "the importer must reload after an exact contract change: {changed}"
+    );
+    assert_cold_equivalent(&w);
+}
+
+#[test]
 fn additions_deletions_and_signature_changes_still_relink_consumers() {
     let w = Workspace::new();
     w.write("provider.py", "def value(): return 1\n");

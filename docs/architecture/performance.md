@@ -42,6 +42,8 @@ By default, Forge verifies workspace freshness before executing tool requests. F
 
 Per-file import maps borrow scope and alias names instead of cloning them for each import. Qualified symbol lookup reuses local scratch strings across lexical scope walks and imported member candidates; delta top-level checks compare a stripped module prefix without constructing a qualified name.
 
+Delta streams each admitted non-component resolution identity tuple into a truncated SHA-256 digest and compares sorted fixed-size digest sets. This avoids materializing JSON strings for every node during the comparison. Import-frontier facts are cached by owner path and reused during the delta; direct importers are refreshed, while later hops expand only when indexed exports or return contracts prove exposure, with unavailable or ambiguous facts handled conservatively.
+
 Value-flow scopes borrow binding names from typed facts or the original node details when flows are decoded locally. A single write stays inline in `BindingList::One`; a second write promotes the history to `Many` while preserving source order and reaching-write behavior. Compact coverage borrows static diagnostic literals with `Cow<'static, str>`. Conversion to the public graph retains its owned evidence strings and serialization format.
 
 The linker regression seam counts successful allocations of selected name and scope sizes during linking in a private one-thread Rayon pool. Parsing, pool setup, warmup, serialization, and assertions are outside the measured operation. This verifies the specific lookup storage changes without setting a whole-linker allocation or latency budget.
