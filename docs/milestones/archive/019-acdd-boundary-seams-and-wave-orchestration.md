@@ -2,7 +2,7 @@
 id: m-acdd-boundary-seams-and-wave-orchestration
 title: ACDD receipt canonicalization, tiered role profile (contract/build/review+deliver), blackboard handoff, seam guards, and wave dispatch
 doc_type: contract
-status: active
+status: completed
 repository: forge-mcp
 project: forge-mcp
 depends_on:
@@ -37,6 +37,15 @@ invariants:
 - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
 related_plans: []
 started_at: 2026-10-14T15:41:30+00:00
+handoff:
+  completed_at: 2026-10-15T01:43:06.685454037+00:00
+  duration: 10h 1m
+  commit: b0d98d3b017a5426a5b63dd5fb91165273596082
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 697
+    tests_failed: 0
 ---
 
 # ACDD receipt canonicalization, tiered role profile (contract/build/review+deliver), blackboard handoff, seam guards, and wave dispatch
@@ -54,10 +63,41 @@ violations of task 2's existing invariants:
 - M019-A2, pre-existing-missed: stale indexed test edges could admit a contract
   after the current test stopped reaching production code.
 
-Both findings remain unresolved until production-seam regressions, repair,
-independent review, and a new milestone handoff pass. Task 2 is reopened;
-the other two task receipts remain historical delivery evidence. The installed
-CLI/MCP runtime must also be checked against the repaired source before closure.
+M019-A1 and M019-A2 are closed by task 2 delivery
+`b0d98d3b017a5426a5b63dd5fb91165273596082`. Public trait visibility now participates
+in signature checks, and seam admission verifies the current claimed-worktree
+source for each indexed edge. The other two task receipts remain historical
+delivery evidence.
+
+Independent architecture review found M019-AR1 during repair: rejecting every
+test-marked intermediate symbol also rejected a valid two-hop test/helper/production
+path. Its regression first established both exact indexed call edges, failed on
+the repair, then passed after allowing the intermediate helper while retaining
+the non-test production endpoint check. Disconnecting that helper without
+reindexing still fails closed. Correctness, architecture/authority, and proof
+reviewers subsequently passed the same frozen candidate; the independent
+reviewer completed review and delivery in one session.
+
+The final affected suites passed 98 ACDD tests and 44 library tests with strict
+Clippy. The integrated milestone command
+`cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets`
+passed: commitment integrity 16/0, strict Clippy exit 0, then all targets
+697 passed, 0 failed, 1 ignored. The handoff count includes only the final
+all-targets run. The scope of the repair is current graph-edge evidence and
+public signature boundaries; unsupported receiver-retargeting and alias
+experiments are not closure evidence or broader data-flow guarantees.
+
+The reviewed source was built with `cargo build --release --all-features --locked`
+and installed at both `~/.local/bin/contextunity-forge-mcp` and
+`~/.cargo/bin/contextunity-forge-mcp`, preserving the previous executables in
+local rollback copies. Both installed files match release SHA-256
+`b0d7c760d485550944024f7a0e2b352ac7d091c21629c5b4d66a0b91afd5b5b8`.
+Fresh stdio MCP processes from both paths expose `task_manage` action `next`
+and `task_list` status `parked`, and successfully execute scoped blackboard
+`inspect` without `message_id`. The official reload command signaled the
+45 matching running local servers; the second executable had no separate
+matching server. The connected MCP transport also passed `inspect` without
+`message_id` after reload.
 
 Based on production rollout telemetry (`rollout-2026-10-14T08-02-19`) and direct code inspection of `src/core/tasks/mod.rs`, `src/core/tasks/profile.rs`, `src/core/tasks/gates.rs`, `src/engine/tasks/gates.rs`, `src/engine/tasks/blackboard.rs`, `src/engine/tasks/context.rs`, and `src/engine/tasks/workspaces.rs`, this milestone resolves receipt synchronization loops, profile command/linter bottlenecks, and subagent orchestration overhead using Forge's existing canonical mechanisms:
 
@@ -248,6 +288,7 @@ subtasks:
     Unsupported experiments remain non-evidence: prior receiver-type fixture had no fresh indexed edge; earlier alias/order scratch attempt was not executed. Neither is represented as a closed finding or a general flow guarantee.
 status: completed
 receipt:
+  commit: b0d98d3b017a5426a5b63dd5fb91165273596082
   contract_revision: 1
   passed_at: 2026-10-15T01:25:57.092028445+00:00
   evidence:
