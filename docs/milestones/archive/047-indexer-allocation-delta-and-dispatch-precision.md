@@ -2,7 +2,7 @@
 id: m-indexer-allocation-delta-and-dispatch-precision
 title: Zero-allocation linker hot paths, bounded delta frontier, and explicit unwrap/polymorphic resolution
 doc_type: contract
-status: active
+status: completed
 repository: forge-mcp
 project: forge-mcp
 depends_on:
@@ -44,6 +44,15 @@ invariants:
 - 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
 related_plans: []
 started_at: 2026-10-14T17:05:07+00:00
+handoff:
+  completed_at: 2026-10-15T12:53:07.220837625+00:00
+  duration: 19h 48m
+  commit: 6453935318c936302d0022438d9da191a95ea1f1
+  verification:
+    command: cargo test --test linker
+    status: passed
+    tests_passed: 102
+    tests_failed: 0
 ---
 
 # Zero-allocation linker hot paths, bounded delta frontier, and explicit unwrap/polymorphic resolution
@@ -248,18 +257,15 @@ subtasks:
   title: Unwrap one non-null payload from already extracted Optional[T] and Union[T, None] in linker value flow and semantic context, leaving multi-type unions unresolved
   status: completed
   evidence: 'Completed against frozen candidate e41826d. Focused persisted nullable readback seam passed 1/1, including fail-closed multi-nonnull Union cases; `cargo test --test linker` 101/101 and `cargo test --lib` 44/44 passed; `cargo test --test languages` 253/253 and strict Clippy passed. Blocker #163 was resolved by the narrow canonical Optional/Union guard.'
-- subtask_ref: python-pep604-binary-union-unwrap
-  title: Parse PEP 604 binary union expressions (T | None) in src/engine/languages/python/value_flow.rs and unwrap single non-null payload via linker value flow
-  status: completed
-  evidence: 'Implemented in src/engine/languages/python/value_flow.rs, src/engine/linker/value_flow.rs, and semantic_context.rs with bracket-depth-aware splitting, parenthesized expression handling, Symbol::Unknown fallback unwrapping, and fail-closed multi-nonnull / NoneType rejection. Verified by tests/linker/method_semantics.rs (102/102 passed) and strict Clippy clean.'
 receipt:
-  contract_revision: 6
-  passed_at: 2026-10-15T12:20:00.000000000+00:00
+  commit: 501b568a50370119f95b06b6b65e3f2c0e8ba4e9
+  contract_revision: 5
+  passed_at: 2026-10-15T03:25:41.925321769+00:00
   evidence:
     command_proof:
       command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test linker
       exit_code: 0
-      tests_passed: 102
+      tests_passed: 101
       tests_failed: 0
       log: |-
         Exact registered command passed after submission validation, with CARGO_TARGET_DIR=/tmp/m047-task2-isolated-target supplied through the process environment.
@@ -383,6 +389,7 @@ subtasks:
   status: completed
   evidence: Strict Clippy passed; `cargo test --test incremental` 30/30 includes `dyn_trait_dispatch_add_change_and_remove_impls_match_cold_builds` for add/change/remove with cold parity; `cargo test --lib` 49/49 includes `added_trait_implementor_refreshes_unchanged_caller_candidates`.
 receipt:
+  commit: 6453935318c936302d0022438d9da191a95ea1f1
   contract_revision: 5
   passed_at: 2026-10-15T04:46:41.897982824+00:00
   evidence:
