@@ -581,6 +581,39 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
                 }
             };
+            let python_nullable_parameter_wrapper = |raw_annotation: &str, node: &Node| {
+                if !profile.is_some_and(|profile| profile.id() == "python") {
+                    return false;
+                }
+                let Some(annotation) = receiver_type_name(raw_annotation) else {
+                    return false;
+                };
+                let (head, member) = annotation.split_once('.').unwrap_or((&annotation, ""));
+                let Some((_, import_line)) = external_for(head, Some(node), true) else {
+                    return false;
+                };
+                if *import_line > node.line {
+                    return false;
+                }
+                facts.references.iter().any(|reference| {
+                    if reference.kind != "imports"
+                        || reference.line != *import_line
+                        || reference.alias.as_deref() != Some(head)
+                    {
+                        return false;
+                    }
+                    let Some(module @ ("typing" | "typing_extensions")) =
+                        reference.module.as_deref()
+                    else {
+                        return false;
+                    };
+                    match (member, reference.expression.as_str()) {
+                        ("", "Optional" | "Union") => true,
+                        ("Optional" | "Union", expression) if expression == module => true,
+                        _ => false,
+                    }
+                })
+            };
             let is_type_only = |name: &str, owner: Option<&Node>, definition_scope: bool| -> bool {
                 let mut scope = owner.map(|n| n.qualname.as_str()).unwrap_or("");
                 if definition_scope { scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent); }
@@ -775,6 +808,13 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                             }
                         }
                     }
+                    if type_candidates.is_empty()
+                        && imported_type.is_some_and(Vec::is_empty)
+                        && !annotation_shadowed
+                        && python_nullable_parameter_wrapper(raw_annotation, node)
+                    {
+                        continue;
+                    }
                     type_candidates.retain(|candidate| matches!(candidate.kind.as_str(), "class" | "struct" | "enum" | "type" | "interface"));
                     type_candidates.sort_by(|a, b| a.id.cmp(&b.id));
                     type_candidates.dedup_by_key(|candidate| candidate.id.as_str());
@@ -879,6 +919,27 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                             r.expression.split_once('.').map_or("an opaque receiver", |(receiver, _)| receiver)
                         ).into(),
                     });
+                    #[cfg(feature = "lang-rust")]
+                    if let Some((owner, (receiver, member))) = owner.zip(r.expression.split_once('.')) {
+                        let at = crate::core::semantic::SourcePosition { line: r.line, column: r.column };
+                        if let Some(value_flow::TypeTarget::Local(trait_node)) = value_flow.lookup(owner, receiver, at) {
+                            if trait_node.kind == "trait" {
+                                if let Some((declaration, implementors)) = semantic_context.dynamic_dispatch(trait_node, member) {
+                                    graph.edges.push(Edge {
+                                        src: r.source.clone(), dst: declaration.id.clone(), kind: "calls".into(),
+                                        path: path.clone(), line: r.line, evidence: r.expression.clone(), confidence: "inferred".into(),
+                                    });
+                                    for target in implementors {
+                                        graph.edges.push(Edge {
+                                            src: r.source.clone(), dst: target.id.clone(), kind: "possible_calls".into(),
+                                            path: path.clone(), line: r.line, evidence: r.expression.clone(), confidence: "possible".into(),
+                                        });
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                    }
                 }
                 let builtin_origin = match active_profile.map(|profile| profile.id()) {
                     Some("rust") => Some("Rust standard library"),
@@ -2031,6 +2092,9 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     "implements" => matches!(n.kind.as_str(), "trait" | "interface"),
                     "mutates" => n.kind == "field",
                     "references" => matches!(n.kind.as_str(), "class" | "enum" | "type" | "struct" | "trait" | "interface" | "field")
+                        || (active_profile.is_some_and(|profile| profile.id() == "rust")
+                            && owner.is_some_and(|owner| owner.kind == "macro")
+                            && matches!(n.kind.as_str(), "function" | "method"))
                         || (n.kind == "module" && n.language == "vue" && n.details["default_export"] == true),
                     _ => matches!(
                         n.kind.as_str(),

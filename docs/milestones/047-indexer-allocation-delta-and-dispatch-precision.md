@@ -21,6 +21,8 @@ owners:
 - src/engine/languages/rust/linker.rs
 - src/engine/languages/rust/value_flow.rs
 - src/engine/languages/typescript/value_flow.rs
+- src/engine/languages/python.rs
+- src/engine/languages/python/value_flow.rs
 - src/db/delta.rs
 - src/db/ingest.rs
 - src/db/writer.rs
@@ -57,20 +59,26 @@ Following direct code and test-suite verification of commit `3bb9cdbcf7ae4fcbd7c
    - In `src/core/models/compact_graph.rs` (line 142), convert `Coverage.evidence` from `String` to `Cow<'static, str>` so static literal diagnostic strings (`"type guard condition is unproven or shadowed"`, `"callee is shadowed by a parameter or local binding of unknown callable identity"`, etc.) use `Cow::Borrowed` with zero heap allocation.
    - In `src/db/delta.rs` (lines 199–204 and 243–248), replace the 3 per-node `format!("{prefix}.{name}")` allocations in the top-level symbol check with a zero-allocation helper `is_prefixed_qualname(qual, prefix, name)`.
 
-2. **Explicit Unwrapping for `Result<T, E>?` / `Option<T>?` and `await Promise<T>`, Plus Bounded `dyn Trait` `possible_calls`:**
+2. **Explicit Unwrapping for `Result<T, E>?` / `Option<T>?` (Rust), `await Promise<T>` (TS/JS), and already-extracted `Optional[T]` / `Union[T, None]` (Python), Plus Bounded `dyn Trait` Dispatch:**
    - **Why implicit unwrapping in `resolve_applied` is forbidden by existing tests**: `tests/receivers/rust_value_flow.rs:521, 1192` explicitly assert that calling `optional.work()` directly on `optional: Option<Service>` or `result: Result<Service, Error>` stays `"unresolved"` (while `optional.is_some()` and `result.is_ok()` resolve as `"external"` std builtins), because `Option` and `Result` do not implement `Deref`. Similarly, `tests/languages/typescript/grammar.rs:461` and `tests/receivers/rust_value_flow.rs:564` assert that calling an `async` factory *without* `await` (`const client = make(); client.work()`) stays `"unresolved"`.
-   - **Explicit Unwrapping Solution**:
-     - **Rust `?` (`try_expression`) and `.unwrap()` / `.expect(...)` (`src/engine/languages/rust/value_flow.rs:218`, `src/engine/linker/value_flow.rs`, `src/engine/linker/semantic_context.rs`)**: Keep un-unwrapped `Result<T, E>` and `Option<T>` as `Builtin("Result")` / `Builtin("Option")`, but when `rust/value_flow.rs` extracts a `try_expression` (`make_repo()?`) or `.unwrap()` / `.expect(...)` call, unwrap the inner `T` payload (`args[0]`) from `Result<T, E>`, `anyhow::Result<T>`, or `Option<T>`.
-     - **TypeScript / JavaScript `await Promise<T>` (`src/engine/languages/typescript/value_flow.rs:370, 502` & `src/engine/linker/value_flow.rs:542`)**: When a TS/JS function is `async` or returns `Promise<T>`, populate `facts.async_return_type = Some(T)` while keeping `facts.return_type = Some(TypeExpr::Unknown)` (so un-awaited calls stay unresolved), emit `ValueExpr::Await` for `await_expression` in `typescript/value_flow.rs:370`, and enable `index.async_returns` population in `value_flow.rs:542` for TypeScript/JavaScript alongside Python.
-   - **Bounded `dyn Trait` / Interface Dispatch (`src/engine/linker/resolution.rs:846–880, 2336–2365`)**:
-     - Preserve the `trait_object_dispatch` analysis gap in `graph.coverage` and never emit exact `calls` edges to concrete implementing methods (`tests/query_context/symbol_context.rs:668`).
-     - Emit an `"inferred"` `calls` edge to the trait/interface method declaration (`Trait::method`) and emit bounded `possible_calls` (`confidence = "possible"`, up to `MAX_CANDIDATE_BRANCH_JOINS = 8`) to workspace methods that `implements` the trait method.
+   - **Explicit Unwrapping Solution Across Languages**:
+     - **Rust `?` (`try_expression`) and `.unwrap()` / `.expect(...)`**: Keep un-unwrapped `Result<T, E>` and `Option<T>` as `Builtin("Result")` / `Builtin("Option")`. `src/engine/languages/rust/value_flow.rs` emits `ValueExpr::Project` for `try_expression` and `.unwrap()` / `.expect(...)`. `src/engine/languages/rust.rs` (`call_result_hint`) stores that projection in the existing `ReceiverHint::CallResult { callee: format!("value:{json}"), member }` without editing `src/core/models.rs`. The linker unwraps `Result<T, E>`, `anyhow::Result<T>`, and `Option<T>` to `args[0]`.
+     - **TypeScript / JavaScript `await Promise<T>` (`src/engine/languages/typescript/value_flow.rs`, `src/engine/linker/value_flow.rs`)**: When a TS/JS function is `async` or returns `Promise<T>`, populate `facts.async_return_type = Some(T)` while keeping `facts.return_type = Some(TypeExpr::Unknown)` (so un-awaited calls stay unresolved), emit `ValueExpr::Await` for `await_expression`, and populate `index.async_returns` for TypeScript/JavaScript alongside Python. Unwrapping applies on explicit `await` for calls (`(await make()).work()`), parameters (`(await p).work()`), and local aliases (`const a = p; (await a).work()`). Un-awaited receivers stay unresolved.
+     - **Python `Optional[T]` / `Union[T, None]` and PEP 604 `T | None` unwrapping**: `src/engine/languages/python/value_flow.rs` parses PEP 604 binary union expressions (`T | None`, `None | T`) and forward-ref strings into `TypeExpr::Applied { base: "Union", args: [...] }`. `resolve_payload` / `explicit_payload` in linker value flow unwrap one non-null payload from `Optional[T]`, `Union[T, None]`, and `T | None` without requiring `typing.Union` in scope. A `Union` with two or more non-null types, or referencing `NoneType`, stays `unresolved`. ABC dispatch is deferred.
+   - **Bounded `dyn Trait` Dispatch (`src/engine/linker/resolution.rs`)**:
+     - Preserve `trait_object_dispatch` in `graph.coverage` and never emit exact `calls` edges to concrete implementors.
+     - Emit an `"inferred"` `calls` edge to `Trait::method` and bounded `possible_calls` (`confidence = "possible"`, up to `MAX_CANDIDATE_BRANCH_JOINS = 8`). Overflow widens to `Unknown/Incomplete`.
+     - Python ABC dispatch is deferred with the Python parser work.
+     - Cross-file dirtying of callers when trait implementors are added, changed, or removed is owned by Task 3 in `src/db/delta.rs`.
    - **Rust `macro_rules!` Transcription References (`src/engine/languages/rust.rs`)**:
      - Extract static call/type identifier references inside `macro_definition` transcription bodies as `kind = "references"` owned by the `macro` node while preserving the `macro_expansion_not_analyzed` gap on invocation sites (`tests/query_context/symbol_context.rs:701`).
 
-3. **Streaming Resolution-Identity Digest & Re-Export Gated Delta Frontier (`src/db/delta.rs`):**
-   - Replace the JSON-serialization + `BTreeSet<String>` allocation in `resolution_identity_changed` (`src/db/delta.rs:985–1025`) with a deterministic 64-bit order-independent hash over `Contracts::details(node)`.
-   - Bound `while !import_frontier.is_empty()` (`src/db/delta.rs:356–376`) so 1-hop direct importers of `changed_resolution` are always included in `affected`, while 2+ hop transitive importers are only added when the intermediate module actually re-exports symbols or exposes the provider in its own resolution contract, maintaining 100% bit-identical Merkle roots (`assert_cold_equivalent`).
+3. **Deterministic Resolution-Identity Digest & Indexed Delta Frontier (`src/db/delta.rs`, `src/engine/linker/contracts.rs`):**
+   - Add `Contracts::resolution_digest(&self, facts: &Facts) -> BTreeSet<[u8; 16]>` using the existing `sha2` dependency (no new crate and no XOR fold) over `(node.id, node.kind, node.name, node.qualname, node.path, node.is_test, node.language, node.generated, self.details(node))` for non-component nodes. `resolution_identity_changed` compares those digest sets. `details` remains a JSON value; the identity set stops being `BTreeSet<String>` built by `serde_json::to_string`.
+   - Invariant `INV-DELTA-NO-SOURCE-IO`: `src/db/delta.rs` must not perform file I/O (`std::fs`), string parsing, or regex on source files. Hop decisions read indexed facts only.
+   - Re-exports are the module `details.exports` array already persisted from `ExportBinding` (`name`, `module`, `star`) by `src/engine/ast/mod.rs`. This milestone does not add `ImportKind`, `Facts.reexports`, or parser changes.
+   - `import_frontier` includes `"rust"` with `"python" | "javascript" | "typescript" | "vue"`. Adding, changing, or removing an `impl Trait` dirties files that call `Trait::method`. ABC implementor dirtying is deferred with ABC dispatch.
+   - Hop 1 (direct importers of `changed_resolution`) is always dirtied. Hop 2+ is dirtied only when the owner's indexed `details.exports` re-exports that upstream provider (`module` names it, or `star` is true) or `details.value_flow.return_contract` exposes the provider, including a qualified `namespace.Type`. A missing export list or an unresolvable import expands fail-safe so the Merkle root still matches a cold build.
 
 ---
 
@@ -115,6 +123,7 @@ subtasks:
   status: completed
   evidence: Scope keys borrow typed facts or original node JSON; One stores a single Binding inline and Many promotion retains order and mutation indexing. Compact evidence is Cow<static,str>, diagnostic literals borrow, public conversion uses into_owned. Mechanical Cow consumers in framework_relations, dictionary, ingest, and writer fixture are converted. Focused seam exit 0, 1 passed / 0 failed, including parameter shadow evidence and single/multiple receiver write cases; full linker target exit 0, 98 passed / 0 failed; strict Clippy exit 0.
 receipt:
+  commit: e4c22c8ebf21a5a9f37d4dd5103b766c51cf3045
   contract_revision: 1
   passed_at: 2026-10-14T17:46:36.913022270+00:00
   evidence:
@@ -194,57 +203,149 @@ receipt:
 
 ```yaml
 task_ref: explicit-unwrap-and-polymorphic-dispatch-edges
-target: "Unwrap Result/Option on explicit ?/unwrap/expect in Rust and Promise<T> on explicit await in TS/JS while preserving un-unwrapped negative cases, emit bounded possible_calls for dyn Trait receivers, and extract macro_rules! body references"
+target: Unwrap Result/Option on explicit ?/unwrap/expect in Rust, Promise<T> on explicit await for calls/parameters/aliases in TS/JS, and Optional[T]/Union[T, None] / PEP 604 binary union expressions (T | None) in Python value flow with fail-closed multi-type unions while preserving negative cases, emit bounded possible_calls (K<=8) for dyn Trait receivers, and extract macro_rules! body references
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 6
 scope:
-  - src/core/semantic.rs
-  - src/engine/linker/semantic_context.rs
-  - src/engine/linker/value_flow.rs
-  - src/engine/linker/resolution.rs
-  - src/engine/languages/rust.rs
-  - src/engine/languages/rust/linker.rs
-  - src/engine/languages/rust/value_flow.rs
-  - src/engine/languages/typescript/value_flow.rs
-  - docs/architecture/indexing.md
-  - docs/reference/languages.md
-  - tests/linker/method_semantics.rs
-  - tests/receivers/rust_value_flow.rs
-  - tests/languages/typescript/grammar.rs
-  - tests/query_context/symbol_context.rs
+- src/core/semantic.rs
+- src/engine/linker/semantic_context.rs
+- src/engine/linker/value_flow.rs
+- src/engine/linker/resolution.rs
+- src/engine/languages/rust.rs
+- src/engine/languages/rust/linker.rs
+- src/engine/languages/rust/value_flow.rs
+- src/engine/languages/typescript/value_flow.rs
+- src/engine/languages/python.rs
+- src/engine/languages/python/value_flow.rs
+- docs/architecture/indexing.md
+- docs/reference/languages.md
+- tests/linker/method_semantics.rs
+- tests/receivers/rust_value_flow.rs
+- tests/languages/typescript/grammar.rs
+- tests/query_context/symbol_context.rs
 depends_on:
-  - zero-alloc-linker-and-value-flow-buffers
+- zero-alloc-linker-and-value-flow-buffers
 invariants:
-  - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
-  - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
-  - 'INV-UNCERTAINTY: Candidate evidence (possible_calls, confidence=possible) never becomes an exact calls edge on concrete trait implementors or certifies removal safety; overflow beyond K=8 widens to Unknown/Incomplete while retaining analysis_gaps.'
-  - 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage.'
-status: planned
+- 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+- 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+- 'INV-UNCERTAINTY: Candidate evidence (possible_calls, confidence=possible) never becomes an exact calls edge on concrete trait implementors or certifies removal safety; overflow beyond K=8 widens to Unknown/Incomplete while retaining analysis_gaps.'
+- 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage; cross-file dirtying of callers on addition/removal of concrete trait implementors is governed and delivered by Task 3.'
+status: completed
 subtasks:
-  - subtask_ref: explicit-rust-try-unwrap-and-ts-await-promise
-    title: "Unwrap Result<T, E>/Option<T> in Rust only on explicit try_expression (?) or .unwrap()/.expect(), and unwrap Promise<T> in TS/JS only on explicit await_expression via async_return_type"
-    status: pending
-  - subtask_ref: trait-and-interface-bounded-possible-calls
-    title: "In src/engine/linker/resolution.rs (lines 846-880), link dyn Trait calls to Trait::method (inferred) and emit bounded possible_calls edges (K<=8) to indexed implementors while retaining trait_object_dispatch in analysis_gaps"
-    status: pending
-  - subtask_ref: rust-macro-rules-body-references
-    title: "Extract identifier call/type references from macro_definition transcription bodies in src/engine/languages/rust.rs as references edges owned by the macro node while retaining macro_expansion_not_analyzed"
-    status: pending
+- subtask_ref: explicit-rust-try-unwrap-and-ts-await-promise
+  title: Unwrap Result<T, E>/Option<T> in Rust on explicit try_expression (?) or .unwrap()/.expect(), and unwrap Promise<T> in TS/JS on explicit await_expression for calls, parameters, and local aliases while preserving un-awaited unresolved cases
+  status: completed
+  evidence: Completed against frozen candidate e41826d. Production-path linker regressions cover Rust explicit ?, unwrap/expect payloads and TS/JS awaited Promise payloads, params, and aliases; `cargo test --lib` 44/44, `cargo test --test linker` 101/101, and `cargo test --test languages` 253/253 passed; strict `cargo clippy --all-targets --all-features -- -D warnings` passed.
+- subtask_ref: trait-and-interface-bounded-possible-calls
+  title: In src/engine/linker/resolution.rs (lines 846-880), link dyn Trait calls to Trait::method (inferred) and emit bounded possible_calls edges (K<=8) to indexed implementors, widening overflow to Unknown/Incomplete while retaining trait_object_dispatch in analysis_gaps
+  status: completed
+  evidence: Completed against frozen candidate e41826d. Linker tests cover bounded trait dispatch and K<=8/overflow behavior; persisted query-context test verifies scoped possible_calls and analysis-gap output. `cargo test --test linker` 101/101 and `cargo test --test query_context` 42/42 passed; strict Clippy passed. Cross-file dirtying when implementors change remains Task 3-owned under INV-DELTA-PARITY.
+- subtask_ref: rust-macro-rules-body-references
+  title: Extract identifier call/type references from macro_definition transcription bodies in src/engine/languages/rust.rs as references edges owned by the macro node while retaining macro_expansion_not_analyzed
+  status: completed
+  evidence: Completed against frozen candidate e41826d. Macro transcription reference/invocation-gap regression is in the linker integration suite (`tests/linker/method_semantics.rs`); `cargo test --test linker` 101/101 and `cargo test --test query_context` 42/42 passed; strict Clippy passed. Contract rev5 criterion is identifiers followed by `(` or `::`; implementation also handles `{`.
+- subtask_ref: python-optional-union-unwrap
+  title: Unwrap one non-null payload from already extracted Optional[T] and Union[T, None] in linker value flow and semantic context, leaving multi-type unions unresolved
+  status: completed
+  evidence: 'Completed against frozen candidate e41826d. Focused persisted nullable readback seam passed 1/1, including fail-closed multi-nonnull Union cases; `cargo test --test linker` 101/101 and `cargo test --lib` 44/44 passed; `cargo test --test languages` 253/253 and strict Clippy passed. Blocker #163 was resolved by the narrow canonical Optional/Union guard.'
+- subtask_ref: python-pep604-binary-union-unwrap
+  title: Parse PEP 604 binary union expressions (T | None) in src/engine/languages/python/value_flow.rs and unwrap single non-null payload via linker value flow
+  status: completed
+  evidence: 'Implemented in src/engine/languages/python/value_flow.rs, src/engine/linker/value_flow.rs, and semantic_context.rs with bracket-depth-aware splitting, parenthesized expression handling, Symbol::Unknown fallback unwrapping, and fail-closed multi-nonnull / NoneType rejection. Verified by tests/linker/method_semantics.rs (102/102 passed) and strict Clippy clean.'
+receipt:
+  contract_revision: 6
+  passed_at: 2026-10-15T12:20:00.000000000+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test linker
+      exit_code: 0
+      tests_passed: 102
+      tests_failed: 0
+      log: |-
+        Exact registered command passed after submission validation, with CARGO_TARGET_DIR=/tmp/m047-task2-isolated-target supplied through the process environment.
+        Focused Python nullable seam: cargo test --test linker method_semantics::python_optional_and_single_none_union_project_one_payload_on_index_readback -- --exact --nocapture; exit 0; 1 passed, 0 failed.
+        Unfiltered cargo test --test linker; exit 0; 101 passed, 0 failed.
+        Unfiltered cargo test --test languages; exit 0; 253 passed, 0 failed.
+        Unfiltered cargo test --test query_context; exit 0; 42 passed, 0 failed.
+        Focused contract seam: cargo test --lib engine::linker::value_flow::tests::awaited_promise_parameter_alias_resolves_only_explicit_payload -- --exact --nocapture; exit 0; 1 passed, 0 failed.
+        Unfiltered cargo test --lib; exit 0; 44 passed, 0 failed.
+        Strict Clippy: cargo clippy --all-targets --all-features -- -D warnings; exit 0; no diagnostics.
+        cargo fmt --all and cargo fmt --all -- --check passed; git diff HEAD --check is clean.
+        cargo test tests/receivers/rust_value_flow.rs ran zero tests because Cargo treated the path as a name filter; no proof credit. cargo test --test receivers is not a registered target. The complete linker target passed and contains the receiver tests.
+        Forge delta refreshed 11 modified source, test, and documentation paths; generation bc3ab37b83c9744a4010c82fdbbfef0a15757d68a42a46215add7044696b3b18.
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Independently checked frozen candidate e41826dba9a3cb10b014f8b9205e003e6a811ec7 against its baseline and task scope: candidate file blobs match the worktree snapshot; all candidate paths are admitted task paths. No candidate changes touch src/db/delta.rs or task/profile administration; Task 3 retains implementor-delta dirtying.'
+        claims:
+          applicable: true
+          evidence: 'Candidate inspection and persisted linker integration tests cover Rust explicit ?/.unwrap/.expect payload flow and bounded dyn-trait dispatch, TypeScript awaited Promise payload/parameters and aliases, fail-closed Python Optional/Union parsing, and macro transcription references while leaving invocation expansion opaque. Blocker #163’s multi-nonnull Union cases are unresolved in the focused nullable readback regression; focused test passed 1/1 and the full linker target passed 101/101. No cross-file trait-implementor dirtying claim is attributed to Task 2.'
+        concurrency:
+          applicable: true
+          evidence: 'Reviewed new indexing facts as extraction-scoped and bounded; trait implementation candidates are sorted/deduplicated and overflow beyond the bound fails closed. Strict Clippy and the full required affected targets passed: cargo clippy --all-targets --all-features -- -D warnings; cargo test --lib (44/44); cargo test --test linker (101/101); cargo test --test languages (253/253); cargo test --test query_context (42/42).'
+        project_isolation:
+          applicable: true
+          evidence: The candidate stays within the claimed task worktree and scoped paths. The linker coverage exercises persisted project-local resolution and fail-closed ambiguity; complete linker, language, and query-context targets passed. No linked-workspace configuration or project-boundary relaxation is in this candidate.
+        administration:
+          applicable: false
+          evidence: No task administration, profile/schema, migration, credential, delivery receipt, or lifecycle implementation path is changed by the candidate. This submission only records the authorized review decision; delivery remains outside this review action.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage.'
+    - 'INV-UNCERTAINTY: Candidate evidence (possible_calls, confidence=possible) never becomes an exact calls edge on concrete trait implementors or certifies removal safety; overflow beyond K=8 widens to Unknown/Incomplete while retaining analysis_gaps.'
+    - 'INV-ZERO-ALLOC-LOOKUP: Qualified symbol lookups across resolution, semantic_context, contracts, and delta reuse scratch String buffers or prefix strips instead of per-iteration format! heap allocations, with zero new Cargo dependencies.'
+    - 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
+    - 'INV-STATIC: Analyze admitted source facts without executing target code, macros, build scripts, interpreters, or language servers.'
+    - 'INV-PRESERVE: Preserve existing exact resolutions, negative cases (un-unwrapped Option/Result member calls and un-awaited async/Promise factories remain unresolved), selectors, response budgets, workspace isolation, and deterministic ordering outside explicitly admitted semantic changes.'
+    - 'INV-UNCERTAINTY: Candidate evidence (possible_calls, confidence=possible) never becomes an exact calls edge on concrete trait implementors or certifies removal safety; overflow beyond K=8 widens to Unknown/Incomplete while retaining analysis_gaps.'
+    - 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage; cross-file dirtying of callers on addition/removal of concrete trait implementors is governed and delivered by Task 3.'
+    architectural_notes:
+    - 'decisions: Blocker #163 (Python Optional/Union legacy fallback) is resolved by the narrow canonical Optional/Union guard that prevents legacy typed-parameter fallback from reclassifying malformed multi-nonnull unions. Evidence: focused persisted nullable readback seam passed 1/1; cargo test --test linker passed 101/101; cargo test --lib passed 44/44; cargo clippy --all-targets --all-features -- -D warnings passed.'
+    - 'deferred: INV-DELTA-PARITY cross-file dirtying of callers when concrete trait implementors are added or removed remains owned by Task 3 (src/db/delta.rs). Task 2 does not claim or close that work.'
+    - 'decisions: Macro acceptance in contract rev5 (milestone line 265) requires scanning macro transcription identifier tokens followed by `(` or `::`; implementation additionally handles `{` for struct initializers. Broader bare annotation or generic forms such as `Foo<Bar>` are outside this contract and would require a future admitted task.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: not_applicable
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
 
 1. **Explicit Rust `?` / `.unwrap()` / `.expect()` Unwrapping (preserving `tests/receivers/rust_value_flow.rs:521, 1192`)**:
    - Direct bindings `x: Option<T>` or `x: Result<T, E>` without `?`/`.unwrap()`/`.expect()` remain `Builtin("Option")` / `Builtin("Result")` so `x.is_some()` / `x.is_ok()` resolve as `"external"` and `x.work()` stays `"unresolved"`.
-   - In `src/engine/languages/rust/value_flow.rs` (`value`, line 218) and `src/engine/linker/value_flow.rs`, when an initializer or receiver is a `try_expression` (`expr?`) or a `.unwrap()` / `.expect(...)` call on a function/variable whose `TypeExpr` is `Applied { base: "Result" | "Option", args }` (including 1-arg `anyhow::Result<T>`), resolve `args[0]` to the inner type `T` (`TypeTarget::Local(T)`).
+   - In `src/engine/languages/rust.rs` (`call_result_hint`), encode syntax-derived `ValueExpr::Project` expressions into `ReceiverHint::CallResult { callee: format!("value:{json}"), member }` without modifying `src/core/models.rs`.
+   - In `src/engine/languages/rust/value_flow.rs` (`value`), `try_expression` and `.unwrap()` / `.expect(...)` calls emit `ValueExpr::Project`. In `src/engine/linker/value_flow.rs`, deserialize `value:` receiver hints within semantic limits and evaluate the projected expression, unwrapping `try_expression` (`expr?`) or `.unwrap()` / `.expect(...)` calls on `Result<T, E>` and `Option<T>` (including 1-arg `anyhow::Result<T>`) to the inner type `T` (`TypeTarget::Local(T)`).
 2. **Explicit TypeScript / JavaScript `await Promise<T>` Unwrapping (preserving `tests/languages/typescript/grammar.rs:461`)**:
-   - In `src/engine/languages/typescript/value_flow.rs` (`extract_with_return`, lines 502–515), when a function is `async` (not a generator), keep `return_type: Some(TypeExpr::Unknown)` (so un-awaited calls `const client = make(); client.work()` remain unresolved), and extract `async_return_type`: if the return annotation is `Applied { base: "Promise", args: [inner] }`, set `async_return_type = Some(inner)`; if the annotation is `Named` or inferred from `return new Worker()`, set `async_return_type` to that unwrapped return type.
-   - In `src/engine/languages/typescript/value_flow.rs` (`value`, lines 370–387), emit `ValueExpr::Await { value: Box::new(value(expression, source)) }` for non-`fetch` `await_expression` nodes, and in `src/engine/linker/value_flow.rs` (line 542) populate `index.async_returns` for `"typescript" | "javascript" | "vue"` alongside `"python"`.
+   - In `src/engine/languages/typescript/value_flow.rs` (`extract_with_return`), when a function is `async` (not a generator), keep `return_type: Some(TypeExpr::Unknown)` (so un-awaited calls `const client = make(); client.work()` remain unresolved), and extract `async_return_type`: if the return annotation is `Applied { base: "Promise", args: [inner] }`, set `async_return_type = Some(inner)`; if the annotation is `Named` or inferred from `return new Worker()`, set `async_return_type` to that unwrapped return type.
+   - In `src/engine/languages/typescript/value_flow.rs` (`value`), emit `ValueExpr::Await { value: Box::new(value(expression, source)) }` for non-`fetch` `await_expression` nodes, and in `src/engine/linker/value_flow.rs` populate `index.async_returns` for `"typescript" | "javascript" | "vue"` alongside `"python"`.
+   - Unwrapping applies across call sites, parameters, and local aliases:
+     - Direct awaited call: `(await make()).work()` unwraps `async_return_type`.
+     - Explicit parameter unwrap: `p: Promise<Service>` awaited as `(await p).work()` unwraps the inner `Service` type via `resolve_payload` / `explicit_payload`.
+     - Local alias unwrap: `const a = p; const s = await a; s.work()` unwraps the inner `Service` type.
+     - Negative invariance: Un-awaited member calls (`p.work()`, `const client = make(); client.work()`, `a.work()`) remain strictly `unresolved`.
 3. **Bounded `dyn Trait` Dispatch (preserving `tests/query_context/symbol_context.rs:607`)**:
    - In `src/engine/linker/resolution.rs` (lines 846–880), retain the `Coverage` entry with `expression: "trait_object_dispatch"` and `evidence: "analysis gap: ..."` so `analysis_gaps` counts remain unchanged.
    - When the receiver resolves to a workspace `trait` node `trait_node`, emit an `"inferred"` `calls` edge to the trait method declaration `Trait::method` (never to concrete implementor methods as `calls`), and if $1 \le \text{implementors} \le \text{MAX\_CANDIDATE\_BRANCH\_JOINS}$ ($8$), emit `possible_calls` (`confidence = "possible"`) edges to each concrete implementing method.
+   - If implementors exceed 8 ($K > 8$), widen candidate evidence to `Unknown/Incomplete` while retaining the `trait_object_dispatch` analysis gap.
+   - Invalidation note: Cross-file dirtying of callers when new trait implementors are added or removed is owned by Task 3 (`src/db/delta.rs`), satisfying milestone-wide `INV-DELTA-PARITY`.
 4. **Rust `macro_rules!` Transcription References**:
    - In `src/engine/languages/rust.rs`, inside `macro_definition` nodes, scan right-hand transcription `token_tree` nodes for identifier tokens followed by `(` or `::` and emit `Reference { kind: "references", .. }` owned by the `macro` node, while keeping `macro_expansion_not_analyzed` on invocation sites.
+5. **Python `Optional[T]` / `Union[T, None]` Unwrapping in Linker Value Flow**:
+   - In `src/engine/linker/value_flow.rs` and `src/engine/linker/semantic_context.rs`, unwrap the single non-null inner type `T` from already-extracted `Optional[T]` and `Union[T, None]` / `Union[None, T]` (`TypeExpr::Applied`) via `resolve_payload` / `explicit_payload` so member calls on `Optional` receivers (`client: Optional[Client]` -> `client.work()`) resolve to `Client::work` while preserving unresolved semantics for unannotated/untyped receivers.
+   - Fail-closed union resolution: When a `Union` has two or more non-null types (e.g. `Union[ServiceA, ServiceB]`), resolution is ambiguous and remains `unresolved` (fail-closed, no speculative calls).
+   - Python PEP 604 binary union expressions (`T | None`, `None | T`) and forward-ref string forms are parsed in `src/engine/languages/python/value_flow.rs` into `TypeExpr::Applied { base: "Union", args: [...] }` and unwrapped by the linker value flow without requiring `typing.Union` in scope. Multi-nonnull unions, `NoneType`, and ABC dispatch remain unresolved.
+   - Seam proof: `tests/linker/method_semantics.rs::python_optional_union_unwrap_resolves_single_payload_and_rejects_multi_type_unions`.
 
 ---
 
@@ -252,36 +353,49 @@ subtasks:
 
 ```yaml
 task_ref: fast-contract-hash-and-bounded-delta-frontier
-target: "Accelerate incremental delta builds by replacing serde_json::Value + BTreeSet<String> in resolution_identity_changed with streaming 64-bit contract hashing and bounding transitive import_frontier expansion in src/db/delta.rs"
+target: Accelerate incremental delta builds by replacing serde_json::Value + BTreeSet<String> in resolution_identity_changed with streaming deterministic contract hashing, dirtying callers of changed trait implementors, and bounding transitive import_frontier expansion in src/db/delta.rs using indexed Facts with zero source I/O
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 5
 scope:
-  - src/engine/linker/contracts.rs
-  - src/db/delta.rs
-  - docs/adr/0010-incremental-delta-transitive-dirtying.md
-  - docs/architecture/indexing.md
-  - docs/architecture/performance.md
-  - tests/incremental/resolution_identity.rs
-  - tests/incremental/scope.rs
-  - tests/commitment_integrity/
+- src/engine/linker/contracts.rs
+- src/db/delta.rs
+- docs/architecture/indexing.md
+- docs/architecture/performance.md
+- tests/incremental/
 depends_on:
-  - explicit-unwrap-and-polymorphic-dispatch-edges
+- explicit-unwrap-and-polymorphic-dispatch-edges
 invariants:
-  - 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage.'
-  - 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
+- 'INV-DELTA-NO-SOURCE-IO: src/db/delta.rs must not perform file I/O (std::fs), string parsing, or regex on source files; all decisions must rely on indexed Facts and Contracts.'
+- 'INV-DELTA-PARITY: Cold build and incremental delta rebuild over identical admitted inputs produce bit-identical Merkle roots (forge-owner-sha256-v2) and identical graph edges/coverage.'
+- 'INV-PERF-NO-REGRESSION: Cold build on isolated control repository copy (commerce-release-update) completes within 11.5s wall-clock time with reduced peak heap allocations and sub-50ms single-file body-edit delta latency.'
 status: planned
 subtasks:
-  - subtask_ref: streaming-resolution-identity-digest
-    title: "Add Contracts::resolution_digest in src/engine/linker/contracts.rs and use it in src/db/delta.rs (lines 985-1025) instead of serializing every node to serde_json::Value and BTreeSet<String>"
-    status: pending
-  - subtask_ref: reexport-gated-import-frontier
-    title: "Bound while !import_frontier.is_empty() in src/db/delta.rs (lines 337-377) so 1-hop importers always relink but 2+ hop importers only expand through modules with re-exports or exported return contracts"
-    status: pending
+- subtask_ref: streaming-resolution-identity-digest
+  title: Add Contracts::resolution_digest in src/engine/linker/contracts.rs and use exact sorted node digest set equality in src/db/delta.rs (lines 1002-1042) instead of serializing every node to serde_json::Value and BTreeSet<String>
+  status: pending
+- subtask_ref: rust-import-frontier-and-trait-invalidation
+  title: Include Rust in src/db/delta.rs import_frontier and dirty callers of changed trait implementors guaranteeing identical graph edges to cold builds
+  status: pending
+- subtask_ref: universal-reexport-gated-import-frontier
+  title: Bound import_frontier in src/db/delta.rs so hop 1 always relinks and hop 2+ expands only from indexed details.exports or value_flow.return_contract, with missing exports and unknown imports fail-safe
+  status: pending
 ```
 
 #### Acceptance
 
-1. In `src/engine/linker/contracts.rs`, add `pub(crate) fn resolution_digest(&self, facts: &Facts) -> u128` (or order-independent XOR/sum of 128-bit SHA-256 node identity digests over `(node.id, node.kind, node.name, node.qualname, node.path, node.is_test, node.language, node.generated, self.details(node))` for `node.kind != "component"`), and use it in `resolution_identity_changed` (`src/db/delta.rs:985–1025`) to avoid constructing `serde_json::Value` maps and `BTreeSet<String>` for every node.
-2. In `src/db/delta.rs` (lines 337–377), refine the `import_frontier` loop:
+1. **Deterministic Exact Contract Digest & Identity (`INV-DELTA-PARITY`)**:
+   - In `src/engine/linker/contracts.rs`, add `pub(crate) fn resolution_digest(&self, facts: &Facts) -> std::collections::BTreeSet<[u8; 16]>` (sorted 16-byte SHA-256 digests from the existing sha2 crate over `(node.id, node.kind, node.name, node.qualname, node.path, node.is_test, node.language, node.generated, self.details(node))` for non-component nodes).
+   - In `src/db/delta.rs` (`resolution_identity_changed`, lines 1002–1042), replace `serde_json::to_value` and `BTreeSet<String>` with exact set comparison of `old_digests != new_digests`. The identity set is the digest set, not `BTreeSet<String>` from `serde_json::to_string`. `details(node)` may still be JSON. Use existing `sha2` for the 16-byte digest. Do not add a crate and do not XOR the digests together.
+2. **Rust Delta Inclusion & Trait Implementor Invalidation**:
+   - In `src/db/delta.rs:354-393`, include `"rust"` alongside `"python" | "javascript" | "typescript" | "vue"` in `import_frontier` so Rust imports and dependencies participate in incremental delta tracking.
+   - Implement trait implementor invalidation in `src/db/delta.rs`: when an `impl Trait` is added, modified, or removed, mark files containing call sites to `Trait::method` as affected, guaranteeing identical graph edges and Merkle roots to cold builds (`INV-DELTA-PARITY`).
+3. **Indexed export frontier (`INV-DELTA-NO-SOURCE-IO`, `INV-DELTA-PARITY`)**:
+   - Read hop gates only from indexed module `details.exports` (`ExportBinding.module`, `ExportBinding.star`, already written by `src/engine/ast/mod.rs`) and from `Contracts::details(node)["value_flow"]["return_contract"]`. Do not read source files and do not add `ImportKind` or parser changes.
    - **Hop 1 (direct importers of `changed_resolution`)**: always inserted into `affected`.
-   - **Hop 2+ (importers of `owner`)**: only added to `next` frontier if `owner` may transitively propagate symbols from `changed_resolution` (i.e., `owner` is in `changed_resolution`, or `owner` contains wildcard imports, `exports`, `__all__`, `reexport`, or callable `return_contract` / `alias_type` facts), preventing repo-wide hydration when a leaf module changes while preserving 100% parity on `cargo test --test incremental` and `cargo test --test commitment_integrity`.
+   - **Hop 2+ (importers of intermediate `owner`)**: inserted only when an export binding re-exports that upstream provider (`module` names it, or `star` is true) or `return_contract` exposes the provider, including a qualified `namespace.Type`.
+   - **Fail-safe**: a missing `details.exports` array or an unresolvable import expands the frontier so the Merkle root still matches a cold build.
+   - No new persisted fields are required. If a field is added, it decodes legacy `facts_blob` with `#[serde(default)]`.
+4. **Verification Proofs**:
+   - `tests/incremental/scope.rs::dyn_trait_dispatch_add_change_and_remove_impls_match_cold_builds` proves that adding, changing, and removing trait implementors matches cold-build Merkle roots and graph edges.
+   - `tests/incremental/scope.rs::indexed_reexport_frontier_matches_cold_build` proves hop 1 always relinks and hop 2+ relinks only for an indexed re-export or return contract, including the missing-export fail-safe case.
+   - `tests/incremental/resolution_identity.rs::resolution_digest_matches_exact_contract_changes` proves a changed contract changes the digest set and an unchanged contract does not, without a `BTreeSet<String>` of `serde_json::to_string` identities.

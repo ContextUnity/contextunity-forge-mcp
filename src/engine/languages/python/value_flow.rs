@@ -406,6 +406,63 @@ fn static_name(node: Node<'_>) -> bool {
                 .is_some_and(|member| member.kind() == "identifier"))
 }
 
+fn strip_outer_parentheses(s: &str) -> &str {
+    let trimmed = s.trim();
+    if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        let mut depth = 0_usize;
+        let mut closed_at_end = false;
+        for (i, c) in trimmed.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 && i == trimmed.len() - 1 {
+                        closed_at_end = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if closed_at_end {
+            trimmed[1..trimmed.len() - 1].trim()
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    }
+}
+
+fn split_python_pipe_types(annotation: &str) -> Option<Vec<&str>> {
+    let mut depth = 0_usize;
+    let mut start = 0_usize;
+    let mut parts = Vec::new();
+    for (index, character) in annotation.char_indices() {
+        match character {
+            '[' | '(' => depth = depth.checked_add(1)?,
+            ']' | ')' => depth = depth.checked_sub(1)?,
+            '|' if depth == 0 => {
+                let part = annotation[start..index].trim();
+                if part.is_empty() {
+                    return None;
+                }
+                parts.push(part);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 || parts.is_empty() {
+        return None;
+    }
+    let last = annotation[start..].trim();
+    if last.is_empty() {
+        return None;
+    }
+    parts.push(last);
+    Some(parts)
+}
+
 fn annotation(node: Node<'_>, source: &str) -> TypeExpr {
     fn parse(node: Node<'_>, source: &str, depth: usize, remaining: &mut usize) -> TypeExpr {
         if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH || *remaining == 0 {
@@ -459,6 +516,51 @@ fn annotation(node: Node<'_>, source: &str) -> TypeExpr {
                 args,
             };
         }
+        if node.kind() == "parenthesized_expression" {
+            if let Some(inner) = node.named_child(0) {
+                return parse(inner, source, depth, remaining);
+            }
+        }
+        if node.kind() == "binary_operator"
+            && node
+                .child_by_field_name("operator")
+                .is_some_and(|op| text(op, source) == "|")
+        {
+            let mut operands = Vec::new();
+            let mut stack = vec![node];
+            while let Some(curr) = stack.pop() {
+                if curr.kind() == "binary_operator"
+                    && curr
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| text(op, source) == "|")
+                {
+                    if let Some(right) = curr.child_by_field_name("right") {
+                        stack.push(right);
+                    }
+                    if let Some(left) = curr.child_by_field_name("left") {
+                        stack.push(left);
+                    }
+                } else if curr.kind() == "parenthesized_expression" {
+                    if let Some(inner) = curr.named_child(0) {
+                        stack.push(inner);
+                    } else {
+                        operands.push(curr);
+                    }
+                } else {
+                    operands.push(curr);
+                }
+            }
+            if !operands.is_empty() && operands.len() <= *remaining {
+                let args = operands
+                    .into_iter()
+                    .map(|arg| parse(arg, source, depth + 1, remaining))
+                    .collect();
+                return TypeExpr::Applied {
+                    base: "Union".to_owned(),
+                    args,
+                };
+            }
+        }
         let value = text(node, source).trim();
         let value = value
             .strip_prefix('\'')
@@ -469,6 +571,21 @@ fn annotation(node: Node<'_>, source: &str) -> TypeExpr {
                     .and_then(|value| value.strip_suffix('"'))
             })
             .unwrap_or(value);
+        let value = strip_outer_parentheses(value);
+        if let Some(parts) = split_python_pipe_types(value) {
+            if parts.len() >= 2 && parts.len() <= *remaining {
+                let args = parts
+                    .into_iter()
+                    .map(|part| TypeExpr::Named {
+                        name: strip_outer_parentheses(part).to_owned(),
+                    })
+                    .collect();
+                return TypeExpr::Applied {
+                    base: "Union".to_owned(),
+                    args,
+                };
+            }
+        }
         if !value.is_empty()
             && value.len() <= 256
             && value.split('.').all(|part| {

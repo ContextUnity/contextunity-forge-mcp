@@ -369,7 +369,6 @@ fn value(node: Syntax<'_>, source: &str) -> ValueExpr {
     match node.kind() {
         "await_expression" => node
             .named_child(0)
-            .filter(|expression| expression.kind() == "call_expression")
             .map(|expression| {
                 if expression
                     .child_by_field_name("function")
@@ -381,7 +380,9 @@ fn value(node: Syntax<'_>, source: &str) -> ValueExpr {
                         callee: "await fetch".to_owned(),
                     }
                 } else {
-                    value(expression, source)
+                    ValueExpr::Await {
+                        value: Box::new(value(expression, source)),
+                    }
                 }
             })
             .unwrap_or(ValueExpr::Unknown),
@@ -499,20 +500,45 @@ pub(super) fn extract_with_return(
         }
     }
     let mut cursor = root.walk();
-    let wrapped_return = root.kind().contains("generator_function")
-        || root
-            .children(&mut cursor)
-            .any(|child| matches!(child.kind(), "async" | "*"));
+    let generator = root.kind().contains("generator_function")
+        || root.children(&mut cursor).any(|child| child.kind() == "*");
+    let mut cursor = root.walk();
+    let asynchronous = root
+        .children(&mut cursor)
+        .any(|child| child.kind() == "async");
+    let annotation = root
+        .child_by_field_name("return_type")
+        .map(|ty| named_type(ty, source))
+        .or_else(documented_return);
+    let promise_payload = match &annotation {
+        Some(TypeExpr::Applied { base, args }) if base == "Promise" && args.len() == 1 => {
+            Some(args[0].clone())
+        }
+        _ => None,
+    };
+    let wrapped_return = generator || asynchronous || promise_payload.is_some();
     let mut result = ValueFlowFacts {
         return_type: if wrapped_return {
             Some(TypeExpr::Unknown)
         } else {
-            root.child_by_field_name("return_type")
-                .map(|ty| named_type(ty, source))
-                .or_else(documented_return)
+            annotation.clone()
+        },
+        async_return_type: if generator {
+            None
+        } else if asynchronous {
+            promise_payload.or(annotation)
+        } else {
+            promise_payload
         },
         ..Default::default()
     };
+    if asynchronous && !generator && result.async_return_type.is_none() {
+        if let Some(expression) = final_return(root) {
+            if let ValueExpr::Construct { callee } = value(expression, source) {
+                result.async_return_type = Some(TypeExpr::Named { name: callee });
+            }
+        }
+    }
     if result.return_type.is_none() {
         if let Some(expression) = final_return(root) {
             let returned = if expression.kind() == "object" {
@@ -558,6 +584,23 @@ pub(super) fn extract_with_return(
             );
         let try_conditional = try_conditional || node.kind() == "try_statement";
         let conditional = branch_conditional || try_conditional;
+        if node.kind() == "required_parameter" {
+            if let (Some(name), Some(annotation)) = (
+                node.child_by_field_name("pattern")
+                    .filter(|name| name.kind() == "identifier"),
+                node.child_by_field_name("type"),
+            ) {
+                let type_expr = named_type(annotation, source);
+                if matches!(&type_expr, TypeExpr::Applied { base, .. } if base == "Promise") {
+                    result.bindings.push(BindingFact {
+                        name: text(name, source).to_owned(),
+                        position: position(node),
+                        value: ValueExpr::Annotated { type_expr },
+                        conditional: false,
+                    });
+                }
+            }
+        }
         if node.kind() == "variable_declarator" {
             let lexical = node
                 .parent()

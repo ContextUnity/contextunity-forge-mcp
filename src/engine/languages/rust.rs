@@ -99,6 +99,19 @@ fn call_result_hint(node: Syntax<'_>, source: &str) -> Option<ReceiverHint> {
         return None;
     }
     let receiver = function.child_by_field_name("value")?;
+    let member = function.child_by_field_name("field")?;
+    if member.kind() != "field_identifier" {
+        return None;
+    }
+    let value = value_flow::value(receiver, source);
+    if matches!(value, crate::core::semantic::ValueExpr::Project { .. }) {
+        if let Ok(serialized) = serde_json::to_string(&value) {
+            return Some(ReceiverHint::CallResult {
+                callee: format!("value:{serialized}"),
+                member: text(member, source).to_owned(),
+            });
+        }
+    }
     if receiver.kind() != "call_expression" {
         return None;
     }
@@ -106,10 +119,6 @@ fn call_result_hint(node: Syntax<'_>, source: &str) -> Option<ReceiverHint> {
         .child_by_field_name("function")
         .and_then(|node| value_flow::callee_name(node, source))?;
     if !callee.contains("::") {
-        return None;
-    }
-    let member = function.child_by_field_name("field")?;
-    if member.kind() != "field_identifier" {
         return None;
     }
     Some(ReceiverHint::CallResult {
@@ -695,6 +704,18 @@ impl LanguageProfile for Rust {
             if let Some(ret) = ctx.node.child_by_field_name("return_type") {
                 value_flow::type_references(facts, ctx.owner, ret, ctx.source, ctx.line());
             }
+        } else if ctx.node.kind() == "macro_definition" {
+            // Inspect transcription tokens only; matching patterns and metavariables are opaque.
+            let mut cursor = ctx.node.walk();
+            for rule in ctx
+                .node
+                .named_children(&mut cursor)
+                .filter(|node| node.kind() == "macro_rule")
+            {
+                if let Some(body) = rule.child_by_field_name("right") {
+                    macro_transcription_references(body, ctx.source, ctx.owner, facts);
+                }
+            }
         } else if ctx.node.kind() == "type_item" {
             if let Some(ty) = ctx.node.child_by_field_name("type") {
                 value_flow::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
@@ -794,6 +815,40 @@ impl LanguageProfile for Rust {
             previous = attr.prev_named_sibling();
         }
         false
+    }
+}
+
+fn macro_transcription_references(node: Syntax<'_>, source: &str, owner: &str, facts: &mut Facts) {
+    let mut pending = vec![node];
+    while let Some(tree) = pending.pop() {
+        let mut cursor = tree.walk();
+        let children: Vec<_> = tree.children(&mut cursor).collect();
+        for (index, token) in children.iter().enumerate() {
+            if token.kind() == "token_tree" {
+                pending.push(*token);
+                continue;
+            }
+            if token.kind() != "identifier"
+                || index
+                    .checked_sub(1)
+                    .is_some_and(|previous| text(children[previous], source) == "$")
+            {
+                continue;
+            }
+            let Some(next) = children.get(index + 1) else {
+                continue;
+            };
+            let next = text(*next, source).trim_start();
+            if next.starts_with('(') || next == "::" || next.starts_with('{') {
+                relations::reference(
+                    facts,
+                    owner,
+                    text(*token, source),
+                    "references",
+                    token.start_position().row + 1,
+                );
+            }
+        }
     }
 }
 

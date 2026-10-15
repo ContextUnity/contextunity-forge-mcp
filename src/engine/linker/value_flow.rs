@@ -165,6 +165,15 @@ pub trait SemanticResolver<'a> {
     ) -> TypeTarget<'a> {
         TypeTarget::Unknown
     }
+    /// Resolves a payload only for an explicitly projected standard wrapper.
+    fn resolve_payload(
+        &self,
+        _scope: &'a Node,
+        _expression: &TypeExpr,
+        _at: SourcePosition,
+    ) -> TypeTarget<'a> {
+        TypeTarget::Unknown
+    }
     /// Resolves imported module.
     fn resolve_import_module(
         &self,
@@ -432,7 +441,13 @@ fn initialize_scope<'a>(
                     .as_str()
                     .filter(|name| !name.is_empty() && name.len() <= limits.name_bytes)
                     .map_or(TypeTarget::Unknown, |name| {
-                        resolve_type(node, &stored_type_expr(name), position, resolver, limits)
+                        resolve_type(
+                            node,
+                            &stored_type_expr(name, &node.language),
+                            position,
+                            resolver,
+                            limits,
+                        )
                     })
             };
             bindings.insert(
@@ -564,6 +579,18 @@ impl<'a> ValueFlowIndex<'a> {
         };
         let initialized = initialize(&nodes, &by_name);
         for (node, facts, scope, returned) in initialized {
+            if matches!(node.language.as_str(), "typescript" | "javascript" | "vue")
+                && !scope.invalid
+                && matches!(node.kind.as_str(), "function" | "method" | "lambda")
+            {
+                if let Some(async_type) = facts.async_return_type.as_ref() {
+                    let returned =
+                        resolve_type(node, async_type, node_position(node), resolver, limits);
+                    if !matches!(returned, TypeTarget::Unknown | TypeTarget::Ambiguous) {
+                        index.async_returns.insert(node.id.as_str(), returned);
+                    }
+                }
+            }
             if node.language == "python" && !scope.invalid {
                 for fact in &facts.collection_elements {
                     let element =
@@ -1075,7 +1102,17 @@ impl<'a> ValueFlowIndex<'a> {
                     }
                 }
                 Some(ReceiverHint::CallResult { callee, .. }) => {
-                    if callee.len() > limits.name_bytes
+                    if let Some(rest) = callee.strip_prefix("value:") {
+                        if let Ok(value) = serde_json::from_str::<ValueExpr>(rest) {
+                            if valid_value(&value, limits, 0) {
+                                index.evaluate(owner, &value, at, resolver, None)
+                            } else {
+                                TypeTarget::Unknown
+                            }
+                        } else {
+                            TypeTarget::Unknown
+                        }
+                    } else if callee.len() > limits.name_bytes
                         || callee.matches('.').count() > limits.alias_depth
                     {
                         TypeTarget::Unknown
@@ -1092,15 +1129,22 @@ impl<'a> ValueFlowIndex<'a> {
                             .cloned()
                             .unwrap_or(TypeTarget::Unknown)
                     } else {
-                        index.evaluate(
-                            owner,
-                            &ValueExpr::Call {
-                                callee: callee.clone(),
-                            },
-                            at,
-                            resolver,
-                            None,
-                        )
+                        let (callee_name, is_try) = match callee.strip_suffix('?') {
+                            Some(base) => (base, true),
+                            None => (callee.as_str(), false),
+                        };
+                        let call_expr = ValueExpr::Call {
+                            callee: callee_name.to_owned(),
+                        };
+                        let expr = if is_try {
+                            ValueExpr::Project {
+                                value: Box::new(call_expr),
+                                member: "?".to_owned(),
+                            }
+                        } else {
+                            call_expr
+                        };
+                        index.evaluate(owner, &expr, at, resolver, None)
                     }
                 }
                 _ => continue,
@@ -1521,6 +1565,9 @@ impl<'a> ValueFlowIndex<'a> {
             ValueExpr::LoopElement { iterable, .. } => self.collection_element(owner, iterable, at),
             ValueExpr::Await { value } => {
                 let ValueExpr::Call { callee } = value.as_ref() else {
+                    if matches!(owner.language.as_str(), "typescript" | "javascript" | "vue") {
+                        return self.explicit_payload(owner, value, at, resolver, trace, 0);
+                    }
                     return TypeTarget::Unknown;
                 };
                 let callable = self.callable_expression_tracked(owner, callee, at, resolver, trace);
@@ -1608,6 +1655,15 @@ impl<'a> ValueFlowIndex<'a> {
                         return target;
                     }
                 } else if matches!(owner.language.as_str(), "javascript" | "typescript" | "vue") {
+                    if self
+                        .callable_expression_tracked(owner, callee, at, resolver, trace)
+                        .is_some_and(|callable| {
+                            self.async_returns.contains_key(callable.id.as_str())
+                        })
+                    {
+                        // Retain the wrapper so aliases can await it without exposing the payload ordinarily.
+                        return TypeTarget::Builtin("Promise".to_owned());
+                    }
                     if let Some(target) = self.evaluate_js_call(owner, callee, at, resolver, trace)
                     {
                         return target;
@@ -1686,6 +1742,30 @@ impl<'a> ValueFlowIndex<'a> {
                 }
             }
             ValueExpr::Project { value, member } => {
+                if owner.language == "rust" && matches!(member.as_str(), "?" | "unwrap" | "expect")
+                {
+                    // Custom methods retain their nominal return contract; only builtin wrappers project payloads.
+                    if member != "?" {
+                        let receiver =
+                            self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
+                        if matches!(receiver, TypeTarget::Local(_)) {
+                            if let Symbol::Callable(callable) =
+                                resolver.resolve_member(&receiver, member, owner, at)
+                            {
+                                if let Some(trace) = trace {
+                                    trace.returned(callable.id.as_str());
+                                }
+                                return self
+                                    .returns
+                                    .get(callable.id.as_str())
+                                    .cloned()
+                                    .unwrap_or(TypeTarget::Unknown);
+                            }
+                            return TypeTarget::Unknown;
+                        }
+                    }
+                    return self.explicit_payload(owner, value, at, resolver, trace, 0);
+                }
                 let source = self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
                 match source {
                     TypeTarget::Object(ref members) => {
@@ -1749,6 +1829,122 @@ impl<'a> ValueFlowIndex<'a> {
                 TypeTarget::Object(Arc::new(resolved))
             }
             ValueExpr::Unknown => TypeTarget::Unknown,
+        }
+    }
+
+    fn explicit_payload(
+        &self,
+        owner: &'a Node,
+        value: &ValueExpr,
+        at: SourcePosition,
+        resolver: &impl SemanticResolver<'a>,
+        trace: Option<&ReadTrace<'a, '_>>,
+        depth: usize,
+    ) -> TypeTarget<'a> {
+        if depth >= self.limits.alias_depth.min(8) {
+            return TypeTarget::Unknown;
+        }
+        let flow = |node: &'a Node| {
+            if self
+                .scopes
+                .get(node.id.as_str())
+                .is_none_or(|scope| scope.invalid)
+            {
+                return None;
+            }
+            if let Some(facts) = resolver.value_flow(node) {
+                Some(Cow::Borrowed(facts))
+            } else if !resolver.has_typed_flows() {
+                ValueFlowFacts::deserialize_for_scope(&node.details["value_flow"], false)
+                    .ok()
+                    .map(Cow::Owned)
+            } else {
+                None
+            }
+        };
+        match value {
+            ValueExpr::Annotated { type_expr } => resolver.resolve_payload(owner, type_expr, at),
+            ValueExpr::Call { callee } => {
+                let Some(callable) =
+                    self.callable_expression_tracked(owner, callee, at, resolver, trace)
+                else {
+                    return TypeTarget::Unknown;
+                };
+                if let Some(trace) = trace {
+                    trace.returned(callable.id.as_str());
+                }
+                if matches!(owner.language.as_str(), "typescript" | "javascript" | "vue") {
+                    return self
+                        .async_returns
+                        .get(callable.id.as_str())
+                        .cloned()
+                        .unwrap_or(TypeTarget::Unknown);
+                }
+                flow(callable)
+                    .and_then(|facts| {
+                        facts.return_type.as_ref().map(|ty| {
+                            resolver.resolve_payload(callable, ty, node_position(callable))
+                        })
+                    })
+                    .unwrap_or(TypeTarget::Unknown)
+            }
+            ValueExpr::Alias { name } => {
+                // Reaching-value uncertainty still fences projection; a write cannot revive an old annotation.
+                let reaching_wrapper = match self.lookup_tracked(owner, name, at, trace) {
+                    Some(TypeTarget::Builtin(wrapper)) if owner.language == "rust" => {
+                        matches!(wrapper.as_str(), "Option" | "Result")
+                    }
+                    Some(TypeTarget::Builtin(wrapper))
+                        if matches!(
+                            owner.language.as_str(),
+                            "typescript" | "javascript" | "vue"
+                        ) =>
+                    {
+                        wrapper == "Promise"
+                    }
+                    _ => false,
+                };
+                if !reaching_wrapper {
+                    return TypeTarget::Unknown;
+                }
+                let Some(scope) = self.scopes.get(owner.id.as_str()) else {
+                    return TypeTarget::Unknown;
+                };
+                for id in std::iter::once(owner.id.as_str()).chain(scope.parents.iter().copied()) {
+                    let Some(TypeTarget::Local(declaration)) = self.local_types.get(id) else {
+                        continue;
+                    };
+                    let Some(facts) = flow(declaration) else {
+                        return TypeTarget::Unknown;
+                    };
+                    if let Some(binding) = facts
+                        .bindings
+                        .iter()
+                        .filter(|binding| binding.name == *name && binding.position < at)
+                        .max_by_key(|binding| binding.position)
+                    {
+                        if binding.conditional {
+                            return TypeTarget::Unknown;
+                        }
+                        return self.explicit_payload(
+                            declaration,
+                            &binding.value,
+                            binding.position,
+                            resolver,
+                            trace,
+                            depth + 1,
+                        );
+                    }
+                    if self.scopes[id].bindings.contains_key(name.as_str()) {
+                        return TypeTarget::Unknown;
+                    }
+                }
+                TypeTarget::Unknown
+            }
+            ValueExpr::Scoped { value, .. } => {
+                self.explicit_payload(owner, value, at, resolver, trace, depth + 1)
+            }
+            _ => TypeTarget::Unknown,
         }
     }
 
@@ -2001,8 +2197,13 @@ fn typed_dict_class<'a>(node: &'a Node, resolver: &impl SemanticResolver<'a>) ->
     )
 }
 
-fn stored_type_expr(annotation: &str) -> TypeExpr {
+fn stored_type_expr(annotation: &str, language: &str) -> TypeExpr {
     let annotation = annotation.trim();
+    if language == "python" {
+        if let Some(expression) = python_nullable_type_expr(annotation) {
+            return expression;
+        }
+    }
     if let Some((base, rest)) = annotation.split_once('[') {
         if let Some(argument) = rest.strip_suffix(']') {
             let base = base.trim();
@@ -2023,6 +2224,123 @@ fn stored_type_expr(annotation: &str) -> TypeExpr {
     TypeExpr::Named {
         name: annotation.to_owned(),
     }
+}
+
+fn split_python_pipe_types(annotation: &str) -> Option<Vec<&str>> {
+    let mut depth = 0_usize;
+    let mut start = 0_usize;
+    let mut parts = Vec::new();
+    for (index, character) in annotation.char_indices() {
+        match character {
+            '[' | '(' => depth = depth.checked_add(1)?,
+            ']' | ')' => depth = depth.checked_sub(1)?,
+            '|' if depth == 0 => {
+                let part = annotation[start..index].trim();
+                if part.is_empty() {
+                    return None;
+                }
+                parts.push(part);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 || parts.is_empty() {
+        return None;
+    }
+    let last = annotation[start..].trim();
+    if last.is_empty() {
+        return None;
+    }
+    parts.push(last);
+    Some(parts)
+}
+
+fn strip_outer_parentheses(s: &str) -> &str {
+    let trimmed = s.trim();
+    if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        let mut depth = 0_usize;
+        let mut closed_at_end = false;
+        for (i, c) in trimmed.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 && i == trimmed.len() - 1 {
+                        closed_at_end = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if closed_at_end {
+            trimmed[1..trimmed.len() - 1].trim()
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    }
+}
+
+fn python_nullable_type_expr(annotation: &str) -> Option<TypeExpr> {
+    let annotation = strip_outer_parentheses(annotation.trim());
+    if let Some(parts) = split_python_pipe_types(annotation) {
+        if parts.len() >= 2 {
+            let args = parts
+                .into_iter()
+                .map(python_nullable_argument)
+                .collect();
+            return Some(TypeExpr::Applied {
+                base: "Union".to_owned(),
+                args,
+            });
+        }
+    }
+    let (base, rest) = annotation.split_once('[')?;
+    let base = base.trim();
+    let wrapper = base.rsplit('.').next()?;
+    if !matches!(wrapper, "Optional" | "Union") {
+        return None;
+    }
+    let arguments = rest.strip_suffix(']')?;
+    let mut depth = 0_usize;
+    let mut start = 0_usize;
+    let mut args = Vec::new();
+    for (index, character) in arguments.char_indices() {
+        match character {
+            '[' => depth = depth.checked_add(1)?,
+            ']' => depth = depth.checked_sub(1)?,
+            ',' if depth == 0 => {
+                let argument = arguments[start..index].trim();
+                if argument.is_empty() {
+                    return None;
+                }
+                args.push(python_nullable_argument(argument));
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    let argument = arguments[start..].trim();
+    if argument.is_empty() {
+        return None;
+    }
+    args.push(python_nullable_argument(argument));
+    Some(TypeExpr::Applied {
+        base: base.to_owned(),
+        args,
+    })
+}
+
+fn python_nullable_argument(annotation: &str) -> TypeExpr {
+    let unparenthesized = strip_outer_parentheses(annotation);
+    python_nullable_type_expr(unparenthesized).unwrap_or_else(|| TypeExpr::Named {
+        name: unparenthesized.to_owned(),
+    })
 }
 
 fn symbol_type(symbol: Symbol<'_>) -> TypeTarget<'_> {
@@ -2210,42 +2528,6 @@ fn valid_immutable_initializers(facts: &ValueFlowFacts) -> bool {
 
 fn valid_facts(facts: &ValueFlowFacts, limits: SemanticLimits) -> bool {
     let text = |name: &str| !name.is_empty() && name.len() <= limits.name_bytes;
-    fn value(expr: &ValueExpr, limits: SemanticLimits, depth: usize) -> bool {
-        if depth >= 8 {
-            return false;
-        }
-        let text = |name: &str| !name.is_empty() && name.len() <= limits.name_bytes;
-        match expr {
-            ValueExpr::Alias { name } => text(name),
-            ValueExpr::Annotated { type_expr } => valid_type(type_expr, limits, 0),
-            ValueExpr::Unknown => true,
-            ValueExpr::Construct { callee } | ValueExpr::Call { callee } => text(callee),
-            ValueExpr::Await { value: inner } => value(inner, limits, depth + 1),
-            ValueExpr::LoopElement { iterable, body_end } => text(iterable) && body_end.line > 0,
-            ValueExpr::Scoped {
-                value: inner,
-                body_end,
-            } => body_end.line > 0 && value(inner, limits, depth + 1),
-            ValueExpr::BranchJoin { alternatives } => {
-                !alternatives.is_empty()
-                    && alternatives.len() <= limits.facts_per_scope
-                    && alternatives
-                        .iter()
-                        .all(|alternative| value(alternative, limits, depth + 1))
-            }
-            ValueExpr::Field { receiver, member } => text(receiver) && text(member),
-            ValueExpr::Project {
-                value: inner,
-                member,
-            } => text(member) && value(inner, limits, depth + 1),
-            ValueExpr::Object { members, .. } => {
-                members.len() <= limits.facts_per_scope
-                    && members
-                        .iter()
-                        .all(|member| text(&member.name) && member.position.line > 0)
-            }
-        }
-    }
     valid_immutable_initializers(facts)
         && facts
             .bindings
@@ -2264,19 +2546,16 @@ fn valid_facts(facts: &ValueFlowFacts, limits: SemanticLimits) -> bool {
                 && fact.position.line > 0
                 && valid_type(&fact.type_expr, limits, 0)
         })
-        && facts
-            .bindings
-            .iter()
-            .all(|fact| text(&fact.name) && fact.position.line > 0 && value(&fact.value, limits, 0))
+        && facts.bindings.iter().all(|fact| {
+            text(&fact.name) && fact.position.line > 0 && valid_value(&fact.value, limits, 0)
+        })
         && facts.branch_joins.len() <= limits.facts_per_scope
-        && facts
-            .branch_joins
-            .iter()
-            .all(|fact| text(&fact.name) && fact.position.line > 0 && value(&fact.value, limits, 0))
-        && facts
-            .fields
-            .iter()
-            .all(|fact| text(&fact.name) && fact.position.line > 0 && value(&fact.value, limits, 0))
+        && facts.branch_joins.iter().all(|fact| {
+            text(&fact.name) && fact.position.line > 0 && valid_value(&fact.value, limits, 0)
+        })
+        && facts.fields.iter().all(|fact| {
+            text(&fact.name) && fact.position.line > 0 && valid_value(&fact.value, limits, 0)
+        })
         && facts
             .return_type
             .as_ref()
@@ -2286,11 +2565,48 @@ fn valid_facts(facts: &ValueFlowFacts, limits: SemanticLimits) -> bool {
             .as_ref()
             .is_none_or(|ty| valid_type(ty, limits, 0))
         && facts.return_value.as_ref().is_none_or(|returned| {
-            value(returned, limits, 0)
+            valid_value(returned, limits, 0)
                 && facts
                     .return_position
                     .is_some_and(|position| position.line > 0)
         })
+}
+
+fn valid_value(expr: &ValueExpr, limits: SemanticLimits, depth: usize) -> bool {
+    if depth >= 8 {
+        return false;
+    }
+    let text = |name: &str| !name.is_empty() && name.len() <= limits.name_bytes;
+    match expr {
+        ValueExpr::Alias { name } => text(name),
+        ValueExpr::Annotated { type_expr } => valid_type(type_expr, limits, 0),
+        ValueExpr::Unknown => true,
+        ValueExpr::Construct { callee } | ValueExpr::Call { callee } => text(callee),
+        ValueExpr::Await { value: inner } => valid_value(inner, limits, depth + 1),
+        ValueExpr::LoopElement { iterable, body_end } => text(iterable) && body_end.line > 0,
+        ValueExpr::Scoped {
+            value: inner,
+            body_end,
+        } => body_end.line > 0 && valid_value(inner, limits, depth + 1),
+        ValueExpr::BranchJoin { alternatives } => {
+            !alternatives.is_empty()
+                && alternatives.len() <= limits.facts_per_scope
+                && alternatives
+                    .iter()
+                    .all(|alternative| valid_value(alternative, limits, depth + 1))
+        }
+        ValueExpr::Field { receiver, member } => text(receiver) && text(member),
+        ValueExpr::Project {
+            value: inner,
+            member,
+        } => text(member) && valid_value(inner, limits, depth + 1),
+        ValueExpr::Object { members, .. } => {
+            members.len() <= limits.facts_per_scope
+                && members
+                    .iter()
+                    .all(|member| text(&member.name) && member.position.line > 0)
+        }
+    }
 }
 
 pub(crate) fn valid_scope_facts(
@@ -2534,6 +2850,66 @@ mod tests {
                 position: SourcePosition { line: 7, column: 5 }
             })
             .is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "lang-typescript")]
+    fn awaited_promise_parameter_alias_resolves_only_explicit_payload() {
+        let source = "class Service {}\nasync function caller(p: Promise<Service>) {\n\
+                      const alias = p;\nconst payload = await alias;\n}\n";
+        let facts = crate::engine::ast::extract("awaited.ts", "typescript", source).unwrap();
+        assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+        let all = BTreeMap::from([("awaited.ts".to_owned(), facts)]);
+        let nodes = &all["awaited.ts"].nodes;
+        let owner = nodes.iter().find(|node| node.name == "caller").unwrap();
+        let service = nodes.iter().find(|node| node.name == "Service").unwrap();
+        let mut by_qual: HashMap<&str, Vec<&Node>> = HashMap::new();
+        for node in nodes {
+            by_qual.entry(&node.qualname).or_default().push(node);
+        }
+        let modules = HashMap::new();
+        let by_module = HashMap::new();
+        let exports = HashMap::new();
+        let imports = HashMap::new();
+        let dependencies =
+            crate::engine::languages::dependency_registry::DependencyRegistry::default();
+        let resolver = super::super::semantic_context::Context::build(
+            &all,
+            &modules,
+            &by_module,
+            &by_qual,
+            &exports,
+            &imports,
+            &dependencies,
+        );
+        let index = ValueFlowIndex::build(&all, &resolver);
+        let at = SourcePosition { line: 5, column: 0 };
+        let payload_declaration = resolve_type(
+            owner,
+            &TypeExpr::Named {
+                name: "Service".into(),
+            },
+            at,
+            &resolver,
+            SemanticLimits::default(),
+        );
+        assert!(
+            matches!(payload_declaration, TypeTarget::Local(node) if node.id == service.id),
+            "the real semantic context must resolve the payload declaration"
+        );
+        assert!(
+            matches!(
+                index.lookup(owner, "payload", at),
+                Some(TypeTarget::Local(node)) if node.id == service.id
+            ),
+            "explicitly awaited parameter alias must expose Service"
+        );
+        for name in ["p", "alias"] {
+            assert!(
+                !matches!(index.lookup(owner, name, at), Some(TypeTarget::Local(_))),
+                "un-awaited {name} must retain its wrapper uncertainty"
+            );
+        }
     }
 
     #[test]

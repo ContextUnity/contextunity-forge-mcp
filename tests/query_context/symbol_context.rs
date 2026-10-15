@@ -630,7 +630,7 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
     let implementation_ids = {
         let mut statement = conn
             .prepare(
-                "SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='dispatch.rs' AND n.name='run' AND n.kind='method'",
+                "SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path='dispatch.rs' AND n.name='run' AND n.kind='method' AND EXISTS (SELECT 1 FROM edges implementation JOIN nodes declaration ON declaration.node_hash=implementation.dst_hash WHERE implementation.src_hash=n.node_hash AND implementation.kind='implements' AND declaration.name=n.name)",
             )
             .unwrap();
         statement
