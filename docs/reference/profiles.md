@@ -120,10 +120,18 @@ Contract and build context exposes indexed `external_callers`, one-hop indexed
 callers outside scope, plus `covering_tests`, which includes direct and two-hop
 test dependencies. ADR entries include up to five invariant-summary lines.
 `workflow_guidance.expected_evidence_template` carries the active claim identity
-and proof shape. Contract submission rejects a seam that does not reach an
-in-scope production symbol with `TASK_SEAM_DISCONNECTED`; contract and build
-reject changed public signatures with out-of-scope indexed callers using
-`TASK_SCOPE_INCOMPLETE`.
+and proof shape. Contract submission requires the exact indexed test symbol to
+reach a current, non-test production symbol inside scope within two supported
+edges (`calls`, `imports`, `possible_calls`, `implements`, or `overrides`). It
+checks each hop's source and target identity, current typed outgoing references,
+and applicable import bindings against source parsed from the claimed worktree,
+using the claimed worktree's local index when present and the shared read-only
+index otherwise. A stale or missing witness returns `TASK_SEAM_DISCONNECTED`;
+refresh the claimed-worktree code map after changing code used by the seam.
+Contract and build reject changed public signatures with
+out-of-scope indexed callers using `TASK_SCOPE_INCOMPLETE`. Rust methods in a
+visible trait inherit that trait's visibility for signature-boundary checks,
+whether the method has a body or only a declaration.
 
 ### 4. Anti-Tampering & SHA-256 Pinning
 

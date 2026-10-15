@@ -43,32 +43,6 @@ fn code_map_connection(
         .context("TASK_CODE_MAP_INVALID: indexed task boundary data is unavailable")
 }
 
-fn scoped_path_predicate(
-    alias: &str,
-    scope: &[String],
-    first_parameter: usize,
-) -> (String, Vec<String>) {
-    if scope.is_empty() {
-        return ("0".into(), Vec::new());
-    }
-    let mut values = Vec::with_capacity(scope.len());
-    let predicate = scope
-        .iter()
-        .enumerate()
-        .map(|(offset, path)| {
-            values.push(path.clone());
-            let parameter = first_parameter + offset;
-            if path.ends_with('/') {
-                format!("substr({alias}, 1, length(?{parameter})) = ?{parameter}")
-            } else {
-                format!("{alias} = ?{parameter}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" OR ");
-    (format!("({predicate})"), values)
-}
-
 fn normalized_signature(signature: &str) -> String {
     signature.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -101,11 +75,41 @@ fn module_export_names(nodes: &[crate::core::models::Node]) -> BTreeSet<String> 
         .collect()
 }
 
-fn exported_callable(node: &crate::core::models::Node, exports: &BTreeSet<String>) -> bool {
+fn public_trait_methods(nodes: &[crate::core::models::Node]) -> BTreeSet<String> {
+    let public_traits = nodes
+        .iter()
+        .filter(|node| node.kind == "trait")
+        .filter(|node| {
+            node.details["signature"]
+                .as_str()
+                .is_some_and(is_public_signature)
+        })
+        .map(|node| node.qualname.as_str())
+        .collect::<BTreeSet<_>>();
+    nodes
+        .iter()
+        .filter(|node| node.kind == "method")
+        .filter(|node| {
+            node.qualname
+                .rsplit_once('.')
+                .is_some_and(|(owner, _)| public_traits.contains(owner))
+        })
+        .map(|node| node.qualname.clone())
+        .collect()
+}
+
+fn exported_callable(
+    node: &crate::core::models::Node,
+    exports: &BTreeSet<String>,
+    public_trait_methods: &BTreeSet<String>,
+) -> bool {
     match node.language.as_str() {
-        "rust" => node.details["signature"]
-            .as_str()
-            .is_some_and(is_public_signature),
+        "rust" => {
+            node.details["signature"]
+                .as_str()
+                .is_some_and(is_public_signature)
+                || public_trait_methods.contains(&node.qualname)
+        }
         "python" => {
             !node.name.starts_with('_')
                 || exports.contains(&node.name)
@@ -136,12 +140,13 @@ fn typed_source_nodes(path: &str, source: &str) -> Result<Vec<crate::core::model
 fn public_callable_nodes(path: &str, source: &str) -> Result<Vec<crate::core::models::Node>> {
     let nodes = typed_source_nodes(path, source)?;
     let exports = module_export_names(&nodes);
+    let public_trait_methods = public_trait_methods(&nodes);
     Ok(nodes
         .into_iter()
         .filter(|node| {
             matches!(node.kind.as_str(), "function" | "method")
                 && !node.is_test
-                && exported_callable(node, &exports)
+                && exported_callable(node, &exports, &public_trait_methods)
         })
         .collect())
 }
@@ -384,6 +389,321 @@ fn indexed_test_hashes(
     Ok(hashes.into_iter().collect())
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SeamNodeIdentity {
+    kind: String,
+    name: String,
+    qualname: String,
+    is_test: bool,
+}
+
+impl From<&crate::core::models::Node> for SeamNodeIdentity {
+    fn from(node: &crate::core::models::Node) -> Self {
+        Self {
+            kind: node.kind.clone(),
+            name: node.name.clone(),
+            qualname: node.qualname.clone(),
+            is_test: node.is_test,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct IndexedSeamEdge {
+    dst_hash: i64,
+    kind: String,
+    src_path: String,
+    src: SeamNodeIdentity,
+    dst_path: String,
+    dst: SeamNodeIdentity,
+}
+
+const SEAM_EDGE_KINDS: [&str; 5] = [
+    "calls",
+    "imports",
+    "possible_calls",
+    "implements",
+    "overrides",
+];
+
+fn reference_source_identities(
+    facts: &crate::core::typed_facts::TypedFacts,
+) -> BTreeMap<String, SeamNodeIdentity> {
+    facts
+        .facts
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), SeamNodeIdentity::from(node)))
+        .collect()
+}
+
+fn seam_reference_key(
+    reference: &crate::core::models::Reference,
+    source: &SeamNodeIdentity,
+) -> Option<String> {
+    let mut value = serde_json::to_value(reference).ok()?;
+    let object = value.as_object_mut()?;
+    object.insert(
+        "source".into(),
+        serde_json::json!([source.kind, source.name, source.qualname, source.is_test]),
+    );
+    object.remove("line");
+    object.remove("column");
+    Some(value.to_string())
+}
+
+fn seam_reference_tokens(expression: &str) -> BTreeSet<String> {
+    expression
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn import_binding_name(reference: &crate::core::models::Reference) -> Option<String> {
+    reference.alias.clone().or_else(|| {
+        reference
+            .expression
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .rfind(|token| !token.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn seam_references_for_node(
+    facts: &crate::core::typed_facts::TypedFacts,
+    identity: &SeamNodeIdentity,
+) -> BTreeSet<String> {
+    let sources = reference_source_identities(facts);
+    facts
+        .facts
+        .references
+        .iter()
+        .filter(|reference| SEAM_EDGE_KINDS.contains(&reference.kind.as_str()))
+        .filter_map(|reference| {
+            let source = sources.get(&reference.source)?;
+            (source == identity)
+                .then(|| seam_reference_key(reference, source))
+                .flatten()
+        })
+        .collect()
+}
+
+fn seam_import_references_for_bindings(
+    facts: &crate::core::typed_facts::TypedFacts,
+    bindings: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    if bindings.is_empty() {
+        return BTreeSet::new();
+    }
+    let sources = reference_source_identities(facts);
+    facts
+        .facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == "imports")
+        .filter(|reference| {
+            import_binding_name(reference).is_some_and(|name| bindings.contains(&name))
+        })
+        .filter_map(|reference| seam_reference_key(reference, sources.get(&reference.source)?))
+        .collect()
+}
+
+fn seam_bindings_for_node(
+    facts: &crate::core::typed_facts::TypedFacts,
+    identity: &SeamNodeIdentity,
+    target_name: &str,
+) -> BTreeSet<String> {
+    let mut bindings = BTreeSet::from([target_name.to_owned()]);
+    let sources = reference_source_identities(facts);
+    for reference in facts
+        .facts
+        .references
+        .iter()
+        .filter(|reference| SEAM_EDGE_KINDS.contains(&reference.kind.as_str()))
+        .filter(|reference| sources.get(&reference.source) == Some(identity))
+    {
+        bindings.extend(seam_reference_tokens(&reference.expression));
+    }
+    bindings
+}
+
+fn indexed_local_facts(
+    connection: &rusqlite::Connection,
+    path: &str,
+) -> Result<Option<crate::core::typed_facts::TypedFacts>> {
+    let blob = connection
+        .query_row(
+            "SELECT facts_blob FROM local_facts WHERE path=?1",
+            [path],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()?;
+    blob.map(|blob| crate::core::typed_facts::decode_facts(&blob))
+        .transpose()
+}
+
+fn current_local_facts(
+    worktree: &Path,
+    path: &str,
+) -> Result<Option<crate::core::typed_facts::TypedFacts>> {
+    let Ok(path) = super::confined_path(worktree, path) else {
+        return Ok(None);
+    };
+    let Ok(source) = std::fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    let relative_path = path
+        .strip_prefix(worktree)
+        .ok()
+        .and_then(Path::to_str)
+        .map(|path| path.replace('\\', "/"));
+    let Some(relative_path) = relative_path else {
+        return Ok(None);
+    };
+    let Ok(language) = language_for_source_path(&relative_path)
+        .context("TASK_CODE_MAP_INVALID: source language is unavailable")
+    else {
+        return Ok(None);
+    };
+    Ok(crate::engine::ast::extract_typed(&relative_path, language, &source).ok())
+}
+
+fn file_has_seam_node(
+    facts: &crate::core::typed_facts::TypedFacts,
+    identity: &SeamNodeIdentity,
+) -> bool {
+    facts
+        .facts
+        .nodes
+        .iter()
+        .any(|node| SeamNodeIdentity::from(node) == *identity)
+}
+
+fn edge_is_named_by_current_facts(
+    facts: &crate::core::typed_facts::TypedFacts,
+    source: &SeamNodeIdentity,
+    target: &SeamNodeIdentity,
+    kind: &str,
+) -> bool {
+    let identities = reference_source_identities(facts);
+    if facts.facts.edges.iter().any(|edge| {
+        identities.get(&edge.src) == Some(source)
+            && identities.get(&edge.dst) == Some(target)
+            && edge.kind == kind
+    }) {
+        return true;
+    }
+
+    let source_references = facts
+        .facts
+        .references
+        .iter()
+        .filter(|reference| identities.get(&reference.source) == Some(source));
+    let target_name = &target.name;
+    let target_token = |reference: &crate::core::models::Reference| {
+        seam_reference_tokens(&reference.expression).contains(target_name)
+    };
+    match kind {
+        "calls" | "possible_calls" => source_references.into_iter().any(|reference| {
+            matches!(reference.kind.as_str(), "calls" | "possible_calls") && target_token(reference)
+        }),
+        "imports" => source_references
+            .into_iter()
+            .any(|reference| reference.kind == "imports" && target_token(reference)),
+        "implements" | "overrides" => source_references
+            .into_iter()
+            .any(|reference| reference.kind == kind && target_token(reference)),
+        _ => false,
+    }
+}
+
+fn indexed_seam_edges(
+    connection: &rusqlite::Connection,
+    source_hash: i64,
+) -> Result<Vec<IndexedSeamEdge>> {
+    let mut statement = connection.prepare(
+        "SELECT edge.dst_hash, edge.kind, source_path.path, source.kind, source.name, source.qualname, source.is_test, \
+                target_path.path, target.kind, target.name, target.qualname, target.is_test \
+         FROM edges edge \
+         JOIN nodes source ON source.node_hash=edge.src_hash \
+         JOIN path_dictionary source_path ON source_path.path_id=source.path_id \
+         JOIN nodes target ON target.node_hash=edge.dst_hash \
+         JOIN path_dictionary target_path ON target_path.path_id=target.path_id \
+         WHERE edge.src_hash=?1 AND edge.kind IN ('calls','imports','possible_calls','implements','overrides') \
+         ORDER BY edge.kind, target_path.path, target.qualname",
+    )?;
+    let edges = statement
+        .query_map([source_hash], |row| {
+            Ok(IndexedSeamEdge {
+                dst_hash: row.get(0)?,
+                kind: row.get(1)?,
+                src_path: row.get(2)?,
+                src: SeamNodeIdentity {
+                    kind: row.get(3)?,
+                    name: row.get(4)?,
+                    qualname: row.get(5)?,
+                    is_test: row.get(6)?,
+                },
+                dst_path: row.get(7)?,
+                dst: SeamNodeIdentity {
+                    kind: row.get(8)?,
+                    name: row.get(9)?,
+                    qualname: row.get(10)?,
+                    is_test: row.get(11)?,
+                },
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(anyhow::Error::from)?;
+    Ok(edges)
+}
+
+fn indexed_edge_is_current(
+    connection: &rusqlite::Connection,
+    worktree: &Path,
+    edge: &IndexedSeamEdge,
+) -> Result<bool> {
+    let Some(indexed_source) = indexed_local_facts(connection, &edge.src_path)? else {
+        return Ok(false);
+    };
+    let Some(current_source) = current_local_facts(worktree, &edge.src_path)? else {
+        return Ok(false);
+    };
+    let Some(current_target) = current_local_facts(worktree, &edge.dst_path)? else {
+        return Ok(false);
+    };
+    if !file_has_seam_node(&indexed_source, &edge.src)
+        || !file_has_seam_node(&current_source, &edge.src)
+        || !file_has_seam_node(&current_target, &edge.dst)
+    {
+        return Ok(false);
+    }
+
+    if seam_references_for_node(&indexed_source, &edge.src)
+        != seam_references_for_node(&current_source, &edge.src)
+    {
+        return Ok(false);
+    }
+    let mut bindings = seam_bindings_for_node(&indexed_source, &edge.src, &edge.dst.name);
+    bindings.extend(seam_bindings_for_node(
+        &current_source,
+        &edge.src,
+        &edge.dst.name,
+    ));
+    if seam_import_references_for_bindings(&indexed_source, &bindings)
+        != seam_import_references_for_bindings(&current_source, &bindings)
+    {
+        return Ok(false);
+    }
+    Ok(edge_is_named_by_current_facts(
+        &current_source,
+        &edge.src,
+        &edge.dst,
+        &edge.kind,
+    ))
+}
+
 fn validate_seam_reachability(
     connection: &rusqlite::Connection,
     task_id: &str,
@@ -421,48 +741,96 @@ fn validate_seam_reachability(
     if reference.symbol.is_some() && test_nodes.len() != 1 {
         bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' does not identify one unambiguous current test symbol in the claimed worktree. Do: use its exact qualified symbol or line.", reference.path);
     }
+    let local_index_path = worktree.join(".forge/code-map.sqlite");
+    let local_connection = if local_index_path.is_file() {
+        Some(
+            rusqlite::Connection::open_with_flags(
+                &local_index_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .context("TASK_CODE_MAP_INVALID: claimed-worktree code index is unreadable")?,
+        )
+    } else {
+        None
+    };
+    let connection = local_connection.as_ref().unwrap_or(connection);
     let test_hashes = indexed_test_hashes(connection, &reference, &test_nodes)?;
     if test_hashes.is_empty() {
         bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no exact indexed test symbol. Do: refresh the index and submit the current test file or symbol.", reference.path);
     }
 
-    let (scope_predicate, scope_values) = scoped_path_predicate("target_path.path", scope, 2);
-    let sql = format!(
-        "WITH RECURSIVE reachable(node_hash, depth) AS (\
-             SELECT ?1, 0 \
-             UNION \
-             SELECT edge.dst_hash, reachable.depth+1 FROM reachable \
-             JOIN edges edge ON edge.src_hash=reachable.node_hash \
-             WHERE reachable.depth < 2 AND edge.kind IN ('calls','imports','possible_calls','implements','overrides')\
-         ) \
-         SELECT EXISTS(SELECT 1 FROM reachable \
-             JOIN nodes target ON target.node_hash=reachable.node_hash \
-             JOIN path_dictionary target_path ON target_path.path_id=target.path_id \
-             WHERE reachable.depth BETWEEN 1 AND 2 AND target.is_test=0 \
-               AND {scope_predicate})"
-    );
     let mut connected = false;
     for hash in test_hashes {
-        let mut values = vec![rusqlite::types::Value::Integer(hash)];
-        values.extend(
-            scope_values
-                .iter()
-                .cloned()
-                .map(rusqlite::types::Value::Text),
-        );
-        connected |= connection
-            .query_row(&sql, rusqlite::params_from_iter(values.iter()), |row| {
-                row.get::<_, bool>(0)
-            })
-            .context("TASK_CODE_MAP_INVALID: could not verify contract seam reachability")?;
+        for first in indexed_seam_edges(connection, hash)? {
+            if !indexed_edge_is_current(connection, worktree, &first)? {
+                continue;
+            }
+            if !first.dst.is_test && path_is_in_scope(&first.dst_path, scope) {
+                connected = true;
+                break;
+            }
+            for second in indexed_seam_edges(connection, first.dst_hash)? {
+                if second.src != first.dst || second.src_path != first.dst_path {
+                    continue;
+                }
+                if !indexed_edge_is_current(connection, worktree, &second)? {
+                    continue;
+                }
+                if !second.dst.is_test && path_is_in_scope(&second.dst_path, scope) {
+                    connected = true;
+                    break;
+                }
+            }
+            if connected {
+                break;
+            }
+        }
         if connected {
             break;
         }
     }
     if !connected {
-        bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no indexed one- or two-hop path into admitted production scope. Do: choose a connected test seam or admit its production dependency.", reference.path);
+        bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no current indexed one- or two-hop path into admitted production scope. Do: refresh the claimed-worktree code map, then choose a connected test seam or admit its production dependency.", reference.path);
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn public_trait_methods_are_public_signature_boundaries() {
+    for source in [
+        "pub trait Router { fn route(&self) -> usize { 1 } }",
+        "pub trait Router { fn route(&self) -> usize; }",
+        "pub(crate) trait Router { fn route(&self) -> usize; }",
+        "pub(in crate::routing) trait Router { fn route(&self) -> usize { 1 } }",
+    ] {
+        let callables = public_callable_nodes("src/routing.rs", source).unwrap();
+        assert!(
+            callables
+                .iter()
+                .any(|node| node.kind == "method" && node.name == "route"),
+            "public trait method must participate in signature boundary checks: {source}"
+        );
+    }
+    for source in [
+        "trait Router { fn route(&self) -> usize; }",
+        "struct Router; impl Router { fn route(&self) -> usize { 1 } }",
+        "struct Router; impl Router { pub fn route(&self) -> usize { 1 } }",
+        "pub trait Router { fn route(&self) -> usize; } struct Local; impl Router for Local { fn route(&self) -> usize { 1 } }",
+    ] {
+        let callables = public_callable_nodes("src/routing.rs", source).unwrap();
+        assert!(
+            !callables.iter().any(|node| {
+                node.kind == "method"
+                    && node.name == "route"
+                    && !node.qualname.contains("Router.route")
+            }),
+            "only methods owned by a public trait are implicit public boundaries: {source}"
+        );
+        if source.starts_with("trait Router") {
+            assert!(callables.iter().all(|node| node.name != "route"));
+        }
+    }
 }
 
 fn validate_public_signature_scope(

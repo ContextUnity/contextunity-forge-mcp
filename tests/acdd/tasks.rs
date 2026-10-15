@@ -1,5 +1,461 @@
 use super::support::*;
 
+fn prepare_indexed_boundary_workspace(
+    api: &str,
+    caller: &str,
+    seam: &str,
+    expected_target: &str,
+    test_helper_source: Option<&str>,
+    expected_intermediate: Option<&str>,
+) -> ScopedWorkspace {
+    let root = ScopedWorkspace::new("forge_current_boundary");
+    root.write(
+        "Cargo.toml",
+        "[package]\nname = \"boundary_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    root.write(
+        "src/lib.rs",
+        if expected_intermediate.is_some() {
+            "pub mod api;\npub mod caller;\npub mod other;\npub mod test_helpers;\n#[cfg(test)]\nmod seam;\n"
+        } else {
+            "pub mod api;\npub mod caller;\npub mod other;\n#[cfg(test)]\nmod seam;\n"
+        },
+    );
+    root.write("src/api.rs", api);
+    root.write("src/caller.rs", caller);
+    root.write("src/other.rs", "pub fn route() -> usize { 2 }\n");
+    root.write("src/seam.rs", seam);
+    if let Some(test_helper_source) = test_helper_source {
+        root.write("src/test_helpers.rs", test_helper_source);
+    }
+    root.write(
+        "AGENTS.md",
+        "# Instructions\nLoad the contextunity-forge skill.\n",
+    );
+    root.write(
+        ".agents/skills/contextunity-forge/SKILL.md",
+        "# ContextUnity Forge\n",
+    );
+    root.write(
+        "forge-mcp.yaml",
+        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    root.write("docs/milestones/010-boundary.md", "---\nid: m-current-boundary\ntitle: Current boundary evidence\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: routing\ntarget: Preserve current seam and public signature boundaries\nproof_policy: seam-test-first\nscope: [src/api.rs, src/seam.rs]\nscope_roots: [src/, tests/]\n```\n");
+    commit_fixture_baseline(&root);
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    let connection = rusqlite::Connection::open(root.0.join(".forge/code-map.sqlite")).unwrap();
+    let has_expected_witness = if let Some(intermediate) = expected_intermediate {
+        let exact_witness: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM edges test_edge JOIN nodes test ON test.node_hash=test_edge.src_hash JOIN path_dictionary test_path ON test_path.path_id=test.path_id JOIN nodes helper ON helper.node_hash=test_edge.dst_hash JOIN path_dictionary helper_path ON helper_path.path_id=helper.path_id JOIN edges helper_edge ON helper_edge.src_hash=helper.node_hash JOIN nodes target ON target.node_hash=helper_edge.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id WHERE test_edge.kind='calls' AND helper_edge.kind='calls' AND test.name='test_connected' AND test.kind='function' AND test_path.path='src/seam.rs' AND test.is_test=1 AND helper.name=?2 AND helper.kind='function' AND helper_path.path='src/test_helpers.rs' AND helper.is_test=1 AND target.name=?1 AND target.kind='function' AND target_path.path='src/api.rs' AND target.is_test=0",
+                [expected_target, intermediate],
+                |row| row.get(0),
+            )
+            .unwrap();
+        exact_witness > 0
+    } else {
+        let seam_depth: Option<i64> = connection
+            .query_row(
+                "WITH RECURSIVE reachable(node_hash,depth) AS (SELECT node_hash,0 FROM nodes WHERE name='test_connected' AND is_test=1 UNION SELECT edge.dst_hash,reachable.depth+1 FROM reachable JOIN edges edge ON edge.src_hash=reachable.node_hash WHERE reachable.depth<3 AND edge.kind IN ('calls','possible_calls')) SELECT MIN(reachable.depth) FROM reachable JOIN nodes target ON target.node_hash=reachable.node_hash JOIN path_dictionary path ON path.path_id=target.path_id WHERE path.path='src/api.rs' AND target.is_test=0 AND target.kind='function' AND target.name=?1",
+                [expected_target],
+                |row| row.get(0),
+            )
+            .unwrap();
+        seam_depth.is_some_and(|depth| (1..=3).contains(&depth))
+    };
+    assert!(
+        has_expected_witness,
+        "fixture must persist the exact expected test-to-production call path"
+    );
+    drop(connection);
+    tasks::manage(
+        &root.0,
+        serde_json::from_value(
+            json!({"action":"sync","milestone_ref":"docs/milestones/010-boundary.md"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    root
+}
+
+fn indexed_boundary_workspace(
+    api: &str,
+    caller: &str,
+    seam: &str,
+    expected_target: &str,
+) -> ScopedWorkspace {
+    let root = prepare_indexed_boundary_workspace(api, caller, seam, expected_target, None, None);
+    tasks::claim(&root.0, serde_json::from_value(json!({"task_id":"forge-mcp/m-current-boundary:routing","stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap()).unwrap();
+    root
+}
+
+fn indexed_test_path_helper_workspace(api: &str, test_helper_source: &str) -> ScopedWorkspace {
+    let root = prepare_indexed_boundary_workspace(
+        api,
+        "",
+        "use crate::test_helpers::helper;\n#[test]\nfn test_connected() { let actual = helper(); assert_eq!(actual, 1); }\n",
+        "route",
+        Some(test_helper_source),
+        Some("helper"),
+    );
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(json!({"task_id":"forge-mcp/m-current-boundary:routing","stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap(),
+    )
+    .unwrap();
+    root
+}
+
+fn submit_indexed_boundary(
+    root: &ScopedWorkspace,
+    stage: &str,
+    seam: &str,
+) -> anyhow::Result<Value> {
+    let task_id = "forge-mcp/m-current-boundary:routing";
+    let task = tasks::store_for_task(&root.0, task_id)?.inspect(task_id)?;
+    let mut proof = evidence(&task);
+    proof.proof = if stage == "contract" {
+        json!({"contract_proof":{"seam_test_ref":seam,"red_exit_code":101}})
+    } else {
+        json!({"command_proof":{"command":"cargo test --test connected","exit_code":0,"tests_passed":1,"tests_failed":0}})
+    };
+    tasks::submit(
+        &root.0,
+        tasks::Submit {
+            task_id: task_id.into(),
+            stage: stage.into(),
+            action: tasks::Action::Pass,
+            evidence: serde_json::to_value(proof)?,
+            findings: None,
+        },
+    )
+}
+
+#[test]
+fn signature_boundary_protects_implicitly_public_trait_methods() {
+    let anchor = "pub fn anchor() -> usize { 1 }\n";
+    let connected =
+        "use crate::api::anchor;\n#[test]\nfn test_connected() { let actual = anchor(); assert_eq!(actual, 1); }\n";
+    let caller = "use crate::api::Router;\npub fn invoke_route(router: &dyn Router) -> usize { Router::route(router) }\n";
+    let mut failures = Vec::new();
+    for (case, baseline, changed, reject) in [
+        ("default_trait_method", "pub trait Router { fn route(&self) -> usize { 1 } }", "pub trait Router { fn route(&self) -> u64 { 1 } }", true),
+        ("declared_trait_method", "pub trait Router { fn route(&self) -> usize; }", "pub trait Router { fn route(&self) -> u64; }", true),
+        ("trait_body_only", "pub trait Router { fn route(&self) -> usize { 1 } }", "pub trait Router { fn route(&self) -> usize { 2 } }", false),
+        ("private_inherent_method", "pub trait Router { fn route(&self) -> usize { 1 } }\npub struct Local; impl Local { fn private_route(&self) -> usize { 1 } }", "pub trait Router { fn route(&self) -> usize { 1 } }\npub struct Local; impl Local { fn private_route(&self, value: usize) -> usize { value } }", false),
+        ("trait_impl_body_only", "pub trait Router { fn route(&self) -> usize; }\npub struct Local; impl Router for Local { fn route(&self) -> usize { 1 } }", "pub trait Router { fn route(&self) -> usize; }\npub struct Local; impl Router for Local { fn route(&self) -> usize { 2 } }", false),
+        ("crate_visible_trait", "pub(crate) trait Router { fn route(&self) -> usize { 1 } }", "pub(crate) trait Router { fn route(&self) -> u64 { 1 } }", true),
+        ("qualified_visible_trait", "pub(in crate) trait Router { fn route(&self) -> usize { 1 } }", "pub(in crate) trait Router { fn route(&self) -> u64 { 1 } }", true),
+    ] {
+        for stage in ["contract", "build"] {
+            let root = indexed_boundary_workspace(
+                &format!("{anchor}{baseline}\n"),
+                caller,
+                connected,
+                "anchor",
+            );
+            let connection = rusqlite::Connection::open(root.0.join(".forge/code-map.sqlite")).unwrap();
+            let exact_calls: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM edges edge JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary tp ON tp.path_id=target.path_id JOIN nodes caller ON caller.node_hash=edge.src_hash JOIN path_dictionary cp ON cp.path_id=caller.path_id WHERE edge.kind='calls' AND target.name='route' AND target.kind='method' AND tp.path='src/api.rs' AND caller.name='invoke_route' AND cp.path='src/caller.rs' AND caller.is_test=0",
+                [], |row| row.get(0)).unwrap();
+            assert!(exact_calls > 0, "{case}/{stage}: fixture must persist the exact external UFCS call");
+            drop(connection);
+            if stage == "build" {
+                submit_indexed_boundary(&root, "contract", "src/seam.rs::test_connected").unwrap();
+                tasks::claim(&root.0, serde_json::from_value(json!({"task_id":"forge-mcp/m-current-boundary:routing","stage":"build","worker_id":"builder","worktree":root.0})).unwrap()).unwrap();
+            }
+            root.write("src/api.rs", &format!("{anchor}{changed}\n"));
+            writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+            let result = submit_indexed_boundary(&root, stage, "src/seam.rs::test_connected");
+            match (reject, result) {
+                (true, Err(error)) => {
+                    assert!(error.to_string().contains("TASK_SCOPE_INCOMPLETE"), "{case}/{stage}: {error}");
+                    assert!(error.to_string().contains("src/caller.rs"), "{case}/{stage}: {error}");
+                    assert_eq!(tasks::store_for_task(&root.0, "forge-mcp/m-current-boundary:routing").unwrap().inspect("forge-mcp/m-current-boundary:routing").unwrap().stage, stage);
+                }
+                (true, Ok(_)) => failures.push(format!("{case}/{stage}: changed implicitly public signature accepted despite exact external UFCS caller")),
+                (false, Err(error)) => failures.push(format!("{case}/{stage}: unchanged public signature rejected: {error}")),
+                (false, Ok(_)) => {}
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn contract_seam_requires_current_indexed_paths_at_every_hop() {
+    let api = "pub fn route() -> usize { 1 }\n";
+    let caller = "use crate::api::route;\npub fn helper() -> usize { route() }\npub fn outer() -> usize { helper() }\n";
+    let direct =
+        "use crate::api::route;\n#[test]\nfn test_connected() { let actual = route(); assert_eq!(actual, 1); }\n";
+    let indirect =
+        "use crate::caller::helper;\n#[test]\nfn test_connected() { let actual = helper(); assert_eq!(actual, 1); }\n";
+    let mut failures = Vec::new();
+    for (case, seam, refresh, reject) in [
+        ("fresh_direct", "src/seam.rs::test_connected", false, false),
+        (
+            "fresh_two_hops",
+            "src/seam.rs::test_connected",
+            false,
+            false,
+        ),
+        ("three_hops", "src/seam.rs::test_connected", false, true),
+        (
+            "removed_direct_call",
+            "src/seam.rs::test_connected",
+            false,
+            true,
+        ),
+        ("removed_direct_call_file", "src/seam.rs", false, true),
+        (
+            "disconnected_helper",
+            "src/seam.rs::test_connected",
+            false,
+            true,
+        ),
+        ("deleted_helper", "src/seam.rs::test_connected", false, true),
+        ("deleted_target", "src/seam.rs::test_connected", false, true),
+        ("unindexed_new_test", "src/seam.rs", false, true),
+        (
+            "refreshed_disconnected",
+            "src/seam.rs::test_connected",
+            true,
+            true,
+        ),
+        (
+            "refreshed_connected",
+            "src/seam.rs::test_connected",
+            true,
+            false,
+        ),
+        (
+            "unrelated_file_change",
+            "src/seam.rs::test_connected",
+            false,
+            false,
+        ),
+        (
+            "retargeted_import",
+            "src/seam.rs::test_connected",
+            false,
+            true,
+        ),
+        (
+            "retargeted_local_alias",
+            "src/seam.rs::test_connected",
+            false,
+            true,
+        ),
+        (
+            "target_becomes_test",
+            "src/seam.rs::test_connected",
+            false,
+            true,
+        ),
+        (
+            "line_shift_only",
+            "src/seam.rs::test_connected",
+            false,
+            false,
+        ),
+    ] {
+        let local_alias = "use crate::api::route;\nuse crate::other::route as other_route;\n#[test]\nfn test_connected() { let handler = other_route; let handler = route; let actual = handler(); assert_eq!(actual, 1); }\n";
+        let initial = if matches!(
+            case,
+            "fresh_two_hops" | "disconnected_helper" | "deleted_helper"
+        ) {
+            indirect.to_owned()
+        } else if case == "retargeted_local_alias" {
+            local_alias.to_owned()
+        } else if case == "three_hops" {
+            direct
+                .replace("api::route", "caller::outer")
+                .replace("route()", "outer()")
+        } else {
+            direct.to_owned()
+        };
+        let root = indexed_boundary_workspace(api, caller, &initial, "route");
+        match case {
+            "removed_direct_call" | "removed_direct_call_file" | "refreshed_disconnected" => root
+                .write(
+                    "src/seam.rs",
+                    "#[test]\nfn test_connected() { assert_eq!(1, 2); }\n",
+                ),
+            "disconnected_helper" => root.write(
+                "src/caller.rs",
+                "pub fn helper() -> usize { 2 }\npub fn outer() -> usize { helper() }\n",
+            ),
+            "deleted_helper" => root.write("src/caller.rs", "pub fn outer() -> usize { 2 }\n"),
+            "deleted_target" => root.write("src/api.rs", "pub fn replacement() -> usize { 1 }\n"),
+            "unindexed_new_test" => root.write(
+                "src/seam.rs",
+                &format!(
+                    "#[test]\nfn test_connected() {{ assert_eq!(1, 2); }}\n{}",
+                    direct.replace("test_connected", "test_new")
+                ),
+            ),
+            "refreshed_connected" => root.write(
+                "src/seam.rs",
+                &direct
+                    .replace("assert_eq!", "assert_ne!")
+                    .replace(", 1)", ", 2)"),
+            ),
+            "unrelated_file_change" => {
+                root.write("src/unrelated.rs", "pub fn unrelated() -> usize { 2 }\n")
+            }
+            "retargeted_import" => {
+                root.write(
+                    "src/seam.rs",
+                    &direct.replace("use crate::api::route;", "use crate::other::route;"),
+                );
+                root.write("src/other.rs", "pub fn route() -> usize { 2 }\n");
+            }
+            "retargeted_local_alias" => root.write(
+                "src/seam.rs",
+                &local_alias.replace("let handler = route", "let handler = other_route"),
+            ),
+            "target_becomes_test" => {
+                root.write("src/api.rs", "#[test]\npub fn route() -> usize { 1 }\n")
+            }
+            "line_shift_only" => root.write("src/seam.rs", &format!("// shifted line\n{direct}")),
+            _ => {}
+        }
+        if refresh {
+            writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+        }
+        let result = submit_indexed_boundary(&root, "contract", seam);
+        match (reject, result) {
+            (true, Err(error)) => {
+                if !error.to_string().contains("TASK_SEAM_DISCONNECTED") {
+                    failures.push(format!(
+                        "{case}: stale seam reached a later boundary: {error}"
+                    ));
+                }
+                assert_eq!(
+                    tasks::store_for_task(&root.0, "forge-mcp/m-current-boundary:routing")
+                        .unwrap()
+                        .inspect("forge-mcp/m-current-boundary:routing")
+                        .unwrap()
+                        .stage,
+                    "contract"
+                );
+            }
+            (true, Ok(_)) => failures.push(format!(
+                "{case}: accepted a seam without a current indexed one- or two-hop production path"
+            )),
+            (false, Err(error)) => failures.push(format!(
+                "{case}: valid current indexed seam rejected: {error}"
+            )),
+            (false, Ok(_)) => {}
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn contract_seam_accepts_test_path_helpers_and_rejects_stale_hops() {
+    let api = "pub fn route() -> usize { 1 }\n";
+    let test_helper_source = "use crate::api::route;\npub fn helper() -> usize { route() }\n";
+    let mut failures = Vec::new();
+
+    let fresh = indexed_test_path_helper_workspace(api, test_helper_source);
+    match submit_indexed_boundary(&fresh, "contract", "src/seam.rs::test_connected") {
+        Ok(_) => {}
+        Err(error) => failures.push(format!("fresh test-marked helper path rejected: {error}")),
+    }
+
+    let stale = indexed_test_path_helper_workspace(api, test_helper_source);
+    stale.write(
+        "src/test_helpers.rs",
+        &test_helper_source.replace(
+            "pub fn helper() -> usize { route() }",
+            "fn helper() -> usize { 1 }",
+        ),
+    );
+    match submit_indexed_boundary(&stale, "contract", "src/seam.rs::test_connected") {
+        Err(error) if error.to_string().contains("TASK_SEAM_DISCONNECTED") => {}
+        Err(error) => failures.push(format!(
+            "stale helper failed at the wrong boundary: {error}"
+        )),
+        Ok(_) => {
+            failures.push("stale test-marked helper path was accepted without reindexing".into())
+        }
+    }
+    let stale_stage = tasks::store_for_task(&stale.0, "forge-mcp/m-current-boundary:routing")
+        .unwrap()
+        .inspect("forge-mcp/m-current-boundary:routing")
+        .unwrap()
+        .stage;
+    if stale_stage != "contract" {
+        failures.push(format!(
+            "stale helper rejection advanced task stage to {stale_stage}"
+        ));
+    }
+
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn contract_seam_validates_claimed_worktree_against_shared_primary_index() {
+    let mut failures = Vec::new();
+    for (case, disconnect_helper) in [("stale_test", false), ("stale_helper", true)] {
+        let api = "pub fn route() -> usize { 1 }\n";
+        let caller = "use crate::api::route;\npub fn helper() -> usize { route() }\n";
+        let seam = if disconnect_helper {
+            "use crate::caller::helper;\n#[test]\nfn test_connected() { let actual = helper(); assert_eq!(actual, 1); }\n"
+        } else {
+            "use crate::api::route;\n#[test]\nfn test_connected() { let actual = route(); assert_eq!(actual, 1); }\n"
+        };
+        let root = prepare_indexed_boundary_workspace(api, caller, seam, "route", None, None);
+        let worktree = root.0.join("claimed-worktree");
+        let added = std::process::Command::new("git")
+            .args(["worktree", "add", "--quiet", "-b", "claimed-boundary"])
+            .arg(&worktree)
+            .current_dir(&root.0)
+            .output()
+            .unwrap();
+        assert!(
+            added.status.success(),
+            "{}",
+            String::from_utf8_lossy(&added.stderr)
+        );
+        tasks::claim(&root.0, serde_json::from_value(json!({"task_id":"forge-mcp/m-current-boundary:routing","stage":"contract","worker_id":"contract-author","worktree":worktree})).unwrap()).unwrap();
+        if disconnect_helper {
+            std::fs::write(
+                worktree.join("src/caller.rs"),
+                "pub fn helper() -> usize { 2 }\n",
+            )
+            .unwrap();
+        } else {
+            std::fs::write(
+                worktree.join("src/seam.rs"),
+                "#[test]\nfn test_connected() { assert_eq!(1, 2); }\n",
+            )
+            .unwrap();
+        }
+        writer::build(&worktree, &worktree.join(".forge/code-map.sqlite"), None).unwrap();
+        let result = submit_indexed_boundary(&root, "contract", "src/seam.rs::test_connected");
+        let Err(error) = result else {
+            failures.push(format!("{case}: shared primary index attested a disconnected claimed worktree despite fresh local index"));
+            continue;
+        };
+        assert!(
+            error.to_string().contains("TASK_SEAM_DISCONNECTED"),
+            "{case}: {error}"
+        );
+        assert_eq!(
+            tasks::store_for_task(&root.0, "forge-mcp/m-current-boundary:routing")
+                .unwrap()
+                .inspect("forge-mcp/m-current-boundary:routing")
+                .unwrap()
+                .stage,
+            "contract"
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 fn commit_fixture_baseline(root: &ScopedWorkspace) {
     let added = std::process::Command::new("git")
         .args(["add", "--all"])
@@ -6460,8 +6916,9 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
             ));
         } else {
             assert!(
-                String::from_utf8_lossy(&sync.stderr)
-                    .contains("TASK_SCOPE_INVALID: docs/milestones/010-profile.md. symlink escape. Do:"),
+                String::from_utf8_lossy(&sync.stderr).contains(
+                    "TASK_SCOPE_INVALID: docs/milestones/010-profile.md. symlink escape. Do:"
+                ),
                 "automatic default {name} symlink should fail as an escape: {}",
                 String::from_utf8_lossy(&sync.stderr)
             );

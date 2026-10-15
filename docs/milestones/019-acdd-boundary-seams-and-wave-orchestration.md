@@ -236,7 +236,72 @@ subtasks:
 - subtask_ref: external-callers-and-static-seam-signature-gates
   title: Add 1-hop external_callers and 2-hop covering_tests to context.rs and enforce TASK_SEAM_DISCONNECTED and TASK_SCOPE_INCOMPLETE in src/engine/tasks/gates.rs
   status: completed
-  evidence: Added non-test external caller context and covering-test graph; contract/build gates enforce seam reachability and stable-baseline signature boundaries. Focused regression seam passed; final cargo test --test acdd passed (87/87); strict Clippy passed (exit 0).
+  evidence: |-
+    Prior A1/A2 evidence retained: A1 treats public Rust trait methods without explicit pub as exported signature boundaries; inline source-unit proof covers default and declaration-only methods, restricted visibility, and body/private controls. A2 revalidates each indexed seam hop against current claimed-worktree typed source facts and applicable import references, requires exact current node identity, and accepts harmless line shifts without whole-file digest or general value-flow freshness claims. Historical RED: /tmp/m019-a1-red.log, /tmp/m019-a2-red.log, /tmp/m019-inline-red.log. Historical GREEN: /tmp/m019-focused-a1-integration.log, /tmp/m019-focused-a2-integration.log, /tmp/m019-focused-a2-shared-primary.log, /tmp/m019-focused-a1-lib.log.
+
+    M019-AR1 introduced-regression repair: removed only the per-edge edge.dst.is_test rejection from indexed_edge_is_current; current identity/reference/import checks remain at every hop, and non-test terminal guards remain in validate_seam_reachability. The regression asserts an exact persisted SQLite calls witness: src/seam.rs::test_connected (test) -> src/test_helpers.rs::helper (is_test=1) -> src/api.rs::route (is_test=0). Fresh submission passes; rewriting helper to return a constant without reindexing yields TASK_SEAM_DISCONNECTED and retains contract stage. Existing matrix retains terminal-test rejection and three-hop rejection. Pre-fix valid RED: /tmp/m019-ar1-red-validated.log (1 test, fresh exact witness rejected with TASK_SEAM_DISCONNECTED); fixture-only failures before the lower-level module fixture were not counted as RED. GREEN regression: /tmp/m019-ar1-green-focused.log (1/1).
+
+    Focused matrix: /tmp/m019-focused-contract-seams.log (3/3, direct/two-hop/stale/three-hop/shared-index cases), /tmp/m019-focused-a1-traits.log (1/1). Registered build command `cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd` exited 0; strict Clippy clean and complete ACDD 98/98 in /tmp/m019-build-clippy-acdd-ar1.log. Separate `cargo test --lib` passed 44/44 in /tmp/m019-build-lib-ar1.log. `cargo fmt --all --check` and `git diff --check` passed.
+
+    Fresh local worktree map: /tmp/m019-code-map-ar1.log; generation/output root 800beec821e5b069f944121f37b479b9921f12f1e839bc81bf372ca5752612bc; 289 files, 5,423 nodes, 18,075 edges, 0 parse errors. Impact /tmp/m019-impact-ar1.log confirms indexed_edge_is_current -> validate_seam_reachability -> TasksStore.submit_with_pre_persist. Residual static-test query /tmp/m019-residual-tests-ar1.log reports 0 direct test relationships and 1 unresolved reference; the focused and full ACDD tests exercise the real submission path. Workspace analyze /tmp/m019-analyze-ar1.log reports 0 parse errors and 34,108 unresolved references across the full graph.
+
+    Unsupported experiments remain non-evidence: prior receiver-type fixture had no fresh indexed edge; earlier alias/order scratch attempt was not executed. Neither is represented as a closed finding or a general flow guarantee.
+status: completed
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-15T01:25:57.092028445+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 98
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed complete four-path repair diff at 549ed219 and bounded closure delta to frozen b1915bd282bc757b16a8217899155e0575cdc672, baseline 4962c83e3478e135c08c7f2be28b7fbb3cb1e02a. All 17 admitted-scope blobs match the accepted candidate; only gates.rs, acdd/tasks.rs and the two admitted task/profile references are modified. Protected milestone id/invariants/owners/dependencies/profile are unchanged. No nonignored untracked files or changes outside accepted scope. Independent cargo fmt --check and git diff --check exit 0, /tmp/m019-closure-review-fmt-diff.log.
+        claims:
+          applicable: true
+          evidence: 'M019-A1 public Rust trait default/declaration methods inherit visible-trait boundary classification, retaining private/body-only controls and baseline external callers across reindex. M019-A2 validates each supported indexed 1/2-hop witness against current claimed-worktree source identity, outgoing typed references and applicable imports; missing/stale nodes/references reject, terminal remains non-test, 3-hop rejects, harmless line shifts pass, shared primary cannot attest a different claimed tree. M019-AR1 closed: only early per-edge dst.is_test rejection was removed; terminal guards remain. New real task-submit regression asserts exact SQLite calls test_connected -> test-marked src/test_helpers.rs helper -> non-test src/api.rs route, accepts fresh, rejects disconnected helper without reindex and retains contract stage. Genuine RED /tmp/m019-ar1-red-validated.log ran 1 failed after exact witness precondition; GREEN /tmp/m019-ar1-green-focused.log ran 1 passed. Independent strict Clippy followed by complete cargo test --test acdd exited 0, 98 passed/0 failed (/tmp/m019-closure-review-clippy-acdd.log); independent cargo test --lib exited 0, 44 passed/0 failed (/tmp/m019-closure-review-lib.log). No general typed value-flow freshness claim; unsupported receiver/alias experiments are excluded.'
+        concurrency:
+          applicable: true
+          evidence: Validation remains within existing claim/profile/revision and candidate fencing before persistence inside the immediate task transaction. No task DB writes or transaction/rollback/receipt changes were added by the currentness algorithm or AR1 repair. Read-only map connections and confined current source reads preserve existing lock order and task namespaces. Complete ACDD independently passes competing claims, stale submissions, atomic delivery and rollback checks with 98/0.
+        project_isolation:
+          applicable: true
+          evidence: Current source is parsed from evidence.worktree through confined_path. Seam validation prefers that worktree's local map and otherwise checks current claimed-tree facts against shared read-only map; real shared-primary regression covers stale test/helper in alternate claimed worktree. No workspace/profile resolution, namespace, symlink, traversal or linked-root policy changes. Current worktree map generation 800beec821e5b069f944121f37b479b9921f12f1e839bc81bf372ca5752612bc has 289 files, 5423 nodes, 18075 edges and 0 parse errors; impact reaches validate_seam_reachability and submit_with_pre_persist. Static direct-test relationship gaps are recorded; real task-submit runs provide production-path proof.
+        administration:
+          applicable: true
+          evidence: No schema, DB/core dependency edge, migration, profile pin, receipt writer, Git delivery or privileged-operation changes. Cohesive validation algorithm stays in existing engine/tasks canonical owner under ADR0018, preserving core leaf. Earlier historical receipts are unchanged. Ledger159 retains A1/A2 dispositions and ledger160 adds AR1 origin, exact RED/GREEN, current map and excluded experiments. Same independent reviewer m019-repair-review differs from builder m019-repair-builder and continues review+delivery in this session after consolidated support approval. No manual task commit or receipt edit.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
+    - 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
+    - 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
+    - 'INV-TIERED-SUBAGENT-PROFILE: Default ACDD profile defines three tiered subagent roles—contract_author (sol-6.1:high for contract seam design), builder (gpt6-luna:xhigh for build code implementation connected via gate-targeted task_blackboard notes), and independent_reviewer (sol-6.1:xhigh governing review and deliver gates in a single reviewer subagent session)—while forbidding preflight subagents.'
+    - 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
+    - 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
+    - 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
+    - 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
+    - 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
+    - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
+    - 'INV-TIERED-SUBAGENT-PROFILE: Default ACDD profile defines three tiered subagent roles—contract_author (sol-6.1:high for contract seam design), builder (gpt6-luna:xhigh for build code implementation connected via gate-targeted task_blackboard notes), and independent_reviewer (sol-6.1:xhigh governing review and deliver gates in a single reviewer subagent session)—while forbidding preflight subagents.'
+    - 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
+    - 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
+    - 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
+    architectural_notes:
+    - 'decisions: {"closure_note":"Use currentness claims narrowly: current indexed identities, current outgoing typed references and applicable imports, plus non-test terminal status. Do not claim whole-file or general typed value-flow freshness.","receiver_fixture":"The receiver-type retarget experiment failed its exact fresh-index edge precondition and was removed; record as not proof, not as a dismissed finding.","review_guidance":"Independent review should focus on every-hop source/witness association, exact import/applicable binding ownership, shared-primary claimed-worktree behavior, implicit-public trait method classification, and fail-closed stale diagnostics. Static graph coverage residual is recorded above."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

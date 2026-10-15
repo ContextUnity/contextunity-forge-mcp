@@ -301,12 +301,20 @@ is retained in `task_gates.evidence` without reading an evidence file. Supplied 
 
 When a code map is available, passing contract and build submissions also
 enforce indexed task boundaries. Contract proof returns
-`TASK_SEAM_DISCONNECTED` if its test reference does not reach a production
-symbol inside admitted scope within two `calls`/`imports` edges. A changed
-indexed public function or method signature with a caller outside admitted
-scope returns `TASK_SCOPE_INCOMPLETE`, allowing the task to admit that caller or
-preserve the signature. These checks use the claimed worktree and the
-workspace's read-only code-map database.
+`TASK_SEAM_DISCONNECTED` unless its exact indexed test symbol has a current
+one- or two-hop path to a non-test production symbol inside admitted scope.
+Supported witness edges are `calls`, `imports`, `possible_calls`, `implements`,
+and `overrides`. Forge checks each hop's source and target identities, current
+typed outgoing references, and applicable import bindings against source parsed
+from the claimed worktree. It uses that worktree's code map when present;
+otherwise it uses the workspace's read-only code map. Missing or stale indexed
+evidence does not prove a seam, so refresh the claimed-worktree code map after
+changing a test, helper, import, or binding used by the witness. A changed indexed public
+function or method signature with a caller outside admitted scope returns
+`TASK_SCOPE_INCOMPLETE`, allowing the task to admit that caller or preserve the
+signature. Rust trait methods are implicitly callable at the visibility of
+their containing visible trait, including methods with default bodies and
+declarations without bodies.
 
 At passing task delivery (`deliver`), Forge validates the current task
 specification and accepted build and review proof, then writes
