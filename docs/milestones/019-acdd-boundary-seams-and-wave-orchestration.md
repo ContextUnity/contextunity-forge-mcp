@@ -2,7 +2,7 @@
 id: m-acdd-boundary-seams-and-wave-orchestration
 title: ACDD receipt canonicalization, tiered role profile (contract/build/review+deliver), blackboard handoff, seam guards, and wave dispatch
 doc_type: contract
-status: completed
+status: active
 repository: forge-mcp
 project: forge-mcp
 depends_on:
@@ -37,20 +37,27 @@ invariants:
 - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
 related_plans: []
 started_at: 2026-10-14T15:41:30+00:00
-handoff:
-  completed_at: 2026-10-14T20:37:39.562533016+00:00
-  duration: 4h 56m
-  commit: 1a226240873ba3310c32a69fb0d4fee668aad86f
-  verification:
-    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
-    status: passed
-    tests_passed: 692
-    tests_failed: 0
 ---
 
 # ACDD receipt canonicalization, tiered role profile (contract/build/review+deliver), blackboard handoff, seam guards, and wave dispatch
 
 ## Outcome and purpose
+
+### Reopened after boundary audit (2026-10-15)
+
+The user reopened this milestone after auditing landed revision `90fab6b`.
+The previous handoff (`e10c06d`, 692 passing tests) missed two reproducible
+violations of task 2's existing invariants:
+
+- M019-A1, pre-existing-missed: public Rust trait methods were omitted from
+  signature boundary checks because their signatures have no explicit `pub`.
+- M019-A2, pre-existing-missed: stale indexed test edges could admit a contract
+  after the current test stopped reaching production code.
+
+Both findings remain unresolved until production-seam regressions, repair,
+independent review, and a new milestone handoff pass. Task 2 is reopened;
+the other two task receipts remain historical delivery evidence. The installed
+CLI/MCP runtime must also be checked against the repaired source before closure.
 
 Based on production rollout telemetry (`rollout-2026-10-14T08-02-19`) and direct code inspection of `src/core/tasks/mod.rs`, `src/core/tasks/profile.rs`, `src/core/tasks/gates.rs`, `src/engine/tasks/gates.rs`, `src/engine/tasks/blackboard.rs`, `src/engine/tasks/context.rs`, and `src/engine/tasks/workspaces.rs`, this milestone resolves receipt synchronization loops, profile command/linter bottlenecks, and subagent orchestration overhead using Forge's existing canonical mechanisms:
 
@@ -217,7 +224,6 @@ invariants:
 - 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
 - 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
 - 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
-status: completed
 subtasks:
 - subtask_ref: tiered-profile-and-canonical-commands
   title: Configure tiered roles in acdd.default.yaml, .forge/acdd/profile.yaml, and workspaces.rs (contract_author with sol-6.1:high, builder with gpt6-luna:xhigh, independent_reviewer with sol-6.1:xhigh for review and deliver), configure check+test commands, and synthesize workflow_guidance.scoped_commands in context.rs
@@ -231,62 +237,6 @@ subtasks:
   title: Add 1-hop external_callers and 2-hop covering_tests to context.rs and enforce TASK_SEAM_DISCONNECTED and TASK_SCOPE_INCOMPLETE in src/engine/tasks/gates.rs
   status: completed
   evidence: Added non-test external caller context and covering-test graph; contract/build gates enforce seam reachability and stable-baseline signature boundaries. Focused regression seam passed; final cargo test --test acdd passed (87/87); strict Clippy passed (exit 0).
-receipt:
-  commit: 9deb19646c665f2732ac72c787ad2ed6997ceb1d
-  contract_revision: 1
-  passed_at: 2026-10-14T18:55:07.125070867+00:00
-  evidence:
-    command_proof:
-      command: cargo test --test acdd
-      exit_code: 0
-      tests_passed: 93
-      tests_failed: 0
-      log: 'Focused R7 rename/reindex regression: cargo test --test acdd signature_boundary_keeps_contract_acceptance_callers_after_symbol_rename_and_reindex (1 passed, 92 filtered). Focused JavaScript export regression: cargo test --test acdd signature_boundary_covers_exported_javascript_callables (1 passed, 92 filtered). Full ACDD: cargo test --test acdd (93 passed). Strict Clippy: cargo clippy --all-targets --all-features -- -D warnings (exit 0, no diagnostics).'
-  review:
-    review_proof:
-      decision: pass
-      contours:
-        paths:
-          applicable: true
-          evidence: Reviewed the current candidate diff and scope. All modified paths are admitted for Task2; git diff --check 05bdbe7 86b6fa0 is clean.
-        claims:
-          applicable: true
-          evidence: 'Static review of R7–R9 fixes found literal directory-prefix matching (including SQL wildcard regression), public callable coverage for Python/JS/TS, and contract-time caller snapshot preservation across symbol rename/reindex. Full unfiltered `cargo test --test acdd`: 93 passed, 0 failed, 0 ignored.'
-        concurrency:
-          applicable: true
-          evidence: No concurrent mutation or conflicting task scope was found in the reviewed candidate; review used the claim-bound worktree and immutable snapshot 86b6fa0.
-        project_isolation:
-          applicable: true
-          evidence: Reviewed the task changes within the claimed project/worktree; no project-boundary or isolation regression was found in the candidate diff.
-        administration:
-          applicable: true
-          evidence: The candidate follows the admitted task contract and workflow. No administrative or lifecycle invariant defect was found.
-  decision: pass
-  rollup:
-    verified_invariants:
-    - 'INV-CORE-LEAF: src/core imports no module from src/engine, src/db, src/mcp, or src/cli.'
-    - 'INV-CANONICAL-RECEIPT-SHA: API responses preserve full 40-character Git SHAs in receipt.commit and candidate_snapshot.commit; gates normalize 7-to-40 char SHA prefixes so source and accepted receipts never diverge.'
-    - 'INV-BLACKBOARD-INSPECT-TOLERANCE: task_blackboard(action=inspect) tolerates optional scope/task_id/milestone_ref fields when message_id is supplied and falls back to scoped read when message_id is omitted.'
-    - 'INV-TIERED-SUBAGENT-PROFILE: Default ACDD profile defines three tiered subagent roles—contract_author (sol-6.1:high for contract seam design), builder (gpt6-luna:xhigh for build code implementation connected via gate-targeted task_blackboard notes), and independent_reviewer (sol-6.1:xhigh governing review and deliver gates in a single reviewer subagent session)—while forbidding preflight subagents.'
-    - 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
-    - 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
-    - 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
-    - 'INV-WAVE-DISJOINTNESS: Task sync automatically records top-down task_dependencies edges (i < j) for tasks in the same milestone with overlapping scope paths, preventing mutual TASK_SCOPE_CONFLICT deadlocks among ready tasks.'
-    - 'INV-WORKTREE-AFFINITY: A task deferred during extend_scope due to an active claim conflict retains its builder worker and worktree binding and is resumed by that worker once the blocking task completes.'
-    - 'INV-DIAGNOSTIC-ERGONOMICS: Every task lifecycle error uses one single-line format and propagates that text verbatim to MCP: "{CODE}: {task_id}. {facts}. Do: {action}".'
-    - 'INV-TIERED-SUBAGENT-PROFILE: Default ACDD profile defines three tiered subagent roles—contract_author (sol-6.1:high for contract seam design), builder (gpt6-luna:xhigh for build code implementation connected via gate-targeted task_blackboard notes), and independent_reviewer (sol-6.1:xhigh governing review and deliver gates in a single reviewer subagent session)—while forbidding preflight subagents.'
-    - 'INV-PROFILE-CANONICAL-COMMANDS: Build verification strictly uses commands registered in GateProfile.commands (combining fast static checks like clippy/ruff/pyright with test execution so suffix test paths work via existing prefix validation), and context_bundle synthesizes workflow_guidance.scoped_commands from profile.commands + contract_seam_test/covering_tests.'
-    - 'INV-SEAM-REACHABILITY: A contract submission with seam_test_ref must reference an indexed test symbol or file with a 1-to-2 hop graph edge into allowed_scope when .forge/code-map.sqlite is present.'
-    - 'INV-SIGNATURE-BLAST-RADIUS: Modifying the public signature of an indexed symbol inside allowed_scope whose 1-hop external callers lie outside allowed_scope fails closed until extend_scope admits those caller paths.'
-    architectural_notes: []
-    review_summary:
-      decision: pass
-      contours:
-        administration: accepted
-        claims: accepted
-        concurrency: accepted
-        paths: accepted
-        project_isolation: accepted
 ```
 
 #### Acceptance
