@@ -215,18 +215,43 @@ pub(super) fn callee_name<'a>(mut node: Node<'_>, source: &'a str) -> Option<Cow
     Some(Cow::Owned(canonical))
 }
 
-fn value(node: Node<'_>, source: &str) -> ValueExpr {
+pub(super) fn value(node: Node<'_>, source: &str) -> ValueExpr {
     match node.kind() {
+        "try_expression" => {
+            node.named_child(0)
+                .map_or(ValueExpr::Unknown, |inner| ValueExpr::Project {
+                    value: Box::new(value(inner, source)),
+                    member: "?".to_owned(),
+                })
+        }
+        "parenthesized_expression" => node
+            .named_child(0)
+            .map_or(ValueExpr::Unknown, |inner| value(inner, source)),
         "struct_expression" => node
             .child_by_field_name("name")
             .and_then(|name| static_name(name, source))
             .map_or(ValueExpr::Unknown, |callee| ValueExpr::Construct { callee }),
-        "call_expression" => node
-            .child_by_field_name("function")
-            .and_then(|name| callee_name(name, source))
-            .map_or(ValueExpr::Unknown, |callee| ValueExpr::Call {
+        "call_expression" => {
+            let Some(function) = node.child_by_field_name("function") else {
+                return ValueExpr::Unknown;
+            };
+            if function.kind() == "field_expression" {
+                if let (Some(receiver), Some(member)) = (
+                    function.child_by_field_name("value"),
+                    function.child_by_field_name("field"),
+                ) {
+                    if matches!(text(member, source), "unwrap" | "expect") {
+                        return ValueExpr::Project {
+                            value: Box::new(value(receiver, source)),
+                            member: text(member, source).to_owned(),
+                        };
+                    }
+                }
+            }
+            callee_name(function, source).map_or(ValueExpr::Unknown, |callee| ValueExpr::Call {
                 callee: callee.into_owned(),
-            }),
+            })
+        }
         "identifier" | "scoped_identifier" => ValueExpr::Alias {
             name: text(node, source).to_owned(),
         },

@@ -36,6 +36,343 @@ fn delta_components(
     }
     Ok(current)
 }
+
+type RustImplShapes = BTreeMap<String, BTreeMap<String, String>>;
+
+fn rust_impl_shapes(facts: &crate::core::models::Facts) -> Result<RustImplShapes> {
+    let imports: BTreeSet<_> = facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == "imports")
+        .map(|reference| {
+            (
+                reference.expression.as_str(),
+                reference.alias.as_deref(),
+                reference.module.as_deref(),
+            )
+        })
+        .collect();
+    let mut shapes = RustImplShapes::new();
+    let mut implementation_keys = std::collections::HashMap::new();
+    for implementation in facts.nodes.iter().filter(|node| node.kind == "impl") {
+        let identity = serde_json::json!({
+            "receiver_type": implementation.details["receiver_type"],
+            "impl_trait": implementation.details["impl_trait"],
+            "generic_impl": implementation.details["generic_impl"],
+            "uniform_generic_impl": implementation.details["uniform_generic_impl"],
+            "imports": &imports,
+        });
+        let key = serde_json::to_string(&identity)?;
+        implementation_keys.insert(implementation.id.as_str(), key.clone());
+        shapes.entry(key).or_default();
+    }
+    let by_id: std::collections::HashMap<_, _> = facts
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    for edge in facts.edges.iter().filter(|edge| edge.kind == "contains") {
+        let (Some(implementation), Some(method)) = (
+            implementation_keys.get(edge.src.as_str()),
+            by_id.get(edge.dst.as_str()),
+        ) else {
+            continue;
+        };
+        if method.kind != "method" {
+            continue;
+        }
+        let signature = serde_json::json!({
+            "name": method.name,
+            "is_static": method.details["is_static"],
+            "unproven_bounds": method.details["unproven_bounds"],
+            "signature": method.details["signature"],
+            "param_types": method.details["param_types"],
+            "return_type": method.details["return_type"],
+        });
+        shapes
+            .get_mut(implementation)
+            .expect("implementation shape was initialized")
+            .insert(serde_json::to_string(&signature)?, method.name.clone());
+    }
+    Ok(shapes)
+}
+
+fn changed_rust_impl_methods(
+    conn: &Connection,
+    changed_rust_paths: &BTreeSet<String>,
+    facts: &BTreeMap<String, TypedFacts>,
+) -> Result<BTreeSet<String>> {
+    let mut changed_methods = BTreeSet::new();
+    for path in changed_rust_paths {
+        let old_blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT facts_blob FROM local_facts WHERE path=?1",
+                [path],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let old_shapes = old_blob
+            .as_deref()
+            .map(decode_facts)
+            .transpose()?
+            .map(|typed| rust_impl_shapes(&typed.facts))
+            .transpose()?
+            .unwrap_or_default();
+        let new_shapes = facts
+            .get(path)
+            .map(|typed| rust_impl_shapes(&typed.facts))
+            .transpose()?
+            .unwrap_or_default();
+        if old_shapes == new_shapes {
+            continue;
+        }
+        for key in old_shapes
+            .keys()
+            .chain(new_shapes.keys())
+            .collect::<BTreeSet<_>>()
+        {
+            if old_shapes.get(key) == new_shapes.get(key) {
+                continue;
+            }
+            changed_methods.extend(
+                old_shapes
+                    .get(key)
+                    .into_iter()
+                    .chain(new_shapes.get(key))
+                    .flat_map(|methods| methods.values().cloned()),
+            );
+        }
+    }
+    Ok(changed_methods)
+}
+
+fn persisted_possible_call_owners(
+    conn: &Connection,
+    changed_rust_paths: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    if changed_rust_paths.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let encoded_paths = serde_json::to_string(changed_rust_paths)?;
+    let mut owners = BTreeSet::new();
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT owner.path FROM edge_occurrences candidate JOIN nodes target ON target.node_hash=candidate.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id JOIN path_dictionary owner ON owner.path_id=candidate.owner_id WHERE candidate.kind='possible_calls' AND target_path.path IN(SELECT value FROM json_each(?1))",
+    )?;
+    for row in statement.query_map([encoded_paths], |row| row.get::<_, String>(0))? {
+        owners.insert(row?);
+    }
+    Ok(owners)
+}
+
+fn unchanged_trait_dispatch_owners(
+    conn: &Connection,
+    implementation_methods: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    if implementation_methods.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let encoded_methods = serde_json::to_string(implementation_methods)?;
+    let mut owners = BTreeSet::new();
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT owner.path FROM edge_occurrences call JOIN nodes declaration ON declaration.node_hash=call.dst_hash JOIN path_dictionary owner ON owner.path_id=call.owner_id WHERE call.kind='calls' AND declaration.kind='method' AND declaration.name IN(SELECT value FROM json_each(?1)) AND EXISTS(SELECT 1 FROM resolution_coverage coverage JOIN coverage_expressions expression ON expression.expression_id=coverage.expression_id WHERE coverage.path_id=call.owner_id AND coverage.line=call.line AND coverage.status='unresolved' AND expression.expression='trait_object_dispatch')",
+    )?;
+    for row in statement.query_map([encoded_methods], |row| row.get::<_, String>(0))? {
+        owners.insert(row?);
+    }
+    Ok(owners)
+}
+
+fn contract_mentions_import(
+    value: &Value,
+    imported_names: &BTreeSet<String>,
+    qualified_aliases: &BTreeSet<String>,
+) -> bool {
+    fn qualified_alias_matches(value: &str, aliases: &BTreeSet<String>) -> bool {
+        aliases.iter().any(|alias| {
+            value == alias
+                || value
+                    .strip_prefix(alias)
+                    .and_then(|suffix| suffix.strip_prefix('.'))
+                    .is_some_and(|member| !member.is_empty())
+        })
+    }
+
+    match value {
+        Value::String(value) => {
+            imported_names.contains(value) || qualified_alias_matches(value, qualified_aliases)
+        }
+        Value::Array(values) => values
+            .iter()
+            .any(|value| contract_mentions_import(value, imported_names, qualified_aliases)),
+        Value::Object(values) => {
+            if values
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == "unknown")
+            {
+                return true;
+            }
+            if values
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == "field")
+            {
+                let Some(receiver) = values.get("receiver").and_then(Value::as_str) else {
+                    return true;
+                };
+                return qualified_alias_matches(receiver, qualified_aliases)
+                    || !imported_names.contains(receiver);
+            }
+            if let Some(opaque_value) = values.get("opaque_value") {
+                return opaque_value.is_null()
+                    || contract_mentions_import(opaque_value, imported_names, qualified_aliases);
+            }
+            if values.keys().any(|key| key.starts_with("opaque")) || values.is_empty() {
+                return true;
+            }
+            values
+                .values()
+                .any(|value| contract_mentions_import(value, imported_names, qualified_aliases))
+        }
+        _ => false,
+    }
+}
+
+#[derive(Default)]
+struct ImportTargetKinds {
+    module: bool,
+    non_module: bool,
+    unknown: bool,
+}
+
+fn module_exposes_provider_contract(
+    conn: &Connection,
+    owner: &str,
+    upstream: &str,
+    facts: &mut BTreeMap<String, TypedFacts>,
+    loaded_fact_files: &mut usize,
+) -> Result<bool> {
+    if !facts.contains_key(owner) {
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT facts_blob FROM local_facts WHERE path=?1",
+                [owner],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(blob) = blob else {
+            return Ok(true);
+        };
+        facts.insert(owner.to_owned(), decode_facts(&blob)?);
+        *loaded_fact_files += 1;
+    }
+    let typed = facts.get(owner).expect("module facts were loaded");
+    let Some(module) = typed.facts.nodes.iter().find(|node| node.kind == "module") else {
+        return Ok(true);
+    };
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT edge.line,evidence.evidence,target.kind FROM edge_occurrences edge JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary owner ON owner.path_id=edge.owner_id JOIN path_dictionary target_path ON target_path.path_id=target.path_id JOIN coverage_evidence evidence ON evidence.evidence_id=edge.evidence_id WHERE owner.path=?1 AND target_path.path=?2 AND edge.kind='imports'",
+    )?;
+    let mut import_edges: BTreeMap<(usize, String), ImportTargetKinds> = BTreeMap::new();
+    for row in statement.query_map([owner, upstream], |row| {
+        Ok((
+            row.get::<_, usize>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })? {
+        let (line, expression, target_kind) = row?;
+        let targets = import_edges.entry((line, expression)).or_default();
+        if target_kind == "module" {
+            targets.module = true;
+        } else if target_kind == "unknown" || target_kind.is_empty() {
+            targets.unknown = true;
+        } else {
+            targets.non_module = true;
+        }
+    }
+    if import_edges.is_empty() {
+        return Ok(true);
+    }
+    let mut imported_names = BTreeSet::new();
+    let mut qualified_aliases = BTreeSet::new();
+    let mut imported_modules = BTreeSet::new();
+    let mut matched_import_edges = BTreeSet::new();
+    for reference in typed
+        .facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == "imports" && reference.source == module.id)
+    {
+        let Some(targets) = import_edges.get(&(reference.line, reference.expression.clone()))
+        else {
+            continue;
+        };
+        if targets.unknown || (targets.module && targets.non_module) {
+            return Ok(true);
+        }
+        let Some(import_module) = reference.module.as_deref() else {
+            return Ok(true);
+        };
+        let alias = reference.alias.as_deref().unwrap_or(&reference.expression);
+        imported_names.insert(alias.to_owned());
+        let is_typescript_namespace_import =
+            reference.expression == "*" && alias != "*" && targets.module && !targets.non_module;
+        let is_python_module_import =
+            module.language == "python" && targets.module && !targets.non_module;
+        if is_typescript_namespace_import || is_python_module_import {
+            qualified_aliases.insert(alias.to_owned());
+        }
+        imported_modules.insert(import_module.to_owned());
+        matched_import_edges.insert((reference.line, reference.expression.clone()));
+    }
+    if matched_import_edges.len() != import_edges.len() {
+        return Ok(true);
+    }
+
+    let Some(exports) = module.details["exports"].as_array() else {
+        return Ok(true);
+    };
+    let explicit_reexport = exports.iter().any(|export| {
+        let export_module = export["module"].as_str();
+        let local = export["local"].as_str();
+        export_module.is_some_and(|source| imported_modules.contains(source))
+            || (export_module.is_none()
+                && local.is_some_and(|local| imported_names.contains(local)))
+    });
+    if explicit_reexport {
+        return Ok(true);
+    }
+
+    let contracts = crate::engine::linker::contracts::Contracts::new_typed(typed);
+    for node in typed
+        .facts
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.kind.as_str(), "function" | "method"))
+    {
+        let exported = if module.language == "python" {
+            !node.name.starts_with('_')
+        } else {
+            exports.iter().any(|export| {
+                export["local"].as_str() == Some(node.name.as_str())
+                    || export["name"].as_str() == Some(node.name.as_str())
+            })
+        };
+        if !exported {
+            continue;
+        }
+        let details = contracts.details(node);
+        let return_contract = &details["value_flow"]["return_contract"];
+        if return_contract.is_null()
+            || contract_mentions_import(return_contract, &imported_names, &qualified_aliases)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Performs delta.
 pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let started = Instant::now();
@@ -197,11 +534,19 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                     .map(|(_, r)| module_name(r))
                     .or_else(|| local_path.strip_prefix("src/").map(module_name));
                 let is_top = qual == name
-                    || qual == format!("{mod_name}.{name}")
-                    || qual == format!("{local_module}.{name}")
-                    || src_module
-                        .as_ref()
-                        .is_some_and(|m| qual == format!("{m}.{name}"));
+                    || qual
+                        .strip_prefix(mod_name.as_str())
+                        .and_then(|s| s.strip_prefix('.'))
+                        == Some(name.as_str())
+                    || qual
+                        .strip_prefix(local_module.as_str())
+                        .and_then(|s| s.strip_prefix('.'))
+                        == Some(name.as_str())
+                    || src_module.as_ref().is_some_and(|m| {
+                        qual.strip_prefix(m.as_str())
+                            .and_then(|s| s.strip_prefix('.'))
+                            == Some(name.as_str())
+                    });
                 if is_top {
                     names.insert(name);
                 }
@@ -241,11 +586,20 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                 names.insert(n.qualname.clone());
                 if !matches!(n.kind.as_str(), "field" | "method" | "route" | "document") {
                     let is_top = n.qualname == n.name
-                        || n.qualname == format!("{mod_name}.{}", n.name)
-                        || n.qualname == format!("{local_module}.{}", n.name)
-                        || src_module
-                            .as_ref()
-                            .is_some_and(|m| n.qualname == format!("{m}.{}", n.name));
+                        || n.qualname
+                            .strip_prefix(mod_name.as_str())
+                            .and_then(|s| s.strip_prefix('.'))
+                            == Some(n.name.as_str())
+                        || n.qualname
+                            .strip_prefix(local_module.as_str())
+                            .and_then(|s| s.strip_prefix('.'))
+                            == Some(n.name.as_str())
+                        || src_module.as_ref().is_some_and(|m| {
+                            n.qualname
+                                .strip_prefix(m.as_str())
+                                .and_then(|s| s.strip_prefix('.'))
+                                == Some(n.name.as_str())
+                        });
                     if is_top {
                         names.insert(n.name.clone());
                     }
@@ -334,6 +688,27 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             affected.insert(owner?);
         }
     }
+    let changed_rust_paths: BTreeSet<_> = changed_resolution
+        .iter()
+        .filter(|path| {
+            inventory
+                .get(path.as_str())
+                .or_else(|| previous.get(path.as_str()))
+                .is_some_and(|file| file.language == "rust")
+        })
+        .cloned()
+        .collect();
+    let changed_impl_methods = changed_rust_impl_methods(&admitted, &changed_rust_paths, &facts)?;
+    affected.extend(persisted_possible_call_owners(
+        &admitted,
+        &changed_rust_paths,
+    )?);
+    affected.extend(unchanged_trait_dispatch_owners(
+        &admitted,
+        &changed_impl_methods,
+    )?);
+
+    let mut loaded_fact_files = 0;
     let mut import_frontier: BTreeSet<_> = changed_resolution
         .iter()
         .filter(|path| {
@@ -343,32 +718,44 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                 .is_some_and(|file| {
                     matches!(
                         file.language.as_str(),
-                        "python" | "javascript" | "typescript" | "vue"
+                        "python" | "javascript" | "typescript" | "vue" | "rust"
                     )
                 })
         })
         .cloned()
         .collect();
     let mut visited_imports = import_frontier.clone();
+    let mut expanded_imports = import_frontier.clone();
     let mut importing_owners = admitted.prepare(
-        "SELECT DISTINCT p.path FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.kind='imports' AND d.target_hash IN(SELECT path_hash FROM files WHERE path IN(SELECT value FROM json_each(?1)))",
+        "SELECT DISTINCT owner.path,target.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files target ON target.path_hash=d.target_hash WHERE d.kind='imports' AND target.path IN(SELECT value FROM json_each(?1))",
     )?;
     while !import_frontier.is_empty() {
-        let owners = importing_owners
+        let importers = importing_owners
             .query_map([serde_json::to_string(&import_frontier)?], |row| {
-                row.get::<_, String>(0)
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
         let mut next = BTreeSet::new();
-        for owner in owners {
-            let owner = owner?;
-            if inventory.get(owner.as_str()).is_some_and(|file| {
+        for importer in importers {
+            let (owner, upstream) = importer?;
+            let supported = inventory.get(owner.as_str()).is_some_and(|file| {
                 matches!(
                     file.language.as_str(),
-                    "python" | "javascript" | "typescript" | "vue"
+                    "python" | "javascript" | "typescript" | "vue" | "rust"
                 )
-            }) && visited_imports.insert(owner.clone())
-            {
+            });
+            if supported && visited_imports.insert(owner.clone()) {
                 affected.insert(owner.clone());
+            }
+            if supported
+                && module_exposes_provider_contract(
+                    &admitted,
+                    &owner,
+                    &upstream,
+                    &mut facts,
+                    &mut loaded_fact_files,
+                )?
+                && expanded_imports.insert(owner.clone())
+            {
                 next.insert(owner);
             }
         }
@@ -565,7 +952,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     }
     let mut load_owners: BTreeSet<_> = affected
         .difference(&modified)
-        .filter(|path| inventory.contains_key(path.as_str()))
+        .filter(|path| inventory.contains_key(path.as_str()) && !facts.contains_key(path.as_str()))
         .cloned()
         .collect();
     if template_inputs_changed {
@@ -648,7 +1035,6 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             frontier = next;
         }
     }
-    let mut loaded_fact_files = 0;
     {
         let mut st=admitted.prepare("SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT value FROM json_each(?1))")?;
         for row in st.query_map([serde_json::to_string(&load_owners)?], |r| {
@@ -983,19 +1369,6 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
 }
 
 fn resolution_identity_changed(conn: &Connection, path: &str, facts: &TypedFacts) -> Result<bool> {
-    fn identity<'a>(
-        node: &'a Node,
-        contracts: &crate::engine::linker::contracts::Contracts<'a>,
-    ) -> Result<String> {
-        let mut value = serde_json::to_value(node)?;
-        let object = value
-            .as_object_mut()
-            .context("node identity must be an object")?;
-        object.remove("line");
-        object.remove("end_line");
-        object.insert("details".into(), contracts.details(node));
-        Ok(serde_json::to_string(&value)?)
-    }
     let old_blob: Option<Vec<u8>> = conn
         .query_row(
             "SELECT facts_blob FROM local_facts WHERE path=?1",
@@ -1009,19 +1382,8 @@ fn resolution_identity_changed(conn: &Connection, path: &str, facts: &TypedFacts
     let old_facts = decode_facts(&old_blob)?;
     let old_contracts = crate::engine::linker::contracts::Contracts::new_typed(&old_facts);
     let new_contracts = crate::engine::linker::contracts::Contracts::new_typed(facts);
-    let old = old_facts
-        .nodes
-        .iter()
-        .filter(|node| node.kind != "component")
-        .map(|node| identity(node, &old_contracts))
-        .collect::<Result<BTreeSet<_>>>()?;
-    let new = facts
-        .nodes
-        .iter()
-        .filter(|node| node.kind != "component")
-        .map(|node| identity(node, &new_contracts))
-        .collect::<Result<BTreeSet<_>>>()?;
-    Ok(old != new)
+    Ok(old_contracts.resolution_digest(&old_facts.facts)?
+        != new_contracts.resolution_digest(&facts.facts)?)
 }
 fn reference_identity_changed(conn: &Connection, path: &str, facts: &TypedFacts) -> Result<bool> {
     let old: Option<Vec<u8>> = conn
@@ -1071,4 +1433,322 @@ fn delete_file(tx: &Connection, path_cache: &mut PathDictionaryCache, path: &str
         )?;
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "lang-rust"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn added_trait_implementor_refreshes_unchanged_caller_candidates() {
+        struct TestRoot(PathBuf);
+        impl Drop for TestRoot {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = TestRoot(std::env::temp_dir().join(format!(
+            "forge-delta-dispatch-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        )));
+        fs::create_dir(&root.0).unwrap();
+        fs::create_dir(root.0.join("src")).unwrap();
+        for (path, source) in [
+            ("defs.rs", "pub trait Work { fn run(&self); }\n"),
+            ("alpha.rs", "use crate::defs::Work; pub struct Alpha; impl Work for Alpha { fn run(&self) {} }\n"),
+            ("caller.rs", "use crate::defs::Work; pub fn caller(value: &dyn Work) { value.run(); }\n"),
+        ] {
+            fs::write(root.0.join("src").join(path), source).unwrap();
+        }
+        let db = root.0.join(".forge/code-map.sqlite");
+        let candidates = |path: &Path| {
+            let conn = crate::db::reader::open(path, &root.0).unwrap();
+            let mut statement = conn.prepare("SELECT d.id FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='caller' AND e.kind='possible_calls' ORDER BY d.id").unwrap();
+            let result = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            result
+        };
+        super::super::build(&root.0, &db, None).unwrap();
+        assert_eq!(
+            candidates(&db).len(),
+            1,
+            "initial trait dispatch must resolve"
+        );
+        fs::write(
+            root.0.join("src/beta.rs"),
+            "use crate::defs::Work; pub struct Beta; impl Work for Beta { fn run(&self) {} }\n",
+        )
+        .unwrap();
+        let report = delta(&root.0, &db, &["src/beta.rs".into()]).unwrap();
+        let cold = root.0.join(".forge/cold.sqlite");
+        super::super::build(&root.0, &cold, None).unwrap();
+        let expected = candidates(&cold);
+        assert_eq!(
+            expected.len(),
+            2,
+            "cold dispatch must see both implementors"
+        );
+        assert_eq!(
+            candidates(&db),
+            expected,
+            "delta must refresh the unchanged caller; {report}"
+        );
+    }
+
+    #[test]
+    fn import_contract_matching_observes_identifier_boundaries_and_unknowns() {
+        let imported_names = BTreeSet::from(["function".to_owned()]);
+        let qualified_aliases = BTreeSet::from(["provider".to_owned()]);
+        assert!(contract_mentions_import(
+            &serde_json::json!("provider.member"),
+            &imported_names,
+            &qualified_aliases
+        ));
+        assert!(!contract_mentions_import(
+            &serde_json::json!("providerish.member"),
+            &imported_names,
+            &qualified_aliases
+        ));
+        assert!(contract_mentions_import(
+            &serde_json::json!("function"),
+            &imported_names,
+            &qualified_aliases
+        ));
+        assert!(!contract_mentions_import(
+            &serde_json::json!("functionality"),
+            &imported_names,
+            &qualified_aliases
+        ));
+        assert!(contract_mentions_import(
+            &serde_json::json!({"kind": "unknown"}),
+            &imported_names,
+            &qualified_aliases
+        ));
+        assert!(!contract_mentions_import(
+            &serde_json::json!({"kind": "field", "receiver": "function"}),
+            &imported_names,
+            &qualified_aliases
+        ));
+        let named_symbol_alias = BTreeSet::from(["_Api".to_owned()]);
+        let no_namespace_aliases = BTreeSet::new();
+        assert!(!contract_mentions_import(
+            &serde_json::json!({"kind": "field", "receiver": "_Api"}),
+            &named_symbol_alias,
+            &no_namespace_aliases
+        ));
+        assert!(!contract_mentions_import(
+            &serde_json::json!("_Api.member"),
+            &named_symbol_alias,
+            &no_namespace_aliases
+        ));
+        assert!(contract_mentions_import(
+            &serde_json::json!({"kind": "field", "receiver": "provider"}),
+            &imported_names,
+            &qualified_aliases
+        ));
+        assert!(contract_mentions_import(
+            &serde_json::json!({"kind": "field"}),
+            &imported_names,
+            &qualified_aliases
+        ));
+    }
+
+    #[test]
+    fn unavailable_or_ambiguous_import_facts_expand_conservatively() {
+        use crate::core::models::{Facts, Node, Reference};
+
+        let missing_facts_db = Connection::open_in_memory().unwrap();
+        missing_facts_db
+            .execute_batch("CREATE TABLE local_facts(path TEXT PRIMARY KEY, facts_blob BLOB);")
+            .unwrap();
+        let mut facts = BTreeMap::new();
+        let mut loaded_fact_files = 0;
+        assert!(module_exposes_provider_contract(
+            &missing_facts_db,
+            "middle.py",
+            "provider.py",
+            &mut facts,
+            &mut loaded_fact_files
+        )
+        .unwrap());
+
+        let ambiguous_facts_db = Connection::open_in_memory().unwrap();
+        ambiguous_facts_db
+            .execute_batch(
+                "CREATE TABLE local_facts(path TEXT PRIMARY KEY, facts_blob BLOB);
+                 CREATE TABLE path_dictionary(path_id INTEGER PRIMARY KEY, path TEXT UNIQUE);
+                 CREATE TABLE nodes(node_hash INTEGER PRIMARY KEY, path_id INTEGER, kind TEXT);
+                 CREATE TABLE edge_occurrences(line INTEGER, dst_hash INTEGER, owner_id INTEGER, evidence_id INTEGER, kind TEXT);
+                 CREATE TABLE coverage_evidence(evidence_id INTEGER PRIMARY KEY, evidence TEXT);
+                 INSERT INTO path_dictionary(path_id,path) VALUES(1,'middle.py'),(2,'provider.py');
+                 INSERT INTO nodes(node_hash,path_id,kind) VALUES(1,1,'module'),(2,2,'module'),(3,2,'function');
+                 INSERT INTO coverage_evidence(evidence_id,evidence) VALUES(1,'provider');
+                 INSERT INTO edge_occurrences(line,dst_hash,owner_id,evidence_id,kind) VALUES
+                    (1,2,1,1,'imports'),(1,3,1,1,'imports');",
+            )
+            .unwrap();
+        let module = Node {
+            id: "module:middle.py".to_owned(),
+            kind: "module".to_owned(),
+            name: "middle".to_owned(),
+            qualname: "middle".to_owned(),
+            path: "middle.py".to_owned(),
+            line: 1,
+            end_line: 1,
+            is_test: false,
+            language: "python".to_owned(),
+            generated: false,
+            details: serde_json::json!({"exports": [], "bindings": []}),
+        };
+        let typed = TypedFacts::from_public(Facts {
+            nodes: vec![module.clone()],
+            references: vec![Reference {
+                source: module.id,
+                expression: "provider".to_owned(),
+                kind: "imports".to_owned(),
+                line: 1,
+                column: 0,
+                alias: Some("provider".to_owned()),
+                module: Some("provider".to_owned()),
+                dynamic: false,
+                receiver_hint: None,
+            }],
+            ..Facts::default()
+        });
+        facts.insert("middle.py".to_owned(), typed);
+        assert!(module_exposes_provider_contract(
+            &ambiguous_facts_db,
+            "middle.py",
+            "provider.py",
+            &mut facts,
+            &mut loaded_fact_files
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn return_contract_and_known_private_import_bound_the_python_frontier() {
+        use crate::core::{
+            models::{Facts, Node, Reference},
+            semantic::{TypeExpr, ValueFlowFacts},
+        };
+
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE local_facts(path TEXT PRIMARY KEY, facts_blob BLOB);
+             CREATE TABLE path_dictionary(path_id INTEGER PRIMARY KEY, path TEXT UNIQUE);
+             CREATE TABLE nodes(node_hash INTEGER PRIMARY KEY, path_id INTEGER, kind TEXT);
+             CREATE TABLE edge_occurrences(line INTEGER, dst_hash INTEGER, owner_id INTEGER, evidence_id INTEGER, kind TEXT);
+             CREATE TABLE coverage_evidence(evidence_id INTEGER PRIMARY KEY, evidence TEXT);
+             INSERT INTO path_dictionary(path_id,path) VALUES(1,'middle.py'),(2,'provider.py');
+             INSERT INTO nodes(node_hash,path_id,kind) VALUES(1,2,'module');
+             INSERT INTO coverage_evidence(evidence_id,evidence) VALUES(1,'provider');
+             INSERT INTO edge_occurrences(line,dst_hash,owner_id,evidence_id,kind) VALUES(1,1,1,1,'imports');",
+        )
+        .unwrap();
+
+        let module = Node {
+            id: "module:middle.py".to_owned(),
+            kind: "module".to_owned(),
+            name: "middle".to_owned(),
+            qualname: "middle".to_owned(),
+            path: "middle.py".to_owned(),
+            line: 1,
+            end_line: 2,
+            is_test: false,
+            language: "python".to_owned(),
+            generated: false,
+            details: serde_json::json!({
+                "exports": [{"local": "visible", "name": "visible"}],
+                "bindings": ["_provider", "visible"]
+            }),
+        };
+        let function = Node {
+            id: "function:middle.py:visible".to_owned(),
+            kind: "function".to_owned(),
+            name: "visible".to_owned(),
+            qualname: "visible".to_owned(),
+            path: "middle.py".to_owned(),
+            line: 2,
+            end_line: 2,
+            is_test: false,
+            language: "python".to_owned(),
+            generated: false,
+            details: serde_json::json!({}),
+        };
+        let import = Reference {
+            source: module.id.clone(),
+            expression: "provider".to_owned(),
+            kind: "imports".to_owned(),
+            line: 1,
+            column: 0,
+            alias: Some("_provider".to_owned()),
+            module: Some("provider".to_owned()),
+            dynamic: false,
+            receiver_hint: None,
+        };
+        let public_facts = || Facts {
+            nodes: vec![module.clone(), function.clone()],
+            references: vec![import.clone()],
+            ..Facts::default()
+        };
+
+        let mut exposed_facts = TypedFacts::from_public(public_facts());
+        exposed_facts.flows.insert(
+            function.id.clone(),
+            ValueFlowFacts {
+                return_type: Some(TypeExpr::Named {
+                    name: "_provider.Api".to_owned(),
+                }),
+                ..ValueFlowFacts::default()
+            },
+        );
+        let mut facts = BTreeMap::from([("middle.py".to_owned(), exposed_facts)]);
+        let mut loaded_fact_files = 0;
+        assert!(module_exposes_provider_contract(
+            &db,
+            "middle.py",
+            "provider.py",
+            &mut facts,
+            &mut loaded_fact_files
+        )
+        .unwrap());
+
+        let mut known_facts = TypedFacts::from_public(public_facts());
+        known_facts.flows.insert(
+            function.id.clone(),
+            ValueFlowFacts {
+                return_type: Some(TypeExpr::Named {
+                    name: "int".to_owned(),
+                }),
+                ..ValueFlowFacts::default()
+            },
+        );
+        facts.insert("middle.py".to_owned(), known_facts);
+        assert!(!module_exposes_provider_contract(
+            &db,
+            "middle.py",
+            "provider.py",
+            &mut facts,
+            &mut loaded_fact_files
+        )
+        .unwrap());
+
+        facts.insert(
+            "middle.py".to_owned(),
+            TypedFacts::from_public(public_facts()),
+        );
+        assert!(module_exposes_provider_contract(
+            &db,
+            "middle.py",
+            "provider.py",
+            &mut facts,
+            &mut loaded_fact_files
+        )
+        .unwrap());
+    }
 }

@@ -87,7 +87,7 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                             line: reference.line,
                             expression: reference.expression.clone(),
                             status: "resolved".into(),
-                            evidence: format!("endpoint route: {}", route.name),
+                            evidence: format!("endpoint route: {}", route.name).into(),
                         });
                     }
                     Ok(None) => graph.coverage.push(Coverage {
@@ -95,14 +95,16 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                         line: reference.line,
                         expression: reference.expression.clone(),
                         status: "unresolved".into(),
-                        evidence: format!("unmatched endpoint route: {}", reference.expression),
+                        evidence: format!("unmatched endpoint route: {}", reference.expression)
+                            .into(),
                     }),
                     Err(()) => graph.coverage.push(Coverage {
                         path: path.clone(),
                         line: reference.line,
                         expression: reference.expression.clone(),
                         status: "ambiguous".into(),
-                        evidence: format!("ambiguous endpoint route: {}", reference.expression),
+                        evidence: format!("ambiguous endpoint route: {}", reference.expression)
+                            .into(),
                     }),
                 }
             }
@@ -153,7 +155,7 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                             line: node.line,
                             expression: node.name.clone(),
                             status: "resolved".into(),
-                            evidence: format!("endpoint route: {}", route.name),
+                            evidence: format!("endpoint route: {}", route.name).into(),
                         });
                     }
                     Ok(None) => graph.coverage.push(Coverage {
@@ -161,14 +163,14 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                         line: node.line,
                         expression: node.name.clone(),
                         status: "unresolved".into(),
-                        evidence: format!("unmatched endpoint route: {}", node.name),
+                        evidence: format!("unmatched endpoint route: {}", node.name).into(),
                     }),
                     Err(()) => graph.coverage.push(Coverage {
                         path: path.clone(),
                         line: node.line,
                         expression: node.name.clone(),
                         status: "ambiguous".into(),
-                        evidence: format!("ambiguous endpoint route: {}", node.name),
+                        evidence: format!("ambiguous endpoint route: {}", node.name).into(),
                     }),
                 }
             }
@@ -202,7 +204,7 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                                 line: reference.line,
                                 expression: reference.expression.clone(),
                                 status: "resolved".into(),
-                                evidence: format!("template binding: {}", symbol.path),
+                                evidence: format!("template binding: {}", symbol.path).into(),
                             });
                         }
                         html_templates::Match::Ambiguous => graph.coverage.push(Coverage {
@@ -226,7 +228,7 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                                         .collect()
                                 })
                                 .unwrap_or_default();
-                            let (status, evidence) =
+                            let (status, evidence): (&str, Cow<'static, str>) =
                                 match (providers.len(), matching_providers.as_slice()) {
                                     (1, [provider]) => {
                                         graph.edges.push(Edge {
@@ -243,18 +245,16 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                                         });
                                         (
                                             "resolved",
-                                            format!("render context: {}", provider.source.path),
+                                            format!("render context: {}", provider.source.path)
+                                                .into(),
                                         )
                                     }
                                     (provider_count, matching)
                                         if provider_count > 1 && !matching.is_empty() =>
                                     {
-                                        (
-                                            "ambiguous",
-                                            "multiple render context providers".to_owned(),
-                                        )
+                                        ("ambiguous", "multiple render context providers".into())
                                     }
-                                    _ => ("unresolved", "no proven template binding".to_owned()),
+                                    _ => ("unresolved", "no proven template binding".into()),
                                 };
                             graph.coverage.push(Coverage {
                                 path: path.clone(),

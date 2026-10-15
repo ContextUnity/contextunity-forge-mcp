@@ -1,6 +1,9 @@
 #![cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-vue"))]
 
-use contextunity_forge_mcp::{core::commitments, db::reader};
+use contextunity_forge_mcp::{
+    core::commitments,
+    db::{reader, writer::delta},
+};
 use rusqlite::Connection;
 use std::fs;
 
@@ -122,6 +125,115 @@ fn src_namespace_edit_relinks_its_consumer_without_invalidating_siblings() {
 
 #[test]
 #[cfg(feature = "lang-python")]
+fn python_import_frontier_uses_semicolon_and_continuation_facts() {
+    let w = Workspace::new();
+    w.write(
+        "provider.py",
+        "def api(): return 1\ndef service(): return 1\n",
+    );
+    w.write("pkg/__init__.py", "");
+    w.write("pkg/nested.py", "def nested_api(): return 1\n");
+    w.write(
+        "middle_module.py",
+        "import provider; marker = 0\nimport provider as renamed\nimport pkg.nested\n",
+    );
+    w.write(
+        "module_consumer.py",
+        "from middle_module import provider, renamed\ndef use_module(): return provider.api()\ndef use_renamed_module(): return renamed.api()\n",
+    );
+    w.write(
+        "dotted_consumer.py",
+        "from middle_module import pkg\ndef use_dotted_module(): return pkg.nested.nested_api()\n",
+    );
+    w.write(
+        "middle_alias.py",
+        "# facts should preserve this logical import across its line continuation\nfrom provider import api as chosen, \\\n    service as other\nmarker = 0\n",
+    );
+    w.write(
+        "alias_consumer.py",
+        "from middle_alias import chosen\ndef use_alias(): return chosen()\n",
+    );
+    w.build();
+
+    w.write(
+        "provider.py",
+        "def api(): return 2\ndef service(): return 3\ndef added(): return 4\n",
+    );
+    let report = w.delta(&["provider.py"]);
+    assert!(
+        report["loaded_fact_files"].as_u64().unwrap_or_default() >= 2,
+        "both intermediate import owners should be evaluated from indexed facts: {report}"
+    );
+    assert_cold_equivalent(&w);
+
+    w.write(
+        "pkg/nested.py",
+        "def nested_api(): return 2\ndef added(): return 3\n",
+    );
+    let dotted_report = w.delta(&["pkg/nested.py"]);
+    assert!(
+        dotted_report["loaded_fact_files"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2,
+        "plain dotted module import should expand from indexed facts: {dotted_report}"
+    );
+    assert_cold_equivalent(&w);
+}
+
+#[test]
+#[cfg(feature = "lang-python")]
+fn indexed_reexport_frontier_matches_cold_build() {
+    let w = Workspace::new();
+    w.write("provider.py", "class Api: pass\n");
+    w.write("middle.py", "import provider\nExportedApi = provider.Api\n");
+    w.write(
+        "consumer.py",
+        "from middle import ExportedApi\ndef consume() -> ExportedApi: return ExportedApi()\n",
+    );
+    w.build();
+
+    w.write(
+        "provider.py",
+        "class Api:\n    def value(self): return 1\nclass Added: pass\n",
+    );
+    let report = w.delta(&["provider.py"]);
+    assert_eq!(
+        report["loaded_fact_files"], 2,
+        "the direct import owner and its indexed re-export consumer should be evaluated: {report}"
+    );
+    assert_cold_equivalent(&w);
+}
+
+#[test]
+#[cfg(feature = "lang-python")]
+fn python_missing_module_export_facts_expand_conservatively() {
+    let w = Workspace::new();
+    w.write("provider.py", "def value(): return 1\n");
+    w.write(
+        "unexposed_alias.py",
+        "import provider as _provider\nmarker = 0\n",
+    );
+    w.write(
+        "unexposed_consumer.py",
+        "from unexposed_alias import marker\ndef call_constant(): return marker\n",
+    );
+    w.build();
+    w.write(
+        "provider.py",
+        "def value(): return 2\ndef added(): return 3\n",
+    );
+    let report = w.delta(&["provider.py"]);
+    assert_eq!(
+        report["loaded_fact_files"],
+        2,
+        "the direct import owner and its consumer should be evaluated because module export facts are unavailable: {report}"
+    );
+    assert_cold_equivalent(&w);
+}
+
+#[test]
+#[cfg(feature = "lang-python")]
 fn linked_component_transfer_preserves_unmodified_containment_edges() {
     let w = Workspace::new();
     let linked = Workspace::new();
@@ -229,6 +341,42 @@ fn shared_aggregate_workspace() -> Workspace {
     w.build();
     assert_aggregate(&w, "impl_a/a.rs", 2);
     w
+}
+
+#[test]
+#[cfg(feature = "lang-rust")]
+fn dyn_trait_dispatch_add_change_and_remove_impls_match_cold_builds() {
+    let candidates = "SELECT d.id FROM edges e JOIN nodes s ON s.node_hash=e.src_hash \
+        JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='caller' \
+        AND e.kind='possible_calls' ORDER BY d.id";
+    for (operation, initial, replacement, expected) in [
+        ("add", None, Some("use crate::defs::Work; pub struct Beta; impl Work for Beta { fn run(&self) {} }\n"), 2),
+        ("change", Some("use crate::defs::Work; pub struct Beta; impl Work for Beta { fn run(&self) {} }\n"), Some("use crate::defs::Other; pub struct Beta; impl Other for Beta { fn run(&self) {} }\n"), 1),
+        ("remove", Some("use crate::defs::Work; pub struct Beta; impl Work for Beta { fn run(&self) {} }\n"), None, 1),
+    ] {
+        let w = Workspace::new();
+        w.write("src/defs.rs", "pub trait Work { fn run(&self); } pub trait Other { fn run(&self); }\n");
+        w.write("src/alpha.rs", "use crate::defs::Work; pub struct Alpha; impl Work for Alpha { fn run(&self) {} }\n");
+        w.write("src/caller.rs", "use crate::defs::Work; pub fn caller(value: &dyn Work) { value.run(); }\n");
+        if let Some(source) = initial {
+            w.write("src/beta.rs", source);
+        }
+        w.build();
+        let initial_count = if initial.is_some() { 2 } else { 1 };
+        assert_eq!(strings(&w.open(), candidates).len(), initial_count, "{operation}: fixture must resolve cross-file trait candidates");
+        match replacement {
+            Some(source) => w.write("src/beta.rs", source),
+            None => fs::remove_file(w.path("src/beta.rs")).unwrap(),
+        }
+        let report = delta(w.root(), &w.db(), &["src/beta.rs".into()]).unwrap();
+        let cold_path = w.path(".forge/cold-dispatch.sqlite");
+        w.build_to(&cold_path);
+        let cold = reader::open(&cold_path, w.root()).unwrap();
+        let expected_candidates = strings(&cold, candidates);
+        assert_eq!(expected_candidates.len(), expected, "{operation}: cold build fixture must retain bounded dispatch");
+        assert_eq!(strings(&w.open(), candidates), expected_candidates, "{operation}: unchanged caller must match cold-build candidate edges; delta={report}");
+        assert_cold_equivalent(&w);
+    }
 }
 
 #[cfg(feature = "lang-rust")]

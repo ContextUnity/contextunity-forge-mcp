@@ -113,6 +113,37 @@ fn rust_deref_wrapper(target: &TypeTarget<'_>) -> Option<&'static str> {
     }
 }
 
+fn python_typing_nullable_generic(
+    module: &str,
+    reference: &Reference,
+    member: &str,
+) -> Option<&'static str> {
+    if !matches!(module, "typing" | "typing_extensions") {
+        return None;
+    }
+    match (reference.expression.as_str(), member) {
+        ("Optional", "") => Some("Optional"),
+        ("Union", "") => Some("Union"),
+        (origin, "Optional") if origin == module => Some("Optional"),
+        (origin, "Union") if origin == module => Some("Union"),
+        _ => None,
+    }
+}
+
+fn python_nullable_payload<'a>(
+    wrapper: &str,
+    args: &'a [crate::core::semantic::TypeExpr],
+) -> Option<&'a crate::core::semantic::TypeExpr> {
+    use crate::core::semantic::TypeExpr;
+
+    match (wrapper, args) {
+        ("Optional", [payload]) => Some(payload),
+        ("Union", [TypeExpr::Named { name }, payload]) if name == "None" => Some(payload),
+        ("Union", [payload, TypeExpr::Named { name }]) if name == "None" => Some(payload),
+        _ => None,
+    }
+}
+
 fn rust_standard_member(module: &str, member: &str) -> bool {
     if matches!(member, "new" | "from" | "with_capacity" | "default") {
         return false;
@@ -283,6 +314,7 @@ impl<'a> Context<'a> {
 
     fn unshadowed_global(&self, owner: &'a Node, name: &str, at: SourcePosition) -> bool {
         let mut scope = owner.qualname.as_str();
+        let mut lookup_key = String::with_capacity(128);
         loop {
             if self.by_qual.get(scope).into_iter().flatten().any(|node| {
                 node.path == owner.path
@@ -308,7 +340,7 @@ impl<'a> Context<'a> {
                         }))
             }) || self
                 .by_qual
-                .get(format!("{scope}.{name}").as_str())
+                .get(super::qualified(&mut lookup_key, scope, name))
                 .into_iter()
                 .flatten()
                 .any(|node| node.path == owner.path)
@@ -837,10 +869,14 @@ impl<'a> Context<'a> {
             });
         }
         let _ = (associated, caller);
-        let qualified = format!("{}.{}", receiver.qualname, member);
+        let mut lookup_key = String::with_capacity(128);
         self.classify(
             self.by_qual
-                .get(qualified.as_str())
+                .get(super::qualified(
+                    &mut lookup_key,
+                    &receiver.qualname,
+                    member,
+                ))
                 .into_iter()
                 .flatten()
                 .copied()
@@ -856,6 +892,15 @@ impl<'a> Context<'a> {
         caller: &'a Node,
     ) -> Member<'s> {
         self.lookup_member_mode(receiver, member, caller, false)
+    }
+
+    #[cfg(feature = "lang-rust")]
+    pub(super) fn dynamic_dispatch<'s>(
+        &'s self,
+        receiver: &'s Node,
+        member: &'s str,
+    ) -> Option<(&'a Node, &'s [&'a Node])> {
+        self.rust?.dynamic_dispatch(receiver, member)
     }
 
     pub(super) fn lookup_member_mode<'s>(
@@ -1188,6 +1233,43 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     ) -> TypeTarget<'a> {
         let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
         let nominal = self.resolve_symbol(owner, base, at, SymbolRole::Type);
+        if owner.language == "python" {
+            let is_union_or_optional = match &nominal {
+                Symbol::Type(TypeTarget::Builtin(wrapper)) => {
+                    matches!(wrapper.as_str(), "Optional" | "Union")
+                }
+                Symbol::Unknown => clean_base == "Union" || clean_base == "Optional",
+                _ => false,
+            };
+            if is_union_or_optional {
+                if owner.kind == "type" {
+                    return TypeTarget::Unknown;
+                }
+                let Some(payload) = python_nullable_payload(clean_base, args) else {
+                    return TypeTarget::Unknown;
+                };
+                return super::value_flow::resolve_type(
+                    owner,
+                    payload,
+                    at,
+                    self,
+                    super::value_flow::SemanticLimits::default(),
+                );
+            }
+        }
+        if matches!(owner.language.as_str(), "typescript" | "javascript" | "vue")
+            && args.len() == 1
+            && matches!(&nominal, Symbol::Type(TypeTarget::Builtin(name)) if name == "Promise")
+        {
+            return TypeTarget::Builtin("Promise".to_owned());
+        }
+        if owner.language == "rust"
+            && matches!(base, "anyhow::Result" | "anyhow.Result")
+            && args.len() == 1
+            && matches!(nominal, Symbol::Unknown)
+        {
+            return TypeTarget::Builtin("Result".to_owned());
+        }
         if owner.language == "rust" && args.len() == 1 {
             if let Symbol::Type(outer) = &nominal {
                 if let Some(wrapper) = rust_deref_wrapper(outer) {
@@ -1256,6 +1338,39 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             }
             _ => TypeTarget::Unknown,
         }
+    }
+    fn resolve_payload(
+        &self,
+        owner: &'a Node,
+        expression: &crate::core::semantic::TypeExpr,
+        at: SourcePosition,
+    ) -> TypeTarget<'a> {
+        let crate::core::semantic::TypeExpr::Applied { base, args } = expression else {
+            return TypeTarget::Unknown;
+        };
+        if args.is_empty() {
+            return TypeTarget::Unknown;
+        }
+        let wrapper = self.resolve_applied(owner, base, args, at);
+        let admitted = match (owner.language.as_str(), &wrapper) {
+            ("rust", TypeTarget::Builtin(name)) => {
+                (name == "Option" && args.len() == 1) || (name == "Result" && args.len() <= 2)
+            }
+            ("typescript" | "javascript" | "vue", TypeTarget::Builtin(name)) => {
+                name == "Promise" && args.len() == 1
+            }
+            _ => false,
+        };
+        if !admitted {
+            return TypeTarget::Unknown;
+        }
+        super::value_flow::resolve_type(
+            owner,
+            &args[0],
+            at,
+            self,
+            super::value_flow::SemanticLimits::default(),
+        )
     }
     fn resolve_member(
         &self,
@@ -1377,9 +1492,9 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             }
         }
         let mut scope = owner.qualname.as_str();
+        let mut lookup_key = String::with_capacity(128);
         loop {
             let scope_nodes = self.by_qual.get(scope);
-            let qualified = format!("{scope}.{name}");
             if let Some(nodes) = scope_nodes {
                 for node in nodes.iter().copied().filter(|node| node.path == owner.path) {
                     if node.details["rebindings"]
@@ -1402,7 +1517,7 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                         if let Some(imported_at) = imported_at {
                             let local = self
                                 .by_qual
-                                .get(qualified.as_str())
+                                .get(super::qualified(&mut lookup_key, scope, &name))
                                 .into_iter()
                                 .flatten()
                                 .copied()
@@ -1489,10 +1604,13 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                                             }
                                             continue;
                                         }
-                                        let qualified = format!("{}.{}", target.qualname, member);
                                         nodes.extend(
                                             self.by_qual
-                                                .get(qualified.as_str())
+                                                .get(super::qualified(
+                                                    &mut lookup_key,
+                                                    &target.qualname,
+                                                    member,
+                                                ))
                                                 .into_iter()
                                                 .flatten()
                                                 .copied()
@@ -1505,6 +1623,8 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                             Imported::External(module, position, reference, _)
                                 if *position <= at =>
                             {
+                                let python_nullable =
+                                    python_typing_nullable_generic(module, reference, member);
                                 if (owner.language == "python"
                                     && matches!(role, SymbolRole::Constructor))
                                     || (matches!(module.as_str(), "typing" | "typing_extensions")
@@ -1519,8 +1639,16 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                                     && languages::by_id("python").is_some_and(|p| {
                                         p.builtin_generic(head) || p.builtin_member(head, "get")
                                     })
+                                    || (owner.language == "python"
+                                        && python_nullable.is_some()
+                                        && matches!(
+                                            module.as_str(),
+                                            "typing" | "typing_extensions"
+                                        ))
                                 {
-                                    Symbol::Type(TypeTarget::Builtin(head.to_string()))
+                                    Symbol::Type(TypeTarget::Builtin(
+                                        python_nullable.unwrap_or(head).to_string(),
+                                    ))
                                 } else if owner.language == "python"
                                     && matches!(role, SymbolRole::Type)
                                     && module == "psycopg"
@@ -1581,10 +1709,9 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 }
             }
             if !member.is_empty() && matches!(role, SymbolRole::Callable) {
-                let qualified = format!("{scope}.{head}");
                 if let Symbol::Type(TypeTarget::Local(receiver)) = self.classify(
                     self.by_qual
-                        .get(qualified.as_str())
+                        .get(super::qualified(&mut lookup_key, scope, head))
                         .into_iter()
                         .flatten()
                         .copied()
@@ -1598,7 +1725,7 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             }
             let local = self
                 .by_qual
-                .get(qualified.as_str())
+                .get(super::qualified(&mut lookup_key, scope, &name))
                 .into_iter()
                 .flatten()
                 .copied()
@@ -1623,8 +1750,13 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             };
             scope = parent;
         }
-        let builtin =
-            languages::by_id(&owner.language).is_some_and(|profile| profile.builtin_type(&name));
+        let builtin = languages::by_id(&owner.language).is_some_and(|profile| {
+            profile.builtin_type(&name)
+                || (matches!(owner.language.as_str(), "typescript" | "javascript" | "vue")
+                    && matches!(role, SymbolRole::Type)
+                    && name == "Promise"
+                    && profile.builtin("Promise"))
+        });
         if builtin {
             Symbol::Type(TypeTarget::Builtin(name.into_owned()))
         } else {

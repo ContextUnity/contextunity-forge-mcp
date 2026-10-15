@@ -864,7 +864,7 @@ pub(super) fn persist_graph(
             .get(c.expression.as_str())
             .context("missing coverage expression")?;
         let evidence_id = *evidence_ids
-            .get(c.evidence.as_str())
+            .get(c.evidence.as_ref())
             .context("missing coverage evidence")?;
         coverage_batch.push([
             BorrowedSqlValue::Integer(owner_id),

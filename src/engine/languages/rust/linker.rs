@@ -48,6 +48,8 @@ pub(crate) struct RustMembers<'a> {
     visible_traits: HashMap<&'a str, HashSet<&'a str>>,
     trait_members: HashMap<(&'a str, &'a str, bool, &'a str), Vec<&'a Node>>,
     receivers_by_method: HashMap<&'a str, &'a Node>,
+    dynamic_declarations: HashMap<(&'a str, &'a str), &'a Node>,
+    dynamic_implementors: HashMap<(&'a str, &'a str), Vec<&'a Node>>,
 }
 
 fn namespace(path: &str, module: &str, name: &str) -> String {
@@ -129,7 +131,12 @@ impl<'a> RustMembers<'a> {
         }
         let mut trait_defaults = HashMap::<&str, Vec<&Node>>::new();
         for facts in all.values() {
-            for edge in facts.as_ref().edges.iter().filter(|edge| edge.kind == "contains") {
+            for edge in facts
+                .as_ref()
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == "contains")
+            {
                 let (Some(owner), Some(method)) =
                     (by_id.get(edge.src.as_str()), by_id.get(edge.dst.as_str()))
                 else {
@@ -140,7 +147,10 @@ impl<'a> RustMembers<'a> {
                     && method.details["trait_default"] == true
                     && method.details["unproven_bounds"] != true
                 {
-                    trait_defaults.entry(owner.id.as_str()).or_default().push(method);
+                    trait_defaults
+                        .entry(owner.id.as_str())
+                        .or_default()
+                        .push(method);
                 }
             }
         }
@@ -150,7 +160,32 @@ impl<'a> RustMembers<'a> {
             visible_traits: HashMap::new(),
             trait_members: HashMap::new(),
             receivers_by_method: HashMap::new(),
+            dynamic_declarations: HashMap::new(),
+            dynamic_implementors: HashMap::new(),
         };
+        for facts in all.values() {
+            for edge in facts
+                .as_ref()
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == "contains")
+            {
+                let (Some(owner), Some(method)) =
+                    (by_id.get(edge.src.as_str()), by_id.get(edge.dst.as_str()))
+                else {
+                    continue;
+                };
+                if owner.kind == "trait"
+                    && method.kind == "method"
+                    && method.details["is_static"] != true
+                    && method.details["unproven_bounds"] != true
+                {
+                    index
+                        .dynamic_declarations
+                        .insert((owner.id.as_str(), method.name.as_str()), method);
+                }
+            }
+        }
         for facts in all.values() {
             let facts = facts.as_ref();
             let Some(module) = facts
@@ -167,8 +202,14 @@ impl<'a> RustMembers<'a> {
             {
                 if import.alias.as_deref() == Some("*") {
                     let target_expr = import.module.as_deref().unwrap_or(&import.expression);
-                    if let Some(normalized) = super::RUST.normalize_import(&module.path, target_expr) {
-                        for target in by_qual.get(normalized.namespace.as_str()).into_iter().flatten() {
+                    if let Some(normalized) =
+                        super::RUST.normalize_import(&module.path, target_expr)
+                    {
+                        for target in by_qual
+                            .get(normalized.namespace.as_str())
+                            .into_iter()
+                            .flatten()
+                        {
                             if target.kind == "trait" {
                                 index
                                     .visible_traits
@@ -259,11 +300,7 @@ impl<'a> RustMembers<'a> {
                     .entry(owner.id.as_str())
                     .or_default()
                     .insert((method.name.as_str(), associated));
-                let key = (
-                    receiver.id.as_str(),
-                    method.name.as_str(),
-                    associated,
-                );
+                let key = (receiver.id.as_str(), method.name.as_str(), associated);
                 if let Some(trait_node) = trait_node {
                     index
                         .traits
@@ -330,6 +367,32 @@ impl<'a> RustMembers<'a> {
             methods.sort_by_key(|method| &method.id);
             methods.dedup_by_key(|method| method.id.as_str());
         }
+        for ((_, member, associated), methods) in &index.traits {
+            if *associated {
+                continue;
+            }
+            for (method, trait_node) in methods {
+                let key = (trait_node.id.as_str(), *member);
+                if index
+                    .dynamic_declarations
+                    .get(&key)
+                    .is_some_and(|declaration| declaration.id != method.id)
+                {
+                    index
+                        .dynamic_implementors
+                        .entry(key)
+                        .or_default()
+                        .push(method);
+                }
+            }
+        }
+        for methods in index.dynamic_implementors.values_mut() {
+            methods.sort_by_key(|method| &method.id);
+            methods.dedup_by_key(|method| method.id.as_str());
+            if methods.len() > crate::engine::linker::value_flow::MAX_CANDIDATE_BRANCH_JOINS {
+                methods.clear();
+            }
+        }
         index.traits.clear();
         index.visible_traits.clear();
         index
@@ -358,6 +421,20 @@ impl<'a> RustMembers<'a> {
 
     pub(crate) fn receiver_for(&self, method: &Node) -> Option<&'a Node> {
         self.receivers_by_method.get(method.id.as_str()).copied()
+    }
+    pub(crate) fn dynamic_dispatch<'s>(
+        &'s self,
+        receiver: &'s Node,
+        member: &'s str,
+    ) -> Option<(&'a Node, &'s [&'a Node])> {
+        let key = (receiver.id.as_str(), member);
+        let declaration = self.dynamic_declarations.get(&key)?;
+        Some((
+            *declaration,
+            self.dynamic_implementors
+                .get(&key)
+                .map_or(&[], Vec::as_slice),
+        ))
     }
 }
 

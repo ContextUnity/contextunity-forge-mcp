@@ -94,7 +94,7 @@ fn receiver_rebinding_shadowing_and_unspecified_types_stay_unresolved() {
         "def run(client: Worker, other):\n    client = other\n    return client.get()\n",
         "def run(client): return client.get()\n",
         "def run(client: Worker):\n    def nested(client): return client.get()\n    return nested(client)\n",
-        "def run(client: Worker | None): return client.get()\n",
+        "def run(client: Worker | Other): return client.get()\n",
         "def run(*client: Worker): return client.get()\n",
         "def run(**client: Worker): return client.get()\n",
         "def outer(Worker):\n    def inner(client: Worker): return client.get()\n    return inner\n",

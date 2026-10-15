@@ -291,7 +291,7 @@ impl CoverageDictionaryCache {
                     graph
                         .coverage
                         .iter()
-                        .map(|coverage| coverage.evidence.as_str()),
+                        .map(|coverage| coverage.evidence.as_ref()),
                 ),
         )
     }
