@@ -2,7 +2,8 @@
 id: m-language-parsers-and-declarative-framework-packs
 title: Declarative framework packs, rule externalization, and 3-tier language parsers
 doc_type: contract
-status: planned
+status: active
+started_at: 2026-10-16T08:05:00+00:00
 depends_on:
 - m-declarative-framework-packs-and-cold-build-pipeline
 owners:
