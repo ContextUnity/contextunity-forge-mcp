@@ -23,9 +23,9 @@ Forge MCP serves two primary environments: AI coding assistants over the JSON-RP
 3. **Emergency Recovery & Scriptability**:
    - Administrative overrides, index maintenance, database migrations, and task state resets remain executable directly via CLI without an active MCP JSON-RPC session.
 4. **Modularity Invariant: Domain-Driven Type and Language Decomposition**:
-   - **Type Layering (`src/core/`)**: Shared domain models are grouped by functional responsibility into dedicated submodules (`graph`, `semantic`, `docs`, `compact`). Business logic and query traversal remain strictly separated from core data definitions.
-   - **Self-Contained Language Subsystems (`src/engine/languages/<lang>/`)**: Complex language engines (exceeding 500 lines or requiring language-specific linking/value-flow rules) are organized as self-contained packages containing their AST visitor, language-specific value flow, and linker profile.
-   - **Language-Agnostic Linker Core (`src/engine/linker/`)**: The core graph linker operates exclusively through the `LanguageLinker` trait contract, keeping graph assembly and SQLite persistence free of language-specific `match` branching.
+   - **Type Layering (`src/core/`)**: Shared leaf models and domain contracts are isolated in `src/core/` (`adapter.rs`, `commitments.rs`, `fs.rs`, `git.rs`, `models.rs`, `response.rs`, `schema.rs`, `semantic.rs`, `sys.rs`, `tasks/`, `typed_facts.rs`). Business logic, storage, and graph traversal remain strictly downstream in `src/db/` and `src/engine/`.
+   - **Self-Contained Language Subsystems (`src/engine/languages/`)**: Language subsystems are organized into language profiles (`python`, `rust`, `html`, `vue`, `typescript`, `manifests`) with dedicated visitors, value flow rules, and grammar bindings.
+   - **Language-Agnostic Linker Core (`src/engine/linker/`)**: The core graph linker operates through language contracts and framework relations, keeping graph assembly and SQLite persistence cohesive and modular.
    - **Cohesive Module Boundaries**: Group production and test code by cohesive responsibility, owned inputs and outputs, and concrete producer/consumer seams. Use file length to find candidates for review; do not set a universal line ceiling or target a fixed child-module size.
 
 ## Consequences

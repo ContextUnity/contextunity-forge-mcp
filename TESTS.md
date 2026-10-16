@@ -13,7 +13,7 @@ isolation.
 
 Run the focused test command required by the admitted task contract. Record the
 exact command, exit code, passing count, and failing count in the active
-`build/v1` proof. This focused contract/build proof uses the narrowest real
+`build` proof. This focused contract/build proof uses the narrowest real
 production seam that proves the task; it is separate from the affected-target
 gate below.
 

@@ -31,7 +31,7 @@ the actual pass count on the green run.
 Use the appropriate domain suite for a task outside `acdd` (`core`, `languages`,
 `linker`, `incremental`, `mcp`). Run `cargo test --test commitment_integrity`
 when changing commitment or storage invariants. When test targets or suites
-change, update the affected instructions during `build/v1` per the
+change, update the affected instructions during `build` per the
 [ACDD contract](../reference/acdd.md#documentation-and-instructions-co-evolution).
 
 Performance-sensitive changes also use the benchmark procedure in root

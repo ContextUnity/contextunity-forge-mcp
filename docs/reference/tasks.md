@@ -86,8 +86,7 @@ After a `reject_to` rewind, `rejection` gives
 `rejected_from`, the prior builder `worker_id` when reuse is enabled, and the
 persisted findings; it is null on clean forward runs. Reuse guidance adds
 `Return task to builder '{worker_id}' with review rejection findings to repair defects.`
-If the instruction file is missing, does not name the `contextunity-forge` skill, or that skill is not installed globally or in the repository, the response includes `TASK_GUIDANCE_MISSING`,
-inline steps.
+If the instruction file is missing, does not name the `contextunity-forge` skill, that skill is not installed globally or in the repository, or `.gitignore` lacks the canonical protective rules, the response includes `TASK_GUIDANCE_MISSING` and inline steps.
 
 Scope paths are checked in both their owner's root and the task's claimed isolated
 worktree. Traversal and symlinks into another repository are rejected. Nested

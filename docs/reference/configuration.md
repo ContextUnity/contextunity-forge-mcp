@@ -73,9 +73,9 @@ storage configuration.
 
 Set root `agents_guidance` to a path inside the root repository. It defaults to
 `AGENTS.md`. Claim and inspect include that path and stage-specific
-`workflow_guidance`. If `docs/reference/acdd.md` is missing, they include inline
-steps, a `TASK_GUIDANCE_MISSING` warning, and the canonical URL of that page.
-A missing `agents_guidance` file does not raise that warning.
+`workflow_guidance`. A `TASK_GUIDANCE_MISSING` warning is raised if the `agents_guidance`
+file is missing, does not reference `contextunity-forge`, the `contextunity-forge` skill
+is not installed, or `.gitignore` lacks the canonical protective rules.
 
 Linked entries opt into the primary task store with `tasks.enabled: true`.
 `tasks.milestones_dir` defaults to `docs/milestones`, and `tasks.agents_guidance`

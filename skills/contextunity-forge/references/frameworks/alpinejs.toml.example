@@ -1,0 +1,41 @@
+# Example .forge/frameworks/alpinejs.toml
+# Framework rules consumed by the Forge language linker for Alpine.js directives and magic properties.
+# All four sections (receivers, builtins, filters, routes) are required by the schema.
+
+receivers = [
+  "$el",
+  "$refs",
+  "$event",
+  "$dispatch",
+  "$nextTick",
+  "$watch",
+  "$store",
+  "$data",
+  "$id",
+  "$root",
+  "$parent",
+]
+
+builtins = [
+  "x-data",
+  "x-init",
+  "x-show",
+  "x-bind",
+  "x-on",
+  "x-text",
+  "x-html",
+  "x-model",
+  "x-for",
+  "x-transition",
+  "x-effect",
+  "x-ignore",
+  "x-ref",
+  "x-cloak",
+  "x-teleport",
+  "x-if",
+  "x-id",
+]
+
+filters = []
+
+routes = []

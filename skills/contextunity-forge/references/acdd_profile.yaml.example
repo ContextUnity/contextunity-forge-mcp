@@ -50,7 +50,7 @@ gates:
     tools: ["task_claim", "code_map_inspect"]
     steps:
       - "Write or identify one production-seam test for the task contract."
-      - "Post the draft to task_blackboard with topic=draft and gate=build."
+      - "Post the draft to task_blackboard with topic=draft and gate=implement."
       - "Submit contract_proof with seam_test_ref and red_exit_code."
 
   - id: implement

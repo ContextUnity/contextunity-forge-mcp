@@ -104,6 +104,7 @@ Task claims inject standing runtime guardrails into `workflow_guidance.rules`:
 - `IMMUTABILITY`: Keep admitted scope unchanged after review pass and during deliver.
 - `INDEPENDENCE`: Review stage requires a worker_id distinct from the accepted builder.
 - `NO_PREFLIGHT_SUBAGENTS`: Start the active gate work without launching preflight subagents.
+- `NEVER_EDIT_RECEIPTS`: Never manually edit receipt: or status: blocks in docs/milestones/*.md; task_submit(stage=deliver) writes and commits receipts automatically.
 
 The embedded profile has `contract_author`, `builder`, and `independent_reviewer` subagent roles. The contract author posts the draft on the task blackboard with `topic=draft` and `gate=build`; the same independent reviewer session continues through review and delivery. Registered command guidance includes scoped test commands, and `expected_evidence_template` is bound to the active task, stage, revisions, worker, and worktree. Contract/build context carries indexed `external_callers`, direct and two-hop `covering_tests`, and ADR invariant summaries. Contract seams must reach an in-scope production symbol; changed public signatures with out-of-scope indexed callers fail with `TASK_SEAM_DISCONNECTED` or `TASK_SCOPE_INCOMPLETE` as applicable.
 
@@ -177,8 +178,7 @@ linked_workspaces:
       - src
     tasks:
       enabled: true
-      repository: shared-core
-      project: shared-core
+      milestones_dir: docs/milestones
       agents_guidance: AGENTS.md
 tasks_db: .forge/tasks.sqlite
 task_repository: forge-mcp
@@ -209,7 +209,7 @@ response:
 `task_list` accepts `parked` to select tasks waiting for a scope owner while retaining worker/worktree affinity. `task next --worker WORKER --worktree PATH [--workspace WS]` exposes the same atomic dispatch as `task_manage(action: "next", worker_id, worktree, workspace?)`; it prioritizes independent delivery, independent review, the requesting worker's unblocked parked work, then ordinary ready work by wave and task ID. It returns claim context or `status: "idle"` when no work is eligible.
 
 ### Discovery & Search
-- `code_map_overview(include_gaps?, limit?, offset?, generation?)`: Workspace component inventory, module hierarchy, indexing metrics, coverage diagnostics, and paged `analysis_gaps`.
+- `code_map_overview(aspects?, limit?, offset?, detail?, generation?)`: Workspace component inventory, module hierarchy, indexing metrics, coverage diagnostics, and paged `analysis_gaps`.
 - `code_map_search(pattern, kind?, detail?, limit?, offset?, generation?)`: Fast BM25 full-text and prefix symbol search.
 - `ast_grep_search(pattern, language, path?, limit?, offset?, generation?)`: Tree-sitter AST syntax matching with `$NAME` and `$$$ARGS` captures.
 - `search_docs(query, doc_type?, component?, limit?)`: Full-text search across documentation, guides, and ADRs.

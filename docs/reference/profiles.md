@@ -36,52 +36,86 @@ A complete profile YAML consists of five primary sections:
 # .forge/acdd/profile.yaml
 gates:
   - id: contract
-    proof: { kind: contract }
+    role: contract_author
+    proof: contract
+    steps:
+      - "Author a sensitive failing seam test."
   - id: build
-    proof: { kind: command }
-    command: "cargo test --locked"
+    role: builder
+    proof: command
     sha_snapshot: true
+    steps:
+      - "Implement approved contract inside the declared allowed_write_scope."
   - id: review
-    proof: { kind: review }
+    role: independent_reviewer
+    proof: review
     independent_from: build
     reject_to: build
+    contours: standard
+    steps:
+      - "Inspect candidate diff and verify contours."
   - id: deliver
-    proof: { kind: delivery }
+    role: independent_reviewer
+    proof: delivery
+    auto_commit: true
     independent_from: build
+    review_sources:
+      - review
+    reject_to: build
+    contours: standard
+    steps:
+      - "Submit delivery proof."
 
 contours:
-  default:
-    - paths
-    - claims
-    - concurrency
-    - project_isolation
-    - administration
+  standard:
+    paths:
+      description: "Verify changes stay within the task's admitted write perimeter."
+      criteria:
+        - "Compare every changed file with the task's initial scope."
+    claims:
+      description: "Verify each accepted contract claim is implemented."
+      criteria:
+        - "Trace every invariant to the production code path."
 
 roles:
+  contract_author:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'sol-6.1:high'
+    guidance: "Define the production-seam contract."
+
   builder:
     mode: subagent
     reuse_on_reject: true
     models:
       - 'gpt6-luna:xhigh'
-      - 'claude-3-7-sonnet'
     guidance: "Implement passing production code and green unit tests."
 
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
     models:
-      - 'sol-6.1:high'
-      - 'o3-mini'
-    guidance: "Audit the candidate diff across the 5 quality contours."
+      - 'sol-6.1:xhigh'
+    guidance: "Audit the candidate diff across the quality contours."
 
 commands:
   rust-check-and-test:
     command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
     description: "Run strict Rust checks followed by the repository's test suite."
+  test:
+    command: "cargo test"
+    description: "Run test suite."
 
 policies:
-  auto_commit: true
-  worker_reuse_on_reject: true
+  delivery:
+    atomic_receipt: true
+  proof:
+    command:
+      require_zero_exit: true
+  review:
+    independent_worker: true
+    require_all_contours: true
 ```
 
 The embedded profile also registers `test: cargo test` for compatibility with

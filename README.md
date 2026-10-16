@@ -204,7 +204,7 @@ MCP is the surface agents use. The CLI is the same operations for a terminal, pl
 | Build or refresh the map | First overview, then automatic refresh | `scan`, `build`, `delta` |
 | Find and read symbols | `code_map_search`, `code_map_inspect`, `get_code_snippet`, `ast_grep_search` | `query search`, `query inspect`, `ast grep` |
 | Callers, impact, tests | `code_map_explain`, `code_map_impact`, `code_map_tests`, `code_map_prove_removal` | `query explain`, `query impact`, `query tests`, `query remove` |
-| Diagnostics and SQL | `code_map_analyze`, `code_map_query` | `query analyze`, `query sql` |
+| Diagnostics and SQL | `code_map_analyze`, `code_map_query` | `query analyze`, `query run sql` |
 | Documentation | `search_docs`, `get_doc` | `docs search`, `docs get` |
 | Task queue | `task_list`, `task_claim`, `task_submit`, `task_manage`, `task_blackboard` | `task …` |
 | Session notes and help | `session_checkpoint`, `forge_guide` | `guide init`, `guide validate` |
@@ -238,7 +238,7 @@ Call `code_map_overview` once. That first call creates the index. On Unix, `cont
 
 ### Skills
 
-Install the `contextunity-forge` skill where the agent loads skills (`~/.agents/skills/contextunity-forge/` or `.agents/skills/contextunity-forge/` in the repo). Claim and inspect report `TASK_GUIDANCE_MISSING` when that skill is absent or when `AGENTS.md` does not name it.
+Install the `contextunity-forge` skill where the agent loads skills (`~/.agents/skills/contextunity-forge/` or `.agents/skills/contextunity-forge/` in the repo). Claim and inspect report `TASK_GUIDANCE_MISSING` when that skill is absent, when `AGENTS.md` does not name it, when the guidance file is missing, or when `.gitignore` lacks the canonical protective rules.
 
 In the repository `AGENTS.md`, tell the agent to load `contextunity-forge`, to follow `workflow_guidance` from the claim, and to use this repo's `TESTS.md` for verification commands. The copy-paste router is [`agents.md.example`](skills/contextunity-forge/references/agents.md.example).
 

@@ -29,8 +29,8 @@ CLI build / scan / delta             MCP request
 > share the same underlying storage, analysis, and execution engines (see [ADR 0001](../adr/0001-dual-surface-parity.md)).
 
 - `src/cli/` owns command parsing, build commands, and command output.
-- `src/mcp/` owns the 15 tool schemas, request validation, freshness checks, and bounded responses.
-- `src/engine/scanner.rs` owns admitted file inventory, roots, ignores, linked workspaces, and scan limits.
+- `src/mcp/` owns the 20 tool schemas, request validation, freshness checks, and bounded responses.
+- `src/engine/scanner/` owns admitted file inventory, roots, ignores, linked workspaces, and scan limits.
 - `src/engine/languages/` and `src/engine/ast/` extract syntax facts for enabled language profiles. A `LanguageProfile` owns parsing and import normalization; a `LanguageLinker` owns language-specific import, receiver, and incremental-linking rules. The shared linker builds namespace indexes and graph edges through those contracts. `src/engine/docs.rs` extracts Markdown documents and heading sections.
 - `src/engine/linker/semantic_context.rs` exposes borrowed, read-only access to prebuilt language member indexes through `LanguageMemberLookup`. `src/engine/linker/framework_relations.rs` composes cross-language route and template relationships after ordinary reference resolution; its graph output joins through the common deterministic sort.
 - The linker connects facts using indexed files and configured workspace boundaries. An edge may remain unresolved or external when its target cannot be established statically.

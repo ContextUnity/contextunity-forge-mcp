@@ -21,7 +21,7 @@ The custom Tree-sitter walk in the framework manifest loader duplicated TOML sem
 1. Read user framework manifests from `.forge/frameworks/` with `.toml`, `.yaml`, or `.yml` extensions. Use the file stem as the framework identifier.
 2. Parse TOML with `toml = "0.8"` and YAML with the existing `serde_yaml = "0.9"` dependency, deserializing both formats into the same serde-derived typed manifest.
 3. Require `receivers`, `builtins`, `filters`, and `routes` to be arrays. Reject missing sections, non-array values, malformed input, unknown top-level sections, and all parser errors before index publication.
-4. Preserve the existing `LanguageLinker` seam, language-owned grammar and lexical rules, dependency-gated activation, and equivalence requirements from ADR 0013.
+4. Preserve the existing `LanguageLinker` seam, language-owned grammar and lexical rules, and equivalence requirements from ADR 0013. Reconcile manifest activation: workspace framework manifests placed in `.forge/frameworks/<id>.toml` (or `.yaml`) activate unconditionally for the workspace, supporting `extend: true` and `replace: true`; bundled fallback manifests activate when `DependencyRegistry` reports that the project declares that framework, or when explicitly enabled.
 
 ## Consequences
 

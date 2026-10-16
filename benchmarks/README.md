@@ -18,6 +18,26 @@ python3 benchmarks/cold_test_coverage_benchmark.py \
   --repeats 5
 ```
 
+Use `cold_memory_budget_benchmark.py` on an isolated workspace copy to compare
+adaptive cold builds and measure candidate extraction budgets. Keep the copy's
+enabled linked workspaces inside the isolated snapshot, and omit an explicit
+`limits.memory_budget_mb` there so the matrix's environment override takes effect.
+The runner uses the selected profile, alternates paired build order, reverses
+budget order between repetitions, and records every wall time, peak RSS, graph
+summary, and Merkle output root. Its JSON report includes medians and whether all
+output roots are bit-identical. The budget controls extraction working memory;
+peak process RSS also includes retained facts, linking, and SQLite.
+
+```sh
+python3 benchmarks/cold_memory_budget_benchmark.py \
+  --profile benchmarks/profiles/commerce-release-update.json \
+  --workspace /path/to/isolated/workspace \
+  --baseline-binary /path/to/older/contextunity-forge-mcp \
+  --candidate-binary /path/to/newer/contextunity-forge-mcp \
+  --repeats 5 --matrix-repeats 3 --budgets-mb 50 200 500 1000 \
+  --output /tmp/cold-memory-budget.json
+```
+
 ```sh
 FORGE_BENCH_ROOT=/path/to/workspace \
 FORGE_BENCH_BASELINE=/path/to/baseline/contextunity-forge-mcp \

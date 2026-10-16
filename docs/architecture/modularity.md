@@ -53,8 +53,14 @@ Decouples language-specific import and receiver resolutions from the core SQLite
 - Import resolution (e.g. Python `__init__.py` re-export chains, TypeScript `tsconfig.json` path mapping, Rust `use crate::` paths).
 - Receiver inference (method binding on class instances, struct instances, or prototypes).
 - Standard library and external package classification, ensuring third-party symbols are properly marked `external_origin` rather than leaking into `unresolved`.
-- Framework receivers, builtins, filters, and routes come from typed `FrameworkManifest` data. Bundled tables live under `src/engine/languages/manifests/` and are embedded in the binary; workspace manifests load from `.forge/frameworks/` and activate only for declared dependencies. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
+- Framework receivers, builtins, filters, and routes come from typed `FrameworkManifest` data. Bundled tables live under `src/engine/languages/manifests/` and are embedded in the binary (activating when declared in project dependencies or explicitly enabled); workspace manifests load from `.forge/frameworks/` and activate unconditionally for the workspace, supporting `extend: true` and `replace: true`. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
 - `DependencyRegistry` owns workspace dependency discovery and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs.
+
+### 4. Three-Tier Language Architecture
+Languages and extensions decompose into three explicit tiers:
+- **Tier 1 (Declarative SyntaxGrammarSpec)**: Pure structural symbol and scope extraction driven by declarative kind tables (~80 LOC) without custom imperative AST traversals.
+- **Tier 2 (Single-Pass AST Extractor)**: Unified `SinglePassExtractor` traversing declaration bodies in a single DFS pass with an enter/exit `ScopeFrame` stack, integrating language hooks for binding and value-flow analysis without redundant subtree walks.
+- **Tier 3 (Polyglot Semantic Linker)**: Deep language-specific member index construction, C3 inheritance resolution, and cross-layer framework relation composition.
 
 ## Language resolution ownership
 
