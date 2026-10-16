@@ -53,6 +53,9 @@ pub struct ScannerLimits {
     #[serde(default)]
     /// Whether allow broad root applies.
     pub allow_broad_root: bool,
+    #[serde(default, skip_serializing)]
+    /// Optional transient memory budget in MiB; YAML takes precedence over the environment.
+    pub memory_budget_mb: Option<u64>,
 }
 
 fn default_max_files() -> usize {
@@ -74,8 +77,57 @@ impl Default for ScannerLimits {
             max_file_bytes: default_max_file_bytes(),
             max_total_bytes: default_max_total_bytes(),
             allow_broad_root: false,
+            memory_budget_mb: None,
         }
     }
+}
+
+/// Resolves the transient working-memory budget from YAML, environment, or available memory.
+pub fn resolve_memory_budget_bytes(limits: &ScannerLimits) -> std::io::Result<u64> {
+    if let Some(mebibytes) = limits.memory_budget_mb {
+        return bytes_from_mebibytes(mebibytes);
+    }
+    let environment = match std::env::var("FORGE_MEMORY_BUDGET_MB") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(error("FORGE_MEMORY_BUDGET_MB must be valid UTF-8"));
+        }
+    };
+    let configured_mb = memory_budget_mb_from_sources(None, environment.as_deref())?;
+    let Some(mebibytes) = configured_mb else {
+        return Ok(memory_budget_bytes());
+    };
+    bytes_from_mebibytes(mebibytes)
+}
+
+fn memory_budget_mb_from_sources(
+    configured_mb: Option<u64>,
+    environment_mb: Option<&str>,
+) -> std::io::Result<Option<u64>> {
+    match configured_mb {
+        Some(value) => Ok(Some(value)),
+        None => environment_mb
+            .map(|value| {
+                let mebibytes = value
+                    .parse::<u64>()
+                    .map_err(|_| error("FORGE_MEMORY_BUDGET_MB must be a positive integer"))?;
+                if mebibytes == 0 {
+                    return Err(error("FORGE_MEMORY_BUDGET_MB must be a positive integer"));
+                }
+                Ok(mebibytes)
+            })
+            .transpose(),
+    }
+}
+
+fn bytes_from_mebibytes(mebibytes: u64) -> std::io::Result<u64> {
+    if mebibytes == 0 {
+        return Err(error("memory budget must be greater than zero MiB"));
+    }
+    mebibytes
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| error("memory budget in MiB overflows the byte range"))
 }
 
 const DEFAULT_IGNORED_NAMES: &[&str] = &[
@@ -138,6 +190,48 @@ pub struct ScanReport {
     pub elapsed_ms: u128,
     /// The entries value.
     pub entries: Vec<FileEntry>,
+}
+
+/// Source metadata captured by the cold-build walk before opening file content.
+#[derive(Debug, Clone)]
+pub(crate) struct BuildCandidate {
+    pub path: String,
+    pub bytes: u64,
+    pub mtime_ns: u128,
+    pub identity: [u64; 3],
+    pub language: String,
+    pub is_doc: bool,
+}
+
+impl BuildCandidate {
+    pub(crate) fn matches_metadata(&self, metadata: &fs::Metadata) -> bool {
+        !metadata.file_type().is_symlink()
+            && metadata.is_file()
+            && self.bytes == metadata.len()
+            && self.mtime_ns == metadata_mtime_ns(metadata)
+            && self.identity == metadata_identity(metadata)
+    }
+
+    pub(crate) fn into_entry(self, digest: String) -> FileEntry {
+        FileEntry {
+            path: self.path,
+            digest,
+            bytes: self.bytes,
+            mtime_ns: self.mtime_ns,
+            identity: self.identity,
+            language: self.language,
+            is_doc: self.is_doc,
+        }
+    }
+}
+
+/// Cold-build candidates and discovered dependency manifests from one traversal.
+pub(crate) struct BuildScanReport {
+    pub candidates: Vec<BuildCandidate>,
+    pub dependency_manifests: Vec<PathBuf>,
+    pub files: usize,
+    pub bytes: u64,
+    pub elapsed_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -428,6 +522,15 @@ fn metadata_identity(metadata: &fs::Metadata) -> [u64; 3] {
     }
 }
 
+fn metadata_mtime_ns(metadata: &fs::Metadata) -> u128 {
+    metadata
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
 fn cached_entry(
     full_path: &Path,
     rel_path: &str,
@@ -467,126 +570,13 @@ pub fn scan_reusing(
     previous: &[FileEntry],
 ) -> std::io::Result<ScanReport> {
     let started = Instant::now();
-    let mut candidates = Vec::new();
-    let mut seen_rel_paths = BTreeSet::new();
-    let configuration_paths: BTreeSet<_> = [root.join("forge-mcp.yaml")]
-        .into_iter()
-        .chain(adapter.adapter_path.iter().cloned())
-        .collect();
-
-    for source_root in &adapter.roots {
-        if !source_root.exists() {
-            continue;
-        }
-        let mut builder = WalkBuilder::new(source_root);
-        builder
-            .hidden(false)
-            .follow_links(false)
-            .same_file_system(true)
-            .git_ignore(true);
-        let ignored_names = adapter.ignored_names.clone();
-        builder.filter_entry(move |item| {
-            !item.path_is_symlink()
-                && !ignored_names.contains(&item.file_name().to_string_lossy().to_string())
-        });
-        for result in builder.build() {
-            let item = result.map_err(|e| error(e.to_string()))?;
-            if item.path_is_symlink()
-                || adapter
-                    .ignored_names
-                    .contains(&item.file_name().to_string_lossy().to_string())
-            {
-                continue;
-            }
-            if item.file_type().is_some_and(|kind| kind.is_file()) {
-                let full = item.into_path();
-                if configuration_paths.contains(&full) || language(&full).is_none() {
-                    continue;
-                }
-                if let Ok(rel) = full.strip_prefix(root) {
-                    let rel_str = rel.to_string_lossy().replace('\\', "/");
-                    if is_milestone_or_plan_path(&rel_str, &adapter.milestones, &adapter.plans)
-                        && !is_milestone_or_plan_readme(
-                            &rel_str,
-                            &adapter.milestones,
-                            &adapter.plans,
-                        )
-                    {
-                        continue;
-                    }
-                    push_candidate(
-                        &mut candidates,
-                        &mut seen_rel_paths,
-                        full,
-                        rel_str,
-                        adapter.limits.max_files,
-                    )?;
-                }
-            }
-        }
-    }
-
-    for lw in &adapter.linked_workspaces {
-        for ws_root in &lw.roots {
-            if !ws_root.exists() {
-                continue;
-            }
-            let mut builder = WalkBuilder::new(ws_root);
-            builder
-                .hidden(false)
-                .follow_links(false)
-                .same_file_system(true)
-                .git_ignore(true);
-            let ignored_names = lw.ignored_names.clone();
-            builder.filter_entry(move |item| {
-                !item.path_is_symlink()
-                    && !ignored_names.contains(&item.file_name().to_string_lossy().to_string())
-            });
-            for result in builder.build() {
-                let item = result.map_err(|e| error(e.to_string()))?;
-                if item.path_is_symlink()
-                    || lw
-                        .ignored_names
-                        .contains(&item.file_name().to_string_lossy().to_string())
-                {
-                    continue;
-                }
-                if item.file_type().is_some_and(|kind| kind.is_file()) {
-                    let full = item.into_path();
-                    if language(&full).is_none() {
-                        continue;
-                    }
-                    if let Ok(rel) = full.strip_prefix(&lw.path) {
-                        let rel_str_inner = rel.to_string_lossy().replace('\\', "/");
-                        if is_milestone_or_plan_path(
-                            &rel_str_inner,
-                            &adapter.milestones,
-                            &adapter.plans,
-                        ) && !is_milestone_or_plan_readme(
-                            &rel_str_inner,
-                            &adapter.milestones,
-                            &adapter.plans,
-                        ) {
-                            continue;
-                        }
-                        let rel_str = format!("[{}]/{}", lw.name, rel_str_inner);
-                        push_candidate(
-                            &mut candidates,
-                            &mut seen_rel_paths,
-                            full,
-                            rel_str,
-                            adapter.limits.max_files,
-                        )?;
-                    }
-                }
-            }
-        }
-    }
+    let (candidates, _) = collect_candidates(root, adapter)?;
 
     let previous: std::collections::BTreeMap<_, _> =
         previous.iter().map(|f| (f.path.as_str(), f)).collect();
     let max_file_bytes = adapter.limits.max_file_bytes;
-    let scan_budget = memory_budget_bytes().min(adapter.limits.max_total_bytes.max(1));
+    let scan_budget =
+        resolve_memory_budget_bytes(&adapter.limits)?.min(adapter.limits.max_total_bytes.max(1));
     let batch_size = bounded_batch_size(scan_budget, max_file_bytes, 1, candidates.len().max(1));
     let mut entries = Vec::new();
     let mut bytes = 0u64;
@@ -622,6 +612,267 @@ pub fn scan_reusing(
         elapsed_ms: started.elapsed().as_millis(),
         entries,
     })
+}
+
+/// Collects metadata and dependency manifest paths without opening source contents.
+pub(crate) fn scan_for_build(root: &Path, adapter: &Adapter) -> std::io::Result<BuildScanReport> {
+    let started = Instant::now();
+    let (paths, dependency_manifests) = collect_candidates(root, adapter)?;
+    let mut candidates = Vec::with_capacity(paths.len());
+    let mut bytes = 0u64;
+    for (full_path, relative_path) in paths {
+        let metadata = fs::symlink_metadata(&full_path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            continue;
+        }
+        let Some((language, is_doc)) = language(&full_path) else {
+            continue;
+        };
+        if metadata.len() > adapter.limits.max_file_bytes {
+            return Err(error(format!(
+                "file exceeds byte limit: {} ({} > max_file_bytes {})",
+                full_path.display(),
+                metadata.len(),
+                adapter.limits.max_file_bytes
+            )));
+        }
+        bytes = bytes
+            .checked_add(metadata.len())
+            .ok_or_else(|| error("workspace byte count overflow"))?;
+        if bytes > adapter.limits.max_total_bytes {
+            return Err(error(format!(
+                "workspace exceeds total byte limit ({} > max_total_bytes {})",
+                bytes, adapter.limits.max_total_bytes
+            )));
+        }
+        candidates.push(BuildCandidate {
+            path: relative_path,
+            bytes: metadata.len(),
+            mtime_ns: metadata_mtime_ns(&metadata),
+            identity: metadata_identity(&metadata),
+            language: language.to_owned(),
+            is_doc,
+        });
+    }
+    candidates.sort_by(|left, right| left.path.cmp(&right.path));
+    ensure_bounds(candidates.len(), bytes, &adapter.limits)?;
+    Ok(BuildScanReport {
+        files: candidates.len(),
+        candidates,
+        dependency_manifests,
+        bytes,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+type ScanCandidates = (Vec<(PathBuf, String)>, Vec<PathBuf>);
+
+fn collect_candidates(root: &Path, adapter: &Adapter) -> std::io::Result<ScanCandidates> {
+    let mut candidates = Vec::new();
+    let mut seen_rel_paths = BTreeSet::new();
+    let mut dependency_manifests = BTreeSet::new();
+    let configuration_paths: BTreeSet<_> = [root.join("forge-mcp.yaml")]
+        .into_iter()
+        .chain(adapter.adapter_path.iter().cloned())
+        .collect();
+
+    for source_root in &adapter.roots {
+        if !source_root.exists() {
+            continue;
+        }
+        let mut builder = WalkBuilder::new(source_root);
+        builder
+            .hidden(false)
+            .follow_links(false)
+            .same_file_system(true)
+            .git_ignore(true);
+        let ignored_names = adapter.ignored_names.clone();
+        builder.filter_entry(move |item| {
+            !item.path_is_symlink()
+                && !ignored_names.contains(&item.file_name().to_string_lossy().to_string())
+        });
+        for result in builder.build() {
+            let item = result.map_err(|e| error(e.to_string()))?;
+            if item.path_is_symlink()
+                || adapter
+                    .ignored_names
+                    .contains(&item.file_name().to_string_lossy().to_string())
+                || !item.file_type().is_some_and(|kind| kind.is_file())
+            {
+                continue;
+            }
+            let full = item.into_path();
+            if configuration_paths.contains(&full) {
+                continue;
+            }
+            let filename = full
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            let is_manifest =
+                super::languages::dependency_registry::is_dependency_manifest_filename(filename);
+            let is_source = language(&full).is_some();
+            if !is_manifest && !is_source {
+                continue;
+            }
+            let Ok(relative) = full.strip_prefix(root) else {
+                continue;
+            };
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            if is_milestone_or_plan_path(&relative, &adapter.milestones, &adapter.plans)
+                && !is_milestone_or_plan_readme(&relative, &adapter.milestones, &adapter.plans)
+            {
+                continue;
+            }
+            if is_manifest {
+                dependency_manifests.insert(full.clone());
+            }
+            if is_source {
+                push_candidate(
+                    &mut candidates,
+                    &mut seen_rel_paths,
+                    full,
+                    relative,
+                    adapter.limits.max_files,
+                )?;
+            }
+        }
+    }
+
+    for workspace in &adapter.linked_workspaces {
+        for workspace_root in &workspace.roots {
+            if !workspace_root.exists() {
+                continue;
+            }
+            let mut builder = WalkBuilder::new(workspace_root);
+            builder
+                .hidden(false)
+                .follow_links(false)
+                .same_file_system(true)
+                .git_ignore(true);
+            let ignored_names = workspace.ignored_names.clone();
+            builder.filter_entry(move |item| {
+                !item.path_is_symlink()
+                    && !ignored_names.contains(&item.file_name().to_string_lossy().to_string())
+            });
+            for result in builder.build() {
+                let item = result.map_err(|e| error(e.to_string()))?;
+                if item.path_is_symlink()
+                    || workspace
+                        .ignored_names
+                        .contains(&item.file_name().to_string_lossy().to_string())
+                    || !item.file_type().is_some_and(|kind| kind.is_file())
+                {
+                    continue;
+                }
+                let full = item.into_path();
+                let filename = full
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                let is_manifest =
+                    super::languages::dependency_registry::is_dependency_manifest_filename(
+                        filename,
+                    );
+                let is_source = language(&full).is_some();
+                if !is_manifest && !is_source {
+                    continue;
+                }
+                let Ok(relative) = full.strip_prefix(&workspace.path) else {
+                    continue;
+                };
+                let relative = relative.to_string_lossy().replace('\\', "/");
+                if is_milestone_or_plan_path(&relative, &adapter.milestones, &adapter.plans)
+                    && !is_milestone_or_plan_readme(&relative, &adapter.milestones, &adapter.plans)
+                {
+                    continue;
+                }
+                if is_manifest {
+                    dependency_manifests.insert(full.clone());
+                }
+                if is_source {
+                    push_candidate(
+                        &mut candidates,
+                        &mut seen_rel_paths,
+                        full,
+                        format!("[{}]/{relative}", workspace.name),
+                        adapter.limits.max_files,
+                    )?;
+                }
+            }
+        }
+        collect_source_root_manifests(
+            &workspace.path,
+            &workspace.roots,
+            &workspace.ignored_names,
+            &mut dependency_manifests,
+        )?;
+    }
+    collect_source_root_manifests(
+        root,
+        &adapter.roots,
+        &adapter.ignored_names,
+        &mut dependency_manifests,
+    )?;
+    Ok((candidates, dependency_manifests.into_iter().collect()))
+}
+
+fn collect_source_root_manifests(
+    workspace_root: &Path,
+    source_roots: &[PathBuf],
+    ignored_names: &BTreeSet<String>,
+    output: &mut BTreeSet<PathBuf>,
+) -> std::io::Result<()> {
+    let mut directories = BTreeSet::new();
+    for source_root in source_roots {
+        let mut directory = source_root.parent();
+        while let Some(path) = directory {
+            if !path.starts_with(workspace_root) || path == workspace_root {
+                break;
+            }
+            let relative = path
+                .strip_prefix(workspace_root)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            if relative.components().any(|component| {
+                component
+                    .as_os_str()
+                    .to_str()
+                    .is_some_and(|name| ignored_names.contains(name))
+            }) {
+                break;
+            }
+            directories.insert(path.to_path_buf());
+            directory = path.parent();
+        }
+    }
+    for directory in directories {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let filename = entry.file_name();
+            let Some(filename) = filename.to_str() else {
+                continue;
+            };
+            if ignored_names.contains(filename)
+                || !super::languages::dependency_registry::is_dependency_manifest_filename(filename)
+            {
+                continue;
+            }
+            let candidate = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&candidate) else {
+                continue;
+            };
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                continue;
+            }
+            let relative = candidate
+                .strip_prefix(workspace_root)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            output.insert(checked_child(workspace_root, relative)?);
+        }
+    }
+    Ok(())
 }
 
 fn push_candidate(
@@ -668,6 +919,75 @@ mod tests {
         );
         assert_eq!(bounded_batch_size(1, 0, 0, 10), 1);
         assert_eq!(bounded_batch_size(1_000, 1, 1, 4), 4);
+    }
+
+    #[test]
+    fn explicit_memory_budgets_validate_positive_mib_and_overflow() {
+        assert_eq!(bytes_from_mebibytes(50).unwrap(), 50 * 1024 * 1024);
+        assert!(bytes_from_mebibytes(0).is_err());
+        assert!(bytes_from_mebibytes(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn build_scan_excludes_ignored_manifests_from_source_root_ancestors() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "forge_ignored_ancestor_manifests_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        let source = root.join("packages/pkg/src");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            root.join("forge-mcp.yaml"),
+            "roots: [packages/pkg/src]\nignore: [package.json]\n",
+        )
+        .unwrap();
+        fs::write(root.join("packages/pkg/package.json"), "{}").unwrap();
+        fs::write(root.join("packages/package.json"), "{}").unwrap();
+        fs::write(
+            root.join("packages/pyproject.toml"),
+            "[project]\nname='kept'\n",
+        )
+        .unwrap();
+        fs::write(source.join("index.ts"), "export const value = 1;\n").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let adapter = load_adapter(&root, None).unwrap();
+        let report = scan_for_build(&root, &adapter).unwrap();
+        let manifests = report.dependency_manifests;
+
+        assert!(
+            manifests
+                .iter()
+                .any(|path| path.ends_with("packages/pyproject.toml")),
+            "ancestor traversal should retain an eligible manifest: {manifests:?}"
+        );
+        assert!(
+            manifests
+                .iter()
+                .all(|path| path.file_name().is_none_or(|name| name != "package.json")),
+            "ignored basenames must be excluded at every source-root ancestor: {manifests:?}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn yaml_memory_budget_precedes_the_environment() {
+        assert_eq!(
+            memory_budget_mb_from_sources(Some(200), Some("not-a-number")).unwrap(),
+            Some(200)
+        );
+        assert_eq!(
+            memory_budget_mb_from_sources(None, Some("50")).unwrap(),
+            Some(50)
+        );
+        assert!(memory_budget_mb_from_sources(None, Some("0")).is_err());
+        assert!(memory_budget_mb_from_sources(None, Some("bad")).is_err());
+        assert_eq!(memory_budget_mb_from_sources(None, None).unwrap(), None);
     }
 
     #[test]

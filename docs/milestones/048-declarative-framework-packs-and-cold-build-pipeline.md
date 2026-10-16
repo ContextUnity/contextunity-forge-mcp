@@ -133,44 +133,113 @@ receipt:
 
 ```yaml
 task_ref: cold-build-pipeline-and-parser-optimization
-target: "Eliminate cold build I/O bottlenecks and optimize parser pooling without regressing indexing fidelity"
+target: Eliminate cold build I/O bottlenecks and optimize parser pooling without regressing indexing fidelity
 proof_policy: seam-test-first
-contract_revision: 5
+contract_revision: 6
 scope:
-  - src/engine/scanner/mod.rs
-  - src/db/writer.rs
-  - src/engine/languages/dependency_registry.rs
-  - src/engine/languages/mod.rs
-  - src/engine/ast/mod.rs
-  - src/engine/languages/vue.rs
-  - docs/reference/cli.md
-  - docs/architecture/concurrency.md
-  - benchmarks/
-  - tests/core/storage_batches.rs
-  - tests/languages/typescript/frameworks.rs
-status: ready
+- src/engine/scanner/mod.rs
+- src/engine/scanner/adapter.rs
+- src/db/writer.rs
+- src/db/writer/memory_budget_tests.rs
+- src/engine/languages/dependency_registry.rs
+- src/engine/languages/mod.rs
+- src/engine/ast/mod.rs
+- src/engine/languages/vue.rs
+- src/engine/languages/vue/setup_facts.rs
+- docs/reference/cli.md
+- docs/reference/configuration.md
+- docs/architecture/concurrency.md
+- benchmarks/
+- tests/core/storage_batches.rs
+- tests/languages/typescript/frameworks.rs
+status: completed
 subtasks:
-  - subtask_ref: eliminate-double-file-read-and-digest
-    title: "Read and hash source files exactly once during cold build extraction within configurable RAM budget (limits.memory_budget_mb and FORGE_MEMORY_BUDGET_MB); benchmark on commerce-release-update across 50, 200, 500, 1000 MB to determine optimal throughput-to-memory operating point"
-    status: pending
-  - subtask_ref: eliminate-dependency-registry-second-walk
-    title: "Collect dependency manifest paths during scanner traversal while preserving discovery for root manifests outside source roots via direct existence checks, eliminating redundant WalkBuilder filesystem walks"
-    status: pending
-  - subtask_ref: expand-parser-pool-and-single-pass-vue
-    title: "Extend thread-local PARSER_POOL to all languages and optimize Vue script setup traversal"
-    status: pending
-  - subtask_ref: align-cli-and-concurrency-docs
-    title: "Align docs/reference/cli.md on open_or_rebuild auto-index behavior and update docs/architecture/concurrency.md to 20 MCP tools and modular task store paths"
-    status: pending
+- subtask_ref: eliminate-double-file-read-and-digest
+  title: Read and hash source files exactly once during cold build extraction within configurable RAM budget (limits.memory_budget_mb and FORGE_MEMORY_BUDGET_MB); benchmark on commerce-release-update across 50, 200, 500, 1000 MB to determine optimal throughput-to-memory operating point
+  status: completed
+  evidence: Final authorized 22-build series is recorded in benchmarks/results/048-cold-build.md and .json. Adaptive median was 13.551s baseline to 13.461s candidate (-0.664%); paired median change -2.359%. The 3-run 50/200/500/1000 MiB matrix selected 1000 MiB under the predeclared lowest-RSS-within-5%-of-fastest rule (12.825s median, 1,475,256,320-byte median peak RSS). Effective budget reporting matched each configured budget. All 38,818 persisted domain_commitments rows across 17 domains were bit-identical; per-binary roots were deterministic across budgets.
+- subtask_ref: eliminate-dependency-registry-second-walk
+  title: Collect dependency manifest paths during scanner traversal while preserving discovery for root and ancestor manifests outside source roots via direct existence checks across all language manifest filenames, eliminating redundant WalkBuilder filesystem walks
+  status: completed
+  evidence: Build ingestion now consumes manifest paths captured by scanner traversal and bounded direct ancestor/root probes; no redundant recursive manifest walk. Ancestor probing stops at the workspace root, skips configured ignored components, and accepts only checked non-symlink regular files. Nuxt boundary regression nuxt_autoimports_require_declared_project_and_preserve_local_shadow initially failed because plain/package.json beside plain/src was missed; after the bounded ancestor probe it passes in final cargo test --test languages --quiet (253 passed, 0 failed, 0 ignored).
+- subtask_ref: expand-parser-pool-and-single-pass-vue
+  title: Extend thread-local PARSER_POOL to all languages and optimize Vue script setup traversal
+  status: completed
+  evidence: 'Thread-local parser pool now retains parsers for all active profile ids while preserving the specialized JavaScript, TypeScript/TSX, Python, Rust, HTML, and grammar-fallback keys. Vue script-setup fact extraction consolidates the prior repeated tree walks into one depth-first traversal and preserves callable, typed prop/iterable/slot, shadowing, reassignment, and component outputs. Verification: cargo test --test languages vue_ passed 26/26; final cargo test --test languages --quiet passed 253/253 with no ignored tests.'
+- subtask_ref: align-cli-and-concurrency-docs
+  title: Align docs/reference/cli.md on open_or_rebuild auto-index behavior, docs/reference/configuration.md on memory budget precedence, and update docs/architecture/concurrency.md to 20 MCP tools and modular task store paths
+  status: completed
+  evidence: Updated docs/reference/cli.md to distinguish missing/schema-incompatible index auto-build from existing-index source refresh, and docs/architecture/concurrency.md to describe 20 MCP tools with task-store paths under src/db/tasks_store/ and src/engine/tasks/. Also documented memory_budget_mb and FORGE_MEMORY_BUDGET_MB precedence/validation in docs/reference/configuration.md. git diff --check passed; full lib/core/languages gates pass.
+receipt:
+  contract_revision: 6
+  passed_at: 2026-10-16T05:30:40.833555509+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib
+      exit_code: 0
+      tests_passed: 55
+      tests_failed: 0
+      log: |-
+        Additional build evidence for Task2, contract revision 6, claim revision 15.
+        Focused seams: cold_build_reads_source_once_and_preserves_durable_facts in src/db/writer/memory_budget_tests.rs passed 1/1 and remains a direct caller of writer::build in graph generation a52d9caec68a599902f3de977fc56077c917cf97c2c9e39f2800946941d9ea8c. public_extraction_rejects_a_file_entry_digest_mismatch in tests/core/storage_batches.rs passed 1/1.
+        F1: extract_candidate performs the single cold SHA-256 and passes it to extract_typed_source_with_digest. Public and delta extraction still hashes and rejects a stale or mismatched FileEntry digest before facts publication. The public mismatch regression remains green.
+        F2: mixed ordinary JS/TS script macro calls no longer poison eligible TypeScript setup slots. Consumer regression vue_typed_slot_members_follow_imported_component_provider is green in all-targets. Pre-fix actual RED is blackboard195; removing only the setup_script guard reproduced RED and was restored.
+        F3: root and bounded ancestor probes apply the owning workspace ignored basenames, including linked scopes. ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt is green in all-targets. Pre-fix actual RED is blackboard196; independent root-probe and ancestor-probe mutations each reproduced consumer RED and were restored.
+        F4: cli_memory_budget_precedence_fallback_and_rejection_are_observable uses child processes and proves YAML over environment, environment fallback, adaptive fallback, malformed/zero/u64-overflow rejection, and no publication on invalid settings. A YAML-selection mutation reproduced RED and was restored; broader invalid-input branch assertions are in the test.
+        F5: docs/reference/configuration.md now distinguishes stable fixture/domain commitments from the global root that includes source/config fingerprinting. No fingerprint or commitment algorithm was changed.
+        Registered affected gates: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib, job shell_8e63724cca39b48e, exit 0, strict Clippy clean, lib 55 passed/0 failed/0 ignored. cargo test --test core && cargo test --test languages, job shell_36f703d6548bc616, exit 0, core 33 passed/0 failed/1 ignored and languages 254 passed/0 failed/0 ignored; affected total 342/0/1.
+        Full staged lifecycle gate: cargo test --all-targets, job shell_9a0f59f39b008602, exit 0, 725 passed/0 failed/1 ignored. Per-target: lib55, acdd102, cli_roots7, commitment_integrity16, core33+1 ignored, impact_context4, incremental30, languages254, linked_workspaces2, linker102, mcp78, query_context42; main binary has 0 tests.
+        Release: cargo build --release job shell_14022629cb2c038a exit 0; candidate binary SHA-256 011c9f0ffdd95515bcb0164ef893cf4faa083e84258b3e6e9b9383a07bb1f877. Refreshed graph generation a52d9caec68a599902f3de977fc56077c917cf97c2c9e39f2800946941d9ea8c: 289 files, 5594 nodes, 18661 edges; direct cold-test call to writer::build verified.
+        Controlled performance gate: 20 builds, job shell_a4207cb3d8eac9b3, passed. Human report benchmarks/results/048-cold-build.md; raw benchmarks/results/048-cold-build-capacity.json. Baseline binary SHA-256 86db2392333637d863f9eac4f17a3317de2b8d508a8a07a782b15b85d3543ee0; candidate SHA-256 011c9f0ffdd95515bcb0164ef893cf4faa083e84258b3e6e9b9383a07bb1f877. Wall medians 15.751s to 15.010s (-4.704%); median paired change -3.624%, satisfying both predeclared non-regression metrics. All 38818 persisted fixture Merkle rows are bit-identical with aggregate SHA-256 d98db364a389041b75c69959b2a522d590c287d83afdf3261b098fe061133e50. Graph counts, components, resolved coverage, and database size match; roots are deterministic within each binary. Cross-version output roots differ because the global root includes the source fingerprint; candidate output root a999a1e6424d855b0e5f16094ecea059bcce7db3f380c345c5184efb130b34ab. Adapter SHA-256 7a2cf281264658ca204454ca59d3ef487b4d6bffa183f12b814bb9da5a683f1e.
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed frozen candidate 85ffeeb7 against accepted contract revision 6 and the original complete review. Bounded closure F1-F5 and buffer-reserve repair stay within admitted source, tests, docs and benchmarks. git diff --check passed. Reviewer made no source/docs/index/benchmark changes. External milestone031 and the approved neighboring Task4 manifest block are preserved for the coordinator; no unrelated staging or manual receipts.
+        claims:
+          applicable: true
+          evidence: 'All F1-F5 closed with no residual: cold extract_candidate hashes its single bounded open/read once, passes the digest to the shared validator, and public/delta paths retain mismatch rejection; Vue assigned defineSlots invalidation again requires setup_script && typescript, with valid ordinary-script/TS-setup consumer positives and existing assigned/shadow negatives; root/discovered/ancestor manifest probes filter ignored basenames while retaining bounded non-symlink probes and package variants; public child-process CLI tests prove YAML over env, env fallback, adaptive omission, malformed/zero/overflow rejection without DB publication, and unchanged ordered durable domain commitments; docs distinguish facts/domain commitments from explicit YAML config fingerprinting. Checked reserve converts candidate size safely and preserves max-file, metadata, no-follow and post-read checks. Actual historical red and mutation evidence are retained honestly in .forge/tasks/048-evidence/task2-review-closure.md. Independent required gates all exit 0: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib (55 passed, 0 failed, 0 ignored; archive 946a8ee13843c4fd), cargo test --test core (33 passed, 0 failed, 1 ignored; b724e67396411244), cargo test --test languages (254 passed, 0 failed, 0 ignored; 9e933a6e3eba7804); aggregate 342 passed, 0 failed, 1 ignored. The cold one-read/durable-facts native unit seam, public wrong-digest test, ignored Nuxt consumer and typed-slot consumer ran in these complete targets. Both read-only architecture/proof helper closures and coordinator cleared this same frozen snapshot. Final retained 10+10 control series satisfies no-regression: raw wall medians 15.750766092 to 15.009530487 (-4.7060%), paired median -3.62393%; published rounded summary gives -4.704%. All 38818 domain rows/17 domains match, graph/component/DB/adapter comparisons are unchanged, and per-binary roots are stable. Independently matched candidate SHA 011c9f0ffdd95515bcb0164ef893cf4faa083e84258b3e6e9b9383a07bb1f877 and runner SHA 9f24532e68c21fc443b7b69ce0d74b7927dcb45ba491412f013c23f224c136b4 to raw provenance; failed af9e series remains disclosed. No statistical or allocation-causality claim and no cross-version global-root identity demand.'
+        concurrency:
+          applicable: true
+          evidence: Thread-local parser pooling isolates parser state across Rayon workers, bounded source chunks retain deterministic ordered collection and one database writer, and atomic build publication remains unchanged. Checked reserve only bounds source working memory; facts/linker/SQLite are outside that scope. CLI budget proof uses child-process environment overrides rather than shared process environment. No task-store revision, transaction, lock ordering or receipt implementation changed; claim16 is distinct from builder claim15 and remains bound to snapshot85ffeeb7/baseline d4187bc.
+        project_isolation:
+          applicable: true
+          evidence: Review and all gates ran in the exact admitted worktree. Source candidates retain workspace containment, no-follow open, regular-file and before/after metadata validation; manifest direct probes preserve checked children, ignored directories/basenames and workspace ancestor stop. Root, nested and linked-workspace ignored-manifest consumer tests pass without activating Nuxt. No linked source repositories, profiles or project namespaces were modified; benchmark artifacts describe isolated approved copies only.
+        administration:
+          applicable: true
+          evidence: No schema, profile, protected configuration, receipt or task-administration code changed. Current accepted contract6, independent reviewer worker and frozen candidate baseline were verified from the live claim. Delivery remains same-session Forge lifecycle with atomic generated receipt and auto_commit, without manual commits, receipt edits, hooks bypasses, source edits or unrelated staging. Coordinator explicitly authorized review/pass then deliver after all three bounded closures and these complete gates pass.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-NO-COLD-REGRESSION: Cold build indexing throughput on control repository copy (commerce-release-update) must not regress; eliminating redundant file I/O and secondary filesystem traversals must reduce overall cold build latency.'
+    - 'INV-FRAMEWORK-EXTEND: Project framework manifests under .forge/frameworks/*.{toml,yaml} extend bundled definitions by default, permitting granular rule enrichment without duplicating standard library tables.'
+    - 'INV-FRAMEWORK-DISCOVERY: Framework manifest rules activate when explicitly placed in .forge/frameworks/ or declared in package manifests, enabling template-driven libraries like Alpine.js, HTMX, and GridViewSpec to resolve without mandatory package.json entry.'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Existing symbol resolution, edge counts, Merkle commitments, and cross-file relationships remain deterministic and pass cargo test --all-targets.'
+    architectural_notes:
+    - 'decisions: User explicitly approved deleting only orphan records pipeline-and-core-config-decomposition and typed-node-semantics-and-module-hygiene. Pre-delete inspect confirmed each ready contract, no worker, attempts empty. Both deleted through Forge task delete --force, each count1 revoked_claims0. JSON exports previously saved /tmp/048-orphan-pipeline-task.json and /tmp/048-orphan-semantics-task.json. Scope owner conflicts for adapter.rs and vue/setup_facts.rs now cleared; extend before editing. Independent pending clarification concerns worktree rewrite/clearing and revoked build claim.'
+    - 'decisions: Correction to finding188: commitments::root includes index_semantics_version, whose build.rs fingerprint hashes src/engine Rust code. Global cross-version output_root equality is therefore not a valid unchanged-fixture oracle; do not freeze/exclude version or change commitment algorithm. INV-ZERO-SEMANTIC-REGRESSION is proved with exact persisted domain commitments (all17 domains byte-equal in diagnostic DB comparison) and per-binary repeat/budget global-root determinism. Updated benchmark retains honest cross-version root equality flag and additionally hashes every ordered domain/owner_id/digest row; fails on fixture divergence or within-binary root instability. Scanner discovery intentionally omits two unused infrastructure manifests outside configured source roots; manifest_digest changes for that admitted policy change. Transient budget null serialization compatibility fixed by builder with source-unit persisted-policy test1/1; current contract6 requires fresh re-admission after external amendment, historical contract5 red remains factual evidence.'
+    - 'decisions: Final benchmark oracle preserves commitments::root semantics. The global root includes engine source fingerprint and manifest discovery policy, so cross-version inequality is expected; unchanged fixture invariance is verified by exact ordered domain_commitments digests across every baseline/candidate run, with per-binary root determinism across repetitions and budgets. Diagnostic comparison covered 38818 rows in 17 domains with zero changes. Transient memory_budget_mb is excluded from persisted adapter policy, while root/ancestor discovery follows admitted revision 6 rather than restoring a second root walk. No source fingerprint or root algorithm was weakened.'
+    - 'decisions: Approved final22 benchmark completed exit0; raw benchmarks/results/048-cold-build.json and readable048-cold-build.md retain exact hashes/commands. Adaptive median13.551s->13.461s(-0.664%), paired median-2.359%; modest measured improvement without significance claim. All38818 domain rows/17domains bit-identical across22; per-binary roots deterministic, candidate root1a5608d7aae3fb697d51f21e7b324feb9251e9dcfa5d1bc703f1beae1cce186d identical acrossallbudgets. Persisted adapterSHA equalsbaseline. Graph/coverage/database192741376bytes unchanged. Matrix50/200/500/1000MiB median23.210/16.785/14.895/12.825s; predefinedRSS-within5%-fastest policy selects1000MiB onthishost. Pre-policy-fix series preserved separately; it is superseded, not discarded. No furtherTask2benchmark planned absent concrete source repair.'
+    - 'decisions: Before further measurements, runner now explicitly scores performance: unrounded candidate median wall time <=baseline AND median paired wall change <=0, in addition to fixture/root determinism. All runs preserved even on failure. py_compile passes. Historical repaired series exit0 was semantic-only and remains failed performance. Bounded source experiment admitted only if confirmed: reserve validated candidate.bytes before the bounded Read::take reader instead of growing an empty String; retain oneopen/oneSHA/size+metadata guards and defaultbudgetpolicy. No claimed cause or benchmark success yet; no broad unrelated optimization.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
 
-1. Cold build does not read source files twice from disk during indexing.
-2. `DependencyRegistry` collection eliminates the redundant `WalkBuilder` filesystem walk by consuming scanner manifest paths and performing direct root-level manifest probes (`root.join("package.json")`) when `roots` excludes project root.
-3. Configurable RAM budget is supported via `limits.memory_budget_mb` in `forge-mcp.yaml` and `FORGE_MEMORY_BUDGET_MB` environment variable (falling back to adaptive system RAM calculation); cold build benchmarks on `commerce-release-update` across 50, 200, 500, and 1000 MB record duration vs peak RSS and document the optimal operating point.
+1. Cold build does not read source files twice from disk; scanner captures metadata only (`BuildCandidate`), while the reader reads source files once in bounded batches sized by `limits.memory_budget_mb` (falling back to `FORGE_MEMORY_BUDGET_MB` and adaptive system RAM), computing SHA-256 and extracting Tree-sitter AST facts within the same memory buffer and releasing the raw source text from RAM immediately after facts extraction.
+2. `DependencyRegistry` collection eliminates the redundant `WalkBuilder` filesystem walk by consuming scanner manifest paths and performing direct root-level and ancestor manifest probes across all supported language manifest filenames (`pyproject.toml`, `package.json`, `Cargo.toml`, etc.) via `fs::read_dir`, preserving discovery for roots outside workspace root and falling back to cached paths when discovered manifests are provided.
+3. Configurable RAM budget is supported via `limits.memory_budget_mb` in `forge-mcp.yaml` and `FORGE_MEMORY_BUDGET_MB` environment variable (falling back to adaptive system RAM calculation); cold build benchmarks on `commerce-release-update` across 50, 200, 500, and 1000 MB record duration vs peak RSS, verifying candidate matrix bit-identical output roots across all candidate memory budgets.
 4. Parser pooling is available for all active language profiles.
-5. `docs/reference/cli.md` and `docs/architecture/concurrency.md` reflect verified runtime reality.
+5. `docs/reference/cli.md`, `docs/reference/configuration.md`, and `docs/architecture/concurrency.md` reflect verified runtime reality.
 6. Cold build throughput on `commerce-release-update` is measurably improved; `cargo test --all-targets` passes with zero regressions.
 
 ---
@@ -209,3 +278,35 @@ subtasks:
 2. Placing a manifest in `.forge/frameworks/` activates framework rules even when undeclared in `package.json` / `pyproject.toml`, reconciled with ADR 0017 and `docs/architecture/modularity.md`.
 3. `gridviewspec.toml` is bundled and validates under framework manifest schema; behavioral execution of its receivers and routes is accepted in milestone 021 (task `rust-to-toml-rule-externalization`) once manifest routes/receivers are wired to extraction and linking.
 4. Connected workspace adapter validation in Forge MCP verifies that configuration in `commerce-release-update`, `grid-view-spec`, and `traverse` parse cleanly, and documents prerequisites for removing obsolete `pim` references in external workspace adapters.
+
+---
+
+### task: handoff-landed-commit-and-shared-scope-resolution
+
+```yaml
+task_ref: handoff-landed-commit-and-shared-scope-resolution
+target: "Resolve verified task landing commits across authorized later shared-scope changes and scope-equivalent repacks without manual receipt edits"
+proof_policy: seam-test-first
+contract_revision: 2
+scope:
+  - src/engine/milestones/handoff.rs
+  - tests/acdd/milestones.rs
+  - docs/reference/cli.md
+status: ready
+subtasks:
+  - subtask_ref: resolve-verified-landings-and-shared-scope
+    title: "Resolve actual landed commits from accepted task delivery provenance, including scope-equivalent repacks, and validate later shared-file changes against completed task evidence"
+    status: pending
+  - subtask_ref: prove-handoff-provenance-and-atomic-failure
+    title: "Prove shared-scope and repack handoff acceptance plus fail-closed rejection and non-mutation through the existing real Git, task lifecycle, SQLite, and archive seam"
+    status: pending
+```
+
+#### Acceptance
+
+1. Handoff requires every milestone task to be completed with valid current-contract delivery and review receipts. Accepted task evidence establishes trust; commit messages and scope membership alone do not.
+2. A later completed and reviewed task can change an earlier task's shared scoped file. Resolve each task's own landing against its accepted delivery and validate the later accepted change without requiring the earlier task's full scoped tree to equal the final tip.
+3. Resolve scope-equivalent repacks from real milestone history and original accepted provenance. Handoff records actual landed SHAs in SQLite and Markdown according to `record_task_commits`, without manual receipt or SQLite edits.
+4. Reject final shared-path changes without accepted completed-task evidence, malformed or missing landings, unrelated or obsolete landings, non-equivalent repacks, and invalid or tampered receipt proof. Declaring an overlapping scope does not authorize an unreviewed change.
+5. Rejected handoff preserves active Markdown and SQLite receipts and creates no archived milestone. Successful handoff preserves archive and receipt atomicity and rollback behavior.
+6. `docs/reference/cli.md` accurately documents milestone handoff landed commit resolution and shared scope verification behavior.

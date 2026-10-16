@@ -24,9 +24,21 @@ enabled linked workspaces inside the isolated snapshot, and omit an explicit
 `limits.memory_budget_mb` there so the matrix's environment override takes effect.
 The runner uses the selected profile, alternates paired build order, reverses
 budget order between repetitions, and records every wall time, peak RSS, graph
-summary, and Merkle output root. Its JSON report includes medians and whether all
-output roots are bit-identical. The budget controls extraction working memory;
+summary, and Merkle output root. Its JSON report includes medians, an aggregate of
+every persisted domain commitment, and root determinism for each binary across
+repetitions and candidate budgets. The overall root also commits the engine source
+fingerprint and discovery policy, so cross-version root equality is reported
+separately from fixture Merkle equality. The runner fails when fixture commitments
+differ or roots vary within one binary. The budget controls extraction working memory;
 peak process RSS also includes retained facts, linking, and SQLite.
+The recommended budget has the lowest median peak RSS among settings within 5%
+of the fastest median build; ties prefer lower latency, then the smaller budget.
+Use `--matrix-repeats 0` for a paired-only follow-up without repeating the budget
+matrix; that report does not select a new recommended budget.
+The runner succeeds only when fixture commitments and per-binary roots are
+deterministic and both the candidate wall median and median paired wall change
+are no worse than baseline. Timing checks use unrounded run values; every run is
+retained in the report, including a failed performance comparison.
 
 ```sh
 python3 benchmarks/cold_memory_budget_benchmark.py \

@@ -35,7 +35,18 @@ linked_workspaces:
 
 The default basename exclusions cover `.git`, `.forge`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.gradle`. The scanner also honors `.gitignore` and skips symbolic links. Add project-specific generated directories with `ignore`; authored source under an excluded basename can be scoped explicitly with a different directory name.
 
-The index records linked paths under their configured workspace names. Changing source scope or linked-workspace settings causes the MCP server to rebuild or update its owned index on the next database read. CLI readers use the index already on disk, so run `build` or `delta` after source changes when using only the CLI.
+The index records linked paths under their configured workspace names. Changing source scope or linked-workspace settings causes the MCP server to rebuild or update its owned index on the next database read. CLI readers automatically build a missing or schema-incompatible index, but do not refresh existing indexed files after source changes; run `build` or `delta` to update CLI results.
+
+## Cold-build memory budget
+
+Set a transient source-extraction budget in MiB under `limits`:
+
+```yaml
+limits:
+  memory_budget_mb: 200
+```
+
+`memory_budget_mb` must be a positive integer whose MiB-to-byte conversion fits in `u64`. When omitted, `FORGE_MEMORY_BUDGET_MB` supplies the same setting; when both are omitted, the builder chooses an adaptive budget from available memory. The YAML value takes precedence over the environment. The budget controls extraction batch sizing and the SQLite cache. Changing the budget preserves extracted facts and per-domain commitments, but an explicit YAML value is part of the workspace configuration fingerprint and can change the overall output root. An environment-only override is transient and leaves the adapter policy fingerprint unchanged. A single admitted file can exceed the budget because the builder must hold that file while parsing it, but source memory remains bounded by the configured batch and file-size limit.
 
 ## Repository documentation admission
 

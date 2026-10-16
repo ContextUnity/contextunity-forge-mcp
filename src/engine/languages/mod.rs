@@ -99,6 +99,7 @@ pub fn with_warm_parser<R>(
         let mut pool = cell.borrow_mut();
         if let Some(mut p) = pool.take(lang_key) {
             p.reset();
+            p.set_language(&grammar)?;
             Ok(p)
         } else {
             let mut p = tree_sitter::Parser::new();
@@ -714,8 +715,8 @@ pub fn relative_namespace(owner: &str, module: &str) -> Option<String> {
     }
     Some(parts.join("."))
 }
-fn parser_slot(profile_id: &str, path: &str) -> Option<&'static str> {
-    Some(match profile_id {
+fn parser_slot(profile_id: &'static str, path: &str) -> &'static str {
+    match profile_id {
         "python" => "python",
         "rust" => "rust",
         "html" => "html",
@@ -730,8 +731,8 @@ fn parser_slot(profile_id: &str, path: &str) -> Option<&'static str> {
             "javascript"
         }
         "vue" | "typescript" => "typescript",
-        _ => return None,
-    })
+        active_profile => active_profile,
+    }
 }
 
 fn parse_tree(
@@ -740,14 +741,10 @@ fn parse_tree(
     source: &str,
 ) -> Result<tree_sitter::Tree> {
     let grammar = profile.grammar(path);
-    if let Some(slot) = parser_slot(profile.id(), path) {
-        return with_warm_parser(slot, grammar, |parser| parser.parse(source, None))?
-            .context("Tree-sitter parse cancelled");
-    }
-    profile
-        .create_parser(path)?
-        .parse(source, None)
-        .context("Tree-sitter parse cancelled")
+    with_warm_parser(parser_slot(profile.id(), path), grammar, |parser| {
+        parser.parse(source, None)
+    })?
+    .context("Tree-sitter parse cancelled")
 }
 
 /// Parses one source file into indexed facts.

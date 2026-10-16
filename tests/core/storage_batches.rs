@@ -188,3 +188,158 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() {
     }
     commitments::verify(&conn).unwrap();
 }
+
+#[test]
+fn cli_memory_budget_precedence_fallback_and_rejection_are_observable() {
+    use std::{path::Path, process::Command};
+
+    fn configure(ws: &Workspace, memory_budget_mb: Option<&str>) {
+        let limits = memory_budget_mb.map_or_else(String::new, |value| {
+            format!("limits:\n  memory_budget_mb: {value}\n")
+        });
+        ws.write(
+            "forge-mcp.yaml",
+            &format!("roots: [src]\ndocs: []\n{limits}"),
+        );
+    }
+
+    fn run_build(
+        ws: &Workspace,
+        name: &str,
+        env_budget_mb: Option<&str>,
+    ) -> (std::process::Output, std::path::PathBuf) {
+        let database = ws.root().join(".forge").join(format!("{name}.sqlite"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+        command
+            .arg("build")
+            .arg(ws.root())
+            .arg("--output")
+            .arg(&database)
+            .env_remove("FORGE_MEMORY_BUDGET_MB");
+        if let Some(value) = env_budget_mb {
+            command.env("FORGE_MEMORY_BUDGET_MB", value);
+        }
+        (command.output().unwrap(), database)
+    }
+
+    fn success_report(output: &std::process::Output) -> serde_json::Value {
+        assert!(
+            output.status.success(),
+            "CLI build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn persisted_commitments(database: &Path) -> Vec<(String, i64, String)> {
+        let connection = Connection::open(database).unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT domain,owner_id,lower(hex(digest)) FROM domain_commitments ORDER BY domain,owner_id",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn assert_cli_rejects(
+        ws: &Workspace,
+        name: &str,
+        yaml_budget_mb: Option<&str>,
+        env_budget_mb: Option<&str>,
+    ) {
+        configure(ws, yaml_budget_mb);
+        let (output, database) = run_build(ws, name, env_budget_mb);
+        assert!(
+            !output.status.success(),
+            "invalid budget unexpectedly built"
+        );
+        assert!(
+            !database.exists(),
+            "invalid budget published a database: {}",
+            database.display()
+        );
+    }
+
+    let ws = Workspace::new();
+    ws.write("src/lib.rs", "pub fn stable() -> u8 { 1 }\n");
+
+    configure(&ws, Some("50"));
+    let (yaml_output, yaml_database) = run_build(&ws, "yaml", Some("1000"));
+    let yaml_report = success_report(&yaml_output);
+    assert_eq!(
+        yaml_report["memory_budget_bytes"].as_u64(),
+        Some(50 * 1024 * 1024)
+    );
+
+    configure(&ws, None);
+    let (env_output, env_database) = run_build(&ws, "environment", Some("200"));
+    let env_report = success_report(&env_output);
+    assert_eq!(
+        env_report["memory_budget_bytes"].as_u64(),
+        Some(200 * 1024 * 1024)
+    );
+    let (env_high_output, env_high_database) = run_build(&ws, "environment-high", Some("1000"));
+    let env_high_report = success_report(&env_high_output);
+    assert_eq!(
+        env_high_report["memory_budget_bytes"].as_u64(),
+        Some(1000 * 1024 * 1024)
+    );
+    assert_eq!(
+        env_report["output_root"], env_high_report["output_root"],
+        "the transient environment budget must not alter the adapter policy fingerprint"
+    );
+
+    let (adaptive_output, adaptive_database) = run_build(&ws, "adaptive", None);
+    let adaptive_report = success_report(&adaptive_output);
+    let adaptive = adaptive_report["memory_budget_bytes"].as_u64().unwrap();
+    assert!((64 * 1024 * 1024..=16 * 1024 * 1024 * 1024).contains(&adaptive));
+
+    let yaml_commitments = persisted_commitments(&yaml_database);
+    assert_eq!(yaml_commitments, persisted_commitments(&env_database));
+    assert_eq!(yaml_commitments, persisted_commitments(&env_high_database));
+    assert_eq!(yaml_commitments, persisted_commitments(&adaptive_database));
+
+    assert_cli_rejects(&ws, "invalid-environment-text", None, Some("many"));
+    assert_cli_rejects(&ws, "invalid-environment-zero", None, Some("0"));
+    assert_cli_rejects(
+        &ws,
+        "invalid-environment-overflow",
+        None,
+        Some("18446744073709551615"),
+    );
+    assert_cli_rejects(&ws, "invalid-yaml-text", Some("many"), Some("200"));
+    assert_cli_rejects(&ws, "invalid-yaml-zero", Some("0"), Some("200"));
+    assert_cli_rejects(
+        &ws,
+        "invalid-yaml-overflow",
+        Some("18446744073709551615"),
+        Some("200"),
+    );
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn public_extraction_rejects_a_file_entry_digest_mismatch() {
+    let ws = Workspace::new();
+    ws.write("src/lib.rs", "pub fn current() -> u8 { 1 }\n");
+    let adapter = scanner::load_adapter(ws.root(), None).unwrap();
+    let mut entry = scanner::scan_with_adapter(ws.root(), &adapter)
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|entry| entry.path == "src/lib.rs")
+        .unwrap();
+    entry.digest = "deliberately-stale-digest".to_owned();
+
+    let error = writer::extract(ws.root(), &entry, &adapter).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("source changed during extraction"),
+        "stale public extraction must fail closed: {error:#}"
+    );
+}

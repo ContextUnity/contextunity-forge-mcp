@@ -19,7 +19,7 @@ PRAGMA mmap_size = 268435456;
 PRAGMA busy_timeout = 5000;
 ```
 
-Graph write transactions (`BEGIN IMMEDIATE`) are owned by `src/db/writer.rs` and `src/db/delta.rs`; task-state writes use their separate `src/db/tasks_store.rs` transaction boundary. In the current MCP server, one reusable SQLite reader connection is guarded by a mutex, so each read callback holds that slot through its query transaction and reads within one server instance are serialized. The current-thread Tokio runtime also runs synchronous tool handlers serially. A reader pool alone would not make public MCP requests execute concurrently.
+Graph write transactions (`BEGIN IMMEDIATE`) are owned by `src/db/writer.rs` and `src/db/delta.rs`; task-state writes use their separate `src/db/tasks_store/` transaction boundary. Task orchestration lives in `src/engine/tasks/`. The MCP surface registers 20 tools. In the current MCP server, one reusable SQLite reader connection is guarded by a mutex, so each read callback holds that slot through its query transaction and reads within one server instance are serialized. The current-thread Tokio runtime also runs synchronous tool handlers serially. A reader pool alone would not make public MCP requests execute concurrently.
 
 ## Snapshot admission and reader fencing
 

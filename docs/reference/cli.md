@@ -27,6 +27,8 @@ contextunity-forge-mcp delta . src/module.py src/other.py
 
 `scan` reports admitted files without writing an index. `build` creates a full index. `delta` updates the listed changed or deleted paths in an existing index. `build` and `scan` accept `--adapter <PATH>` for a configuration file inside the workspace; normal reads use the workspace's default adapter file.
 
+`query`, `docs`, and `ast grep` open the index through `open_or_rebuild`: a missing or schema-incompatible index is built automatically. An existing index is not refreshed just because source files changed; run `build` or `delta` to update those results.
+
 ## Queries
 
 ```sh
@@ -55,7 +57,7 @@ contextunity-forge-mcp docs get 'docs/architecture/indexing.md' --section 'Owner
 contextunity-forge-mcp ast grep 'print($VALUE)' --lang python --path src
 ```
 
-`docs` reads the index. `ast grep` reads admitted file paths from the index, narrows them with FTS terms, and parses matching source after checking its indexed digest. It requires a built index and a compiled language profile. `docs search` accepts `--component` and `--limit`; `ast grep` accepts `--limit`.
+`docs` reads indexed documents. `ast grep` reads admitted file paths from the index, narrows them with FTS terms, and parses matching source after checking its indexed digest. Both can trigger the missing or incompatible-index rebuild described above; `ast grep` also requires a compiled language profile. `docs search` accepts `--component` and `--limit`; `ast grep` accepts `--limit`.
 
 ## Repository tasks
 

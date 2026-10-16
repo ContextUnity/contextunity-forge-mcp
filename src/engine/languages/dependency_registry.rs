@@ -6,7 +6,7 @@ use super::{profiles, ImportPath, LanguageFamily, LanguageProfile};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -77,6 +77,23 @@ impl DependencyRegistry {
         root: &Path,
         adapter: Option<&crate::engine::scanner::Adapter>,
     ) -> Result<Self> {
+        Self::try_collect(root, adapter, None)
+    }
+
+    /// Collects dependency metadata from scanner-discovered manifests and direct workspace roots.
+    pub(crate) fn try_collect_with_paths(
+        root: &Path,
+        adapter: Option<&crate::engine::scanner::Adapter>,
+        discovered_manifests: &[PathBuf],
+    ) -> Result<Self> {
+        Self::try_collect(root, adapter, Some(discovered_manifests))
+    }
+
+    fn try_collect(
+        root: &Path,
+        adapter: Option<&crate::engine::scanner::Adapter>,
+        discovered_manifests: Option<&[PathBuf]>,
+    ) -> Result<Self> {
         let mut registry = Self::default();
         load_standard_framework_manifests(&mut registry)?;
         let mut roots = vec![(
@@ -102,32 +119,19 @@ impl DependencyRegistry {
         let mut snapshots = std::collections::BTreeMap::new();
         let mut parsed_families = Vec::with_capacity(profiles.len());
         for (root, prefix, ignored_names) in roots {
-            let ignored_names: HashSet<std::ffi::OsString> =
-                ignored_names.into_iter().map(Into::into).collect();
-            let mut walk = ignore::WalkBuilder::new(&root);
-            walk.hidden(false)
-                .follow_links(false)
-                .git_ignore(true)
-                .filter_entry(move |entry| {
-                    !entry.path_is_symlink()
-                        && !ignored_names.contains(entry.file_name())
-                        && !matches!(
-                            entry.file_name().to_str(),
-                            Some(
-                                ".git"
-                                    | "node_modules"
-                                    | "target"
-                                    | ".venv"
-                                    | "venv"
-                                    | "__pycache__"
-                            )
-                        )
-                });
-            for entry in walk.build().filter_map(std::result::Result::ok) {
-                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-                    continue;
-                }
-                let Some(filename) = entry.file_name().to_str() else {
+            let manifest_paths = if let Some(discovered) = discovered_manifests {
+                scanner_manifest_paths(&root, &ignored_names, &profiles, discovered)?
+            } else {
+                walked_manifest_paths(&root, ignored_names, &profiles)
+            };
+            for path in manifest_paths {
+                let metadata = match fs::symlink_metadata(&path) {
+                    Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                        metadata
+                    }
+                    _ => continue,
+                };
+                let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
                     continue;
                 };
                 let matches = |profile: &&dyn LanguageProfile| {
@@ -136,21 +140,17 @@ impl DependencyRegistry {
                         .iter()
                         .any(|pattern| filename_matches(pattern, filename))
                 };
-                if !profiles.iter().any(matches) || !visited.insert(entry.path().to_path_buf()) {
+                if !profiles.iter().any(matches) || !visited.insert(path.clone()) {
                     continue;
                 }
                 // Manifest parsing is bounded independently of source-file limits.
-                if entry
-                    .metadata()
-                    .map_or(true, |metadata| metadata.len() > 4 * 1024 * 1024)
-                {
+                if metadata.len() > 4 * 1024 * 1024 {
                     continue;
                 }
-                let Ok(content) = std::fs::read_to_string(entry.path()) else {
+                let Ok(content) = std::fs::read_to_string(&path) else {
                     continue;
                 };
-                let Some(directory) = entry
-                    .path()
+                let Some(directory) = path
                     .parent()
                     .and_then(|parent| parent.strip_prefix(&root).ok())
                 else {
@@ -172,10 +172,7 @@ impl DependencyRegistry {
                         .typescript_paths
                         .record_config(&scope, filename, &content);
                 }
-                snapshots.insert(
-                    entry.path().to_path_buf(),
-                    Sha256::digest(content.as_bytes()),
-                );
+                snapshots.insert(path.clone(), Sha256::digest(content.as_bytes()));
                 if filename == "pnpm-workspace.yaml"
                     || (filename.starts_with("tsconfig") && filename.ends_with(".json"))
                 {
@@ -190,8 +187,7 @@ impl DependencyRegistry {
                     parsed_families.push(family);
                     let dependencies = profile.extract_manifest_dependencies(filename, &content);
                     {
-                        let origin = entry
-                            .path()
+                        let origin = path
                             .strip_prefix(&root)
                             .map(|relative| {
                                 format!(
@@ -378,6 +374,98 @@ impl DependencyRegistry {
             directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
         }
     }
+}
+
+fn scanner_manifest_paths(
+    root: &Path,
+    ignored_names: &BTreeSet<String>,
+    profiles: &[&dyn LanguageProfile],
+    discovered: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    let is_manifest = |filename: &str| {
+        profiles.iter().any(|profile| {
+            profile
+                .manifest_filenames()
+                .iter()
+                .any(|pattern| filename_matches(pattern, filename))
+        })
+    };
+    let mut paths = BTreeSet::new();
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let filename = entry.file_name();
+            let Some(filename) = filename.to_str() else {
+                continue;
+            };
+            if ignored_names.contains(filename) || !is_manifest(filename) {
+                continue;
+            }
+            let candidate = entry.path();
+            let is_regular_file = fs::symlink_metadata(&candidate)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink());
+            if !is_regular_file {
+                continue;
+            }
+            let relative = candidate
+                .strip_prefix(root)
+                .context("workspace manifest escaped its root")?;
+            paths.insert(crate::engine::scanner::checked_child(root, relative)?);
+        }
+    }
+    for discovered_path in discovered {
+        let Ok(relative) = discovered_path.strip_prefix(root) else {
+            continue;
+        };
+        let Some(filename) = discovered_path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if ignored_names.contains(filename) || !is_manifest(filename) {
+            continue;
+        }
+        let path = crate::engine::scanner::checked_child(root, relative)?;
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.is_file() && !metadata.file_type().is_symlink() {
+            paths.insert(path);
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
+fn walked_manifest_paths(
+    root: &Path,
+    ignored_names: BTreeSet<String>,
+    profiles: &[&dyn LanguageProfile],
+) -> Vec<PathBuf> {
+    let ignored_names: HashSet<std::ffi::OsString> =
+        ignored_names.into_iter().map(Into::into).collect();
+    let mut walk = ignore::WalkBuilder::new(root);
+    walk.hidden(false)
+        .follow_links(false)
+        .git_ignore(true)
+        .filter_entry(move |entry| {
+            !entry.path_is_symlink()
+                && !ignored_names.contains(entry.file_name())
+                && !matches!(
+                    entry.file_name().to_str(),
+                    Some(".git" | "node_modules" | "target" | ".venv" | "venv" | "__pycache__")
+                )
+        });
+    walk.build()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+        .filter(|entry| {
+            let Some(filename) = entry.file_name().to_str() else {
+                return false;
+            };
+            profiles.iter().any(|profile| {
+                profile
+                    .manifest_filenames()
+                    .iter()
+                    .any(|pattern| filename_matches(pattern, filename))
+            })
+        })
+        .map(|entry| entry.into_path())
+        .collect()
 }
 
 fn load_standard_framework_manifests(registry: &mut DependencyRegistry) -> Result<()> {

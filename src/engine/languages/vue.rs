@@ -5,10 +5,7 @@ use crate::core::semantic::{SourcePosition, TypeExpr, ValueFlowFacts, VueSlotFac
 mod setup_facts;
 #[path = "vue/template.rs"]
 mod template;
-use setup_facts::{
-    collect_registered_components, collect_setup_callables, collect_setup_reassignments,
-    collect_shadowed_producers, collect_typed_iterables, collect_typed_props, collect_typed_slots,
-};
+use setup_facts::{collect_setup_facts, SetupFactOutputs};
 
 /// Represents vue data.
 pub struct Vue;
@@ -186,44 +183,31 @@ fn extract_file_impl(
         .context("Tree-sitter parse cancelled")?;
         if setup_script {
             script_setup_bindings.extend(profile.bindings(tree.root_node(), source).all);
-            collect_setup_callables(
+        }
+        {
+            let mut output = SetupFactOutputs {
+                setup_callables: &mut setup_callables,
+                duplicate_callables: &mut duplicate_callables,
+                typed_props: &mut typed_props,
+                duplicate_typed_props: &mut duplicate_typed_props,
+                typed_iterables: &mut typed_iterables,
+                duplicate_typed_iterables: &mut duplicate_typed_iterables,
+                typed_slots: &mut typed_slots,
+                typed_slots_invalid: &mut typed_slots_invalid,
+                typed_slot_calls: &mut typed_slot_calls,
+                shadowed_producers: &mut shadowed_producers,
+                setup_reassignments: &mut setup_reassignments,
+                registered_components: &mut registered_components,
+                duplicate_components: &mut duplicate_components,
+                component_reassignments: &mut component_reassignments,
+            };
+            collect_setup_facts(
                 tree.root_node(),
                 source,
-                &mut setup_callables,
-                &mut duplicate_callables,
+                setup_script,
+                lang == "typescript",
+                &mut output,
             );
-            collect_typed_props(
-                tree.root_node(),
-                source,
-                &mut typed_props,
-                &mut duplicate_typed_props,
-            );
-            if lang == "typescript" {
-                collect_typed_iterables(
-                    tree.root_node(),
-                    source,
-                    &mut typed_iterables,
-                    &mut duplicate_typed_iterables,
-                );
-                if !typed_slots_invalid {
-                    typed_slots_invalid = collect_typed_slots(
-                        tree.root_node(),
-                        source,
-                        &mut typed_slots,
-                        &mut typed_slot_calls,
-                    );
-                }
-            }
-            collect_shadowed_producers(tree.root_node(), source, &mut shadowed_producers);
-            collect_setup_reassignments(tree.root_node(), source, &mut setup_reassignments);
-        } else {
-            collect_registered_components(
-                tree.root_node(),
-                source,
-                &mut registered_components,
-                &mut duplicate_components,
-            );
-            collect_setup_reassignments(tree.root_node(), source, &mut component_reassignments);
         }
         ast::extract_tree_with_flows(
             profile,

@@ -5,7 +5,7 @@ use crate::{
     core::{commitments, models::*, schema::SCHEMA_DDL},
     engine::{
         ast, docs, linker,
-        scanner::{self, FileEntry},
+        scanner::{self, BuildCandidate, FileEntry},
     },
 };
 use anyhow::{bail, Context, Result};
@@ -19,6 +19,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs::{self, OpenOptions},
+    io::Read,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     sync::Arc,
@@ -43,6 +44,12 @@ static NONCE: AtomicU64 = AtomicU64::new(0);
 const EXTRACTION_MEMORY_MULTIPLIER: u64 = 8;
 const MAX_EXTRACTION_BATCH_FILES: usize = 25_000;
 const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
+
+#[derive(Clone, Copy)]
+struct BuildInputs<'a> {
+    dependency_manifests: &'a [PathBuf],
+    memory_budget: u64,
+}
 
 fn sqlite_cache_size_kib(memory_budget: u64) -> u64 {
     (memory_budget / 8 / 1024).clamp(4_096, 128_000)
@@ -72,7 +79,20 @@ pub fn extract(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> Res
 fn extract_typed(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> Result<TypedFacts> {
     let path = scanner::resolve_file_path(root, adapter, &file.path)?;
     let source = fs::read_to_string(&path)?;
-    if commitments::hash(source.as_bytes()) != file.digest {
+    extract_typed_source(file, &source)
+}
+
+fn extract_typed_source(file: &FileEntry, source: &str) -> Result<TypedFacts> {
+    let source_digest = commitments::hash(source.as_bytes());
+    extract_typed_source_with_digest(file, source, &source_digest)
+}
+
+fn extract_typed_source_with_digest(
+    file: &FileEntry,
+    source: &str,
+    source_digest: &str,
+) -> Result<TypedFacts> {
+    if source_digest != file.digest {
         return Err(SourceSnapshotMismatch(format!(
             "source changed during extraction: {}",
             file.path
@@ -80,7 +100,7 @@ fn extract_typed(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> R
         .into());
     }
     if file.is_doc {
-        let sections = docs::extract(&file.path, &source, file.mtime_ns as f64 / 1e9)?;
+        let sections = docs::extract(&file.path, source, file.mtime_ns as f64 / 1e9)?;
         let nodes = sections
             .iter()
             .map(|d| Node {
@@ -103,8 +123,58 @@ fn extract_typed(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> R
             ..Facts::default()
         }))
     } else {
-        ast::extract_typed(&file.path, &file.language, &source)
+        ast::extract_typed(&file.path, &file.language, source)
     }
+}
+
+fn extract_candidate(
+    root: &Path,
+    candidate: &BuildCandidate,
+    adapter: &scanner::Adapter,
+) -> Result<(FileEntry, TypedFacts)> {
+    let path = scanner::resolve_file_path(root, adapter, &candidate.path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut source_file = options.open(&path)?;
+    if !candidate.matches_metadata(&source_file.metadata()?) {
+        return Err(SourceSnapshotMismatch(format!(
+            "source changed during extraction: {}",
+            candidate.path
+        ))
+        .into());
+    }
+    let source_capacity =
+        usize::try_from(candidate.bytes).context("source size exceeds addressable memory")?;
+    let mut source = String::new();
+    source.try_reserve_exact(source_capacity)?;
+    source_file
+        .by_ref()
+        .take(adapter.limits.max_file_bytes.saturating_add(1))
+        .read_to_string(&mut source)?;
+    if source.len() as u64 > adapter.limits.max_file_bytes || source.len() as u64 != candidate.bytes
+    {
+        return Err(SourceSnapshotMismatch(format!(
+            "source changed during extraction: {}",
+            candidate.path
+        ))
+        .into());
+    }
+    if !candidate.matches_metadata(&source_file.metadata()?) {
+        return Err(SourceSnapshotMismatch(format!(
+            "source changed during extraction: {}",
+            candidate.path
+        ))
+        .into());
+    }
+    let source_digest = commitments::hash(source.as_bytes());
+    let file = candidate.clone().into_entry(source_digest.clone());
+    let facts = extract_typed_source_with_digest(&file, &source, &source_digest)?;
+    Ok((file, facts))
 }
 fn policy(root: &Path, adapter: &scanner::Adapter) -> Value {
     json!({
@@ -210,9 +280,9 @@ fn populate(
     entries: &[FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
+    build_inputs: BuildInputs<'_>,
 ) -> Result<Value> {
-    let budget = scanner::memory_budget_bytes();
-    let cache_kb = sqlite_cache_size_kib(budget);
+    let cache_kb = sqlite_cache_size_kib(build_inputs.memory_budget);
     conn.execute_batch(&format!(
         "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-{cache_kb}; PRAGMA cache_spill=OFF;"
     ))?;
@@ -223,9 +293,10 @@ fn populate(
     conn.execute_batch(tables)?;
     let linking = Instant::now();
     let dependencies =
-        crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_scan_config(
+        crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_paths(
             root,
             Some(adapter),
+            build_inputs.dependency_manifests,
         )?;
     let graph = linker::link_compact_with_typed_registry(facts, None, Some(root), &dependencies);
     let link_ms = linking.elapsed().as_secs_f64() * 1000.;
@@ -426,6 +497,7 @@ fn atomic_build(
     entries: &[FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
     encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
+    build_inputs: BuildInputs<'_>,
 ) -> Result<Value> {
     let output = if output.is_absolute() {
         output.to_owned()
@@ -474,7 +546,15 @@ fn atomic_build(
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         conn.execute_batch("PRAGMA page_size=32768;")?;
-        let mut report = populate(&mut conn, root, adapter, entries, facts, encoded_facts)?;
+        let mut report = populate(
+            &mut conn,
+            root,
+            adapter,
+            entries,
+            facts,
+            encoded_facts,
+            build_inputs,
+        )?;
         let verifying = Instant::now();
         let integrity: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
         if integrity != "ok" {
@@ -516,11 +596,10 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
     let root = scanner::canonical_root(root)?;
     let adapter = scanner::load_adapter(&root, adapter_path)?;
     scanner::check_root_scope(&root, adapter.limits.allow_broad_root)?;
-    let scanning = Instant::now();
-    let scan = scanner::scan_with_adapter(&root, &adapter)?;
-    let scan_ms = scanning.elapsed().as_secs_f64() * 1000.;
+    let scan = scanner::scan_for_build(&root, &adapter)?;
+    let scan_ms = scan.elapsed_ms as f64;
     let extracting = Instant::now();
-    let budget = scanner::memory_budget_bytes();
+    let budget = scanner::resolve_memory_budget_bytes(&adapter.limits)?;
     let batch_size = scanner::bounded_batch_size(
         budget,
         adapter.limits.max_file_bytes,
@@ -528,12 +607,16 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
         MAX_EXTRACTION_BATCH_FILES,
     );
     let mut facts: BTreeMap<_, _> = BTreeMap::new();
-    for chunk in scan.entries.chunks(batch_size) {
-        let chunk_facts: Vec<(String, TypedFacts)> = chunk
+    let mut entries = Vec::with_capacity(scan.files);
+    for chunk in scan.candidates.chunks(batch_size) {
+        let extracted: Vec<(FileEntry, TypedFacts)> = chunk
             .par_iter()
-            .map(|file| Ok((file.path.clone(), extract_typed(&root, file, &adapter)?)))
+            .map(|candidate| extract_candidate(&root, candidate, &adapter))
             .collect::<Result<_>>()?;
-        facts.extend(chunk_facts);
+        for (file, typed_facts) in extracted {
+            facts.insert(file.path.clone(), typed_facts);
+            entries.push(file);
+        }
     }
     let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
     let preparing_components = Instant::now();
@@ -549,10 +632,17 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
         &root,
         output,
         &adapter,
-        &scan.entries,
+        &entries,
         &facts,
         Some(&encoded_facts),
+        BuildInputs {
+            dependency_manifests: &scan.dependency_manifests,
+            memory_budget: budget,
+        },
     )?;
+    report["memory_budget_bytes"] = json!(budget);
+    report["scanned_bytes"] = json!(scan.bytes);
+    report["scanned_files"] = json!(scan.files);
     report["scan_ms"] = json!(scan_ms);
     report["extract_ms"] = json!(extract_ms);
     report["components_ms"] = json!(components_ms);

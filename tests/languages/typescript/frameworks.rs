@@ -9,6 +9,19 @@ fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
     let workspace = Workspace::new();
     for (path, source) in [
         (
+            "forge-mcp.yaml",
+            "roots: [src, nuxt/src, plain/src, nuxt.config.ts, nuxt/nuxt.config.ts]\ndocs: []\n",
+        ),
+        (
+            "package.json",
+            r#"{"dependencies":{"nuxt":"3.21.9","vue":"3.5.0"}}"#,
+        ),
+        (
+            "src/auto.ts",
+            "const value = computed(() => 1); const state = ref(0);",
+        ),
+        ("nuxt.config.ts", "export default defineNuxtConfig({});"),
+        (
             "nuxt/package.json",
             r#"{"dependencies":{"nuxt":"3.21.9","vue":"3.5.0"}}"#,
         ),
@@ -47,6 +60,12 @@ fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
         rows.map(Result::unwrap).collect()
     };
     for expression in ["computed", "ref"] {
+        let root = coverage("src/auto.ts", expression);
+        assert!(
+            root.iter().any(|(status, evidence)| status == "external"
+                && evidence.contains("builtin:nuxt_autoimport")),
+            "root package.json outside source roots must activate Nuxt {expression}: {root:?}"
+        );
         let auto = coverage("nuxt/src/auto.ts", expression);
         assert!(
             auto.iter().any(|(status, evidence)| status == "external"
@@ -67,6 +86,85 @@ fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
     }
     contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
     drop(conn);
+}
+
+#[test]
+fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
+    use contextunity_forge_mcp::db::{reader, writer};
+
+    let workspace = Workspace::new();
+    let linked = Workspace::new();
+    workspace.write(
+        "forge-mcp.yaml",
+        &format!(
+            "roots: [src, nuxt.config.ts, nested/src, nested/nuxt.config.ts]\ndocs: []\nignore: [package.json]\nlinked_workspaces:\n  - name: shared\n    path: '{}'\n    roots: [src, nuxt.config.ts]\n    ignore: [package.json]\n",
+            linked.0.display()
+        ),
+    );
+    for (path, source) in [
+        (
+            "package.json",
+            r#"{"dependencies":{"nuxt":"3.21.9","vue":"3.5.0"}}"#,
+        ),
+        ("nuxt.config.ts", "export default defineNuxtConfig({});"),
+        (
+            "src/root.ts",
+            "const value = computed(() => 1); const state = ref(0);",
+        ),
+        (
+            "nested/package.json",
+            r#"{"dependencies":{"nuxt":"3.21.9","vue":"3.5.0"}}"#,
+        ),
+        (
+            "nested/nuxt.config.ts",
+            "export default defineNuxtConfig({});",
+        ),
+        (
+            "nested/src/ancestor.ts",
+            "const value = computed(() => 1); const state = ref(0);",
+        ),
+    ] {
+        workspace.write(path, source);
+    }
+    for (path, source) in [
+        (
+            "package.json",
+            r#"{"dependencies":{"nuxt":"3.21.9","vue":"3.5.0"}}"#,
+        ),
+        ("nuxt.config.ts", "export default defineNuxtConfig({});"),
+        (
+            "src/linked.ts",
+            "const value = computed(() => 1); const state = ref(0);",
+        ),
+    ] {
+        linked.write(path, source);
+    }
+
+    let database = workspace.join(".forge/code-map.sqlite");
+    writer::build(&workspace, &database, None).unwrap();
+    let conn = reader::open(&database, &workspace).unwrap();
+    let coverage = |path: &str, expression: &str| -> Vec<String> {
+        let mut stmt = conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2").unwrap();
+        stmt.query_map(rusqlite::params![path, expression], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    for (path, expression) in [
+        ("src/root.ts", "computed"),
+        ("src/root.ts", "ref"),
+        ("nested/src/ancestor.ts", "computed"),
+        ("nested/src/ancestor.ts", "ref"),
+        ("[shared]/src/linked.ts", "computed"),
+        ("[shared]/src/linked.ts", "ref"),
+    ] {
+        let rows = coverage(path, expression);
+        assert!(
+            !rows.is_empty() && rows.iter().all(|status| status == "unresolved"),
+            "ignored root, ancestor, and linked package manifests must not activate Nuxt: {path} {expression} -> {rows:?}"
+        );
+    }
+    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
 }
 
 #[test]
@@ -1257,7 +1355,11 @@ fn vue_typed_slot_members_follow_imported_component_provider() {
     let w = Workspace::new();
     w.write(
         "app/Panel.vue",
-        "<template><slot /></template>\n<script setup lang=\"ts\">interface Item { title: string } defineSlots<{ default(props: { entry: Item }): any }>();</script>",
+        "<template><slot /></template>\n<script lang=\"ts\">const runtimeTsSlots = defineSlots();</script>\n<script setup lang=\"ts\">interface Item { title: string } defineSlots<{ default(props: { entry: Item }): any }>();</script>",
+    );
+    w.write(
+        "app/JavascriptSlotsPanel.vue",
+        "<template><slot /></template>\n<script>const runtimeJsSlots = defineSlots();</script>\n<script setup lang=\"ts\">interface Item { title: string } defineSlots<{ default(props: { entry: Item }): any }>();</script>",
     );
     w.write(
         "app/View.vue",
@@ -1267,7 +1369,19 @@ fn vue_typed_slot_members_follow_imported_component_provider() {
         "app/NestedSlot.vue",
         "<template><Panel><template #default=\"{ entry }\">{{ entry.title }}</template></Panel></template>\n<script setup lang=\"ts\">import Panel from './Panel.vue';</script>",
     );
+    w.write(
+        "app/JavascriptSlots.vue",
+        "<template><JavascriptSlotsPanel v-slot=\"{ entry }\">{{ entry.title }}</JavascriptSlotsPanel></template>\n<script setup lang=\"ts\">import JavascriptSlotsPanel from './JavascriptSlotsPanel.vue';</script>",
+    );
     w.write("app/Plain.vue", "<template><slot /></template>");
+    w.write(
+        "app/AssignedSlotsPanel.vue",
+        "<template><slot /></template>\n<script setup lang=\"ts\">interface Item { title: string } const slots = defineSlots<{ default(props: { entry: Item }): any }>();</script>",
+    );
+    w.write(
+        "app/AssignedSlots.vue",
+        "<template><AssignedSlotsPanel v-slot=\"{ entry }\">{{ entry.title }}</AssignedSlotsPanel></template>\n<script setup lang=\"ts\">import AssignedSlotsPanel from './AssignedSlotsPanel.vue';</script>",
+    );
     w.write(
         "app/NestedComponent.vue",
         "<template><Panel><Plain><template #default=\"{ entry }\">{{ entry.title }}</template></Plain></Panel></template>\n<script setup lang=\"ts\">import Panel from './Panel.vue'; import Plain from './Plain.vue';</script>",
@@ -1317,6 +1431,7 @@ fn vue_typed_slot_members_follow_imported_component_provider() {
     };
     assert_eq!(status("app/View.vue"), "resolved");
     assert_eq!(status("app/NestedSlot.vue"), "resolved");
+    assert_eq!(status("app/JavascriptSlots.vue"), "resolved");
     assert_eq!(status("app/UnrelatedImport.vue"), "resolved");
     let field_edge: i64 = conn.query_row(
         "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/View.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='app/Panel.vue' AND dst.kind='field' AND dst.name='title'",
@@ -1340,6 +1455,7 @@ fn vue_typed_slot_members_follow_imported_component_provider() {
         "app/FieldCall.vue",
         "app/ShadowedMacro.vue",
         "app/NestedComponent.vue",
+        "app/AssignedSlots.vue",
     ] {
         assert_eq!(status(path), "unresolved", "{path}");
     }
