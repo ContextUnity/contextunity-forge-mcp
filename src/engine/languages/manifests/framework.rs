@@ -57,6 +57,8 @@ pub struct FrameworkManifest {
     /// Provider references created by dependency-injection calls.
     #[serde(default)]
     pub di_calls: Vec<DiCallRule>,
+    #[serde(default)]
+    pub(crate) semantic_rules: Vec<super::SemanticRule>,
 }
 
 /// External members supplied by a known base class.
@@ -174,6 +176,11 @@ impl FrameworkManifest {
             route_calls: merge_typed_rules(self.route_calls, &bundled.route_calls, |rule| {
                 format!("{}\u{0}{}", rule.callee, rule.method)
             }),
+            semantic_rules: merge_typed_rules(
+                self.semantic_rules,
+                &bundled.semantic_rules,
+                |rule| rule.id.clone(),
+            ),
             di_calls: merge_typed_rules(self.di_calls, &bundled.di_calls, |rule| {
                 rule.callee.clone()
             }),
@@ -205,6 +212,15 @@ impl FrameworkManifest {
                 rule.handler_argument != Some(rule.path_argument),
                 "route path and handler arguments must differ"
             );
+        }
+        let mut ids = BTreeSet::new();
+        for rule in &self.semantic_rules {
+            anyhow::ensure!(
+                ids.insert(&rule.id),
+                "duplicate semantic rule id {}",
+                rule.id
+            );
+            rule.validate()?;
         }
         for rule in &self.di_calls {
             validate_callee(&rule.callee)?;

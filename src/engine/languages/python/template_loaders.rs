@@ -1,6 +1,6 @@
 use crate::core::models::{Facts, Node as IndexedNode};
 use crate::engine::ast::{field, text};
-use crate::engine::languages::SyntaxContext;
+use crate::engine::languages::{LanguageProfile, SyntaxContext};
 use std::path::{Component, Path};
 use tree_sitter::Node;
 
@@ -46,7 +46,63 @@ fn import_binding<'a>(node: Node<'_>, name: Node<'_>, source: &'a str) -> Option
     Some((module, imported, alias))
 }
 
+pub(super) fn type_parameter_binds(scope: Node<'_>, source: &str, name: &str) -> bool {
+    let Some(parameters) = scope.child_by_field_name("type_parameters") else {
+        return false;
+    };
+    let mut cursor = parameters.walk();
+    let bound = parameters.named_children(&mut cursor).any(|mut parameter| {
+        while matches!(parameter.kind(), "type" | "splat_type" | "constrained_type") {
+            let Some(first) = parameter.named_child(0) else {
+                return false;
+            };
+            parameter = first;
+        }
+        parameter.kind() == "identifier" && text(parameter, source) == name
+    });
+    bound
+}
+
 pub(super) fn binding_count(root: Node<'_>, source: &str, name: &str) -> usize {
+    // A match pattern's names are bindings only in capture positions. Class
+    // heads, mapping keys, keyword labels and dotted value patterns are reads.
+    fn captures(node: Node<'_>, source: &str, name: &str) -> usize {
+        match node.kind() {
+            "identifier" => usize::from(text(node, source) == name),
+            "dotted_name" => {
+                usize::from(node.named_child_count() == 1 && text(node, source) == name)
+            }
+            "dict_pattern" => {
+                let mut values = node.walk();
+                let count = node
+                    .children_by_field_name("value", &mut values)
+                    .map(|value| captures(value, source, name))
+                    .sum::<usize>();
+                let mut rest = node.walk();
+                count
+                    + node
+                        .named_children(&mut rest)
+                        .filter(|child| child.kind() == "splat_pattern")
+                        .map(|child| captures(child, source, name))
+                        .sum::<usize>()
+            }
+            "class_pattern" | "keyword_pattern" => {
+                let mut cursor = node.walk();
+                node.named_children(&mut cursor)
+                    .skip(1)
+                    .map(|child| captures(child, source, name))
+                    .sum()
+            }
+            "case_pattern" | "list_pattern" | "tuple_pattern" | "union_pattern" | "as_pattern"
+            | "splat_pattern" => {
+                let mut cursor = node.walk();
+                node.named_children(&mut cursor)
+                    .map(|child| captures(child, source, name))
+                    .sum()
+            }
+            _ => 0,
+        }
+    }
     fn targets(node: Node<'_>, source: &str, name: &str) -> usize {
         match node.kind() {
             "identifier" => usize::from(text(node, source) == name),
@@ -61,39 +117,62 @@ pub(super) fn binding_count(root: Node<'_>, source: &str, name: &str) -> usize {
     }
     fn visit(node: Node<'_>, source: &str, name: &str) -> usize {
         match node.kind() {
+            "case_pattern" => captures(node, source, name),
+            "type_alias_statement" => {
+                usize::from(super::Python.symbol_name(node, source) == Some(name))
+            }
             "assignment" | "annotated_assignment" | "augmented_assignment" | "for_statement" => {
-                let own = node.child_by_field_name("left")
+                let own = node
+                    .child_by_field_name("left")
                     .map_or(0, |left| targets(left, source, name));
                 let mut cursor = node.walk();
-                own + node.named_children(&mut cursor).map(|child| visit(child, source, name)).sum::<usize>()
+                own + node
+                    .named_children(&mut cursor)
+                    .map(|child| visit(child, source, name))
+                    .sum::<usize>()
             }
             "named_expression" | "as_pattern" => {
-                let own = node.child_by_field_name("name")
+                let own = node
+                    .child_by_field_name("name")
                     .or_else(|| node.child_by_field_name("alias"))
                     .map_or(0, |target| targets(target, source, name));
                 let mut cursor = node.walk();
-                own + node.named_children(&mut cursor).map(|child| visit(child, source, name)).sum::<usize>()
+                own + node
+                    .named_children(&mut cursor)
+                    .map(|child| visit(child, source, name))
+                    .sum::<usize>()
             }
             "import_from_statement" | "import_statement" => {
                 let mut imports = node.walk();
-                node.children_by_field_name("name", &mut imports)
+                let explicit = node
+                    .children_by_field_name("name", &mut imports)
                     .filter(|child| {
                         field(*child, source, "alias")
                             .or_else(|| field(*child, source, "name"))
                             .unwrap_or_else(|| text(*child, source))
                             == name
                     })
-                    .count()
+                    .count();
+                let mut wildcard = node.walk();
+                let unknown = node
+                    .named_children(&mut wildcard)
+                    .any(|child| child.kind() == "wildcard_import");
+                explicit + usize::from(unknown)
             }
-            "function_definition" | "class_definition" =>
-                (field(node, source, "name") == Some(name)) as usize,
+            "function_definition" | "class_definition" => {
+                (field(node, source, "name") == Some(name)) as usize
+            }
             "delete_statement" => {
                 let mut cursor = node.walk();
-                node.named_children(&mut cursor).map(|target| targets(target, source, name)).sum()
+                node.named_children(&mut cursor)
+                    .map(|target| targets(target, source, name))
+                    .sum()
             }
             _ => {
                 let mut cursor = node.walk();
-                node.named_children(&mut cursor).map(|child| visit(child, source, name)).sum()
+                node.named_children(&mut cursor)
+                    .map(|child| visit(child, source, name))
+                    .sum()
             }
         }
     }

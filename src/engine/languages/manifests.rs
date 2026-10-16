@@ -5,3 +5,6 @@ pub use framework::{
     ClassHierarchyReceiverRule, DiCallRule, FrameworkManifest, FrameworkManifestValue,
     RouteCallRule, RouteDecoratorRule,
 };
+
+pub(crate) mod semantic;
+pub(crate) use semantic::{Activation, SemanticCallee, SemanticOperation, SemanticRule};

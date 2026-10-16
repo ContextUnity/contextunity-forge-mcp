@@ -32,6 +32,7 @@ pub mod manifests;
 pub(crate) mod python_receivers;
 /// Package and TypeScript path registries.
 pub(crate) mod registries;
+pub(crate) mod semantic;
 #[cfg(any(feature = "lang-html", feature = "lang-vue"))]
 #[path = "support/template.rs"]
 pub(crate) mod template;
@@ -223,6 +224,7 @@ pub struct LanguageContext {
     pub route_calls: Vec<manifests::RouteCallRule>,
     /// Dependency-injection call rules.
     pub di_calls: Vec<manifests::DiCallRule>,
+    pub(crate) semantic_rules: Vec<semantic::EffectiveSemanticRule>,
 }
 
 #[derive(Clone, Debug, Default)]

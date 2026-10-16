@@ -3,15 +3,20 @@ use crate::engine::ast::text;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
-fn lexical_import_owner<'a>(node: Node<'a>, source: &str, alias: &str) -> Option<Node<'a>> {
+pub(super) fn lexical_import_owner<'a>(
+    node: Node<'a>,
+    source: &str,
+    alias: &str,
+) -> Option<Node<'a>> {
     let mut parent = node.parent();
     while let Some(scope) = parent {
         match scope.kind() {
             "function_definition" => {
-                if crate::engine::ast::scope_bindings(scope, source)
-                    .all
-                    .iter()
-                    .any(|bound| bound == alias)
+                if super::template_loaders::type_parameter_binds(scope, source, alias)
+                    || crate::engine::ast::scope_bindings(scope, source)
+                        .all
+                        .iter()
+                        .any(|bound| bound == alias)
                 {
                     return None;
                 }
@@ -20,7 +25,12 @@ fn lexical_import_owner<'a>(node: Node<'a>, source: &str, alias: &str) -> Option
                     return None;
                 }
             }
-            "class_definition" | "lambda" => return None,
+            "class_definition"
+            | "lambda"
+            | "list_comprehension"
+            | "set_comprehension"
+            | "dictionary_comprehension"
+            | "generator_expression" => return None,
             "module" => return Some(scope),
             _ => {}
         }

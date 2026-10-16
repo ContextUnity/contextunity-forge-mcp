@@ -687,6 +687,7 @@ pub(crate) fn extract_typed_with_registry(
     };
     if is_trivial_source(source, language) {
         profile.finish(&mut typed.facts);
+        languages::semantic::file_providers(&mut typed.facts, &language_context);
         return Ok(typed);
     }
     match language {
@@ -713,6 +714,7 @@ pub(crate) fn extract_typed_with_registry(
             }
         }
     }
+    languages::semantic::file_providers(&mut typed.facts, &language_context);
     Ok(typed)
 }
 

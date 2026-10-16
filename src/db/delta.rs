@@ -239,6 +239,41 @@ fn django_route_include_closure(
     Ok(closure)
 }
 
+fn semantic_fact_owners(
+    conn: &Connection,
+    facts: &BTreeMap<String, TypedFacts>,
+    seeds: &BTreeSet<String>,
+    inventory: &BTreeMap<&str, &FileEntry>,
+) -> Result<BTreeSet<String>> {
+    let mut keys = BTreeSet::new();
+    for (_, typed) in facts.iter().filter(|(path, _)| seeds.contains(*path)) {
+        for node in &typed.facts.nodes {
+            for fact in crate::engine::languages::semantic::decode(node)? {
+                keys.insert(crate::engine::languages::semantic::dependency_key(
+                    &fact.identity,
+                ));
+            }
+        }
+    }
+    // Deleted/renamed inputs contribute their prior identities as well.
+    let mut old = conn.prepare("SELECT k.key FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND p.path IN(SELECT value FROM json_each(?1)) AND typeof(k.key)='text' AND k.key LIKE 'semantic:%'")?;
+    for key in old.query_map([serde_json::to_string(seeds)?], |row| {
+        row.get::<_, String>(0)
+    })? {
+        keys.insert(key?);
+    }
+    let mut owners = conn.prepare("SELECT DISTINCT p.path FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND k.key IN(SELECT value FROM json_each(?1))")?;
+    let paths = owners
+        .query_map([serde_json::to_string(&keys)?], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(paths
+        .into_iter()
+        .filter(|path| inventory.contains_key(path.as_str()))
+        .collect())
+}
+
 fn persisted_possible_call_owners(
     conn: &Connection,
     changed_rust_paths: &BTreeSet<String>,
@@ -1047,6 +1082,9 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             frontier = next;
         }
     }
+    affected.extend(semantic_fact_owners(
+        &admitted, &facts, &affected, &inventory,
+    )?);
     let mut load_owners: BTreeSet<_> = affected
         .difference(&modified)
         .filter(|path| inventory.contains_key(path.as_str()) && !facts.contains_key(path.as_str()))

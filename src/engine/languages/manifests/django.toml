@@ -115,3 +115,10 @@ method = "ANY"
 path_argument = 0
 handler_argument = 1
 allow_relative_path = true
+
+[[semantic_rules]]
+id = "render-template"
+namespace = "templates"
+scope = "project"
+activation = [{ kind = "package", name = "django" }]
+operation = { kind = "call_to_file", language = "python", callee = { kind = "imported", module = "django.shortcuts", export = "render" }, argument = 1, target = { kind = "project_path_suffix", prefix = "templates/", language = "html" }, relation = "renders_template" }

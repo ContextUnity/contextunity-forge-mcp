@@ -46,6 +46,8 @@ fn coverage_aggregate_rows(conn: &rusqlite::Connection) -> (Vec<String>, Vec<Str
 #[cfg(feature = "lang-typescript")]
 #[path = "classic_wire.rs"]
 mod classic_wire;
+#[cfg(feature = "lang-python")]
+mod framework_relations;
 mod syntax;
 #[path = "template_masking.rs"]
 mod template_masking;

@@ -2,6 +2,17 @@ use super::*;
 use crate::core::typed_facts::FlowState;
 use crate::engine::languages::{self, LanguageProfile};
 use crate::engine::linker::semantic_context;
+use std::collections::BTreeSet;
+
+fn project_scope(
+    path: &str,
+    dependencies: &languages::dependency_registry::DependencyRegistry,
+) -> String {
+    dependencies
+        .nearest_manifest_scope_for_path(languages::LanguageFamily("python"), path)
+        .unwrap_or_else(|| languages::workspace_path(path).0)
+        .to_owned()
+}
 
 /// Composes relations that require facts owned by more than one language.
 ///
@@ -18,6 +29,46 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
     nodes: &[&'a Node],
 ) -> Vec<Graph> {
     let route_index = routes::RouteIndex::build(nodes);
+    use languages::semantic::{
+        SemanticFactRole, SemanticIdentity, SemanticOccurrence, SemanticRelation,
+    };
+    let by_id: HashMap<_, _> = nodes.iter().map(|node| (node.id.as_str(), *node)).collect();
+    let mut semantic_facts = BTreeMap::new();
+    let mut semantic_errors = BTreeMap::new();
+    let mut semantic_targets = BTreeMap::<SemanticIdentity, BTreeSet<String>>::new();
+    for (path, source) in all {
+        let mut decoded = Vec::new();
+        for node in &source.as_ref().nodes {
+            match languages::semantic::decode(node) {
+                Ok(values) => decoded.extend(values),
+                Err(error) => semantic_errors
+                    .entry(path.as_str())
+                    .or_insert_with(Vec::new)
+                    .push((node.line, node.qualname.clone(), error.to_string())),
+            }
+        }
+        for fact in &decoded {
+            if let SemanticFactRole::FileProvider { target } = &fact.role {
+                if let Some(node) = by_id.get(target.as_str()).filter(|node| {
+                    node.kind == "module"
+                        && node.path == *path
+                        && fact.occurrence.owner_id == node.id
+                        && fact.identity.scope == project_scope(path, dependencies)
+                        && fact
+                            .identity
+                            .target
+                            .paths(path, &node.language)
+                            .contains(&fact.identity.path)
+                }) {
+                    semantic_targets
+                        .entry(fact.identity.clone())
+                        .or_default()
+                        .insert(node.id.clone());
+                }
+            }
+        }
+        semantic_facts.insert(path.as_str(), decoded);
+    }
     #[cfg(not(feature = "lang-html"))]
     let _ = (flows, dependencies, profiles, semantic_context);
     #[cfg(feature = "lang-html")]
@@ -34,6 +85,85 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                 edges: Vec::new(),
                 coverage: Vec::new(),
             };
+            for (line, expression, error) in
+                semantic_errors.get(path.as_str()).into_iter().flatten()
+            {
+                graph.coverage.push(Coverage {
+                    path: path.clone(),
+                    line: *line,
+                    expression: expression.clone(),
+                    status: "unresolved".into(),
+                    evidence: format!("invalid persisted semantic fact: {error}").into(),
+                });
+            }
+            let mut occurrences = BTreeMap::<
+                (SemanticOccurrence, SemanticRelation),
+                (String, BTreeSet<String>),
+            >::new();
+            for fact in semantic_facts.get(path.as_str()).into_iter().flatten() {
+                let SemanticFactRole::CallToFile {
+                    import_owner,
+                    alias,
+                    module,
+                    export,
+                    relation,
+                } = &fact.role
+                else {
+                    continue;
+                };
+                let entry = occurrences
+                    .entry((fact.occurrence.clone(), *relation))
+                    .or_insert_with(|| (fact.expression.clone(), BTreeSet::new()));
+                if fact.identity.scope != project_scope(path, dependencies)
+                    || !by_id
+                        .get(fact.occurrence.owner_id.as_str())
+                        .is_some_and(|owner| owner.path == *path)
+                    || !by_id.get(import_owner.as_str()).is_some_and(|owner| {
+                        owner.path == *path
+                            && semantic_context.exact_external_import(
+                                owner,
+                                alias,
+                                module,
+                                export,
+                                crate::core::semantic::SourcePosition {
+                                    line: fact.occurrence.line,
+                                    column: fact.occurrence.column,
+                                },
+                            )
+                    })
+                {
+                    continue;
+                }
+                if let Some(targets) = semantic_targets.get(&fact.identity) {
+                    entry.1.extend(targets.iter().cloned());
+                }
+            }
+            // Aggregate every rule and namespace before promoting one source occurrence.
+            for ((occurrence, relation), (expression, targets)) in occurrences {
+                let status = match targets.len() {
+                    0 => "unresolved",
+                    1 => "resolved",
+                    _ => "ambiguous",
+                };
+                if targets.len() == 1 {
+                    graph.edges.push(Edge {
+                        src: occurrence.owner_id,
+                        dst: targets.into_iter().next().expect("one target"),
+                        kind: relation.as_str().into(),
+                        path: path.clone(),
+                        line: occurrence.line,
+                        evidence: expression.clone(),
+                        confidence: "exact".into(),
+                    });
+                }
+                graph.coverage.push(Coverage {
+                    path: path.clone(),
+                    line: occurrence.line,
+                    expression,
+                    status: status.into(),
+                    evidence: "declarative file identity; unique proven target required".into(),
+                });
+            }
 
             #[cfg(feature = "lang-html")]
             for (provider, target) in render_contexts.targets(path) {

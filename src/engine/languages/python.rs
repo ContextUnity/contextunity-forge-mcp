@@ -900,6 +900,7 @@ impl LanguageProfile for Python {
         }
         if ctx.node.kind() == "call" {
             routes::registration_with_context(ctx, facts, symbols, rules, route_context);
+            call_to_file(ctx, facts, rules);
         }
         self.extract_routes(ctx, facts, symbols);
     }
@@ -921,6 +922,104 @@ impl LanguageProfile for Python {
             diagnostic_hint: "Use a complete Python statement or expression, or a supported bodyless function or class declaration.",
             ..AstSearchCapabilities::default()
         }
+    }
+}
+
+fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &LanguageContext) {
+    use super::manifests::{SemanticCallee, SemanticOperation};
+    let Some(callee) = ctx
+        .node
+        .child_by_field_name("function")
+        .filter(|node| node.kind() == "identifier")
+    else {
+        return;
+    };
+    let alias = text(callee, ctx.source);
+    let Some(arguments) = ctx.node.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut cursor = arguments.walk();
+    let args: Vec<_> = arguments
+        .named_children(&mut cursor)
+        .filter(|node| node.kind() != "comment")
+        .collect();
+    if args.iter().any(|node| {
+        matches!(
+            node.kind(),
+            "keyword_argument" | "list_splat" | "dictionary_splat"
+        )
+    }) {
+        return;
+    }
+    let Some(import_owner) = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind == "module")
+        .map(|node| node.id.clone())
+    else {
+        return;
+    };
+    for effective in rules.semantic_rules.iter().filter(|rule| rule.active) {
+        let SemanticOperation::CallToFile {
+            language,
+            callee,
+            argument,
+            relation,
+            ..
+        } = &effective.rule.operation;
+        if language != "python" {
+            continue;
+        }
+        let SemanticCallee::Imported { module, export } = callee;
+        if !facts.references.iter().any(|reference| {
+            reference.kind == "imports"
+                && reference.source == import_owner
+                && reference.alias.as_deref() == Some(alias)
+                && reference.module.as_deref() == Some(module)
+                && reference.expression == *export
+        }) {
+            continue;
+        }
+        let Some(root) = render_context::lexical_import_owner(ctx.node, ctx.source, alias) else {
+            continue;
+        };
+        if !template_loaders::imported(
+            root,
+            ctx.source,
+            alias,
+            module,
+            export,
+            ctx.node.start_byte(),
+        ) {
+            continue;
+        }
+        let Some(literal) = args
+            .get(*argument)
+            .and_then(|node| template_loaders::literal(*node, ctx.source))
+        else {
+            continue;
+        };
+        if !super::manifests::semantic::normal_relative_path(literal) {
+            continue;
+        }
+        let position = ctx.node.start_position();
+        super::semantic::push(
+            facts,
+            effective.fact(
+                ctx.owner,
+                position.row + ctx.offset + 1,
+                position.column,
+                literal.to_owned(),
+                text(ctx.node, ctx.source).to_owned(),
+                super::semantic::SemanticFactRole::CallToFile {
+                    import_owner: import_owner.clone(),
+                    alias: alias.to_owned(),
+                    module: module.clone(),
+                    export: export.clone(),
+                    relation: *relation,
+                },
+            ),
+        );
     }
 }
 

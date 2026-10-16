@@ -65,6 +65,24 @@ impl DependencyRegistry {
                 .route_calls
                 .extend(manifest.route_calls.iter().cloned());
             context.di_calls.extend(manifest.di_calls.iter().cloned());
+            for rule in &manifest.semantic_rules {
+                let family = LanguageFamily("python");
+                context
+                    .semantic_rules
+                    .push(super::semantic::EffectiveSemanticRule {
+                        pack: manifest.name.clone(),
+                        rule: rule.clone(),
+                        scope: self
+                            .nearest_manifest_scope_for_path(family, path)
+                            .unwrap_or(workspace)
+                            .to_owned(),
+                        active: rule.activation.is_empty()
+                            || rule.activation.iter().any(|activation| {
+                                let super::manifests::Activation::Package { name } = activation;
+                                self.declares_for_path(family, path, name)
+                            }),
+                    });
+            }
         }
         context
     }
@@ -762,6 +780,215 @@ mod tests {
             std::process::id()
         )));
         fs::create_dir(&temporary.0).unwrap();
+        let semantic_root = temporary.0.join("semantic-replacement");
+        fs::create_dir_all(semantic_root.join(".forge/frameworks")).unwrap();
+        fs::write(
+            semantic_root.join("pyproject.toml"),
+            "[project]\nname='call-file-fixture'\ndependencies=['django']\n",
+        )
+        .unwrap();
+        let replacement = semantic_root.join(".forge/frameworks/django.toml");
+        for (phase, enabled) in [
+            ("bundled", true),
+            ("empty replacement", false),
+            ("restored", true),
+        ] {
+            if phase == "empty replacement" {
+                fs::write(
+                    &replacement,
+                    "replace = true\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n",
+                )
+                .unwrap();
+            } else if phase == "restored" {
+                fs::remove_file(&replacement).unwrap();
+            }
+            let registry =
+                DependencyRegistry::try_collect_with_paths(&semantic_root, None, &[]).unwrap();
+            let manifest = registry
+                .framework_manifest_for_path(
+                    LanguageFamily("python"),
+                    "views.py",
+                    "django",
+                    "django",
+                )
+                .expect("package/project pack remains available");
+            let _ = manifest;
+            let extracted = crate::engine::ast::extract_typed_with_registry(
+                "views.py",
+                "python",
+                "from django.shortcuts import render as show_page\n\ndef page(request):\n    return show_page(request, 'catalog/card.html')\n\ndef shadowed(request, show_page):\n    return show_page(request, 'catalog/card.html')\n\ndef starred(request, args):\n    return show_page(*args, 'catalog/card.html')\n\ndef comprehension(request, callbacks):\n    return [show_page(request, 'catalog/card.html') for show_page in callbacks]\n",
+                &registry,
+            )
+            .unwrap();
+            assert!(extracted.facts.errors.is_empty(), "{phase}: parse errors");
+            let owner = extracted
+                .facts
+                .nodes
+                .iter()
+                .find(|node| node.name == "page")
+                .expect("ordinary caller declaration survives replacement");
+            let consumers: Vec<_> = extracted
+                .facts
+                .nodes
+                .iter()
+                .flat_map(|node| {
+                    node.details
+                        .get("semantic_facts")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .filter(|fact| fact["role"]["kind"] == "call_to_file")
+                .collect();
+            if enabled {
+                assert_eq!(
+                    consumers.len(),
+                    1,
+                    "{phase}: exact imported-call consumer fact"
+                );
+                assert_eq!(
+                    consumers[0]["occurrence"]["owner_id"], owner.id,
+                    "{phase}: actual caller declaration"
+                );
+                assert_eq!(
+                    consumers[0]["role"],
+                    serde_json::json!({"kind":"call_to_file","import_owner":"module:views.py","alias":"show_page","module":"django.shortcuts","export":"render","relation":"renders_template"})
+                );
+                assert_eq!(
+                    consumers[0]["identity"]["path"], "catalog/card.html",
+                    "{phase}: literal identity"
+                );
+                assert_eq!(
+                    consumers[0]["identity"]["target"],
+                    serde_json::json!({"kind":"project_path_suffix","prefix":"templates/","language":"html"})
+                );
+                assert_eq!(consumers[0]["occurrence"]["line"], 4, "{phase}: occurrence");
+                for field in ["", "/identity", "/occurrence", "/role"] {
+                    let mut malformed = consumers[0].clone();
+                    malformed
+                        .pointer_mut(field)
+                        .unwrap()
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("unsupported".into(), true.into());
+                    assert!(
+                        serde_json::from_value::<super::super::semantic::SemanticFact>(malformed)
+                            .is_err(),
+                        "strict stored DTO field {field}"
+                    );
+                }
+            } else {
+                assert!(
+                    consumers.is_empty(),
+                    "empty replacement must remove consumer facts: {consumers:?}"
+                );
+            }
+        }
+        let mut documented = Vec::new();
+        for block in include_str!("../../../docs/reference/framework-manifests.md").split("```") {
+            let Some((extension @ ("toml" | "yaml"), source)) = block.split_once('\n') else {
+                continue;
+            };
+            if source.contains("call_to_file") {
+                documented.push(
+                    FrameworkManifest::parse("documented".into(), extension, source).unwrap(),
+                );
+            }
+        }
+        assert_eq!(
+            documented.len(),
+            2,
+            "both complete shipped semantic examples parse"
+        );
+        let valid = serde_json::to_value(&documented[0]).unwrap();
+        for extension in ["toml", "yaml", "yml"] {
+            let replacement = semantic_root.join(format!(".forge/frameworks/django.{extension}"));
+            for (pointer, value) in [
+                ("/unexpected", true.into()),
+                ("/semantic_rules/0/unexpected", true.into()),
+                ("/semantic_rules/0/scope", "cross_language_project".into()),
+                ("/semantic_rules/0/namespace", "".into()),
+                ("/semantic_rules/0/activation/0/unexpected", true.into()),
+                ("/semantic_rules/0/activation/0/kind", "import".into()),
+                ("/semantic_rules/0/operation/unexpected", true.into()),
+                ("/semantic_rules/0/operation/kind", "member_provider".into()),
+                ("/semantic_rules/0/operation/language", "javascript".into()),
+                ("/semantic_rules/0/operation/argument", (-1).into()),
+                ("/semantic_rules/0/operation/callee/unexpected", true.into()),
+                ("/semantic_rules/0/operation/callee/kind", "global".into()),
+                (
+                    "/semantic_rules/0/operation/callee/module",
+                    "django..shortcuts".into(),
+                ),
+                ("/semantic_rules/0/operation/target/unexpected", true.into()),
+                ("/semantic_rules/0/operation/target/kind", "basename".into()),
+                (
+                    "/semantic_rules/0/operation/target/language",
+                    "python".into(),
+                ),
+                (
+                    "/semantic_rules/0/operation/target/prefix",
+                    "../templates/".into(),
+                ),
+                (
+                    "/semantic_rules/0/operation/target/prefix",
+                    "/templates/".into(),
+                ),
+                (
+                    "/semantic_rules/0/operation/target/prefix",
+                    "templates".into(),
+                ),
+                ("/semantic_rules/0/operation/relation", "calls".into()),
+            ] {
+                let mut invalid = valid.clone();
+                invalid["replace"] = true.into();
+                let (parent, field) = pointer.rsplit_once('/').unwrap();
+                invalid
+                    .pointer_mut(parent)
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(field.into(), value);
+                let source = if extension == "toml" {
+                    toml::to_string(&invalid).unwrap()
+                } else {
+                    serde_yaml::to_string(&invalid).unwrap()
+                };
+                fs::write(&replacement, source).unwrap();
+                let error = DependencyRegistry::try_collect_with_paths(&semantic_root, None, &[])
+                    .err()
+                    .expect("malformed replacement must fail instead of resurrecting the bundle");
+                assert!(
+                    format!("{error:#}").contains(&replacement.display().to_string()),
+                    "actionable source diagnostic: {error:#}"
+                );
+            }
+            fs::remove_file(replacement).unwrap();
+        }
+        // Existing project-first merge owns semantic IDs as well as T1 rule IDs.
+        let mut bundled = documented[0].clone();
+        let mut project = documented[0].clone();
+        project.semantic_rules[0].namespace = "override".into();
+        let mut independent = bundled.semantic_rules[0].clone();
+        independent.id = "independent".into();
+        bundled.semantic_rules.push(independent);
+        let merged = project.with_bundled_rules(&bundled);
+        assert_eq!(merged.semantic_rules.len(), 2);
+        assert_eq!(merged.semantic_rules[0].namespace, "override");
+        let mut duplicate = valid.clone();
+        let rule = duplicate["semantic_rules"][0].clone();
+        duplicate["semantic_rules"]
+            .as_array_mut()
+            .unwrap()
+            .push(rule);
+        assert!(FrameworkManifest::parse(
+            "duplicate".into(),
+            "toml",
+            &toml::to_string(&duplicate).unwrap()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate semantic rule id"));
         let family = LanguageFamily("python");
         let mut failures = Vec::new();
         for extension in ["toml", "yaml", "yml"] {

@@ -107,3 +107,52 @@ Typed project sections can add class receivers, route decorators, route calls, a
 `DependencyRegistry` lives in `src/engine/languages/dependency_registry.rs` and collects workspace dependencies together with framework rules. JavaScript package metadata and TypeScript path mappings use separate registries under `src/engine/languages/registries/`; Python package declarations are extracted in `src/engine/languages/python/dependencies.rs`. `LanguageProfile::manifest_filenames` names external package metadata inputs such as `package.json`, `pyproject.toml`, and `Cargo.toml`; it does not name framework rule files.
 
 See [ADR 0013](../adr/0013-data-driven-framework-manifests.md) for the linker and grammar boundaries and [ADR 0017](../adr/0017-serde-framework-manifest-formats.md) for the accepted file formats and parser contract.
+
+## Imported calls to actual files
+
+`semantic_rules` adds a bounded two-phase relation to the existing language owners. The Python parser proves a direct imported alias and a static positional literal; the shared linker joins it to one actual HTML module in the nearest Python project. The target projection matches the complete directory prefix plus literal path at a path-segment boundary. Multiple distinct targets across all matching rules and namespaces remain ambiguous. No basename fallback or synthetic target is used.
+
+This complete TOML pack can be saved under any `.forge/frameworks/<name>.toml` filename:
+
+```toml
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[semantic_rules]]
+id = "render-template"
+namespace = "templates"
+scope = "project"
+activation = [{ kind = "package", name = "django" }]
+operation = { kind = "call_to_file", language = "python", callee = { kind = "imported", module = "django.shortcuts", export = "render" }, argument = 1, target = { kind = "project_path_suffix", prefix = "templates/", language = "html" }, relation = "renders_template" }
+```
+
+The equivalent complete YAML pack is accepted with `.yaml` or `.yml`:
+
+```yaml
+receivers: []
+builtins: []
+filters: []
+routes: []
+semantic_rules:
+  - id: render-template
+    namespace: templates
+    scope: project
+    activation:
+      - kind: package
+        name: django
+    operation:
+      kind: call_to_file
+      language: python
+      callee: {kind: imported, module: django.shortcuts, export: render}
+      argument: 1
+      target: {kind: project_path_suffix, prefix: templates/, language: html}
+      relation: renders_template
+```
+
+`argument` is a zero-based positional index. Currently the closed operation accepts Python direct from-import callees and HTML file targets with `renders_template`. API module/export, index, namespace and directory prefix are data; a new pack needs no Rust registration. Unknown fields, unsupported languages/operations/relations, duplicate rule IDs and invalid path prefixes fail manifest loading with a file diagnostic. An invalid project override never falls back to bundled rules.
+
+Activation is either empty or a list of package alternatives declared in the nearest Python project. Empty activation requires the same exact imported-callee proof. Package activation controls both caller and file-provider facts. Project rules replace bundled rules with the same ID; other bundled IDs remain unless `replace = true` replaces the whole pack. An empty replacement disables its semantic rules and activation.
+
+Only already-normal relative literal paths are accepted: no absolute path, traversal, empty segment, escape-dependent or interpolated literal. Keyword arguments, argument expansion and unsupported binding contexts remain without semantic facts. A same-spelling local module cannot establish external API provenance. Facts retain the original call occurrence and actual target module; edits, deletions, renames and manifest changes invalidate both sides through their shared typed dependency identity.
