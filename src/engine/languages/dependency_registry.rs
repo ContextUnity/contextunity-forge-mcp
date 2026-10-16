@@ -264,10 +264,10 @@ impl DependencyRegistry {
             .is_some_and(|packages| packages.contains(package))
     }
 
-    /// Returns a user manifest only when the declaring project owns its package.
+    /// Returns a workspace-local manifest unconditionally, otherwise a bundled
+    /// manifest only when the workspace declares its package.
     ///
-    /// The manifest scope is the primary or linked-workspace root. Package
-    /// declarations remain scoped through the existing dependency registry.
+    /// Both lookups are scoped to the workspace containing `path`.
     pub fn framework_manifest_for_path(
         &self,
         family: LanguageFamily,
@@ -275,13 +275,16 @@ impl DependencyRegistry {
         framework: &str,
         package: &str,
     ) -> Option<&FrameworkManifest> {
-        if !self.declares_for_path(family, path, package) {
-            return None;
-        }
         let (workspace, _) = super::workspace_path(path);
-        self.framework_manifests
+        if let Some(manifest) = self
+            .framework_manifests
             .get(&(workspace.to_owned(), framework.to_owned()))
-            .or_else(|| self.standard_framework_manifests.get(framework))
+        {
+            return Some(manifest);
+        }
+        self.declares_for_path(family, path, package)
+            .then(|| self.standard_framework_manifests.get(framework))
+            .flatten()
     }
 
     pub(crate) fn nuxt_package_scope_for_path(&self, path: &str) -> Option<&str> {
@@ -472,6 +475,7 @@ fn load_standard_framework_manifests(registry: &mut DependencyRegistry) -> Resul
     for (name, source) in [
         ("alpinejs", include_str!("manifests/alpinejs.toml")),
         ("django", include_str!("manifests/django.toml")),
+        ("gridviewspec", include_str!("manifests/gridviewspec.toml")),
         ("jinja2", include_str!("manifests/jinja2.toml")),
         ("nuxt", include_str!("manifests/nuxt.toml")),
     ] {
@@ -590,6 +594,12 @@ fn load_framework_manifests(
             .with_context(|| format!("failed to read framework manifest {}", path.display()))?;
         let manifest = FrameworkManifest::parse(name.clone(), extension, &content)
             .with_context(|| format!("failed to load framework manifest {}", path.display()))?;
+        let manifest = registry
+            .standard_framework_manifests
+            .get(&name)
+            .map_or(manifest.clone(), |bundled| {
+                manifest.with_bundled_rules(bundled)
+            });
         if registry
             .framework_manifests
             .insert((workspace.to_owned(), name.clone()), manifest)
@@ -630,6 +640,224 @@ pub fn is_dependency_manifest_filename(filename: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn project_framework_packs_merge_replace_and_activate() {
+        use super::super::manifests::FrameworkManifestValue;
+        use std::collections::BTreeMap;
+
+        struct TestRoot(PathBuf);
+        impl Drop for TestRoot {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temporary = TestRoot(std::env::temp_dir().join(format!(
+            "forge-framework-packs-{}-{nonce}",
+            std::process::id()
+        )));
+        fs::create_dir(&temporary.0).unwrap();
+        let family = LanguageFamily("python");
+        let mut failures = Vec::new();
+        for extension in ["toml", "yaml", "yml"] {
+            for (mode, replace) in [("default", false), ("extend", false), ("replace", true)] {
+                for declared in [false, true] {
+                    let workspace = temporary.0.join(format!("{extension}-{mode}-{declared}"));
+                    let root = workspace.as_path();
+                    let directory = root.join(".forge/frameworks");
+                    fs::create_dir_all(&directory).unwrap();
+                    if declared {
+                        fs::write(root.join("requirements.txt"), "django>=5\n").unwrap();
+                    }
+                    let directive = match (extension, mode) {
+                        (_, "default") => "",
+                        ("toml", "extend") => "extend = true\n",
+                        ("toml", "replace") => "replace = true\n",
+                        (_, "extend") => "extend: true\n",
+                        (_, "replace") => "replace: true\n",
+                        _ => unreachable!(),
+                    };
+                    let rules = if extension == "toml" {
+                        r#"receivers = ["template_context=project.render", { metadata = { arity = 2 }, enabled = true }]
+builtins = ["template.tag.project", "template.tag.if"]
+filters = ["template.filter.project", "template.filter.upper"]
+routes = ["template.tag.trans=project.i18n", { methods = ["GET", "POST"], priority = 7 }]
+"#
+                    } else {
+                        r#"receivers:
+  - template_context=project.render
+  - metadata: { arity: 2 }
+    enabled: true
+builtins: [template.tag.project, template.tag.if]
+filters: [template.filter.project, template.filter.upper]
+routes:
+  - template.tag.trans=project.i18n
+  - methods: [GET, POST]
+    priority: 7
+"#
+                    };
+                    let project_path = directory.join(format!("django.{extension}"));
+                    fs::write(&project_path, format!("{directive}{rules}")).unwrap();
+                    let label = format!("{extension}/{mode}/declared={declared}");
+                    let registry = match DependencyRegistry::try_collect_with_paths(root, None, &[])
+                    {
+                        Ok(registry) => registry,
+                        Err(error) => {
+                            failures.push(format!(
+                                "{label}: collection rejected valid pack: {error:#}"
+                            ));
+                            continue;
+                        }
+                    };
+                    let Some(manifest) = registry.framework_manifest_for_path(
+                        family,
+                        "src/views.py",
+                        "django",
+                        "django",
+                    ) else {
+                        failures.push(format!("{label}: explicit project pack did not activate"));
+                        continue;
+                    };
+                    let opaque_receiver = FrameworkManifestValue::Table(BTreeMap::from([
+                        ("enabled".to_owned(), FrameworkManifestValue::Boolean(true)),
+                        (
+                            "metadata".to_owned(),
+                            FrameworkManifestValue::Table(BTreeMap::from([(
+                                "arity".to_owned(),
+                                FrameworkManifestValue::Integer(2),
+                            )])),
+                        ),
+                    ]));
+                    let opaque_route = FrameworkManifestValue::Table(BTreeMap::from([
+                        (
+                            "methods".to_owned(),
+                            FrameworkManifestValue::Array(vec![
+                                FrameworkManifestValue::String("GET".to_owned()),
+                                FrameworkManifestValue::String("POST".to_owned()),
+                            ]),
+                        ),
+                        ("priority".to_owned(), FrameworkManifestValue::Integer(7)),
+                    ]));
+                    for (claim, satisfied) in [
+                        (
+                            "project receiver takes precedence",
+                            manifest.receiver_target("template_context") == Some("project.render"),
+                        ),
+                        (
+                            "project route takes precedence",
+                            manifest.route_target("template.tag.trans") == Some("project.i18n"),
+                        ),
+                        ("project builtin remains", manifest.has_builtin("template.tag.project")),
+                        ("project filter remains", manifest.has_filter("template.filter.project")),
+                        (
+                            "bundled builtin follows merge mode",
+                            manifest.has_builtin("template.tag.block") != replace,
+                        ),
+                        (
+                            "bundled filter follows merge mode",
+                            manifest.has_filter("template.filter.lower") != replace,
+                        ),
+                        (
+                            "bundled route follows merge mode",
+                            manifest.route_target("template.tag.static") == (!replace).then_some("static"),
+                        ),
+                        (
+                            "receiver table remains opaque and project first",
+                            manifest.receivers.get(1) == Some(&opaque_receiver),
+                        ),
+                        (
+                            "route table remains opaque and project first",
+                            manifest.routes.get(1) == Some(&opaque_route),
+                        ),
+                        (
+                            "builtin exact-string identity is unique",
+                            manifest.builtins.iter().filter(|rule| matches!(rule, FrameworkManifestValue::String(value) if value == "template.tag.if")).count() == 1,
+                        ),
+                        (
+                            "filter exact-string identity is unique",
+                            manifest.filters.iter().filter(|rule| matches!(rule, FrameworkManifestValue::String(value) if value == "template.filter.upper")).count() == 1,
+                        ),
+                        (
+                            "receiver source identity is unique",
+                            manifest.receivers.iter().filter(|rule| matches!(rule, FrameworkManifestValue::String(value) if value.starts_with("template_context="))).count() == 1,
+                        ),
+                        (
+                            "route source identity is unique",
+                            manifest.routes.iter().filter(|rule| matches!(rule, FrameworkManifestValue::String(value) if value.starts_with("template.tag.trans="))).count() == 1,
+                        ),
+                        (
+                            "project pack stays in its workspace",
+                            registry.framework_manifest_for_path(family, "[other]/src/views.py", "django", "django").is_none(),
+                        ),
+                    ] {
+                        if !satisfied {
+                            failures.push(format!("{label}: {claim}"));
+                        }
+                    }
+                    let again =
+                        DependencyRegistry::try_collect_with_paths(root, None, &[]).unwrap();
+                    if registry.digest() != again.digest()
+                        || again.framework_manifest_for_path(
+                            family,
+                            "src/views.py",
+                            "django",
+                            "django",
+                        ) != Some(manifest)
+                    {
+                        failures.push(format!("{label}: re-collection is not deterministic"));
+                    }
+                    for (invalid, content) in [
+                        ("missing section", "receivers = []\nbuiltins = []\nfilters = []\n"),
+                        ("unknown section", "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\nunknown = []\n"),
+                        ("wrong section shape", "receivers = {}\nbuiltins = []\nfilters = []\nroutes = []\n"),
+                        ("conflicting modes", "extend = true\nreplace = true\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n"),
+                        ("wrong mode shape", "extend = \"true\"\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n"),
+                    ] {
+                        fs::write(directory.join("invalid.toml"), content).unwrap();
+                        if DependencyRegistry::try_collect_with_paths(root, None, &[]).is_ok() {
+                            failures.push(format!("{label}: accepted {invalid}"));
+                        }
+                    }
+                }
+            }
+        }
+
+        let workspace = temporary.0.join("dependency-only");
+        fs::create_dir(&workspace).unwrap();
+        let root = workspace.as_path();
+        let undeclared = DependencyRegistry::try_collect_with_paths(root, None, &[]).unwrap();
+        if undeclared
+            .framework_manifest_for_path(family, "src/app.py", "django", "django")
+            .is_some()
+        {
+            failures
+                .push("undeclared bundled framework activated without a project pack".to_owned());
+        }
+        if undeclared
+            .framework_manifest_for_path(family, "src/app.py", "gridviewspec", "grid_view_spec")
+            .is_some()
+        {
+            failures
+                .push("undeclared GridViewSpec bundle activated without a project pack".to_owned());
+        }
+        fs::write(
+            root.join("pyproject.toml"),
+            "[project]\nname = 'consumer'\ndependencies = ['grid-view-spec>=0.1']\n",
+        )
+        .unwrap();
+        let registry = DependencyRegistry::try_collect_with_paths(root, None, &[]).unwrap();
+        match registry.framework_manifest_for_path(family, "src/app.py", "gridviewspec", "grid_view_spec") {
+            Some(manifest) if manifest.receiver_target("GridViewSpec") == Some("grid_view_spec.types.spec.GridViewSpec") => {}
+            _ => failures.push("declared grid-view-spec did not activate its verified GridViewSpec bundle receiver".to_owned()),
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     #[test]
     fn requirement_patterns_are_filename_scoped() {
         assert!(filename_matches(

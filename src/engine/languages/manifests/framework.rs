@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,12 @@ pub struct FrameworkManifest {
     /// Framework identifier, taken from the user manifest's filename stem.
     #[serde(skip)]
     pub name: String,
+    /// Selects merging explicitly when true; merging is also the default.
+    #[serde(default, skip_serializing)]
+    extend: bool,
+    /// Selects replacement of the bundled table when true.
+    #[serde(default, skip_serializing)]
+    replace: bool,
     /// Receiver rules consumed by the language linker.
     pub receivers: Vec<FrameworkManifestValue>,
     /// Builtin rules consumed by the language linker.
@@ -41,6 +48,49 @@ pub struct FrameworkManifest {
 }
 
 impl FrameworkManifest {
+    fn merge_rules(
+        project: &[FrameworkManifestValue],
+        bundled: &[FrameworkManifestValue],
+        identity: impl Fn(&str) -> String,
+    ) -> Vec<FrameworkManifestValue> {
+        let mut seen = BTreeSet::new();
+        project
+            .iter()
+            .chain(bundled)
+            .filter(|rule| match rule {
+                FrameworkManifestValue::String(value) => seen.insert(identity(value)),
+                _ => true,
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Merges project rules before bundled rules, unless replacement is explicit.
+    pub(crate) fn with_bundled_rules(self, bundled: &Self) -> Self {
+        if self.replace {
+            return Self {
+                extend: false,
+                replace: false,
+                ..self
+            };
+        }
+
+        let source_identity = |rule: &str| {
+            rule.split_once('=')
+                .map_or(rule, |(source, _)| source)
+                .to_owned()
+        };
+        Self {
+            name: self.name,
+            extend: false,
+            replace: false,
+            receivers: Self::merge_rules(&self.receivers, &bundled.receivers, source_identity),
+            builtins: Self::merge_rules(&self.builtins, &bundled.builtins, str::to_owned),
+            filters: Self::merge_rules(&self.filters, &bundled.filters, str::to_owned),
+            routes: Self::merge_rules(&self.routes, &bundled.routes, source_identity),
+        }
+    }
+
     fn contains_rule(rules: &[FrameworkManifestValue], rule: &str) -> bool {
         rules
             .iter()
@@ -100,6 +150,9 @@ impl FrameworkManifest {
                 .with_context(|| format!("invalid YAML framework manifest {name}"))?,
             other => bail!("unsupported framework manifest extension .{other}"),
         };
+        if manifest.extend && manifest.replace {
+            bail!("framework manifest cannot set both extend and replace to true");
+        }
         manifest.name = name;
         Ok(manifest)
     }

@@ -774,7 +774,8 @@ fn commonjs_provider_body_edits_preserve_unchanged_consumer_contracts() {
 fn framework_manifest_requires_all_rule_tables_and_accepts_complete_manifest() {
     let tables = ["receivers", "builtins", "filters", "routes"];
     let mut failures = Vec::new();
-    let complete_toml = "receivers = [{ name = 'render', receiver = 'request' }]\n\
+    let complete_toml = "replace = true\n\
+        receivers = [{ name = 'render', receiver = 'request' }]\n\
         builtins = ['$refs', '$dispatch']\n\
         filters = ['escape']\n\
         [[routes]]\n\
@@ -783,7 +784,7 @@ fn framework_manifest_requires_all_rule_tables_and_accepts_complete_manifest() {
         [[routes]]\n\
         pattern = '/teams/{id}'\n\
         method = 'POST'\n";
-    let complete_yaml = "receivers:\n  - name: render\n    receiver: request\nbuiltins: [\"$refs\", \"$dispatch\"]\nfilters: [escape]\nroutes:\n  - pattern: \"/users/{id}\"\n    method: GET\n  - pattern: \"/teams/{id}\"\n    method: POST\n";
+    let complete_yaml = "replace: true\nreceivers:\n  - name: render\n    receiver: request\nbuiltins: [\"$refs\", \"$dispatch\"]\nfilters: [escape]\nroutes:\n  - pattern: \"/users/{id}\"\n    method: GET\n  - pattern: \"/teams/{id}\"\n    method: POST\n";
 
     for (extension, complete_manifest) in [
         ("toml", complete_toml),
@@ -958,9 +959,10 @@ fn framework_manifest_requires_all_rule_tables_and_accepts_complete_manifest() {
     let undeclared_dependencies = DependencyRegistry::collect_with_scan_config(&undeclared.0, None);
     if undeclared_dependencies
         .framework_manifest_for_path(LanguageFamily("python"), "index.html", "django", "django")
-        .is_some()
+        .is_none()
     {
-        failures.push("an undeclared project received the Django manifest".to_owned());
+        failures
+            .push("an undeclared project did not activate its local Django manifest".to_owned());
     }
     assert!(
         failures.is_empty(),

@@ -1,33 +1,8 @@
 # Example .forge/frameworks/gridviewspec.toml
-# Framework rules consumed by the Forge language linker for GridViewSpec UI components,
-# HTMX action endpoints, and table render contexts.
+# Verified receiver rule for the GridViewSpec Python distribution.
 # All four sections (receivers, builtins, filters, routes) are required by the schema.
 
-receivers = [
-  "gridview=django_gridviewspec.views.GridView",
-  "spec=django_gridviewspec.spec.GridViewSpec",
-  "columns=django_gridviewspec.columns.Column",
-]
-
-builtins = [
-  "grid_view",
-  "grid_spec",
-  "grid_table",
-  "grid_pagination",
-  "grid_filters",
-  "grid_actions",
-]
-
-filters = [
-  "grid_format",
-  "grid_badge",
-  "grid_date",
-  "grid_currency",
-]
-
-routes = [
-  "endpoint=grid_action",
-  "endpoint=grid_filter",
-  "endpoint=grid_paginate",
-  "endpoint=grid_export",
-]
+receivers = ["GridViewSpec=grid_view_spec.types.spec.GridViewSpec"]
+builtins = []
+filters = []
+routes = []

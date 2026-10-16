@@ -248,28 +248,77 @@ receipt:
 
 ```yaml
 task_ref: declarative-framework-packs-and-cross-repo-alignment
-target: "Implement framework manifest extension mode, auto-activation, GridViewSpec support, and workspace alignment"
+target: Implement framework manifest extension mode, auto-activation, GridViewSpec support, and workspace alignment
 proof_policy: seam-test-first
-contract_revision: 3
+contract_revision: 4
 scope:
-  - src/engine/languages/manifests/framework.rs
-  - src/engine/languages/dependency_registry.rs
-  - src/engine/languages/manifests/
-  - docs/reference/framework-manifests.md
-  - docs/architecture/modularity.md
-  - docs/adr/0017-serde-framework-manifest-formats.md
-  - tests/languages/manifests.rs
-status: ready
+- src/engine/languages/manifests/framework.rs
+- src/engine/languages/dependency_registry.rs
+- src/engine/languages/manifests/
+- docs/reference/framework-manifests.md
+- docs/architecture/modularity.md
+- docs/adr/0017-serde-framework-manifest-formats.md
+- tests/languages/manifests.rs
+- skills/contextunity-forge/references/frameworks/gridviewspec.toml.example
+status: completed
 subtasks:
-  - subtask_ref: framework-manifest-merge-and-workspace-activation
-    title: "Implement extend: true merge mode in FrameworkManifest with project rule precedence and allow activation from workspace .forge/frameworks/ directory"
-    status: pending
-  - subtask_ref: add-gridviewspec-and-rich-framework-rules
-    title: "Add bundled gridviewspec.toml manifest with receiver/route schema validation and auto-activation"
-    status: pending
-  - subtask_ref: align-connected-workspaces
-    title: "Align forge-mcp.yaml and .forge/ in commerce-release-update, grid-view-spec, and traverse"
-    status: pending
+- subtask_ref: framework-manifest-merge-and-workspace-activation
+  title: 'Implement extend: true merge mode in FrameworkManifest with project rule precedence and allow activation from workspace .forge/frameworks/ directory'
+  status: completed
+  evidence: Default/extend merge, explicit replace, project-first identities, opaque nested values, invalid mode/schema rejection, and unconditional local activation covered by the native dependency_registry seam; framework manifest integration suite passes 254/0.
+- subtask_ref: add-gridviewspec-and-rich-framework-rules
+  title: Add bundled gridviewspec.toml manifest with receiver/route schema validation and auto-activation
+  status: completed
+  evidence: Embedded gridviewspec bundle uses the verified grid-view-spec distribution and GridViewSpec class; test proves declared activation and inactive bundled-only behavior. Canonical example now contains only verified rules.
+- subtask_ref: align-connected-workspaces
+  title: Align forge-mcp.yaml and .forge/ in commerce-release-update, grid-view-spec, and traverse
+  status: completed
+  evidence: Candidate guide validation passed on isolated commerce-release-update (3950 files), grid-view-spec (401 files), and traverse (557 files); docs record the obsolete PIM-entry prerequisite without asserting a live entry exists.
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-16T05:58:34.532115866+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib
+      exit_code: 0
+      tests_passed: 56
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Full original Task3 review covered all eight admitted paths at b5b4ca9927020df80efe54be403f7fc60ed4bc21 against baseline452d0f61bfdd0feed9571d4156afd1796e7a4cb0. Closure candidate87fa621f5e36308d9fd3dd038eaf2195fe3a8652 differs only by the owning accessor comment267-270. All scoped tracked work matches candidate; gridviewspec blob3853bc1182b645adc98c2851e5f613062f2fd4d9 unchanged. No reviewer source edits; unrelated031/approvedTask4 modifications preserved.
+        claims:
+          applicable: true
+          evidence: 'T3-DOC-1 confirmed-fixed: corrected public accessor comment accurately states unconditional owning-workspace local activation and dependency-gated bundled fallback, matching278-287. Origin incomplete-remediation; no regression test needed for comment-only maintenance. Original runtime/proof review remains valid: default/extend project-first merge, explicit replace, correct string identities, opaque values, strict arrays/unknown/mode errors, verified GridViewSpec bundle. All three stable reviewers pass bounded closure. Fresh independent cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib exit0,56passed/0failed archive0eb18860c230d687; cargo test --test languages exit0,254passed/0failed archive8ecbe277673f3b37,total310/0. Clippy contributes zero test count. Root ledger .forge/tasks/048-evidence/task3-review-closure.md.'
+        concurrency:
+          applicable: false
+          evidence: Task3 only changes deterministic in-memory manifest parsing/merging and read-only collection. No new task transaction, claim fencing, receipt publication or process/lock behavior; closure is comment-only.
+        project_isolation:
+          applicable: true
+          evidence: Full source review confirms local manifests keyed by workspace_path, bundled fallback still nearest-manifest dependency-gated, linked/nested isolation and scanner-supplied path/ignored-name/no-second-walk guards preserved. Native positive/negative cases and full target remain green. Original candidate guide validations passed all three isolated copies (3950/401/557 files); unchanged CLI behavior carried through comment-only closure. Originals/global agent directories untouched.
+        administration:
+          applicable: false
+          evidence: Task3 changes no protected profiles/configuration, migrations, Git hooks, receipt machinery or candidate-parent rules. Mode flags remain skipped on serialization, conflicts fail closed. No manual receipt/status edits; same independent reviewer continues to delivery.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-NO-COLD-REGRESSION: Cold build indexing throughput on control repository copy (commerce-release-update) must not regress; eliminating redundant file I/O and secondary filesystem traversals must reduce overall cold build latency.'
+    - 'INV-FRAMEWORK-EXTEND: Project framework manifests under .forge/frameworks/*.{toml,yaml} extend bundled definitions by default, permitting granular rule enrichment without duplicating standard library tables.'
+    - 'INV-FRAMEWORK-DISCOVERY: Framework manifest rules activate when explicitly placed in .forge/frameworks/ or declared in package manifests, enabling template-driven libraries like Alpine.js, HTMX, and GridViewSpec to resolve without mandatory package.json entry.'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Existing symbol resolution, edge counts, Merkle commitments, and cross-file relationships remain deterministic and pass cargo test --all-targets.'
+    architectural_notes:
+    - 'decisions: TASK_SCOPE_INVALID for reference example correctly failed outside revision3 roots; no edit/bypass occurred. Canonical Git task specification amended to revision4 with exact skills/contextunity-forge/references/frameworks/gridviewspec.toml.example scope, then supported task sync048 re-admitted it and revoked contractclaim4. This necessary co-evolution follows docs/AGENTS.md shared skill/example maintenance within existing milestone skills owner; protected frontmatter and receipts unchanged. Correct only repository example to verified distribution grid-view-spec and grid_view_spec.types.spec.GridViewSpec; no external agent directories/workspace writes. Contract author reclaims fresh revision4 before RED.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: not_applicable
+        claims: accepted
+        concurrency: not_applicable
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
