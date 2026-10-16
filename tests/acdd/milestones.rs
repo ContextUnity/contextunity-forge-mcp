@@ -1,4 +1,5 @@
 use super::support::*;
+use contextunity_forge_mcp::engine::milestones as milestone_engine;
 
 #[test]
 fn cli_migration_reconciles_manifests_and_creation_selects_one_task() {
@@ -109,6 +110,298 @@ fn complete_task_through_engine(root: &ScopedWorkspace, store: &TasksStore, task
             }
         );
     }
+}
+
+#[test]
+fn handoff_validates_reviewed_shared_scope_and_repacked_landings_atomically() {
+    #[derive(Clone, Copy, Debug)]
+    enum Scenario {
+        Shared,
+        RepackedShared,
+        RepackedWithoutMarkdownCommits,
+        UnreviewedShared,
+        NonEquivalentRepack,
+        MalformedReceipt,
+        MissingReceiptCommit,
+        UnrelatedReceiptCommit,
+        ObsoleteReceiptCommit,
+        CorruptedLaterReview,
+        ReviewEnvelopeBuilder,
+        ReviewEnvelopeOtherWorktree,
+        ReviewClaimBuilder,
+        ReviewClaimAndEnvelopeBuilder,
+        DeliveryEnvelopeOtherWorker,
+        RetargetedDeliveryUnreviewedShared,
+    }
+    let mut failures = Vec::new();
+    for scenario in [
+        Scenario::Shared,
+        Scenario::RepackedShared,
+        Scenario::RepackedWithoutMarkdownCommits,
+        Scenario::UnreviewedShared,
+        Scenario::NonEquivalentRepack,
+        Scenario::MalformedReceipt,
+        Scenario::MissingReceiptCommit,
+        Scenario::UnrelatedReceiptCommit,
+        Scenario::ObsoleteReceiptCommit,
+        Scenario::CorruptedLaterReview,
+        Scenario::ReviewEnvelopeBuilder,
+        Scenario::ReviewEnvelopeOtherWorktree,
+        Scenario::ReviewClaimBuilder,
+        Scenario::ReviewClaimAndEnvelopeBuilder,
+        Scenario::DeliveryEnvelopeOtherWorker,
+        Scenario::RetargetedDeliveryUnreviewedShared,
+    ] {
+        let root = ScopedWorkspace::new("forge_reviewed_shared_handoff");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root.0)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{scenario:?}: git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let record_commits = !matches!(
+            scenario,
+            Scenario::RepackedWithoutMarkdownCommits | Scenario::RetargetedDeliveryUnreviewedShared
+        );
+        root.write(
+            "forge-mcp.yaml",
+            &format!(
+                "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nrecord_task_commits: {record_commits}\n"
+            ),
+        );
+        let source = "---\nid: m-shared-landings\ntitle: Reviewed shared landings\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Reviewed shared landings\n```yaml\ntask_ref: first\ntarget: Deliver first shared version\nproof_policy: seam-test-first\nscope: [src/shared.rs, src/first.rs]\n```\n```yaml\ntask_ref: second\ntarget: Deliver next reviewed shared version\nproof_policy: seam-test-first\nscope: [src/shared.rs, src/second.rs]\ndepends_on: [first]\n```\n";
+        let active_ref = "docs/milestones/010-shared-landings.md";
+        let archive_ref = "docs/milestones/archive/010-shared-landings.md";
+        root.write(active_ref, source);
+        root.write("src/shared.rs", "pub fn shared() -> u8 { 0 }\n");
+        root.write("src/first.rs", "pub fn first() -> u8 { 0 }\n");
+        root.write("src/second.rs", "pub fn second() -> u8 { 0 }\n");
+        git(&["add", "forge-mcp.yaml", "docs", "src"]);
+        git(&["commit", "-m", "admit shared milestone"]);
+        let baseline = git_head(&root.0);
+        let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+        let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+        store.sync(&milestone, active_ref, &root.0).unwrap();
+        let first_id = milestone.task_id(&milestone.tasks[0]);
+        let second_id = milestone.task_id(&milestone.tasks[1]);
+        root.write("src/shared.rs", "pub fn shared() -> u8 { 1 }\n");
+        root.write("src/first.rs", "pub fn first() -> u8 { 1 }\n");
+        complete_task_through_engine(&root, &store, &first_id);
+        let first_delivery = store
+            .inspect(&first_id)
+            .unwrap()
+            .receipt
+            .unwrap()
+            .commit
+            .unwrap();
+        if matches!(
+            scenario,
+            Scenario::RepackedShared
+                | Scenario::RepackedWithoutMarkdownCommits
+                | Scenario::NonEquivalentRepack
+        ) {
+            if matches!(scenario, Scenario::NonEquivalentRepack) {
+                root.write("src/first.rs", "pub fn first() -> u8 { 99 }\n");
+                git(&["add", "src/first.rs"]);
+            }
+            // Only the disposable fixture history is rewritten. Positive cases never edit receipts.
+            git(&["commit", "--amend", "-m", "repacked first task"]);
+            assert_ne!(git_head(&root.0), first_delivery);
+        }
+        let first_landed = git_head(&root.0);
+        root.write("src/shared.rs", "pub fn shared() -> u8 { 2 }\n");
+        root.write("src/second.rs", "pub fn second() -> u8 { 2 }\n");
+        complete_task_through_engine(&root, &store, &second_id);
+        let second_landed = git_head(&root.0);
+        if matches!(
+            scenario,
+            Scenario::UnreviewedShared | Scenario::RetargetedDeliveryUnreviewedShared
+        ) {
+            root.write("src/shared.rs", "pub fn shared() -> u8 { 3 }\n");
+            git(&["add", "src/shared.rs"]);
+            // A plausible task message and declared overlap cannot authorize this delta.
+            git(&["commit", "-m", "second: shared scope follow-up"]);
+        }
+        let invalid_commit = match scenario {
+            Scenario::MalformedReceipt => Some("not-a-git-commit".to_owned()),
+            Scenario::MissingReceiptCommit => Some("f".repeat(40)),
+            Scenario::UnrelatedReceiptCommit => {
+                let tree = git(&["rev-parse", &format!("{first_landed}^{{tree}}")]);
+                Some(git(&[
+                    "commit-tree",
+                    &tree,
+                    "-m",
+                    "unrelated matching tree",
+                ]))
+            }
+            Scenario::ObsoleteReceiptCommit => Some(baseline),
+            _ => None,
+        };
+        if let Some(invalid_commit) = invalid_commit {
+            // Fault injection only: prove malformed/stale caller input is rejected atomically.
+            let doc = std::fs::read_to_string(root.0.join(active_ref)).unwrap();
+            let mut receipt = store.inspect(&first_id).unwrap().receipt.unwrap();
+            receipt.commit = Some(invalid_commit);
+            let invalid_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
+                &doc,
+                "first",
+                &receipt,
+                &[],
+            )
+            .unwrap();
+            root.write(active_ref, &invalid_doc);
+        }
+        if matches!(scenario, Scenario::CorruptedLaterReview) {
+            assert_eq!(store.connection.execute(
+                "UPDATE task_gates SET evidence='{corrupted-review' WHERE task_id=?1 AND gate='review' AND state='passed'",
+                [&second_id],
+            ).unwrap(), 1);
+        }
+        if matches!(
+            scenario,
+            Scenario::ReviewEnvelopeBuilder | Scenario::ReviewClaimAndEnvelopeBuilder
+        ) {
+            assert_eq!(store.connection.execute(
+                "UPDATE task_gates SET evidence=json_set(evidence, '$.worker_id', 'builder') WHERE task_id=?1 AND gate='review' AND state='passed'",
+                [&second_id],
+            ).unwrap(), 1);
+        }
+        if matches!(scenario, Scenario::ReviewEnvelopeOtherWorktree) {
+            let other_worktree = root.0.join("other-claimed-worktree");
+            std::fs::create_dir_all(&other_worktree).unwrap();
+            assert_eq!(store.connection.execute(
+                "UPDATE task_gates SET evidence=json_set(evidence, '$.worktree', ?1) WHERE task_id=?2 AND gate='review' AND state='passed'",
+                rusqlite::params![other_worktree.to_str().unwrap(), second_id],
+            ).unwrap(), 1);
+        }
+        if matches!(
+            scenario,
+            Scenario::ReviewClaimBuilder | Scenario::ReviewClaimAndEnvelopeBuilder
+        ) {
+            assert_eq!(store.connection.execute(
+                "UPDATE task_claims SET worker_id='builder' WHERE task_id=?1 AND revision=(SELECT revision FROM task_gates WHERE task_id=?1 AND gate='review' AND state='passed' ORDER BY revision DESC LIMIT 1)",
+                [&second_id],
+            ).unwrap(), 1);
+        }
+        if matches!(scenario, Scenario::DeliveryEnvelopeOtherWorker) {
+            assert_eq!(store.connection.execute(
+                "UPDATE task_gates SET evidence=json_set(evidence, '$.worker_id', 'other-delivery-worker') WHERE task_id=?1 AND gate='deliver' AND state='passed'",
+                [&second_id],
+            ).unwrap(), 1);
+        }
+        if matches!(scenario, Scenario::RetargetedDeliveryUnreviewedShared) {
+            let generated_doc = std::fs::read_to_string(root.0.join(active_ref)).unwrap();
+            let generated = Milestone::parse(&generated_doc, "forge-mcp").unwrap();
+            assert!(generated.tasks.iter().all(|task| task
+                .receipt
+                .as_ref()
+                .unwrap()
+                .commit
+                .is_none()));
+            let unreviewed_commit = git_head(&root.0);
+            assert_ne!(unreviewed_commit, second_landed);
+            // Retarget only the accepted delivery pointer and durable receipt. The
+            // accepted build/review snapshots remain bound to reviewed shared v2.
+            assert_eq!(store.connection.execute(
+                "UPDATE task_gates SET evidence=json_set(evidence, '$.commit', ?1) WHERE task_id=?2 AND gate='deliver' AND state='passed'",
+                rusqlite::params![unreviewed_commit, second_id],
+            ).unwrap(), 1);
+            assert_eq!(store.connection.execute(
+                "UPDATE tasks SET descriptor=json_set(descriptor, '$.receipt.commit', ?1) WHERE task_id=?2",
+                rusqlite::params![unreviewed_commit, second_id],
+            ).unwrap(), 1);
+        }
+        let head = git_head(&root.0);
+        let before_doc = std::fs::read(root.0.join(active_ref)).unwrap();
+        let before_tasks = serde_json::to_value(store.list(None, "all", None).unwrap()).unwrap();
+        drop(store);
+        let result = milestone_engine::handoff(
+            &root.0,
+            "m-shared-landings",
+            Some(&head),
+            "cargo test --test acdd",
+            1,
+            0,
+        );
+        let reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+        let accepted = matches!(
+            scenario,
+            Scenario::Shared | Scenario::RepackedShared | Scenario::RepackedWithoutMarkdownCommits
+        );
+        if accepted {
+            if let Err(error) = result {
+                failures.push(format!(
+                    "{scenario:?}: expected verified landing acceptance: {error:#}"
+                ));
+                assert_eq!(std::fs::read(root.0.join(active_ref)).unwrap(), before_doc);
+                assert_eq!(
+                    serde_json::to_value(reopened.list(None, "all", None).unwrap()).unwrap(),
+                    before_tasks
+                );
+                assert!(!root.0.join(archive_ref).exists());
+                continue;
+            }
+            assert!(!root.0.join(active_ref).exists(), "{scenario:?}");
+            let archived = std::fs::read_to_string(root.0.join(archive_ref)).unwrap();
+            let parsed = Milestone::parse(&archived, "forge-mcp").unwrap();
+            for (index, (task_id, landed)) in
+                [(&first_id, &first_landed), (&second_id, &second_landed)]
+                    .into_iter()
+                    .enumerate()
+            {
+                let task = reopened.inspect(task_id).unwrap();
+                assert_eq!(task.milestone_ref, archive_ref, "{scenario:?}");
+                assert_eq!(
+                    task.receipt.unwrap().commit.as_deref(),
+                    Some(landed.as_str()),
+                    "{scenario:?}: SQLite must record each task's own landed commit"
+                );
+                assert_eq!(
+                    parsed.tasks[index]
+                        .receipt
+                        .as_ref()
+                        .unwrap()
+                        .commit
+                        .as_deref(),
+                    record_commits.then_some(landed.as_str()),
+                    "{scenario:?}: markdown follows record_task_commits"
+                );
+            }
+            let shown = milestone_cli(&root, &["show", "m-shared-landings"]);
+            assert!(
+                shown.status.success(),
+                "{scenario:?}: {}",
+                String::from_utf8_lossy(&shown.stderr)
+            );
+        } else {
+            if result.is_ok() {
+                failures.push(format!("{scenario:?}: unverified provenance was accepted"));
+                continue;
+            }
+            assert_eq!(
+                std::fs::read(root.0.join(active_ref)).unwrap(),
+                before_doc,
+                "{scenario:?}: active markdown changed on failure"
+            );
+            assert_eq!(
+                serde_json::to_value(reopened.list(None, "all", None).unwrap()).unwrap(),
+                before_tasks,
+                "{scenario:?}: SQLite receipts changed on failure"
+            );
+            assert!(
+                !root.0.join(archive_ref).exists(),
+                "{scenario:?}: archive created on failure"
+            );
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -3179,13 +3472,26 @@ scope:
     );
 
     // 5g. Corrupted evidence in task_gates: sync and migrate verify must fail closed
-    {
+    let valid_gate_evidence = {
         let store_corrupt = TasksStore::open_project(
             &root.0.join(".forge/tasks.sqlite"),
             "forge-mcp",
             "forge-mcp",
         )
         .unwrap();
+        let valid: Vec<(String, u64, String)> = {
+            let mut statement = store_corrupt
+                .connection
+                .prepare("SELECT gate,revision,evidence FROM task_gates WHERE task_id=?1 AND state='passed' ORDER BY revision,gate")
+                .unwrap();
+            statement
+                .query_map([&task.task_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
         store_corrupt
             .connection
             .execute(
@@ -3193,7 +3499,8 @@ scope:
                 [&task.task_id],
             )
             .unwrap();
-    }
+        valid
+    };
     root.write("docs/milestones/010-repack.md", &updated_doc);
     let corrupt_sync = contextunity_forge_mcp::engine::tasks::manage(
         &root.0,
@@ -3233,17 +3540,15 @@ scope:
             "forge-mcp",
         )
         .unwrap();
-        let valid_evidence = serde_json::json!({
-            "commit": repacked_sha,
-            "candidate_baseline_head": c1_sha,
-        });
-        store_restore
-            .connection
-            .execute(
-                "UPDATE task_gates SET evidence=?1 WHERE task_id=?2 AND state='passed' AND evidence LIKE '%corrupted%'",
-                rusqlite::params![valid_evidence.to_string(), task.task_id],
-            )
-            .unwrap();
+        for (gate, revision, evidence) in &valid_gate_evidence {
+            store_restore
+                .connection
+                .execute(
+                    "UPDATE task_gates SET evidence=?1 WHERE task_id=?2 AND gate=?3 AND revision=?4",
+                    rusqlite::params![evidence, task.task_id, gate, revision],
+                )
+                .unwrap();
+        }
     }
 
     // Restore the valid repacked doc
@@ -4157,7 +4462,10 @@ scope:
     drop(store);
 
     // Modify scoped file after delivery
-    root.write("src/lib.rs", "pub fn work() -> bool { false /* diverged */ }\n");
+    root.write(
+        "src/lib.rs",
+        "pub fn work() -> bool { false /* diverged */ }\n",
+    );
     std::process::Command::new("git")
         .args(["add", "src/lib.rs"])
         .current_dir(&root.0)
@@ -4192,7 +4500,10 @@ scope:
 
     let msg = err.to_string();
     assert!(msg.contains("TASK_LANDED_COMMIT_NOT_FOUND"), "{msg}");
-    assert!(msg.contains("Differing paths in task scope:\n  - src/lib.rs"), "{msg}");
+    assert!(
+        msg.contains("Differing paths in task scope:\n  - src/lib.rs"),
+        "{msg}"
+    );
     assert!(msg.contains("git checkout"), "{msg}");
     assert!(msg.contains("src/lib.rs"), "{msg}");
 }
@@ -4215,4 +4526,3 @@ fn task_settings_parses_various_commit_tracking_formats() {
         serde_yaml::from_str("").unwrap();
     assert!(yaml_default.records_task_commits());
 }
-

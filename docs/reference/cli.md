@@ -178,10 +178,16 @@ a nonempty verification command, and a supplied failed-test count of zero. Run
 the verification gate from [`TESTS.md`](../../TESTS.md) before calling it; the
 CLI records the caller-verified result and does not execute the command.
 
-The handoff contract requires the CLI to resolve the commit that landed each
-task's work on the milestone branch (the fast-forwarded task commit or the task
-merge commit), then rewrite `receipt.commit` in each task block and SQLite task
-record to that SHA before archiving. It requires `status: completed` and a
+The handoff contract validates each durable receipt against its accepted gate
+evidence, then resolves the earliest first-parent milestone commit after the
+task's accepted snapshot baseline that introduces the same scoped tree as its
+delivery. This also handles a scope-equivalent repacked commit when the original
+delivery commit is not on the milestone branch. A later task may change a shared
+path only when its own completed, reviewed delivery contains the final value for
+that path; an unexplained shared-path edit blocks handoff. SQLite records each
+task's actual landing SHA. When `record_task_commits` is enabled (the default),
+the CLI also rewrites `receipt.commit` in each task block before archiving; when
+disabled, the Markdown receipt omits that commit. It requires `status: completed` and a
 `handoff` frontmatter receipt whose `commit` records the milestone branch `HEAD`
 at handoff, or the supplied `--commit`, alongside `completed_at`, `duration`,
 and the verification `command`, `tests_passed`, and `tests_failed` fields. The

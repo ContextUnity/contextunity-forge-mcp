@@ -334,21 +334,69 @@ receipt:
 
 ```yaml
 task_ref: handoff-landed-commit-and-shared-scope-resolution
-target: "Resolve verified task landing commits across authorized later shared-scope changes and scope-equivalent repacks without manual receipt edits"
+target: Resolve verified task landing commits across authorized later shared-scope changes and scope-equivalent repacks without manual receipt edits
 proof_policy: seam-test-first
 contract_revision: 2
 scope:
-  - src/engine/milestones/handoff.rs
-  - tests/acdd/milestones.rs
-  - docs/reference/cli.md
-status: ready
+- src/engine/milestones/handoff.rs
+- tests/acdd/milestones.rs
+- docs/reference/cli.md
+status: completed
 subtasks:
-  - subtask_ref: resolve-verified-landings-and-shared-scope
-    title: "Resolve actual landed commits from accepted task delivery provenance, including scope-equivalent repacks, and validate later shared-file changes against completed task evidence"
-    status: pending
-  - subtask_ref: prove-handoff-provenance-and-atomic-failure
-    title: "Prove shared-scope and repack handoff acceptance plus fail-closed rejection and non-mutation through the existing real Git, task lifecycle, SQLite, and archive seam"
-    status: pending
+- subtask_ref: resolve-verified-landings-and-shared-scope
+  title: Resolve actual landed commits from accepted task delivery provenance, including scope-equivalent repacks, and validate later shared-file changes against completed task evidence
+  status: completed
+  evidence: Frozen candidate3109b9c reviewed by three stable independent reviewers. Own first-parent landing and scope-equivalent repack resolution accepts legitimate reviewed shared evolution, with accepted gate/closed claim provenance, configured independence, reviewed candidate to delivery scoped content, and final shared-value authority verified. T4-PROV-1/-2 closed; CLI record_task_commits behavior documented.
+- subtask_ref: prove-handoff-provenance-and-atomic-failure
+  title: Prove shared-scope and repack handoff acceptance plus fail-closed rejection and non-mutation through the existing real Git, task lifecycle, SQLite, and archive seam
+  status: completed
+  evidence: Independent strict Clippy clean; complete cargo test --lib57/0 and cargo test --test acdd103/0. Expanded real Git/tasks/SQLite/archive16-case seam passes1/0 after six causal RED regressions (archive052c21a5e67442dc). Retained independent CLI fixture control passes, all six provenance/baseline tamper cases reject with active doc preserved/no archive. Same three reviewers bounded closurePASS for T4-PROV-1/-2 and T4-DOC-1.
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-16T07:03:51.077385364+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 103
+      tests_failed: 0
+      log: 'Final required scoped commands also passed: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib (57 passed, 0 failed); cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd (103 passed, 0 failed). Focused 16-case handoff seam passed (1 test, 0 failed, 102 filtered).'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed frozen scoped candidate3109b9c168e09fdc592b12cf7476c891ad8e4b21 and bounded repair against rejected18ce984. All Task4 changes remain in handoff.rs, tests/acdd/milestones.rs and docs/reference/cli.md; scoped candidate equality and git diff --check pass. Unrelated milestone031 and existing Rust formatting paths preserved. Reviewer made no source/docs/test/receipt edits.
+        claims:
+          applicable: true
+          evidence: 'All three original review contours completed, then the same primary, architecture and proof reviewers independently passed bounded closure of exactly T4-PROV-1, T4-PROV-2 and T4-DOC-1. Unique persisted closed-claim worker/worktree binding and configured independent_from enforcement close PROV-1; accepted delivery scoped content is checked against reviewed snapshot excluding only the actual active milestone receipt path, with review/delivery baseline binding, closing PROV-2. CLI now distinguishes conditional Markdown SHA from SQLite actual landing SHA, closing DOC-1. Original shared/repack/no-op/first-parent, rejection, omission and rollback behavior retained. Independent exact commands: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib; cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd. Both exit0, strict Clippy clean; lib57/0 and acdd103/0, total160/0, no ignored or filtered tests. Focused expanded16-case seam passes1/0. Retained independent disposable CLI fixture script now accepts control and rejects all six tamper variants with active Markdown preserved and no archive.'
+        concurrency:
+          applicable: true
+          evidence: All task provenance and shared-scope validation occurs before archive creation and SQLite receipt mutation. Existing rollback compensation and expected task-set transaction checks are retained and covered by complete103-test ACDD gate. New claim reads require a unique ended attempt and current gate envelope consistency; synchronous local provenance behavior adds no storage schema, locking or concurrency contract.
+        project_isolation:
+          applicable: true
+          evidence: Exact milestone worktree and worktree-bound Forge graph generation ae6f2bba830938409167789cc7ab0ac8ea15659f3bcf8c7a8ed25aa9fbaa698d verified. Provenance binds evidence worktree to its persisted attempt; mismatching worktree fixture now fails. All independent fault injection occurred in disposable /tmp Git/SQLite repositories using the current candidate target/debug binary. Canonical active milestone receipt path is the sole scoped-content comparison exemption.
+        administration:
+          applicable: true
+          evidence: Accepted gate proofs, current contract revisions, commit objects, snapshot baselines and configured independent workers are validated before landing authority is used. No schema/profile or core task commit policy changed. Auto delivery, repack/no-op landing resolution, actual own SHA recording, record_task_commits:false Markdown omission and rollback gates pass. No reviewer manual commit, receipt edit, handoff, release or benchmark. Root consolidated all three same-reviewer closure passes and authorized this review pass plus automatic delivery.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-NO-COLD-REGRESSION: Cold build indexing throughput on control repository copy (commerce-release-update) must not regress; eliminating redundant file I/O and secondary filesystem traversals must reduce overall cold build latency.'
+    - 'INV-FRAMEWORK-EXTEND: Project framework manifests under .forge/frameworks/*.{toml,yaml} extend bundled definitions by default, permitting granular rule enrichment without duplicating standard library tables.'
+    - 'INV-FRAMEWORK-DISCOVERY: Framework manifest rules activate when explicitly placed in .forge/frameworks/ or declared in package manifests, enabling template-driven libraries like Alpine.js, HTMX, and GridViewSpec to resolve without mandatory package.json entry.'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Existing symbol resolution, edge counts, Merkle commitments, and cross-file relationships remain deterministic and pass cargo test --all-targets.'
+    architectural_notes:
+    - 'decisions: User explicitly approved this fourth milestone048 task after tasks2 and3, before final handoff. Production ownership is only src/engine/milestones/handoff.rs; tests/acdd/milestones.rs is admitted solely for the existing real Git/task lifecycle/SQLite/archive verification seam. Do not edit receipts or SQLite manually, do not trust scope overlap or commit messages as proof, and preserve fail-closed rejection and archive non-mutation. No implementation starts before tasks2 and3 are delivered.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
