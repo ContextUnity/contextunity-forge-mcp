@@ -83,7 +83,7 @@ enum Imported<'a> {
 
 pub(super) enum Member<'a> {
     Local(&'a Node),
-    External(&'a str, usize, Option<&'static str>),
+    External(&'a str, usize, Option<&'a str>),
     Builtin,
     Ambiguous,
     Unknown,

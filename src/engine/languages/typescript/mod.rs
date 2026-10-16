@@ -1627,8 +1627,6 @@ impl LanguageProfile for TypeScript {
         }
 
         relations::decorator_references(ctx, facts);
-        routes::declaration(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
-
         if matches!(
             ctx.node.kind(),
             "function_declaration"
@@ -1827,12 +1825,27 @@ impl LanguageProfile for TypeScript {
         &self,
         ctx: &SyntaxContext<'_, '_>,
         facts: &mut Facts,
-        symbols: &HashMap<usize, String>,
+        _symbols: &HashMap<usize, String>,
     ) {
         if matches!(ctx.node.kind(), "call_expression" | "object") {
-            routes::registration(ctx.node, ctx.source, ctx.owner, facts, ctx.offset, symbols);
             routes::client_call(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
         }
+    }
+    fn extract_routes_with_context(
+        &self,
+        ctx: &SyntaxContext<'_, '_>,
+        facts: &mut Facts,
+        symbols: &HashMap<usize, String>,
+        rules: &super::LanguageContext,
+        route_context: &crate::engine::ast::routes::RouteContext,
+    ) {
+        if matches!(ctx.node.kind(), "method_definition" | "method_declaration") {
+            routes::declaration_with_context(ctx, facts, rules, route_context);
+        }
+        if matches!(ctx.node.kind(), "call_expression" | "object") {
+            routes::registration_with_context(ctx, facts, symbols, rules, route_context);
+        }
+        self.extract_routes(ctx, facts, symbols);
     }
     fn finish(&self, facts: &mut Facts) {
         if !self.javascript {

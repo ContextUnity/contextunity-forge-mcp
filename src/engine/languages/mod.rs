@@ -211,6 +211,20 @@ pub struct FileContext {
     pub has_django_shortcuts_import: bool,
 }
 
+/// Manifest-backed extraction rules prepared once for one source file.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default)]
+pub struct LanguageContext {
+    /// External class hierarchy receiver rules.
+    pub class_hierarchy_receivers: Vec<manifests::ClassHierarchyReceiverRule>,
+    /// Decorator route rules.
+    pub route_decorators: Vec<manifests::RouteDecoratorRule>,
+    /// Registration call route rules.
+    pub route_calls: Vec<manifests::RouteCallRule>,
+    /// Dependency-injection call rules.
+    pub di_calls: Vec<manifests::DiCallRule>,
+}
+
 #[derive(Clone, Debug, Default)]
 /// A bounded expression shape retained for DOM listener receiver inference.
 pub enum DomListenerReceiverExpression {
@@ -572,6 +586,17 @@ pub trait LanguageProfile: Send + Sync {
         _symbols: &HashMap<usize, String>,
     ) {
     }
+    /// Extracts manifest-backed routes using rule and prefix context prepared once per file.
+    fn extract_routes_with_context(
+        &self,
+        ctx: &SyntaxContext<'_, '_>,
+        facts: &mut Facts,
+        symbols: &HashMap<usize, String>,
+        _rules: &LanguageContext,
+        _routes: &crate::engine::ast::routes::RouteContext,
+    ) {
+        self.extract_routes(ctx, facts, symbols);
+    }
     /// Finalizes extracted facts after the syntax walk.
     fn finish(&self, _facts: &mut Facts) {}
     /// Describes AST search syntax supported by this profile.
@@ -765,9 +790,10 @@ pub(crate) fn parse_file_typed(
     source: &str,
     module: &str,
     typed: &mut crate::core::typed_facts::TypedFacts,
+    language_context: &LanguageContext,
 ) -> Result<()> {
     let tree = parse_tree(profile, path, source)?;
-    ast::extract_tree_with_flows(
+    ast::extract_tree_with_language_context(
         profile,
         tree.root_node(),
         path,
@@ -776,6 +802,7 @@ pub(crate) fn parse_file_typed(
         &format!("module:{path}"),
         &mut typed.facts,
         Some(&mut typed.flows),
+        language_context,
     );
     Ok(())
 }

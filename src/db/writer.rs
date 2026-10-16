@@ -47,7 +47,7 @@ const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
 
 #[derive(Clone, Copy)]
 struct BuildInputs<'a> {
-    dependency_manifests: &'a [PathBuf],
+    dependency_registry: &'a crate::engine::languages::dependency_registry::DependencyRegistry,
     memory_budget: u64,
 }
 
@@ -73,24 +73,35 @@ impl std::error::Error for SourceSnapshotMismatch {}
 ///
 /// Returns [`SourceSnapshotMismatch`] if the file no longer matches its digest.
 pub fn extract(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> Result<Facts> {
-    Ok(extract_typed(root, file, adapter)?.into_public())
+    let dependencies = crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_scan_config(root, Some(adapter))?;
+    Ok(extract_typed(root, file, adapter, &dependencies)?.into_public())
 }
 
-fn extract_typed(root: &Path, file: &FileEntry, adapter: &scanner::Adapter) -> Result<TypedFacts> {
+fn extract_typed(
+    root: &Path,
+    file: &FileEntry,
+    adapter: &scanner::Adapter,
+    dependencies: &crate::engine::languages::dependency_registry::DependencyRegistry,
+) -> Result<TypedFacts> {
     let path = scanner::resolve_file_path(root, adapter, &file.path)?;
     let source = fs::read_to_string(&path)?;
-    extract_typed_source(file, &source)
+    extract_typed_source(file, &source, dependencies)
 }
 
-fn extract_typed_source(file: &FileEntry, source: &str) -> Result<TypedFacts> {
+fn extract_typed_source(
+    file: &FileEntry,
+    source: &str,
+    dependencies: &crate::engine::languages::dependency_registry::DependencyRegistry,
+) -> Result<TypedFacts> {
     let source_digest = commitments::hash(source.as_bytes());
-    extract_typed_source_with_digest(file, source, &source_digest)
+    extract_typed_source_with_digest(file, source, &source_digest, dependencies)
 }
 
 fn extract_typed_source_with_digest(
     file: &FileEntry,
     source: &str,
     source_digest: &str,
+    dependencies: &crate::engine::languages::dependency_registry::DependencyRegistry,
 ) -> Result<TypedFacts> {
     if source_digest != file.digest {
         return Err(SourceSnapshotMismatch(format!(
@@ -123,7 +134,7 @@ fn extract_typed_source_with_digest(
             ..Facts::default()
         }))
     } else {
-        ast::extract_typed(&file.path, &file.language, source)
+        ast::extract_typed_with_registry(&file.path, &file.language, source, dependencies)
     }
 }
 
@@ -131,6 +142,7 @@ fn extract_candidate(
     root: &Path,
     candidate: &BuildCandidate,
     adapter: &scanner::Adapter,
+    dependencies: &crate::engine::languages::dependency_registry::DependencyRegistry,
 ) -> Result<(FileEntry, TypedFacts)> {
     let path = scanner::resolve_file_path(root, adapter, &candidate.path)?;
     let mut options = OpenOptions::new();
@@ -173,7 +185,7 @@ fn extract_candidate(
     }
     let source_digest = commitments::hash(source.as_bytes());
     let file = candidate.clone().into_entry(source_digest.clone());
-    let facts = extract_typed_source_with_digest(&file, &source, &source_digest)?;
+    let facts = extract_typed_source_with_digest(&file, &source, &source_digest, dependencies)?;
     Ok((file, facts))
 }
 fn policy(root: &Path, adapter: &scanner::Adapter) -> Value {
@@ -292,13 +304,8 @@ fn populate(
         .context("schema indexes missing")?;
     conn.execute_batch(tables)?;
     let linking = Instant::now();
-    let dependencies =
-        crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_paths(
-            root,
-            Some(adapter),
-            build_inputs.dependency_manifests,
-        )?;
-    let graph = linker::link_compact_with_typed_registry(facts, None, Some(root), &dependencies);
+    let dependencies = build_inputs.dependency_registry;
+    let graph = linker::link_compact_with_typed_registry(facts, None, Some(root), dependencies);
     let link_ms = linking.elapsed().as_secs_f64() * 1000.;
     let writing = Instant::now();
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -597,6 +604,12 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
     let adapter = scanner::load_adapter(&root, adapter_path)?;
     scanner::check_root_scope(&root, adapter.limits.allow_broad_root)?;
     let scan = scanner::scan_for_build(&root, &adapter)?;
+    let dependencies =
+        crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_paths(
+            &root,
+            Some(&adapter),
+            &scan.dependency_manifests,
+        )?;
     let scan_ms = scan.elapsed_ms as f64;
     let extracting = Instant::now();
     let budget = scanner::resolve_memory_budget_bytes(&adapter.limits)?;
@@ -611,7 +624,7 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
     for chunk in scan.candidates.chunks(batch_size) {
         let extracted: Vec<(FileEntry, TypedFacts)> = chunk
             .par_iter()
-            .map(|candidate| extract_candidate(&root, candidate, &adapter))
+            .map(|candidate| extract_candidate(&root, candidate, &adapter, &dependencies))
             .collect::<Result<_>>()?;
         for (file, typed_facts) in extracted {
             facts.insert(file.path.clone(), typed_facts);
@@ -620,6 +633,7 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
     }
     let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
     let preparing_components = Instant::now();
+    let _ = ast::route_includes::compose_django_route_includes(&mut facts);
     components(&mut facts);
     let components_ms = preparing_components.elapsed().as_secs_f64() * 1000.;
     let encoding = Instant::now();
@@ -636,7 +650,7 @@ pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<
         &facts,
         Some(&encoded_facts),
         BuildInputs {
-            dependency_manifests: &scan.dependency_manifests,
+            dependency_registry: &dependencies,
             memory_budget: budget,
         },
     )?;

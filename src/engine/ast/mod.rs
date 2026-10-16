@@ -1,4 +1,5 @@
 pub(crate) mod relations;
+pub(crate) mod route_includes;
 pub(crate) mod routes;
 mod search;
 use crate::core::models::*;
@@ -294,6 +295,8 @@ struct Extraction<'a> {
     source: &'a str,
     path: &'a str,
     profile: &'a dyn LanguageProfile,
+    language_context: languages::LanguageContext,
+    route_context: routes::RouteContext,
     file: FileContext,
     module: &'a str,
     offset: usize,
@@ -305,6 +308,8 @@ struct VisitContext<'a> {
     source: &'a str,
     path: &'a str,
     profile: &'a dyn LanguageProfile,
+    language_context: &'a languages::LanguageContext,
+    route_context: &'a routes::RouteContext,
     file: &'a FileContext,
     module: &'a str,
     offset: usize,
@@ -333,6 +338,8 @@ impl Extraction<'_> {
             source: self.source,
             path: self.path,
             profile: self.profile,
+            language_context: &self.language_context,
+            route_context: &self.route_context,
             file: &self.file,
             module: self.module,
             offset: self.offset,
@@ -593,12 +600,19 @@ impl Extraction<'_> {
         };
         context.profile.extract_imports(&ctx, facts);
         context.profile.extract_calls(&ctx, facts);
+        routes::dependency_injection(&ctx, context.language_context, facts);
         context.profile.extract_mutations(&ctx, facts);
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             Self::visit_node(context, state, child, scopes, &child_owner, facts);
         }
-        context.profile.extract_routes(&ctx, facts, state.symbols);
+        context.profile.extract_routes_with_context(
+            &ctx,
+            facts,
+            state.symbols,
+            context.language_context,
+            context.route_context,
+        );
         if pushed {
             scopes.pop();
         }
@@ -632,6 +646,17 @@ fn is_trivial_source(source: &str, language: &str) -> bool {
 }
 
 pub(crate) fn extract_typed(path: &str, language: &str, source: &str) -> Result<TypedFacts> {
+    let registry = languages::dependency_registry::DependencyRegistry::bundled_framework_rules();
+    extract_typed_with_registry(path, language, source, &registry)
+}
+
+pub(crate) fn extract_typed_with_registry(
+    path: &str,
+    language: &str,
+    source: &str,
+    registry: &languages::dependency_registry::DependencyRegistry,
+) -> Result<TypedFacts> {
+    let language_context = registry.language_context_for_path(path);
     let profile = languages::require(language)?;
     let module = profile.module_name_for_source(path, source);
     let mut facts = Facts::default();
@@ -666,7 +691,14 @@ pub(crate) fn extract_typed(path: &str, language: &str, source: &str) -> Result<
     }
     match language {
         "python" | "rust" | "typescript" | "javascript" => {
-            languages::parse_file_typed(profile, path, source, &module, &mut typed)?;
+            languages::parse_file_typed(
+                profile,
+                path,
+                source,
+                &module,
+                &mut typed,
+                &language_context,
+            )?;
             profile.finish(&mut typed.facts);
         }
         #[cfg(feature = "lang-html")]
@@ -692,7 +724,9 @@ pub(crate) fn extract_tree(
     module: &str,
     facts: &mut Facts,
 ) {
-    extract_tree_owned(
+    let registry = languages::dependency_registry::DependencyRegistry::bundled_framework_rules();
+    let language_context = registry.language_context_for_path(path);
+    extract_tree_with_language_context(
         profile,
         root,
         path,
@@ -700,6 +734,8 @@ pub(crate) fn extract_tree(
         module,
         &format!("module:{path}"),
         facts,
+        None,
+        &language_context,
     );
 }
 
@@ -725,18 +761,6 @@ pub(crate) fn parse_island(
     Some(tree)
 }
 
-pub(crate) fn extract_tree_owned(
-    profile: &dyn LanguageProfile,
-    root: Syntax<'_>,
-    path: &str,
-    source: &str,
-    module: &str,
-    owner: &str,
-    facts: &mut Facts,
-) {
-    extract_tree_with_flows(profile, root, path, source, module, owner, facts, None);
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_tree_with_flows(
     profile: &dyn LanguageProfile,
@@ -748,10 +772,40 @@ pub(crate) fn extract_tree_with_flows(
     facts: &mut Facts,
     flows: Option<&mut FlowStore>,
 ) {
+    let registry = languages::dependency_registry::DependencyRegistry::bundled_framework_rules();
+    let language_context = registry.language_context_for_path(path);
+    extract_tree_with_language_context(
+        profile,
+        root,
+        path,
+        source,
+        module,
+        owner,
+        facts,
+        flows,
+        &language_context,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn extract_tree_with_language_context(
+    profile: &dyn LanguageProfile,
+    root: Syntax<'_>,
+    path: &str,
+    source: &str,
+    module: &str,
+    owner: &str,
+    facts: &mut Facts,
+    flows: Option<&mut FlowStore>,
+    language_context: &languages::LanguageContext,
+) {
+    let route_context = routes::RouteContext::build(root, source);
     Extraction {
         source,
         path,
         profile,
+        language_context: language_context.clone(),
+        route_context,
         file: profile.prepare(root, source),
         module,
         offset: 0,

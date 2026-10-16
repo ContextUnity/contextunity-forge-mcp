@@ -5,13 +5,17 @@ doc_type: guide
 
 # Framework manifests
 
-Framework manifests provide rules to an existing language linker. They keep framework-specific receivers, builtins, template filters, and route rules out of language grammar and general AST extraction. A manifest does not install a dependency, add a parser, or register a new programming language.
+Framework manifests provide declarative rules to existing language extraction and linking hooks. They describe framework-specific receivers, builtins, template filters, routes, and dependency-injection calls. A manifest does not install a dependency, add a parser, or register a new programming language.
 
 ## Bundled manifests
 
-Bundled manifest tables live in `src/engine/languages/manifests/` as TOML files. The build embeds these files in the Forge binary with `include_str!`; when the dependency registry is constructed, Forge parses the embedded text into typed `FrameworkManifest` values. The bundled identifiers are `alpinejs`, `django`, `gridviewspec`, `jinja2`, and `nuxt`. The `gridviewspec` table recognizes the declared Python distribution `grid-view-spec` and maps the verified `GridViewSpec` receiver to `grid_view_spec.types.spec.GridViewSpec`.
+Bundled manifest tables live in `src/engine/languages/manifests/` as TOML files. The build embeds these files in the Forge binary with `include_str!`; when the dependency registry is constructed, Forge parses the embedded text into typed `FrameworkManifest` values. The bundled identifiers are `alpinejs`, `django`, `fastapi`, `gridviewspec`, `jinja2`, `nestjs`, `nuxt`, `pydantic`, and `unittest`. The `gridviewspec` table recognizes the declared Python distribution `grid-view-spec` and maps the verified `GridViewSpec` receiver to `grid_view_spec.types.spec.GridViewSpec`.
 
-To ship another bundled manifest with Forge, add a TOML file in that directory and register its identifier in `load_standard_framework_manifests`. Rebuild the Forge binary to include the new table. The table still needs a caller in the relevant `LanguageLinker`; adding a file alone does not teach a linker new semantics.
+To ship another bundled manifest with Forge, add a TOML file in that directory and register its identifier in `load_standard_framework_manifests`. Rebuild the Forge binary to include the new table. Typed sections execute through the existing extraction hooks; legacy string rules need a caller in the relevant `LanguageLinker`. Adding a table does not introduce new extraction semantics.
+
+The GridViewSpec hierarchy rules describe the verified public API of the specification, metadata, configuration, layout, block types, nested column/action/filter/card types, and Django host adapter. Concrete block rules include inherited `GridViewBlockBase` fields; dataclass fields support member reads, while the host adapter also exposes callable methods. Unknown members remain unresolved. See the [GridViewSpec example](../../skills/contextunity-forge/references/frameworks/gridviewspec.toml.example).
+
+In the verified package API, `GridViewAction` is a union alias. The manifest registers its real `GridViewActionBase` and export, overlay, link, button, select, and menu action classes with their respective members.
 
 ## Project manifests
 
@@ -23,7 +27,7 @@ A project can provide or override framework manifest data under its workspace ro
 <workspace>/.forge/frameworks/<framework-id>.yml
 ```
 
-Forge uses the file stem as the framework identifier. Put the manifest in each workspace that needs it; linked workspaces have their own `.forge/frameworks/` directory. A project manifest activates for its workspace even when the package is not declared. A bundled manifest activates only when its package is declared in that workspace's recognized package/dependency manifest. Forge scopes both the local manifest and declaration lookup to the source file's workspace before asking the language linker for rules.
+Forge uses the file stem as the framework identifier. Put the manifest in each workspace that needs it; linked workspaces have their own `.forge/frameworks/` directory. A project manifest activates for its workspace even when the package is not declared. Legacy bundled linker rules require a declared package in the source file's dependency scope. Typed extraction rules are available without a package declaration; their syntax and canonical import checks determine whether a rule applies. This preserves import-proven framework behavior in projects without package metadata.
 
 Use the extension and values expected by the existing linker. For example, a project that wants to add Django rules can create `.forge/frameworks/django.toml`:
 
@@ -59,9 +63,30 @@ routes:
   - template.tag.static=static
 ```
 
-These examples show the schema, not a complete Django rule set. Receiver and route strings use the portion before `=` as their source identity. The loader retains other typed array values, including nested tables, without interpreting them. Linker execution remains limited to the existing string rules; richer receiver and route execution is deferred to milestone 021. For the exact values a linker consumes, use the bundled files as reference and consult [Engine modularity](../architecture/modularity.md).
+These examples show the legacy string rules, not a complete Django rule set. Receiver and route strings use the portion before `=` as their source identity. The loader retains other values in those four arrays, including nested tables, without executing them generically. For the exact legacy values a linker consumes, use the bundled files as reference and consult [Engine modularity](../architecture/modularity.md).
 
 Project manifests are read and parsed while Forge collects the dependency registry for an index build or update. They are not compiled into the Forge binary. After adding or editing a manifest, rebuild or update the workspace index so its input digest and linker results include the change.
+
+## Typed extraction rules
+
+Four optional typed sections execute through the existing language hooks:
+
+| Section | Required fields | Meaning |
+| --- | --- | --- |
+| `class_hierarchy_receivers` | `bases`, `provider`, `members` | Recognize canonical imported base classes and expose the listed external members through verified inheritance. |
+| `route_decorators` | `callee`, `method`, `path_argument` | Extract a route from a decorator and its zero-based path argument. |
+| `route_calls` | `callee`, `method`, `path_argument` | Extract a route from a call; optional `handler_argument` selects the first zero-based handler position, including subsequent positional middleware handlers. |
+| `di_calls` | `callee`, `argument` | Extract a dependency reference from the selected zero-based call argument. |
+
+A callee matches its qualified name; a leading dot selects a qualified member suffix, as in `.get`. Route rules optionally accept `receiver_names`, a list of admissible receiver basenames; its default empty list adds no receiver restriction. For restricted suffix rules, a syntactically recognized `APIRouter` binding is also admissible. Route paths must begin with `/` or `^` unless `allow_relative_path = true`; this flag defaults to false. Django rules enable it for empty and relative URL patterns. These checks keep ordinary mapping calls from becoming routes.
+
+Route methods use uppercase letters, digits, or underscores; `ANY` represents an unspecified method. Static route extraction combines FastAPI `APIRouter` and NestJS controller prefixes. Django include facts retain route names and namespaces and compose statically known nested URL prefixes before persistence. Dynamic paths retain their uncertainty.
+
+Omitting `handler_argument` still extracts a route from a matching call; it creates no `handles` edge. When an index is configured, a call without any valid positional handlers from that index does not register a route. Composed Django routes retain the included module's handler lookup context while their `handles` edges originate at the composed route.
+
+The complete [TOML example](../../skills/contextunity-forge/references/frameworks/declarative-rules.toml.example) and equivalent [YAML example](../../skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example) include all four sections. Copy one into `.forge/frameworks/django.toml` or `.forge/frameworks/django.yaml` to extend that bundle. Custom file stems work through the same typed hooks.
+
+Project typed rules take precedence over bundled rules with the same identity: ordered `bases` for class rules, `callee` plus `method` for route rules, and `callee` for DI rules. `replace = true` replaces both legacy and typed sections of the bundle. Unknown fields in typed rules fail validation. Bases, providers, members, callees, and methods must be nonempty; callees cannot contain whitespace. Argument positions are nonnegative integers, and a route's handler argument must differ from its path argument.
 
 ## Connected workspace rollout
 
@@ -75,7 +100,7 @@ An invalid or unreadable manifest aborts the build before index publication. For
 
 ## Extending language support
 
-Project manifests can supply data only to framework identifiers and rule values that an existing linker requests. To add a new framework integration, wire its identifier and rule lookups into the appropriate `LanguageLinker`; register its package mapping when a bundled table should activate from a declared dependency. Then add writer-seam tests. To add a new programming language, implement and register a `LanguageProfile` with its grammar and extraction behavior, add its Cargo `lang-*` feature and parser dependency as needed, and provide a language linker when it needs custom resolution. The build script generates the compiled profile registry from enabled features. These code changes require a new Forge build; a project manifest cannot add them at runtime.
+Typed project sections can add class receivers, route decorators, route calls, and DI calls without Rust changes when the existing language hooks support that syntax. Legacy string rules still require a caller in the relevant `LanguageLinker`. New extraction semantics require code and writer-seam tests. To add a new programming language, implement and register a `LanguageProfile` with its grammar and extraction behavior, add its Cargo `lang-*` feature and parser dependency as needed, and provide a language linker when it needs custom resolution. The build script generates the compiled profile registry from enabled features. These code changes require a new Forge build; a project manifest cannot add them at runtime.
 
 ## Language registry boundaries
 

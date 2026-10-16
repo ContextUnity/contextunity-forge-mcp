@@ -1,5 +1,6 @@
 use super::{relations, text, Syntax};
-use crate::core::models::{Edge, Facts, Node};
+use crate::core::models::{Edge, Facts, Node, Reference};
+use crate::engine::languages::{self, LanguageContext};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -16,22 +17,173 @@ fn literal<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
     Some(&value[1..value.len() - 1])
 }
 
-fn django_path(call: Syntax<'_>, source: &str) -> bool {
-    if call.kind() != "call" {
-        return false;
-    }
-    let Some(function) = call.child_by_field_name("function") else {
-        return false;
+fn callee<'source>(node: Syntax<'_>, source: &'source str) -> Option<&'source str> {
+    node.child_by_field_name("function")
+        .map(|function| text(function, source))
+}
+
+fn callee_matches(actual: &str, configured: &str) -> bool {
+    actual == configured || (configured.starts_with('.') && actual.ends_with(configured))
+}
+
+fn positional_argument<'tree>(
+    node: Syntax<'tree>,
+    source: &str,
+    index: usize,
+) -> Option<Syntax<'tree>> {
+    positional_arguments(node)
+        .into_iter()
+        .nth(index)
+        .filter(|argument| !text(*argument, source).is_empty())
+}
+
+fn positional_arguments<'tree>(node: Syntax<'tree>) -> Vec<Syntax<'tree>> {
+    let Some(arguments) = node.child_by_field_name("arguments") else {
+        return Vec::new();
     };
-    matches!(
-        text(function, source),
-        "path"
-            | "re_path"
-            | "urls.path"
-            | "urls.re_path"
-            | "django.urls.path"
-            | "django.urls.re_path"
-    )
+    let mut cursor = arguments.walk();
+    arguments
+        .named_children(&mut cursor)
+        .filter(|child| !matches!(child.kind(), "keyword_argument" | "comment"))
+        .collect()
+}
+
+/// Per-file route prefixes discovered from framework constructors and class decorators.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct RouteContext {
+    routers: HashMap<String, Option<String>>,
+    controllers: HashMap<usize, String>,
+}
+
+impl RouteContext {
+    pub(crate) fn build(root: Syntax<'_>, source: &str) -> Self {
+        fn visit(node: Syntax<'_>, source: &str, context: &mut RouteContext) {
+            if matches!(node.kind(), "assignment" | "variable_declarator") {
+                let name = node
+                    .child_by_field_name("left")
+                    .or_else(|| node.child_by_field_name("name"));
+                let value = node
+                    .child_by_field_name("right")
+                    .or_else(|| node.child_by_field_name("value"));
+                if let (Some(name), Some(value)) = (name, value) {
+                    if let Some(prefix) = router_prefix(value, source) {
+                        context
+                            .routers
+                            .insert(text(name, source).to_owned(), prefix.map(str::to_owned));
+                    }
+                }
+            }
+            if matches!(node.kind(), "class_definition" | "class_declaration") {
+                if let Some(prefix) = controller_prefix(node, source) {
+                    context.controllers.insert(node.id(), prefix.to_owned());
+                }
+            }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                visit(child, source, context);
+            }
+        }
+
+        fn router_prefix<'source>(
+            value: Syntax<'_>,
+            source: &'source str,
+        ) -> Option<Option<&'source str>> {
+            if !matches!(value.kind(), "call" | "call_expression")
+                || callee(value, source)? != "APIRouter"
+            {
+                return None;
+            }
+            let Some(arguments) = value.child_by_field_name("arguments") else {
+                return Some(None);
+            };
+            let mut cursor = arguments.walk();
+            for argument in arguments.named_children(&mut cursor) {
+                if argument.kind() == "keyword_argument"
+                    && argument
+                        .child_by_field_name("name")
+                        .is_some_and(|name| text(name, source) == "prefix")
+                {
+                    return Some(
+                        argument
+                            .child_by_field_name("value")
+                            .and_then(|value| literal(value, source)),
+                    );
+                }
+            }
+            Some(None)
+        }
+
+        fn controller_prefix<'source>(
+            node: Syntax<'_>,
+            source: &'source str,
+        ) -> Option<&'source str> {
+            relations::decorators(node)
+                .into_iter()
+                .find_map(|decorator| {
+                    let call = decorator
+                        .named_child(0)
+                        .filter(|child| matches!(child.kind(), "call" | "call_expression"))?;
+                    (callee(call, source)? == "Controller")
+                        .then(|| {
+                            positional_argument(call, source, 0)
+                                .and_then(|value| literal(value, source))
+                        })
+                        .flatten()
+                })
+        }
+
+        let mut context = Self::default();
+        visit(root, source, &mut context);
+        context
+    }
+
+    fn prefix_for(&self, node: Syntax<'_>, route_callee: &str) -> Option<&str> {
+        let mut ancestor = Some(node);
+        while let Some(current) = ancestor {
+            if let Some(prefix) = self.controllers.get(&current.id()) {
+                return Some(prefix);
+            }
+            ancestor = current.parent();
+        }
+        let (receiver, _) = route_callee.rsplit_once('.')?;
+        self.routers
+            .get(receiver)
+            .or_else(|| {
+                receiver
+                    .rsplit('.')
+                    .next()
+                    .and_then(|name| self.routers.get(name))
+            })
+            .and_then(Option::as_deref)
+    }
+
+    fn is_router_receiver(&self, route_callee: &str) -> bool {
+        let Some((receiver, _)) = route_callee.rsplit_once('.') else {
+            return false;
+        };
+        self.routers.contains_key(receiver)
+            || receiver
+                .rsplit('.')
+                .next()
+                .is_some_and(|name| self.routers.contains_key(name))
+    }
+}
+
+pub(super) fn prefixed_path(prefix: Option<&str>, path: &str) -> String {
+    let Some(prefix) = prefix.filter(|prefix| !prefix.is_empty()) else {
+        return path.to_owned();
+    };
+    let leading_slash = prefix.starts_with('/') || path.starts_with('/');
+    let trailing_slash = path.ends_with('/');
+    let mut joined = format!("{}/{}", prefix.trim_matches('/'), path.trim_matches('/'));
+    if leading_slash {
+        joined.insert(0, '/');
+    }
+    if trailing_slash && !joined.ends_with('/') {
+        joined.push('/');
+    }
+    joined
 }
 
 fn in_routes_collection(node: Syntax<'_>, source: &str) -> bool {
@@ -49,77 +201,61 @@ fn in_routes_collection(node: Syntax<'_>, source: &str) -> bool {
     name.is_some_and(|name| text(name, source).trim_matches(['\'', '"']) == "routes")
 }
 
-fn methods(call: Syntax<'_>, source: &str, decorated: bool) -> Vec<String> {
-    if django_path(call, source) {
-        return vec!["ANY".into()];
-    }
-    let Some(fun) = call.child_by_field_name("function") else {
-        return Vec::new();
-    };
-    let callee = text(fun, source);
-    let receiver = callee
-        .rsplit_once('.')
-        .map(|(receiver, _)| receiver.rsplit('.').next().unwrap_or(receiver));
-    let registration_receiver = receiver.is_some_and(|receiver| {
-        matches!(
-            receiver,
-            "app" | "router" | "server" | "api" | "bp" | "blueprint" | "route"
-        )
-    });
-    let framework_decorator = decorated
-        && fun.kind() == "identifier"
-        && matches!(
-            callee,
-            "Get" | "Post" | "Put" | "Patch" | "Delete" | "Head" | "Options" | "All" | "Route"
-        );
-    if !registration_receiver && !framework_decorator {
-        return Vec::new();
-    }
-    let method = callee
-        .rsplit('.')
-        .next()
-        .unwrap_or(callee)
-        .to_ascii_lowercase();
-    if matches!(
-        method.as_str(),
-        "get" | "post" | "put" | "patch" | "delete" | "head" | "options" | "all" | "route"
-    ) {
-        if method == "route" {
-            if let Some(args) = call.child_by_field_name("arguments") {
-                let mut c = args.walk();
-                for kw in args.named_children(&mut c) {
-                    if kw.kind() == "keyword_argument"
-                        && kw
-                            .child_by_field_name("name")
-                            .is_some_and(|n| text(n, source) == "methods")
-                    {
-                        if let Some(values) = kw.child_by_field_name("value") {
-                            let mut c = values.walk();
-                            return values
-                                .named_children(&mut c)
-                                .filter_map(|n| literal(n, source))
-                                .map(str::to_ascii_uppercase)
-                                .collect();
-                        }
+fn rule_methods(call: Syntax<'_>, source: &str, configured: &str, method: &str) -> Vec<String> {
+    let is_route = configured.rsplit('.').next() == Some("route");
+    if is_route && method == "ANY" {
+        if let Some(arguments) = call.child_by_field_name("arguments") {
+            let mut cursor = arguments.walk();
+            for keyword in arguments.named_children(&mut cursor) {
+                if keyword.kind() == "keyword_argument"
+                    && keyword
+                        .child_by_field_name("name")
+                        .is_some_and(|name| text(name, source) == "methods")
+                {
+                    if let Some(values) = keyword.child_by_field_name("value") {
+                        let mut cursor = values.walk();
+                        return values
+                            .named_children(&mut cursor)
+                            .filter_map(|value| literal(value, source))
+                            .map(str::to_ascii_uppercase)
+                            .collect();
                     }
                 }
             }
         }
-        return vec![if matches!(method.as_str(), "all" | "route") {
-            "ANY".into()
-        } else {
-            method.to_ascii_uppercase()
-        }];
     }
-    Vec::new()
+    vec![method.to_owned()]
+}
+
+fn route_receiver_matches(
+    actual_callee: &str,
+    configured_receivers: &[String],
+    route_context: &RouteContext,
+) -> bool {
+    if configured_receivers.is_empty() {
+        return true;
+    }
+    let Some((receiver, _)) = actual_callee.rsplit_once('.') else {
+        return false;
+    };
+    configured_receivers.iter().any(|name| {
+        receiver == name || receiver.rsplit('.').next().is_some_and(|last| last == name)
+    }) || route_context.is_router_receiver(actual_callee)
+}
+
+fn route_path_is_allowed(path: &str, allow_relative_path: bool) -> bool {
+    allow_relative_path || path.starts_with(['/', '^'])
 }
 
 struct Route<'a> {
     syntax: Syntax<'a>,
     path: &'a str,
     method: String,
-    handler: &'a str,
+    handler: Option<&'a str>,
     direct: bool,
+    route_name: Option<String>,
+    include_module: Option<String>,
+    include_namespace: Option<String>,
 }
 
 fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
@@ -135,8 +271,10 @@ fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
         route.method
     );
     if let Some(existing) = facts.nodes.iter_mut().find(|n| n.id == id) {
-        if let Some(handlers) = existing.details["handlers"].as_array_mut() {
-            handlers.push(json!(route.handler));
+        if let (Some(handler), Some(handlers)) =
+            (route.handler, existing.details["handlers"].as_array_mut())
+        {
+            handlers.push(json!(handler));
         }
     } else {
         facts.nodes.push(Node {
@@ -150,7 +288,7 @@ fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
         is_test: parent.is_test,
         language: parent.language.clone(),
         generated: false,
-        details: json!({"method":route.method,"route_path":route.path,"handler":route.handler,"handlers":[route.handler]}),
+        details: json!({"method":route.method,"route_path":route.path,"handler":route.handler,"handlers":route.handler.into_iter().collect::<Vec<_>>(),"route_name":route.route_name,"include_module":route.include_module,"include_namespace":route.include_namespace}),
     });
         facts.edges.push(Edge {
             src: format!("module:{}", parent.path),
@@ -162,28 +300,30 @@ fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
             confidence: "exact".into(),
         });
     }
-    if route.direct {
-        facts.edges.push(Edge {
-            src: id,
-            dst: route.handler.into(),
-            kind: "handles".into(),
-            path: parent.path,
-            line,
-            evidence: "handler syntax identity".into(),
-            confidence: "exact".into(),
-        });
-    } else {
-        relations::reference(facts, &id, route.handler, "handles", line);
+    if let Some(handler) = route.handler {
+        if route.direct {
+            facts.edges.push(Edge {
+                src: id,
+                dst: handler.into(),
+                kind: "handles".into(),
+                path: parent.path,
+                line,
+                evidence: "handler syntax identity".into(),
+                confidence: "exact".into(),
+            });
+        } else {
+            relations::reference(facts, &id, handler, "handles", line);
+        }
     }
 }
 
-pub(crate) fn declaration(
-    node: Syntax<'_>,
-    source: &str,
-    owner: &str,
+pub(crate) fn declaration_with_context(
+    ctx: &languages::SyntaxContext<'_, '_>,
     facts: &mut Facts,
-    offset: usize,
+    rules: &LanguageContext,
+    route_context: &RouteContext,
 ) {
+    let (node, source, owner, offset) = (ctx.node, ctx.source, ctx.owner, ctx.offset);
     for decorator in relations::decorators(node) {
         let Some(call) = decorator
             .named_child(0)
@@ -191,85 +331,155 @@ pub(crate) fn declaration(
         else {
             continue;
         };
-        let Some(path) = call
-            .child_by_field_name("arguments")
-            .and_then(|a| a.named_child(0))
-            .and_then(|n| literal(n, source))
-        else {
+        let Some(actual_callee) = callee(call, source) else {
             continue;
         };
-        if !path.starts_with(['/', '^']) && !django_path(call, source) {
-            continue;
-        }
-        for method in methods(call, source, true) {
-            add(
-                Route {
-                    syntax: decorator,
-                    path,
-                    method,
-                    handler: owner,
-                    direct: true,
-                },
-                owner,
-                facts,
-                offset,
-            );
-        }
-    }
-}
-
-pub(crate) fn registration(
-    node: Syntax<'_>,
-    source: &str,
-    owner: &str,
-    facts: &mut Facts,
-    offset: usize,
-    symbols: &HashMap<usize, String>,
-) {
-    if matches!(node.kind(), "call" | "call_expression") {
-        if node.parent().is_some_and(|p| p.kind() == "decorator") {
-            return;
-        }
-        let Some(args) = node.child_by_field_name("arguments") else {
-            return;
-        };
-        let Some(path) = args.named_child(0).and_then(|n| literal(n, source)) else {
-            return;
-        };
-        if !path.starts_with(['/', '^']) && !django_path(node, source) {
-            return;
-        }
-        let methods = methods(node, source, false);
-        if methods.is_empty() {
-            return;
-        }
-        let mut cursor = args.walk();
-        let handlers: Vec<_> = args
-            .named_children(&mut cursor)
-            .skip(1)
-            .filter(|n| !matches!(n.kind(), "keyword_argument" | "comment"))
-            .collect();
-        for method in methods {
-            for handler in &handlers {
-                let handler = unwrapped(*handler);
-                if literal_handler(handler) {
-                    continue;
-                }
-                let direct = symbols.get(&handler.id());
+        for rule in rules
+            .route_decorators
+            .iter()
+            .filter(|rule| callee_matches(actual_callee, &rule.callee))
+        {
+            if !route_receiver_matches(actual_callee, &rule.receiver_names, route_context) {
+                continue;
+            }
+            let Some(path) = positional_argument(call, source, rule.path_argument)
+                .and_then(|argument| literal(argument, source))
+            else {
+                continue;
+            };
+            if !route_path_is_allowed(path, rule.allow_relative_path) {
+                continue;
+            }
+            let path = prefixed_path(route_context.prefix_for(node, actual_callee), path);
+            for method in rule_methods(call, source, &rule.callee, &rule.method) {
                 add(
                     Route {
-                        syntax: node,
-                        path,
-                        method: method.clone(),
-                        handler: direct
-                            .map(String::as_str)
-                            .unwrap_or_else(|| text(handler, source)),
-                        direct: direct.is_some(),
+                        syntax: decorator,
+                        path: &path,
+                        method,
+                        handler: Some(owner),
+                        direct: true,
+                        route_name: None,
+                        include_module: None,
+                        include_namespace: None,
                     },
                     owner,
                     facts,
                     offset,
                 );
+            }
+        }
+    }
+}
+
+pub(crate) fn registration_with_context(
+    ctx: &languages::SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    symbols: &HashMap<usize, String>,
+    rules: &LanguageContext,
+    route_context: &RouteContext,
+) {
+    let (node, source, owner, offset) = (ctx.node, ctx.source, ctx.owner, ctx.offset);
+    if matches!(node.kind(), "call" | "call_expression") {
+        if node.parent().is_some_and(|p| p.kind() == "decorator") {
+            return;
+        }
+        let Some(actual_callee) = callee(node, source) else {
+            return;
+        };
+        for rule in rules
+            .route_calls
+            .iter()
+            .filter(|rule| callee_matches(actual_callee, &rule.callee))
+        {
+            if !route_receiver_matches(actual_callee, &rule.receiver_names, route_context) {
+                continue;
+            }
+            let Some(path) = positional_argument(node, source, rule.path_argument)
+                .and_then(|argument| literal(argument, source))
+            else {
+                continue;
+            };
+            if !route_path_is_allowed(path, rule.allow_relative_path) {
+                continue;
+            }
+            let path = prefixed_path(route_context.prefix_for(node, actual_callee), path);
+            let methods = rule_methods(node, source, &rule.callee, &rule.method);
+            let handlers = rule
+                .handler_argument
+                .map(|first| {
+                    positional_arguments(node)
+                        .into_iter()
+                        .skip(first)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if rule.handler_argument.is_some() && handlers.is_empty() {
+                continue;
+            }
+            let route_name = node
+                .child_by_field_name("arguments")
+                .and_then(|arguments| {
+                    let mut cursor = arguments.walk();
+                    let argument = arguments.named_children(&mut cursor).find(|argument| {
+                        argument.kind() == "keyword_argument"
+                            && argument
+                                .child_by_field_name("name")
+                                .is_some_and(|name| text(name, source) == "name")
+                    });
+                    argument
+                })
+                .and_then(|argument| argument.child_by_field_name("value"))
+                .and_then(|value| literal(value, source))
+                .map(str::to_owned);
+            if handlers.is_empty() {
+                for method in methods {
+                    add(
+                        Route {
+                            syntax: node,
+                            path: &path,
+                            method,
+                            handler: None,
+                            direct: false,
+                            route_name: route_name.clone(),
+                            include_module: None,
+                            include_namespace: None,
+                        },
+                        owner,
+                        facts,
+                        offset,
+                    );
+                }
+            } else {
+                for method in methods {
+                    for handler in &handlers {
+                        let handler = unwrapped(*handler);
+                        if literal_handler(handler) {
+                            continue;
+                        }
+                        let direct = symbols.get(&handler.id());
+                        let (include_module, include_namespace) = include_target(handler, source);
+                        add(
+                            Route {
+                                syntax: node,
+                                path: &path,
+                                method: method.clone(),
+                                handler: Some(
+                                    direct
+                                        .map(String::as_str)
+                                        .unwrap_or_else(|| text(handler, source)),
+                                ),
+                                direct: direct.is_some(),
+                                route_name: route_name.clone(),
+                                include_module,
+                                include_namespace,
+                            },
+                            owner,
+                            facts,
+                            offset,
+                        );
+                    }
+                }
             }
         }
     } else if node.kind() == "object" && in_routes_collection(node, source) {
@@ -298,17 +508,84 @@ pub(crate) fn registration(
                     syntax: node,
                     path,
                     method: "ANY".into(),
-                    handler: symbols
-                        .get(&handler.id())
-                        .map(String::as_str)
-                        .unwrap_or_else(|| text(handler, source)),
+                    handler: Some(
+                        symbols
+                            .get(&handler.id())
+                            .map(String::as_str)
+                            .unwrap_or_else(|| text(handler, source)),
+                    ),
                     direct: symbols.contains_key(&handler.id()),
+                    route_name: None,
+                    include_module: None,
+                    include_namespace: None,
                 },
                 owner,
                 facts,
                 offset,
             );
         }
+    }
+}
+
+fn include_target(node: Syntax<'_>, source: &str) -> (Option<String>, Option<String>) {
+    if !matches!(node.kind(), "call" | "call_expression")
+        || callee(node, source)
+            .is_none_or(|callee| callee != "include" && !callee.ends_with(".include"))
+    {
+        return (None, None);
+    }
+    let module = positional_argument(node, source, 0).and_then(|value| literal(value, source));
+    let namespace = node
+        .child_by_field_name("arguments")
+        .and_then(|arguments| {
+            let mut cursor = arguments.walk();
+            let argument = arguments.named_children(&mut cursor).find(|argument| {
+                argument.kind() == "keyword_argument"
+                    && argument
+                        .child_by_field_name("name")
+                        .is_some_and(|name| text(name, source) == "namespace")
+            });
+            argument
+        })
+        .and_then(|argument| argument.child_by_field_name("value"))
+        .and_then(|value| literal(value, source));
+    (module.map(str::to_owned), namespace.map(str::to_owned))
+}
+
+pub(crate) fn dependency_injection(
+    ctx: &languages::SyntaxContext<'_, '_>,
+    rules: &LanguageContext,
+    facts: &mut Facts,
+) {
+    if !matches!(ctx.node.kind(), "call" | "call_expression") {
+        return;
+    }
+    let Some(actual_callee) = callee(ctx.node, ctx.source) else {
+        return;
+    };
+    for rule in rules
+        .di_calls
+        .iter()
+        .filter(|rule| callee_matches(actual_callee, &rule.callee))
+    {
+        let Some(argument) = positional_argument(ctx.node, ctx.source, rule.argument) else {
+            continue;
+        };
+        let expression = text(argument, ctx.source).trim();
+        if expression.is_empty() {
+            continue;
+        }
+        facts.references.push(Reference {
+            source: ctx.owner.to_owned(),
+            dynamic: false,
+            expression: expression.to_owned(),
+            kind: "injects".to_owned(),
+            line: ctx.line(),
+            column: argument.start_position().column,
+            alias: None,
+            module: None,
+            receiver_hint: None,
+        });
     }
 }
 

@@ -1,0 +1,125 @@
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[route_decorators]]
+callee = ".get"
+method = "GET"
+path_argument = 0
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".post"
+method = "POST"
+path_argument = 0
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".put"
+method = "PUT"
+path_argument = 0
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".patch"
+method = "PATCH"
+path_argument = 0
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".delete"
+method = "DELETE"
+path_argument = 0
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".head"
+method = "HEAD"
+path_argument = 0
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".options"
+method = "OPTIONS"
+path_argument = 0
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".all"
+method = "ANY"
+path_argument = 0
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_decorators]]
+callee = ".route"
+method = "ANY"
+path_argument = 0
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".get"
+method = "GET"
+path_argument = 0
+handler_argument = 1
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".post"
+method = "POST"
+path_argument = 0
+handler_argument = 1
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".put"
+method = "PUT"
+path_argument = 0
+handler_argument = 1
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".patch"
+method = "PATCH"
+path_argument = 0
+handler_argument = 1
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".delete"
+method = "DELETE"
+path_argument = 0
+handler_argument = 1
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".head"
+method = "HEAD"
+path_argument = 0
+handler_argument = 1
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".options"
+method = "OPTIONS"
+path_argument = 0
+handler_argument = 1
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".all"
+method = "ANY"
+path_argument = 0
+handler_argument = 1
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[route_calls]]
+callee = ".route"
+method = "ANY"
+path_argument = 0
+handler_argument = 1
+receiver_names = ["app", "router", "server", "api", "bp", "blueprint", "route"]
+
+[[di_calls]]
+callee = "Depends"
+argument = 0

@@ -1,0 +1,9 @@
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[class_hierarchy_receivers]]
+bases = ["unittest.TestCase", "unittest.case.TestCase"]
+provider = "TestCase"
+members = ["assertEqual", "assertNotEqual", "assertTrue", "assertFalse", "assertIs", "assertIsNot", "assertIsNone", "assertIsNotNone", "assertIn", "assertNotIn", "assertIsInstance", "assertNotIsInstance", "assertRaises", "assertRaisesRegex", "assertWarns", "assertWarnsRegex", "assertLogs", "assertNoLogs", "assertAlmostEqual", "assertNotAlmostEqual", "assertGreater", "assertGreaterEqual", "assertLess", "assertLessEqual", "assertRegex", "assertNotRegex", "assertCountEqual", "assertSequenceEqual", "assertListEqual", "assertTupleEqual", "assertSetEqual", "assertDictEqual", "fail", "skipTest", "addCleanup", "doCleanups", "subTest"]

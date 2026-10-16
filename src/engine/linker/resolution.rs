@@ -7,6 +7,19 @@ use crate::engine::linker::traits::{ModulesByNamespace, PackageExports};
 
 type ExternalAliases<'a> = HashMap<&'a str, Option<(String, usize)>>;
 
+fn reference_scope<'a>(owner: &'a Node, path: &str) -> &'a str {
+    if owner.details["included_from"].is_string()
+        && owner.details["source_path"].as_str() == Some(path)
+    {
+        owner.details["source_qualname"]
+            .as_str()
+            .filter(|scope| !scope.is_empty())
+            .unwrap_or(owner.qualname.as_str())
+    } else {
+        owner.qualname.as_str()
+    }
+}
+
 pub(super) struct ResolutionInput<'a, F> {
     pub(super) all: &'a BTreeMap<String, F>,
     pub(super) public_all: Option<&'a BTreeMap<String, Facts>>,
@@ -555,7 +568,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 }
             }
             let alias_for = |name: &str, owner: Option<&Node>, definition_scope: bool| {
-                let mut scope = owner.map(|n| n.qualname.as_str()).unwrap_or("");
+                let mut scope = owner.map(|n| reference_scope(n, path)).unwrap_or("");
                 if definition_scope { scope = scope.rsplit_once('.').map_or("", |(p, _)| p); }
                 loop {
                     let class_scope = !profile.is_some_and(|p|p.class_scope()) && !definition_scope && owner.is_some_and(|n| matches!(n.kind.as_str(), "function" | "method"))
@@ -568,7 +581,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 }
             };
             let external_for = |name: &str, owner: Option<&Node>, definition_scope: bool| {
-                let mut scope = owner.map(|n| n.qualname.as_str()).unwrap_or("");
+                let mut scope = owner.map(|n| reference_scope(n, path)).unwrap_or("");
                 if definition_scope { scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent); }
                 loop {
                     let class_scope = !profile.is_some_and(|p|p.class_scope())
@@ -615,7 +628,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 })
             };
             let is_type_only = |name: &str, owner: Option<&Node>, definition_scope: bool| -> bool {
-                let mut scope = owner.map(|n| n.qualname.as_str()).unwrap_or("");
+                let mut scope = owner.map(|n| reference_scope(n, path)).unwrap_or("");
                 if definition_scope { scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent); }
                 loop {
                     let class_scope = !profile.is_some_and(|p| p.class_scope())
@@ -880,7 +893,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
             for r in facts.references.iter().filter(|r| {
                 matches!(
                     r.kind.as_str(),
-                    "calls" | "inherits" | "implements" | "bases" | "decorates" | "mutates" | "handles" | "references"
+                    "calls" | "inherits" | "implements" | "bases" | "decorates" | "mutates" | "handles" | "references" | "injects"
                 )
             }) {
                 let owner = by_id.get(r.source.as_str()).copied();
@@ -1587,7 +1600,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     });
                     continue;
                 }
-                let mut scope = owner.map(|n| n.qualname.as_str()).unwrap_or("");
+                let mut scope = owner.map(|n| reference_scope(n, path)).unwrap_or("");
                 let definition_scope = matches!(r.kind.as_str(), "decorates" | "inherits" | "implements" | "bases");
                 if definition_scope { scope = scope.rsplit_once('.').map_or("", |(p, _)| p); }
                 if matches!(r.kind.as_str(), "calls" | "mutates" | "handles") && is_type_only(first, owner, definition_scope) {
@@ -1619,7 +1632,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         return true;
                     }
                     let at = crate::core::semantic::SourcePosition { line: r.line, column: r.column };
-                    let mut import_scope = owner.map(|node| node.qualname.as_str()).unwrap_or("");
+                    let mut import_scope = owner.map(|node| reference_scope(node, path)).unwrap_or("");
                     if definition_scope {
                         import_scope = import_scope.rsplit_once('.').map_or("", |(parent, _)| parent);
                     }
@@ -1907,7 +1920,9 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         match classes { [class] if class.kind == "class" => Some(*class), _ => None }
                     } else { None }
                 } else { None };
-                let receiver_member = receiver_class.filter(|_| matches!(r.kind.as_str(), "calls" | "handles")).map(|class| member_lookup.python(class, tail, false));
+                let receiver_member = receiver_class
+                    .filter(|_| matches!(r.kind.as_str(), "calls" | "handles" | "references"))
+                    .map(|class| member_lookup.python(class, tail, false));
                 if shadowed
                     && !known_receiver
                     && !typed_receiver.is_some_and(|receiver| !matches!(receiver, ReceiverType::Unknown))

@@ -197,6 +197,12 @@ response:
 
 ---
 
+## Declarative framework packs
+
+Project rules live in each workspace's `.forge/frameworks/<framework-id>.toml`, `.yaml`, or `.yml`. Start with the equivalent [TOML](references/frameworks/declarative-rules.toml.example) or [YAML](references/frameworks/declarative-rules.yaml.example) examples for class receivers, route decorators, route calls, and dependency-injection calls. Keep the four legacy arrays (`receivers`, `builtins`, `filters`, `routes`) even when empty. Project rules extend the bundled identifier by default; `replace = true` replaces it. Rebuild or update the index after editing rules.
+
+The Forge repository's [framework manifest reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/framework-manifests.md) owns the schema, merge identities, activation rules, and validation limits. Use manifests for data supported by existing language hooks; a new language or new extraction semantics requires profile code and production-seam proof.
+
 ## MCP Tool Reference
 
 ### Operational Task Lifecycle

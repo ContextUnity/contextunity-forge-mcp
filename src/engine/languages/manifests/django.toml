@@ -53,3 +53,65 @@ routes = [
   "template.tag.trans=i18n",
   "template.tag.translate=i18n",
 ]
+
+[[class_hierarchy_receivers]]
+bases = ["django.core.management.base.BaseCommand"]
+provider = "django.core.management.base.BaseCommand"
+members = ["stdout.write", "stderr.write", "add_arguments", "execute", "run_from_argv", "check", "check_migrations", "print_help", "create_parser"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.http.HttpRequest", "django.http.request.HttpRequest"]
+provider = "django.http.HttpRequest"
+members = ["GET.get", "GET.items", "GET.keys", "GET.values", "POST.get", "POST.items", "POST.keys", "POST.values"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.test.TestCase", "django.test.testcases.TestCase"]
+provider = "TestCase"
+members = ["assertEqual", "assertNotEqual", "assertTrue", "assertFalse", "assertIs", "assertIsNot", "assertIsNone", "assertIsNotNone", "assertIn", "assertNotIn", "assertIsInstance", "assertNotIsInstance", "assertRaises", "assertRaisesRegex", "assertWarns", "assertWarnsRegex", "assertLogs", "assertNoLogs", "assertAlmostEqual", "assertNotAlmostEqual", "assertGreater", "assertGreaterEqual", "assertLess", "assertLessEqual", "assertRegex", "assertNotRegex", "assertCountEqual", "assertSequenceEqual", "assertListEqual", "assertTupleEqual", "assertSetEqual", "assertDictEqual", "fail", "skipTest", "addCleanup", "doCleanups", "subTest"]
+
+[[class_hierarchy_receivers]]
+bases = ["django.db.models.Model", "django.db.models.base.Model"]
+provider = "django.db.models.Model"
+members = ["objects.all", "objects.filter", "objects.exclude", "objects.get", "objects.create", "objects.get_or_create", "objects.update_or_create", "objects.bulk_create", "objects.bulk_update", "objects.count", "objects.exists", "objects.first", "objects.last", "objects.order_by", "objects.values", "objects.values_list", "objects.select_related", "objects.prefetch_related", "objects.aggregate", "objects.annotate", "objects.none", "objects.update", "objects.delete", "objects.using"]
+
+[[route_calls]]
+callee = "path"
+method = "ANY"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "re_path"
+method = "ANY"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "urls.path"
+method = "ANY"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "django.urls.path"
+method = "ANY"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "urls.re_path"
+method = "ANY"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true
+
+[[route_calls]]
+callee = "django.urls.re_path"
+method = "ANY"
+path_argument = 0
+handler_argument = 1
+allow_relative_path = true

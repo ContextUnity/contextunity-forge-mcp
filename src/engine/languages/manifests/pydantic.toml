@@ -1,0 +1,9 @@
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[class_hierarchy_receivers]]
+bases = ["pydantic.BaseModel", "pydantic.main.BaseModel"]
+provider = "pydantic.BaseModel"
+members = ["model_validate", "model_validate_json", "model_dump", "model_dump_json", "model_copy", "model_construct", "model_json_schema"]

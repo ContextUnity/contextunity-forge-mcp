@@ -23,7 +23,7 @@ impl<'a> NamespaceIndexes<'a> {
         all: &'a BTreeMap<String, F>,
         nodes: &[&'a Node],
         root: Option<&Path>,
-        dependency_registry: &DependencyRegistry,
+        dependency_registry: &'a DependencyRegistry,
     ) -> Self {
         let profiles: HashMap<&str, &'static dyn LanguageProfile> = all
             .iter()
@@ -179,7 +179,7 @@ impl<'a> InheritanceIndexes<'a> {
         by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
         namespaces: &'a NamespaceIndexes<'a>,
         package_exports: &'a HashMap<&'static str, PackageExports<'a>>,
-        dependency_registry: &DependencyRegistry,
+        dependency_registry: &'a DependencyRegistry,
     ) -> Self {
         let mut inheritance_imports: HashMap<(&str, &str, &str), Vec<&Reference>> = HashMap::new();
         for (path, facts) in all {
@@ -209,8 +209,9 @@ impl<'a> InheritanceIndexes<'a> {
 
         let lookup =
             |name: &str| -> &[&Node] { by_qual.get(name).map(Vec::as_slice).unwrap_or_default() };
-        let python_receivers =
-            languages::python_receivers::PythonReceivers::build(all, |class, reference| {
+        let python_receivers = languages::python_receivers::PythonReceivers::build(
+            all,
+            |class, reference| {
                 let expression = reference.expression.as_str();
                 let (head, tail) = expression.split_once('.').unwrap_or((expression, ""));
                 let mut scope = class
@@ -373,7 +374,12 @@ impl<'a> InheritanceIndexes<'a> {
                 } else {
                     languages::python_receivers::Base::Unknown
                 }
-            });
+            },
+            |path, base| {
+                let rule = dependency_registry.class_hierarchy_receiver_for_path(path, base)?;
+                Some((rule.provider.as_str(), rule.members.as_slice()))
+            },
+        );
         drop(inheritance_imports);
 
         Self {

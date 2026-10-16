@@ -146,6 +146,99 @@ fn changed_rust_impl_methods(
     Ok(changed_methods)
 }
 
+fn django_route_include_closure(
+    conn: &Connection,
+    facts: &BTreeMap<String, TypedFacts>,
+    modified: &BTreeSet<String>,
+    inventory: &BTreeMap<&str, &FileEntry>,
+) -> Result<BTreeSet<String>> {
+    let mut module_paths = std::collections::HashMap::new();
+    {
+        let mut statement = conn.prepare(
+            "SELECT owner.path,n.qualname FROM nodes n JOIN path_dictionary owner ON owner.path_id=n.owner_path_id WHERE n.kind='module' AND n.language='python'",
+        )?;
+        for row in statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (path, module) = row?;
+            // Preserve the prior module identity long enough to expand include
+            // consumers when a module is modified or deleted. `facts` replaces
+            // modified modules below; deleted modules intentionally have no
+            // replacement entry but still need to invalidate their parents.
+            if modified.contains(&path) || inventory.contains_key(path.as_str()) {
+                module_paths.insert(
+                    (
+                        crate::engine::languages::workspace_path(&path).0.to_owned(),
+                        module,
+                    ),
+                    path,
+                );
+            }
+        }
+    }
+    for (path, typed) in facts {
+        let workspace = crate::engine::languages::workspace_path(path).0.to_owned();
+        for module in typed
+            .facts
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "module" && node.language == "python")
+        {
+            module_paths.insert((workspace.clone(), module.qualname.clone()), path.clone());
+        }
+    }
+
+    let mut include_rows = Vec::new();
+    {
+        let mut statement = conn.prepare(
+            "SELECT owner.path,n.details FROM nodes n JOIN path_dictionary owner ON owner.path_id=n.owner_path_id WHERE n.kind='route' AND json_extract(n.details,'$.include_module') IS NOT NULL",
+        )?;
+        for row in statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (owner, details) = row?;
+            if modified.contains(&owner) || !inventory.contains_key(owner.as_str()) {
+                continue;
+            }
+            let details: serde_json::Value = serde_json::from_str(&details)?;
+            if let Some(module) = details["include_module"].as_str() {
+                include_rows.push((owner, module.to_owned()));
+            }
+        }
+    }
+    for (path, typed) in facts {
+        for route in typed.facts.nodes.iter().filter(|node| node.kind == "route") {
+            if let Some(module) = route.details["include_module"].as_str() {
+                include_rows.push((path.clone(), module.to_owned()));
+            }
+        }
+    }
+
+    let mut relations = BTreeSet::new();
+    for (parent, module) in include_rows {
+        let workspace = crate::engine::languages::workspace_path(&parent)
+            .0
+            .to_owned();
+        if let Some(child) = module_paths.get(&(workspace, module)) {
+            relations.insert((parent, child.clone()));
+        }
+    }
+    let mut closure = modified.clone();
+    loop {
+        let mut changed = false;
+        for (parent, child) in &relations {
+            if closure.contains(parent) || closure.contains(child) {
+                changed |= closure.insert(parent.clone());
+                changed |= closure.insert(child.clone());
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    Ok(closure)
+}
+
 fn persisted_possible_call_owners(
     conn: &Connection,
     changed_rust_paths: &BTreeSet<String>,
@@ -496,7 +589,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
     let mut changed_resolution = BTreeSet::new();
     for path in &modified {
         if let Some(file) = inventory.get(path.as_str()) {
-            let extracted = extract_typed(&root, file, &adapter)?;
+            let extracted = extract_typed(&root, file, &adapter, &dependencies)?;
             if !previous.contains_key(path.as_str())
                 || resolution_identity_changed(&admitted, path, &extracted)?
                 || (linker::needs_reference_identity(path, &extracted)
@@ -762,7 +855,11 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         import_frontier = next;
     }
     drop(importing_owners);
+    let route_include_paths =
+        django_route_include_closure(&admitted, &facts, &modified, &inventory)?;
     let mut replace_files = modified.clone();
+    replace_files.extend(route_include_paths.iter().cloned());
+    affected.extend(route_include_paths);
     let component_owners = delta_components(&admitted, &modified, &facts, &mut replace_files)?;
     affected.extend(replace_files.iter().cloned());
     let template_inputs_changed = modified.iter().any(|path| {
@@ -1074,6 +1171,10 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
             }
         }
     }
+    let composed_routes =
+        crate::engine::ast::route_includes::compose_django_route_includes(&mut facts);
+    affected.extend(composed_routes.iter().cloned());
+    replace_files.extend(composed_routes);
     assign_components(&mut facts, &component_owners);
     let mut tokens = BTreeSet::new();
     let mut doc_symbols = BTreeSet::new();

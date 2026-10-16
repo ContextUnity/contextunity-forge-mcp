@@ -1,0 +1,26 @@
+# Copy to .forge/frameworks/django.yaml. The default mode extends the bundle.
+receivers: []
+builtins: []
+filters: []
+routes: []
+class_hierarchy_receivers:
+  - bases: [django.custom.Base]
+    provider: django.custom.Base
+    members: [deliver]
+route_decorators:
+  - callee: portal.expose
+    method: POST
+    path_argument: 0
+    receiver_names: []
+    allow_relative_path: false
+route_calls:
+  - callee: register_endpoint
+    method: GET
+    path_argument: 0
+    # First handler position; subsequent positional middleware handlers also apply.
+    handler_argument: 1
+    receiver_names: []
+    allow_relative_path: false
+di_calls:
+  - callee: InjectService
+    argument: 0

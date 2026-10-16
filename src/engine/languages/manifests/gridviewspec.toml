@@ -3,3 +3,207 @@ receivers = ["GridViewSpec=grid_view_spec.types.spec.GridViewSpec"]
 builtins = []
 filters = []
 routes = []
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.spec.GridViewSpec", "grid_view_spec.types.GridViewSpec"]
+provider = "grid_view_spec.types.spec.GridViewSpec"
+members = ["id", "title", "meta", "config", "blocks", "layout"]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.block_base.GridViewBlockBase", "grid_view_spec.types.GridViewBlockBase"]
+provider = "grid_view_spec.types.block_base.GridViewBlockBase"
+members = ["id", "type", "title", "extra", "style", "trusted_style", "lazy"]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.spec_meta.GridViewMeta", "grid_view_spec.types.GridViewMeta"]
+provider = "grid_view_spec.types.spec_meta.GridViewMeta"
+members = ["title", "subtitle", "icon", "description"]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.spec_meta.GridViewConfig", "grid_view_spec.types.GridViewConfig"]
+provider = "grid_view_spec.types.spec_meta.GridViewConfig"
+members = ["htmx", "template", "assets", "lazy", "page_state_scope"]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.layout.GridViewLayout", "grid_view_spec.types.GridViewLayout"]
+provider = "grid_view_spec.types.layout.GridViewLayout"
+members = ["root"]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.table_v2.GridViewTable", "grid_view_spec.types.GridViewTable"]
+provider = "grid_view_spec.types.table_v2.GridViewTable"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "backend", "columns", "column_source", "rows", "datasource", "header",
+    "search_mode", "sort", "settings", "edit", "assets", "row_action", "footer",
+    "empty_message", "per_page", "pagination", "striped", "hide_sole_section_header",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.toolbar.GridViewToolbar", "grid_view_spec.types.GridViewToolbar"]
+provider = "grid_view_spec.types.toolbar.GridViewToolbar"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "presentation", "search", "filters", "clear_all", "reload", "counters", "actions", "target",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.filters_v2.GridViewFilters", "grid_view_spec.types.GridViewFilters"]
+provider = "grid_view_spec.types.filters_v2.GridViewFilters"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "presentation", "schema", "state", "target", "auto_apply", "navigate_on_change",
+    "fragment_endpoint", "fragment_target", "fragment_swap", "facets", "drawer_layout",
+    "drawer_sections", "drawer_search",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.actions.GridViewActions", "grid_view_spec.types.GridViewActions"]
+provider = "grid_view_spec.types.actions.GridViewActions"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "presentation", "items",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.content.GridViewCards", "grid_view_spec.types.GridViewCards"]
+provider = "grid_view_spec.types.content.GridViewCards"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "cards", "presentation",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.content.GridViewCharts", "grid_view_spec.types.GridViewCharts"]
+provider = "grid_view_spec.types.content.GridViewCharts"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "charts", "presentation", "filters",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.content.GridViewKpi", "grid_view_spec.types.GridViewKpi"]
+provider = "grid_view_spec.types.content.GridViewKpi"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "items", "presentation",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.content.GridViewTabs", "grid_view_spec.types.GridViewTabs"]
+provider = "grid_view_spec.types.content.GridViewTabs"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "tabs", "presentation",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.nav.GridViewNav", "grid_view_spec.types.GridViewNav"]
+provider = "grid_view_spec.types.nav.GridViewNav"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "presentation", "items", "levels", "search_placeholder", "allow_create", "saved_searches",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.form.GridViewForm", "grid_view_spec.types.GridViewForm"]
+provider = "grid_view_spec.types.form.GridViewForm"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "presentation", "fields", "fieldsets", "values", "errors", "translations", "submit", "method", "endpoint",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.header.GridViewHeader", "grid_view_spec.types.GridViewHeader"]
+provider = "grid_view_spec.types.header.GridViewHeader"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "presentation", "nav", "entity", "content", "subtitle", "icon", "actions",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.content.GridViewTemplate", "grid_view_spec.types.GridViewTemplate"]
+provider = "grid_view_spec.types.content.GridViewTemplate"
+members = [
+    "id", "type", "title", "extra", "style", "trusted_style", "lazy",
+    "mode", "template", "context", "html", "assets",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.table_v2.GridViewColumn", "grid_view_spec.types.GridViewColumn"]
+provider = "grid_view_spec.types.table_v2.GridViewColumn"
+members = [
+    "id", "label", "field", "type", "renderer", "width", "min_width", "align",
+    "sortable", "searchable", "exportable", "wrap", "menu_group", "editable", "filter",
+    "hidden", "pinned", "extra", "currency_formatter", "date_time_formatter",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.filters_v2.GridViewFilter", "grid_view_spec.types.GridViewFilter"]
+provider = "grid_view_spec.types.filters_v2.GridViewFilter"
+members = [
+    "id", "label", "param", "type", "scope", "options", "options_endpoint", "placeholder",
+    "select_all", "select_all_label", "select_all_value", "all_exclusive", "presets", "default", "drawer_control",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.content.GridViewCard", "grid_view_spec.types.GridViewCard"]
+provider = "grid_view_spec.types.content.GridViewCard"
+members = ["id", "title", "subtitle", "value", "href", "icon", "tone", "meta"]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.backends.django.host.DjangoGridViewHost"]
+provider = "grid_view_spec.backends.django.host.DjangoGridViewHost"
+members = [
+    "request", "config", "translate", "url_for", "template_exists", "render_host_template",
+    "get_grid_prefs", "save_grid_prefs", "filter_state_from_request", "current_subject_id",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.actions.GridViewActionBase"]
+provider = "grid_view_spec.types.actions.GridViewActionBase"
+members = ["id", "type", "label", "icon", "variant", "tone", "target", "disabled", "reason", "params", "confirm"]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.actions.GridViewExportAction", "grid_view_spec.types.GridViewExportAction"]
+provider = "grid_view_spec.types.actions.GridViewExportAction"
+members = [
+    "id", "type", "label", "icon", "variant", "tone", "target", "disabled", "reason", "params", "confirm",
+    "format", "endpoint", "include_state",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.actions.GridViewOverlayAction", "grid_view_spec.types.GridViewOverlayAction"]
+provider = "grid_view_spec.types.actions.GridViewOverlayAction"
+members = [
+    "id", "type", "label", "icon", "variant", "tone", "target", "disabled", "reason", "params", "confirm", "overlay",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.actions.GridViewLinkAction", "grid_view_spec.types.GridViewLinkAction"]
+provider = "grid_view_spec.types.actions.GridViewLinkAction"
+members = [
+    "id", "type", "label", "icon", "variant", "tone", "target", "disabled", "reason", "params", "confirm", "href", "method",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.actions.GridViewButtonAction", "grid_view_spec.types.GridViewButtonAction"]
+provider = "grid_view_spec.types.actions.GridViewButtonAction"
+members = [
+    "id", "type", "label", "icon", "variant", "tone", "target", "disabled", "reason", "params", "confirm", "action",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.actions.GridViewSelectAction", "grid_view_spec.types.GridViewSelectAction"]
+provider = "grid_view_spec.types.actions.GridViewSelectAction"
+members = [
+    "id", "type", "label", "icon", "variant", "tone", "target", "disabled", "reason", "params", "confirm",
+    "action", "button_label", "options", "default",
+]
+
+[[class_hierarchy_receivers]]
+bases = ["grid_view_spec.types.actions.GridViewMenuAction", "grid_view_spec.types.GridViewMenuAction"]
+provider = "grid_view_spec.types.actions.GridViewMenuAction"
+members = [
+    "id", "type", "label", "icon", "variant", "tone", "target", "disabled", "reason", "params", "confirm", "items",
+]

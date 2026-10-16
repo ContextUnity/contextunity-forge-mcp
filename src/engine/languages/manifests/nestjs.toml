@@ -1,0 +1,49 @@
+receivers = []
+builtins = []
+filters = []
+routes = []
+
+[[route_decorators]]
+callee = "Get"
+method = "GET"
+path_argument = 0
+
+[[route_decorators]]
+callee = "Post"
+method = "POST"
+path_argument = 0
+
+[[route_decorators]]
+callee = "Put"
+method = "PUT"
+path_argument = 0
+
+[[route_decorators]]
+callee = "Patch"
+method = "PATCH"
+path_argument = 0
+
+[[route_decorators]]
+callee = "Delete"
+method = "DELETE"
+path_argument = 0
+
+[[route_decorators]]
+callee = "Head"
+method = "HEAD"
+path_argument = 0
+
+[[route_decorators]]
+callee = "Options"
+method = "OPTIONS"
+path_argument = 0
+
+[[route_decorators]]
+callee = "All"
+method = "ANY"
+path_argument = 0
+
+[[route_decorators]]
+callee = "Route"
+method = "ANY"
+path_argument = 0

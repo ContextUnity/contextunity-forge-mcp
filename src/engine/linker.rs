@@ -497,7 +497,13 @@ fn emit_inferred(
 ) {
     let (status, evidence): (&str, Cow<'static, str>) = match &result {
         semantic_context::Member::Local(node) => ("resolved", format!("statically inferred value receiver: {}", node.qualname).into()),
-        semantic_context::Member::External(module, line, Some(provider)) => ("external", format!("finite Python framework member from {provider} via external import {module} at line {line}; receiver origin statically inferred").into()),
+        semantic_context::Member::External(module, line, Some(provider)) => {
+            let member = reference.expression.rsplit('.').next().unwrap_or_default();
+            (
+                "external",
+                format!("finite Python framework member from {provider} via external import {module} at line {line}; resolved member {provider}.{member}; receiver origin statically inferred").into(),
+            )
+        }
         semantic_context::Member::External(module, line, None) => ("external", format!("call through external import {module} at line {line}; receiver origin statically inferred").into()),
         semantic_context::Member::Builtin => match builtin_origin {
             Some(origin) => ("external", format!("{origin} built-in: {}", reference.expression).into()),

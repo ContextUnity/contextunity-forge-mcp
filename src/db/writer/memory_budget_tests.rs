@@ -49,6 +49,7 @@ fn sqlite_cache_size_is_clamped_in_kibibytes() {
         1
     );
 
+    let dependencies = crate::engine::languages::dependency_registry::DependencyRegistry::default();
     populate(
         &mut connection,
         &root.0,
@@ -57,7 +58,7 @@ fn sqlite_cache_size_is_clamped_in_kibibytes() {
         &BTreeMap::new(),
         None,
         super::BuildInputs {
-            dependency_manifests: &[],
+            dependency_registry: &dependencies,
             memory_budget: scanner::memory_budget_bytes(),
         },
     )

@@ -846,7 +846,6 @@ impl LanguageProfile for Python {
         }
         relations::decorator_references(ctx, facts);
         fastmcp::decorator_candidates(ctx, facts);
-        routes::declaration(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         relations::mutation(
@@ -862,10 +861,9 @@ impl LanguageProfile for Python {
         &self,
         ctx: &SyntaxContext<'_, '_>,
         facts: &mut Facts,
-        symbols: &HashMap<usize, String>,
+        _symbols: &HashMap<usize, String>,
     ) {
         if ctx.node.kind() == "call" {
-            routes::registration(ctx.node, ctx.source, ctx.owner, facts, ctx.offset, symbols);
             routes::client_call(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
         }
         if ctx.node.kind() == "assignment" && !ctx.owner.starts_with("module:") {
@@ -888,6 +886,22 @@ impl LanguageProfile for Python {
         } else {
             fastmcp::module_assignment(ctx, facts);
         }
+    }
+    fn extract_routes_with_context(
+        &self,
+        ctx: &SyntaxContext<'_, '_>,
+        facts: &mut Facts,
+        symbols: &HashMap<usize, String>,
+        rules: &super::LanguageContext,
+        route_context: &crate::engine::ast::routes::RouteContext,
+    ) {
+        if matches!(ctx.node.kind(), "function_definition" | "class_definition") {
+            routes::declaration_with_context(ctx, facts, rules, route_context);
+        }
+        if ctx.node.kind() == "call" {
+            routes::registration_with_context(ctx, facts, symbols, rules, route_context);
+        }
+        self.extract_routes(ctx, facts, symbols);
     }
     fn finish(&self, facts: &mut Facts) {
         relations::implicit_fields(facts);

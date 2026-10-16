@@ -25,6 +25,77 @@ pub struct DependencyRegistry {
 }
 
 impl DependencyRegistry {
+    /// Loads the built-in framework rules without requiring dependency manifests.
+    pub(crate) fn bundled_framework_rules() -> Self {
+        let mut registry = Self::default();
+        load_standard_framework_manifests(&mut registry)
+            .expect("bundled framework manifests are validated at compile time");
+        registry
+    }
+
+    /// Prepares the merged extraction rules for one file path.
+    pub(crate) fn language_context_for_path(&self, path: &str) -> super::LanguageContext {
+        let (workspace, _) = super::workspace_path(path);
+        let mut names: BTreeSet<&str> = self
+            .standard_framework_manifests
+            .keys()
+            .map(String::as_str)
+            .collect();
+        names.extend(
+            self.framework_manifests
+                .keys()
+                .filter(|(scope, _)| scope == workspace)
+                .map(|(_, name)| name.as_str()),
+        );
+
+        let mut context = super::LanguageContext::default();
+        for name in names {
+            let manifest = self
+                .framework_manifests
+                .get(&(workspace.to_owned(), name.to_owned()))
+                .or_else(|| self.standard_framework_manifests.get(name));
+            let Some(manifest) = manifest else { continue };
+            context
+                .class_hierarchy_receivers
+                .extend(manifest.class_hierarchy_receivers.iter().cloned());
+            context
+                .route_decorators
+                .extend(manifest.route_decorators.iter().cloned());
+            context
+                .route_calls
+                .extend(manifest.route_calls.iter().cloned());
+            context.di_calls.extend(manifest.di_calls.iter().cloned());
+        }
+        context
+    }
+
+    pub(crate) fn class_hierarchy_receiver_for_path(
+        &self,
+        path: &str,
+        base: &str,
+    ) -> Option<&super::manifests::ClassHierarchyReceiverRule> {
+        let (workspace, _) = super::workspace_path(path);
+        let mut names: BTreeSet<&str> = self
+            .standard_framework_manifests
+            .keys()
+            .map(String::as_str)
+            .collect();
+        names.extend(
+            self.framework_manifests
+                .keys()
+                .filter(|(scope, _)| scope == workspace)
+                .map(|(_, name)| name.as_str()),
+        );
+        names.into_iter().find_map(|name| {
+            self.framework_manifests
+                .get(&(workspace.to_owned(), name.to_owned()))
+                .or_else(|| self.standard_framework_manifests.get(name))?
+                .class_hierarchy_receivers
+                .iter()
+                .find(|rule| rule.bases.iter().any(|candidate| candidate == base))
+        })
+    }
+
     /// Resolves local package exports and TypeScript path aliases from the dependency snapshot.
     pub(crate) fn normalize_javascript_import(
         &self,
@@ -53,7 +124,7 @@ impl DependencyRegistry {
     /// Collects workspace dependencies and framework rules.
     pub fn collect(root: Option<&Path>) -> Self {
         let Some(root) = root else {
-            return Self::default();
+            return Self::bundled_framework_rules();
         };
         let adapter = crate::engine::scanner::load_adapter(root, None).ok();
         Self::collect_with_scan_config(root, adapter.as_ref())
@@ -475,9 +546,13 @@ fn load_standard_framework_manifests(registry: &mut DependencyRegistry) -> Resul
     for (name, source) in [
         ("alpinejs", include_str!("manifests/alpinejs.toml")),
         ("django", include_str!("manifests/django.toml")),
+        ("fastapi", include_str!("manifests/fastapi.toml")),
         ("gridviewspec", include_str!("manifests/gridviewspec.toml")),
         ("jinja2", include_str!("manifests/jinja2.toml")),
+        ("nestjs", include_str!("manifests/nestjs.toml")),
         ("nuxt", include_str!("manifests/nuxt.toml")),
+        ("pydantic", include_str!("manifests/pydantic.toml")),
+        ("unittest", include_str!("manifests/unittest.toml")),
     ] {
         let manifest = FrameworkManifest::parse(name.to_owned(), "toml", source)
             .with_context(|| format!("invalid standard framework manifest {name}"))?;
@@ -644,8 +719,33 @@ mod tests {
     #[cfg(feature = "lang-python")]
     #[test]
     fn project_framework_packs_merge_replace_and_activate() {
-        use super::super::manifests::FrameworkManifestValue;
+        use super::super::manifests::{FrameworkManifest, FrameworkManifestValue};
         use std::collections::BTreeMap;
+
+        for (extension, source) in [
+            (
+                "toml",
+                include_str!("../../../skills/contextunity-forge/references/frameworks/declarative-rules.toml.example"),
+            ),
+            (
+                "yaml",
+                include_str!("../../../skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example"),
+            ),
+        ] {
+            let parsed = FrameworkManifest::parse("django".to_owned(), extension, source)
+                .unwrap_or_else(|error| panic!("invalid documented {extension} example: {error:#}"));
+            assert_eq!(parsed.class_hierarchy_receivers.len(), 1, "{extension}");
+            assert_eq!(parsed.route_decorators.len(), 1, "{extension}");
+            assert_eq!(parsed.route_calls.len(), 1, "{extension}");
+            assert_eq!(parsed.di_calls.len(), 1, "{extension}");
+        }
+        let gridviewspec = FrameworkManifest::parse(
+            "gridviewspec".to_owned(),
+            "toml",
+            include_str!("../../../skills/contextunity-forge/references/frameworks/gridviewspec.toml.example"),
+        )
+        .unwrap_or_else(|error| panic!("invalid documented GridViewSpec example: {error:#}"));
+        assert_eq!(gridviewspec.class_hierarchy_receivers.len(), 28);
 
         struct TestRoot(PathBuf);
         impl Drop for TestRoot {
@@ -687,6 +787,31 @@ mod tests {
 builtins = ["template.tag.project", "template.tag.if"]
 filters = ["template.filter.project", "template.filter.upper"]
 routes = ["template.tag.trans=project.i18n", { methods = ["GET", "POST"], priority = 7 }]
+[[class_hierarchy_receivers]]
+bases = ["django.custom.Base"]
+provider = "django.custom.Base"
+members = ["deliver"]
+[[class_hierarchy_receivers]]
+bases = ["django.core.management.base.BaseCommand"]
+provider = "project.management.BaseCommand"
+members = ["write"]
+[[route_decorators]]
+callee = "portal.expose"
+method = "POST"
+path_argument = 0
+[[route_calls]]
+callee = "register_endpoint"
+method = "GET"
+path_argument = 0
+handler_argument = 1
+[[route_calls]]
+callee = "path"
+method = "ANY"
+path_argument = 0
+handler_argument = 2
+[[di_calls]]
+callee = "InjectService"
+argument = 0
 "#
                     } else {
                         r#"receivers:
@@ -699,6 +824,29 @@ routes:
   - template.tag.trans=project.i18n
   - methods: [GET, POST]
     priority: 7
+class_hierarchy_receivers:
+  - bases: [django.custom.Base]
+    provider: django.custom.Base
+    members: [deliver]
+  - bases: [django.core.management.base.BaseCommand]
+    provider: project.management.BaseCommand
+    members: [write]
+route_decorators:
+  - callee: portal.expose
+    method: POST
+    path_argument: 0
+route_calls:
+  - callee: register_endpoint
+    method: GET
+    path_argument: 0
+    handler_argument: 1
+  - callee: path
+    method: ANY
+    path_argument: 0
+    handler_argument: 2
+di_calls:
+  - callee: InjectService
+    argument: 0
 "#
                     };
                     let project_path = directory.join(format!("django.{extension}"));
@@ -791,6 +939,76 @@ routes:
                             manifest.routes.iter().filter(|rule| matches!(rule, FrameworkManifestValue::String(value) if value.starts_with("template.tag.trans="))).count() == 1,
                         ),
                         (
+                            "typed class rule collision uses project provider",
+                            manifest
+                                .class_hierarchy_receivers
+                                .iter()
+                                .find(|rule| {
+                                    rule.bases == ["django.core.management.base.BaseCommand"]
+                                })
+                                .is_some_and(|rule| {
+                                    rule.provider == "project.management.BaseCommand"
+                                }),
+                        ),
+                        (
+                            "typed class rule collision is unique",
+                            manifest
+                                .class_hierarchy_receivers
+                                .iter()
+                                .filter(|rule| {
+                                    rule.bases == ["django.core.management.base.BaseCommand"]
+                                })
+                                .count()
+                                == 1,
+                        ),
+                        (
+                            "noncolliding bundled class rule follows replace mode",
+                            manifest
+                                .class_hierarchy_receivers
+                                .iter()
+                                .any(|rule| rule.bases.contains(&"django.test.TestCase".to_owned()))
+                                != replace,
+                        ),
+                        (
+                            "typed route rule collision uses project handler position",
+                            manifest
+                                .route_calls
+                                .iter()
+                                .find(|rule| rule.callee == "path" && rule.method == "ANY")
+                                .is_some_and(|rule| rule.handler_argument == Some(2)),
+                        ),
+                        (
+                            "typed route rule collision is unique",
+                            manifest
+                                .route_calls
+                                .iter()
+                                .filter(|rule| rule.callee == "path" && rule.method == "ANY")
+                                .count()
+                                == 1,
+                        ),
+                        (
+                            "noncolliding bundled route rule follows replace mode",
+                            manifest
+                                .route_calls
+                                .iter()
+                                .any(|rule| rule.callee == "re_path" && rule.method == "ANY")
+                                != replace,
+                        ),
+                        (
+                            "project decorator rule remains under replace mode",
+                            manifest
+                                .route_decorators
+                                .iter()
+                                .any(|rule| rule.callee == "portal.expose" && rule.method == "POST"),
+                        ),
+                        (
+                            "project dependency rule remains under replace mode",
+                            manifest
+                                .di_calls
+                                .iter()
+                                .any(|rule| rule.callee == "InjectService" && rule.argument == 0),
+                        ),
+                        (
                             "project pack stays in its workspace",
                             registry.framework_manifest_for_path(family, "[other]/src/views.py", "django", "django").is_none(),
                         ),
@@ -818,6 +1036,40 @@ routes:
                         ("conflicting modes", "extend = true\nreplace = true\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n"),
                         ("wrong mode shape", "extend = \"true\"\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n"),
                     ] {
+                        fs::write(directory.join("invalid.toml"), content).unwrap();
+                        if DependencyRegistry::try_collect_with_paths(root, None, &[]).is_ok() {
+                            failures.push(format!("{label}: accepted {invalid}"));
+                        }
+                    }
+                    for (invalid, typed_rule) in [
+                        (
+                            "empty class hierarchy base list",
+                            "[[class_hierarchy_receivers]]\nbases = []\nprovider = \"provider.Base\"\nmembers = [\"send\"]\n",
+                        ),
+                        (
+                            "empty class hierarchy provider",
+                            "[[class_hierarchy_receivers]]\nbases = [\"provider.Base\"]\nprovider = \" \"\nmembers = [\"send\"]\n",
+                        ),
+                        (
+                            "invalid route method",
+                            "[[route_decorators]]\ncallee = \"router.get\"\nmethod = \"get\"\npath_argument = 0\n",
+                        ),
+                        (
+                            "same path and handler argument",
+                            "[[route_calls]]\ncallee = \"register\"\nmethod = \"GET\"\npath_argument = 0\nhandler_argument = 0\n",
+                        ),
+                        (
+                            "negative dependency argument",
+                            "[[di_calls]]\ncallee = \"Inject\"\nargument = -1\n",
+                        ),
+                        (
+                            "unknown typed rule field",
+                            "[[di_calls]]\ncallee = \"Inject\"\nargument = 0\nextra = true\n",
+                        ),
+                    ] {
+                        let content = format!(
+                            "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\n{typed_rule}"
+                        );
                         fs::write(directory.join("invalid.toml"), content).unwrap();
                         if DependencyRegistry::try_collect_with_paths(root, None, &[]).is_ok() {
                             failures.push(format!("{label}: accepted {invalid}"));

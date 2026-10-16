@@ -51,6 +51,14 @@ A full build validates a staged database before publication. Forge readers hold 
 
 Selectors must identify one target. For example, `package/settings.py:load_config` names a function in a file, while `package/settings.py#L12` resolves the narrowest indexed symbol at that line. If a bare name matches more than one target, the resolver reports ambiguity and requires a path or exact symbol identifier. See the [MCP tool reference](../reference/mcp-tools.md) for selector syntax and response bounds.
 
+## Declarative framework extraction
+
+`DependencyRegistry` loads and validates bundled and workspace-local framework manifests before parallel extraction. It supplies merged typed rules through a per-file `LanguageContext`; AST extraction uses `extract_typed_with_registry` in both the cold writer and delta paths. Profiles receive those rules through `extract_routes_with_context`, together with a `RouteContext` for static router and controller prefixes. Extraction does not reread manifest files for each syntax node.
+
+Class-hierarchy rules feed canonical Python receiver lookup through the inheritance index. Import provenance, method shadowing, and unknown external bases still bound resolution. Route and DI rules produce ordinary syntax facts and references. Django URL facts retain include modules, route names, and namespaces; static include-prefix composition runs before persistence, including after incremental fact hydration. Manifest digest changes invalidate the indexed rule snapshot so an update cannot retain extraction from an old rule set.
+
+The [framework manifest reference](../reference/framework-manifests.md) owns fields and merge behavior. New rule data uses existing language hooks; a manifest does not register a grammar or introduce arbitrary extraction code.
+
 ## Extending a language profile
 
 Language extraction belongs to its profile and the shared AST layer. Add a profile through the language registry and compile-time feature configuration, then add a `LanguageLinker` only when that language needs import, receiver, or incremental-linking behavior beyond the generic implementation. Python package initializers, paired declaration files, re-exports, and external import aliases live in the Python linker. Verify facts against parser fixtures and linker tests. A profile does not change the selector or database contracts. Keep unresolved references visible instead of guessing a target from a name alone.

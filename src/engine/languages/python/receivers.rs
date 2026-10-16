@@ -24,7 +24,7 @@ impl Eq for Base<'_> {}
 #[derive(Clone, Copy)]
 pub(crate) enum Member<'a> {
     Local(&'a Node),
-    External(&'a str, usize, Option<&'static str>),
+    External(&'a str, usize, Option<&'a str>),
     Ambiguous,
     Unknown,
 }
@@ -39,6 +39,7 @@ impl<'a> PythonReceivers<'a> {
     pub(crate) fn build<F: AsRef<Facts>>(
         all: &'a BTreeMap<String, F>,
         mut resolve: impl FnMut(&'a Node, &'a Reference) -> Base<'a>,
+        mut framework_receiver: impl FnMut(&str, &str) -> Option<(&'a str, &'a [String])>,
     ) -> Self {
         let classes: HashMap<&str, &Node> = all
             .values()
@@ -229,13 +230,14 @@ impl<'a> PythonReceivers<'a> {
             members: own,
             supers: HashMap::new(),
         }
-        .finish(&classes, &orders)
+        .finish(&classes, &orders, &mut framework_receiver)
     }
 
     fn finish(
         mut self,
         classes: &HashMap<&'a str, &'a Node>,
         orders: &HashMap<&'a str, Option<Vec<Base<'a>>>>,
+        framework_receiver: &mut impl FnMut(&str, &str) -> Option<(&'a str, &'a [String])>,
     ) -> Self {
         let own = std::mem::take(&mut self.members);
         for id in classes.keys() {
@@ -255,13 +257,15 @@ impl<'a> PythonReceivers<'a> {
                             }
                         }
                     } else if let Base::External(key, origin, line) = base {
-                        if let Some((provider, members)) = framework_members(key) {
+                        if let Some((provider, members)) =
+                            framework_receiver(classes[id].path.as_str(), key)
+                        {
                             for name in members {
                                 if name.starts_with("objects.") && inherited.contains_key("objects")
                                 {
                                     continue;
                                 }
-                                inherited.entry(*name).or_insert(Member::External(
+                                inherited.entry(name.as_str()).or_insert(Member::External(
                                     origin,
                                     *line,
                                     Some(provider),
@@ -305,125 +309,6 @@ impl<'a> PythonReceivers<'a> {
             return *result;
         }
         Member::Unknown
-    }
-}
-
-fn framework_members(base: &str) -> Option<(&'static str, &'static [&'static str])> {
-    match base {
-        "django.core.management.base.BaseCommand" => Some((
-            "django.core.management.base.BaseCommand",
-            &[
-                "stdout.write",
-                "stderr.write",
-                "add_arguments",
-                "execute",
-                "run_from_argv",
-                "check",
-                "check_migrations",
-                "print_help",
-                "create_parser",
-            ],
-        )),
-        "django.http.HttpRequest" | "django.http.request.HttpRequest" => Some((
-            "django.http.HttpRequest",
-            &[
-                "GET.get",
-                "GET.items",
-                "GET.keys",
-                "GET.values",
-                "POST.get",
-                "POST.items",
-                "POST.keys",
-                "POST.values",
-            ],
-        )),
-        "unittest.TestCase"
-        | "unittest.case.TestCase"
-        | "django.test.TestCase"
-        | "django.test.testcases.TestCase" => Some((
-            "TestCase",
-            &[
-                "assertEqual",
-                "assertNotEqual",
-                "assertTrue",
-                "assertFalse",
-                "assertIs",
-                "assertIsNot",
-                "assertIsNone",
-                "assertIsNotNone",
-                "assertIn",
-                "assertNotIn",
-                "assertIsInstance",
-                "assertNotIsInstance",
-                "assertRaises",
-                "assertRaisesRegex",
-                "assertWarns",
-                "assertWarnsRegex",
-                "assertLogs",
-                "assertNoLogs",
-                "assertAlmostEqual",
-                "assertNotAlmostEqual",
-                "assertGreater",
-                "assertGreaterEqual",
-                "assertLess",
-                "assertLessEqual",
-                "assertRegex",
-                "assertNotRegex",
-                "assertCountEqual",
-                "assertSequenceEqual",
-                "assertListEqual",
-                "assertTupleEqual",
-                "assertSetEqual",
-                "assertDictEqual",
-                "fail",
-                "skipTest",
-                "addCleanup",
-                "doCleanups",
-                "subTest",
-            ],
-        )),
-        "django.db.models.Model" | "django.db.models.base.Model" => Some((
-            "django.db.models.Model",
-            &[
-                "objects.all",
-                "objects.filter",
-                "objects.exclude",
-                "objects.get",
-                "objects.create",
-                "objects.get_or_create",
-                "objects.update_or_create",
-                "objects.bulk_create",
-                "objects.bulk_update",
-                "objects.count",
-                "objects.exists",
-                "objects.first",
-                "objects.last",
-                "objects.order_by",
-                "objects.values",
-                "objects.values_list",
-                "objects.select_related",
-                "objects.prefetch_related",
-                "objects.aggregate",
-                "objects.annotate",
-                "objects.none",
-                "objects.update",
-                "objects.delete",
-                "objects.using",
-            ],
-        )),
-        "pydantic.BaseModel" | "pydantic.main.BaseModel" => Some((
-            "pydantic.BaseModel",
-            &[
-                "model_validate",
-                "model_validate_json",
-                "model_dump",
-                "model_dump_json",
-                "model_copy",
-                "model_construct",
-                "model_json_schema",
-            ],
-        )),
-        _ => None,
     }
 }
 
