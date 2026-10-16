@@ -251,10 +251,14 @@ pub fn validate_commit_for_task(
                 bail!("TASK_COMMIT_OBSOLETE: commit '{commit}' is an ancestor of accepted delivery '{accepted}'. Do: update commit reference to the latest delivery or repacked SHA.");
             }
             if crate::core::git::git_scoped_tree_changed(worktree, accepted, commit, scope)? {
-                let differing = crate::core::git::git_scoped_differing_files(worktree, accepted, commit, scope)
-                    .unwrap_or_default();
+                let differing =
+                    crate::core::git::git_scoped_differing_files(worktree, accepted, commit, scope)
+                        .unwrap_or_default();
                 let detail = if !differing.is_empty() {
-                    format!("\nDiffering paths in scope:\n  - {}", differing.join("\n  - "))
+                    format!(
+                        "\nDiffering paths in scope:\n  - {}",
+                        differing.join("\n  - ")
+                    )
                 } else {
                     String::new()
                 };

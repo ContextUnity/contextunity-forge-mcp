@@ -2,7 +2,7 @@
 id: m-declarative-framework-packs-and-cold-build-pipeline
 title: Declarative framework packs, cold build pipeline optimization, and workspace alignment
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-indexer-allocation-delta-and-dispatch-precision
 owners:
@@ -23,6 +23,15 @@ invariants:
 related_plans:
 - docs/plans/forge-mcp-audit-and-architecture.md
 started_at: 2026-10-16T00:37:50+00:00
+handoff:
+  completed_at: 2026-10-16T07:19:01.330733904+00:00
+  duration: 6h 41m
+  commit: 943e71738efc9b30a70c815fb24ca0902508d706
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 728
+    tests_failed: 0
 ---
 
 # Declarative framework packs, cold build pipeline optimization, and workspace alignment
@@ -73,6 +82,7 @@ subtasks:
   status: completed
   evidence: Removed obsolete .forge/acdd_profile.yaml from workspace root.
 receipt:
+  commit: d4187bc3cca8efedcfe0cd30161f4d9653ff9152
   contract_revision: 1
   passed_at: 2026-10-16T00:45:54.015346067+00:00
   evidence:
@@ -171,6 +181,7 @@ subtasks:
   status: completed
   evidence: Updated docs/reference/cli.md to distinguish missing/schema-incompatible index auto-build from existing-index source refresh, and docs/architecture/concurrency.md to describe 20 MCP tools with task-store paths under src/db/tasks_store/ and src/engine/tasks/. Also documented memory_budget_mb and FORGE_MEMORY_BUDGET_MB precedence/validation in docs/reference/configuration.md. git diff --check passed; full lib/core/languages gates pass.
 receipt:
+  commit: 452d0f61bfdd0feed9571d4156afd1796e7a4cb0
   contract_revision: 6
   passed_at: 2026-10-16T05:30:40.833555509+00:00
   evidence:
@@ -275,6 +286,7 @@ subtasks:
   status: completed
   evidence: Candidate guide validation passed on isolated commerce-release-update (3950 files), grid-view-spec (401 files), and traverse (557 files); docs record the obsolete PIM-entry prerequisite without asserting a live entry exists.
 receipt:
+  commit: b39f12c689a2a23935f5d69865d1caa4b89c31ea
   contract_revision: 4
   passed_at: 2026-10-16T05:58:34.532115866+00:00
   evidence:
@@ -352,6 +364,7 @@ subtasks:
   status: completed
   evidence: Independent strict Clippy clean; complete cargo test --lib57/0 and cargo test --test acdd103/0. Expanded real Git/tasks/SQLite/archive16-case seam passes1/0 after six causal RED regressions (archive052c21a5e67442dc). Retained independent CLI fixture control passes, all six provenance/baseline tamper cases reject with active doc preserved/no archive. Same three reviewers bounded closurePASS for T4-PROV-1/-2 and T4-DOC-1.
 receipt:
+  commit: 943e71738efc9b30a70c815fb24ca0902508d706
   contract_revision: 2
   passed_at: 2026-10-16T07:03:51.077385364+00:00
   evidence:
@@ -407,3 +420,78 @@ receipt:
 4. Reject final shared-path changes without accepted completed-task evidence, malformed or missing landings, unrelated or obsolete landings, non-equivalent repacks, and invalid or tampered receipt proof. Declaring an overlapping scope does not authorize an unreviewed change.
 5. Rejected handoff preserves active Markdown and SQLite receipts and creates no archived milestone. Successful handoff preserves archive and receipt atomicity and rollback behavior.
 6. `docs/reference/cli.md` accurately documents milestone handoff landed commit resolution and shared scope verification behavior.
+
+## Verified task landings
+
+Each task has one delivery commit on the milestone branch:
+
+| Task | Actual landed commit |
+| --- | --- |
+| documentation-skills-and-reference-alignment | `d4187bc3cca8efedcfe0cd30161f4d9653ff9152` |
+| cold-build-pipeline-and-parser-optimization | `452d0f61bfdd0feed9571d4156afd1796e7a4cb0` |
+| declarative-framework-packs-and-cross-repo-alignment | `b39f12c689a2a23935f5d69865d1caa4b89c31ea` |
+| handoff-landed-commit-and-shared-scope-resolution | `943e71738efc9b30a70c815fb24ca0902508d706` |
+
+Task 1 retains original accepted delivery provenance at
+`cf4aa2931b023005b5da12c913dba33fe3f2873b`; its landed repack has an identical
+tree across every admitted task path. Generated receipts were not manually
+rewritten to resolve that repack.
+
+Task 4's independent review closed `T4-PROV-1`, `T4-PROV-2`, and `T4-DOC-1`.
+The six added provenance regressions first reproduced incorrect acceptance,
+then passed with the original ten scenarios in the same production seam.
+Independent strict Clippy and complete library/ACDD targets passed 160 tests
+with zero failures on the delivered candidate. Final milestone verification
+and cold-build evidence are recorded below separately from task receipts.
+
+## Final cold-build verification
+
+The final release binary was compared with the retained pre-optimization binary
+on the isolated `commerce-release-update` copy in exactly five alternating pairs
+(ten cold builds, no additional budget matrix). The complete measurements are in
+`docs/milestones/archive/048-cold-build-final.json`.
+
+- Baseline binary SHA-256: `86db2392333637d863f9eac4f17a3317de2b8d508a8a07a782b15b85d3543ee0`.
+- Final binary SHA-256: `5a47f006a8b3405243333e202300e97061103baa9d3c4c918494956f47fc9268`.
+- Unrounded wall medians: 17.84848251286894 s baseline and
+  16.531224925071 s candidate, a 7.3802% reduction. Median paired change:
+  -7.0749%. Both predeclared non-regression checks passed.
+- Median peak RSS: 1,475,850,240 bytes baseline and 1,476,812,800 bytes
+  candidate. Database size remained 192,741,376 bytes; graph counts and resolved
+  coverage were unchanged.
+- All 38,818 fixture Merkle rows were bit-identical across all ten builds:
+  `d98db364a389041b75c69959b2a522d590c287d83afdf3261b098fe061133e50`.
+  Each binary also produced a deterministic output root across its five runs.
+  Cross-binary global roots include source-version fingerprints and are not the
+  unchanged-fixture semantic comparison.
+
+These measurements establish the admitted gate on this host, without a claim of
+statistical significance. Earlier measurements, including the failed repaired
+series, remain preserved in `benchmarks/results/048-cold-build*.json` and the
+task's existing benchmark report; they were not pooled with this final series.
+
+## Handoff adjustments
+
+The handoff preserves the existing milestone 031 acceptance clarification about
+in-flight worker accounting and single oversized-file admission for its future
+pipeline work. It also includes formatting-only changes in `src/core/tasks/mod.rs`,
+`src/engine/linker/value_flow.rs`, `src/engine/tasks/gates.rs`,
+`src/engine/tasks/mod.rs`, and `tests/linker/method_semantics.rs`.
+
+The first final gate found content drift in the globally installed
+`references/frameworks/gridviewspec.toml.example`. That single installed file was
+synchronized from the delivered repository skill before repeating the complete
+gate; no production source or accepted contract was changed for this correction.
+
+## Final milestone gate
+
+Executed successfully from the milestone worktree:
+
+```sh
+cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+```
+
+Exit code: 0. The complete `--all-targets` run reported **728 passed, 0 failed,
+1 ignored**. The preliminary commitment-integrity target passed 16 tests and is
+not counted again in the handoff total. Strict Clippy passed with zero warnings
+and contributes no test count. No production source changed after this gate.

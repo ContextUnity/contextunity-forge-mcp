@@ -67,7 +67,7 @@ subtasks:
 #### Acceptance
 
 1. Cold build pipeline concurrently overlaps file scanning, Tree-sitter parsing, and SQLite row ingestion.
-2. Queue bounds use estimated byte budgets derived from `limits.memory_budget_mb` / `FORGE_MEMORY_BUDGET_MB` to prevent memory exhaustion on large generated files.
+2. Queue bounds use estimated byte budgets derived from `limits.memory_budget_mb` / `FORGE_MEMORY_BUDGET_MB` to prevent memory exhaustion on large generated files, with in-flight worker accounting and single oversized-file admission preventing pipeline stall or memory bloat.
 3. Pre- and post-benchmarks on `commerce-release-update` are recorded, demonstrating measurable throughput improvement with zero semantic regression.
 
 ---

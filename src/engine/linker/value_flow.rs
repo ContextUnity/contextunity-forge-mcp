@@ -2287,10 +2287,7 @@ fn python_nullable_type_expr(annotation: &str) -> Option<TypeExpr> {
     let annotation = strip_outer_parentheses(annotation.trim());
     if let Some(parts) = split_python_pipe_types(annotation) {
         if parts.len() >= 2 {
-            let args = parts
-                .into_iter()
-                .map(python_nullable_argument)
-                .collect();
+            let args = parts.into_iter().map(python_nullable_argument).collect();
             return Some(TypeExpr::Applied {
                 base: "Union".to_owned(),
                 args,

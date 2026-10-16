@@ -38,7 +38,9 @@ fn code_map_connection(
         )
         .context("TASK_CODE_MAP_INVALID: unable to inspect indexed task boundary tables")?;
     if !has_path_dict {
-        anyhow::bail!("TASK_CODE_MAP_INVALID: table 'path_dictionary' is missing from indexed code map");
+        anyhow::bail!(
+            "TASK_CODE_MAP_INVALID: table 'path_dictionary' is missing from indexed code map"
+        );
     }
     Ok(Some(connection))
 }

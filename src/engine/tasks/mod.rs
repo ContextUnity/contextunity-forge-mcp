@@ -293,7 +293,12 @@ impl CommitTrackingSetting {
             Self::Bool(b) => *b,
             Self::Text(s) => !matches!(
                 s.trim().to_lowercase().as_str(),
-                "off" | "none" | "false" | "milestone_only" | "milestone-only" | "disabled"
+                "off"
+                    | "none"
+                    | "false"
+                    | "milestone_only"
+                    | "milestone-only"
+                    | "disabled"
                     | "untracked"
             ),
         }
