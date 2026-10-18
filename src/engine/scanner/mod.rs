@@ -225,13 +225,10 @@ impl BuildCandidate {
     }
 }
 
-/// Cold-build candidates and discovered dependency manifests from one traversal.
-pub(crate) struct BuildScanReport {
-    pub candidates: Vec<BuildCandidate>,
-    pub dependency_manifests: Vec<PathBuf>,
+/// Summary for the cold-build walk that sends candidates to a live consumer.
+pub(crate) struct BuildStreamReport {
     pub files: usize,
     pub bytes: u64,
-    pub elapsed_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -614,19 +611,21 @@ pub fn scan_reusing(
     })
 }
 
-/// Collects metadata and dependency manifest paths without opening source contents.
-pub(crate) fn scan_for_build(root: &Path, adapter: &Adapter) -> std::io::Result<BuildScanReport> {
-    let started = Instant::now();
-    let (paths, dependency_manifests) = collect_candidates(root, adapter)?;
-    let mut candidates = Vec::with_capacity(paths.len());
+/// Streams metadata-only cold-build candidates to the pipeline as the walker discovers them.
+pub(crate) fn stream_for_build(
+    root: &Path,
+    adapter: &Adapter,
+    mut visit: impl FnMut(BuildCandidate) -> std::io::Result<()>,
+) -> std::io::Result<BuildStreamReport> {
+    let mut files = 0usize;
     let mut bytes = 0u64;
-    for (full_path, relative_path) in paths {
+    let _dependency_manifests = walk_candidate_paths(root, adapter, |full_path, relative_path| {
         let metadata = fs::symlink_metadata(&full_path)?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
-            continue;
+            return Ok(());
         }
         let Some((language, is_doc)) = language(&full_path) else {
-            continue;
+            return Ok(());
         };
         if metadata.len() > adapter.limits.max_file_bytes {
             return Err(error(format!(
@@ -645,30 +644,46 @@ pub(crate) fn scan_for_build(root: &Path, adapter: &Adapter) -> std::io::Result<
                 bytes, adapter.limits.max_total_bytes
             )));
         }
-        candidates.push(BuildCandidate {
+        files += 1;
+        visit(BuildCandidate {
             path: relative_path,
             bytes: metadata.len(),
             mtime_ns: metadata_mtime_ns(&metadata),
             identity: metadata_identity(&metadata),
             language: language.to_owned(),
             is_doc,
-        });
-    }
-    candidates.sort_by(|left, right| left.path.cmp(&right.path));
-    ensure_bounds(candidates.len(), bytes, &adapter.limits)?;
-    Ok(BuildScanReport {
-        files: candidates.len(),
-        candidates,
-        dependency_manifests,
-        bytes,
-        elapsed_ms: started.elapsed().as_millis(),
-    })
+        })?;
+        Ok(())
+    })?;
+    ensure_bounds(files, bytes, &adapter.limits)?;
+    Ok(BuildStreamReport { files, bytes })
+}
+
+/// Discovers dependency manifests without retaining the cold-build candidate list.
+pub(crate) fn dependency_manifests_for_build(
+    root: &Path,
+    adapter: &Adapter,
+) -> std::io::Result<Vec<PathBuf>> {
+    walk_candidate_paths(root, adapter, |_, _| Ok(()))
 }
 
 type ScanCandidates = (Vec<(PathBuf, String)>, Vec<PathBuf>);
 
 fn collect_candidates(root: &Path, adapter: &Adapter) -> std::io::Result<ScanCandidates> {
     let mut candidates = Vec::new();
+    let dependency_manifests = walk_candidate_paths(root, adapter, |full, relative| {
+        candidates.push((full, relative));
+        Ok(())
+    })?;
+    Ok((candidates, dependency_manifests))
+}
+
+fn walk_candidate_paths(
+    root: &Path,
+    adapter: &Adapter,
+    mut visit: impl FnMut(PathBuf, String) -> std::io::Result<()>,
+) -> std::io::Result<Vec<PathBuf>> {
+    let mut candidate_count = 0usize;
     let mut seen_rel_paths = BTreeSet::new();
     let mut dependency_manifests = BTreeSet::new();
     let configuration_paths: BTreeSet<_> = [root.join("forge-mcp.yaml")]
@@ -728,12 +743,13 @@ fn collect_candidates(root: &Path, adapter: &Adapter) -> std::io::Result<ScanCan
                 dependency_manifests.insert(full.clone());
             }
             if is_source {
-                push_candidate(
-                    &mut candidates,
+                visit_candidate(
+                    &mut candidate_count,
                     &mut seen_rel_paths,
                     full,
                     relative,
                     adapter.limits.max_files,
+                    &mut visit,
                 )?;
             }
         }
@@ -791,12 +807,13 @@ fn collect_candidates(root: &Path, adapter: &Adapter) -> std::io::Result<ScanCan
                     dependency_manifests.insert(full.clone());
                 }
                 if is_source {
-                    push_candidate(
-                        &mut candidates,
+                    visit_candidate(
+                        &mut candidate_count,
                         &mut seen_rel_paths,
                         full,
                         format!("[{}]/{relative}", workspace.name),
                         adapter.limits.max_files,
+                        &mut visit,
                     )?;
                 }
             }
@@ -814,7 +831,28 @@ fn collect_candidates(root: &Path, adapter: &Adapter) -> std::io::Result<ScanCan
         &adapter.ignored_names,
         &mut dependency_manifests,
     )?;
-    Ok((candidates, dependency_manifests.into_iter().collect()))
+    Ok(dependency_manifests.into_iter().collect())
+}
+
+fn visit_candidate(
+    candidate_count: &mut usize,
+    seen_rel_paths: &mut BTreeSet<String>,
+    full_path: PathBuf,
+    relative_path: String,
+    max_files: usize,
+    visit: &mut impl FnMut(PathBuf, String) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if seen_rel_paths.insert(relative_path.clone()) {
+        *candidate_count += 1;
+        if *candidate_count > max_files {
+            return Err(error(format!(
+                "workspace exceeds file limit ({} > max_files {})",
+                *candidate_count, max_files
+            )));
+        }
+        visit(full_path, relative_path)?;
+    }
+    Ok(())
 }
 
 fn collect_source_root_manifests(
@@ -870,26 +908,6 @@ fn collect_source_root_manifests(
                 .strip_prefix(workspace_root)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             output.insert(checked_child(workspace_root, relative)?);
-        }
-    }
-    Ok(())
-}
-
-fn push_candidate(
-    candidates: &mut Vec<(PathBuf, String)>,
-    seen_rel_paths: &mut BTreeSet<String>,
-    full_path: PathBuf,
-    relative_path: String,
-    max_files: usize,
-) -> std::io::Result<()> {
-    if seen_rel_paths.insert(relative_path.clone()) {
-        candidates.push((full_path, relative_path));
-        if candidates.len() > max_files {
-            return Err(error(format!(
-                "workspace exceeds file limit ({} > max_files {})",
-                candidates.len(),
-                max_files
-            )));
         }
     }
     Ok(())
@@ -957,8 +975,7 @@ mod tests {
 
         let root = root.canonicalize().unwrap();
         let adapter = load_adapter(&root, None).unwrap();
-        let report = scan_for_build(&root, &adapter).unwrap();
-        let manifests = report.dependency_manifests;
+        let manifests = dependency_manifests_for_build(&root, &adapter).unwrap();
 
         assert!(
             manifests

@@ -17,6 +17,14 @@ These values are recommendations for profiling and product planning, not reposit
 | **`code_map_tests`** | about 50 / 50 ms | Bounded graph traversal + lexical fallback |
 | **`code_map_prove_removal`** | about 30 / 30 ms | Target-scoped dependency evaluation |
 
+## Cold Build Streaming and Memory Budget
+
+`db::writer::build` overlaps file discovery from `scanner::stream_for_build`, source acquisition and extraction, and SQLite `source_inventory` ingestion. A bounded producer queue applies backpressure while a shared byte budget accounts for queued and active extraction items. Each item's estimate is its scanned source size multiplied by the extraction expansion factor, with saturating arithmetic. A single item larger than the configured budget proceeds only when no other item holds a permit.
+
+The SQLite consumer releases an item's permit after its source inventory row has been inserted. Extracted `TypedFacts` remain available for the cross-file linker and component pass. After global route and component composition, the build encodes each file's canonical facts once in parallel. The final persistence transaction clears provisional source inventory rows, then `persist_files` writes canonical rows in sorted path order, preserving deterministic row order and uniqueness. Scan, worker, or SQLite errors cancel the pipeline, wake blocked stages, join workers, discard the staged database, and leave the previously published database intact.
+
+The build report's `pipeline` object exposes `budget_bytes`, `peak_in_flight_bytes`, `max_item_bytes`, `oversized_admissions`, `extracted_files`, and `ingested_files`. Byte metrics describe the extraction estimate held by permits; they do not represent process RSS. Top-level `scan_ms` measures producer wall time, including time spent waiting for backpressure. `extract_ms` sums worker service time, `sqlite_ingest_ms` measures consumer service time, and `encode_facts_ms` measures the one-time parallel canonical encoding after the composition barrier. Scan, extraction, and SQLite ingestion overlap; encoding follows the semantic barrier.
+
 ## Key Architectural Systems
 
 ### 1. MCP Admission Inventory Scan Debouncing

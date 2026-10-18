@@ -2,7 +2,7 @@
 id: m-cold-indexing-throughput-and-memory-optimization
 title: Cold indexing throughput optimization, memory budgeting, and in-memory Merkle sealing
 doc_type: contract
-status: planned
+status: active
 depends_on:
 - m-language-parsers-and-declarative-framework-packs
 owners:
@@ -21,6 +21,7 @@ invariants:
 - 'INV-ZERO-SEMANTIC-REGRESSION: Symbol counts, edge counts, reference resolution, and commitments remain bit-identical across cargo test --all-targets.'
 related_plans:
 - docs/plans/forge-mcp-audit-and-architecture.md
+started_at: 2026-10-18T03:04:05+00:00
 ---
 
 # Cold indexing throughput optimization, memory budgeting, and in-memory Merkle sealing
@@ -41,27 +42,75 @@ Deliver maximum cold build indexing throughput and memory efficiency on the cont
 
 ```yaml
 task_ref: staged-producer-consumer-pipeline-and-memory-budget
-target: "Implement staged producer-consumer pipeline with byte-budgeted queue and verify throughput gains on control repository"
+target: Implement staged producer-consumer pipeline with byte-budgeted queue and verify throughput gains on control repository
 proof_policy: seam-test-first
 contract_revision: 1
 scope:
-  - src/engine/pipeline.rs
-  - src/engine/scanner/mod.rs
-  - src/db/writer.rs
-  - docs/architecture/performance.md
-  - tests/commitment_integrity.rs
-  - benchmarks/
-status: ready
+- src/engine/pipeline.rs
+- src/engine/scanner/mod.rs
+- src/db/writer.rs
+- docs/architecture/performance.md
+- tests/commitment_integrity.rs
+- benchmarks/
+status: completed
 subtasks:
-  - subtask_ref: record-task1-pre-benchmark
-    title: "Record baseline cold build elapsed time, phase breakdown, and peak RSS on commerce-release-update"
-    status: pending
-  - subtask_ref: staged-streaming-pipeline-implementation
-    title: "Implement staged producer-consumer pipeline overlapping file discovery, parsing, and SQLite ingestion with bounded byte-budget backpressure derived from limits.memory_budget_mb"
-    status: pending
-  - subtask_ref: record-task1-post-benchmark
-    title: "Record post-implementation benchmarks on commerce-release-update proving throughput gain without memory spikes"
-    status: pending
+- subtask_ref: record-task1-pre-benchmark
+  title: Record baseline cold build elapsed time, phase breakdown, and peak RSS on commerce-release-update
+  status: completed
+  evidence: 'Authorized command completed all 5 paired baseline/candidate cold-build repetitions on the prepared isolated commerce snapshot with RAYON_NUM_THREADS=8 and --matrix-repeats 0. Report: benchmarks/results/031-task1-pre.json. Baseline/candidate median wall 12.054s/11.362s (candidate -5.741%); median paired wall change -2.109%; median peak RSS 1,475,018,752/1,492,959,232 bytes. Runner exit 1 only because its semantic parity checks are false: bit_identical_output_roots=false and bit_identical_fixture_merkle_rows=false; performance_gate_passed=true. Graph deltas: +309 edges, +1 external import, -359 unresolved; files/nodes/docs/parse_errors and components match. Raw report preserved unmodified; all builds completed without runner warnings.'
+- subtask_ref: staged-streaming-pipeline-implementation
+  title: Implement staged producer-consumer pipeline overlapping file discovery, parsing, and SQLite ingestion with bounded byte-budget backpressure derived from limits.memory_budget_mb
+  status: completed
+  evidence: 'Implemented streaming discovery in src/engine/scanner/mod.rs and the byte-budgeted producer/consumer pipeline in src/db/writer.rs, with seam proofs in src/db/writer/memory_budget_tests.rs and performance behavior documented in docs/architecture/performance.md. The staged connection consumes source_inventory rows under bounded byte accounting; oversized candidates are admitted alone; producer/worker/consumer errors cancel, wake, and join cleanly. Global route/component composition remains a semantic barrier. Final persistence clears provisional source_inventory and reinserts canonical rows in sorted path order, preserving ORDER BY rowid scan invariants and deterministic commitments. Proofs: `cargo test --lib db::writer::memory_budget_tests::cold_pipeline_` (4 passed) covers genuine three-stage overlap, byte accounting, no duplicate/canonical data, and worker/consumer cleanup preserving the old DB; `cargo test --test core storage_batches::cold_build_preserves_extracted_storage_across_full_and_remainder_batches -- --nocapture` (1 passed) covers sorted canonical rows across full and remainder batches. Final-source gates: `cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test` passed, with 744 passed, 1 ignored, 0 failed. `git diff --check` passed. Post benchmark proof is recorded separately.'
+- subtask_ref: record-task1-post-benchmark
+  title: Record post-implementation benchmarks on commerce-release-update proving throughput gain without memory spikes
+  status: completed
+  evidence: 'Authorized controlled benchmark on the prepared isolated copy `/tmp/forge031-bench-wiysmu06/commerce` (copied linked workspaces; never the original commerce-release-update worktree), RAYON_NUM_THREADS=8, --repeats 5 --matrix-repeats 0. Clean task-local report: benchmarks/results/031-task1-post-v4.json; baseline binary `/tmp/forge031-bench-wiysmu06/candidate-target/release/contextunity-forge-mcp` (pre-change candidate) vs post binary `/tmp/forge031-bench-wiysmu06/post2-target/release/contextunity-forge-mcp`. Runner exit 0; performance_gate_passed=true. Median wall 13.405s→13.101s (-2.268%), median paired change -2.813%; median peak RSS 1,496,555,520→1,493,004,288 bytes (-0.237%); DB size identical at 197,132,288 bytes. All graph count deltas zero; 39,211 fixture Merkle rows bit-identical. Output roots differ because index_semantics_version fingerprint changed with the source; raw v4 JSON records the metadata. Earlier post-v2 (candidate +3.503%) and post-v3 (+4.856%) reports are preserved unchanged and were not accepted as clean performance proof: v3 had a 32.359s candidate outlier with DB phases inflated, and a task-022 cargo test was observed during the noisy window. After a quiet window, v4 ran with no competing build/test and low CPU pressure. Pre milestone context remains in benchmarks/results/031-task1-pre.json (cf4aa29→pre-change candidate); that report''s performance gate passed, while its semantic parity was affected by the recorded 90-file source drift. No source edits followed the v4 benchmark.'
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-18T04:55:43.065329547+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib
+      exit_code: 0
+      tests_passed: 68
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Reviewed immutable task snapshot 5e1162489bfaf7b585dff0db2e23412592cba29a. Candidate paths are limited to the admitted writer, scanner, memory-budget tests, performance documentation, and benchmark reports; src/db/writer/memory_budget_tests.rs was added to scope in decision 323. The planned→active/started_at milestone edit is Forge lifecycle metadata only in the live worktree and absent from the candidate snapshot.
+        claims:
+          applicable: true
+          evidence: 'Task 1 acceptance traces through run_cold_pipeline and scanner::stream_for_build: bounded estimated-byte permits, oversized items admitted alone, overlapping scan/extraction/SQLite consumer, and canonical sorted persistence after global composition. Seam tests cover overlap, budget accounting, durable facts/commitments, worker and consumer failures, and preservation of the previous DB. The clean v4 paired benchmark passed its performance gate: median wall 13.405s→13.101s (−2.268%), paired median −2.813%, RSS −0.237%, zero graph-count deltas and identical 39,211 commitment rows.'
+        concurrency:
+          applicable: true
+          evidence: Workers, bounded channels, the single SQLite consumer transaction, cancellation and joins were traced in writer.rs; failure tests verify worker/consumer cleanup and previous-DB preservation. A theoretical missed-notify window in wake_waiters has no demonstrated persistent deadlock because outstanding MemoryPermit drops call release under the budget mutex and notify waiters. Existing tests do not force cancellation while the producer waits on a saturated budget; no confirmed defect was found.
+        project_isolation:
+          applicable: true
+          evidence: Scanner traversal remains root-bounded and excludes symlinks; extraction resolves checked children, opens with O_NOFOLLOW on Unix, and checks file identity, size, and mtime around its read. All benchmark runs used the isolated /tmp commerce snapshot; no original control-repo worktree was used as the benchmark workspace.
+        administration:
+          applicable: false
+          evidence: The candidate changes no ACDD profiles, migrations, gate definitions, task-store code, or protected milestone header. The milestone lifecycle edit is generated metadata outside the candidate snapshot. Atomic task receipt and delivery commit are governed by the subsequent Forge deliver gate.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-BENCHMARK-EACH-TASK: Every task in this milestone requires strict before-and-after benchmark measurements on the control repository (commerce-release-update); no task may be accepted without verified throughput and memory profiling.'
+    - 'INV-NO-COLD-REGRESSION: Cold build indexing duration on the control repository (commerce-release-update) must decrease by at least 20% (elapsed time <= 80%) compared to baseline commit cf4aa29 under identical hardware and thread configuration.'
+    - 'INV-DETERMINISTIC-MERKLE: In-memory Merkle tree sealing produces bit-identical commitment digests matching existing SQLite table seal queries across all 17 domains (13 logical in-memory + 4 SQLite FTS search domains).'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Symbol counts, edge counts, reference resolution, and commitments remain bit-identical across cargo test --all-targets.'
+    architectural_notes:
+    - 'decisions: Coordinator-authorized scope amendment: task scope now includes src/db/writer/memory_budget_tests.rs so the contract can use an indexed in-module writer build seam. Moved only the new contract test from integration tests/commitment_integrity.rs into that admitted module, reusing TemporaryRoot. No production behavior or milestone authority was edited. This amendment resumes the halted contract proof once after concrete seam ownership correction; draft and proof reference now target cargo test --lib db::writer::memory_budget_tests::cold_pipeline_accounts_for_in_flight_bytes_and_preserves_commitments -- --exact.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: not_applicable
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

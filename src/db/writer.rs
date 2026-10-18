@@ -20,9 +20,14 @@ use std::{
     fmt::Write as _,
     fs::{self, OpenOptions},
     io::Read,
+    panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        mpsc::{self, Receiver, SyncSender},
+        Arc, Condvar, Mutex,
+    },
+    thread,
     time::Instant,
 };
 #[path = "batch.rs"]
@@ -42,13 +47,233 @@ use ingest::*;
 static NONCE: AtomicU64 = AtomicU64::new(0);
 // Bound source, parser-tree, and extracted-fact working memory per active file.
 const EXTRACTION_MEMORY_MULTIPLIER: u64 = 8;
-const MAX_EXTRACTION_BATCH_FILES: usize = 25_000;
 const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
+
+type DependencyRegistry = crate::engine::languages::dependency_registry::DependencyRegistry;
 
 #[derive(Clone, Copy)]
 struct BuildInputs<'a> {
-    dependency_registry: &'a crate::engine::languages::dependency_registry::DependencyRegistry,
+    dependency_registry: &'a DependencyRegistry,
     memory_budget: u64,
+    schema_ready: bool,
+}
+
+#[derive(Default)]
+struct ByteBudgetState {
+    in_flight_bytes: u64,
+    peak_in_flight_bytes: u64,
+    max_item_bytes: u64,
+    oversized_admissions: u64,
+}
+
+struct ByteBudget {
+    limit: u64,
+    state: Mutex<ByteBudgetState>,
+    available: Condvar,
+}
+
+impl ByteBudget {
+    fn new(limit: u64) -> Arc<Self> {
+        Arc::new(Self {
+            limit: limit.max(1),
+            state: Mutex::new(ByteBudgetState::default()),
+            available: Condvar::new(),
+        })
+    }
+
+    fn acquire(self: &Arc<Self>, bytes: u64, cancelled: &AtomicBool) -> Result<MemoryPermit> {
+        let bytes = bytes.max(1);
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                bail!("cold pipeline cancelled while waiting for memory budget");
+            }
+            let oversized = bytes > self.limit;
+            let admitted = if oversized {
+                state.in_flight_bytes == 0
+            } else {
+                state.in_flight_bytes <= self.limit.saturating_sub(bytes)
+            };
+            if admitted {
+                state.in_flight_bytes = state.in_flight_bytes.saturating_add(bytes);
+                state.peak_in_flight_bytes = state.peak_in_flight_bytes.max(state.in_flight_bytes);
+                state.max_item_bytes = state.max_item_bytes.max(bytes);
+                if oversized {
+                    state.oversized_admissions = state.oversized_admissions.saturating_add(1);
+                }
+                return Ok(MemoryPermit {
+                    budget: Arc::clone(self),
+                    bytes,
+                });
+            }
+            state = self
+                .available
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+
+    fn release(&self, bytes: u64) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.in_flight_bytes = state.in_flight_bytes.saturating_sub(bytes);
+        self.available.notify_all();
+    }
+
+    fn wake_waiters(&self) {
+        self.available.notify_all();
+    }
+
+    fn snapshot(&self) -> ByteBudgetState {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
+impl Clone for ByteBudgetState {
+    fn clone(&self) -> Self {
+        Self {
+            in_flight_bytes: self.in_flight_bytes,
+            peak_in_flight_bytes: self.peak_in_flight_bytes,
+            max_item_bytes: self.max_item_bytes,
+            oversized_admissions: self.oversized_admissions,
+        }
+    }
+}
+
+struct MemoryPermit {
+    budget: Arc<ByteBudget>,
+    bytes: u64,
+}
+
+impl Drop for MemoryPermit {
+    fn drop(&mut self) {
+        self.budget.release(self.bytes);
+    }
+}
+
+struct PipelineControl {
+    cancelled: AtomicBool,
+    failure: Mutex<Option<String>>,
+    budget: Arc<ByteBudget>,
+}
+
+impl PipelineControl {
+    fn new(budget: Arc<ByteBudget>) -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            failure: Mutex::new(None),
+            budget,
+        }
+    }
+
+    fn cancel(&self, failure: impl std::fmt::Display) {
+        self.cancelled.store(true, Ordering::Release);
+        let mut current = self
+            .failure
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if current.is_none() {
+            *current = Some(failure.to_string());
+        }
+        drop(current);
+        self.budget.wake_waiters();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn failure(&self) -> Option<String> {
+        self.failure
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
+#[derive(Default)]
+struct PipelineCounters {
+    extracted_files: AtomicUsize,
+    ingested_files: AtomicUsize,
+    extraction_nanos: AtomicU64,
+    ingestion_nanos: AtomicU64,
+}
+
+struct PipelineWork {
+    #[cfg(test)]
+    sequence: usize,
+    candidate: BuildCandidate,
+    permit: MemoryPermit,
+}
+
+struct PipelineItem {
+    file: FileEntry,
+    facts: TypedFacts,
+    permit: MemoryPermit,
+}
+
+struct ExtractionWorkerContext {
+    root: PathBuf,
+    adapter: Arc<scanner::Adapter>,
+    dependencies: Arc<DependencyRegistry>,
+    work_rx: Arc<Mutex<Receiver<PipelineWork>>>,
+    result_tx: SyncSender<std::result::Result<PipelineItem, String>>,
+    control: Arc<PipelineControl>,
+    counters: Arc<PipelineCounters>,
+    #[cfg(test)]
+    test_hooks: Option<Arc<PipelineTestHooks>>,
+}
+
+struct PipelineConsumerOutput {
+    connection: Connection,
+    entries: Vec<FileEntry>,
+    facts: BTreeMap<String, TypedFacts>,
+}
+
+#[derive(Clone)]
+struct PipelineMetrics {
+    budget_bytes: u64,
+    peak_in_flight_bytes: u64,
+    max_item_bytes: u64,
+    oversized_admissions: u64,
+    extracted_files: usize,
+    ingested_files: usize,
+    scan_ms: f64,
+    extraction_ms: f64,
+    sqlite_ingest_ms: f64,
+    scanned_files: usize,
+    scanned_bytes: u64,
+}
+
+#[cfg(test)]
+struct PipelineTestHooks {
+    overlap: bool,
+    fail_consumer: bool,
+    overlap_barrier: std::sync::Barrier,
+    overlap_participants: AtomicUsize,
+}
+
+#[cfg(test)]
+impl PipelineTestHooks {
+    fn overlap() -> Arc<Self> {
+        Arc::new(Self {
+            overlap: true,
+            fail_consumer: false,
+            overlap_barrier: std::sync::Barrier::new(3),
+            overlap_participants: AtomicUsize::new(0),
+        })
+    }
+
+    fn fail_consumer() -> Arc<Self> {
+        Arc::new(Self {
+            overlap: false,
+            fail_consumer: true,
+            overlap_barrier: std::sync::Barrier::new(3),
+            overlap_participants: AtomicUsize::new(0),
+        })
+    }
 }
 
 fn sqlite_cache_size_kib(memory_budget: u64) -> u64 {
@@ -188,6 +413,350 @@ fn extract_candidate(
     let facts = extract_typed_source_with_digest(&file, &source, &source_digest, dependencies)?;
     Ok((file, facts))
 }
+
+fn prepare_pipeline_schema(
+    conn: &mut Connection,
+    memory_budget: u64,
+    #[cfg(test)] test_hooks: Option<&PipelineTestHooks>,
+) -> Result<()> {
+    let cache_kb = sqlite_cache_size_kib(memory_budget);
+    conn.execute_batch(&format!(
+        "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-{cache_kb}; PRAGMA cache_spill=OFF;"
+    ))?;
+    let (tables, _) = SCHEMA_DDL
+        .split_once("CREATE INDEX")
+        .context("schema indexes missing")?;
+    conn.execute_batch(tables)?;
+    #[cfg(test)]
+    if test_hooks.is_some_and(|hooks| hooks.fail_consumer) {
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER pipeline_test_consumer_failure
+             BEFORE INSERT ON main.source_inventory
+             WHEN NEW.path='src/unit_00.rs'
+             BEGIN SELECT RAISE(ABORT,'injected pipeline SQLite consumer failure'); END;",
+        )?;
+    }
+    Ok(())
+}
+
+fn run_cold_pipeline(
+    root: &Path,
+    adapter: &scanner::Adapter,
+    dependencies: Arc<DependencyRegistry>,
+    connection: Connection,
+    budget_bytes: u64,
+    #[cfg(test)] test_hooks: Option<Arc<PipelineTestHooks>>,
+) -> Result<(PipelineConsumerOutput, PipelineMetrics)> {
+    let worker_count = rayon::current_num_threads().max(1);
+    let channel_capacity = worker_count.saturating_mul(2).max(1);
+    let byte_budget = ByteBudget::new(budget_bytes);
+    let control = Arc::new(PipelineControl::new(Arc::clone(&byte_budget)));
+    let counters = Arc::new(PipelineCounters::default());
+    let (work_tx, work_rx) = mpsc::sync_channel::<PipelineWork>(channel_capacity);
+    let work_rx = Arc::new(Mutex::new(work_rx));
+    let (result_tx, result_rx) =
+        mpsc::sync_channel::<std::result::Result<PipelineItem, String>>(channel_capacity);
+
+    let consumer_control = Arc::clone(&control);
+    let consumer_counters = Arc::clone(&counters);
+    #[cfg(test)]
+    let consumer_hooks = test_hooks.clone();
+    let consumer = thread::spawn(move || {
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            consume_pipeline_results(
+                connection,
+                result_rx,
+                consumer_control.as_ref(),
+                consumer_counters.as_ref(),
+                #[cfg(test)]
+                consumer_hooks.as_deref(),
+            )
+        }));
+        match outcome {
+            Ok(result) => result,
+            Err(_) => {
+                consumer_control.cancel("cold pipeline SQLite consumer panicked");
+                Err(anyhow::anyhow!("cold pipeline SQLite consumer panicked"))
+            }
+        }
+    });
+
+    let root = root.to_path_buf();
+    let adapter = Arc::new(adapter.clone());
+    let mut workers = Vec::with_capacity(worker_count);
+    for _ in 0..worker_count {
+        let worker_root = root.clone();
+        let worker_adapter = Arc::clone(&adapter);
+        let worker_dependencies = Arc::clone(&dependencies);
+        let worker_rx = Arc::clone(&work_rx);
+        let worker_tx = result_tx.clone();
+        let worker_control = Arc::clone(&control);
+        let panic_control = Arc::clone(&worker_control);
+        let worker_counters = Arc::clone(&counters);
+        #[cfg(test)]
+        let worker_hooks = test_hooks.clone();
+        workers.push(thread::spawn(move || {
+            let context = ExtractionWorkerContext {
+                root: worker_root,
+                adapter: worker_adapter,
+                dependencies: worker_dependencies,
+                work_rx: worker_rx,
+                result_tx: worker_tx,
+                control: worker_control,
+                counters: worker_counters,
+                #[cfg(test)]
+                test_hooks: worker_hooks,
+            };
+            let outcome = catch_unwind(AssertUnwindSafe(|| extraction_worker(context)));
+            if outcome.is_err() {
+                panic_control.cancel("cold pipeline extraction worker panicked");
+            }
+        }));
+    }
+    drop(result_tx);
+
+    let producer_control = Arc::clone(&control);
+    let producer_adapter = Arc::clone(&adapter);
+    let producer_budget = Arc::clone(&byte_budget);
+    #[cfg(test)]
+    let producer_hooks = test_hooks.clone();
+    let producer = thread::spawn(move || {
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            let started = Instant::now();
+            #[cfg(test)]
+            let mut sequence = 0usize;
+            let scan = scanner::stream_for_build(&root, &producer_adapter, |candidate| {
+                let estimate = candidate
+                    .bytes
+                    .saturating_mul(EXTRACTION_MEMORY_MULTIPLIER)
+                    .max(1);
+                let permit = producer_budget
+                    .acquire(estimate, &producer_control.cancelled)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+                #[cfg(test)]
+                let current_sequence = {
+                    let current = sequence;
+                    sequence = sequence.saturating_add(1);
+                    current
+                };
+                work_tx
+                    .send(PipelineWork {
+                        #[cfg(test)]
+                        sequence: current_sequence,
+                        candidate,
+                        permit,
+                    })
+                    .map_err(|error| {
+                        std::io::Error::other(format!(
+                            "cold pipeline worker channel closed: {error}"
+                        ))
+                    })?;
+                #[cfg(test)]
+                if producer_hooks
+                    .as_deref()
+                    .is_some_and(|hooks| hooks.overlap && current_sequence == 2)
+                {
+                    let hooks = producer_hooks.as_deref().expect("checked above");
+                    hooks.overlap_participants.fetch_add(1, Ordering::AcqRel);
+                    hooks.overlap_barrier.wait();
+                }
+                Ok(())
+            })?;
+            Ok::<_, std::io::Error>((scan, started.elapsed().as_secs_f64() * 1000.))
+        }));
+        match outcome {
+            Ok(Ok(report)) => Ok(report),
+            Ok(Err(error)) => {
+                producer_control.cancel(&error);
+                Err(error)
+            }
+            Err(_) => {
+                producer_control.cancel("cold pipeline scanner panicked");
+                Err(std::io::Error::other("cold pipeline scanner panicked"))
+            }
+        }
+    });
+
+    let scan_result = match producer.join() {
+        Ok(result) => result,
+        Err(_) => {
+            control.cancel("cold pipeline scanner thread panicked");
+            Err(std::io::Error::other(
+                "cold pipeline scanner thread panicked",
+            ))
+        }
+    };
+    if let Err(error) = &scan_result {
+        control.cancel(error);
+    }
+    for worker in workers {
+        if worker.join().is_err() {
+            control.cancel("cold pipeline extraction worker thread panicked");
+        }
+    }
+    drop(work_rx);
+    let consumer_result = match consumer.join() {
+        Ok(result) => result,
+        Err(_) => {
+            control.cancel("cold pipeline SQLite consumer thread panicked");
+            Err(anyhow::anyhow!(
+                "cold pipeline SQLite consumer thread panicked"
+            ))
+        }
+    };
+    if let Some(failure) = control.failure() {
+        bail!("{failure}");
+    }
+    let (scan, scan_ms) = scan_result.context("cold pipeline scan failed")?;
+    let output = consumer_result?;
+    let byte_state = byte_budget.snapshot();
+    let metrics = PipelineMetrics {
+        budget_bytes,
+        peak_in_flight_bytes: byte_state.peak_in_flight_bytes,
+        max_item_bytes: byte_state.max_item_bytes,
+        oversized_admissions: byte_state.oversized_admissions,
+        extracted_files: counters.extracted_files.load(Ordering::Acquire),
+        ingested_files: counters.ingested_files.load(Ordering::Acquire),
+        scan_ms,
+        extraction_ms: counters.extraction_nanos.load(Ordering::Acquire) as f64 / 1_000_000.,
+        sqlite_ingest_ms: counters.ingestion_nanos.load(Ordering::Acquire) as f64 / 1_000_000.,
+        scanned_files: scan.files,
+        scanned_bytes: scan.bytes,
+    };
+    Ok((output, metrics))
+}
+
+fn extraction_worker(context: ExtractionWorkerContext) {
+    let ExtractionWorkerContext {
+        root,
+        adapter,
+        dependencies,
+        work_rx,
+        result_tx,
+        control,
+        counters,
+        #[cfg(test)]
+        test_hooks,
+    } = context;
+    loop {
+        let next = {
+            let receiver = work_rx.lock().unwrap_or_else(|error| error.into_inner());
+            receiver.recv()
+        };
+        let Ok(work) = next else {
+            break;
+        };
+        if control.is_cancelled() {
+            drop(work);
+            continue;
+        }
+        #[cfg(test)]
+        if test_hooks
+            .as_deref()
+            .is_some_and(|hooks| hooks.overlap && work.sequence == 1)
+        {
+            let hooks = test_hooks.as_deref().expect("checked above");
+            hooks.overlap_participants.fetch_add(1, Ordering::AcqRel);
+            hooks.overlap_barrier.wait();
+        }
+        let extraction_started = Instant::now();
+        let extracted = extract_candidate(&root, &work.candidate, &adapter, &dependencies);
+        counters.extraction_nanos.fetch_add(
+            extraction_started
+                .elapsed()
+                .as_nanos()
+                .min(u64::MAX as u128) as u64,
+            Ordering::AcqRel,
+        );
+        let (file, facts) = match extracted {
+            Ok(value) => value,
+            Err(error) => {
+                let message = error.to_string();
+                control.cancel(&message);
+                let _ = result_tx.send(Err(message));
+                drop(work);
+                continue;
+            }
+        };
+        counters.extracted_files.fetch_add(1, Ordering::AcqRel);
+        let item = PipelineItem {
+            file,
+            facts,
+            permit: work.permit,
+        };
+        if let Err(error) = result_tx.send(Ok(item)) {
+            control.cancel(format!("cold pipeline SQLite consumer stopped: {error}"));
+        }
+    }
+}
+
+fn consume_pipeline_results(
+    mut connection: Connection,
+    result_rx: Receiver<std::result::Result<PipelineItem, String>>,
+    control: &PipelineControl,
+    counters: &PipelineCounters,
+    #[cfg(test)] test_hooks: Option<&PipelineTestHooks>,
+) -> Result<PipelineConsumerOutput> {
+    let transaction = connection.transaction()?;
+    let mut statement =
+        transaction.prepare_cached("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
+    let mut entries = Vec::new();
+    let mut facts = BTreeMap::new();
+    while let Ok(result) = result_rx.recv() {
+        let item = match result {
+            Ok(item) => item,
+            Err(error) => {
+                control.cancel(error);
+                continue;
+            }
+        };
+        if control.is_cancelled() {
+            drop(item);
+            continue;
+        }
+        #[cfg(test)]
+        if counters.ingested_files.load(Ordering::Acquire) == 0
+            && test_hooks.is_some_and(|hooks| hooks.overlap)
+        {
+            let hooks = test_hooks.expect("checked above");
+            hooks.overlap_participants.fetch_add(1, Ordering::AcqRel);
+            hooks.overlap_barrier.wait();
+        }
+        let ingestion_started = Instant::now();
+        let PipelineItem {
+            file,
+            facts: typed_facts,
+            permit,
+        } = item;
+        let inserted =
+            statement.execute(params![file.path, file.digest, i64::try_from(file.bytes)?]);
+        counters.ingestion_nanos.fetch_add(
+            ingestion_started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::AcqRel,
+        );
+        match inserted {
+            Ok(_) => {
+                let path = file.path.clone();
+                entries.push(file);
+                facts.insert(path, typed_facts);
+                counters.ingested_files.fetch_add(1, Ordering::AcqRel);
+            }
+            Err(error) => control.cancel(error),
+        }
+        drop(permit);
+    }
+    drop(statement);
+    if let Some(failure) = control.failure() {
+        transaction.rollback()?;
+        bail!("{failure}");
+    }
+    transaction.commit()?;
+    Ok(PipelineConsumerOutput {
+        connection,
+        entries,
+        facts,
+    })
+}
 fn policy(root: &Path, adapter: &scanner::Adapter) -> Value {
     json!({
         "adapter_path": adapter.adapter_path.as_ref().map(|path| path.strip_prefix(root).unwrap_or(path).to_string_lossy()),
@@ -302,7 +871,9 @@ fn populate(
     let (tables, indexes) = SCHEMA_DDL
         .split_once("CREATE INDEX")
         .context("schema indexes missing")?;
-    conn.execute_batch(tables)?;
+    if !build_inputs.schema_ready {
+        conn.execute_batch(tables)?;
+    }
     let linking = Instant::now();
     let dependencies = build_inputs.dependency_registry;
     let graph = linker::link_compact_with_typed_registry(facts, None, Some(root), dependencies);
@@ -389,7 +960,6 @@ fn populate(
     let docs_count = file_timings.docs_count;
     let fts_insert_ms = file_timings.fts_insert_ms;
     let persist_files_ms = t_files.elapsed().as_secs_f64() * 1000. - fts_insert_ms;
-
     let t_doc_fts = Instant::now();
     if docs_count > 0 {
         tx.execute(
@@ -506,10 +1076,9 @@ fn atomic_build(
     root: &Path,
     output: &Path,
     adapter: &scanner::Adapter,
-    entries: &[FileEntry],
-    facts: &BTreeMap<String, TypedFacts>,
-    encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
-    build_inputs: BuildInputs<'_>,
+    dependencies: Arc<DependencyRegistry>,
+    memory_budget: u64,
+    #[cfg(test)] test_hooks: Option<Arc<PipelineTestHooks>>,
 ) -> Result<Value> {
     let output = if output.is_absolute() {
         output.to_owned()
@@ -558,23 +1127,76 @@ fn atomic_build(
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         conn.execute_batch("PRAGMA page_size=32768;")?;
-        let mut report = populate(
+        prepare_pipeline_schema(
             &mut conn,
+            memory_budget,
+            #[cfg(test)]
+            test_hooks.as_deref(),
+        )?;
+        let (mut streamed, pipeline_metrics) = run_cold_pipeline(
             root,
             adapter,
-            entries,
-            facts,
-            encoded_facts,
-            build_inputs,
+            Arc::clone(&dependencies),
+            conn,
+            memory_budget,
+            #[cfg(test)]
+            test_hooks.clone(),
         )?;
+        streamed
+            .entries
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        let preparing_components = Instant::now();
+        let _ = ast::route_includes::compose_django_route_includes(&mut streamed.facts);
+        components(&mut streamed.facts);
+        let components_ms = preparing_components.elapsed().as_secs_f64() * 1000.;
+        let encoding = Instant::now();
+        let encoded_facts: hashbrown::HashMap<String, Vec<u8>> = streamed
+            .facts
+            .par_iter()
+            .map(|(path, facts)| Ok((path.clone(), encode_facts(facts)?)))
+            .collect::<Result<_>>()?;
+        let encode_facts_ms = encoding.elapsed().as_secs_f64() * 1000.;
+        let mut report = populate(
+            &mut streamed.connection,
+            root,
+            adapter,
+            &streamed.entries,
+            &streamed.facts,
+            Some(&encoded_facts),
+            BuildInputs {
+                dependency_registry: &dependencies,
+                memory_budget,
+                schema_ready: true,
+            },
+        )?;
+        report["memory_budget_bytes"] = json!(memory_budget);
+        report["scanned_files"] = json!(pipeline_metrics.scanned_files);
+        report["scanned_bytes"] = json!(pipeline_metrics.scanned_bytes);
+        report["scan_ms"] = json!(pipeline_metrics.scan_ms);
+        report["extract_ms"] = json!(pipeline_metrics.extraction_ms);
+        report["encode_facts_ms"] = json!(encode_facts_ms);
+        report["components_ms"] = json!(components_ms);
+        report["pipeline"] = json!({
+            "budget_bytes": pipeline_metrics.budget_bytes,
+            "peak_in_flight_bytes": pipeline_metrics.peak_in_flight_bytes,
+            "max_item_bytes": pipeline_metrics.max_item_bytes,
+            "oversized_admissions": pipeline_metrics.oversized_admissions,
+            "extracted_files": pipeline_metrics.extracted_files,
+            "ingested_files": pipeline_metrics.ingested_files,
+        });
+        report["sqlite_ingest_ms"] = json!(pipeline_metrics.sqlite_ingest_ms);
         let verifying = Instant::now();
-        let integrity: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+        let integrity: String = streamed
+            .connection
+            .query_row("PRAGMA quick_check", [], |r| r.get(0))?;
         if integrity != "ok" {
             bail!("candidate database failed integrity check: {integrity}");
         }
         report["verify_ms"] = json!(verifying.elapsed().as_secs_f64() * 1000.);
-        conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
-        conn.close().map_err(|(_, e)| e)?;
+        streamed
+            .connection
+            .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
+        streamed.connection.close().map_err(|(_, e)| e)?;
         let _generation_lock = super::cache::exclusive_lock(&output)?;
         let wal = PathBuf::from(format!("{}-wal", output.display()));
         let shm = PathBuf::from(format!("{}-shm", output.display()));
@@ -597,75 +1219,60 @@ fn atomic_build(
 
 /// Builds and publishes a sealed index for the workspace.
 ///
-/// Scanning and extraction use bounded batches. Graph rows are persisted with
-/// multi-value SQL inserts before the final Merkle seal and publication.
+/// Scanning, extraction, and local-fact ingestion overlap under a shared byte
+/// budget. Graph rows are persisted before the final Merkle seal and publication.
 ///
 /// # Errors
 ///
 /// Rejects unsafe roots, changed source snapshots, storage failures, and seal failures.
 pub fn build(root: &Path, output: &Path, adapter_path: Option<&Path>) -> Result<Value> {
+    build_inner(
+        root,
+        output,
+        adapter_path,
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn build_with_test_hooks(
+    root: &Path,
+    output: &Path,
+    adapter_path: Option<&Path>,
+    test_hooks: Arc<PipelineTestHooks>,
+) -> Result<Value> {
+    build_inner(root, output, adapter_path, Some(test_hooks))
+}
+
+fn build_inner(
+    root: &Path,
+    output: &Path,
+    adapter_path: Option<&Path>,
+    #[cfg(test)] test_hooks: Option<Arc<PipelineTestHooks>>,
+) -> Result<Value> {
     let started = Instant::now();
     let root = scanner::canonical_root(root)?;
     let adapter = scanner::load_adapter(&root, adapter_path)?;
     scanner::check_root_scope(&root, adapter.limits.allow_broad_root)?;
-    let scan = scanner::scan_for_build(&root, &adapter)?;
+    let dependency_manifests = scanner::dependency_manifests_for_build(&root, &adapter)?;
     let dependencies =
         crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_paths(
             &root,
             Some(&adapter),
-            &scan.dependency_manifests,
+            &dependency_manifests,
         )?;
-    let scan_ms = scan.elapsed_ms as f64;
-    let extracting = Instant::now();
     let budget = scanner::resolve_memory_budget_bytes(&adapter.limits)?;
-    let batch_size = scanner::bounded_batch_size(
-        budget,
-        adapter.limits.max_file_bytes,
-        EXTRACTION_MEMORY_MULTIPLIER,
-        MAX_EXTRACTION_BATCH_FILES,
-    );
-    let mut facts: BTreeMap<_, _> = BTreeMap::new();
-    let mut entries = Vec::with_capacity(scan.files);
-    for chunk in scan.candidates.chunks(batch_size) {
-        let extracted: Vec<(FileEntry, TypedFacts)> = chunk
-            .par_iter()
-            .map(|candidate| extract_candidate(&root, candidate, &adapter, &dependencies))
-            .collect::<Result<_>>()?;
-        for (file, typed_facts) in extracted {
-            facts.insert(file.path.clone(), typed_facts);
-            entries.push(file);
-        }
-    }
-    let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
-    let preparing_components = Instant::now();
-    let _ = ast::route_includes::compose_django_route_includes(&mut facts);
-    components(&mut facts);
-    let components_ms = preparing_components.elapsed().as_secs_f64() * 1000.;
-    let encoding = Instant::now();
-    let encoded_facts: hashbrown::HashMap<String, Vec<u8>> = facts
-        .par_iter()
-        .map(|(path, f)| Ok((path.clone(), encode_facts(f)?)))
-        .collect::<Result<_>>()?;
-    let encode_facts_ms = encoding.elapsed().as_secs_f64() * 1000.;
+    let dependencies = Arc::new(dependencies);
     let mut report = atomic_build(
         &root,
         output,
         &adapter,
-        &entries,
-        &facts,
-        Some(&encoded_facts),
-        BuildInputs {
-            dependency_registry: &dependencies,
-            memory_budget: budget,
-        },
+        dependencies,
+        budget,
+        #[cfg(test)]
+        test_hooks,
     )?;
-    report["memory_budget_bytes"] = json!(budget);
-    report["scanned_bytes"] = json!(scan.bytes);
-    report["scanned_files"] = json!(scan.files);
-    report["scan_ms"] = json!(scan_ms);
-    report["extract_ms"] = json!(extract_ms);
-    report["components_ms"] = json!(components_ms);
-    report["encode_facts_ms"] = json!(encode_facts_ms);
     report["elapsed_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
     report["output"] = json!(output);
     Ok(report)

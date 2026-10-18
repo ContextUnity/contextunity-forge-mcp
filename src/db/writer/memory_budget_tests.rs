@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use std::{
     collections::BTreeMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -60,6 +60,7 @@ fn sqlite_cache_size_is_clamped_in_kibibytes() {
         super::BuildInputs {
             dependency_registry: &dependencies,
             memory_budget: scanner::memory_budget_bytes(),
+            schema_ready: false,
         },
     )
     .unwrap();
@@ -122,7 +123,7 @@ fn assert_variant_manifests_above_source_roots() {
     }
 
     let adapter = scanner::load_adapter(&root.0, None).unwrap();
-    let scan = scanner::scan_for_build(&root.0, &adapter).unwrap();
+    let dependency_manifests = scanner::dependency_manifests_for_build(&root.0, &adapter).unwrap();
     for path in [
         "apps/requirements-dev.txt",
         "apps/Pipfile",
@@ -130,16 +131,13 @@ fn assert_variant_manifests_above_source_roots() {
         "apps/api/package.json",
     ] {
         assert!(
-            scan.dependency_manifests.contains(&root.0.join(path)),
+            dependency_manifests.contains(&root.0.join(path)),
             "scanner missed ancestor manifest {path} outside source roots"
         );
     }
-    let registry = DependencyRegistry::try_collect_with_paths(
-        &root.0,
-        Some(&adapter),
-        &scan.dependency_manifests,
-    )
-    .unwrap();
+    let registry =
+        DependencyRegistry::try_collect_with_paths(&root.0, Some(&adapter), &dependency_manifests)
+            .unwrap();
     for (profile, path, package) in [
         ("python", "root_probe.py", "root_dependency"),
         ("rust", "root_probe.rs", "root_crate"),
@@ -229,4 +227,238 @@ fn cold_build_reads_source_once_and_preserves_durable_facts() {
 
     #[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
     assert_variant_manifests_above_source_roots();
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn cold_pipeline_accounts_for_in_flight_bytes_and_preserves_commitments() {
+    use super::build;
+    use crate::core::commitments;
+
+    let workspace = TemporaryRoot::new();
+    let source = workspace.0.join("source");
+    fs::create_dir_all(source.join("src")).unwrap();
+    fs::write(
+        source.join("forge-mcp.yaml"),
+        "roots: [src]\nlimits:\n  memory_budget_mb: 1\n",
+    )
+    .unwrap();
+    for index in 0..16 {
+        fs::write(
+            source.join(format!("src/unit_{index:02}.rs")),
+            format!("pub fn unit_{index}() {{}}\n"),
+        )
+        .unwrap();
+    }
+    // A single legal file exceeds the entire transient queue budget. It must
+    // make progress in isolation instead of deadlocking behind its own permit.
+    fs::write(
+        source.join("src/oversized.rs"),
+        format!(
+            "/*{}*/\npub fn oversized() {{}}\n",
+            "x".repeat(2 * 1024 * 1024)
+        ),
+    )
+    .unwrap();
+    let mut expected_root = None;
+    for threads in [1, 4] {
+        let database = workspace.0.join(format!("pipeline-{threads}.sqlite"));
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        let report = pool.install(|| build(&source, &database, None)).unwrap();
+        let pipeline = &report["pipeline"];
+        let metric = |name: &str| {
+            pipeline[name]
+                .as_u64()
+                .unwrap_or_else(|| panic!("cold build must report pipeline.{name}: {report}"))
+        };
+        let budget = metric("budget_bytes");
+        let peak = metric("peak_in_flight_bytes");
+        let largest = metric("max_item_bytes");
+        assert!(budget > 0 && budget <= 1024 * 1024);
+        assert!(
+            largest > budget,
+            "fixture must exercise oversized admission"
+        );
+        assert!(peak > 0 && peak <= budget.max(largest));
+        assert_eq!(metric("oversized_admissions"), 1);
+        assert_eq!(metric("extracted_files"), 17);
+        assert_eq!(metric("ingested_files"), 17);
+
+        let conn = Connection::open(&database).unwrap();
+        commitments::verify(&conn).unwrap();
+        let functions: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM nodes WHERE kind='function'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(functions, 17, "streaming must retain every extracted file");
+        let root = report["output_root"].as_str().unwrap().to_owned();
+        if let Some(expected) = &expected_root {
+            assert_eq!(&root, expected, "worker count must not change commitments");
+        } else {
+            expected_root = Some(root);
+        }
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+fn write_pipeline_fixture(root: &Path, files: usize) {
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("forge-mcp.yaml"),
+        "roots: [src]\nlimits:\n  memory_budget_mb: 1\n",
+    )
+    .unwrap();
+    for index in 0..files {
+        fs::write(
+            root.join(format!("src/unit_{index:02}.rs")),
+            format!("pub fn unit_{index}() {{}}\n"),
+        )
+        .unwrap();
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+fn assert_no_pipeline_stage(parent: &Path) {
+    let stages: Vec<_> = fs::read_dir(parent)
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".forge-stage-")
+        })
+        .map(|entry| entry.path())
+        .collect();
+    assert!(
+        stages.is_empty(),
+        "failed pipeline left stage paths: {stages:?}"
+    );
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn cold_pipeline_overlaps_scan_extraction_and_sqlite_ingestion() {
+    use super::{build, build_with_test_hooks, PipelineTestHooks};
+    use crate::core::commitments;
+    use std::sync::atomic::Ordering;
+
+    let workspace = TemporaryRoot::new();
+    let source = workspace.0.join("source");
+    write_pipeline_fixture(&source, 12);
+
+    let baseline = workspace.0.join("baseline.sqlite");
+    let baseline_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let baseline_report = baseline_pool
+        .install(|| build(&source, &baseline, None))
+        .unwrap();
+
+    let database = workspace.0.join("overlap.sqlite");
+    let hooks = PipelineTestHooks::overlap();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    let report = pool
+        .install(|| build_with_test_hooks(&source, &database, None, hooks.clone()))
+        .unwrap();
+
+    assert_eq!(hooks.overlap_participants.load(Ordering::Acquire), 3);
+    assert_eq!(report["pipeline"]["extracted_files"], 12);
+    assert_eq!(report["pipeline"]["ingested_files"], 12);
+    assert_eq!(
+        report["output_root"], baseline_report["output_root"],
+        "overlapping stages must preserve the canonical commitments"
+    );
+
+    let connection = Connection::open(&database).unwrap();
+    commitments::verify(&connection).unwrap();
+    let (rows, unique_paths): (i64, i64) = connection
+        .query_row(
+            "SELECT count(*),count(DISTINCT path) FROM local_facts",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((rows, unique_paths), (12, 12));
+    let (inventory_rows, unique_inventory_paths): (i64, i64) = connection
+        .query_row(
+            "SELECT count(*),count(DISTINCT path) FROM source_inventory",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((inventory_rows, unique_inventory_paths), (12, 12));
+    let temp_triggers: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_temp_master WHERE type='trigger'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        temp_triggers, 0,
+        "pipeline trigger must be removed before sealing"
+    );
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn cold_pipeline_worker_error_cancels_stages_and_preserves_previous_database() {
+    use super::build;
+    use crate::core::commitments;
+
+    let workspace = TemporaryRoot::new();
+    let source = workspace.0.join("source");
+    write_pipeline_fixture(&source, 16);
+    let database = workspace.0.join(".forge/code-map.sqlite");
+    let first_report = build(&source, &database, None).unwrap();
+    let original_root = first_report["output_root"].as_str().unwrap().to_owned();
+
+    fs::write(source.join("src/unit_00.rs"), [0xff, 0xfe, 0xfd]).unwrap();
+    let error = build(&source, &database, None).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("stream did not contain valid UTF-8"));
+
+    let connection = Connection::open(&database).unwrap();
+    commitments::verify(&connection).unwrap();
+    let persisted_root = commitments::seal_snapshot(&connection).unwrap();
+    assert_eq!(persisted_root, original_root);
+    assert_no_pipeline_stage(database.parent().unwrap());
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn cold_pipeline_consumer_error_cancels_stages_and_preserves_previous_database() {
+    use super::{build, build_with_test_hooks, PipelineTestHooks};
+    use crate::core::commitments;
+
+    let workspace = TemporaryRoot::new();
+    let source = workspace.0.join("source");
+    write_pipeline_fixture(&source, 16);
+    let database = workspace.0.join(".forge/code-map.sqlite");
+    let first_report = build(&source, &database, None).unwrap();
+    let original_root = first_report["output_root"].as_str().unwrap().to_owned();
+
+    let error = build_with_test_hooks(&source, &database, None, PipelineTestHooks::fail_consumer())
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("injected pipeline SQLite consumer failure"));
+
+    let connection = Connection::open(&database).unwrap();
+    commitments::verify(&connection).unwrap();
+    let verified_root = commitments::seal_snapshot(&connection).unwrap();
+    assert_eq!(verified_root, original_root);
+    assert_no_pipeline_stage(database.parent().unwrap());
 }
