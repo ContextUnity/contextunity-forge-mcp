@@ -646,6 +646,58 @@ pub struct ExportBinding {
     pub star: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// TypeScript / CommonJS import and require binding fact.
+pub struct TypeScriptBinding {
+    /// Alias bound in the current scope.
+    pub alias: String,
+    /// Required or imported module specifier.
+    pub module: String,
+    /// Source position where declaration starts.
+    pub declaration: SourcePosition,
+    /// Source position where declaration completes.
+    pub completed: SourcePosition,
+    /// Whether the binding is invalidated by subsequent reassignments.
+    #[serde(default)]
+    pub invalidated: bool,
+    /// Whether capture was proven safe without mutations.
+    #[serde(default)]
+    pub captured_safe: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+/// Module-level TypeScript / CommonJS bindings catalog.
+pub struct TypeScriptBindings {
+    /// List of require and import bindings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<TypeScriptBinding>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+/// Language-neutral receiver catalog mapping type names and expressions to receiver hints and target types.
+pub struct ReceiverCatalog {
+    /// Statically known receiver hints indexed by canonical type or expression.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub receivers: std::collections::BTreeMap<String, String>,
+}
+
+impl ReceiverCatalog {
+    /// Creates an empty receiver catalog.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a receiver hint for a canonical type or expression.
+    pub fn register(&mut self, type_name: impl Into<String>, receiver_hint: impl Into<String>) {
+        self.receivers.insert(type_name.into(), receiver_hint.into());
+    }
+
+    /// Looks up a receiver hint for a type or expression.
+    pub fn lookup(&self, type_name: &str) -> Option<&str> {
+        self.receivers.get(type_name).map(String::as_str)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,4 +796,33 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn receiver_catalog_and_typescript_bindings_round_trip() {
+        let mut catalog = ReceiverCatalog::new();
+        catalog.register("AppService", "service:app");
+        assert_eq!(catalog.lookup("AppService"), Some("service:app"));
+        assert_eq!(catalog.lookup("Missing"), None);
+
+        let json = serde_json::to_string(&catalog).expect("serialize catalog");
+        let deserialized: ReceiverCatalog =
+            serde_json::from_str(&json).expect("deserialize catalog");
+        assert_eq!(catalog, deserialized);
+
+        let bindings = TypeScriptBindings {
+            bindings: vec![TypeScriptBinding {
+                alias: "express".into(),
+                module: "express".into(),
+                declaration: SourcePosition { line: 1, column: 1 },
+                completed: SourcePosition { line: 1, column: 25 },
+                invalidated: false,
+                captured_safe: true,
+            }],
+        };
+        let bindings_json = serde_json::to_string(&bindings).expect("serialize bindings");
+        let deserialized_bindings: TypeScriptBindings =
+            serde_json::from_str(&bindings_json).expect("deserialize bindings");
+        assert_eq!(bindings, deserialized_bindings);
+    }
 }
+

@@ -28,7 +28,7 @@ struct CacheIdentity<'a> {
     effective_ruleset_hash: &'a str,
 }
 
-pub(super) fn key(
+pub(crate) fn key(
     source_digest: &str,
     relative_path: &str,
     grammar_id: &str,
@@ -45,7 +45,7 @@ pub(super) fn key(
     commitments::hash(&serde_json::to_vec(&identity).expect("cache identity is JSON serializable"))
 }
 
-pub(super) fn effective_ruleset_hash(adapter_digest: &str, dependency_digest: &str) -> String {
+pub(crate) fn effective_ruleset_hash(adapter_digest: &str, dependency_digest: &str) -> String {
     let mut input = Vec::with_capacity(adapter_digest.len() + dependency_digest.len() + 32);
     input.extend_from_slice(b"forge-effective-ruleset-v1\0");
     input.extend_from_slice(&(adapter_digest.len() as u64).to_le_bytes());
@@ -55,16 +55,16 @@ pub(super) fn effective_ruleset_hash(adapter_digest: &str, dependency_digest: &s
     commitments::hash(&input)
 }
 
-pub(super) struct ExtractionCache {
+pub(crate) struct ExtractionCache {
     root: Option<PathBuf>,
 }
 
 impl ExtractionCache {
-    pub(super) fn new(root: Option<PathBuf>) -> Self {
+    pub(crate) fn new(root: Option<PathBuf>) -> Self {
         Self { root }
     }
 
-    pub(super) fn load(&self, key: &str, max_payload_bytes: u64) -> Option<TypedFacts> {
+    pub(crate) fn load(&self, key: &str, max_payload_bytes: u64) -> Option<TypedFacts> {
         let path = self.entry_path(key)?;
         let file = open_regular_file(&path).ok()?;
         let max_entry_bytes = max_payload_bytes.saturating_add(256);
@@ -82,7 +82,7 @@ impl ExtractionCache {
     }
 
     /// Publishes a complete entry atomically. Cache failures never affect extraction.
-    pub(super) fn store(&self, key: &str, facts: &TypedFacts) -> bool {
+    pub(crate) fn store(&self, key: &str, facts: &TypedFacts) -> bool {
         let Some(path) = self.entry_path(key) else {
             return false;
         };
@@ -132,7 +132,7 @@ impl ExtractionCache {
     }
 }
 
-pub(super) fn default_cache_root() -> Option<PathBuf> {
+pub(crate) fn default_cache_root() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("FORGE_EXTRACTION_CACHE_DIR") {
         return Some(PathBuf::from(path));
     }

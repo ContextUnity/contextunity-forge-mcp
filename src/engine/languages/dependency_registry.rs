@@ -1554,7 +1554,8 @@ di_calls:
         assert!(failures.is_empty(), "{}", failures.join("\n"));
 
         {
-            use crate::db::{reader, writer};
+            use crate::db::reader;
+            use crate::engine::pipeline;
             let coverage_root = temporary.0.join("rule-coverage");
             fs::create_dir_all(coverage_root.join(".forge/frameworks")).unwrap();
             fs::write(
@@ -1658,7 +1659,7 @@ di_calls:
                     ));
                 }
             };
-            let initial = writer::build(&coverage_root, &coverage_db, None).unwrap();
+            let initial = pipeline::build(&coverage_root, &coverage_db, None).unwrap();
             check_report("clean full build", &initial, &clean, &mut coverage_failures);
             check_persisted(
                 "clean full build",
@@ -1743,7 +1744,7 @@ di_calls:
                         case.name, effective.di_calls
                     ));
                 }
-                let fallback = writer::delta(
+                let fallback = pipeline::delta(
                     &coverage_root,
                     &coverage_db,
                     &[PathBuf::from(framework_path)],
@@ -1764,7 +1765,7 @@ di_calls:
                     case.injections,
                     &mut coverage_failures,
                 );
-                let cold = writer::build(&coverage_root, &coverage_cold, None).unwrap();
+                let cold = pipeline::build(&coverage_root, &coverage_cold, None).unwrap();
                 check_report(case.name, &cold, expected, &mut coverage_failures);
                 check_persisted(
                     case.name,
@@ -1779,7 +1780,7 @@ di_calls:
                 )
                 .unwrap();
                 let ordinary =
-                    writer::delta(&coverage_root, &coverage_db, &[PathBuf::from("README.md")])
+                    pipeline::delta(&coverage_root, &coverage_db, &[PathBuf::from("README.md")])
                         .unwrap();
                 if ordinary["changed_files"] != 1 || ordinary["reparsed_files"] != 1 {
                     coverage_failures.push(format!(
@@ -1839,9 +1840,9 @@ di_calls:
             ] {
                 fs::write(linked_root.join(framework_path), manifest).unwrap();
                 let report = if phase == "linked payload keeps identity" {
-                    writer::build(&coverage_root, &coverage_db, None).unwrap()
+                    pipeline::build(&coverage_root, &coverage_db, None).unwrap()
                 } else {
-                    let fallback = writer::delta(
+                    let fallback = pipeline::delta(
                         &coverage_root,
                         &coverage_db,
                         &[PathBuf::from("[linked]/.forge/frameworks/fastapi.toml")],
@@ -1855,11 +1856,11 @@ di_calls:
                     fallback
                 };
                 check_report(phase, &report, expected, &mut coverage_failures);
-                let cold = writer::build(&coverage_root, &coverage_cold, None).unwrap();
+                let cold = pipeline::build(&coverage_root, &coverage_cold, None).unwrap();
                 check_report(phase, &cold, expected, &mut coverage_failures);
                 fs::write(coverage_root.join("README.md"), format!("# {phase}\n")).unwrap();
                 let ordinary =
-                    writer::delta(&coverage_root, &coverage_db, &[PathBuf::from("README.md")])
+                    pipeline::delta(&coverage_root, &coverage_db, &[PathBuf::from("README.md")])
                         .unwrap();
                 if ordinary["changed_files"] != 1 || ordinary["reparsed_files"] != 1 {
                     coverage_failures.push(format!("{phase}: linked diagnostics must survive ordinary Markdown delta: {ordinary}"));
@@ -1912,7 +1913,7 @@ di_calls:
         }
         #[cfg(feature = "lang-typescript")]
         {
-            use crate::db::{reader, writer};
+            use crate::{db::reader, engine::pipeline};
             let mixed_root = temporary.0.join("mixed-grammar");
             fs::create_dir_all(mixed_root.join(".forge/frameworks")).unwrap();
             fs::write(mixed_root.join(".forge/frameworks/mixed.toml"), "receivers=[]\nbuiltins=[]\nfilters=[]\nroutes=[]\n[[route_calls]]\ncallee='publish'\nmethod='GET'\npath_argument=0\nhandler_argument=1\n[[di_calls]]\ncallee='InjectMixed'\nargument=0\n").unwrap();
@@ -1926,9 +1927,9 @@ di_calls:
                     fs::write(mixed_root.join(file), format!("export function endpoint() {{ return {revision}; }}\npublish('{route}', endpoint);\nInjectMixed(endpoint);\n{suffix}\n")).unwrap();
                 }
                 let report = if revision == 0 {
-                    writer::build(&mixed_root, &database, None).unwrap()
+                    pipeline::build(&mixed_root, &database, None).unwrap()
                 } else {
-                    let ordinary = writer::delta(
+                    let ordinary = pipeline::delta(
                         &mixed_root,
                         &database,
                         &[PathBuf::from("a.ts"), PathBuf::from("b.tsx")],
@@ -1942,7 +1943,7 @@ di_calls:
                     ordinary
                 };
                 assert_eq!(report["framework_rule_diagnostics"], serde_json::json!([]));
-                let cold = writer::build(&mixed_root, &cold_database, None).unwrap();
+                let cold = pipeline::build(&mixed_root, &cold_database, None).unwrap();
                 assert_eq!(cold["framework_rule_diagnostics"], serde_json::json!([]));
                 for output in [&database, &cold_database] {
                     let persisted = reader::open(output, &mixed_root).unwrap();

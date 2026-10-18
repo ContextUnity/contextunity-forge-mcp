@@ -101,3 +101,25 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
     }
     assert_eq!(doc_edges(&workspace.db()), baseline);
 }
+
+#[cfg(feature = "lang-python")]
+#[test]
+fn readme_only_delta_retains_component_documentation_edges() {
+    let workspace = Workspace::new();
+    workspace.write("pkg/simple.py", "def simple(): return 1\n");
+    workspace.write("README.md", "# Package\nSee `pkg` for details.\n");
+    workspace.build();
+    let baseline = doc_edges(&workspace.db());
+    assert!(
+        baseline.iter().any(|(src, dst, kind)| {
+            src.contains("README.md") && dst == "component:pkg" && kind == "documents"
+        }),
+        "cold build must link README to component:pkg: {baseline:?}"
+    );
+
+    workspace.write("README.md", "# Package Updated\nSee `pkg` for details.\n");
+    workspace.delta(&["README.md"]);
+    let cold = workspace.path(".forge/cold.sqlite");
+    workspace.build_to(&cold);
+    assert_eq!(doc_edges(&workspace.db()), doc_edges(&cold));
+}

@@ -1,5 +1,6 @@
 use super::models::{Facts, Node};
 use super::semantic::ValueFlowFacts;
+use rayon::prelude::*;
 use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
@@ -277,6 +278,7 @@ impl TypedFacts {
     pub(crate) fn nodes_view(&self) -> NodesView<'_> {
         NodesView(self)
     }
+    #[allow(dead_code)]
     pub(crate) fn push_node(&mut self, mut node: Node) {
         self.flows.ingest(&mut node);
         self.facts.nodes.push(node);
@@ -297,6 +299,95 @@ impl TypedFacts {
             }
         }
         self.facts
+    }
+
+    /// Extracts canonical semantic reference keys from typed facts.
+    pub(crate) fn reference_keys(&self) -> Vec<&str> {
+        self.collect_reference_keys(false)
+    }
+
+    /// Extracts semantic reference keys from typed facts, optionally including component declarations.
+    pub(crate) fn collect_reference_keys<'a>(&'a self, include_components: bool) -> Vec<&'a str> {
+        let mut keys = Vec::new();
+        let mut insert = |expression: &'a str| {
+            keys.push(expression);
+            for token in expression.split(['.', ':', '/']) {
+                if !token.is_empty() && token.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    keys.push(token);
+                }
+            }
+        };
+        for expression in self
+            .facts
+            .references
+            .iter()
+            .filter(|r| !r.dynamic)
+            .flat_map(|r| std::iter::once(r.expression.as_str()).chain(r.module.as_deref()))
+            .chain(
+                self.facts
+                    .nodes
+                    .iter()
+                    .filter(|n| n.kind == "impl")
+                    .map(|n| n.name.split('<').next().unwrap_or(&n.name).trim()),
+            )
+            .chain(
+                self.facts
+                    .nodes
+                    .iter()
+                    .filter(|n| include_components && n.kind == "component")
+                    .map(|n| n.name.as_str()),
+            )
+            .chain(
+                self.facts
+                    .docs
+                    .iter()
+                    .flat_map(|d| d.referenced_symbols.iter().map(String::as_str)),
+            )
+        {
+            insert(expression);
+        }
+        for reference in &self.facts.references {
+            if let Some(
+                crate::core::models::ReceiverHint::CallResult { callee, .. }
+                | crate::core::models::ReceiverHint::ConstructorResult { callee, .. },
+            ) = &reference.receiver_hint
+            {
+                insert(callee);
+            }
+        }
+        for node in &self.facts.nodes {
+            if let Some(flow) = self.flows.get(node) {
+                flow.reference_keys(&mut insert);
+            } else if let Some(raw) = self.flows.raw(node) {
+                crate::core::semantic::ValueFlowFacts::reference_keys_from_value(raw, &mut insert);
+            } else {
+                crate::core::semantic::ValueFlowFacts::reference_keys_from_details(
+                    &node.details,
+                    &mut insert,
+                );
+            }
+            if let Some(exports) = node.details.get("exports").and_then(Value::as_array) {
+                for export in exports {
+                    for key in ["local", "module"] {
+                        if let Some(name) = export.get(key).and_then(Value::as_str) {
+                            insert(name);
+                        }
+                    }
+                }
+            }
+            if let Some(types) = node.details.get("param_types").and_then(Value::as_object) {
+                for ty in types.values().filter_map(Value::as_str) {
+                    insert(ty);
+                }
+            }
+        }
+        if keys.len() >= 8192 {
+            keys.par_sort_unstable();
+        } else {
+            keys.sort_unstable();
+        }
+        keys.dedup();
+        keys
     }
 }
 

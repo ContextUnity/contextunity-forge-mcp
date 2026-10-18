@@ -936,13 +936,7 @@ pub fn for_path(path: &Path) -> Option<&'static dyn LanguageProfile> {
 pub fn module_stem(path: &str) -> &str {
     path.rsplit_once('.').map_or(path, |(p, _)| p)
 }
-/// Performs workspace path.
-pub fn workspace_path(path: &str) -> (&str, &str) {
-    match path.split_once('/') {
-        Some((head, tail)) if head.starts_with('[') && head.ends_with(']') => (head, tail),
-        _ => ("", path),
-    }
-}
+pub use crate::core::config::workspace_path;
 /// Performs relative namespace.
 pub fn relative_namespace(owner: &str, module: &str) -> Option<String> {
     let (_, owner) = workspace_path(owner);

@@ -1,9 +1,10 @@
 use super::{paging, reader};
 use crate::core::{
+    commitments,
+    config,
     models::stable_hash64,
     response::{CoverageOptions, Detail, QueryOptions, SourceOptions},
 };
-use crate::engine::scanner;
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -166,19 +167,19 @@ fn verified_source(conn: &Connection, root: &Path, path: &str) -> Result<String>
     let digest: String = conn.query_row("SELECT digest FROM files WHERE path=?1", [path], |r| {
         r.get(0)
     })?;
-    let adapter = scanner::load_adapter(root, None)?;
-    let resolved = scanner::resolve_file_path(root, &adapter, path)?;
+    let adapter = config::load_adapter(root, None)?;
+    let resolved = config::resolve_file_path(root, &adapter, path)?;
     let file = File::open(resolved).context("source file unavailable; rebuild index")?;
     if !file.metadata()?.is_file() {
         bail!("source must be a regular file");
     }
     let mut bytes = Vec::new();
-    file.take(scanner::MAX_FILE_BYTES + 1)
+    file.take(config::MAX_FILE_BYTES + 1)
         .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > scanner::MAX_FILE_BYTES {
+    if bytes.len() as u64 > config::MAX_FILE_BYTES {
         bail!("source exceeds file byte limit");
     }
-    if scanner::digest(&bytes) != digest {
+    if commitments::hash(&bytes) != digest {
         bail!("source changed since indexing; update or rebuild index");
     }
     String::from_utf8(bytes).context("source is not UTF-8")

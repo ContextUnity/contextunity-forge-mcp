@@ -1,4 +1,7 @@
-use super::{build, build_with_cache_dir, cache, populate, sqlite_cache_size_kib};
+use super::{cache, populate, sqlite_cache_size_kib};
+use crate::engine::pipeline::{
+    build, build_with_cache_dir, build_with_test_hooks, PipelineTestHooks,
+};
 use crate::engine::scanner;
 use rusqlite::Connection;
 use std::{
@@ -57,8 +60,9 @@ fn sqlite_cache_size_is_clamped_in_kibibytes() {
         &[],
         &BTreeMap::new(),
         None,
+        &crate::core::models::compact_graph::Graph::default(),
         super::BuildInputs {
-            dependency_registry: &dependencies,
+            manifest_digest: dependencies.digest(),
             memory_budget: scanner::memory_budget_bytes(),
             schema_ready: false,
         },
@@ -156,7 +160,6 @@ fn assert_variant_manifests_above_source_roots() {
 #[cfg(all(target_os = "linux", feature = "lang-rust"))]
 #[test]
 fn cold_build_reads_source_once_and_preserves_durable_facts() {
-    use super::build;
     use crate::core::{commitments, models::Facts};
     use std::{
         io::Read,
@@ -261,7 +264,6 @@ fn cold_build_reports_the_sqlite_bulk_ingestion_strategy() {
 #[cfg(feature = "lang-rust")]
 #[test]
 fn cold_pipeline_accounts_for_in_flight_bytes_and_preserves_commitments() {
-    use super::build;
     use crate::core::commitments;
 
     let workspace = TemporaryRoot::new();
@@ -374,7 +376,6 @@ fn assert_no_pipeline_stage(parent: &Path) {
 #[cfg(feature = "lang-rust")]
 #[test]
 fn cold_pipeline_overlaps_scan_extraction_and_sqlite_ingestion() {
-    use super::{build, build_with_test_hooks, PipelineTestHooks};
     use crate::core::commitments;
     use std::sync::atomic::Ordering;
 
@@ -443,7 +444,6 @@ fn cold_pipeline_overlaps_scan_extraction_and_sqlite_ingestion() {
 #[cfg(feature = "lang-rust")]
 #[test]
 fn cold_pipeline_worker_error_cancels_stages_and_preserves_previous_database() {
-    use super::build;
     use crate::core::commitments;
 
     let workspace = TemporaryRoot::new();
@@ -469,7 +469,6 @@ fn cold_pipeline_worker_error_cancels_stages_and_preserves_previous_database() {
 #[cfg(feature = "lang-rust")]
 #[test]
 fn cold_pipeline_consumer_error_cancels_stages_and_preserves_previous_database() {
-    use super::{build, build_with_test_hooks, PipelineTestHooks};
     use crate::core::commitments;
 
     let workspace = TemporaryRoot::new();

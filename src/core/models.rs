@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 pub(crate) mod compact_graph;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Indexed source declaration with a stable identity and compact metadata projection.
@@ -28,9 +29,135 @@ pub struct Node {
     pub details: Value,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// Typed semantic metadata for declaration bindings, rebindings, and receiver hints.
+pub struct NodeSemanticMeta {
+    /// Resolved bindings for the declaration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<String>,
+    /// Resolved rebindings or alias names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rebindings: Vec<String>,
+    /// Raw receiver expression (e.g. `(s *Service)` in Go or `self` in Python).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver: Option<String>,
+    /// Resolved receiver type name (e.g. `Service` in Go, struct name in Rust, or prototype in TS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_type: Option<String>,
+    /// Optional receiver type hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_hint: Option<String>,
+    /// Parameter type annotations.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub param_types: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Represents a scanned source or documentation file candidate.
+pub struct FileEntry {
+    /// Workspace-relative path to the file.
+    pub path: String,
+    /// Content digest of the file bytes.
+    pub digest: String,
+    /// File size in bytes.
+    pub bytes: u64,
+    /// Modification time in nanoseconds.
+    pub mtime_ns: u128,
+    #[serde(default)]
+    /// Device, inode, and mtime identity triple.
+    pub identity: [u64; 3],
+    /// Canonical language profile ID or detected language.
+    pub language: String,
+    /// Whether the file is indexed as documentation.
+    pub is_doc: bool,
+}
+
 impl Node {
     pub(crate) fn navigation_details(&self) -> NavigationDetails<'_> {
         NavigationDetails(&self.details)
+    }
+
+    /// Extracts typed semantic metadata from node details.
+    pub fn semantic_meta(&self) -> NodeSemanticMeta {
+        let bindings = self
+            .details
+            .get("bindings")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        let rebindings = self
+            .details
+            .get("rebindings")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        let receiver = self
+            .details
+            .get("receiver")
+            .and_then(|v| v.as_str().map(str::to_owned));
+        let receiver_type = self
+            .details
+            .get("receiver_type")
+            .and_then(|v| v.as_str().map(str::to_owned));
+        let receiver_hint = self
+            .details
+            .get("receiver_hint")
+            .and_then(|v| v.as_str().map(str::to_owned));
+        let param_types = self
+            .details
+            .get("param_types")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        NodeSemanticMeta {
+            bindings,
+            rebindings,
+            receiver,
+            receiver_type,
+            receiver_hint,
+            param_types,
+        }
+    }
+
+    /// Applies typed semantic metadata into node details.
+    pub fn apply_semantic_meta(&mut self, meta: NodeSemanticMeta) {
+        if !self.details.is_object() {
+            self.details = serde_json::json!({});
+        }
+        if let Some(details) = self.details.as_object_mut() {
+            if meta.bindings.is_empty() {
+                details.remove("bindings");
+            } else {
+                details.insert("bindings".into(), serde_json::json!(meta.bindings));
+            }
+
+            if meta.rebindings.is_empty() {
+                details.remove("rebindings");
+            } else {
+                details.insert("rebindings".into(), serde_json::json!(meta.rebindings));
+            }
+
+            if meta.param_types.is_empty() {
+                details.remove("param_types");
+            } else {
+                details.insert("param_types".into(), serde_json::json!(meta.param_types));
+            }
+
+            if let Some(ref r) = meta.receiver {
+                details.insert("receiver".into(), serde_json::json!(r));
+            } else {
+                details.remove("receiver");
+            }
+
+            if let Some(ref rt) = meta.receiver_type {
+                details.insert("receiver_type".into(), serde_json::json!(rt));
+            } else {
+                details.remove("receiver_type");
+            }
+
+            if let Some(ref rh) = meta.receiver_hint {
+                details.insert("receiver_hint".into(), serde_json::json!(rh));
+            } else {
+                details.remove("receiver_hint");
+            }
+        }
     }
 }
 

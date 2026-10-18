@@ -639,14 +639,14 @@ pub(super) fn persist_graph(
                 continue;
             };
             for context in &flow.template_contexts {
-                let Some(target) = crate::engine::languages::html::local_template_target(
+                let Some(target) = crate::core::config::local_template_target(
                     provider_path,
                     &context.target,
                 ) else {
                     continue;
                 };
-                if crate::engine::languages::workspace_path(provider_path).0
-                    != crate::engine::languages::workspace_path(&target).0
+                if crate::core::config::workspace_path(provider_path).0
+                    != crate::core::config::workspace_path(&target).0
                 {
                     continue;
                 }

@@ -559,31 +559,7 @@ fn extract_template_target(input: &str) -> Option<&str> {
     }
 }
 
-pub(crate) fn local_template_target(owner: &str, target: &str) -> Option<String> {
-    let target = target.strip_prefix("./").unwrap_or(target);
-    if target.is_empty()
-        || target.contains([':', '\\'])
-        || target
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-    {
-        return None;
-    }
-    let template_root = if owner.starts_with("templates/") {
-        "templates/"
-    } else if let Some(index) = owner.rfind("/templates/") {
-        &owner[..index + "/templates/".len()]
-    } else {
-        owner.rsplit_once('/').map_or("", |(parent, _)| parent)
-    };
-    if template_root.is_empty() {
-        Some(target.to_owned())
-    } else if template_root.ends_with('/') {
-        Some(format!("{template_root}{target}"))
-    } else {
-        Some(format!("{template_root}/{target}"))
-    }
-}
+pub(crate) use crate::core::config::local_template_target;
 
 fn emit_template_reference(path: &str, target: &str, kind: &str, line: usize, facts: &mut Facts) {
     facts.references.push(Reference {

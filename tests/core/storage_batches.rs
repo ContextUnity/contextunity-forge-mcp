@@ -1,5 +1,9 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::{core::models::Facts, db::writer, engine::scanner};
+use contextunity_forge_mcp::{
+    core::models::{Facts, Node, NodeSemanticMeta},
+    db::writer,
+    engine::{pipeline, scanner},
+};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 
@@ -343,3 +347,190 @@ fn public_extraction_rejects_a_file_entry_digest_mismatch() {
         "stale public extraction must fail closed: {error:#}"
     );
 }
+
+#[test]
+fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
+    use serde_json::json;
+
+    let meta = NodeSemanticMeta {
+        bindings: vec!["foo".into(), "bar".into()],
+        rebindings: vec!["baz".into()],
+        receiver: Some("(s *Service)".into()),
+        receiver_type: Some("Service".into()),
+        receiver_hint: Some("Service".into()),
+        param_types: std::collections::BTreeMap::from([("arg".into(), "str".into())]),
+    };
+
+    let serialized = serde_json::to_vec(&meta).expect("serialization succeeds");
+    let deserialized: NodeSemanticMeta =
+        serde_json::from_slice(&serialized).expect("deserialization succeeds");
+    assert_eq!(meta, deserialized);
+
+    let mut node = Node {
+        id: "func:foo".into(),
+        path: "src/foo.go".into(),
+        language: "go".into(),
+        kind: "method".into(),
+        name: "foo".into(),
+        qualname: "Service.foo".into(),
+        line: 1,
+        end_line: 5,
+        is_test: false,
+        generated: false,
+        details: json!({
+            "receiver": "(s *Service)",
+            "receiver_type": "Service"
+        }),
+    };
+    node.apply_semantic_meta(meta.clone());
+    let extracted_meta = node.semantic_meta();
+    assert_eq!(meta, extracted_meta);
+    assert_eq!(node.details["receiver"], "(s *Service)");
+    assert_eq!(node.details["receiver_type"], "Service");
+
+    // Verify clearing metadata with default
+    node.apply_semantic_meta(NodeSemanticMeta::default());
+    let cleared_meta = node.semantic_meta();
+    assert_eq!(cleared_meta, NodeSemanticMeta::default());
+    assert!(node.details.get("bindings").is_none());
+    assert!(node.details.get("rebindings").is_none());
+    assert!(node.details.get("receiver").is_none());
+    assert!(node.details.get("receiver_type").is_none());
+    assert!(node.details.get("receiver_hint").is_none());
+    assert!(node.details.get("param_types").is_none());
+
+    // Verify hint-only metadata roundtrip without inventing receiver or receiver_type
+    let mut node2 = Node {
+        id: "func:bar".into(),
+        path: "src/bar.py".into(),
+        language: "python".into(),
+        kind: "function".into(),
+        name: "bar".into(),
+        qualname: "bar".into(),
+        line: 1,
+        end_line: 5,
+        is_test: false,
+        generated: false,
+        details: json!({}),
+    };
+    let hint_meta = NodeSemanticMeta {
+        receiver_hint: Some("Service".into()),
+        ..Default::default()
+    };
+    node2.apply_semantic_meta(hint_meta.clone());
+    assert_eq!(node2.semantic_meta(), hint_meta);
+    assert_eq!(node2.details["receiver_hint"], "Service");
+    assert!(node2.details.get("receiver").is_none());
+    assert!(node2.details.get("receiver_type").is_none());
+
+    // Exercise real cold build and delta persistence to prove SQLite round-trip
+    // and cold-versus-delta equivalence on extracted semantic metadata.
+    let ws = Workspace::new();
+    ws.write(
+        "src/models.py",
+        "class Service:\n    def execute(self, value: int) -> str:\n        return str(value)\n",
+    );
+    ws.write("src/util.py", "def helper() -> int:\n    return 42\n");
+
+    let cold_db = ws.root().join(".forge/cold.sqlite");
+    pipeline::build(ws.root(), &cold_db, None).expect("cold build succeeds");
+
+    let conn = Connection::open(&cold_db).expect("open cold_db succeeds");
+    let cold_details_str: String = conn
+        .query_row(
+            "SELECT details FROM nodes WHERE name = 'execute'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query cold details succeeds");
+    let cold_details: serde_json::Value =
+        serde_json::from_str(&cold_details_str).expect("parse cold details succeeds");
+
+    let mut cold_node = Node {
+        id: "func:Service.execute".into(),
+        path: "src/models.py".into(),
+        language: "python".into(),
+        kind: "method".into(),
+        name: "execute".into(),
+        qualname: "Service.execute".into(),
+        line: 2,
+        end_line: 3,
+        is_test: false,
+        generated: false,
+        details: cold_details,
+    };
+    let cold_meta = cold_node.semantic_meta();
+    assert_eq!(cold_meta.receiver_type.as_deref(), Some("Service"));
+
+    // Verify persisted metadata roundtrip through apply_semantic_meta
+    cold_node.apply_semantic_meta(cold_meta.clone());
+    assert_eq!(cold_node.semantic_meta(), cold_meta);
+
+    // Modify file and run delta indexing
+    ws.write(
+        "src/models.py",
+        "class Service:\n    def execute(self, value: int) -> str:\n        return f'processed:{value}'\n",
+    );
+    pipeline::delta(
+        ws.root(),
+        &cold_db,
+        &[std::path::PathBuf::from("src/models.py")],
+    )
+    .expect("delta indexing succeeds");
+
+    let delta_details_str: String = conn
+        .query_row(
+            "SELECT details FROM nodes WHERE name = 'execute'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query delta details succeeds");
+    let delta_details: serde_json::Value =
+        serde_json::from_str(&delta_details_str).expect("parse delta details succeeds");
+    let delta_node = Node {
+        id: "func:Service.execute".into(),
+        path: "src/models.py".into(),
+        language: "python".into(),
+        kind: "method".into(),
+        name: "execute".into(),
+        qualname: "Service.execute".into(),
+        line: 2,
+        end_line: 3,
+        is_test: false,
+        generated: false,
+        details: delta_details,
+    };
+    let delta_meta = delta_node.semantic_meta();
+
+    // Fresh cold build for comparison
+    let fresh_cold_db = ws.root().join(".forge/fresh_cold.sqlite");
+    pipeline::build(ws.root(), &fresh_cold_db, None).expect("fresh cold build succeeds");
+    let fresh_conn = Connection::open(&fresh_cold_db).expect("open fresh_cold_db succeeds");
+    let fresh_details_str: String = fresh_conn
+        .query_row(
+            "SELECT details FROM nodes WHERE name = 'execute'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query fresh details succeeds");
+    let fresh_details: serde_json::Value =
+        serde_json::from_str(&fresh_details_str).expect("parse fresh details succeeds");
+    let fresh_node = Node {
+        id: "func:Service.execute".into(),
+        path: "src/models.py".into(),
+        language: "python".into(),
+        kind: "method".into(),
+        name: "execute".into(),
+        qualname: "Service.execute".into(),
+        line: 2,
+        end_line: 3,
+        is_test: false,
+        generated: false,
+        details: fresh_details,
+    };
+    let fresh_meta = fresh_node.semantic_meta();
+
+    // Exact cold-versus-delta equivalence
+    assert_eq!(delta_meta, fresh_meta);
+}
+

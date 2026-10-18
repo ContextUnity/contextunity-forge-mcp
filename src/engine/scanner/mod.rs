@@ -12,7 +12,7 @@ pub use crate::core::sys::{available_memory_bytes, memory_budget_bytes};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 fn error(message: impl Into<String>) -> std::io::Error {
@@ -21,163 +21,9 @@ fn error(message: impl Into<String>) -> std::io::Error {
 
 #[path = "adapter.rs"]
 mod adapter;
-pub use adapter::{load_adapter, Adapter, LinkedWorkspace, LinkedWorkspaceConfig};
-
-/// The engine schema version value.
-pub const ENGINE_SCHEMA_VERSION: &str = "15";
-/// The index semantics version value.
-pub const INDEX_SEMANTICS_VERSION: &str = concat!(
-    "9:compact-storage-v8:",
-    env!("FORGE_LANGUAGE_PROFILE_DIGEST")
-);
-/// The default max files value.
-pub const DEFAULT_MAX_FILES: usize = 100_000;
-/// The default max file bytes value.
-pub const DEFAULT_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
-/// The default max total bytes value.
-pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;
-pub(crate) const MAX_FILE_BYTES: u64 = DEFAULT_MAX_FILE_BYTES;
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-/// Represents scanner limits data.
-pub struct ScannerLimits {
-    #[serde(default = "default_max_files")]
-    /// The max files value.
-    pub max_files: usize,
-    #[serde(default = "default_max_file_bytes")]
-    /// The max file bytes value.
-    pub max_file_bytes: u64,
-    #[serde(default = "default_max_total_bytes")]
-    /// The max total bytes value.
-    pub max_total_bytes: u64,
-    #[serde(default)]
-    /// Whether allow broad root applies.
-    pub allow_broad_root: bool,
-    #[serde(default, skip_serializing)]
-    /// Optional transient memory budget in MiB; YAML takes precedence over the environment.
-    pub memory_budget_mb: Option<u64>,
-}
-
-fn default_max_files() -> usize {
-    DEFAULT_MAX_FILES
-}
-
-fn default_max_file_bytes() -> u64 {
-    DEFAULT_MAX_FILE_BYTES
-}
-
-fn default_max_total_bytes() -> u64 {
-    DEFAULT_MAX_TOTAL_BYTES
-}
-
-impl Default for ScannerLimits {
-    fn default() -> Self {
-        Self {
-            max_files: default_max_files(),
-            max_file_bytes: default_max_file_bytes(),
-            max_total_bytes: default_max_total_bytes(),
-            allow_broad_root: false,
-            memory_budget_mb: None,
-        }
-    }
-}
-
-/// Resolves the transient working-memory budget from YAML, environment, or available memory.
-pub fn resolve_memory_budget_bytes(limits: &ScannerLimits) -> std::io::Result<u64> {
-    if let Some(mebibytes) = limits.memory_budget_mb {
-        return bytes_from_mebibytes(mebibytes);
-    }
-    let environment = match std::env::var("FORGE_MEMORY_BUDGET_MB") {
-        Ok(value) => Some(value),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(std::env::VarError::NotUnicode(_)) => {
-            return Err(error("FORGE_MEMORY_BUDGET_MB must be valid UTF-8"));
-        }
-    };
-    let configured_mb = memory_budget_mb_from_sources(None, environment.as_deref())?;
-    let Some(mebibytes) = configured_mb else {
-        return Ok(memory_budget_bytes());
-    };
-    bytes_from_mebibytes(mebibytes)
-}
-
-fn memory_budget_mb_from_sources(
-    configured_mb: Option<u64>,
-    environment_mb: Option<&str>,
-) -> std::io::Result<Option<u64>> {
-    match configured_mb {
-        Some(value) => Ok(Some(value)),
-        None => environment_mb
-            .map(|value| {
-                let mebibytes = value
-                    .parse::<u64>()
-                    .map_err(|_| error("FORGE_MEMORY_BUDGET_MB must be a positive integer"))?;
-                if mebibytes == 0 {
-                    return Err(error("FORGE_MEMORY_BUDGET_MB must be a positive integer"));
-                }
-                Ok(mebibytes)
-            })
-            .transpose(),
-    }
-}
-
-fn bytes_from_mebibytes(mebibytes: u64) -> std::io::Result<u64> {
-    if mebibytes == 0 {
-        return Err(error("memory budget must be greater than zero MiB"));
-    }
-    mebibytes
-        .checked_mul(1024 * 1024)
-        .ok_or_else(|| error("memory budget in MiB overflows the byte range"))
-}
-
-const DEFAULT_IGNORED_NAMES: &[&str] = &[
-    ".git",
-    ".forge",
-    ".forge-mcp",
-    ".venv",
-    "__pycache__",
-    "target",
-    "node_modules",
-    "build",
-    "dist",
-    "coverage",
-    ".cache",
-    ".next",
-    ".nuxt",
-    ".svelte-kit",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".gradle",
-    "vendor",
-    ".cargo",
-    ".idea",
-    ".vscode",
-    ".tox",
-    ".turbo",
-    "out",
-    ".output",
-];
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Represents file entry data.
-pub struct FileEntry {
-    /// The path value.
-    pub path: String,
-    /// The digest value.
-    pub digest: String,
-    /// The bytes value.
-    pub bytes: u64,
-    /// The mtime ns value.
-    pub mtime_ns: u128,
-    #[serde(default)]
-    /// The identity value.
-    pub identity: [u64; 3],
-    /// The language value.
-    pub language: String,
-    /// Whether doc applies.
-    pub is_doc: bool,
-}
+pub use crate::core::config::*;
+pub use crate::core::models::FileEntry;
+pub use crate::core::config::{ENGINE_SCHEMA_VERSION, INDEX_SEMANTICS_VERSION};
 
 #[derive(Debug, Clone, Serialize)]
 /// Represents scan report data.
@@ -248,22 +94,7 @@ pub struct BuildReport {
     pub engine_schema_version: &'static str,
 }
 
-/// Resolves file path.
-pub fn resolve_file_path(
-    root: &Path,
-    adapter: &Adapter,
-    file_path: &str,
-) -> std::io::Result<PathBuf> {
-    if file_path.starts_with('[') {
-        if let Some((prefix, rest)) = file_path.split_once("]/") {
-            let ws_name = prefix.trim_start_matches('[');
-            if let Some(lw) = adapter.linked_workspaces.iter().find(|w| w.name == ws_name) {
-                return checked_child(&lw.path, Path::new(rest));
-            }
-        }
-    }
-    checked_child(root, Path::new(file_path))
-}
+pub use crate::core::config::resolve_file_path;
 
 fn ensure_bounds(files: usize, bytes: u64, limits: &ScannerLimits) -> std::io::Result<()> {
     if files > limits.max_files {
@@ -281,81 +112,7 @@ fn ensure_bounds(files: usize, bytes: u64, limits: &ScannerLimits) -> std::io::R
     Ok(())
 }
 
-/// Checks root scope.
-pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
-    if allow_broad
-        || std::env::var("FORGE_ALLOW_BROAD_ROOT")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    {
-        return Ok(());
-    }
-
-    // 1. Filesystem root
-    if root == Path::new("/") {
-        return Err(error(
-            "refusing to index filesystem root '/'; specify a repository directory or set limits.allow_broad_root: true",
-        ));
-    }
-
-    // 2. Direct parent is / or /home or /Users
-    if let Some(parent) = root.parent() {
-        if parent == Path::new("/") {
-            let name = root.file_name().unwrap_or_default().to_string_lossy();
-            if matches!(
-                name.as_ref(),
-                "home" | "Users" | "var" | "tmp" | "usr" | "etc" | "opt"
-            ) {
-                return Err(error(format!(
-                    "refusing to index system directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
-                )));
-            }
-        } else if parent == Path::new("/home") || parent == Path::new("/Users") {
-            return Err(error(format!(
-                "refusing to index user home directory '{root:?}'; specify a repository directory or set limits.allow_broad_root: true"
-            )));
-        }
-    }
-
-    // 3. Multi-repository container check:
-    let is_git_repo = root.join(".git").exists();
-    let has_manifest = root.join("forge-mcp.yaml").exists()
-        || root.join("Cargo.toml").exists()
-        || root.join("package.json").exists()
-        || root.join("pyproject.toml").exists()
-        || root.join("go.mod").exists();
-
-    if !is_git_repo && !has_manifest {
-        if let Ok(entries) = fs::read_dir(root) {
-            let mut git_subdirs = 0;
-            for entry in entries.flatten() {
-                if let Ok(ft) = entry.file_type() {
-                    if ft.is_dir() {
-                        let p = entry.path();
-                        if p.join(".git").exists() {
-                            git_subdirs += 1;
-                        } else if let Ok(sub_entries) = fs::read_dir(&p) {
-                            for sub_entry in sub_entries.flatten() {
-                                if let Ok(sft) = sub_entry.file_type() {
-                                    if sft.is_dir() && sub_entry.path().join(".git").exists() {
-                                        git_subdirs += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if git_subdirs >= 2 {
-                    return Err(error(format!(
-                        "workspace root '{root:?}' appears to be a multi-repository container ({git_subdirs}+ repos detected); specify a single repository or set limits.allow_broad_root: true"
-                    )));
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
+pub use crate::core::config::check_root_scope;
 
 pub(crate) fn bounded_batch_size(
     memory_budget: u64,

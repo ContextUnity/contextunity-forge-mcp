@@ -338,7 +338,7 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
         [],
         |r| r.get(0),
     )?;
-    if version != crate::engine::scanner::ENGINE_SCHEMA_VERSION
+    if version != crate::core::config::ENGINE_SCHEMA_VERSION
         || engine != "contextunity-forge-mcp-rust"
     {
         validate_database_integrity(&conn)?;
@@ -352,7 +352,7 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
             |r| r.get(0),
         )
         .optional()?;
-    if semantics.as_deref() != Some(crate::engine::scanner::INDEX_SEMANTICS_VERSION) {
+    if semantics.as_deref() != Some(crate::core::config::INDEX_SEMANTICS_VERSION) {
         validate_database_integrity(&conn)?;
         return Err(IndexRebuildRequired("incompatible index semantics; rebuild index").into());
     }
@@ -391,7 +391,7 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
 }
 pub(crate) fn inventory_snapshot(
     conn: &Connection,
-) -> Result<Vec<crate::engine::scanner::FileEntry>> {
+) -> Result<Vec<crate::core::models::FileEntry>> {
     // Sealed inventory metadata can exceed the public SQL cell limit; restore it before tool queries.
     let previous_limit = conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, i32::MAX);
     let inventory = conn.query_row(
@@ -1147,4 +1147,15 @@ pub fn analyze_paged(
 
 fn resolution_cause_sql() -> &'static str {
     "CASE WHEN c.status='ambiguous' THEN 'ambiguous_candidates' WHEN e.evidence='computed receiver or dynamic callee; callable identity is unknown' THEN 'dynamic_callee' WHEN e.evidence='callee is shadowed by a parameter or local binding of unknown callable identity' THEN 'shadowed_binding' WHEN e.evidence LIKE 'call through external import %' THEN 'external_import_call' WHEN e.evidence LIKE 'import %: 1 modules, 0 alias targets' THEN 'alias_target_missing' WHEN e.evidence LIKE 'no indexed provider for absolute import %' THEN 'missing_indexed_import' WHEN e.evidence LIKE 'import %: 0 modules, %' THEN 'missing_indexed_import' WHEN e.evidence LIKE '0 lexically justified candidates;%' THEN 'no_lexical_candidate' ELSE 'other' END"
+}
+
+#[allow(dead_code)]
+/// Reads and decodes typed facts for a single indexed file.
+pub(crate) fn file_facts(conn: &Connection, path: &str) -> Result<Option<crate::core::typed_facts::TypedFacts>> {
+    let mut st = conn.prepare("SELECT facts_blob FROM local_facts WHERE path=?1")?;
+    let raw: Option<Vec<u8>> = st.query_row([path], |row| row.get(0)).optional()?;
+    match raw {
+        Some(blob) => Ok(Some(crate::core::typed_facts::decode_facts(&blob)?)),
+        None => Ok(None),
+    }
 }

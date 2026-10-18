@@ -1,5 +1,7 @@
 /// Implements adapter support.
 pub mod adapter;
+/// Implements workspace configuration and limits support.
+pub mod config;
 /// Implements commitments support.
 pub mod commitments;
 /// Implements debug log support.

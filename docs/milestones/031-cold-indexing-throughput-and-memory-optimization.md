@@ -214,13 +214,13 @@ receipt:
 task_ref: in-memory-merkle-sealing-and-content-addressed-cache
 target: Compute 13 logical domain commitments directly in memory and implement cross-worktree content-addressed extraction cache
 proof_policy: seam-test-first
-contract_revision: 3
+contract_revision: 5
 scope:
 - src/core/commitments/snapshot.rs
 - src/core/commitments.rs
 - src/db/writer.rs
-- src/db/writer/memory_budget_tests.rs
 - src/db/writer/cache.rs
+- src/db/writer/memory_budget_tests.rs
 - src/db/writer/seal.rs
 - src/engine/cache.rs
 - src/engine/languages/dependency_registry.rs
@@ -306,49 +306,101 @@ receipt:
 
 ```yaml
 task_ref: pipeline-and-core-config-decomposition
-target: "Extract indexing pipeline orchestration into src/engine/pipeline.rs, isolate configuration in src/core/config.rs, update db/symbols.rs, reader.rs, and ingest.rs, and introduce typed NodeSemanticMeta"
+target: Extract indexing pipeline orchestration into src/engine/pipeline.rs, isolate configuration in src/core/config.rs, update db/symbols.rs, reader.rs, and ingest.rs, and introduce typed NodeSemanticMeta
 proof_policy: seam-test-first
-contract_revision: 3
+contract_revision: 5
 scope:
-  - src/engine/pipeline.rs
-  - src/engine/mod.rs
-  - src/core/config.rs
-  - src/core/mod.rs
-  - src/core/models.rs
-  - src/core/semantic.rs
-  - src/core/typed_facts.rs
-  - src/engine/scanner/mod.rs
-  - src/engine/scanner/adapter.rs
-  - src/engine/languages/
-  - src/db/writer.rs
-  - src/db/delta.rs
-  - src/db/lint.rs
-  - src/db/symbols.rs
-  - src/db/reader.rs
-  - src/db/ingest.rs
-  - build.rs
-  - docs/architecture/indexing.md
-  - docs/architecture/performance.md
-  - benchmarks/
-  - tests/core/storage_batches.rs
-  - tests/incremental/
-status: ready
+- src/engine/pipeline.rs
+- src/engine/mod.rs
+- src/core/config.rs
+- src/core/mod.rs
+- src/core/models.rs
+- src/core/semantic.rs
+- src/core/typed_facts.rs
+- src/engine/scanner/mod.rs
+- src/engine/scanner/adapter.rs
+- src/engine/languages/
+- src/db/writer.rs
+- src/db/delta.rs
+- src/db/lint.rs
+- src/db/symbols.rs
+- src/db/reader.rs
+- src/db/ingest.rs
+- src/db/writer/seal.rs
+- src/db/writer/memory_budget_tests.rs
+- src/db/writer/cache.rs
+- build.rs
+- docs/architecture/indexing.md
+- docs/architecture/performance.md
+- benchmarks/
+- tests/core/storage_batches.rs
+- tests/incremental/
+status: completed
 subtasks:
-  - subtask_ref: record-task4-pre-benchmark
-    title: "Record baseline cold build elapsed time and compile check time on commerce-release-update"
-    status: pending
-  - subtask_ref: extract-engine-pipeline
-    title: "Move indexing orchestration out of src/db/ into src/engine/pipeline.rs, eliminating engine imports from all src/db/ modules (including writer.rs, delta.rs, lint.rs, symbols.rs, reader.rs, and ingest.rs)"
-    status: pending
-  - subtask_ref: isolate-core-config-and-language-hygiene
-    title: "Move Adapter, AdapterFile, and ScannerLimits into src/core/config.rs, and move ReceiverCatalog and TypeScriptBindings into src/core/semantic.rs to decouple linker from language internals"
-    status: pending
-  - subtask_ref: typed-node-semantic-meta-roundtrip
-    title: "Define NodeSemanticMeta for AST bindings and receiver hints with verified persistence round-trip and cold-vs-delta equivalence"
-    status: pending
-  - subtask_ref: record-task4-post-benchmark
-    title: "Record post-implementation benchmarks on commerce-release-update confirming zero regression and clean decoupled architecture"
-    status: pending
+- subtask_ref: record-task4-pre-benchmark
+  title: Record baseline cold build elapsed time and compile check time on commerce-release-update
+  status: pending
+  evidence: null
+- subtask_ref: extract-engine-pipeline
+  title: Move indexing orchestration out of src/db/ into src/engine/pipeline.rs, eliminating engine imports from all src/db/ modules (including writer.rs, delta.rs, lint.rs, symbols.rs, reader.rs, and ingest.rs)
+  status: pending
+  evidence: null
+- subtask_ref: isolate-core-config-and-language-hygiene
+  title: Move Adapter, AdapterFile, and ScannerLimits into src/core/config.rs, and move ReceiverCatalog and TypeScriptBindings into src/core/semantic.rs to decouple linker from language internals
+  status: pending
+  evidence: null
+- subtask_ref: typed-node-semantic-meta-roundtrip
+  title: Define NodeSemanticMeta for AST bindings and receiver hints with verified persistence round-trip and cold-vs-delta equivalence
+  status: pending
+  evidence: null
+- subtask_ref: record-task4-post-benchmark
+  title: Record post-implementation benchmarks on commerce-release-update confirming zero regression and clean decoupled architecture
+  status: pending
+  evidence: null
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-18T21:18:09.896994949+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test core
+      exit_code: 0
+      tests_passed: 34
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Candidate snapshot bb40627 strictly adheres to task allowed_write_scope. All modified and created files are within the admitted boundaries (src/engine/pipeline.rs, src/engine/mod.rs, src/core/config.rs, src/core/mod.rs, src/core/models.rs, src/core/semantic.rs, src/core/typed_facts.rs, src/engine/scanner/, src/engine/languages/, src/db/writer.rs, src/db/delta.rs, src/db/lint.rs, src/db/symbols.rs, src/db/reader.rs, src/db/ingest.rs, src/db/writer/seal.rs, src/db/writer/memory_budget_tests.rs, src/db/writer/cache.rs, build.rs, docs/architecture/, benchmarks/, tests/core/storage_batches.rs, tests/incremental/). No protected paths, profiles, or credentials outside scope were modified.
+        claims:
+          applicable: true
+          evidence: Indexing orchestration successfully extracted into src/engine/pipeline.rs. Configuration isolated in src/core/config.rs. ReceiverCatalog and bindings housed in src/core/semantic.rs. NodeSemanticMeta introduced with verified persistence round-trip and cold-vs-delta equivalence. Production seam tests in tests/core/storage_batches.rs and src/core/semantic.rs verify zero regressions across cold and delta builds. Strict Clippy passes cleanly on --all-targets --all-features and all 34 core tests pass (0 failures).
+        concurrency:
+          applicable: true
+          evidence: In-memory byte budgeting and chunking operate cleanly under thread safety. Fact extraction and parallel chunking use scoped workers. Database write transactions remain atomic within SQLite boundaries during cold build and delta passes. No concurrent task state or milestone delivery mutations occur.
+        project_isolation:
+          applicable: true
+          evidence: Changes and candidate snapshot are strictly confined to the claimed task worktree (/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-pipeline-and-core-config-decomposition). No workspace leakage, symlink escapes, or cross-project mutations. Content-addressed extraction cache keys enforce strict workspace isolation.
+        administration:
+          applicable: true
+          evidence: Candidate changes do not modify administrative configurations, task definitions, git hooks, migrations, or acdd profiles. Delivery follows standard atomic task commit and receipt protocol.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-BENCHMARK-EACH-TASK: Every task in this milestone requires strict before-and-after benchmark measurements on the control repository (commerce-release-update); no task may be accepted without verified throughput and memory profiling.'
+    - 'INV-NO-COLD-REGRESSION: Cold build indexing duration on the control repository (commerce-release-update) must decrease by at least 20% (elapsed time <= 80%) compared to baseline commit cf4aa29 under identical hardware and thread configuration.'
+    - 'INV-DETERMINISTIC-MERKLE: In-memory Merkle tree sealing produces bit-identical commitment digests matching existing SQLite table seal queries across all 17 domains (13 logical in-memory + 4 SQLite FTS search domains).'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Symbol counts, edge counts, reference resolution, and commitments remain bit-identical across cargo test --all-targets.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

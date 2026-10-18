@@ -93,6 +93,7 @@ fn generate_profiles() {
         std::path::PathBuf::from("src/core/typed_facts.rs"),
         std::path::PathBuf::from("src/core/schema.rs"),
         std::path::PathBuf::from("src/core/commitments.rs"),
+        std::path::PathBuf::from("src/core/config.rs"),
         std::path::PathBuf::from("src/db/writer.rs"),
     ];
     let mut pending = vec![std::path::PathBuf::from("src/engine")];

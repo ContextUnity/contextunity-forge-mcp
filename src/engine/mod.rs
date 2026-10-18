@@ -8,6 +8,8 @@ pub mod languages;
 pub mod linker;
 /// Implements milestone lifecycle support.
 pub mod milestones;
+/// Indexing pipeline orchestration.
+pub mod pipeline;
 /// Implements scanner support.
 pub mod scanner;
 /// Implements tasks support.
