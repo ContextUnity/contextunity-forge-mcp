@@ -114,8 +114,7 @@ pub(crate) fn compose_django_route_includes(
             for child in child_routes {
                 let ancestors = route_ancestry.get(&child.id);
                 if ancestors.is_some_and(|ancestors| {
-                    ancestors.len() >= MAX_INCLUDE_DEPTH
-                        || ancestors.contains(&include.id)
+                    ancestors.len() >= MAX_INCLUDE_DEPTH || ancestors.contains(&include.id)
                 }) {
                     continue;
                 }
@@ -161,9 +160,7 @@ pub(crate) fn compose_django_route_includes(
                     })
                     .and_then(|source_facts| {
                         source_facts.facts.nodes.iter().find(|node| {
-                            node.id == source_id
-                                && node.kind == "route"
-                                && node.path == source_path
+                            node.id == source_id && node.kind == "route" && node.path == source_path
                         })
                     });
                 let source_qualname = origin.map(|node| node.qualname.clone());
@@ -182,8 +179,8 @@ pub(crate) fn compose_django_route_includes(
                 route.details["source_path"] = json!(source_path);
                 route.details["source_line"] = json!(source_line);
                 route.details["source_id"] = json!(source_id);
-                route.details["source_qualname"] = source_qualname
-                    .map_or(serde_json::Value::Null, |qualname| json!(qualname));
+                route.details["source_qualname"] =
+                    source_qualname.map_or(serde_json::Value::Null, |qualname| json!(qualname));
                 route.details["included_from"] = json!(include.id);
                 route.details["include_depth"] = json!(
                     include.details["include_depth"]
@@ -245,9 +242,7 @@ pub(crate) fn compose_django_route_includes(
                 })
                 .filter(|source_facts| {
                     source_facts.facts.nodes.iter().any(|node| {
-                        node.id == source_id
-                            && node.kind == "route"
-                            && node.path == source_path
+                        node.id == source_id && node.kind == "route" && node.path == source_path
                     })
                 })
                 .map(|source_facts| {

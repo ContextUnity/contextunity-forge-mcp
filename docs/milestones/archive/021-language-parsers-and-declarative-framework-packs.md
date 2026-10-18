@@ -2,7 +2,7 @@
 id: m-language-parsers-and-declarative-framework-packs
 title: Declarative framework packs, rule externalization, and 3-tier language parsers
 doc_type: contract
-status: active
+status: completed
 started_at: 2026-10-16T08:05:00+00:00
 depends_on:
 - m-declarative-framework-packs-and-cold-build-pipeline
@@ -22,6 +22,15 @@ invariants:
 related_plans:
 - docs/plans/forge-mcp-audit-and-architecture.md
 - docs/plans/declarative-tree-sitter-queries-study.md
+handoff:
+  completed_at: 2026-10-18T02:37:50.216089276+00:00
+  duration: 42h 32m
+  commit: 7fcb317ca526be1a10c1dd7f2b41a728f91866e4
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 740
+    tests_failed: 0
 ---
 
 # Declarative framework packs, rule externalization, and 3-tier language parsers
@@ -91,6 +100,7 @@ subtasks:
   status: completed
   evidence: 'Root-owned framework-manifest reference, indexing architecture page, SKILL.md, TOML/YAML declarative examples, and GridViewSpec TOML example are synced to the typed schema and current source-verified GridView API. Existing registry seam strictly parses both declarative examples and the full GridViewSpec example and asserts 28 hierarchy receiver rules; `cargo test --lib project_framework_packs_merge_replace_and_activate -- --nocapture` passed (1). Skill validator passed: `uv run --offline --with pyyaml python /home/oleksii/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/contextunity-forge`.'
 receipt:
+  commit: f45c764f5312aff1949231c967c59e66620362dd
   contract_revision: 7
   passed_at: 2026-10-16T10:40:53.880056015+00:00
   evidence:
@@ -229,6 +239,7 @@ subtasks:
   status: completed
   evidence: 'Complete current17builderfiles/1532added17removed necessary-role inventory against delivered T1 f45c764f5312aff1949231c967c59e66620362dd. Unsupported zero-gain channels removed, no parallel resolver/schema/testbinary; canonical helpers reused. All20 currenthashes bound,2pre-existingforeignformatfiles excluded and untouched. Complete54syntax equivalents, actualruntimeRed/5mutations/exactrestore/current415tests+Clippy; Forge source-map/residual receipts efb5da8e. Full /tmp/021-r12-build26-closure-ledger.md and finalinventory;  Independent REVIEW27 PASS accepted and submitted: /tmp/021-r12-build26-review-terminal.md and /tmp/021-r12-build26-review-submit-result.json; no required residual. Metadata reconciliation only; frozen candidate bytes unchanged.'
 receipt:
+  commit: 04b11483d0cf180bb0a896c2a2f5ca2818f43bb9
   contract_revision: 12
   passed_at: 2026-10-16T19:39:11.682803965+00:00
   evidence:
@@ -387,6 +398,7 @@ subtasks:
   status: completed
   evidence: 'R3-C1 complete retained declaration metadata+flow and exact-root prepared bindings repair, public12-case/typed-offset/full original finish-order coverage, genuine pre-fix runtime Red, all12 author + Rust2/IR3 final-byte runtime guards. /tmp/021-t3-r3c1-author-terminal-proof.json; /tmp/021-t3-r3c1-root-mutation-sequence.json; /tmp/021-t3-r3c1-implementation.md. Final BUILD9 source392 digest2fec2668ea80cc7a2c7764f2b0ca4318de9a16e648ec40dcd412d17296d7209b: strictClippy; compound734/0, all-feature languages263/0, registered lib59/0. /tmp/021-t3-r3c1-green-gate-results.json; /tmp/021-t3-r3c1-green-source-currentness.json. Fresh actualCLI a5d8a86e canonical58 and Commerce38851 leaves/typed tables/graph/coverage exact; /tmp/021-t3-r3c1-current-replays.json. NoCold unmeasured, no benchmark consent or run.'
 receipt:
+  commit: 7fcb317ca526be1a10c1dd7f2b41a728f91866e4
   contract_revision: 10
   passed_at: 2026-10-18T02:19:34.471131744+00:00
   evidence:

@@ -257,44 +257,47 @@ pub(crate) fn mutation(
     member_kinds: &[&str],
 ) {
     let node = ctx.node;
-    if !field_kinds.contains(&node.kind()) && !assignment_kinds.contains(&node.kind()) {
+    let is_field = field_kinds.contains(&node.kind());
+    let is_assign = assignment_kinds.contains(&node.kind());
+    if !is_field && !is_assign {
         return;
     }
     let (source, owner, offset) = (ctx.source, ctx.owner, ctx.offset);
     let line = node.start_position().row + offset + 1;
-    let (parent_id, parent_qualname, parent_path, parent_is_test, parent_language, parent_kind) = {
-        let Some(p) = facts.nodes.iter().find(|n| n.id == owner) else {
-            return;
-        };
-        (
-            p.id.clone(),
-            p.qualname.clone(),
-            p.path.clone(),
-            p.is_test,
-            p.language.clone(),
-            p.kind.clone(),
-        )
-    };
-    let owner_meta = FieldOwner {
-        id: &parent_id,
-        qualname: &parent_qualname,
-        path: &parent_path,
-        is_test: parent_is_test,
-        language: &parent_language,
+    let Some(p_idx) = facts.nodes.iter().rposition(|n| n.id == owner) else {
+        return;
     };
 
-    if field_kinds.contains(&node.kind()) {
+    if is_field {
         if let Some(name) = node.child_by_field_name("name") {
+            let field_text = text(name, source);
+            let owner_meta = {
+                let p = &facts.nodes[p_idx];
+                (
+                    p.id.clone(),
+                    p.qualname.clone(),
+                    p.path.clone(),
+                    p.is_test,
+                    p.language.clone(),
+                )
+            };
+            let meta = FieldOwner {
+                id: &owner_meta.0,
+                qualname: &owner_meta.1,
+                path: &owner_meta.2,
+                is_test: owner_meta.3,
+                language: &owner_meta.4,
+            };
             add_field(
                 facts,
-                &owner_meta,
-                text(name, source),
+                &meta,
+                field_text,
                 line,
                 node.end_position().row + offset + 1,
             );
         }
     }
-    if !assignment_kinds.contains(&node.kind()) {
+    if !is_assign {
         return;
     }
     let Some(left) = node
@@ -303,27 +306,55 @@ pub(crate) fn mutation(
     else {
         return;
     };
-    if matches!(parent_kind.as_str(), "class" | "struct") && left.kind() == "identifier" {
+    let is_member = member_kinds.contains(&left.kind());
+    let is_class_or_struct = matches!(facts.nodes[p_idx].kind.as_str(), "class" | "struct");
+    if is_class_or_struct && left.kind() == "identifier" {
         let field_name = text(left, source);
+        let (owner_meta, p_path, p_id) = {
+            let p = &facts.nodes[p_idx];
+            (
+                (
+                    p.id.clone(),
+                    p.qualname.clone(),
+                    p.path.clone(),
+                    p.is_test,
+                    p.language.clone(),
+                ),
+                p.path.clone(),
+                p.id.clone(),
+            )
+        };
+        let meta = FieldOwner {
+            id: &owner_meta.0,
+            qualname: &owner_meta.1,
+            path: &owner_meta.2,
+            is_test: owner_meta.3,
+            language: &owner_meta.4,
+        };
         let id = add_field(
             facts,
-            &owner_meta,
+            &meta,
             field_name,
             line,
             node.end_position().row + offset + 1,
         );
         facts.edges.push(Edge {
-            src: owner.into(),
+            src: p_id,
             dst: id,
             kind: "mutates".into(),
-            path: parent_path,
+            path: p_path,
             line,
             evidence: field_name.into(),
             confidence: "exact".into(),
         });
-    } else if member_kinds.contains(&left.kind()) {
+    } else if is_member {
         let expr = text(left, source);
-        if expr.starts_with("self.") || expr.starts_with("this.") || expr.starts_with("cls.") {
+        if expr.starts_with("self.")
+            || expr.starts_with("this.")
+            || expr.starts_with("cls.")
+            || expr.starts_with("self?.")
+            || expr.starts_with("this?.")
+        {
             reference(facts, owner, expr, "mutates", line);
         }
     }
@@ -336,6 +367,21 @@ pub(crate) fn member_access(
 ) {
     let node = ctx.node;
     if !member_kinds.contains(&node.kind()) {
+        return;
+    }
+    let expr = text(node, ctx.source);
+    if !expr.starts_with("self.")
+        && !expr.starts_with("this.")
+        && !expr.starts_with("cls.")
+        && !expr.starts_with("self?.")
+        && !expr.starts_with("this?.")
+    {
+        return;
+    }
+    if expr
+        .split('.')
+        .any(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+    {
         return;
     }
     if let Some(parent) = node.parent() {
@@ -364,17 +410,8 @@ pub(crate) fn member_access(
             return;
         }
     }
-    let expr = text(node, ctx.source);
-    if expr.starts_with("self.") || expr.starts_with("this.") || expr.starts_with("cls.") {
-        if expr
-            .split('.')
-            .any(|s| s.chars().all(|c| c.is_ascii_digit()))
-        {
-            return;
-        }
-        let line = node.start_position().row + ctx.offset + 1;
-        reference(facts, ctx.owner, expr, "references", line);
-    }
+    let line = node.start_position().row + ctx.offset + 1;
+    reference(facts, ctx.owner, expr, "references", line);
 }
 
 pub(crate) fn implicit_fields(facts: &mut Facts) {

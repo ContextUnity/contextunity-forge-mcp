@@ -38,7 +38,7 @@ fn literal_set<'a>(mut node: Node<'_>, source: &'a str) -> Option<Vec<&'a str>> 
         .collect()
 }
 
-fn invalidate_rebound_sets<'a>(
+fn invalidate_rebound_event<'a>(
     node: Node<'_>,
     source: &'a str,
     originals: &HashMap<&'a str, usize>,
@@ -69,10 +69,7 @@ fn invalidate_rebound_sets<'a>(
             }
         }
     }
-    if matches!(
-        node.kind(),
-        "function_definition" | "class_definition" | "lambda"
-    ) {
+    if matches!(node.kind(), "function_definition" | "class_definition" | "lambda") {
         if let Some(name) = field(node, source, "name").filter(|name| originals.contains_key(name))
         {
             sets.insert(name, None);
@@ -100,10 +97,6 @@ fn invalidate_rebound_sets<'a>(
                 sets.insert(name, None);
             }
         }
-    }
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        invalidate_rebound_sets(child, source, originals, sets);
     }
 }
 
@@ -319,17 +312,27 @@ fn branch_exports(
     result
 }
 
-pub(super) fn extract(
-    root: Node<'_>,
+pub(super) fn extract<'tree>(
+    root: Node<'tree>,
     source: &str,
-    statements: &[Node<'_>],
-    getters: &[Node<'_>],
+    module_rebindings: &[String],
+    rebound_events: &[Node<'tree>],
 ) -> Vec<LazyExport> {
-    if getters.len() != 1 {
+    let mut getter = None;
+    let mut getter_count = 0;
+    let mut cursor = root.walk();
+    for statement in root.named_children(&mut cursor) {
+        if statement.kind() == "function_definition"
+            && field(statement, source, "name") == Some("__getattr__")
+        {
+            getter_count += 1;
+            getter = Some(statement);
+        }
+    }
+    if getter_count != 1 {
         return Vec::new();
     }
-    let getter = getters[0];
-    let module_rebindings = crate::engine::ast::scope_bindings(root, source).rebindings;
+    let getter = getter.expect("one matching module getter");
     if module_rebindings
         .iter()
         .any(|name| matches!(name.as_str(), "__getattr__" | "frozenset"))
@@ -370,7 +373,8 @@ pub(super) fn extract(
     let mut getattr_bound = false;
     let mut frozenset_shadowed = false;
     let mut getter_rebound = false;
-    for &statement in statements {
+    let mut cursor = root.walk();
+    for statement in root.named_children(&mut cursor) {
         if matches!(
             statement.kind(),
             "import_statement" | "import_from_statement"
@@ -446,8 +450,10 @@ pub(super) fn extract(
             }
         }
     }
-    invalidate_rebound_sets(root, source, &set_originals, &mut sets);
-    for name in &module_rebindings {
+    for &event in rebound_events {
+        invalidate_rebound_event(event, source, &set_originals, &mut sets);
+    }
+    for name in module_rebindings {
         module_bindings.remove(name);
     }
     if module_rebindings.iter().any(|name| name == "getattr") {

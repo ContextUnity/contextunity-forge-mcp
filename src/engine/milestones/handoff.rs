@@ -24,9 +24,7 @@ fn full_git_sha(value: &str) -> bool {
 }
 
 fn canonical_git_path(path: &str) -> String {
-    path.replace('\\', "/")
-        .trim_start_matches("./")
-        .to_owned()
+    path.replace('\\', "/").trim_start_matches("./").to_owned()
 }
 
 fn git_tree_id(root: &Path, commit: &str) -> Result<String> {
@@ -104,7 +102,10 @@ fn accepted_gate_evidence(
                 )
             })?;
         if row["state"] != "passed" {
-            bail!("TASK_RECEIPT_INVALID: latest '{}' gate evidence is not accepted", gate.id);
+            bail!(
+                "TASK_RECEIPT_INVALID: latest '{}' gate evidence is not accepted",
+                gate.id
+            );
         }
         let revision = row["claim_revision"]
             .as_u64()
@@ -112,14 +113,17 @@ fn accepted_gate_evidence(
         let serialized = row["evidence"]
             .as_str()
             .context("TASK_RECEIPT_INVALID: accepted gate evidence is missing")?;
-        let evidence: crate::core::tasks::gates::Evidence =
-            serde_json::from_str(serialized).context("TASK_RECEIPT_INVALID: accepted gate evidence is malformed")?;
+        let evidence: crate::core::tasks::gates::Evidence = serde_json::from_str(serialized)
+            .context("TASK_RECEIPT_INVALID: accepted gate evidence is malformed")?;
         let claims = attempts
             .iter()
             .filter(|attempt| attempt["claim_revision"].as_u64() == Some(revision))
             .collect::<Vec<_>>();
         let [claim] = claims.as_slice() else {
-            bail!("TASK_RECEIPT_INVALID: accepted '{}' gate has no unique persisted claim", gate.id);
+            bail!(
+                "TASK_RECEIPT_INVALID: accepted '{}' gate has no unique persisted claim",
+                gate.id
+            );
         };
         let claim_worker = claim["worker_id"]
             .as_str()
@@ -128,7 +132,10 @@ fn accepted_gate_evidence(
             .as_str()
             .context("TASK_RECEIPT_INVALID: persisted claim worktree is malformed")?;
         if claim["ended"].as_bool() != Some(true) {
-            bail!("TASK_RECEIPT_INVALID: accepted '{}' gate claim is not closed", gate.id);
+            bail!(
+                "TASK_RECEIPT_INVALID: accepted '{}' gate claim is not closed",
+                gate.id
+            );
         }
         if evidence.task_id != task_id
             || evidence.stage != gate.id
@@ -148,10 +155,18 @@ fn accepted_gate_evidence(
             true,
             proof_policy,
         )
-        .with_context(|| format!("TASK_RECEIPT_INVALID: accepted '{}' gate proof is invalid", gate.id))?;
+        .with_context(|| {
+            format!(
+                "TASK_RECEIPT_INVALID: accepted '{}' gate proof is invalid",
+                gate.id
+            )
+        })?;
         if let Some(commit) = evidence.commit.as_deref() {
             if !full_git_sha(commit) || !crate::core::git::git_commit_exists(root, commit)? {
-                bail!("TASK_RECEIPT_INVALID: accepted '{}' gate commit is malformed or unavailable", gate.id);
+                bail!(
+                    "TASK_RECEIPT_INVALID: accepted '{}' gate commit is malformed or unavailable",
+                    gate.id
+                );
             }
         }
         if gate.sha_snapshot {
@@ -207,10 +222,13 @@ fn validate_task_provenance(
         task.proof_policy,
         task.profile,
     )?;
-    let delivery_index = task.profile
+    let delivery_index = task
+        .profile
         .gates
         .iter()
-        .position(|gate| gate.proof.kind() == Some(crate::core::tasks::profile::ProofKind::Delivery))
+        .position(|gate| {
+            gate.proof.kind() == Some(crate::core::tasks::profile::ProofKind::Delivery)
+        })
         .context("TASK_RECEIPT_INVALID: profile has no delivery gate")?;
     let snapshot_gate = task.profile.gates[..delivery_index]
         .iter()
@@ -229,7 +247,9 @@ fn validate_task_provenance(
         .as_deref()
         .context("TASK_RECEIPT_INVALID: accepted candidate baseline is missing")?;
     if task.receipt.evidence != snapshot.proof {
-        bail!("TASK_RECEIPT_INVALID: durable candidate proof does not match accepted build evidence");
+        bail!(
+            "TASK_RECEIPT_INVALID: durable candidate proof does not match accepted build evidence"
+        );
     }
 
     let delivery_gate = &task.profile.gates[delivery_index];
@@ -247,7 +267,12 @@ fn validate_task_provenance(
             bail!("TASK_RECEIPT_INVALID: accepted review '{source}' does not match the candidate baseline");
         }
     }
-    if let Some(sources) = task.receipt.review.get("review_sources").and_then(Value::as_object) {
+    if let Some(sources) = task
+        .receipt
+        .review
+        .get("review_sources")
+        .and_then(Value::as_object)
+    {
         if sources.len() != delivery_gate.review_sources.len() {
             bail!("TASK_RECEIPT_INVALID: durable review rollup does not match accepted review evidence");
         }
@@ -262,10 +287,14 @@ fn validate_task_provenance(
     } else if delivery_gate.review_sources.len() == 1 {
         let source = &delivery_gate.review_sources[0];
         if evidence.get(source).map(|value| &value.proof) != Some(&task.receipt.review) {
-            bail!("TASK_RECEIPT_INVALID: durable review proof does not match accepted gate evidence");
+            bail!(
+                "TASK_RECEIPT_INVALID: durable review proof does not match accepted gate evidence"
+            );
         }
     } else {
-        bail!("TASK_RECEIPT_INVALID: multiple accepted review sources require a source-keyed receipt");
+        bail!(
+            "TASK_RECEIPT_INVALID: multiple accepted review sources require a source-keyed receipt"
+        );
     }
 
     let delivered = evidence
@@ -345,13 +374,18 @@ fn task_landed_commit(
     let differing = crate::core::git::git_scoped_differing_files(
         root,
         delivery,
-        commits.last().context("milestone first-parent history is empty")?,
+        commits
+            .last()
+            .context("milestone first-parent history is empty")?,
         scope,
     )?;
     let detail = if differing.is_empty() {
         String::new()
     } else {
-        format!("\nDiffering paths in task scope:\n  - {}", differing.join("\n  - "))
+        format!(
+            "\nDiffering paths in task scope:\n  - {}",
+            differing.join("\n  - ")
+        )
     };
     let restore_cmd = if differing.is_empty() {
         format!("git checkout {delivery} -- <paths>")
@@ -377,9 +411,10 @@ fn validate_later_scope_changes(root: &Path, handoff: &str, tasks: &[LandedTask]
             let mut explained = false;
             for later in tasks.iter().filter(|later| {
                 later.landing_index > earlier.landing_index
-                    && later.scope.iter().any(|scope| {
-                        crate::core::tasks::path_matches_scope_entry(&path, scope)
-                    })
+                    && later
+                        .scope
+                        .iter()
+                        .any(|scope| crate::core::tasks::path_matches_scope_entry(&path, scope))
             }) {
                 if !git_changed(root, &later.delivery, handoff, std::slice::from_ref(&path))? {
                     explained = true;
@@ -485,10 +520,8 @@ pub fn handoff(
         .unwrap_or(true);
     let mut original_receipts = BTreeMap::new();
     let mut landed_receipts = BTreeMap::new();
-    let history_output = crate::core::git::git_command(
-        root,
-        &["rev-list", "--first-parent", "--reverse", &sha],
-    )?;
+    let history_output =
+        crate::core::git::git_command(root, &["rev-list", "--first-parent", "--reverse", &sha])?;
     if !history_output.status.success() {
         bail!("unable to inspect milestone first-parent history");
     }
@@ -562,8 +595,7 @@ pub fn handoff(
         let mut landed = original.clone();
         let effective_delivery = match markdown_commit {
             Some(md_sha) => {
-                if original.commit.as_deref() != Some(md_sha)
-                    && !git_ancestor(root, md_sha, &sha)?
+                if original.commit.as_deref() != Some(md_sha) && !git_ancestor(root, md_sha, &sha)?
                 {
                     bail!(
                         "TASK_DELIVERY_COMMIT_INVALID: task '{task_ref}' receipt commit '{md_sha}' is not an ancestor of milestone handoff commit '{sha}'.\n\
