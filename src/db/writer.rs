@@ -1,5 +1,5 @@
 use crate::core::models::compact_graph::Graph as CompactGraph;
-use crate::core::typed_facts::{decode_facts, encode_facts, TypedFacts};
+use crate::core::typed_facts::{decode_facts, TypedFacts};
 use crate::engine::languages::module_name;
 use crate::{
     core::{commitments, models::*, schema::SCHEMA_DDL},
@@ -930,25 +930,35 @@ fn populate(
             params![k, v],
         )?;
     }
-    let mut node_paths: hashbrown::HashMap<String, Option<CachedNodePath>> =
-        hashbrown::HashMap::with_capacity(facts.values().map(|f| f.nodes.len()).sum());
-    for f in facts.values() {
-        for n in &f.nodes {
-            node_paths.insert(
-                n.id.clone(),
-                Some(CachedNodePath::new(&n.id, n.path.clone())),
-            );
-        }
-    }
     let mut path_cache = PathDictionaryCache::new();
     let all_paths = entries
         .iter()
         .map(|e| e.path.as_str())
         .chain(graph.edges.iter().map(|e| e.path.as_str()))
-        .chain(graph.coverage.iter().map(|c| c.path.as_str()));
+        .chain(graph.coverage.iter().map(|c| c.path.as_str()))
+        .chain(
+            entries
+                .iter()
+                .filter_map(|entry| facts.get(&entry.path))
+                .flat_map(|file_facts| file_facts.nodes.iter().map(|node| node.path.as_str())),
+        );
     let t_bulk = Instant::now();
     path_cache.bulk_insert(&tx, all_paths)?;
     let bulk_paths_ms = t_bulk.elapsed().as_secs_f64() * 1000.;
+    let mut node_paths: hashbrown::HashMap<String, Option<CachedNodePath>> =
+        hashbrown::HashMap::with_capacity(facts.values().map(|f| f.nodes.len()).sum());
+    let mut shared_paths = hashbrown::HashMap::<&str, Arc<str>>::new();
+    for f in facts.values() {
+        for n in &f.nodes {
+            let shared_path = shared_paths
+                .entry(n.path.as_str())
+                .or_insert_with(|| Arc::<str>::from(n.path.as_str()));
+            node_paths.insert(
+                n.id.clone(),
+                Some(CachedNodePath::from_shared(&n.id, Arc::clone(shared_path))),
+            );
+        }
+    }
 
     let t_files = Instant::now();
     let file_timings = persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
@@ -959,6 +969,8 @@ fn populate(
         .context("cold file persistence must report node row insertion time")?;
     let docs_count = file_timings.docs_count;
     let fts_insert_ms = file_timings.fts_insert_ms;
+    let encode_facts_ms = file_timings.encode_facts_ms;
+    let local_facts_batch_rows = file_timings.local_facts_batch_rows;
     let persist_files_ms = t_files.elapsed().as_secs_f64() * 1000. - fts_insert_ms;
     let t_doc_fts = Instant::now();
     if docs_count > 0 {
@@ -1003,7 +1015,7 @@ fn populate(
     let index_and_seal_ms = index_and_seal.elapsed().as_secs_f64() * 1000.;
     let persist_ms = writing.elapsed().as_secs_f64() * 1000.;
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-    let mut report = json!({"files":entries.len(),"nodes":node_id,"node_row_count":node_row_count,"node_row_insert_ms":node_row_insert_ms,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"doc_fts_insert_ms":doc_fts_insert_ms,"persist_graph_ms":persist_graph_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms});
+    let mut report = json!({"files":entries.len(),"nodes":node_id,"node_row_count":node_row_count,"node_row_insert_ms":node_row_insert_ms,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"doc_fts_insert_ms":doc_fts_insert_ms,"persist_graph_ms":persist_graph_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms,"encode_facts_ms":encode_facts_ms,"sqlite_ingestion":{"mode":"deferred-index-batched","secondary_indexes_deferred":true,"batch_rows":local_facts_batch_rows}});
     report["graph_phases_ms"] = json!({"occurrences_and_dependencies":graph_timings.occurrences,"unique_edges":graph_timings.edges,"coverage_dictionaries":graph_timings.dictionaries,"coverage_and_unresolved":graph_timings.coverage});
     report["index_and_seal_ms"] = json!(index_and_seal_ms);
     report["framework_rule_diagnostics"] = json!(dependencies.framework_rule_diagnostics(
@@ -1149,20 +1161,13 @@ fn atomic_build(
         let _ = ast::route_includes::compose_django_route_includes(&mut streamed.facts);
         components(&mut streamed.facts);
         let components_ms = preparing_components.elapsed().as_secs_f64() * 1000.;
-        let encoding = Instant::now();
-        let encoded_facts: hashbrown::HashMap<String, Vec<u8>> = streamed
-            .facts
-            .par_iter()
-            .map(|(path, facts)| Ok((path.clone(), encode_facts(facts)?)))
-            .collect::<Result<_>>()?;
-        let encode_facts_ms = encoding.elapsed().as_secs_f64() * 1000.;
         let mut report = populate(
             &mut streamed.connection,
             root,
             adapter,
             &streamed.entries,
             &streamed.facts,
-            Some(&encoded_facts),
+            None,
             BuildInputs {
                 dependency_registry: &dependencies,
                 memory_budget,
@@ -1174,7 +1179,6 @@ fn atomic_build(
         report["scanned_bytes"] = json!(pipeline_metrics.scanned_bytes);
         report["scan_ms"] = json!(pipeline_metrics.scan_ms);
         report["extract_ms"] = json!(pipeline_metrics.extraction_ms);
-        report["encode_facts_ms"] = json!(encode_facts_ms);
         report["components_ms"] = json!(components_ms);
         report["pipeline"] = json!({
             "budget_bytes": pipeline_metrics.budget_bytes,

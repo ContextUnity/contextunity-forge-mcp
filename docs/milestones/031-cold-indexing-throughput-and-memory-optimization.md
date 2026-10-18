@@ -125,30 +125,79 @@ receipt:
 
 ```yaml
 task_ref: retained-memory-reduction-and-turbo-ingestion
-target: "Decouple transient extraction data, free ASTs early before linking, and evaluate SQLite turbo-ingestion mode"
+target: Decouple transient extraction data, free ASTs early before linking, and evaluate SQLite turbo-ingestion mode
 proof_policy: seam-test-first
 contract_revision: 2
 scope:
-  - src/db/writer.rs
-  - src/db/ingest.rs
-  - src/core/models.rs
-  - docs/architecture/performance.md
-  - tests/commitment_integrity.rs
-  - benchmarks/
-status: ready
+- src/db/writer.rs
+- src/db/ingest.rs
+- src/core/models.rs
+- docs/architecture/performance.md
+- tests/commitment_integrity.rs
+- benchmarks/
+status: completed
 subtasks:
-  - subtask_ref: record-task2-pre-benchmark
-    title: "Record baseline memory profile and SQLite ingestion phase timing on commerce-release-update"
-    status: pending
-  - subtask_ref: retained-memory-reduction
-    title: "Separate transient AST/source facts from long-lived linker data, releasing AST trees and duplicate fact maps before global linking"
-    status: pending
-  - subtask_ref: sqlite-turbo-ingestion-mode
-    title: "Evaluate and implement unindexed bulk insertion with post-load secondary index creation and chunked transaction batching against baseline PRAGMAs, proving measured speedup"
-    status: pending
-  - subtask_ref: record-task2-post-benchmark
-    title: "Record post-implementation benchmarks on commerce-release-update proving peak RSS reduction and faster ingestion"
-    status: pending
+- subtask_ref: record-task2-pre-benchmark
+  title: Record baseline memory profile and SQLite ingestion phase timing on commerce-release-update
+  status: completed
+  evidence: 'Recorded benchmarks/results/031-task2-pre.json with five paired release cold-build runs on the verified isolated workspace copy /tmp/forge031-bench-wiysmu06/commerce (baseline post2-target, candidate task2-target; RAYON_NUM_THREADS=8). Runner exited 0; performance_gate_passed=true; graph counts, fixture Merkle rows, output roots, and components matched. Median wall: baseline 11.984 s, candidate 11.774 s; median paired change -0.052%. Median peak RSS: baseline 1,502,248,960 B, candidate 1,501,782,016 B. Median phase ms baseline/candidate: link 2261.6/2149.7, persist_files 1303.7/1336.9, persist_graph 1740.8/1776.8, indexes 1040.2/1132.6, seal 1136.9/1119.2.'
+- subtask_ref: retained-memory-reduction
+  title: Separate transient AST/source facts from long-lived linker data, releasing AST trees and duplicate fact maps before global linking
+  status: completed
+  evidence: 'Removed the workspace-wide encoded_facts HashMap<String, Vec<u8>> from the cold path. local_facts payloads are now encoded in parallel chunks of up to 500 files (also bounded by SQLite''s live variable limit), inserted, and released before the next chunk; path strings are shared with Arc<str> across nodes. Parser trees and source buffers stay within per-file extraction, leaving TypedFacts as the cross-file retained input. Verification: cargo clippy --all-targets --all-features -- -D warnings passed; cargo test --lib passed 69/69; cargo test --all-targets passed 745 tests (1 ignored, 0 failed). Commerce control-copy postbench measured peak RSS 1,467,928,576 B vs 1,498,591,232 B baseline (−30,662,656 B, −2.05%), with identical domain commitment rows.'
+- subtask_ref: sqlite-turbo-ingestion-mode
+  title: Evaluate and implement unindexed bulk insertion with post-load secondary index creation and chunked transaction batching against baseline PRAGMAs, proving measured speedup
+  status: completed
+  evidence: 'The cold writer reports sqlite_ingestion.mode=deferred-index-batched, secondary_indexes_deferred=true, and the effective local_facts batch_rows; the production-seam test asserts these values through db::writer::build. Payload chunks cap at 500 rows and are further constrained by SQLite''s current variable limit; secondary indexes are built after bulk inserts in the existing candidate transaction. The before/after runner selected this strategy: median wall improved 0.451% (paired median −0.325%), and all 39,211 domain commitment rows matched. Exact scoped verification passed: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test commitment_integrity (16 passed, 0 failed); full cargo test --all-targets passed (745 passed, 1 ignored, 0 failed).'
+- subtask_ref: record-task2-post-benchmark
+  title: Record post-implementation benchmarks on commerce-release-update proving peak RSS reduction and faster ingestion
+  status: completed
+  evidence: 'Recorded benchmarks/results/031-task2-post.json using the same verified isolated control copy /tmp/forge031-bench-wiysmu06/commerce, baseline post2-target and candidate task2-target release binaries, RAYON_NUM_THREADS=8, five paired runs. Runner completed with exit 0 and performance_gate_passed=true. Median wall: baseline 9.754 s, candidate 9.710 s (−0.451%; median paired change −0.325%). Median peak RSS: baseline 1,498,591,232 B, candidate 1,467,928,576 B (−30,662,656 B, −2.05%). Database size and all graph counts/components matched; fixture Merkle fingerprint matched. Direct comparison of saved baseline/candidate SQLite databases found all 39,211 domain_commitments rows identical; output_root differs only because INDEX_SEMANTICS_VERSION embeds the changed src/db/writer.rs fingerprint. Candidate phase medians ms: encode_facts 76.3, persist_files 1,151.0, persist_graph 1,441.8, indexes 855.5, seal 963.6. Workspace was the verified /tmp copy, not the original control worktree.'
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-18T09:43:03.251473022+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib db::writer::memory_budget_tests::cold_build_reports_the_sqlite_bulk_ingestion_strategy && cargo test --test commitment_integrity
+      exit_code: 0
+      tests_passed: 17
+      tests_failed: 0
+      log: Strict Clippy passed. Production-seam test passed 1/1. Commitment integrity integration target passed 16/16.
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Candidate c8e2304 contains the now-admitted src/db/writer/memory_budget_tests.rs. Forge allowed_write_scope includes that path; task worktree diff paths are writer.rs, ingest.rs, performance docs, commitment_integrity tests, the admitted seam test, and task benchmark results. No protected or neighboring project paths were changed.
+        claims:
+          applicable: true
+          evidence: Independent review confirms the named cold_build_reports_the_sqlite_bulk_ingestion_strategy test reaches db::writer::build and asserts mode, deferred-index flag, and positive batch size. Claim-bound build proof on c8 records strict Clippy, seam test 1/1, and commitment_integrity 16/16. Benchmark evidence records lower peak RSS and wall time with identical domain commitment rows.
+        concurrency:
+          applicable: true
+          evidence: Fact encoding is parallel within bounded chunks; SQLite insertion remains within the existing writer transaction and index creation follows row insertion. The candidate introduces no concurrent task ownership, receipt, or delivery-state mutations. Independent review found no concurrency blocker.
+        project_isolation:
+          applicable: true
+          evidence: Changes and snapshot are confined to the claimed forge-mcp task worktree. Benchmark runs used the isolated /tmp/forge031-bench-wiysmu06/commerce copy. No workspace routing or linked-workspace resolution code changed.
+        administration:
+          applicable: true
+          evidence: Candidate changes do not modify profiles, credentials, migrations, hooks, or task administration code. Forge captured candidate c8 against the task's accepted baseline; delivery remains governed by the normal auto-commit receipt workflow.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-BENCHMARK-EACH-TASK: Every task in this milestone requires strict before-and-after benchmark measurements on the control repository (commerce-release-update); no task may be accepted without verified throughput and memory profiling.'
+    - 'INV-NO-COLD-REGRESSION: Cold build indexing duration on the control repository (commerce-release-update) must decrease by at least 20% (elapsed time <= 80%) compared to baseline commit cf4aa29 under identical hardware and thread configuration.'
+    - 'INV-DETERMINISTIC-MERKLE: In-memory Merkle tree sealing produces bit-identical commitment digests matching existing SQLite table seal queries across all 17 domains (13 logical in-memory + 4 SQLite FTS search domains).'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Symbol counts, edge counts, reference resolution, and commitments remain bit-identical across cargo test --all-targets.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

@@ -1,4 +1,4 @@
-use super::{populate, sqlite_cache_size_kib};
+use super::{build, populate, sqlite_cache_size_kib};
 use crate::engine::scanner;
 use rusqlite::Connection;
 use std::{
@@ -227,6 +227,35 @@ fn cold_build_reads_source_once_and_preserves_durable_facts() {
 
     #[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
     assert_variant_manifests_above_source_roots();
+}
+
+#[cfg(all(target_os = "linux", feature = "lang-rust"))]
+#[test]
+fn cold_build_reports_the_sqlite_bulk_ingestion_strategy() {
+    let root = TemporaryRoot::new();
+    fs::create_dir(root.0.join("src")).unwrap();
+    fs::write(root.0.join("src/lib.rs"), "pub fn indexed_symbol() {}\n").unwrap();
+
+    let report = build(&root.0, &root.0.join("cold-ingestion.sqlite"), None).unwrap();
+    let ingestion = report
+        .get("sqlite_ingestion")
+        .and_then(serde_json::Value::as_object)
+        .expect("cold build reports its SQLite ingestion strategy");
+
+    assert_eq!(
+        ingestion.get("mode").and_then(serde_json::Value::as_str),
+        Some("deferred-index-batched")
+    );
+    assert_eq!(
+        ingestion
+            .get("secondary_indexes_deferred")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(ingestion
+        .get("batch_rows")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|rows| rows > 0));
 }
 
 #[cfg(feature = "lang-rust")]

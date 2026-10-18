@@ -1,0 +1,863 @@
+{
+  "baseline": {
+    "graph": {
+      "components": [
+        "[gridviewspec]",
+        "[traverse]",
+        "extensions",
+        "packages",
+        "scripts",
+        "services",
+        "tests"
+      ],
+      "counts": {
+        "doc_sections": 2133,
+        "edges": 288620,
+        "external_imports": 140301,
+        "files": 3990,
+        "nodes": 66482,
+        "parse_errors": 7,
+        "unresolved": 45552
+      },
+      "resolution": {
+        "ambiguous": 38,
+        "external_imports": 140301,
+        "resolved": 130079,
+        "resolved_percent_excluding_external": 74.0638,
+        "unresolved": 45514
+      },
+      "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+    },
+    "median": {
+      "database_bytes": 197132288.0,
+      "peak_rss_bytes": 1502248960.0,
+      "system_seconds": 2.459,
+      "user_seconds": 33.69,
+      "wall_seconds": 11.984
+    },
+    "runs": [
+      {
+        "commitment_metadata": {
+          "adapter_sha256": "a3a3c6310adf5dd35a765fa59c5f2931a83084bfe58f269ff5489b49897d82a4",
+          "index_semantics_version": "9:compact-storage-v8:7cf29105a61009e546b8402df1fef99cb55d8701b0c93f8c89a4f1a8c401a6a1",
+          "manifest_digest": "535d0d8c1662b9e8272d2f8b2b720758a77a823e97bb239cc4b7ab4752371548"
+        },
+        "database_bytes": 197132288,
+        "fixture_merkle_rows": 39211,
+        "fixture_merkle_sha256": "062460698b8aba316c3edfd590acd5f03f1a2d017b9aeebfdd9c204eda85eef3",
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "memory_budget_bytes": 5802631168,
+        "output_root": "bb6862ae6e77a681bcc414ec49cd6e03c1b740f30bd247bc64664806a3dcc1fe",
+        "peak_rss_bytes": 1488969728,
+        "phases_ms": {
+          "bulk_paths_ms": 60.052105000000005,
+          "components_ms": 53.220974,
+          "doc_fts_insert_ms": 17.950484,
+          "elapsed_ms": 12487.469098,
+          "encode_facts_ms": 112.608765,
+          "extract_ms": 26101.775162,
+          "fts_insert_ms": 247.14257499999997,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 646.351117,
+            "coverage_dictionaries": 218.777962,
+            "occurrences_and_dependencies": 463.06545500000004,
+            "unique_edges": 412.21820599999995
+          },
+          "index_and_seal_ms": 2040.7444099999998,
+          "indexes_ms": 933.689428,
+          "link_ms": 2357.923656,
+          "node_row_insert_ms": 253.11325799999992,
+          "persist_files_ms": 1303.685915,
+          "persist_graph_ms": 1740.792357,
+          "persist_ms": 5512.960993,
+          "rows_ms": 3413.217869,
+          "scan_ms": 3249.5401730000003,
+          "seal_ms": 1106.6241269999998,
+          "sqlite_ingest_ms": 40.065704,
+          "verify_ms": 373.11830000000003
+        },
+        "repetition": 1,
+        "system_seconds": 2.943923,
+        "user_seconds": 36.679506,
+        "wall_seconds": 12.650263146031648
+      },
+      {
+        "commitment_metadata": {
+          "adapter_sha256": "a3a3c6310adf5dd35a765fa59c5f2931a83084bfe58f269ff5489b49897d82a4",
+          "index_semantics_version": "9:compact-storage-v8:7cf29105a61009e546b8402df1fef99cb55d8701b0c93f8c89a4f1a8c401a6a1",
+          "manifest_digest": "535d0d8c1662b9e8272d2f8b2b720758a77a823e97bb239cc4b7ab4752371548"
+        },
+        "database_bytes": 197132288,
+        "fixture_merkle_rows": 39211,
+        "fixture_merkle_sha256": "062460698b8aba316c3edfd590acd5f03f1a2d017b9aeebfdd9c204eda85eef3",
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "memory_budget_bytes": 5789067946,
+        "output_root": "bb6862ae6e77a681bcc414ec49cd6e03c1b740f30bd247bc64664806a3dcc1fe",
+        "peak_rss_bytes": 1502248960,
+        "phases_ms": {
+          "bulk_paths_ms": 76.041023,
+          "components_ms": 59.820058,
+          "doc_fts_insert_ms": 15.589853000000002,
+          "elapsed_ms": 12141.500739,
+          "encode_facts_ms": 110.351254,
+          "extract_ms": 21580.800149,
+          "fts_insert_ms": 230.26863099999997,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 682.465415,
+            "coverage_dictionaries": 228.747586,
+            "occurrences_and_dependencies": 521.195109,
+            "unique_edges": 374.696329
+          },
+          "index_and_seal_ms": 2262.288238,
+          "indexes_ms": 1040.178794,
+          "link_ms": 2261.631011,
+          "node_row_insert_ms": 259.18824699999993,
+          "persist_files_ms": 1351.6150440000001,
+          "persist_graph_ms": 1807.5076000000001,
+          "persist_ms": 5851.891428,
+          "rows_ms": 3524.7511600000003,
+          "scan_ms": 2688.553691,
+          "seal_ms": 1221.4456710000002,
+          "sqlite_ingest_ms": 32.528326,
+          "verify_ms": 462.740083
+        },
+        "repetition": 2,
+        "system_seconds": 2.458665,
+        "user_seconds": 33.361394,
+        "wall_seconds": 12.26521057728678
+      },
+      {
+        "commitment_metadata": {
+          "adapter_sha256": "a3a3c6310adf5dd35a765fa59c5f2931a83084bfe58f269ff5489b49897d82a4",
+          "index_semantics_version": "9:compact-storage-v8:7cf29105a61009e546b8402df1fef99cb55d8701b0c93f8c89a4f1a8c401a6a1",
+          "manifest_digest": "535d0d8c1662b9e8272d2f8b2b720758a77a823e97bb239cc4b7ab4752371548"
+        },
+        "database_bytes": 197132288,
+        "fixture_merkle_rows": 39211,
+        "fixture_merkle_sha256": "062460698b8aba316c3edfd590acd5f03f1a2d017b9aeebfdd9c204eda85eef3",
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "memory_budget_bytes": 5793685504,
+        "output_root": "bb6862ae6e77a681bcc414ec49cd6e03c1b740f30bd247bc64664806a3dcc1fe",
+        "peak_rss_bytes": 1500946432,
+        "phases_ms": {
+          "bulk_paths_ms": 72.884738,
+          "components_ms": 61.363811,
+          "doc_fts_insert_ms": 19.440385000000003,
+          "elapsed_ms": 11873.157151000001,
+          "encode_facts_ms": 113.939605,
+          "extract_ms": 22514.033741,
+          "fts_insert_ms": 238.14876999999993,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 669.349149,
+            "coverage_dictionaries": 194.366134,
+            "occurrences_and_dependencies": 465.812639,
+            "unique_edges": 324.47067499999997
+          },
+          "index_and_seal_ms": 2077.6421809999997,
+          "indexes_ms": 979.000483,
+          "link_ms": 2302.993723,
+          "node_row_insert_ms": 272.28365399999996,
+          "persist_files_ms": 1371.994674,
+          "persist_graph_ms": 1654.6681720000001,
+          "persist_ms": 5547.909426,
+          "rows_ms": 3408.3360740000003,
+          "scan_ms": 2802.558843,
+          "seal_ms": 1097.984397,
+          "sqlite_ingest_ms": 32.723165,
+          "verify_ms": 427.221471
+        },
+        "repetition": 3,
+        "system_seconds": 2.304073,
+        "user_seconds": 34.013405,
+        "wall_seconds": 11.984412381891161
+      },
+      {
+        "commitment_metadata": {
+          "adapter_sha256": "a3a3c6310adf5dd35a765fa59c5f2931a83084bfe58f269ff5489b49897d82a4",
+          "index_semantics_version": "9:compact-storage-v8:7cf29105a61009e546b8402df1fef99cb55d8701b0c93f8c89a4f1a8c401a6a1",
+          "manifest_digest": "535d0d8c1662b9e8272d2f8b2b720758a77a823e97bb239cc4b7ab4752371548"
+        },
+        "database_bytes": 197132288,
+        "fixture_merkle_rows": 39211,
+        "fixture_merkle_sha256": "062460698b8aba316c3edfd590acd5f03f1a2d017b9aeebfdd9c204eda85eef3",
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "memory_budget_bytes": 5792504490,
+        "output_root": "bb6862ae6e77a681bcc414ec49cd6e03c1b740f30bd247bc64664806a3dcc1fe",
+        "peak_rss_bytes": 1502674944,
+        "phases_ms": {
+          "bulk_paths_ms": 64.31890299999999,
+          "components_ms": 57.518391,
+          "doc_fts_insert_ms": 17.193929999999998,
+          "elapsed_ms": 11472.978105999999,
+          "encode_facts_ms": 98.034683,
+          "extract_ms": 20495.515247,
+          "fts_insert_ms": 205.33912499999994,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 696.4687729999999,
+            "coverage_dictionaries": 198.393432,
+            "occurrences_and_dependencies": 500.026577,
+            "unique_edges": 363.627637
+          },
+          "index_and_seal_ms": 2243.635237,
+          "indexes_ms": 1057.1201050000002,
+          "link_ms": 2170.849311,
+          "node_row_insert_ms": 224.21686399999993,
+          "persist_files_ms": 1170.3368850000002,
+          "persist_graph_ms": 1759.287786,
+          "persist_ms": 5565.893097,
+          "rows_ms": 3260.5100829999997,
+          "scan_ms": 2553.284113,
+          "seal_ms": 1185.907986,
+          "sqlite_ingest_ms": 30.418194,
+          "verify_ms": 436.59956300000005
+        },
+        "repetition": 4,
+        "system_seconds": 2.2830880000000002,
+        "user_seconds": 32.016731,
+        "wall_seconds": 11.576715135015547
+      },
+      {
+        "commitment_metadata": {
+          "adapter_sha256": "a3a3c6310adf5dd35a765fa59c5f2931a83084bfe58f269ff5489b49897d82a4",
+          "index_semantics_version": "9:compact-storage-v8:7cf29105a61009e546b8402df1fef99cb55d8701b0c93f8c89a4f1a8c401a6a1",
+          "manifest_digest": "535d0d8c1662b9e8272d2f8b2b720758a77a823e97bb239cc4b7ab4752371548"
+        },
+        "database_bytes": 197132288,
+        "fixture_merkle_rows": 39211,
+        "fixture_merkle_sha256": "062460698b8aba316c3edfd590acd5f03f1a2d017b9aeebfdd9c204eda85eef3",
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "memory_budget_bytes": 5786457429,
+        "output_root": "bb6862ae6e77a681bcc414ec49cd6e03c1b740f30bd247bc64664806a3dcc1fe",
+        "peak_rss_bytes": 1510952960,
+        "phases_ms": {
+          "bulk_paths_ms": 47.550104000000005,
+          "components_ms": 60.602221,
+          "doc_fts_insert_ms": 17.402783000000003,
+          "elapsed_ms": 11805.815103,
+          "encode_facts_ms": 115.052817,
+          "extract_ms": 21871.014726,
+          "fts_insert_ms": 241.67143899999994,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 661.486452,
+            "coverage_dictionaries": 211.938152,
+            "occurrences_and_dependencies": 482.727768,
+            "unique_edges": 376.606249
+          },
+          "index_and_seal_ms": 2181.894008,
+          "indexes_ms": 1044.3588399999999,
+          "link_ms": 2234.639155,
+          "node_row_insert_ms": 243.42631599999996,
+          "persist_files_ms": 1291.122431,
+          "persist_graph_ms": 1733.136124,
+          "persist_ms": 5611.366033,
+          "rows_ms": 3365.66325,
+          "scan_ms": 2724.2111109999996,
+          "seal_ms": 1136.9079339999998,
+          "sqlite_ingest_ms": 34.106653,
+          "verify_ms": 453.38454
+        },
+        "repetition": 5,
+        "system_seconds": 2.513538,
+        "user_seconds": 33.689677,
+        "wall_seconds": 11.898092026822269
+      }
+    ]
+  },
+  "baseline_binary": "/tmp/forge031-bench-wiysmu06/post2-target/release/contextunity-forge-mcp",
+  "binary_sha256": {
+    "baseline": "723dccffce315b831fbac0b999587ce5516c26436c8b2146314805c8a63cb223",
+    "candidate": "b05a5da2009cc8bade4a37c7ca91310e66754efca1a0d4362eea015e4ecc408c"
+  },
+  "bit_identical_fixture_merkle_rows": true,
+  "bit_identical_output_roots": true,
+  "budget_matrix": {},
+  "budget_policy": "comparison uses adaptive budget; matrix sets FORGE_MEMORY_BUDGET_MB",
+  "candidate": {
+    "graph": {
+      "components": [
+        "[gridviewspec]",
+        "[traverse]",
+        "extensions",
+        "packages",
+        "scripts",
+        "services",
+        "tests"
+      ],
+      "counts": {
+        "doc_sections": 2133,
+        "edges": 288620,
+        "external_imports": 140301,
+        "files": 3990,
+        "nodes": 66482,
+        "parse_errors": 7,
+        "unresolved": 45552
+      },
+      "resolution": {
+        "ambiguous": 38,
+        "external_imports": 140301,
+        "resolved": 130079,
+        "resolved_percent_excluding_external": 74.0638,
+        "unresolved": 45514
+      },
+      "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+    },
+    "median": {
+      "database_bytes": 197132288.0,
+      "peak_rss_bytes": 1501782016.0,
+      "system_seconds": 2.43,
+      "user_seconds": 32.672,
+      "wall_seconds": 11.774
+    },
+    "runs": [
+      {
+        "commitment_metadata": {
+          "adapter_sha256": "a3a3c6310adf5dd35a765fa59c5f2931a83084bfe58f269ff5489b49897d82a4",
+          "index_semantics_version": "9:compact-storage-v8:7cf29105a61009e546b8402df1fef99cb55d8701b0c93f8c89a4f1a8c401a6a1",
+          "manifest_digest": "535d0d8c1662b9e8272d2f8b2b720758a77a823e97bb239cc4b7ab4752371548"
+        },
+        "database_bytes": 197132288,
+        "fixture_merkle_rows": 39211,
+        "fixture_merkle_sha256": "062460698b8aba316c3edfd590acd5f03f1a2d017b9aeebfdd9c204eda85eef3",
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "memory_budget_bytes": 5800206336,
+        "output_root": "bb6862ae6e77a681bcc414ec49cd6e03c1b740f30bd247bc64664806a3dcc1fe",
+        "peak_rss_bytes": 1501782016,
+        "phases_ms": {
+          "bulk_paths_ms": 58.067544,
+          "components_ms": 56.135115,
+          "doc_fts_insert_ms": 15.348759999999999,
+          "elapsed_ms": 11504.772682,
+          "encode_facts_ms": 102.357116,
+          "extract_ms": 19453.111801,
+          "fts_insert_ms": 235.39318700000007,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 664.4474329999999,
+            "coverage_dictionaries": 208.18161600000002,
+            "occurrences_and_dependencies": 529.468849,
+            "unique_edges": 374.29595
+          },
+          "index_and_seal_ms": 2181.708016,
+          "indexes_ms": 1058.2622740000002,
+          "link_ms": 2180.640132,
+          "node_row_insert_ms": 264.03733000000005,
+          "persist_files_ms": 1343.540768,
+          "persist_graph_ms": 1776.751165,
+          "persist_ms": 5716.953906,
+          "rows_ms": 3473.175497,
+          "scan_ms": 2419.18212,
+          "seal_ms": 1122.9187060000002,
+          "sqlite_ingest_ms": 29.294943,
+          "verify_ms": 408.04674
+        },
+        "repetition": 1,
+        "system_seconds": 2.343828,
+        "user_seconds": 31.180209,
+        "wall_seconds": 11.59876736998558
+      },
+      {
+        "commitment_metadata": {
+          "adapter_sha256": "a3a3c6310adf5dd35a765fa59c5f2931a83084bfe58f269ff5489b49897d82a4",
+          "index_semantics_version": "9:compact-storage-v8:7cf29105a61009e546b8402df1fef99cb55d8701b0c93f8c89a4f1a8c401a6a1",
+          "manifest_digest": "535d0d8c1662b9e8272d2f8b2b720758a77a823e97bb239cc4b7ab4752371548"
+        },
+        "database_bytes": 197132288,
+        "fixture_merkle_rows": 39211,
+        "fixture_merkle_sha256": "062460698b8aba316c3edfd590acd5f03f1a2d017b9aeebfdd9c204eda85eef3",
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "memory_budget_bytes": 5800363349,
+        "output_root": "bb6862ae6e77a681bcc414ec49cd6e03c1b740f30bd247bc64664806a3dcc1fe",
+        "peak_rss_bytes": 1497673728,
+        "phases_ms": {
+          "bulk_paths_ms": 59.876898,
+          "components_ms": 54.044042,
+          "doc_fts_insert_ms": 15.48714,
+          "elapsed_ms": 12147.791932,
+          "encode_facts_ms": 104.397725,
+          "extract_ms": 22121.239091,
+          "fts_insert_ms": 232.629489,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 709.590921,
+            "coverage_dictionaries": 211.796193,
+            "occurrences_and_dependencies": 520.804158,
+            "unique_edges": 419.417121
+          },
+          "index_and_seal_ms": 2333.883072,
+          "indexes_ms": 1132.6246959999999,
+          "link_ms": 2149.720323,
+          "node_row_insert_ms": 267.0745119999999,
+          "persist_files_ms": 1353.047311,
+          "persist_graph_ms": 1862.014057,
+          "persist_ms": 5969.977872,
+          "rows_ms": 3567.554842,
+          "scan_ms": 2758.149253,
+          "seal_ms": 1200.640669,
+          "sqlite_ingest_ms": 33.664593,
+          "verify_ms": 430.322259
+        },
+        "repetition": 2,
+        "system_seconds": 2.429751,
+        "user_seconds": 34.250851,
+        "wall_seconds": 12.258814163971692
+      },
+      {
+        "commitment_metadata": {
+          "adapter_sha256": "a3a3c6310adf5dd35a765fa59c5f2931a83084bfe58f269ff5489b49897d82a4",
+          "index_semantics_version": "9:compact-storage-v8:7cf29105a61009e546b8402df1fef99cb55d8701b0c93f8c89a4f1a8c401a6a1",
+          "manifest_digest": "535d0d8c1662b9e8272d2f8b2b720758a77a823e97bb239cc4b7ab4752371548"
+        },
+        "database_bytes": 197132288,
+        "fixture_merkle_rows": 39211,
+        "fixture_merkle_sha256": "062460698b8aba316c3edfd590acd5f03f1a2d017b9aeebfdd9c204eda85eef3",
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "memory_budget_bytes": 5794050048,
+        "output_root": "bb6862ae6e77a681bcc414ec49cd6e03c1b740f30bd247bc64664806a3dcc1fe",
+        "peak_rss_bytes": 1515823104,
+        "phases_ms": {
+          "bulk_paths_ms": 64.70576899999999,
+          "components_ms": 64.25069,
+          "doc_fts_insert_ms": 17.337172000000002,
+          "elapsed_ms": 11511.572572000001,
+          "encode_facts_ms": 110.060754,
+          "extract_ms": 21365.158976,
+          "fts_insert_ms": 203.55228099999994,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 570.568821,
+            "coverage_dictionaries": 183.21206,
+            "occurrences_and_dependencies": 476.049992,
+            "unique_edges": 297.168889
+          },
+          "index_and_seal_ms": 2263.858699,
+          "indexes_ms": 1204.0036499999999,
+          "link_ms": 2239.959723,
+          "node_row_insert_ms": 227.87748399999998,
+          "persist_files_ms": 1196.992927,
+          "persist_graph_ms": 1527.408976,
+          "persist_ms": 5383.960949,
+          "rows_ms": 3051.818084,
+          "scan_ms": 2656.487437,
+          "seal_ms": 1059.376245,
+          "sqlite_ingest_ms": 31.787083,
+          "verify_ms": 405.461668
+        },
+        "repetition": 3,
+        "system_seconds": 2.443066,
+        "user_seconds": 32.511714,
+        "wall_seconds": 11.600754652172327
+      },
+      {
+        "commitment_metadata": {
+          "adapter_sha256": "a3a3c6310adf5dd35a765fa59c5f2931a83084bfe58f269ff5489b49897d82a4",
+          "index_semantics_version": "9:compact-storage-v8:7cf29105a61009e546b8402df1fef99cb55d8701b0c93f8c89a4f1a8c401a6a1",
+          "manifest_digest": "535d0d8c1662b9e8272d2f8b2b720758a77a823e97bb239cc4b7ab4752371548"
+        },
+        "database_bytes": 197132288,
+        "fixture_merkle_rows": 39211,
+        "fixture_merkle_sha256": "062460698b8aba316c3edfd590acd5f03f1a2d017b9aeebfdd9c204eda85eef3",
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "memory_budget_bytes": 5813852842,
+        "output_root": "bb6862ae6e77a681bcc414ec49cd6e03c1b740f30bd247bc64664806a3dcc1fe",
+        "peak_rss_bytes": 1498886144,
+        "phases_ms": {
+          "bulk_paths_ms": 62.491274,
+          "components_ms": 52.588673,
+          "doc_fts_insert_ms": 17.991476,
+          "elapsed_ms": 11668.671388,
+          "encode_facts_ms": 109.247443,
+          "extract_ms": 20935.358549,
+          "fts_insert_ms": 229.42307300000004,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 755.907873,
+            "coverage_dictionaries": 212.794829,
+            "occurrences_and_dependencies": 530.977089,
+            "unique_edges": 394.313072
+          },
+          "index_and_seal_ms": 2288.166851,
+          "indexes_ms": 1171.507387,
+          "link_ms": 1947.758434,
+          "node_row_insert_ms": 264.9982279999999,
+          "persist_files_ms": 1336.929568,
+          "persist_graph_ms": 1894.447279,
+          "persist_ms": 5940.41061,
+          "rows_ms": 3586.536343,
+          "scan_ms": 2608.7558350000004,
+          "seal_ms": 1116.248397,
+          "sqlite_ingest_ms": 31.338641,
+          "verify_ms": 361.102409
+        },
+        "repetition": 4,
+        "system_seconds": 2.344468,
+        "user_seconds": 32.672331,
+        "wall_seconds": 11.773748481180519
+      },
+      {
+        "commitment_metadata": {
+          "adapter_sha256": "a3a3c6310adf5dd35a765fa59c5f2931a83084bfe58f269ff5489b49897d82a4",
+          "index_semantics_version": "9:compact-storage-v8:7cf29105a61009e546b8402df1fef99cb55d8701b0c93f8c89a4f1a8c401a6a1",
+          "manifest_digest": "535d0d8c1662b9e8272d2f8b2b720758a77a823e97bb239cc4b7ab4752371548"
+        },
+        "database_bytes": 197132288,
+        "fixture_merkle_rows": 39211,
+        "fixture_merkle_sha256": "062460698b8aba316c3edfd590acd5f03f1a2d017b9aeebfdd9c204eda85eef3",
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "memory_budget_bytes": 5813604352,
+        "output_root": "bb6862ae6e77a681bcc414ec49cd6e03c1b740f30bd247bc64664806a3dcc1fe",
+        "peak_rss_bytes": 1504792576,
+        "phases_ms": {
+          "bulk_paths_ms": 67.86921099999999,
+          "components_ms": 68.421585,
+          "doc_fts_insert_ms": 14.497005999999999,
+          "elapsed_ms": 11811.597773000001,
+          "encode_facts_ms": 96.763504,
+          "extract_ms": 23264.939167,
+          "fts_insert_ms": 222.08777300000006,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 642.18725,
+            "coverage_dictionaries": 177.379585,
+            "occurrences_and_dependencies": 438.66018299999996,
+            "unique_edges": 406.735126
+          },
+          "index_and_seal_ms": 2175.369443,
+          "indexes_ms": 1055.316797,
+          "link_ms": 2147.197798,
+          "node_row_insert_ms": 245.99997000000005,
+          "persist_files_ms": 1292.5541130000001,
+          "persist_graph_ms": 1665.349565,
+          "persist_ms": 5544.499804,
+          "rows_ms": 3302.1324659999996,
+          "scan_ms": 2894.9018090000004,
+          "seal_ms": 1119.190047,
+          "sqlite_ingest_ms": 36.026607,
+          "verify_ms": 426.29908500000005
+        },
+        "repetition": 5,
+        "system_seconds": 2.464918,
+        "user_seconds": 34.328228,
+        "wall_seconds": 11.92281116079539
+      }
+    ]
+  },
+  "candidate_binary": "/tmp/forge031-bench-wiysmu06/task2-target/release/contextunity-forge-mcp",
+  "candidate_matrix_bit_identical": true,
+  "command": [
+    "/home/oleksii/.local/share/mise/installs/python/3.14.7/bin/python3",
+    "benchmarks/cold_memory_budget_benchmark.py",
+    "--profile",
+    "benchmarks/profiles/commerce-release-update.json",
+    "--workspace",
+    "/tmp/forge031-bench-wiysmu06/commerce",
+    "--baseline-binary",
+    "/tmp/forge031-bench-wiysmu06/post2-target/release/contextunity-forge-mcp",
+    "--candidate-binary",
+    "/tmp/forge031-bench-wiysmu06/task2-target/release/contextunity-forge-mcp",
+    "--repeats",
+    "5",
+    "--matrix-repeats",
+    "0",
+    "--output",
+    "benchmarks/results/031-task2-pre.json"
+  ],
+  "comparison": {
+    "candidate_database_size_change_percent": 0.0,
+    "candidate_wall_change_percent": -1.752,
+    "components_match": true,
+    "graph_count_deltas": {
+      "doc_sections": 0,
+      "edges": 0,
+      "external_imports": 0,
+      "files": 0,
+      "nodes": 0,
+      "parse_errors": 0,
+      "unresolved": 0
+    },
+    "median_paired_wall_change_percent": -0.052,
+    "resolved_coverage_change_percentage_points": 0.0
+  },
+  "deterministic_output_roots_by_binary": {
+    "baseline": true,
+    "candidate": true
+  },
+  "host": {
+    "cpu_count": 16,
+    "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+    "rayon_num_threads": "8"
+  },
+  "performance_gate_passed": true,
+  "performance_gate_policy": "candidate wall median and median paired change must both be no worse than baseline; evaluate unrounded runs",
+  "policy": "sequential builds; fresh temporary databases; supplied isolated workspace",
+  "profile": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-retained-memory-reduction-and-turbo-ingestion/benchmarks/profiles/commerce-release-update.json",
+  "recommendation_policy": "lowest median peak RSS within 5% of fastest median wall time; ties prefer latency then smaller budget",
+  "recommended_budget_mb": null,
+  "runner_sha256": "9f24532e68c21fc443b7b69ce0d74b7927dcb45ba491412f013c23f224c136b4",
+  "started_at_utc": "2026-10-18T05:13:55.095015+00:00",
+  "workspace": "/tmp/forge031-bench-wiysmu06/commerce"
+}

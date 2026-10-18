@@ -1,4 +1,7 @@
 use super::*;
+use crate::core::typed_facts::encode_facts;
+
+const COLD_LOCAL_FACTS_BATCH_ROWS: usize = 500;
 
 fn compare_coverage_rows(
     left: &crate::core::models::compact_graph::Coverage,
@@ -32,6 +35,8 @@ pub(super) struct FilePersistenceTimings {
     pub(super) docs_count: usize,
     pub(super) fts_insert_ms: f64,
     pub(super) node_row_insert_ms: Option<f64>,
+    pub(super) encode_facts_ms: f64,
+    pub(super) local_facts_batch_rows: usize,
 }
 
 pub(super) fn persist_files(
@@ -47,6 +52,7 @@ pub(super) fn persist_files(
     })?;
     let initial_node_id = node_id;
     let mut docs_count = 0;
+    let mut encode_facts_ms = 0.0;
 
     let mut stmt_source_inv = (!bulk_search)
         .then(|| tx.prepare("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)"))
@@ -94,10 +100,8 @@ pub(super) fn persist_files(
             )
         })
         .transpose()?;
-    let mut local_facts_batch = bulk_search
-        .then(|| {
-            MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO local_facts VALUES")
-        })
+    let local_facts_batch_rows = bulk_search
+        .then(|| multi_value_batch_rows::<6>(tx).map(|rows| rows.min(COLD_LOCAL_FACTS_BATCH_ROWS)))
         .transpose()?;
     let mut doc_sections_batch = bulk_search
         .then(|| {
@@ -123,220 +127,267 @@ pub(super) fn persist_files(
         (None, None, None)
     };
 
-    for file in entries {
-        let f = facts.get(&file.path).context("missing extracted facts")?;
-        let owner_id = path_cache.get_or_insert(tx, &file.path)?;
-        if let Some(batch) = source_inventory_batch.as_mut() {
-            batch.push([
-                BorrowedSqlValue::Text(&file.path),
-                BorrowedSqlValue::Text("indexed"),
-                BorrowedSqlValue::Text(&file.digest),
-                BorrowedSqlValue::Integer(i64::try_from(file.bytes)?),
-            ])?;
+    for file_chunk in entries.chunks(local_facts_batch_rows.unwrap_or(1)) {
+        let encoded_chunk = if encoded_facts.is_none() && local_facts_batch_rows.is_some() {
+            let started = Instant::now();
+            let encoded = file_chunk
+                .par_iter()
+                .map(|file| {
+                    let facts = facts.get(&file.path).context("missing extracted facts")?;
+                    encode_facts(facts)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
+            Some(encoded)
         } else {
-            stmt_source_inv
-                .as_mut()
-                .context("missing incremental source inventory insert")?
-                .execute(params![file.path, file.digest, file.bytes])?;
-        }
-        if bulk_search {
-            file_batch.push([
-                SqlValue::Text(file.path.clone()),
-                SqlValue::Text("indexed".into()),
-                SqlValue::Text(file.digest.clone()),
-                SqlValue::Integer(i64::try_from(file.bytes)?),
-                SqlValue::Text(file.language.clone()),
-                SqlValue::Integer(i64::from(is_test(&file.path))),
-                SqlValue::Integer(0),
-                SqlValue::Integer(stable_hash64(&file.path)),
-            ]);
-            if file_batch.len() == file_batch_rows.context("missing cold file batch size")? {
-                insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
-                file_batch.clear();
-            }
-        } else {
-            stmt_files
-                .as_mut()
-                .context("missing incremental file insert")?
-                .execute(params![
-                    file.path,
-                    file.digest,
-                    file.bytes,
-                    file.language,
-                    is_test(&file.path),
-                    stable_hash64(&file.path)
-                ])?;
-        }
-        if let Some(batch) = local_facts_batch.as_mut() {
-            let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)) {
-                Some(blob) => BorrowedSqlValue::Blob(blob),
-                None => BorrowedSqlValue::OwnedBlob(encode_facts(f)?),
-            };
-            batch.push([
-                BorrowedSqlValue::Text(&file.path),
-                BorrowedSqlValue::Text(&file.digest),
-                BorrowedSqlValue::Text(&file.language),
-                BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
-                BorrowedSqlValue::Integer(0),
-                facts_blob,
-            ])?;
-        } else {
-            let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)) {
-                Some(blob) => std::borrow::Cow::Borrowed(blob.as_slice()),
-                None => std::borrow::Cow::Owned(encode_facts(f)?),
-            };
-            stmt_local_facts
-                .as_mut()
-                .context("missing incremental local facts insert")?
-                .execute(params![
-                    file.path,
-                    file.digest,
-                    file.language,
-                    is_test(&file.path),
-                    facts_blob.as_ref()
-                ])?;
-        }
-        for n in &f.nodes {
-            node_id += 1;
-            let search_id = stable_hash64(&n.id);
-            let node_path_id = if n.path == file.path {
-                owner_id
-            } else {
-                path_cache.get_or_insert(tx, &n.path)?
-            };
-            if bulk_search {
-                let mut details = reusable_detail_buffers.pop().unwrap_or_default();
-                details.clear();
-                serde_json::to_writer(&mut details, &n.navigation_details())?;
-                node_batch.push([
-                    BorrowedSqlValue::Integer(node_id),
-                    BorrowedSqlValue::Text(&n.id),
-                    BorrowedSqlValue::Text(&n.kind),
-                    BorrowedSqlValue::Text(&n.name),
-                    BorrowedSqlValue::Text(&n.qualname),
-                    BorrowedSqlValue::Integer(node_path_id),
-                    BorrowedSqlValue::Integer(i64::try_from(n.line)?),
-                    BorrowedSqlValue::Integer(i64::try_from(n.end_line)?),
-                    BorrowedSqlValue::Integer(i64::from(n.is_test)),
-                    BorrowedSqlValue::Text(&n.language),
-                    BorrowedSqlValue::Integer(i64::from(n.generated)),
-                    BorrowedSqlValue::OwnedJsonText(details),
-                    BorrowedSqlValue::Integer(search_id),
-                    BorrowedSqlValue::Integer(owner_id),
-                ]);
-                if node_batch.len() == node_batch_rows.context("missing cold node batch size")? {
-                    let insert_ms =
-                        flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
-                    if let Some(total_ms) = node_row_insert_ms.as_mut() {
-                        *total_ms += insert_ms;
-                    }
-                }
-            } else {
-                let details = serde_json::to_string(&n.navigation_details())?;
-                stmt_nodes
-                    .as_mut()
-                    .context("missing incremental node insert")?
-                    .execute(params![
-                        node_id,
-                        n.id,
-                        n.kind,
-                        n.name,
-                        n.qualname,
-                        node_path_id,
-                        n.line,
-                        n.end_line,
-                        n.is_test,
-                        n.language,
-                        n.generated,
-                        details,
-                        search_id,
-                        owner_id
-                    ])?;
-            }
-            if bulk_search {
-                let mut search = reusable_search_buffers.pop().unwrap_or_default();
-                write_node_search_text(&mut search, n, f);
-                owned_search_batch.push(SearchRow {
-                    search_id,
-                    text: search,
-                });
-                if owned_search_batch.len()
-                    == owned_search_batch_rows.context("missing cold search batch size")?
-                {
-                    fts_insert_ms += flush_owned_search_batch(
-                        tx,
-                        &mut owned_search_batch,
-                        &mut reusable_search_buffers,
-                    )?;
-                }
-            } else {
-                write_node_search_text(&mut incremental_search_buffer, n, f);
-                if let Some(stmt_node_search) = stmt_node_search.as_mut() {
-                    stmt_node_search.execute(params![search_id, &incremental_search_buffer])?;
-                }
-                incremental_search_buffer.clear();
-            }
-            let key_hash = shared_key_cache.get_or_insert_node(&n.qualname, node_id)?;
-            shared_owner_rows.push([0, key_hash, owner_id, node_id]);
-        }
-        for key in reference_keys(f) {
-            let key_hash = shared_key_cache.get_or_insert(key)?;
-            shared_owner_rows.push([1, key_hash, owner_id, 0]);
-        }
-        for n in &f.nodes {
-            if n.details["default_export"] == true {
-                let key_hash = shared_key_cache.get_or_insert(&n.id)?;
-                shared_owner_rows.push([2, key_hash, owner_id, 0]);
-            }
-        }
-        if shared_owner_rows.len() >= 8192 {
-            shared_owner_rows.par_sort_unstable();
-        } else {
-            shared_owner_rows.sort_unstable();
-        }
-        for row in shared_owner_rows.drain(..) {
-            shared_owner_batch.push(row.map(SqlValue::Integer))?;
-        }
-        for d in &f.docs {
-            docs_count += 1;
-            if let Some(batch) = doc_sections_batch.as_mut() {
+            None
+        };
+        let mut local_facts_batch = Vec::<[BorrowedSqlValue<'_>; 6]>::with_capacity(
+            local_facts_batch_rows.unwrap_or_default(),
+        );
+        for (chunk_index, file) in file_chunk.iter().enumerate() {
+            let f = facts.get(&file.path).context("missing extracted facts")?;
+            let owner_id = path_cache.get_or_insert(tx, &file.path)?;
+            if let Some(batch) = source_inventory_batch.as_mut() {
                 batch.push([
-                    BorrowedSqlValue::Text(&d.doc_id),
-                    BorrowedSqlValue::Text(&d.path),
-                    BorrowedSqlValue::Text(&d.section_title),
-                    BorrowedSqlValue::Text(&d.doc_type),
-                    BorrowedSqlValue::Text(&d.content),
-                    BorrowedSqlValue::OwnedText(serde_json::to_string(&d.invariants)?),
-                    BorrowedSqlValue::OwnedText(serde_json::to_string(&d.referenced_symbols)?),
-                    BorrowedSqlValue::Real(d.mtime),
-                    BorrowedSqlValue::Integer(i64::try_from(d.size)?),
-                    BorrowedSqlValue::Integer(i64::from(d.is_invariant)),
+                    BorrowedSqlValue::Text(&file.path),
+                    BorrowedSqlValue::Text("indexed"),
+                    BorrowedSqlValue::Text(&file.digest),
+                    BorrowedSqlValue::Integer(i64::try_from(file.bytes)?),
                 ])?;
             } else {
-                stmt_doc_sec
+                stmt_source_inv
                     .as_mut()
-                    .context("missing incremental document section insert")?
+                    .context("missing incremental source inventory insert")?
+                    .execute(params![file.path, file.digest, file.bytes])?;
+            }
+            if bulk_search {
+                file_batch.push([
+                    SqlValue::Text(file.path.clone()),
+                    SqlValue::Text("indexed".into()),
+                    SqlValue::Text(file.digest.clone()),
+                    SqlValue::Integer(i64::try_from(file.bytes)?),
+                    SqlValue::Text(file.language.clone()),
+                    SqlValue::Integer(i64::from(is_test(&file.path))),
+                    SqlValue::Integer(0),
+                    SqlValue::Integer(stable_hash64(&file.path)),
+                ]);
+                if file_batch.len() == file_batch_rows.context("missing cold file batch size")? {
+                    insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
+                    file_batch.clear();
+                }
+            } else {
+                stmt_files
+                    .as_mut()
+                    .context("missing incremental file insert")?
                     .execute(params![
-                        d.doc_id,
-                        d.path,
-                        d.section_title,
-                        d.doc_type,
-                        d.content,
-                        serde_json::to_string(&d.invariants)?,
-                        serde_json::to_string(&d.referenced_symbols)?,
-                        d.mtime,
-                        d.size,
-                        d.is_invariant
+                        file.path,
+                        file.digest,
+                        file.bytes,
+                        file.language,
+                        is_test(&file.path),
+                        stable_hash64(&file.path)
                     ])?;
             }
-        }
-        if !f.docs.is_empty() {
-            if let Some(stmt) = stmt_doc_search.as_mut() {
-                stmt.execute([&file.path])?;
+            if let Some(batch_rows) = local_facts_batch_rows {
+                let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)).or_else(|| {
+                    encoded_chunk
+                        .as_ref()
+                        .and_then(|blobs| blobs.get(chunk_index))
+                }) {
+                    Some(blob) => BorrowedSqlValue::Blob(blob),
+                    None => {
+                        let started = Instant::now();
+                        let blob = encode_facts(f)?;
+                        encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
+                        BorrowedSqlValue::OwnedBlob(blob)
+                    }
+                };
+                local_facts_batch.push([
+                    BorrowedSqlValue::Text(&file.path),
+                    BorrowedSqlValue::Text(&file.digest),
+                    BorrowedSqlValue::Text(&file.language),
+                    BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
+                    BorrowedSqlValue::Integer(0),
+                    facts_blob,
+                ]);
+                if local_facts_batch.len() == batch_rows {
+                    insert_multi_value_batch(
+                        tx,
+                        "INSERT INTO local_facts VALUES",
+                        &local_facts_batch,
+                    )?;
+                    local_facts_batch.clear();
+                }
+            } else {
+                let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)) {
+                    Some(blob) => std::borrow::Cow::Borrowed(blob.as_slice()),
+                    None => {
+                        let started = Instant::now();
+                        let blob = encode_facts(f)?;
+                        encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
+                        std::borrow::Cow::Owned(blob)
+                    }
+                };
+                stmt_local_facts
+                    .as_mut()
+                    .context("missing incremental local facts insert")?
+                    .execute(params![
+                        file.path,
+                        file.digest,
+                        file.language,
+                        is_test(&file.path),
+                        facts_blob.as_ref()
+                    ])?;
+            }
+            for n in &f.nodes {
+                node_id += 1;
+                let search_id = stable_hash64(&n.id);
+                let node_path_id = if n.path == file.path {
+                    owner_id
+                } else {
+                    path_cache.get_or_insert(tx, &n.path)?
+                };
+                if bulk_search {
+                    let mut details = reusable_detail_buffers.pop().unwrap_or_default();
+                    details.clear();
+                    serde_json::to_writer(&mut details, &n.navigation_details())?;
+                    node_batch.push([
+                        BorrowedSqlValue::Integer(node_id),
+                        BorrowedSqlValue::Text(&n.id),
+                        BorrowedSqlValue::Text(&n.kind),
+                        BorrowedSqlValue::Text(&n.name),
+                        BorrowedSqlValue::Text(&n.qualname),
+                        BorrowedSqlValue::Integer(node_path_id),
+                        BorrowedSqlValue::Integer(i64::try_from(n.line)?),
+                        BorrowedSqlValue::Integer(i64::try_from(n.end_line)?),
+                        BorrowedSqlValue::Integer(i64::from(n.is_test)),
+                        BorrowedSqlValue::Text(&n.language),
+                        BorrowedSqlValue::Integer(i64::from(n.generated)),
+                        BorrowedSqlValue::OwnedJsonText(details),
+                        BorrowedSqlValue::Integer(search_id),
+                        BorrowedSqlValue::Integer(owner_id),
+                    ]);
+                    if node_batch.len()
+                        == node_batch_rows.context("missing cold node batch size")?
+                    {
+                        let insert_ms =
+                            flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
+                        if let Some(total_ms) = node_row_insert_ms.as_mut() {
+                            *total_ms += insert_ms;
+                        }
+                    }
+                } else {
+                    let details = serde_json::to_string(&n.navigation_details())?;
+                    stmt_nodes
+                        .as_mut()
+                        .context("missing incremental node insert")?
+                        .execute(params![
+                            node_id,
+                            n.id,
+                            n.kind,
+                            n.name,
+                            n.qualname,
+                            node_path_id,
+                            n.line,
+                            n.end_line,
+                            n.is_test,
+                            n.language,
+                            n.generated,
+                            details,
+                            search_id,
+                            owner_id
+                        ])?;
+                }
+                if bulk_search {
+                    let mut search = reusable_search_buffers.pop().unwrap_or_default();
+                    write_node_search_text(&mut search, n, f);
+                    owned_search_batch.push(SearchRow {
+                        search_id,
+                        text: search,
+                    });
+                    if owned_search_batch.len()
+                        == owned_search_batch_rows.context("missing cold search batch size")?
+                    {
+                        fts_insert_ms += flush_owned_search_batch(
+                            tx,
+                            &mut owned_search_batch,
+                            &mut reusable_search_buffers,
+                        )?;
+                    }
+                } else {
+                    write_node_search_text(&mut incremental_search_buffer, n, f);
+                    if let Some(stmt_node_search) = stmt_node_search.as_mut() {
+                        stmt_node_search.execute(params![search_id, &incremental_search_buffer])?;
+                    }
+                    incremental_search_buffer.clear();
+                }
+                let key_hash = shared_key_cache.get_or_insert_node(&n.qualname, node_id)?;
+                shared_owner_rows.push([0, key_hash, owner_id, node_id]);
+            }
+            for key in reference_keys(f) {
+                let key_hash = shared_key_cache.get_or_insert(key)?;
+                shared_owner_rows.push([1, key_hash, owner_id, 0]);
+            }
+            for n in &f.nodes {
+                if n.details["default_export"] == true {
+                    let key_hash = shared_key_cache.get_or_insert(&n.id)?;
+                    shared_owner_rows.push([2, key_hash, owner_id, 0]);
+                }
+            }
+            if shared_owner_rows.len() >= 8192 {
+                shared_owner_rows.par_sort_unstable();
+            } else {
+                shared_owner_rows.sort_unstable();
+            }
+            for row in shared_owner_rows.drain(..) {
+                shared_owner_batch.push(row.map(SqlValue::Integer))?;
+            }
+            for d in &f.docs {
+                docs_count += 1;
+                if let Some(batch) = doc_sections_batch.as_mut() {
+                    batch.push([
+                        BorrowedSqlValue::Text(&d.doc_id),
+                        BorrowedSqlValue::Text(&d.path),
+                        BorrowedSqlValue::Text(&d.section_title),
+                        BorrowedSqlValue::Text(&d.doc_type),
+                        BorrowedSqlValue::Text(&d.content),
+                        BorrowedSqlValue::OwnedText(serde_json::to_string(&d.invariants)?),
+                        BorrowedSqlValue::OwnedText(serde_json::to_string(&d.referenced_symbols)?),
+                        BorrowedSqlValue::Real(d.mtime),
+                        BorrowedSqlValue::Integer(i64::try_from(d.size)?),
+                        BorrowedSqlValue::Integer(i64::from(d.is_invariant)),
+                    ])?;
+                } else {
+                    stmt_doc_sec
+                        .as_mut()
+                        .context("missing incremental document section insert")?
+                        .execute(params![
+                            d.doc_id,
+                            d.path,
+                            d.section_title,
+                            d.doc_type,
+                            d.content,
+                            serde_json::to_string(&d.invariants)?,
+                            serde_json::to_string(&d.referenced_symbols)?,
+                            d.mtime,
+                            d.size,
+                            d.is_invariant
+                        ])?;
+                }
+            }
+            if !f.docs.is_empty() {
+                if let Some(stmt) = stmt_doc_search.as_mut() {
+                    stmt.execute([&file.path])?;
+                }
+            }
+            for e in &f.errors {
+                stmt_errors.execute(params![e.path, e.line, e.message])?;
             }
         }
-        for e in &f.errors {
-            stmt_errors.execute(params![e.path, e.line, e.message])?;
+        if !local_facts_batch.is_empty() {
+            insert_multi_value_batch(tx, "INSERT INTO local_facts VALUES", &local_facts_batch)?;
+            local_facts_batch.clear();
         }
     }
 
@@ -348,9 +399,6 @@ pub(super) fn persist_files(
     fts_insert_ms +=
         flush_owned_search_batch(tx, &mut owned_search_batch, &mut reusable_search_buffers)?;
     if let Some(batch) = source_inventory_batch.as_mut() {
-        batch.flush()?;
-    }
-    if let Some(batch) = local_facts_batch.as_mut() {
         batch.flush()?;
     }
     if let Some(batch) = doc_sections_batch.as_mut() {
@@ -365,6 +413,8 @@ pub(super) fn persist_files(
         docs_count,
         fts_insert_ms,
         node_row_insert_ms,
+        encode_facts_ms,
+        local_facts_batch_rows: local_facts_batch_rows.unwrap_or(1),
     })
 }
 
@@ -458,13 +508,17 @@ fn flush_owned_search_batch(
 }
 
 pub(super) struct CachedNodePath {
-    path: String,
+    path: Arc<str>,
     node_hash: i64,
     path_hash: i64,
 }
 
 impl CachedNodePath {
     pub(super) fn new(id: &str, path: String) -> Self {
+        Self::from_shared(id, Arc::<str>::from(path))
+    }
+
+    pub(super) fn from_shared(id: &str, path: Arc<str>) -> Self {
         Self {
             node_hash: stable_hash64(id),
             path_hash: stable_hash64(&path),
@@ -486,7 +540,7 @@ pub(super) fn graph_endpoint_hashes(
             .with_context(|| format!("edge {kind} has missing endpoint {endpoint}"))?;
         return Ok((
             node.node_hash,
-            (node.path != owner).then_some(node.path_hash),
+            (node.path.as_ref() != owner).then_some(node.path_hash),
         ));
     }
     let path: Option<String> = stmt_select_path
@@ -500,7 +554,7 @@ pub(super) fn graph_endpoint_hashes(
         .with_context(|| format!("edge {kind} has missing endpoint {endpoint}"))?;
     Ok((
         node.node_hash,
-        (node.path != owner).then_some(node.path_hash),
+        (node.path.as_ref() != owner).then_some(node.path_hash),
     ))
 }
 
