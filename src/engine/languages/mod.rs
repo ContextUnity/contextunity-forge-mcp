@@ -17,6 +17,7 @@ use crate::engine::ast::{self, field, text};
 use crate::engine::linker::traits::{LanguageLinker, GENERIC_LINKER};
 use anyhow::{Context, Result};
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     sync::Arc,
@@ -225,6 +226,164 @@ pub struct LanguageContext {
     /// Dependency-injection call rules.
     pub di_calls: Vec<manifests::DiCallRule>,
     pub(crate) semantic_rules: Vec<semantic::EffectiveSemanticRule>,
+    pub(crate) rule_ir: manifests::RuleIRHandle,
+}
+
+impl LanguageContext {
+    pub(crate) fn bind_rule_ir(&self, grammar: &tree_sitter::Language) -> manifests::RuleIRHandle {
+        self.rule_ir.bind(grammar, self)
+    }
+}
+
+/// Declarative syntax categories for profiles using the shared extractor.
+/// Every selector is a named kind in the actual source grammar; absent selectors
+/// are errors rather than the grammar's zero/error kind.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SyntaxGrammarSpec {
+    /// Grammar declaration kinds paired with indexed symbol categories.
+    pub declarations: &'static [(&'static str, &'static str)],
+    /// Kinds whose expressions produce references through the call hook.
+    pub references: &'static [&'static str],
+    /// Kinds that own lexical binding summaries.
+    pub scopes: &'static [&'static str],
+    /// Kinds passed to the import hook.
+    pub imports: &'static [&'static str],
+    /// Kinds whose member expressions produce read references.
+    pub member_access: &'static [&'static str],
+    /// Kinds accepted as attached documentation comments.
+    pub comments: &'static [&'static str],
+}
+pub(crate) struct CompiledSyntaxGrammar {
+    kinds: HashMap<u16, CompiledSyntaxKind>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CompiledSyntaxKind {
+    declaration: Option<&'static str>,
+    flags: u8,
+}
+
+impl CompiledSyntaxKind {
+    const REFERENCE: u8 = 1 << 0;
+    const SCOPE: u8 = 1 << 1;
+    const IMPORT: u8 = 1 << 2;
+    const MEMBER_ACCESS: u8 = 1 << 3;
+    const COMMENT: u8 = 1 << 4;
+
+    fn has(self, flag: u8) -> bool {
+        self.flags & flag != 0
+    }
+
+    pub(crate) fn declaration(self) -> Option<&'static str> {
+        self.declaration
+    }
+
+    pub(crate) fn is_reference(self) -> bool {
+        self.has(Self::REFERENCE)
+    }
+
+    pub(crate) fn is_scope(self) -> bool {
+        self.has(Self::SCOPE)
+    }
+
+    pub(crate) fn is_import(self) -> bool {
+        self.has(Self::IMPORT)
+    }
+
+    pub(crate) fn is_member_access(self) -> bool {
+        self.has(Self::MEMBER_ACCESS)
+    }
+
+    pub(crate) fn is_comment(self) -> bool {
+        self.has(Self::COMMENT)
+    }
+}
+
+impl CompiledSyntaxGrammar {
+    pub(crate) fn classify(&self, kind_id: u16) -> Option<CompiledSyntaxKind> {
+        self.kinds.get(&kind_id).copied()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct SyntaxGrammarCacheKey {
+    grammar: tree_sitter::Language,
+    spec_identity: usize,
+}
+
+thread_local! {
+    static SYNTAX_GRAMMAR_CACHE: RefCell<HashMap<SyntaxGrammarCacheKey, Arc<CompiledSyntaxGrammar>>> = RefCell::new(HashMap::new());
+}
+
+impl SyntaxGrammarSpec {
+    pub(crate) fn compile(&self, grammar: &tree_sitter::Language) -> Result<CompiledSyntaxGrammar> {
+        let kind = |name: &str| -> Result<u16> {
+            let id = grammar.id_for_node_kind(name, true);
+            anyhow::ensure!(
+                grammar.node_kind_for_id(id) == Some(name) && grammar.node_kind_is_named(id),
+                "SyntaxGrammarSpec names unknown named kind '{name}'"
+            );
+            Ok(id)
+        };
+        let mut compiled_kinds = HashMap::<u16, CompiledSyntaxKind>::with_capacity(
+            self.declarations.len()
+                + self.references.len()
+                + self.scopes.len()
+                + self.imports.len()
+                + self.member_access.len()
+                + self.comments.len(),
+        );
+        for (name, category) in self.declarations {
+            anyhow::ensure!(
+                !category.is_empty(),
+                "SyntaxGrammarSpec declaration category is empty"
+            );
+            let compiled = compiled_kinds.entry(kind(name)?).or_default();
+            anyhow::ensure!(
+                compiled.declaration.is_none(),
+                "SyntaxGrammarSpec repeats declaration kind '{name}'"
+            );
+            compiled.declaration = Some(category);
+        }
+        for (names, flag) in [
+            (self.references, CompiledSyntaxKind::REFERENCE),
+            (self.scopes, CompiledSyntaxKind::SCOPE),
+            (self.imports, CompiledSyntaxKind::IMPORT),
+            (self.member_access, CompiledSyntaxKind::MEMBER_ACCESS),
+            (self.comments, CompiledSyntaxKind::COMMENT),
+        ] {
+            for name in names {
+                compiled_kinds.entry(kind(name)?).or_default().flags |= flag;
+            }
+        }
+        Ok(CompiledSyntaxGrammar {
+            kinds: compiled_kinds,
+        })
+    }
+
+    /// Reuses the immutable kind-id table for this exact static spec and grammar.
+    pub(crate) fn compile_cached(
+        &'static self,
+        grammar: &tree_sitter::Language,
+    ) -> Result<Arc<CompiledSyntaxGrammar>> {
+        let key = SyntaxGrammarCacheKey {
+            grammar: grammar.clone(),
+            spec_identity: self as *const Self as usize,
+        };
+        if let Some(compiled) = SYNTAX_GRAMMAR_CACHE.with(|cache| cache.borrow().get(&key).cloned())
+        {
+            return Ok(compiled);
+        }
+
+        let compiled = Arc::new(self.compile(grammar)?);
+        Ok(SYNTAX_GRAMMAR_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= 128 {
+                cache.clear();
+            }
+            cache.entry(key).or_insert_with(|| compiled.clone()).clone()
+        }))
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -447,6 +606,19 @@ pub trait LanguageProfile: Send + Sync {
     }
     /// Maps a grammar node kind to an indexed symbol category.
     fn symbol_kind(&self, kind: &str) -> Option<&'static str>;
+    /// Supplies declarative syntax selectors; legacy profiles retain their hooks.
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        None
+    }
+    /// Creates incremental language body state consumed by the shared DFS.
+    fn scope_analysis<'source, 'tree>(
+        &self,
+        _node: Syntax<'tree>,
+        _source: &'source str,
+        _file: &FileContext,
+    ) -> Option<ast::ScopeAnalysis<'source, 'tree>> {
+        None
+    }
     /// Classifies a syntax node as an indexed symbol when applicable.
     fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
         self.symbol_kind(node.kind())
@@ -512,6 +684,15 @@ pub trait LanguageProfile: Send + Sync {
     fn prepare(&self, _root: Syntax<'_>, _source: &str) -> FileContext {
         FileContext::default()
     }
+    /// Derives module exports after the shared walk has collected root bindings.
+    fn module_exports_with_bindings(
+        &self,
+        _root: Syntax<'_>,
+        _source: &str,
+        _bindings: &ast::ScopeBindings,
+    ) -> Option<Vec<crate::core::semantic::ExportBinding>> {
+        None
+    }
     /// Projects bounded semantic metadata for an indexed declaration.
     fn metadata(
         &self,
@@ -573,13 +754,40 @@ pub trait LanguageProfile: Send + Sync {
         name == "self" || name == "this" || name == "cls"
     }
     /// Appends import references found at the current syntax node.
-    fn extract_imports(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {}
+    fn extract_imports(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {
+        if self.syntax_grammar_spec().is_some() {
+            let expression = field(_ctx.node, _ctx.source, "module_name")
+                .or_else(|| field(_ctx.node, _ctx.source, "source"))
+                .unwrap_or_else(|| text(_ctx.node, _ctx.source));
+            _ctx.import(_facts, expression.to_owned(), None, None);
+        }
+    }
     /// Appends structural relations found at the current syntax node.
     fn extract_relations(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {}
     /// Appends call references found at the current syntax node.
-    fn extract_calls(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {}
+    fn extract_calls(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {
+        if self.syntax_grammar_spec().is_some() {
+            let expression = field(_ctx.node, _ctx.source, "function")
+                .unwrap_or_else(|| text(_ctx.node, _ctx.source));
+            _facts.references.push(Reference {
+                source: _ctx.owner.into(),
+                expression: expression.into(),
+                kind: "calls".into(),
+                line: _ctx.line(),
+                column: _ctx.node.start_position().column,
+                alias: None,
+                module: None,
+                dynamic: false,
+                receiver_hint: None,
+            });
+        }
+    }
     /// Appends mutation references found at the current syntax node.
     fn extract_mutations(&self, _ctx: &SyntaxContext<'_, '_>, _facts: &mut Facts) {}
+    /// Reports whether this profile extracts route facts and needs per-file route context.
+    fn route_extraction_enabled(&self) -> bool {
+        true
+    }
     /// Appends route relationships found at the current syntax node.
     fn extract_routes(
         &self,
@@ -598,6 +806,19 @@ pub trait LanguageProfile: Send + Sync {
         _routes: &crate::engine::ast::routes::RouteContext,
     ) {
         self.extract_routes(ctx, facts, symbols);
+    }
+    /// Appends routes using a grammar-bound manifest dispatch table.
+    #[doc(hidden)]
+    fn extract_routes_with_rule_ir(
+        &self,
+        ctx: &SyntaxContext<'_, '_>,
+        facts: &mut Facts,
+        symbols: &HashMap<usize, String>,
+        rules: &LanguageContext,
+        _rule_ir: &manifests::RuleIRHandle,
+        routes: &crate::engine::ast::routes::RouteContext,
+    ) {
+        self.extract_routes_with_context(ctx, facts, symbols, rules, routes);
     }
     /// Finalizes extracted facts after the syntax walk.
     fn finish(&self, _facts: &mut Facts) {}
@@ -768,6 +989,9 @@ fn parse_tree(
     source: &str,
 ) -> Result<tree_sitter::Tree> {
     let grammar = profile.grammar(path);
+    if let Some(spec) = profile.syntax_grammar_spec() {
+        spec.compile_cached(&grammar)?;
+    }
     with_warm_parser(parser_slot(profile.id(), path), grammar, |parser| {
         parser.parse(source, None)
     })?

@@ -181,9 +181,6 @@ fn extract_file_impl(
             tree_sitter::Point::new(offset, column),
         )
         .context("Tree-sitter parse cancelled")?;
-        if setup_script {
-            script_setup_bindings.extend(profile.bindings(tree.root_node(), source).all);
-        }
         {
             let mut output = SetupFactOutputs {
                 setup_callables: &mut setup_callables,
@@ -209,7 +206,7 @@ fn extract_file_impl(
                 &mut output,
             );
         }
-        ast::extract_tree_with_flows(
+        let bindings = ast::extract_tree_with_flows(
             profile,
             tree.root_node(),
             path,
@@ -219,6 +216,9 @@ fn extract_file_impl(
             facts,
             flows.as_deref_mut(),
         );
+        if setup_script {
+            script_setup_bindings.extend(bindings.all);
+        }
         base += end + 9;
         rest = &source[base..];
     }

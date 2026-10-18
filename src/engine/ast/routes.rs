@@ -1,6 +1,6 @@
 use super::{relations, text, Syntax};
 use crate::core::models::{Edge, Facts, Node, Reference};
-use crate::engine::languages::{self, LanguageContext};
+use crate::engine::languages;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -31,10 +31,14 @@ fn positional_argument<'tree>(
     source: &str,
     index: usize,
 ) -> Option<Syntax<'tree>> {
-    positional_arguments(node)
-        .into_iter()
+    let arguments = node.child_by_field_name("arguments")?;
+    let mut cursor = arguments.walk();
+    let result = arguments
+        .named_children(&mut cursor)
+        .filter(|child| !matches!(child.kind(), "keyword_argument" | "comment"))
         .nth(index)
-        .filter(|argument| !text(*argument, source).is_empty())
+        .filter(|argument| !text(*argument, source).is_empty());
+    result
 }
 
 fn positional_arguments<'tree>(node: Syntax<'tree>) -> Vec<Syntax<'tree>> {
@@ -48,6 +52,46 @@ fn positional_arguments<'tree>(node: Syntax<'tree>) -> Vec<Syntax<'tree>> {
         .collect()
 }
 
+fn router_prefix<'source>(value: Syntax<'_>, source: &'source str) -> Option<Option<&'source str>> {
+    if !matches!(value.kind(), "call" | "call_expression") || callee(value, source)? != "APIRouter"
+    {
+        return None;
+    }
+    let Some(arguments) = value.child_by_field_name("arguments") else {
+        return Some(None);
+    };
+    let mut cursor = arguments.walk();
+    for argument in arguments.named_children(&mut cursor) {
+        if argument.kind() == "keyword_argument"
+            && argument
+                .child_by_field_name("name")
+                .is_some_and(|name| text(name, source) == "prefix")
+        {
+            return Some(
+                argument
+                    .child_by_field_name("value")
+                    .and_then(|value| literal(value, source)),
+            );
+        }
+    }
+    Some(None)
+}
+
+fn controller_prefix<'source>(node: Syntax<'_>, source: &'source str) -> Option<&'source str> {
+    relations::decorators(node)
+        .into_iter()
+        .find_map(|decorator| {
+            let call = decorator
+                .named_child(0)
+                .filter(|child| matches!(child.kind(), "call" | "call_expression"))?;
+            (callee(call, source)? == "Controller")
+                .then(|| {
+                    positional_argument(call, source, 0).and_then(|value| literal(value, source))
+                })
+                .flatten()
+        })
+}
+
 /// Per-file route prefixes discovered from framework constructors and class decorators.
 #[doc(hidden)]
 #[derive(Debug, Default)]
@@ -57,84 +101,38 @@ pub struct RouteContext {
 }
 
 impl RouteContext {
+    fn observe(&mut self, node: Syntax<'_>, source: &str) {
+        if matches!(node.kind(), "assignment" | "variable_declarator") {
+            let name = node
+                .child_by_field_name("left")
+                .or_else(|| node.child_by_field_name("name"));
+            let value = node
+                .child_by_field_name("right")
+                .or_else(|| node.child_by_field_name("value"));
+            if let (Some(name), Some(value)) = (name, value) {
+                if let Some(prefix) = router_prefix(value, source) {
+                    self.routers
+                        .insert(text(name, source).to_owned(), prefix.map(str::to_owned));
+                }
+            }
+        }
+        if matches!(node.kind(), "class_definition" | "class_declaration") {
+            if let Some(prefix) = controller_prefix(node, source) {
+                self.controllers.insert(node.id(), prefix.to_owned());
+            }
+        }
+    }
+
     pub(crate) fn build(root: Syntax<'_>, source: &str) -> Self {
-        fn visit(node: Syntax<'_>, source: &str, context: &mut RouteContext) {
-            if matches!(node.kind(), "assignment" | "variable_declarator") {
-                let name = node
-                    .child_by_field_name("left")
-                    .or_else(|| node.child_by_field_name("name"));
-                let value = node
-                    .child_by_field_name("right")
-                    .or_else(|| node.child_by_field_name("value"));
-                if let (Some(name), Some(value)) = (name, value) {
-                    if let Some(prefix) = router_prefix(value, source) {
-                        context
-                            .routers
-                            .insert(text(name, source).to_owned(), prefix.map(str::to_owned));
-                    }
-                }
-            }
-            if matches!(node.kind(), "class_definition" | "class_declaration") {
-                if let Some(prefix) = controller_prefix(node, source) {
-                    context.controllers.insert(node.id(), prefix.to_owned());
-                }
-            }
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
-                visit(child, source, context);
-            }
-        }
-
-        fn router_prefix<'source>(
-            value: Syntax<'_>,
-            source: &'source str,
-        ) -> Option<Option<&'source str>> {
-            if !matches!(value.kind(), "call" | "call_expression")
-                || callee(value, source)? != "APIRouter"
-            {
-                return None;
-            }
-            let Some(arguments) = value.child_by_field_name("arguments") else {
-                return Some(None);
-            };
-            let mut cursor = arguments.walk();
-            for argument in arguments.named_children(&mut cursor) {
-                if argument.kind() == "keyword_argument"
-                    && argument
-                        .child_by_field_name("name")
-                        .is_some_and(|name| text(name, source) == "prefix")
-                {
-                    return Some(
-                        argument
-                            .child_by_field_name("value")
-                            .and_then(|value| literal(value, source)),
-                    );
-                }
-            }
-            Some(None)
-        }
-
-        fn controller_prefix<'source>(
-            node: Syntax<'_>,
-            source: &'source str,
-        ) -> Option<&'source str> {
-            relations::decorators(node)
-                .into_iter()
-                .find_map(|decorator| {
-                    let call = decorator
-                        .named_child(0)
-                        .filter(|child| matches!(child.kind(), "call" | "call_expression"))?;
-                    (callee(call, source)? == "Controller")
-                        .then(|| {
-                            positional_argument(call, source, 0)
-                                .and_then(|value| literal(value, source))
-                        })
-                        .flatten()
-                })
-        }
-
         let mut context = Self::default();
-        visit(root, source, &mut context);
+        if !source.contains("APIRouter") && !source.contains("Controller") {
+            return context;
+        }
+        super::visitor::walk(root, &mut |node, entering| {
+            if entering {
+                context.observe(node, source);
+            }
+        });
         context
     }
 
@@ -320,7 +318,7 @@ fn add(route: Route<'_>, owner: &str, facts: &mut Facts, offset: usize) {
 pub(crate) fn declaration_with_context(
     ctx: &languages::SyntaxContext<'_, '_>,
     facts: &mut Facts,
-    rules: &LanguageContext,
+    rule_ir: &languages::manifests::RuleIRHandle,
     route_context: &RouteContext,
 ) {
     let (node, source, owner, offset) = (ctx.node, ctx.source, ctx.owner, ctx.offset);
@@ -331,11 +329,14 @@ pub(crate) fn declaration_with_context(
         else {
             continue;
         };
+        let rules = rule_ir.route_decorators_for_kind(call.kind_id());
+        if rules.is_empty() {
+            continue;
+        }
         let Some(actual_callee) = callee(call, source) else {
             continue;
         };
         for rule in rules
-            .route_decorators
             .iter()
             .filter(|rule| callee_matches(actual_callee, &rule.callee))
         {
@@ -376,11 +377,15 @@ pub(crate) fn registration_with_context(
     ctx: &languages::SyntaxContext<'_, '_>,
     facts: &mut Facts,
     symbols: &HashMap<usize, String>,
-    rules: &LanguageContext,
+    rule_ir: &languages::manifests::RuleIRHandle,
     route_context: &RouteContext,
 ) {
     let (node, source, owner, offset) = (ctx.node, ctx.source, ctx.owner, ctx.offset);
     if matches!(node.kind(), "call" | "call_expression") {
+        let rules = rule_ir.route_calls_for_kind(ctx.node.kind_id());
+        if rules.is_empty() {
+            return;
+        }
         if node.parent().is_some_and(|p| p.kind() == "decorator") {
             return;
         }
@@ -388,7 +393,6 @@ pub(crate) fn registration_with_context(
             return;
         };
         for rule in rules
-            .route_calls
             .iter()
             .filter(|rule| callee_matches(actual_callee, &rule.callee))
         {
@@ -554,17 +558,20 @@ fn include_target(node: Syntax<'_>, source: &str) -> (Option<String>, Option<Str
 
 pub(crate) fn dependency_injection(
     ctx: &languages::SyntaxContext<'_, '_>,
-    rules: &LanguageContext,
+    rule_ir: &languages::manifests::RuleIRHandle,
     facts: &mut Facts,
 ) {
     if !matches!(ctx.node.kind(), "call" | "call_expression") {
         return;
     }
+    let di_rules = rule_ir.di_calls_for_kind(ctx.node.kind_id());
+    if di_rules.is_empty() {
+        return;
+    }
     let Some(actual_callee) = callee(ctx.node, ctx.source) else {
         return;
     };
-    for rule in rules
-        .di_calls
+    for rule in di_rules
         .iter()
         .filter(|rule| callee_matches(actual_callee, &rule.callee))
     {

@@ -19,7 +19,7 @@ pub(crate) mod linker;
 pub(crate) use commonjs::commonjs_bindings;
 mod package_metadata;
 mod scope_facts;
-mod value_flow;
+pub(crate) mod value_flow;
 /// Performs language.
 pub fn language(path: &str, language: &str) -> tree_sitter::Language {
     if language == "javascript"
@@ -547,6 +547,16 @@ impl TypeScript {
 }
 
 impl LanguageProfile for TypeScript {
+    fn scope_analysis<'source, 'tree>(
+        &self,
+        node: Syntax<'tree>,
+        source: &'source str,
+        file: &FileContext,
+    ) -> Option<ast::ScopeAnalysis<'source, 'tree>> {
+        let _ = file;
+        Some(ast::ScopeAnalysis::typescript(node, source))
+    }
+
     fn id(&self) -> &'static str {
         if self.javascript {
             "javascript"
@@ -1481,10 +1491,7 @@ impl LanguageProfile for TypeScript {
         self.is_stdlib(module).then_some("Node.js standard library")
     }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
-        let root_bindings = self.bindings(root, source);
         let mut file = FileContext {
-            exports: value_flow::exports(root, source, &root_bindings),
-            root_bindings: Some((root.id(), root_bindings)),
             ..Default::default()
         };
         let scope_fact_needs =
@@ -1540,6 +1547,15 @@ impl LanguageProfile for TypeScript {
             }
         }
         file
+    }
+
+    fn module_exports_with_bindings(
+        &self,
+        root: Syntax<'_>,
+        source: &str,
+        bindings: &ast::ScopeBindings,
+    ) -> Option<Vec<crate::core::semantic::ExportBinding>> {
+        Some(value_flow::exports(root, source, bindings))
     }
 
     fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
@@ -1661,7 +1677,22 @@ impl LanguageProfile for TypeScript {
     }
 
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        if !self.javascript && ctx.node.kind() == "identifier" {
+        let kind = ctx.node.kind();
+        if !matches!(
+            kind,
+            "identifier"
+                | "member_expression"
+                | "assignment_expression"
+                | "augmented_assignment_expression"
+                | "update_expression"
+                | "unary_expression"
+                | "public_field_definition"
+                | "field_definition"
+                | "property_signature"
+        ) {
+            return;
+        }
+        if !self.javascript && kind == "identifier" {
             let runtime_value = ctx.node.parent().is_some_and(|parent| {
                 (parent.kind() == "variable_declarator"
                     && parent.child_by_field_name("value") == Some(ctx.node))
@@ -1839,11 +1870,29 @@ impl LanguageProfile for TypeScript {
         rules: &super::LanguageContext,
         route_context: &crate::engine::ast::routes::RouteContext,
     ) {
+        self.extract_routes_with_rule_ir(
+            ctx,
+            facts,
+            symbols,
+            rules,
+            &rules.rule_ir,
+            route_context,
+        );
+    }
+    fn extract_routes_with_rule_ir(
+        &self,
+        ctx: &SyntaxContext<'_, '_>,
+        facts: &mut Facts,
+        symbols: &HashMap<usize, String>,
+        _rules: &super::LanguageContext,
+        rule_ir: &super::manifests::RuleIRHandle,
+        route_context: &crate::engine::ast::routes::RouteContext,
+    ) {
         if matches!(ctx.node.kind(), "method_definition" | "method_declaration") {
-            routes::declaration_with_context(ctx, facts, rules, route_context);
+            routes::declaration_with_context(ctx, facts, rule_ir, route_context);
         }
         if matches!(ctx.node.kind(), "call_expression" | "object") {
-            routes::registration_with_context(ctx, facts, symbols, rules, route_context);
+            routes::registration_with_context(ctx, facts, symbols, rule_ir, route_context);
         }
         self.extract_routes(ctx, facts, symbols);
     }

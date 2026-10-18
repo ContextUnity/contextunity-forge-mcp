@@ -3,6 +3,631 @@ use contextunity_forge_mcp::db::{reader, writer};
 use contextunity_forge_mcp::engine::ast;
 use std::{fs, path::PathBuf};
 
+#[cfg(feature = "lang-typescript")]
+mod legacy_hooks;
+
+#[cfg(all(feature = "lang-python", feature = "lang-rust"))]
+#[test]
+fn syntax_grammar_cache_isolated_by_spec_and_actual_grammar() {
+    use contextunity_forge_mcp::core::models::Facts;
+    use contextunity_forge_mcp::engine::languages::{self, LanguageProfile, SyntaxGrammarSpec};
+    static FUNCTION_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+        declarations: &[("function_definition", "function")],
+        ..SyntaxGrammarSpec {
+            references: &[],
+            scopes: &[],
+            imports: &[],
+            member_access: &[],
+            comments: &[],
+            declarations: &[],
+        }
+    };
+    static CLASS_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+        declarations: &[("class_definition", "class")],
+        ..SyntaxGrammarSpec {
+            references: &[],
+            scopes: &[],
+            imports: &[],
+            member_access: &[],
+            comments: &[],
+            declarations: &[],
+        }
+    };
+
+    struct Probe(&'static SyntaxGrammarSpec, &'static str);
+    impl LanguageProfile for Probe {
+        fn id(&self) -> &'static str {
+            self.1
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["py", "rs"]
+        }
+        fn grammar(&self, path: &str) -> tree_sitter::Language {
+            if path.ends_with(".rs") {
+                languages::require("rust").unwrap().grammar(path)
+            } else {
+                languages::require("python").unwrap().grammar(path)
+            }
+        }
+        fn symbol_kind(&self, _kind: &str) -> Option<&'static str> {
+            None
+        }
+        fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+            Some(self.0)
+        }
+        fn node_prefix(&self, _kind: &str) -> &'static str {
+            "syntax-cache"
+        }
+        fn normalize_import(&self, _owner: &str, _module: &str) -> Option<languages::ImportPath> {
+            None
+        }
+        fn extract_file(
+            &self,
+            path: &str,
+            source: &str,
+            module: &str,
+            facts: &mut Facts,
+        ) -> anyhow::Result<()> {
+            languages::parse_file(self, path, source, module, facts)
+        }
+    }
+
+    let source = "def run():\n    pass\n\nclass Thing:\n    pass\n";
+    let mut function_facts = Facts::default();
+    languages::parse_file(
+        &Probe(&FUNCTION_SPEC, "function-probe"),
+        "probe.py",
+        source,
+        "probe",
+        &mut function_facts,
+    )
+    .unwrap();
+    assert!(function_facts
+        .nodes
+        .iter()
+        .any(|node| node.name == "run" && node.kind == "function"));
+
+    let mut class_facts = Facts::default();
+    languages::parse_file(
+        &Probe(&CLASS_SPEC, "class-probe"),
+        "probe.py",
+        source,
+        "probe",
+        &mut class_facts,
+    )
+    .unwrap();
+    assert!(class_facts
+        .nodes
+        .iter()
+        .any(|node| node.name == "Thing" && node.kind == "class"));
+
+    let wrong_grammar = languages::parse_file(
+        &Probe(&FUNCTION_SPEC, "wrong-grammar-probe"),
+        "probe.rs",
+        "fn run() {}",
+        "probe",
+        &mut Facts::default(),
+    );
+    assert!(wrong_grammar.is_err());
+}
+
+#[cfg(all(
+    feature = "lang-python",
+    feature = "lang-rust",
+    feature = "lang-typescript"
+))]
+#[test]
+fn three_tier_profiles_preserve_delivered_public_facts_and_all_commitments() {
+    use contextunity_forge_mcp::core::commitments;
+    use contextunity_forge_mcp::core::semantic::ValueFlowFacts;
+    use rusqlite::types::ValueRef;
+    use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
+    use std::{
+        collections::BTreeSet,
+        time::{Duration, UNIX_EPOCH},
+    };
+
+    let baseline: Value =
+        serde_json::from_str(include_str!("fixtures/three_tier/pre_refactor.json")).unwrap();
+    assert_eq!(baseline["format"], "forge-three-tier-baseline-v1");
+    assert_eq!(
+        baseline["release"]["t2_commit"],
+        "04b11483d0cf180bb0a896c2a2f5ca2818f43bb9"
+    );
+    assert_eq!(
+        baseline["snapshot"]["commitments"],
+        baseline["same_root_repeat"]["commitments"]
+    );
+    assert_eq!(
+        baseline["snapshot"]["metadata"],
+        baseline["same_root_repeat"]["metadata"]
+    );
+    let fixture_root =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/languages/fixtures/three_tier");
+    let workspace = Workspace::new();
+    let mut public = serde_json::Map::new();
+    let mut failures = Vec::new();
+    for source in baseline["sources"].as_array().unwrap() {
+        let path = source["path"].as_str().unwrap();
+        let bytes = fs::read(fixture_root.join(path)).unwrap();
+        assert_eq!(
+            bytes.len() as u64,
+            source["size"].as_u64().unwrap(),
+            "{path}"
+        );
+        assert_eq!(
+            hex::encode(Sha256::digest(&bytes)),
+            source["sha256"].as_str().unwrap(),
+            "{path}"
+        );
+        let text = std::str::from_utf8(&bytes).unwrap();
+        workspace.write(path, text);
+        fs::File::options()
+            .write(true)
+            .open(workspace.0.join(path))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(
+                UNIX_EPOCH + Duration::from_nanos(source["mtime_ns"].as_u64().unwrap()),
+            ))
+            .unwrap();
+        let language = match path.rsplit('.').next().unwrap() {
+            "py" => "python",
+            "rs" => "rust",
+            "ts" => "typescript",
+            _ => continue,
+        };
+        let facts = ast::extract(path, language, text).unwrap();
+        if !facts.errors.is_empty() {
+            failures.push(format!("{path}: {:?}", facts.errors));
+        }
+        for node in &facts.nodes {
+            if node.path != path
+                || node.language != language
+                || node.line == 0
+                || node.end_line < node.line
+            {
+                failures.push(format!("invalid public owner: {node:?}"));
+            }
+            if let Some(flow) = node.details.get("value_flow") {
+                let typed: ValueFlowFacts = serde_json::from_value(flow.clone()).unwrap();
+                if typed.fact_limit_exceeded {
+                    failures.push(format!("unexpected bounded fact overflow: {}", node.id));
+                }
+            }
+        }
+        public.insert(path.into(), serde_json::to_value(&facts).unwrap());
+    }
+    // All owners are captured through the public API before any comparison can
+    // fail, so one unsupported assumption cannot hide another language's facts.
+    let expected = baseline
+        .get("public_extraction")
+        .expect("baseline requires delivered public owner/binding/return prevalidation");
+    for (path, facts) in &public {
+        for node in facts["nodes"].as_array().unwrap() {
+            let original = expected[path]["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|original| original["id"] == node["id"]);
+            if original.is_some_and(|original| {
+                serde_json::to_string(&original["details"]).unwrap()
+                    != serde_json::to_string(&node["details"]).unwrap()
+            }) {
+                failures.push(format!(
+                    "{path}: serialized details changed for {}",
+                    node["id"]
+                ));
+            }
+        }
+    }
+    if expected != &Value::Object(public) {
+        failures.push("public owner/binding/return facts changed".into());
+    }
+    #[cfg(feature = "lang-vue")]
+    {
+        let facts = ast::extract(
+            "order.vue",
+            "vue",
+            "<script setup>const left = 1; const right = 2;</script>\n<template>{{ left + right }}</template>",
+        )
+        .unwrap();
+        assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+        let references: Vec<_> = facts
+            .references
+            .iter()
+            .filter(|reference| reference.source.starts_with("template_scope:"))
+            .map(|reference| reference.expression.as_str())
+            .collect();
+        assert_eq!(references, ["right", "left"]);
+    }
+    let conn = workspace.build();
+    commitments::verify(&conn).unwrap();
+    let mut statement = conn.prepare("SELECT domain,p.path,CASE WHEN typeof(digest)='blob' THEN lower(hex(digest)) ELSE digest END FROM domain_commitments d LEFT JOIN path_dictionary p ON p.path_id=d.owner_id ORDER BY domain,p.path").unwrap();
+    let actual: Vec<(String, Option<String>, String)> = statement
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let domains: BTreeSet<_> = actual
+        .iter()
+        .filter(|(_, owner, _)| owner.is_none())
+        .map(|(domain, _, _)| domain.as_str())
+        .collect();
+    assert_eq!(domains, "source_inventory files nodes edges local_facts edge_occurrences dependencies shared_owners errors resolution_coverage coverage_owner_language coverage_language_counts doc_sections node_search_postings node_search_config doc_search_postings doc_search_config".split_whitespace().collect());
+    if serde_json::to_value(actual).unwrap() != baseline["snapshot"]["commitments"] {
+        failures.push("complete 17-domain/owner-leaf commitments differ".into());
+    }
+    for (name, expected) in baseline["snapshot"]["tables"].as_object().unwrap() {
+        if name == "domain_commitments"
+            || ["node_search", "doc_search"].iter().any(|prefix| {
+                ["_data", "_idx", "_content", "_docsize"]
+                    .iter()
+                    .any(|suffix| name == &format!("{prefix}{suffix}"))
+            })
+        {
+            continue;
+        }
+        let columns: Vec<_> = expected["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_str().unwrap())
+            .collect();
+        let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+        let sql = format!(
+            "SELECT * FROM {} ORDER BY {}",
+            quote(name),
+            columns
+                .iter()
+                .map(|c| quote(c))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let mut statement = conn.prepare(&sql).unwrap();
+        let rows: Vec<Vec<Value>> = statement
+            .query_map([], |row| {
+                (0..columns.len())
+                    .map(|index| {
+                        Ok(match row.get_ref(index)? {
+                            ValueRef::Null => json!({"type":"null"}),
+                            ValueRef::Integer(value) => json!({"type":"integer","value":value}),
+                            ValueRef::Text(value) => {
+                                json!({"type":"text","value":std::str::from_utf8(value).unwrap()})
+                            }
+                            ValueRef::Blob(value) => {
+                                json!({"type":"blob","hex":hex::encode(value)})
+                            }
+                            ValueRef::Real(_) => panic!(
+                                "baseline real cell requires exact observed representation: {name}"
+                            ),
+                        })
+                    })
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        if serde_json::to_value(rows).unwrap() != expected["rows"] {
+            failures.push(format!("complete typed table {name} differs"));
+        }
+    }
+    // This profile uses the supported public hook surface. Body summaries must
+    // be finalized after their own descendants while retaining nested owners.
+    struct ScopeOrderProfile(std::sync::Mutex<Vec<String>>);
+    impl contextunity_forge_mcp::engine::languages::LanguageProfile for ScopeOrderProfile {
+        fn id(&self) -> &'static str {
+            "scope-order"
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["py"]
+        }
+        fn grammar(&self, path: &str) -> tree_sitter::Language {
+            contextunity_forge_mcp::engine::languages::require("python")
+                .unwrap()
+                .grammar(path)
+        }
+        fn symbol_kind(&self, kind: &str) -> Option<&'static str> {
+            (kind == "function_definition").then_some("function")
+        }
+        fn node_prefix(&self, _kind: &str) -> &'static str {
+            "scope-order"
+        }
+        fn normalize_import(
+            &self,
+            _owner: &str,
+            _module: &str,
+        ) -> Option<contextunity_forge_mcp::engine::languages::ImportPath> {
+            None
+        }
+        fn value_flow(&self, node: tree_sitter::Node<'_>, source: &str) -> ValueFlowFacts {
+            if node.kind() == "function_definition" {
+                let name = node
+                    .child_by_field_name("name")
+                    .unwrap()
+                    .utf8_text(source.as_bytes())
+                    .unwrap();
+                self.0.lock().unwrap().push(format!("flow:{name}"));
+            }
+            ValueFlowFacts::default()
+        }
+        fn scope_analysis<'source, 'tree>(
+            &self,
+            node: tree_sitter::Node<'tree>,
+            source: &'source str,
+            file: &contextunity_forge_mcp::engine::languages::FileContext,
+        ) -> Option<ast::ScopeAnalysis<'source, 'tree>> {
+            contextunity_forge_mcp::engine::languages::require("python")
+                .unwrap()
+                .scope_analysis(node, source, file)
+        }
+        fn extract_calls(
+            &self,
+            ctx: &contextunity_forge_mcp::engine::languages::SyntaxContext<'_, '_>,
+            _facts: &mut contextunity_forge_mcp::core::models::Facts,
+        ) {
+            if ctx.node.kind() == "call" {
+                self.0.lock().unwrap().push(format!(
+                    "call:{}",
+                    ctx.node.utf8_text(ctx.source.as_bytes()).unwrap()
+                ));
+            }
+        }
+        fn extract_file(
+            &self,
+            path: &str,
+            source: &str,
+            module: &str,
+            facts: &mut contextunity_forge_mcp::core::models::Facts,
+        ) -> anyhow::Result<()> {
+            contextunity_forge_mcp::engine::languages::parse_file(self, path, source, module, facts)
+        }
+    }
+    let profile = ScopeOrderProfile(std::sync::Mutex::new(Vec::new()));
+    let mut facts = contextunity_forge_mcp::core::models::Facts::default();
+    contextunity_forge_mcp::engine::languages::parse_file(
+        &profile,
+        "probe.py",
+        "def outer():\n    first()\n    def inner():\n        nested()\n    last()\n",
+        "probe",
+        &mut facts,
+    )
+    .unwrap();
+    let trace = profile.0.into_inner().unwrap();
+    let expected = ["call:first()", "call:nested()", "call:last()"];
+    if trace != expected {
+        failures.push(format!(
+            "incremental analysis must not invoke legacy flow hooks: expected {expected:?}, got {trace:?}"
+        ));
+    }
+    // A profile declaring only syntax data executes every category through the
+    // public parser. Category removal must change an observable fact.
+    use contextunity_forge_mcp::engine::languages::{self, LanguageProfile, SyntaxGrammarSpec};
+    struct DeclarativeProfile(&'static SyntaxGrammarSpec);
+    impl LanguageProfile for DeclarativeProfile {
+        fn id(&self) -> &'static str {
+            "declarative-probe"
+        }
+        fn extensions(&self) -> &'static [&'static str] {
+            &["py"]
+        }
+        fn grammar(&self, path: &str) -> tree_sitter::Language {
+            languages::require("python").unwrap().grammar(path)
+        }
+        fn symbol_kind(&self, _kind: &str) -> Option<&'static str> {
+            None
+        }
+        fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+            Some(self.0)
+        }
+        fn node_prefix(&self, _kind: &str) -> &'static str {
+            "declarative"
+        }
+        fn normalize_import(&self, _owner: &str, _module: &str) -> Option<languages::ImportPath> {
+            None
+        }
+        fn extract_file(
+            &self,
+            path: &str,
+            source: &str,
+            module: &str,
+            facts: &mut contextunity_forge_mcp::core::models::Facts,
+        ) -> anyhow::Result<()> {
+            languages::parse_file(self, path, source, module, facts)
+        }
+    }
+    static SYNTAX: SyntaxGrammarSpec = SyntaxGrammarSpec {
+        declarations: &[("function_definition", "function")],
+        references: &["call"],
+        scopes: &["module", "function_definition"],
+        imports: &["import_statement"],
+        member_access: &["attribute"],
+        comments: &["comment"],
+    };
+    let syntax_source =
+        "import package\n# profile-doc\ndef sample(arg):\n    local = arg\n    service.execute()\n";
+    let mut syntax_facts = contextunity_forge_mcp::core::models::Facts::default();
+    languages::parse_file(
+        &DeclarativeProfile(&SYNTAX),
+        "syntax.py",
+        syntax_source,
+        "syntax",
+        &mut syntax_facts,
+    )
+    .unwrap();
+    let declaration = syntax_facts.nodes.iter().find(|node| node.name == "sample");
+    for (category, observed) in [
+        (
+            "declaration",
+            declaration.is_some_and(|node| node.kind == "function"),
+        ),
+        (
+            "scope",
+            declaration.is_some_and(|node| node.details["bindings"] == json!(["arg", "local"])),
+        ),
+        (
+            "comment",
+            declaration.is_some_and(|node| node.details["doc"] == "# profile-doc"),
+        ),
+        (
+            "reference",
+            syntax_facts.references.iter().any(|reference| {
+                reference.kind == "calls" && reference.expression == "service.execute"
+            }),
+        ),
+        (
+            "import",
+            syntax_facts.references.iter().any(|reference| {
+                reference.kind == "imports" && reference.expression == "import package"
+            }),
+        ),
+        (
+            "member",
+            syntax_facts.references.iter().any(|reference| {
+                reference.kind == "reads" && reference.expression == "service.execute"
+            }),
+        ),
+    ] {
+        if !observed {
+            failures.push(format!(
+                "SyntaxGrammarSpec {category} outcome missing: {syntax_facts:?}"
+            ));
+        }
+    }
+    static INVALID: [SyntaxGrammarSpec; 6] = [
+        SyntaxGrammarSpec {
+            declarations: &[("unknown_decl", "function")],
+            references: &[],
+            scopes: &[],
+            imports: &[],
+            member_access: &[],
+            comments: &[],
+        },
+        SyntaxGrammarSpec {
+            declarations: &[],
+            references: &["unknown_ref"],
+            scopes: &[],
+            imports: &[],
+            member_access: &[],
+            comments: &[],
+        },
+        SyntaxGrammarSpec {
+            declarations: &[],
+            references: &[],
+            scopes: &["unknown_scope"],
+            imports: &[],
+            member_access: &[],
+            comments: &[],
+        },
+        SyntaxGrammarSpec {
+            declarations: &[],
+            references: &[],
+            scopes: &[],
+            imports: &["unknown_import"],
+            member_access: &[],
+            comments: &[],
+        },
+        SyntaxGrammarSpec {
+            declarations: &[],
+            references: &[],
+            scopes: &[],
+            imports: &[],
+            member_access: &["unknown_member"],
+            comments: &[],
+        },
+        SyntaxGrammarSpec {
+            declarations: &[],
+            references: &[],
+            scopes: &[],
+            imports: &[],
+            member_access: &[],
+            comments: &["unknown_comment"],
+        },
+    ];
+    for spec in &INVALID {
+        let mut facts = contextunity_forge_mcp::core::models::Facts::default();
+        match languages::parse_file(
+            &DeclarativeProfile(spec),
+            "invalid.py",
+            syntax_source,
+            "invalid",
+            &mut facts,
+        ) {
+            Err(error)
+                if error.to_string().contains("unknown named kind")
+                    && facts.nodes.is_empty()
+                    && facts.references.is_empty() => {}
+            result => failures.push(format!(
+                "invalid SyntaxGrammarSpec must fail before extraction: {result:?}, {facts:?}"
+            )),
+        }
+    }
+    // Nested body writes belong only to their own frame, including anonymous
+    // callable scopes which are not direct sibling declarations.
+    for (language, path, source) in [
+        (
+            "python",
+            "nested.py",
+            "def outer():\n    outer_only = object()\n    def inner():\n        inner_only = object()\n        return inner_only\n    callback = lambda: object()\n    return outer_only\n",
+        ),
+        (
+            "rust",
+            "nested.rs",
+            "fn outer() { let outer_only = Thing::new(); fn inner() { let inner_only = Thing::new(); } let callback = || { let closure_only = Thing::new(); }; }",
+        ),
+        (
+            "typescript",
+            "nested.ts",
+            "function outer() { const outer_only = new Thing(); function inner() { const inner_only = new Thing(); return inner_only; } const callback = () => { const closure_only = new Thing(); }; return outer_only; }",
+        ),
+    ] {
+        let facts = ast::extract(path, language, source).unwrap();
+        if !facts.errors.is_empty() {
+            failures.push(format!(
+                "{language} nested source parse errors: {:?}",
+                facts.errors
+            ));
+        }
+        let outer = facts
+            .nodes
+            .iter()
+            .find(|node| node.name == "outer")
+            .unwrap();
+        let flow: ValueFlowFacts =
+            serde_json::from_value(outer.details["value_flow"].clone()).unwrap();
+        if !flow
+            .bindings
+            .iter()
+            .any(|binding| binding.name == "outer_only")
+            || flow
+                .bindings
+                .iter()
+                .any(|binding| matches!(binding.name.as_str(), "inner_only" | "closure_only"))
+        {
+            failures.push(format!("{language} nested frame binding leak: {flow:?}"));
+        }
+        let inner = facts
+            .nodes
+            .iter()
+            .find(|node| node.name == "inner")
+            .unwrap();
+        let flow: ValueFlowFacts =
+            serde_json::from_value(inner.details["value_flow"].clone()).unwrap();
+        if !flow
+            .bindings
+            .iter()
+            .any(|binding| binding.name == "inner_only")
+            || flow
+                .bindings
+                .iter()
+                .any(|binding| binding.name == "outer_only")
+        {
+            failures.push(format!("{language} nested owner lost bindings: {flow:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 fn persisted_graph(w: &Workspace) -> Vec<Vec<String>> {
     let conn = reader::open(&w.db(), &w.0).unwrap();
     [
@@ -580,7 +1205,7 @@ class Worker : public Base {
             &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
             Some(100),
             0,
-            None,
+            Some(contextunity_forge_mcp::core::response::Detail::Full),
             None,
         )
         .unwrap();
@@ -617,16 +1242,123 @@ class Worker : public Base {
             )
             .unwrap();
         assert_eq!(count, relations, "{language}");
-        let unknown: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM resolution_coverage WHERE status='unresolved'",
-                [],
-                |r| r.get(0),
-            )
+        let coverage: Vec<(i64, String, String, String)> = conn
+            .prepare("SELECT c.line, e.expression, c.status, v.evidence FROM resolution_coverage c JOIN coverage_expressions e ON e.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id ORDER BY c.line, e.expression, c.status, v.evidence")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
             .unwrap();
-        assert!(
-            unknown >= if language == "java" { 2 } else { 3 },
-            "{language}: {unknown}"
+        let resolved =
+            "1 lexically justified candidates; implementor resolved=true, heuristic=false";
+        let shadowed =
+            "callee is shadowed by a parameter or local binding of unknown callable identity";
+        let dynamic = "computed receiver or dynamic callee; callable identity is unknown";
+        let expected_coverage = match language {
+            "java" => vec![
+                (
+                    1,
+                    "missing.Library",
+                    "external",
+                    "external dependency; no indexed provider for missing.Library",
+                ),
+                (4, "Base", "resolved", resolved),
+                (4, "Face", "resolved", resolved),
+                (7, "helper", "resolved", resolved),
+                (8, "client.run", "unresolved", shadowed),
+                (9, "helper", "resolved", resolved),
+            ],
+            "csharp" => vec![
+                (
+                    1,
+                    "Missing.Library",
+                    "unresolved",
+                    "import Missing.Library: 0 modules, 0 alias targets",
+                ),
+                (4, "Base", "resolved", resolved),
+                (4, "Face", "resolved", resolved),
+                (7, "helper", "resolved", resolved),
+                (8, "client.run", "unresolved", shadowed),
+                (9, "helper", "unresolved", shadowed),
+            ],
+            "kotlin" => vec![
+                (
+                    1,
+                    "missing.Library",
+                    "external",
+                    "external dependency; no indexed provider for missing.Library",
+                ),
+                (4, "Base", "resolved", resolved),
+                (4, "Base()", "unresolved", dynamic),
+                (4, "Face", "resolved", resolved),
+                (7, "helper", "resolved", resolved),
+                (8, "client.run", "unresolved", shadowed),
+                (9, "helper", "unresolved", shadowed),
+            ],
+            "php" => vec![
+                (
+                    2,
+                    "Missing\\Library",
+                    "unresolved",
+                    "import Missing\\Library: 0 modules, 0 alias targets",
+                ),
+                (5, "Base", "resolved", resolved),
+                (5, "Face", "resolved", resolved),
+                (8, "helper", "resolved", resolved),
+                (9, "$client.run", "unresolved", dynamic),
+                (10, "$helper", "unresolved", dynamic),
+            ],
+            "ruby" => vec![
+                (
+                    1,
+                    "'missing/library'",
+                    "unresolved",
+                    "import 'missing/library': 0 modules, 0 alias targets",
+                ),
+                (4, "Base", "resolved", resolved),
+                (10, "helper", "resolved", resolved),
+                (13, "client", "unresolved", dynamic),
+                (13, "client.run", "unresolved", shadowed),
+                (16, "helper", "unresolved", dynamic),
+                (16, "helper.call", "unresolved", shadowed),
+            ],
+            "c" => vec![
+                (
+                    1,
+                    "<missing.h>",
+                    "unresolved",
+                    "import <missing.h>: 0 modules, 0 alias targets",
+                ),
+                (4, "helper", "resolved", resolved),
+                (5, "client->run", "unresolved", dynamic),
+                (6, "helper", "unresolved", shadowed),
+            ],
+            "cpp" => vec![
+                (
+                    1,
+                    "<missing.hpp>",
+                    "unresolved",
+                    "import <missing.hpp>: 0 modules, 0 alias targets",
+                ),
+                (3, "Base", "resolved", resolved),
+                (6, "helper", "resolved", resolved),
+                (7, "client.run", "unresolved", shadowed),
+                (8, "helper", "unresolved", shadowed),
+            ],
+            _ => unreachable!("fixture language is unsupported"),
+        };
+        assert_eq!(
+            coverage
+                .iter()
+                .map(|(line, expression, status, evidence)| (
+                    *line,
+                    expression.as_str(),
+                    status.as_str(),
+                    evidence.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            expected_coverage,
+            "{language} coverage classifications"
         );
         drop(st);
         drop(conn);

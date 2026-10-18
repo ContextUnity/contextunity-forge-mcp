@@ -221,80 +221,14 @@ pub(super) fn jsdoc(
     (parameters, returned, declared)
 }
 
-fn returned_callables<'tree>(
-    root: Syntax<'tree>,
+fn object_value(
+    node: Syntax<'_>,
     source: &str,
-) -> Option<hashbrown::HashMap<String, Syntax<'tree>>> {
-    let body = root.child_by_field_name("body")?;
-    if body.kind() != "statement_block" {
-        return None;
-    }
-    let mut definitions = hashbrown::HashMap::new();
-    let mut declared = hashbrown::HashSet::new();
-    for statement in body.named_children(&mut body.walk()) {
-        if statement.kind() == "function_declaration" {
-            let name = statement.child_by_field_name("name")?;
-            let name = text(name, source);
-            if !declared.insert(name.to_owned()) {
-                return None;
-            }
-            definitions.insert(name.to_owned(), statement);
-        } else if matches!(
-            statement.kind(),
-            "lexical_declaration" | "variable_declaration"
-        ) {
-            let is_const = text(statement, source).trim_start().starts_with("const ");
-            for declaration in statement.named_children(&mut statement.walk()) {
-                if declaration.kind() != "variable_declarator" {
-                    continue;
-                }
-                let Some(name) = declaration
-                    .child_by_field_name("name")
-                    .filter(|name| name.kind() == "identifier")
-                else {
-                    continue;
-                };
-                let name = text(name, source);
-                if !declared.insert(name.to_owned()) {
-                    return None;
-                }
-                if is_const {
-                    if let Some(value) = declaration.child_by_field_name("value").filter(|value| {
-                        matches!(value.kind(), "arrow_function" | "function_expression")
-                    }) {
-                        definitions.insert(name.to_owned(), value);
-                    }
-                }
-            }
-        }
-    }
-    let mut pending = vec![body];
-    while let Some(node) = pending.pop() {
-        let written = if matches!(
-            node.kind(),
-            "assignment_expression" | "augmented_assignment_expression"
-        ) {
-            node.child_by_field_name("left")
-        } else if node.kind() == "update_expression" {
-            node.child_by_field_name("argument")
-        } else {
-            None
-        };
-        if written.is_some_and(|name| {
-            name.kind() == "identifier" && definitions.contains_key(text(name, source))
-        }) {
-            return None;
-        }
-        pending.extend(node.named_children(&mut node.walk()));
-    }
-    Some(definitions)
-}
-
-fn object_value(node: Syntax<'_>, source: &str, scope: Option<Syntax<'_>>) -> ValueExpr {
+    definitions: Option<&hashbrown::HashMap<String, Syntax<'_>>>,
+) -> ValueExpr {
     if node.named_child_count() > 128 {
         return ValueExpr::Unknown;
     }
-    let mut definitions = None;
     let mut members = Vec::new();
     let mut names = hashbrown::HashSet::new();
     for item in node.named_children(&mut node.walk()) {
@@ -330,16 +264,8 @@ fn object_value(node: Syntax<'_>, source: &str, scope: Option<Syntax<'_>>) -> Va
                 },
             )
         } else if item.kind() == "shorthand_property_identifier" {
-            if definitions.is_none() {
-                let Some(found) = scope.and_then(|root| returned_callables(root, source)) else {
-                    return ValueExpr::Unknown;
-                };
-                definitions = Some(found);
-            }
             let name = text(item, source);
-            let Some(declaration) = definitions
-                .as_ref()
-                .and_then(|definitions| definitions.get(name))
+            let Some(declaration) = definitions.and_then(|definitions| definitions.get(name))
             else {
                 return ValueExpr::Unknown;
             };
@@ -478,100 +404,159 @@ fn is_simple_assignment(node: Syntax<'_>, source: &str) -> bool {
     true
 }
 
-pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
-    extract_with_return(root, source, || jsdoc(root, source).1)
+pub(crate) struct Collector<'source, 'tree> {
+    root: Syntax<'tree>,
+    source: &'source str,
+    result: ValueFlowFacts,
+    states: Vec<(bool, bool, bool)>,
+    object_aliases: std::collections::BTreeSet<&'source str>,
+    returned: ReturnSummary<'tree>,
+    asynchronous: bool,
+    generator: bool,
+    definitions: hashbrown::HashMap<String, Syntax<'tree>>,
+    declared: hashbrown::HashSet<String>,
+    writes: hashbrown::HashSet<String>,
+    duplicate_definition: bool,
+    terminal: bool,
 }
 
-pub(super) fn extract_with_return(
-    root: Syntax<'_>,
-    source: &str,
-    documented_return: impl FnOnce() -> Option<TypeExpr>,
-) -> ValueFlowFacts {
-    if root.kind() == "pair" {
-        if let Some(field_value) = root
-            .child_by_field_name("value")
-            .filter(|value| value.kind() == "array")
-        {
-            return ValueFlowFacts {
-                return_value: Some(value(field_value, source)),
-                return_position: Some(completed(field_value)),
-                ..Default::default()
-            };
+impl<'source, 'tree> Collector<'source, 'tree> {
+    fn empty(root: Syntax<'tree>, source: &'source str, result: ValueFlowFacts) -> Self {
+        Self {
+            root,
+            source,
+            result,
+            states: Vec::new(),
+            object_aliases: Default::default(),
+            returned: ReturnSummary::new(root),
+            asynchronous: false,
+            generator: false,
+            definitions: Default::default(),
+            declared: Default::default(),
+            writes: Default::default(),
+            duplicate_definition: false,
+            terminal: false,
         }
     }
-    let mut cursor = root.walk();
-    let generator = root.kind().contains("generator_function")
-        || root.children(&mut cursor).any(|child| child.kind() == "*");
-    let mut cursor = root.walk();
-    let asynchronous = root
-        .children(&mut cursor)
-        .any(|child| child.kind() == "async");
-    let annotation = root
-        .child_by_field_name("return_type")
-        .map(|ty| named_type(ty, source))
-        .or_else(documented_return);
-    let promise_payload = match &annotation {
-        Some(TypeExpr::Applied { base, args }) if base == "Promise" && args.len() == 1 => {
-            Some(args[0].clone())
-        }
-        _ => None,
-    };
-    let wrapped_return = generator || asynchronous || promise_payload.is_some();
-    let mut result = ValueFlowFacts {
-        return_type: if wrapped_return {
-            Some(TypeExpr::Unknown)
-        } else {
-            annotation.clone()
-        },
-        async_return_type: if generator {
-            None
-        } else if asynchronous {
-            promise_payload.or(annotation)
-        } else {
-            promise_payload
-        },
-        ..Default::default()
-    };
-    if asynchronous && !generator && result.async_return_type.is_none() {
-        if let Some(expression) = final_return(root) {
-            if let ValueExpr::Construct { callee } = value(expression, source) {
-                result.async_return_type = Some(TypeExpr::Named { name: callee });
+    pub(crate) fn new(root: Syntax<'tree>, source: &'source str) -> Self {
+        let documented_return = || jsdoc(root, source).1;
+        if root.kind() == "pair" {
+            if let Some(field_value) = root
+                .child_by_field_name("value")
+                .filter(|value| value.kind() == "array")
+            {
+                return Self {
+                    terminal: true,
+                    ..Self::empty(
+                        root,
+                        source,
+                        ValueFlowFacts {
+                            return_value: Some(value(field_value, source)),
+                            return_position: Some(completed(field_value)),
+                            ..Default::default()
+                        },
+                    )
+                };
             }
         }
-    }
-    if result.return_type.is_none() {
-        if let Some(expression) = final_return(root) {
-            let returned = if expression.kind() == "object" {
-                object_value(expression, source, Some(root))
+        let mut cursor = root.walk();
+        let generator = root.kind().contains("generator_function")
+            || root.children(&mut cursor).any(|child| child.kind() == "*");
+        let mut cursor = root.walk();
+        let asynchronous = root
+            .children(&mut cursor)
+            .any(|child| child.kind() == "async");
+        let annotation = root
+            .child_by_field_name("return_type")
+            .map(|ty| named_type(ty, source))
+            .or_else(documented_return);
+        let promise_payload = match &annotation {
+            Some(TypeExpr::Applied { base, args }) if base == "Promise" && args.len() == 1 => {
+                Some(args[0].clone())
+            }
+            _ => None,
+        };
+        let wrapped_return = generator || asynchronous || promise_payload.is_some();
+        let result = ValueFlowFacts {
+            return_type: if wrapped_return {
+                Some(TypeExpr::Unknown)
             } else {
-                value(expression, source)
-            };
-            if !matches!(returned, ValueExpr::Unknown) {
-                result.return_value = Some(returned);
-                result.return_position = Some(position(expression));
-            }
+                annotation.clone()
+            },
+            async_return_type: if generator {
+                None
+            } else if asynchronous {
+                promise_payload.or(annotation)
+            } else {
+                promise_payload
+            },
+            ..Default::default()
+        };
+        Self {
+            asynchronous,
+            generator,
+            ..Self::empty(root, source, result)
         }
     }
-    let mut pending = vec![(root, false, false)];
-    let mut object_aliases = std::collections::BTreeSet::new();
-    while let Some((node, branch_conditional, try_conditional)) = pending.pop() {
-        if node.id() != root.id()
-            && matches!(
-                node.kind(),
-                "function_declaration"
-                    | "function_expression"
-                    | "generator_function_declaration"
-                    | "generator_function"
-                    | "generator_function_expression"
-                    | "arrow_function"
-                    | "method_definition"
-                    | "class_declaration"
-                    | "class"
-            )
-        {
-            continue;
+
+    fn record_write(&mut self, node: Syntax<'tree>) {
+        let written = match node.kind() {
+            "assignment_expression" | "augmented_assignment_expression" => {
+                node.child_by_field_name("left")
+            }
+            "update_expression" => node.child_by_field_name("argument"),
+            _ => None,
+        };
+        if let Some(name) = written.filter(|name| name.kind() == "identifier") {
+            self.writes.insert(text(name, self.source).to_owned());
         }
-        let branch_conditional = branch_conditional
+    }
+
+    pub(crate) fn enter_suspended(&mut self, node: Syntax<'tree>) {
+        if !self.terminal {
+            self.record_write(node);
+        }
+    }
+
+    pub(crate) fn enter(&mut self, node: Syntax<'tree>) {
+        if self.terminal {
+            return;
+        }
+        let source = self.source;
+        let body = self.root.child_by_field_name("body");
+        // Returned object members require direct callable definitions and all writes,
+        // including writes in nested closures. Both are recorded by shared events.
+        if node.kind() == "function_declaration" && node.parent() == body {
+            if let Some(name) = node.child_by_field_name("name") {
+                let name = text(name, source).to_owned();
+                self.duplicate_definition |= !self.declared.insert(name.clone());
+                self.definitions.insert(name, node);
+            }
+        }
+        if node.kind() == "variable_declarator" && node.parent().and_then(|n| n.parent()) == body {
+            if let Some(name) = node
+                .child_by_field_name("name")
+                .filter(|n| n.kind() == "identifier")
+            {
+                let name = text(name, source).to_owned();
+                self.duplicate_definition |= !self.declared.insert(name.clone());
+                if node
+                    .parent()
+                    .is_some_and(|n| text(n, source).trim_start().starts_with("const "))
+                {
+                    if let Some(value) = node
+                        .child_by_field_name("value")
+                        .filter(|n| matches!(n.kind(), "arrow_function" | "function_expression"))
+                    {
+                        self.definitions.insert(name, value);
+                    }
+                }
+            }
+        }
+        self.record_write(node);
+        let (parent_active, branch, trying) = self.states.last().copied().unwrap_or_default();
+        let active = node == self.root || (parent_active && !nested_scope(node));
+        let branch_conditional = branch
             || matches!(
                 node.kind(),
                 "if_statement"
@@ -582,7 +567,13 @@ pub(super) fn extract_with_return(
                     | "do_statement"
                     | "ternary_expression"
             );
-        let try_conditional = try_conditional || node.kind() == "try_statement";
+        let try_conditional = trying || node.kind() == "try_statement";
+        self.states
+            .push((active, branch_conditional, try_conditional));
+        self.returned.enter(node, active);
+        if !active {
+            return;
+        }
         let conditional = branch_conditional || try_conditional;
         if node.kind() == "required_parameter" {
             if let (Some(name), Some(annotation)) = (
@@ -592,7 +583,7 @@ pub(super) fn extract_with_return(
             ) {
                 let type_expr = named_type(annotation, source);
                 if matches!(&type_expr, TypeExpr::Applied { base, .. } if base == "Promise") {
-                    result.bindings.push(BindingFact {
+                    self.result.bindings.push(BindingFact {
                         name: text(name, source).to_owned(),
                         position: position(node),
                         value: ValueExpr::Annotated { type_expr },
@@ -646,14 +637,14 @@ pub(super) fn extract_with_return(
                     })
                     .unwrap_or(ValueExpr::Unknown);
                 let local = text(name, source);
-                object_aliases.remove(local);
+                self.object_aliases.remove(local);
                 if matches!(
                     &expression,
                     ValueExpr::Object { .. } | ValueExpr::Alias { .. }
                 ) {
-                    object_aliases.insert(local);
+                    self.object_aliases.insert(local);
                 }
-                result.bindings.push(BindingFact {
+                self.result.bindings.push(BindingFact {
                     name: text(name, source).to_owned(),
                     position: position(node),
                     value: scoped(ValueExpr::Unknown),
@@ -661,9 +652,9 @@ pub(super) fn extract_with_return(
                 });
                 if !matches!(&expression, ValueExpr::Unknown) {
                     if immutable && !binding_conditional {
-                        result.immutable_initializers.push(completed(node));
+                        self.result.immutable_initializers.push(completed(node));
                     }
-                    result.bindings.push(BindingFact {
+                    self.result.bindings.push(BindingFact {
                         name: text(name, source).to_owned(),
                         position: completed(node),
                         value: scoped(expression),
@@ -698,14 +689,14 @@ pub(super) fn extract_with_return(
                             }
                         };
                         if let Some((member, local)) = pair {
-                            result.bindings.push(BindingFact {
+                            self.result.bindings.push(BindingFact {
                                 name: local.to_owned(),
                                 position: position(node),
                                 value: scoped(ValueExpr::Unknown),
                                 conditional: binding_conditional,
                             });
                             if !matches!(source_value, ValueExpr::Unknown) {
-                                result.bindings.push(BindingFact {
+                                self.result.bindings.push(BindingFact {
                                     name: local.to_owned(),
                                     position: completed(node),
                                     value: scoped(ValueExpr::Project {
@@ -735,7 +726,7 @@ pub(super) fn extract_with_return(
                             .map(|initializer| value(initializer, source))
                     })
                     .unwrap_or(ValueExpr::Unknown);
-                result.fields.push(FieldFact {
+                self.result.fields.push(FieldFact {
                     name: text(name, source).to_owned(),
                     value,
                     position: position(node),
@@ -758,7 +749,7 @@ pub(super) fn extract_with_return(
                 } else {
                     ValueExpr::Unknown
                 };
-                result.bindings.push(BindingFact {
+                self.result.bindings.push(BindingFact {
                     name: text(name, source).to_owned(),
                     position: completed(node),
                     value: assigned,
@@ -771,9 +762,9 @@ pub(super) fn extract_with_return(
                 .filter(|receiver| receiver.kind() == "identifier")
             {
                 let name = text(receiver, source);
-                if object_aliases.contains(name) {
-                    for name in std::mem::take(&mut object_aliases) {
-                        result.bindings.push(BindingFact {
+                if self.object_aliases.contains(name) {
+                    for name in std::mem::take(&mut self.object_aliases) {
+                        self.result.bindings.push(BindingFact {
                             name: name.to_owned(),
                             position: completed(node),
                             value: ValueExpr::Unknown,
@@ -797,7 +788,7 @@ pub(super) fn extract_with_return(
                                 .child_by_field_name("right")
                                 .map(|right| value(right, source))
                                 .unwrap_or(ValueExpr::Unknown);
-                            result.fields.push(FieldFact {
+                            self.result.fields.push(FieldFact {
                                 name,
                                 value: assigned,
                                 position: position(node),
@@ -808,55 +799,85 @@ pub(super) fn extract_with_return(
                 }
             }
         }
-        let mut cursor = node.walk();
-        let children: Vec<_> = node.named_children(&mut cursor).collect();
-        pending.extend(
-            children
-                .into_iter()
-                .rev()
-                .map(|child| (child, branch_conditional, try_conditional)),
-        );
     }
-    result.immutable_initializers.sort_unstable();
-    result
+    pub(crate) fn exit(&mut self, _node: Syntax<'tree>) {
+        self.states.pop();
+    }
+
+    pub(crate) fn finish(mut self) -> ValueFlowFacts {
+        if self.terminal {
+            return self.result;
+        }
+        let (source, asynchronous, generator) = (self.source, self.asynchronous, self.generator);
+        let definitions = (!self.duplicate_definition
+            && !self
+                .writes
+                .iter()
+                .any(|name| self.definitions.contains_key(name)))
+        .then_some(&self.definitions);
+        if asynchronous && !generator && self.result.async_return_type.is_none() {
+            if let Some(expression) = self.returned.expression() {
+                if let ValueExpr::Construct { callee } = value(expression, source) {
+                    self.result.async_return_type = Some(TypeExpr::Named { name: callee });
+                }
+            }
+        }
+        if self.result.return_type.is_none() {
+            if let Some(expression) = self.returned.expression() {
+                let returned = if expression.kind() == "object" {
+                    object_value(expression, source, definitions)
+                } else {
+                    value(expression, source)
+                };
+                if !matches!(returned, ValueExpr::Unknown) {
+                    self.result.return_value = Some(returned);
+                    self.result.return_position = Some(position(expression));
+                }
+            }
+        }
+        self.result.immutable_initializers.sort_unstable();
+        self.result
+    }
 }
 
-pub(super) fn final_return(root: Syntax<'_>) -> Option<Syntax<'_>> {
-    if !matches!(
-        root.kind(),
-        "function_declaration" | "function_expression" | "arrow_function" | "method_definition"
-    ) {
-        return None;
+fn nested_scope(node: Syntax<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "function_declaration"
+            | "function_expression"
+            | "generator_function_declaration"
+            | "generator_function"
+            | "generator_function_expression"
+            | "arrow_function"
+            | "method_definition"
+            | "class_declaration"
+            | "class"
+    )
+}
+
+struct ReturnSummary<'tree> {
+    root: Syntax<'tree>,
+    body: Option<Syntax<'tree>>,
+    last: Option<Syntax<'tree>>,
+    returns: Vec<usize>,
+    invalid: bool,
+}
+impl<'tree> ReturnSummary<'tree> {
+    fn new(root: Syntax<'tree>) -> Self {
+        Self {
+            root,
+            body: root.child_by_field_name("body"),
+            last: None,
+            returns: Vec::new(),
+            invalid: false,
+        }
     }
-    let body = root.child_by_field_name("body")?;
-    if body.kind() != "statement_block" {
-        return Some(body);
-    }
-    let mut cursor = body.walk();
-    let last = body
-        .named_children(&mut cursor)
-        .filter(|node| node.kind() != "comment")
-        .last()?;
-    if last.kind() != "return_statement" {
-        return None;
-    }
-    let mut pending = vec![body];
-    while let Some(node) = pending.pop() {
-        if node.id() != body.id()
-            && matches!(
-                node.kind(),
-                "function_declaration"
-                    | "function_expression"
-                    | "generator_function_declaration"
-                    | "generator_function"
-                    | "generator_function_expression"
-                    | "arrow_function"
-                    | "method_definition"
-                    | "class_declaration"
-                    | "class"
-            )
-        {
-            continue;
+    fn enter(&mut self, node: Syntax<'tree>, active: bool) {
+        if !active {
+            return;
+        }
+        if node.kind() != "comment" && node.parent() == self.body {
+            self.last = Some(node);
         }
         if matches!(
             node.kind(),
@@ -869,16 +890,69 @@ pub(super) fn final_return(root: Syntax<'_>) -> Option<Syntax<'_>> {
                 | "try_statement"
                 | "throw_statement"
                 | "ternary_expression"
-        ) || (node.kind() == "return_statement" && node.id() != last.id())
+        ) {
+            self.invalid = true;
+        }
+        if node.kind() == "return_statement" {
+            self.returns.push(node.id());
+        }
+    }
+    fn expression(&self) -> Option<Syntax<'tree>> {
+        if !matches!(
+            self.root.kind(),
+            "function_declaration" | "function_expression" | "arrow_function" | "method_definition"
+        ) {
+            return None;
+        }
+        let body = self.body?;
+        if body.kind() != "statement_block" {
+            return Some(body);
+        }
+        let last = self.last?;
+        if self.invalid
+            || last.kind() != "return_statement"
+            || self.returns.iter().any(|id| *id != last.id())
         {
             return None;
         }
-        let mut cursor = node.walk();
-        pending.extend(node.named_children(&mut cursor));
+        last.named_child(0)
     }
-    let mut cursor = last.walk();
-    let expression = last.named_children(&mut cursor).next();
-    expression
+}
+
+pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
+    extract_with_return(root, source, || jsdoc(root, source).1)
+}
+pub(super) fn extract_with_return(
+    root: Syntax<'_>,
+    source: &str,
+    _documented_return: impl FnOnce() -> Option<TypeExpr>,
+) -> ValueFlowFacts {
+    let mut collector = Collector::new(root, source);
+    crate::engine::ast::visitor::walk(root, &mut |node, entering| {
+        if entering {
+            collector.enter(node);
+        } else {
+            collector.exit(node);
+        }
+    });
+    collector.finish()
+}
+
+// Occurrence-local lexical proof used by framework handlers, never a scope-exit collector.
+pub(super) fn final_return(root: Syntax<'_>) -> Option<Syntax<'_>> {
+    let mut summary = ReturnSummary::new(root);
+    let mut active = Vec::new();
+    crate::engine::ast::visitor::walk(root, &mut |node, entering| {
+        if entering {
+            let included =
+                node == root || (active.last().copied().unwrap_or(false) && !nested_scope(node));
+            active.push(included);
+            summary.enter(node, included);
+        } else {
+            active.pop();
+        }
+    });
+    summary.expression()
 }
 
 fn binding(
@@ -909,21 +983,11 @@ pub(super) fn exports(
         .any(|name| matches!(name.as_str(), "module" | "exports"));
     let mut commonjs_invalidated = false;
     let mut module_replacements = 0;
-    let mut mutations = vec![root];
-    while let Some(node) = mutations.pop() {
-        if node.id() != root.id()
-            && matches!(
-                node.kind(),
-                "function_declaration"
-                    | "function_expression"
-                    | "arrow_function"
-                    | "method_definition"
-                    | "class_declaration"
-            )
-        {
-            continue;
-        }
-        if node.kind() == "assignment_expression"
+    let mut type_imports = HashSet::new();
+    let mut pending = vec![(root, true, true, false)];
+    while let Some((node, scan_mutations, scan_imports, inherited_type_only)) = pending.pop() {
+        if scan_mutations
+            && node.kind() == "assignment_expression"
             && field(node, source, "left").is_some_and(|left| {
                 left == "module.exports"
                     || left.starts_with("exports.")
@@ -936,36 +1000,40 @@ pub(super) fn exports(
         {
             commonjs_invalidated = true;
         }
-        let mut cursor = node.walk();
-        mutations.extend(node.named_children(&mut cursor));
-    }
-    let mut type_imports = HashSet::new();
-    let mut pending = vec![(root, false)];
-    while let Some((node, type_only)) = pending.pop() {
-        if node.id() != root.id()
-            && !matches!(
-                node.kind(),
-                "import_statement" | "import_clause" | "named_imports" | "import_specifier"
-            )
-        {
-            continue;
-        }
-        let type_only = type_only
-            || (node.kind() == "import_statement"
-                && text(node, source).trim_start().starts_with("import type "))
-            || (node.kind() == "import_specifier"
-                && text(node, source).trim_start().starts_with("type "));
+
+        let type_only = scan_imports
+            && (inherited_type_only
+                || (node.kind() == "import_statement"
+                    && text(node, source).trim_start().starts_with("import type "))
+                || (node.kind() == "import_specifier"
+                    && text(node, source).trim_start().starts_with("type ")));
         if type_only && node.kind() == "import_specifier" {
             if let Some(name) = field(node, source, "alias").or_else(|| field(node, source, "name"))
             {
                 type_imports.insert(name.to_owned());
             }
         }
+
         let mut cursor = node.walk();
-        pending.extend(
-            node.named_children(&mut cursor)
-                .map(|child| (child, type_only)),
-        );
+        for child in node.named_children(&mut cursor) {
+            let child_mutations = scan_mutations
+                && !matches!(
+                    child.kind(),
+                    "function_declaration"
+                        | "function_expression"
+                        | "arrow_function"
+                        | "method_definition"
+                        | "class_declaration"
+                );
+            let child_imports = scan_imports
+                && matches!(
+                    child.kind(),
+                    "import_statement" | "import_clause" | "named_imports" | "import_specifier"
+                );
+            if child_mutations || child_imports {
+                pending.push((child, child_mutations, child_imports, type_only));
+            }
+        }
     }
     let mut cursor = root.walk();
     for node in root.named_children(&mut cursor) {

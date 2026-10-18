@@ -6,7 +6,7 @@ pub(crate) mod linker;
 #[path = "rust/patterns.rs"]
 pub(crate) mod patterns;
 #[path = "rust/value_flow.rs"]
-mod value_flow;
+pub(crate) mod value_flow;
 /// Performs language.
 pub fn language() -> tree_sitter::Language {
     tree_sitter_rust::language()
@@ -135,6 +135,9 @@ impl LanguageProfile for Rust {
     fn id(&self) -> &'static str {
         "rust"
     }
+    fn route_extraction_enabled(&self) -> bool {
+        false
+    }
     fn ast_search_capabilities(&self) -> AstSearchCapabilities {
         AstSearchCapabilities {
             declaration_kinds: &[
@@ -247,6 +250,14 @@ impl LanguageProfile for Rust {
     }
     fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
         value_flow::extract(node, source)
+    }
+    fn scope_analysis<'source, 'tree>(
+        &self,
+        node: Syntax<'tree>,
+        source: &'source str,
+        _file: &FileContext,
+    ) -> Option<crate::engine::ast::ScopeAnalysis<'source, 'tree>> {
+        Some(crate::engine::ast::ScopeAnalysis::rust(node, source))
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "use_declaration" {
@@ -793,6 +804,15 @@ impl LanguageProfile for Rust {
         }
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+        if !matches!(
+            ctx.node.kind(),
+            "field_declaration"
+                | "compound_assignment_expr"
+                | "assignment_expr"
+                | "field_expression"
+        ) {
+            return;
+        }
         relations::mutation(
             ctx,
             facts,

@@ -84,7 +84,7 @@ Route methods use uppercase letters, digits, or underscores; `ANY` represents an
 
 Omitting `handler_argument` still extracts a route from a matching call; it creates no `handles` edge. When an index is configured, a call without any valid positional handlers from that index does not register a route. Composed Django routes retain the included module's handler lookup context while their `handles` edges originate at the composed route.
 
-The complete [TOML example](../../skills/contextunity-forge/references/frameworks/declarative-rules.toml.example) and equivalent [YAML example](../../skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example) include all four sections. Copy one into `.forge/frameworks/django.toml` or `.forge/frameworks/django.yaml` to extend that bundle. Custom file stems work through the same typed hooks.
+The complete [TOML example](../../skills/contextunity-forge/references/frameworks/declarative-rules.toml.example) and equivalent [YAML example](../../skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example) include all four sections and a `semantic_rules` imported-call example. Copy one into `.forge/frameworks/django.toml` or `.forge/frameworks/django.yaml` to extend that bundle. Custom file stems work through the same typed hooks.
 
 Project typed rules take precedence over bundled rules with the same identity: ordered `bases` for class rules, `callee` plus `method` for route rules, and `callee` for DI rules. `replace = true` replaces both legacy and typed sections of the bundle. Unknown fields in typed rules fail validation. Bases, providers, members, callees, and methods must be nonempty; callees cannot contain whitespace. Argument positions are nonnegative integers, and a route's handler argument must differ from its path argument.
 
@@ -97,6 +97,16 @@ Before validating a connected-workspace adapter for this integration, check for 
 Every manifest must contain all four top-level arrays: `receivers`, `builtins`, `filters`, and `routes`. Optional `extend` and `replace` fields must be booleans and cannot both be true. The loader deserializes TOML and YAML into the same typed `FrameworkManifest`, rejects unknown top-level fields, and reports malformed syntax or values as build errors. TOML duplicate keys, duplicate tables, and key/table collisions fail through the TOML parser. A workspace may use only one file format for a given identifier; duplicate stems across files are rejected.
 
 An invalid or unreadable manifest aborts the build before index publication. Forge also rejects a symlinked `.forge` directory, a symlinked `frameworks` directory or manifest file, and files larger than 4 MiB. If there is no `.forge/frameworks/` directory, the workspace has no project manifests and uses eligible bundled tables.
+
+## Compiled rules and coverage diagnostics
+
+Forge compiles effective typed AST rules into grammar-specific `RuleIR` candidate tables. Extraction selects candidates with the parsed node's `kind_id`; the existing language hooks still prove the callee, literal arguments, lexical owner and target. Class-hierarchy receivers retain their borrowed linker rule lookup. Matching a grammar kind alone does not establish a semantic binding.
+
+The cache belongs to a dependency-registry generation and distinguishes the actual Tree-sitter grammar, effective rule data and workspace. TypeScript and TSX cannot share a table merely because their profile identifier matches. Project merge and replacement happen before compilation. Manifest changes recollect the registry and invalidate its compiled results; semantic activation retains the source's project scope.
+
+Full build and delta reports contain `framework_rule_diagnostics`, including an empty list for clean coverage. Each diagnostic contains `framework`, `workspace`, `language`, `rule_domain`, `code` and `removed_eligible_rule_identities`. The code `eligible_rule_identity_removed` reports bundled identities absent from the effective rules for the applicable grammar. Equal counts can hide a removed identity. An addition or a changed payload under the same canonical identity does not itself remove that identity.
+
+Diagnostic groups and identity lists are sorted and deduplicated. Rule domains use the existing section names. Class identities contain ordered `bases`; route identities contain `callee` and `method`; DI identities contain `callee`; semantic identities contain `id`. Ordinary delta checks the complete current source inventory, including unchanged languages. Manifest-change rebuilds recompute the report. These values are ephemeral: they do not become syntax errors, persisted records or commitment inputs.
 
 ## Extending language support
 

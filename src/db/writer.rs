@@ -436,6 +436,11 @@ fn populate(
     let mut report = json!({"files":entries.len(),"nodes":node_id,"node_row_count":node_row_count,"node_row_insert_ms":node_row_insert_ms,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"doc_fts_insert_ms":doc_fts_insert_ms,"persist_graph_ms":persist_graph_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms});
     report["graph_phases_ms"] = json!({"occurrences_and_dependencies":graph_timings.occurrences,"unique_edges":graph_timings.edges,"coverage_dictionaries":graph_timings.dictionaries,"coverage_and_unresolved":graph_timings.coverage});
     report["index_and_seal_ms"] = json!(index_and_seal_ms);
+    report["framework_rule_diagnostics"] = json!(dependencies.framework_rule_diagnostics(
+        entries
+            .iter()
+            .map(|file| (file.path.as_str(), file.language.as_str()))
+    ));
     Ok(report)
 }
 fn components(facts: &mut BTreeMap<String, TypedFacts>) {

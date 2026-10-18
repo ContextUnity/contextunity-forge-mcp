@@ -4,7 +4,7 @@
 //! Source offsets are retained rather than recovering identifiers from tokens.
 
 use super::*;
-use crate::core::models::{is_test, Diagnostic, Edge};
+use crate::core::models::{Diagnostic, Edge, is_test};
 use crate::core::semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
 use crate::engine::languages::template::TemplateMasker;
 
@@ -45,10 +45,11 @@ pub(super) fn extract(
     flows: Option<&mut crate::core::typed_facts::FlowStore>,
 ) -> Result<()> {
     let masked = TemplateMasker::mask(source, |_| {}, None);
-    let tree = crate::engine::languages::with_warm_parser("html", tree_sitter_html::language(), |html| {
-        html.parse(masked.as_ref(), None)
-    })?
-    .context("Vue template parse cancelled")?;
+    let tree =
+        crate::engine::languages::with_warm_parser("html", tree_sitter_html::language(), |html| {
+            html.parse(masked.as_ref(), None)
+        })?
+        .context("Vue template parse cancelled")?;
     let owner = format!("module:{path}");
     let mut components = std::collections::HashMap::new();
     for alias in facts
@@ -56,8 +57,14 @@ pub(super) fn extract(
         .iter()
         .filter(|reference| reference.kind == "imports")
         .filter(|reference| {
-            let at = Position { line: reference.line, column: reference.column };
-            setup.setup_positions.iter().any(|(start, end)| *start <= at && at < *end)
+            let at = Position {
+                line: reference.line,
+                column: reference.column,
+            };
+            setup
+                .setup_positions
+                .iter()
+                .any(|(start, end)| *start <= at && at < *end)
         })
         .filter_map(|reference| reference.alias.as_deref())
     {
@@ -86,16 +93,20 @@ pub(super) fn extract(
         typed_iterables: setup.typed_iterables,
         flows,
     };
-    crate::engine::languages::with_warm_parser("javascript", tree_sitter_javascript::language(), |javascript| {
-        for element in tree
-            .root_node()
-            .named_children(&mut tree.root_node().walk())
-        {
-            if tag_name(element, source) == Some("template") {
-                visit_element(element, &mut document, &owner, None, facts, javascript);
+    crate::engine::languages::with_warm_parser(
+        "javascript",
+        tree_sitter_javascript::language(),
+        |javascript| {
+            for element in tree
+                .root_node()
+                .named_children(&mut tree.root_node().walk())
+            {
+                if tag_name(element, source) == Some("template") {
+                    visit_element(element, &mut document, &owner, None, facts, javascript);
+                }
             }
-        }
-    })?;
+        },
+    )?;
     Ok(())
 }
 
@@ -150,7 +161,9 @@ fn scope(
         .map_or(document.module, String::as_str);
     let qualname = format!("{parent_qual}.template@{}:{}", point.row + 1, point.column);
     document.scopes.insert(id.clone(), qualname.clone());
-    document.scope_bindings.insert(id.clone(), (parent.to_owned(), bindings.clone()));
+    document
+        .scope_bindings
+        .insert(id.clone(), (parent.to_owned(), bindings.clone()));
     let mut scope_node = Node {
         id: id.clone(),
         kind: "template_scope".into(),
@@ -169,18 +182,22 @@ fn scope(
     }
     if !typed_bindings.is_empty() {
         let flow = ValueFlowFacts {
-            bindings: typed_bindings.into_iter().map(|(name, type_expr, position)| BindingFact {
-                name,
-                position,
-                value: ValueExpr::Annotated { type_expr },
-                conditional: false,
-            }).collect(),
+            bindings: typed_bindings
+                .into_iter()
+                .map(|(name, type_expr, position)| BindingFact {
+                    name,
+                    position,
+                    value: ValueExpr::Annotated { type_expr },
+                    conditional: false,
+                })
+                .collect(),
             ..ValueFlowFacts::default()
         };
         if let Some(flows) = document.flows.as_deref_mut() {
             flows.insert(id.clone(), flow);
         } else {
-            scope_node.details["value_flow"] = serde_json::to_value(flow).expect("valid Vue scope flow");
+            scope_node.details["value_flow"] =
+                serde_json::to_value(flow).expect("valid Vue scope flow");
         }
     }
     facts.nodes.push(scope_node);
@@ -232,11 +249,15 @@ fn first_loop_binding(pattern: &str, parser: &mut Parser) -> Option<String> {
     let pattern = pattern.trim().trim_start_matches('(').trim_end_matches(')');
     let input = format!("let {pattern};");
     let tree = parser.parse(&input, None)?;
-    if tree.root_node().has_error() { return None; }
+    if tree.root_node().has_error() {
+        return None;
+    }
     let declaration = tree.root_node().named_child(0)?;
-    let first = declaration.named_children(&mut declaration.walk())
+    let first = declaration
+        .named_children(&mut declaration.walk())
         .find(|node| node.kind() == "variable_declarator")?;
-    let name = first.child_by_field_name("name")
+    let name = first
+        .child_by_field_name("name")
         .filter(|node| node.kind() == "identifier")?;
     Some(text(name, &input).to_owned())
 }
@@ -244,8 +265,12 @@ fn first_loop_binding(pattern: &str, parser: &mut Parser) -> Option<String> {
 fn template_binding_shadows(document: &Document<'_>, parent: &str, name: &str) -> bool {
     let mut scope = parent;
     for _ in 0..64 {
-        let Some((next, bindings)) = document.scope_bindings.get(scope) else { return false; };
-        if bindings.iter().any(|binding| binding == name) { return true; }
+        let Some((next, bindings)) = document.scope_bindings.get(scope) else {
+            return false;
+        };
+        if bindings.iter().any(|binding| binding == name) {
+            return true;
+        }
         scope = next;
     }
     true
@@ -282,14 +307,23 @@ fn visit_element(
                 .or_else(|| expression.split_once(" of "))
             {
                 let loop_bindings = binding_names(left, parser);
-                if let Some(element) = document.typed_iterables.get(right.trim())
-                    .filter(|_| !template_binding_shadows(document, parent, right.trim())) {
-                    if let Some(first) = first_loop_binding(left, parser).filter(|first| loop_bindings.contains(first)) {
+                if let Some(element) = document
+                    .typed_iterables
+                    .get(right.trim())
+                    .filter(|_| !template_binding_shadows(document, parent, right.trim()))
+                {
+                    if let Some(first) = first_loop_binding(left, parser)
+                        .filter(|first| loop_bindings.contains(first))
+                    {
                         let end = value.end_position();
-                        typed_bindings.push((first, element.clone(), SourcePosition {
-                            line: end.row + 1,
-                            column: end.column,
-                        }));
+                        typed_bindings.push((
+                            first,
+                            element.clone(),
+                            SourcePosition {
+                                line: end.row + 1,
+                                column: end.column,
+                            },
+                        ));
                     }
                 }
                 bindings.extend(loop_bindings);
@@ -307,14 +341,24 @@ fn visit_element(
         } else if name == "v-slot" || name.starts_with("v-slot:") || name.starts_with('#') {
             bindings.extend(binding_names(expression, parser));
             slot_directives += 1;
-            let slot = if name == "v-slot" { "default" } else if let Some(slot) = name.strip_prefix("v-slot:") { slot } else { &name[1..] };
+            let slot = if name == "v-slot" {
+                "default"
+            } else if let Some(slot) = name.strip_prefix("v-slot:") {
+                slot
+            } else {
+                &name[1..]
+            };
             let component = if tag == Some("template") {
                 parent_component
             } else {
                 tag.and_then(|tag| document.components.get(tag).map(String::as_str))
             };
             if let Some(component) = component {
-                if !slot.is_empty() && slot.len() <= 48 && component.len() <= 48 && slot_directives == 1 {
+                if !slot.is_empty()
+                    && slot.len() <= 48
+                    && component.len() <= 48
+                    && slot_directives == 1
+                {
                     slot_provider = Some((component.to_owned(), slot.to_owned()));
                 }
             }
@@ -322,12 +366,23 @@ fn visit_element(
     }
     bindings.sort();
     bindings.dedup();
-    if slot_directives != 1 { slot_provider = None; }
+    if slot_directives != 1 {
+        slot_provider = None;
+    }
     let owner = if bindings.is_empty() && tag_name(node, source) != Some("template") {
         parent.to_owned()
     } else {
-        scope(document, parent, node, bindings, typed_bindings,
-            slot_provider.as_ref().map(|(component, slot)| (component.as_str(), slot.as_str())), facts)
+        scope(
+            document,
+            parent,
+            node,
+            bindings,
+            typed_bindings,
+            slot_provider
+                .as_ref()
+                .map(|(component, slot)| (component.as_str(), slot.as_str())),
+            facts,
+        )
     };
     let child_component = tag.and_then(|tag| document.components.get(tag)).cloned();
     if let Some(tag) = tag_name(node, source) {
@@ -391,7 +446,14 @@ fn visit_element(
             );
         }
         match child.kind() {
-            "element" | "self_closing_tag" => visit_element(child, document, &owner, child_component.as_deref(), facts, parser),
+            "element" | "self_closing_tag" => visit_element(
+                child,
+                document,
+                &owner,
+                child_component.as_deref(),
+                facts,
+                parser,
+            ),
             "text" => interpolation_facts(
                 text(child, source),
                 child.start_byte(),
@@ -479,9 +541,14 @@ fn expression_facts(
                     .is_some_and(|n| matches!(n.kind(), "identifier" | "member_expression"))
         });
     let shadows = std::collections::HashSet::new();
-    let mut stack = vec![(root, owner.to_owned())];
-    while let Some((node, current_owner)) = stack.pop() {
-        let mut child_owner = current_owner.clone();
+    let mut owners = vec![owner.to_owned()];
+    ast::visitor::walk_reversed(root, &mut |node, entering| {
+        if !entering {
+            owners.pop();
+            return;
+        }
+        let current_owner = owners.last().expect("Vue expression owner").as_str();
+        let mut child_owner = current_owner.to_owned();
         if node.kind() == "arrow_function" {
             let parameters = node
                 .child_by_field_name("parameters")
@@ -489,7 +556,15 @@ fn expression_facts(
             let bindings = parameters
                 .map(|n| binding_names(text(n, source), parser))
                 .unwrap_or_default();
-            child_owner = scope(document, &current_owner, node, bindings, Vec::new(), None, facts);
+            child_owner = scope(
+                document,
+                current_owner,
+                node,
+                bindings,
+                Vec::new(),
+                None,
+                facts,
+            );
         }
         let ctx = SyntaxContext {
             node,
@@ -535,11 +610,8 @@ fn expression_facts(
                 );
             }
         }
-        stack.extend(
-            node.named_children(&mut node.walk())
-                .map(|n| (n, child_owner.clone())),
-        );
-    }
+        owners.push(child_owner);
+    });
 }
 
 fn kebab_case(name: &str) -> String {

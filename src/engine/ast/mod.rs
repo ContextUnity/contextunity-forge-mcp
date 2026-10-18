@@ -1,3 +1,5 @@
+pub(crate) mod visitor;
+pub use visitor::ScopeAnalysis;
 pub(crate) mod relations;
 pub(crate) mod route_includes;
 pub(crate) mod routes;
@@ -79,178 +81,9 @@ pub struct ScopeBindings {
     pub rebindings: Vec<String>,
 }
 pub(crate) fn scope_bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
-    let is_callable = matches!(
-        node.kind(),
-        "function_definition"
-            | "function_declaration"
-            | "function_item"
-            | "method_definition"
-            | "method_declaration"
-            | "arrow_function"
-            | "function_expression"
-            | "lambda"
-            | "closure_expression"
-            | "func_literal"
-    );
-    let is_module = matches!(
-        node.kind(),
-        "module" | "program" | "source_file" | "class_definition"
-    );
-    if !is_callable && !is_module {
-        return ScopeBindings {
-            all: Vec::new(),
-            rebindings: Vec::new(),
-        };
-    }
-    fn names<'a>(node: Syntax<'_>, source: &'a str, out: &mut HashSet<&'a str>) {
-        match node.kind() {
-            #[cfg(feature = "lang-rust")]
-            "tuple_struct_pattern" | "struct_pattern" | "ref_pattern" | "captured_pattern" => {
-                languages::rust::patterns::bindings(node, |binding| {
-                    out.insert(text(binding, source));
-                });
-            }
-            "identifier" | "shorthand_property_identifier_pattern" => {
-                out.insert(text(node, source));
-            }
-            "default_parameter"
-            | "typed_default_parameter"
-            | "required_parameter"
-            | "optional_parameter"
-            | "parameter"
-            | "parameter_declaration"
-            | "variadic_parameter_declaration" => {
-                for field in ["name", "pattern"] {
-                    let mut c = node.walk();
-                    for child in node.children_by_field_name(field, &mut c) {
-                        names(child, source, out);
-                    }
-                }
-            }
-            "assignment_pattern" | "object_assignment_pattern" => {
-                if let Some(n) = node.child_by_field_name("left") {
-                    names(n, source, out);
-                }
-            }
-            "pair_pattern" => {
-                if let Some(n) = node.child_by_field_name("value") {
-                    names(n, source, out);
-                }
-            }
-            "typed_parameter" => {
-                if let Some(n) = node.named_child(0) {
-                    if Some(n) != node.child_by_field_name("type") {
-                        names(n, source, out);
-                    }
-                }
-            }
-            "parameters"
-            | "lambda_parameters"
-            | "as_pattern_target"
-            | "formal_parameters"
-            | "parameter_list"
-            | "tuple_pattern"
-            | "list_pattern"
-            | "pattern_list"
-            | "expression_list"
-            | "array_pattern"
-            | "object_pattern"
-            | "rest_pattern"
-            | "list_splat_pattern"
-            | "dictionary_splat_pattern"
-            | "slice_pattern"
-            | "reference_pattern"
-            | "mut_pattern" => {
-                let mut c = node.walk();
-                for child in node.named_children(&mut c) {
-                    names(child, source, out);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut param_names = HashSet::new();
-    if is_callable {
-        for field in ["parameters", "parameter"] {
-            if let Some(parameters) = node.child_by_field_name(field) {
-                names(parameters, source, &mut param_names);
-            }
-        }
-    }
-    let mut body_names = HashSet::new();
-    let body = node
-        .child_by_field_name("body")
-        .or_else(|| is_module.then_some(node));
-    if let Some(body_node) = body {
-        let mut stack = vec![body_node];
-        while let Some(n) = stack.pop() {
-            if n != body_node
-                && matches!(
-                    n.kind(),
-                    "function_definition"
-                        | "lambda"
-                        | "class_definition"
-                        | "function_declaration"
-                        | "function_item"
-                        | "arrow_function"
-                        | "function_expression"
-                        | "method_definition"
-                        | "method_declaration"
-                        | "closure_expression"
-                        | "func_literal"
-                )
-            {
-                continue;
-            }
-            let lhs = match n.kind() {
-                "assignment"
-                | "augmented_assignment"
-                | "assignment_expression"
-                | "augmented_assignment_expression"
-                | "for_statement"
-                | "for_in_statement"
-                | "for_in_clause"
-                | "short_var_declaration" => n.child_by_field_name("left"),
-                "as_pattern" => n.child_by_field_name("alias"),
-                "variable_declarator" | "let_declaration" | "named_expression" => n
-                    .child_by_field_name("name")
-                    .or_else(|| n.child_by_field_name("pattern")),
-                _ => None,
-            };
-            let callable = n
-                .child_by_field_name("value")
-                .or_else(|| n.child_by_field_name("right"))
-                .is_some_and(|n| {
-                    matches!(
-                        n.kind(),
-                        "arrow_function" | "function_expression" | "lambda"
-                    )
-                });
-            if !callable {
-                if let Some(lhs) = lhs {
-                    names(lhs, source, &mut body_names);
-                }
-            }
-            if n.kind() == "delete_statement" {
-                let mut c = n.walk();
-                for child in n.named_children(&mut c) {
-                    names(child, source, &mut body_names);
-                }
-            }
-            let mut c = n.walk();
-            stack.extend(n.named_children(&mut c));
-        }
-    }
-    let mut all_set: std::collections::BTreeSet<String> =
-        param_names.into_iter().map(str::to_owned).collect();
-    let rebindings_set: std::collections::BTreeSet<String> =
-        body_names.into_iter().map(str::to_owned).collect();
-    all_set.extend(rebindings_set.iter().cloned());
-    ScopeBindings {
-        all: all_set.into_iter().collect(),
-        rebindings: rebindings_set.into_iter().collect(),
-    }
+    visitor::bindings(node, source)
 }
+
 fn declaration_signature(node: Syntax<'_>, source: &str) -> String {
     let mut c = node.walk();
     let body_node = node.child_by_field_name("body").or_else(|| {
@@ -291,333 +124,6 @@ pub(crate) fn symbol_name<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a s
         .or(inferred)
 }
 
-struct Extraction<'a> {
-    source: &'a str,
-    path: &'a str,
-    profile: &'a dyn LanguageProfile,
-    language_context: languages::LanguageContext,
-    route_context: routes::RouteContext,
-    file: FileContext,
-    module: &'a str,
-    offset: usize,
-    symbols: HashMap<usize, String>,
-    ids: HashSet<String>,
-    flows: Option<&'a mut FlowStore>,
-}
-struct VisitContext<'a> {
-    source: &'a str,
-    path: &'a str,
-    profile: &'a dyn LanguageProfile,
-    language_context: &'a languages::LanguageContext,
-    route_context: &'a routes::RouteContext,
-    file: &'a FileContext,
-    module: &'a str,
-    offset: usize,
-}
-struct VisitState<'a, 'flow> {
-    root_bindings: Option<ScopeBindings>,
-    symbols: &'a mut HashMap<usize, String>,
-    ids: &'a mut HashSet<String>,
-    flows: &'a mut Option<&'flow mut FlowStore>,
-}
-impl Extraction<'_> {
-    fn visit(
-        &mut self,
-        node: Syntax<'_>,
-        scopes: &mut Vec<String>,
-        owner: &str,
-        facts: &mut Facts,
-    ) {
-        let root_bindings = self
-            .file
-            .root_bindings
-            .take()
-            .filter(|(root_id, _)| *root_id == node.id())
-            .map(|(_, bindings)| bindings);
-        let context = VisitContext {
-            source: self.source,
-            path: self.path,
-            profile: self.profile,
-            language_context: &self.language_context,
-            route_context: &self.route_context,
-            file: &self.file,
-            module: self.module,
-            offset: self.offset,
-        };
-        let mut state = VisitState {
-            root_bindings,
-            symbols: &mut self.symbols,
-            ids: &mut self.ids,
-            flows: &mut self.flows,
-        };
-        Self::visit_node(&context, &mut state, node, scopes, owner, facts);
-    }
-
-    fn visit_node(
-        context: &VisitContext<'_>,
-        state: &mut VisitState<'_, '_>,
-        node: Syntax<'_>,
-        scopes: &mut Vec<String>,
-        owner: &str,
-        facts: &mut Facts,
-    ) {
-        let (source, path, language, module, offset) = (
-            context.source,
-            context.path,
-            context.profile.id(),
-            context.module,
-            context.offset,
-        );
-        if node.parent().is_none() {
-            if let Some(module) = facts.nodes.iter_mut().find(|n| n.id == owner) {
-                #[cfg(feature = "lang-python")]
-                if language == "python" {
-                    let factories =
-                        crate::engine::languages::python::logging_factories(node, source, offset);
-                    if factories
-                        .as_array()
-                        .is_some_and(|entries| !entries.is_empty())
-                    {
-                        module.details["python_logging_factories"] = factories;
-                    }
-                }
-                #[cfg(feature = "lang-typescript")]
-                if matches!(language, "javascript" | "typescript" | "vue") {
-                    module.details["commonjs_bindings"] =
-                        json!(crate::engine::languages::typescript::commonjs_bindings(
-                            node,
-                            source,
-                            offset,
-                            &context.file.shadowed_require_scopes,
-                        ));
-                }
-                if !context.file.lazy_exports.is_empty() {
-                    module.details["lazy_exports"] = json!(context.file.lazy_exports);
-                }
-                if !context.file.exports.is_empty() {
-                    module.details["exports"] = json!(context.file.exports);
-                }
-                let mut value_flow =
-                    context
-                        .profile
-                        .value_flow_with_context(node, source, context.file);
-                value_flow.offset_lines(offset);
-                if !value_flow.is_empty() {
-                    if let Some(flows) = state.flows.as_mut() {
-                        if let Some(previous) = flows.take(&module.id) {
-                            value_flow.bindings.extend(previous.bindings);
-                            value_flow
-                                .immutable_initializers
-                                .extend(previous.immutable_initializers);
-                            value_flow.fields.extend(previous.fields);
-                        }
-                    } else if let Ok(previous) = crate::core::semantic::ValueFlowFacts::deserialize(
-                        &module.details["value_flow"],
-                    ) {
-                        value_flow.bindings.extend(previous.bindings);
-                        value_flow
-                            .immutable_initializers
-                            .extend(previous.immutable_initializers);
-                        value_flow.fields.extend(previous.fields);
-                    }
-                    value_flow.bindings.sort_by_key(|binding| binding.position);
-                    value_flow.immutable_initializers.sort_unstable();
-                    value_flow.fields.sort_by_key(|field| field.position);
-                    if let Some(flows) = state.flows.as_mut() {
-                        module.details["value_flow"] = serde_json::Value::Null;
-                        flows.insert(module.id.clone(), value_flow);
-                    } else {
-                        module.details["value_flow"] = json!(value_flow);
-                    }
-                }
-                let scope_bindings = state
-                    .root_bindings
-                    .take()
-                    .unwrap_or_else(|| context.profile.bindings(node, source));
-                let bindings = module.details["bindings"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                let bindings: std::collections::BTreeSet<String> = bindings
-                    .iter()
-                    .filter_map(|v| v.as_str().map(str::to_owned))
-                    .chain(scope_bindings.all)
-                    .collect();
-                module.details["bindings"] = json!(bindings);
-                let rebindings: std::collections::BTreeSet<String> = module.details["rebindings"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|value| value.as_str().map(str::to_owned))
-                    .chain(scope_bindings.rebindings)
-                    .collect();
-                module.details["rebindings"] = json!(rebindings);
-            }
-        }
-        if node.is_error() || node.is_missing() {
-            let is_ts_grammar_gap = if language == "typescript" {
-                let line_text = source.lines().nth(node.start_position().row).unwrap_or("");
-                line_text.contains("import(")
-                    || line_text.contains("readonly [")
-                    || line_text.contains("readonly (")
-            } else {
-                false
-            };
-            if !is_ts_grammar_gap {
-                facts.errors.push(Diagnostic {
-                    path: path.into(),
-                    line: node.start_position().row + offset + 1,
-                    message: format!(
-                        "syntax {} at column {}",
-                        node.kind(),
-                        node.start_position().column + 1
-                    ),
-                });
-            }
-        }
-        let mut child_owner = std::borrow::Cow::Borrowed(owner);
-        let mut pushed = false;
-        if let Some(kind) = context.profile.symbol_with_source(node, source) {
-            let name = context
-                .profile
-                .symbol_name(node, source)
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    format!(
-                        "anonymous@{}:{}",
-                        node.start_position().row + offset + 1,
-                        node.start_position().column + 1
-                    )
-                });
-            let prefix = context.profile.node_prefix(kind);
-            let line = node.start_position().row + offset + 1;
-            let mut id = format!("{prefix}:{path}:{line}:{name}");
-            if !state.ids.insert(id.clone()) {
-                id.push_str(&format!(":{}", node.start_position().column));
-                state.ids.insert(id.clone());
-            }
-            state.symbols.insert(node.id(), id.clone());
-            let (metadata, mut value_flow) =
-                context
-                    .profile
-                    .declaration(node, source, &name, context.file);
-            let prototype_owner = (language == "javascript"
-                && matches!(node.kind(), "function_expression" | "arrow_function")
-                && metadata.is_method == Some(true))
-            .then(|| metadata.receiver_type.clone())
-            .flatten();
-            let qualname = if let Some(receiver) = prototype_owner.as_deref() {
-                qualified(module, scopes, &format!("{receiver}.{name}"))
-            } else {
-                qualified(module, scopes, &name)
-            };
-            let bindings = context.profile.bindings(node, source);
-            let mut details = json!({"receiver_name":metadata.receiver_name,"bindings":bindings.all,"rebindings":bindings.rebindings,"default_export":metadata.default_export,"doc":context.profile.doc_comment(node,source),"decorators":metadata.decorators,"bases":metadata.bases,"receiver":metadata.receiver,"signature":declaration_signature(node,source),"async":metadata.is_async});
-            details["column"] = json!(node.start_position().column);
-            if let Some(receiver_type) = metadata.receiver_type {
-                details["receiver_type"] = json!(receiver_type);
-            }
-            if prototype_owner.is_some() {
-                details["prototype"] = json!(true);
-            }
-            if language == "javascript" && commonjs_default_callable(node, source) {
-                details["commonjs_default_callable"] = json!(true);
-            }
-            if let Some(is_method) = metadata.is_method {
-                details["is_method"] = json!(is_method);
-            }
-            if let Some(is_static) = metadata.is_static {
-                details["is_static"] = json!(is_static);
-            }
-            if !metadata.param_types.is_empty() {
-                details["param_types"] = json!(metadata.param_types);
-            }
-            if value_flow.return_type.is_none() {
-                value_flow.return_type = metadata.return_type;
-            }
-            value_flow.offset_lines(offset);
-            if !value_flow.is_empty() {
-                if let Some(flows) = state.flows.as_mut() {
-                    details["value_flow"] = serde_json::Value::Null;
-                    flows.insert(id.clone(), value_flow);
-                } else {
-                    details["value_flow"] = json!(value_flow);
-                }
-            }
-            if metadata.is_overload {
-                details["is_overload"] = json!(true);
-            }
-            if metadata.is_stub {
-                details["is_stub"] = json!(true);
-            }
-            if metadata.is_conditional {
-                details["is_conditional"] = json!(true);
-            }
-            facts.nodes.push(Node {
-                id: id.clone(),
-                kind: kind.into(),
-                name: name.clone(),
-                qualname,
-                path: path.into(),
-                line,
-                end_line: node.end_position().row + offset + 1,
-                is_test: is_test(path) || context.profile.test_attribute(node, source),
-                language: language.into(),
-                generated: false,
-                details,
-            });
-            facts.edges.push(Edge {
-                src: owner.into(),
-                dst: id.clone(),
-                kind: "contains".into(),
-                path: path.into(),
-                line,
-                evidence: node.kind().into(),
-                confidence: "exact".into(),
-            });
-            context.profile.extract_relations(
-                &SyntaxContext {
-                    node,
-                    source,
-                    owner: &id,
-                    offset,
-                    shadowed_require_scopes: &context.file.shadowed_require_scopes,
-                    type_checking_aliases: Some(&context.file.type_checking_aliases),
-                },
-                facts,
-            );
-            child_owner = std::borrow::Cow::Owned(id);
-            scopes.push(name);
-            pushed = true;
-        }
-        let ctx = SyntaxContext {
-            node,
-            source,
-            owner: &child_owner,
-            offset,
-            shadowed_require_scopes: &context.file.shadowed_require_scopes,
-            type_checking_aliases: Some(&context.file.type_checking_aliases),
-        };
-        context.profile.extract_imports(&ctx, facts);
-        context.profile.extract_calls(&ctx, facts);
-        routes::dependency_injection(&ctx, context.language_context, facts);
-        context.profile.extract_mutations(&ctx, facts);
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            Self::visit_node(context, state, child, scopes, &child_owner, facts);
-        }
-        context.profile.extract_routes_with_context(
-            &ctx,
-            facts,
-            state.symbols,
-            context.language_context,
-            context.route_context,
-        );
-        if pushed {
-            scopes.pop();
-        }
-    }
-}
 /// Performs extract.
 pub fn extract(path: &str, language: &str, source: &str) -> Result<Facts> {
     Ok(extract_typed(path, language, source)?.into_public())
@@ -773,7 +279,7 @@ pub(crate) fn extract_tree_with_flows(
     owner: &str,
     facts: &mut Facts,
     flows: Option<&mut FlowStore>,
-) {
+) -> ScopeBindings {
     let registry = languages::dependency_registry::DependencyRegistry::bundled_framework_rules();
     let language_context = registry.language_context_for_path(path);
     extract_tree_with_language_context(
@@ -786,7 +292,7 @@ pub(crate) fn extract_tree_with_flows(
         facts,
         flows,
         &language_context,
-    );
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -800,13 +306,19 @@ pub(crate) fn extract_tree_with_language_context(
     facts: &mut Facts,
     flows: Option<&mut FlowStore>,
     language_context: &languages::LanguageContext,
-) {
-    let route_context = routes::RouteContext::build(root, source);
-    Extraction {
+) -> ScopeBindings {
+    let rule_ir = language_context.bind_rule_ir(&root.language());
+    let route_context = if profile.route_extraction_enabled() {
+        routes::RouteContext::build(root, source)
+    } else {
+        routes::RouteContext::default()
+    };
+    visitor::SinglePassExtractor {
         source,
         path,
         profile,
-        language_context: language_context.clone(),
+        language_context,
+        rule_ir,
         route_context,
         file: profile.prepare(root, source),
         module,
@@ -815,5 +327,5 @@ pub(crate) fn extract_tree_with_language_context(
         ids: facts.nodes.iter().map(|n| n.id.clone()).collect(),
         flows,
     }
-    .visit(root, &mut Vec::new(), owner, facts);
+    .visit(root, &mut Vec::new(), owner, facts)
 }

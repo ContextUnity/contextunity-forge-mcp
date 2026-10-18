@@ -24,3 +24,16 @@ route_calls:
 di_calls:
   - callee: InjectService
     argument: 0
+
+semantic_rules:
+  - id: portal-render
+    namespace: templates
+    scope: project
+    activation: []
+    operation:
+      kind: call_to_file
+      language: python
+      callee: {kind: imported, module: portal.responses, export: render_file}
+      argument: 1
+      target: {kind: project_path_suffix, prefix: templates/, language: html}
+      relation: renders_template

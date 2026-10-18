@@ -1,4 +1,7 @@
-use super::manifests::FrameworkManifest;
+use super::manifests::{
+    named_kind, FrameworkManifest, RuleCoverageCode, RuleCoverageDiagnostic, RuleDomain,
+    RuleIRHandle, RuleIdentity,
+};
 use super::registries::{
     javascript_packages::JavascriptPackageRegistry, typescript_paths::TypeScriptPathsRegistry,
 };
@@ -6,10 +9,19 @@ use super::{profiles, ImportPath, LanguageFamily, LanguageProfile};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::RefCell,
     collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
+
+type LanguageContextCacheKey = (String, String, String);
+
+thread_local! {
+    static LANGUAGE_CONTEXT_CACHE: RefCell<HashMap<LanguageContextCacheKey, Arc<super::LanguageContext>>> =
+        RefCell::new(HashMap::new());
+}
 
 #[derive(Default)]
 /// Represents dependency registry data.
@@ -19,6 +31,7 @@ pub struct DependencyRegistry {
     scoped_origins: HashMap<LanguageFamily, HashMap<String, HashMap<String, String>>>,
     framework_manifests: HashMap<(String, String), FrameworkManifest>,
     standard_framework_manifests: HashMap<String, FrameworkManifest>,
+    rule_ir: RuleIRHandle,
     javascript_packages: JavascriptPackageRegistry,
     typescript_paths: TypeScriptPathsRegistry,
     digest: String,
@@ -33,9 +46,24 @@ impl DependencyRegistry {
         registry
     }
 
-    /// Prepares the merged extraction rules for one file path.
-    pub(crate) fn language_context_for_path(&self, path: &str) -> super::LanguageContext {
+    /// Reuses merged extraction rules for files with the same workspace and package scope.
+    pub(crate) fn language_context_for_path(&self, path: &str) -> Arc<super::LanguageContext> {
         let (workspace, _) = super::workspace_path(path);
+        let family = LanguageFamily("python");
+        let manifest_scope = self
+            .nearest_manifest_scope_for_path(family, path)
+            .unwrap_or(workspace);
+        let key = (
+            self.digest.clone(),
+            workspace.to_owned(),
+            manifest_scope.to_owned(),
+        );
+        if let Some(context) =
+            LANGUAGE_CONTEXT_CACHE.with(|cache| cache.borrow().get(&key).cloned())
+        {
+            return context;
+        }
+
         let mut names: BTreeSet<&str> = self
             .standard_framework_manifests
             .keys()
@@ -48,7 +76,14 @@ impl DependencyRegistry {
                 .map(|(_, name)| name.as_str()),
         );
 
-        let mut context = super::LanguageContext::default();
+        let mut context = super::LanguageContext {
+            rule_ir: self.rule_ir.for_workspace(workspace),
+            ..super::LanguageContext::default()
+        };
+        let declared_packages = self
+            .scoped_packages
+            .get(&family)
+            .and_then(|scopes| scopes.get(manifest_scope));
         for name in names {
             let manifest = self
                 .framework_manifests
@@ -66,25 +101,132 @@ impl DependencyRegistry {
                 .extend(manifest.route_calls.iter().cloned());
             context.di_calls.extend(manifest.di_calls.iter().cloned());
             for rule in &manifest.semantic_rules {
-                let family = LanguageFamily("python");
                 context
                     .semantic_rules
                     .push(super::semantic::EffectiveSemanticRule {
                         pack: manifest.name.clone(),
                         rule: rule.clone(),
-                        scope: self
-                            .nearest_manifest_scope_for_path(family, path)
-                            .unwrap_or(workspace)
-                            .to_owned(),
+                        scope: manifest_scope.to_owned(),
                         active: rule.activation.is_empty()
                             || rule.activation.iter().any(|activation| {
                                 let super::manifests::Activation::Package { name } = activation;
-                                self.declares_for_path(family, path, name)
+                                declared_packages.is_some_and(|packages| packages.contains(name))
                             }),
                     });
             }
         }
-        context
+        let context = Arc::new(context);
+        LANGUAGE_CONTEXT_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= 128 {
+                cache.clear();
+            }
+            cache
+                .entry(key)
+                .or_insert_with(|| Arc::clone(&context))
+                .clone()
+        })
+    }
+
+    /// Reports removed eligible bundled identities for the complete current file inventory.
+    ///
+    /// Entries are `(workspace-qualified path, actual language)`. Diagnostics describe
+    /// the current substitution, independently of which files were reparsed or cached.
+    pub fn framework_rule_diagnostics<'a>(
+        &self,
+        inventory: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Vec<RuleCoverageDiagnostic> {
+        let mut removed_by_group = std::collections::BTreeMap::<
+            (String, String, String, RuleDomain),
+            BTreeSet<RuleIdentity>,
+        >::new();
+        for (path, language) in inventory {
+            let Some(profile) = super::by_id(language) else {
+                continue;
+            };
+            let grammar = profile.grammar(path);
+            let (workspace, _) = super::workspace_path(path);
+            let call = ["call", "call_expression"]
+                .into_iter()
+                .any(|name| named_kind(&grammar, name).is_some());
+            let routes = matches!(language, "python" | "typescript" | "javascript");
+            for ((scope, framework), effective) in &self.framework_manifests {
+                if scope != workspace {
+                    continue;
+                }
+                let Some(bundled) = self.standard_framework_manifests.get(framework) else {
+                    continue;
+                };
+                for (domain, eligible) in [
+                    (
+                        RuleDomain::ClassHierarchyReceivers,
+                        language == "python" && named_kind(&grammar, "class_definition").is_some(),
+                    ),
+                    (RuleDomain::DiCalls, call),
+                    (RuleDomain::RouteCalls, routes && call),
+                    (
+                        RuleDomain::RouteDecorators,
+                        routes && call && named_kind(&grammar, "decorator").is_some(),
+                    ),
+                    (
+                        RuleDomain::SemanticRules,
+                        language == "python" && named_kind(&grammar, "call").is_some(),
+                    ),
+                ] {
+                    if !eligible {
+                        continue;
+                    }
+                    let baseline = bundled.rule_identities(domain);
+                    let current = effective.rule_identities(domain);
+                    let removed = baseline.difference(&current).filter(|identity| {
+                        if let RuleIdentity::Semantic { id } = identity {
+                            // Activation determines whether the bundled owner is eligible
+                            // here. A payload change under an existing identity remains
+                            // that identity even when its effective activation changes.
+                            bundled.semantic_rules.iter().any(|rule| {
+                                &rule.id == id
+                                    && (rule.activation.is_empty()
+                                        || rule.activation.iter().any(|activation| {
+                                            let super::manifests::Activation::Package { name } =
+                                                activation;
+                                            self.declares_for_path(
+                                                LanguageFamily("python"),
+                                                path,
+                                                name,
+                                            )
+                                        }))
+                            })
+                        } else {
+                            true
+                        }
+                    });
+                    for identity in removed {
+                        removed_by_group
+                            .entry((
+                                framework.clone(),
+                                workspace.to_owned(),
+                                language.to_owned(),
+                                domain,
+                            ))
+                            .or_default()
+                            .insert(identity.clone());
+                    }
+                }
+            }
+        }
+        removed_by_group
+            .into_iter()
+            .map(|((framework, workspace, language, rule_domain), removed)| {
+                RuleCoverageDiagnostic {
+                    framework,
+                    workspace,
+                    language,
+                    rule_domain,
+                    code: RuleCoverageCode::EligibleRuleIdentityRemoved,
+                    removed_eligible_rule_identities: removed.into_iter().collect(),
+                }
+            })
+            .collect()
     }
 
     pub(crate) fn class_hierarchy_receiver_for_path(
@@ -740,6 +882,7 @@ mod tests {
         use super::super::manifests::{FrameworkManifest, FrameworkManifestValue};
         use std::collections::BTreeMap;
 
+        let mut documented_examples = Vec::new();
         for (extension, source) in [
             (
                 "toml",
@@ -756,7 +899,13 @@ mod tests {
             assert_eq!(parsed.route_decorators.len(), 1, "{extension}");
             assert_eq!(parsed.route_calls.len(), 1, "{extension}");
             assert_eq!(parsed.di_calls.len(), 1, "{extension}");
+            assert_eq!(parsed.semantic_rules.len(), 1, "{extension}");
+            documented_examples.push(parsed);
         }
+        assert_eq!(
+            documented_examples[0], documented_examples[1],
+            "complete documented TOML/YAML payloads, including semantic rules, must agree"
+        );
         let gridviewspec = FrameworkManifest::parse(
             "gridviewspec".to_owned(),
             "toml",
@@ -1335,6 +1484,436 @@ di_calls:
             _ => failures.push("declared grid-view-spec did not activate its verified GridViewSpec bundle receiver".to_owned()),
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+        {
+            use crate::db::{reader, writer};
+            let coverage_root = temporary.0.join("rule-coverage");
+            fs::create_dir_all(coverage_root.join(".forge/frameworks")).unwrap();
+            fs::write(
+                coverage_root.join("pyproject.toml"),
+                "[project]\nname = 'rule-coverage'\ndependencies = ['fastapi']\n",
+            )
+            .unwrap();
+            fs::write(
+                coverage_root.join("app.py"),
+                "def original_provider(): return 1\ndef project_provider(): return 2\ndef original(value=Depends(original_provider, project_provider)): return value\ndef project(value=ProjectDepends(project_provider)): return value\ndef endpoint(): return None\napp.get('/stable', endpoint)\n",
+            ).unwrap();
+            fs::write(coverage_root.join("peer.py"), "def ordinary(): return 1\n").unwrap();
+            fs::write(
+                coverage_root.join("README.md"),
+                "# Rule coverage\n\nRevision 0.\n",
+            )
+            .unwrap();
+            let coverage_db = coverage_root.join(".forge/code-map.sqlite");
+            let coverage_cold = coverage_root.join(".forge/rule-coverage-cold.sqlite");
+            let framework_path = ".forge/frameworks/fastapi.toml";
+            let bundled = include_str!("manifests/fastapi.toml");
+            let replacement = format!(
+                "replace = true\n{}",
+                bundled.replace("callee = \"Depends\"", "callee = \"ProjectDepends\"")
+            );
+            let payload_override = format!(
+                "replace = true\n{}",
+                bundled.replace(
+                    "callee = \"Depends\"\nargument = 0",
+                    "callee = \"Depends\"\nargument = 1",
+                )
+            );
+            let addition = "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\n[[di_calls]]\ncallee = 'ProjectDepends'\nargument = 0\n";
+            let duplicate = "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\n[[di_calls]]\ncallee = 'Depends'\nargument = 0\n[[di_calls]]\ncallee = 'Depends'\nargument = 0\n";
+            let clean = serde_json::json!([]);
+            let lost_depends = serde_json::json!([{
+                "framework": "fastapi",
+                "workspace": "",
+                "language": "python",
+                "rule_domain": "di_calls",
+                "code": "eligible_rule_identity_removed",
+                "removed_eligible_rule_identities": [{"callee": "Depends"}]
+            }]);
+            let mut coverage_failures = Vec::new();
+            let check_report = |phase: &str,
+                                report: &serde_json::Value,
+                                expected: &serde_json::Value,
+                                failures: &mut Vec<String>| {
+                if report.get("framework_rule_diagnostics") != Some(expected) {
+                    failures.push(format!(
+                        "{phase}: framework_rule_diagnostics must be {expected}, got {:?}",
+                        report.get("framework_rule_diagnostics")
+                    ));
+                }
+            };
+            let check_persisted = |phase: &str,
+                                   database: &std::path::Path,
+                                   expected_injections: &[(&str, i64)],
+                                   failures: &mut Vec<String>| {
+                let persisted = reader::open(database, &coverage_root).unwrap();
+                crate::core::commitments::verify(&persisted).unwrap();
+                let parse_errors: i64 = persisted
+                    .query_row("SELECT count(*) FROM errors", [], |row| row.get(0))
+                    .unwrap();
+                if parse_errors != 0 {
+                    failures.push(format!(
+                        "{phase}: rule diagnostics must not become parse errors: {parse_errors}"
+                    ));
+                }
+                let injections: Vec<(String, i64)> = persisted
+                    .prepare(
+                        "SELECT target.qualname,count(*) FROM edge_occurrences occurrence \
+                         JOIN nodes target ON target.node_hash=occurrence.dst_hash \
+                         WHERE occurrence.kind='injects' GROUP BY target.qualname \
+                         ORDER BY target.qualname",
+                    )
+                    .unwrap()
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .unwrap()
+                    .map(|row| row.unwrap())
+                    .collect();
+                let expected: Vec<(String, i64)> = expected_injections
+                    .iter()
+                    .map(|(target, occurrences)| ((*target).to_owned(), *occurrences))
+                    .collect();
+                if injections != expected {
+                    failures.push(format!(
+                        "{phase}: current effective DI rules must reach exact persisted occurrences: expected {expected:?}, got {injections:?}"
+                    ));
+                }
+                let stable_route: i64 = persisted
+                    .query_row(
+                        "SELECT count(*) FROM nodes WHERE kind='route' AND name='GET /stable'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                if stable_route != 1 {
+                    failures.push(format!(
+                        "{phase}: unchanged bundled route must remain unique: {stable_route}"
+                    ));
+                }
+            };
+            let initial = writer::build(&coverage_root, &coverage_db, None).unwrap();
+            check_report("clean full build", &initial, &clean, &mut coverage_failures);
+            check_persisted(
+                "clean full build",
+                &coverage_db,
+                &[("app.original_provider", 1)],
+                &mut coverage_failures,
+            );
+
+            struct CoverageCase<'a> {
+                name: &'static str,
+                manifest: Option<&'a str>,
+                loses_depends: bool,
+                injections: &'static [(&'static str, i64)],
+            }
+            let coverage_cases = [
+                CoverageCase {
+                    name: "equal-count replacement",
+                    manifest: Some(&replacement),
+                    loses_depends: true,
+                    injections: &[("app.project_provider", 1)],
+                },
+                CoverageCase {
+                    name: "default extension adds identity",
+                    manifest: Some(addition),
+                    loses_depends: false,
+                    injections: &[("app.original_provider", 1), ("app.project_provider", 1)],
+                },
+                CoverageCase {
+                    name: "extension deduplicates identity",
+                    manifest: Some(duplicate),
+                    loses_depends: false,
+                    injections: &[("app.original_provider", 1)],
+                },
+                CoverageCase {
+                    name: "same identity changes payload",
+                    manifest: Some(&payload_override),
+                    loses_depends: false,
+                    injections: &[("app.project_provider", 1)],
+                },
+                CoverageCase {
+                    name: "override deletion restores bundled coverage",
+                    manifest: None,
+                    loses_depends: false,
+                    injections: &[("app.original_provider", 1)],
+                },
+                CoverageCase {
+                    name: "override restoration reinstates loss",
+                    manifest: Some(&replacement),
+                    loses_depends: true,
+                    injections: &[("app.project_provider", 1)],
+                },
+            ];
+            for (revision, case) in coverage_cases.iter().enumerate() {
+                match case.manifest {
+                    Some(manifest) => {
+                        fs::write(coverage_root.join(framework_path), manifest).unwrap()
+                    }
+                    None => fs::remove_file(coverage_root.join(framework_path)).unwrap(),
+                }
+                let expected = if case.loses_depends {
+                    &lost_depends
+                } else {
+                    &clean
+                };
+                let reloaded = DependencyRegistry::collect_with_scan_config(&coverage_root, None);
+                let effective = reloaded
+                    .framework_manifest_for_path(
+                        LanguageFamily("python"),
+                        "app.py",
+                        "fastapi",
+                        "fastapi",
+                    )
+                    .unwrap();
+                let expected_di_count = if case.name == "default extension adds identity" {
+                    2
+                } else {
+                    1
+                };
+                if effective.di_calls.len() != expected_di_count {
+                    coverage_failures.push(format!(
+                        "{}: expected {expected_di_count} unique effective DI identities, got {:?}",
+                        case.name, effective.di_calls
+                    ));
+                }
+                let fallback = writer::delta(
+                    &coverage_root,
+                    &coverage_db,
+                    &[PathBuf::from(framework_path)],
+                )
+                .unwrap();
+                if fallback.get("schema_version").is_none()
+                    || fallback.get("changed_files").is_some()
+                {
+                    coverage_failures.push(format!(
+                        "{}: framework digest change must use the full-build fallback report: {fallback}",
+                        case.name
+                    ));
+                }
+                check_report(case.name, &fallback, expected, &mut coverage_failures);
+                check_persisted(
+                    case.name,
+                    &coverage_db,
+                    case.injections,
+                    &mut coverage_failures,
+                );
+                let cold = writer::build(&coverage_root, &coverage_cold, None).unwrap();
+                check_report(case.name, &cold, expected, &mut coverage_failures);
+                check_persisted(
+                    case.name,
+                    &coverage_cold,
+                    case.injections,
+                    &mut coverage_failures,
+                );
+
+                fs::write(
+                    coverage_root.join("README.md"),
+                    format!("# Rule coverage\n\nRevision {}.\n", revision + 1),
+                )
+                .unwrap();
+                let ordinary =
+                    writer::delta(&coverage_root, &coverage_db, &[PathBuf::from("README.md")])
+                        .unwrap();
+                if ordinary["changed_files"] != 1 || ordinary["reparsed_files"] != 1 {
+                    coverage_failures.push(format!(
+                        "{}: Markdown-only edit must take ordinary delta: {ordinary}",
+                        case.name
+                    ));
+                }
+                check_report(case.name, &ordinary, expected, &mut coverage_failures);
+                check_persisted(
+                    case.name,
+                    &coverage_db,
+                    case.injections,
+                    &mut coverage_failures,
+                );
+            }
+            let linked_root = temporary.0.join("linked-rule-coverage");
+            fs::create_dir_all(linked_root.join(".forge/frameworks")).unwrap();
+            fs::write(
+                linked_root.join("pyproject.toml"),
+                "[project]\nname='linked-rule-coverage'\ndependencies=['fastapi']\n",
+            )
+            .unwrap();
+            fs::write(
+                linked_root.join("app.py"),
+                "def original_provider(): return 1\ndef project_provider(): return 2\ndef original(value=Depends(original_provider, project_provider)): return value\ndef project(value=ProjectDepends(project_provider)): return value\ndef linked(value=LinkedDepends(original_provider)): return value\ndef endpoint(): return None\napp.get('/stable', endpoint)\n",
+            ).unwrap();
+            fs::write(
+                coverage_root.join("forge-mcp.yaml"),
+                format!("roots: [.]\nlinked_workspaces:\n  - name: linked\n    path: {}\n    roots: [.]\n", linked_root.display()),
+            ).unwrap();
+            let linked_replacement = replacement.replace("ProjectDepends", "LinkedDepends");
+            let mut linked_loss = lost_depends[0].clone();
+            linked_loss["workspace"] = serde_json::json!("[linked]");
+            let scoped_losses = serde_json::json!([lost_depends[0], linked_loss]);
+            for (phase, manifest, expected, linked_owner, linked_target) in [
+                (
+                    "linked payload keeps identity",
+                    &payload_override,
+                    &lost_depends,
+                    "original",
+                    "project_provider",
+                ),
+                (
+                    "linked replacement removes identity",
+                    &linked_replacement,
+                    &scoped_losses,
+                    "linked",
+                    "original_provider",
+                ),
+                (
+                    "linked payload restoration",
+                    &payload_override,
+                    &lost_depends,
+                    "original",
+                    "project_provider",
+                ),
+            ] {
+                fs::write(linked_root.join(framework_path), manifest).unwrap();
+                let report = if phase == "linked payload keeps identity" {
+                    writer::build(&coverage_root, &coverage_db, None).unwrap()
+                } else {
+                    let fallback = writer::delta(
+                        &coverage_root,
+                        &coverage_db,
+                        &[PathBuf::from("[linked]/.forge/frameworks/fastapi.toml")],
+                    )
+                    .unwrap();
+                    if fallback.get("schema_version").is_none()
+                        || fallback.get("changed_files").is_some()
+                    {
+                        coverage_failures.push(format!("{phase}: linked manifest change must use full-build fallback: {fallback}"));
+                    }
+                    fallback
+                };
+                check_report(phase, &report, expected, &mut coverage_failures);
+                let cold = writer::build(&coverage_root, &coverage_cold, None).unwrap();
+                check_report(phase, &cold, expected, &mut coverage_failures);
+                fs::write(coverage_root.join("README.md"), format!("# {phase}\n")).unwrap();
+                let ordinary =
+                    writer::delta(&coverage_root, &coverage_db, &[PathBuf::from("README.md")])
+                        .unwrap();
+                if ordinary["changed_files"] != 1 || ordinary["reparsed_files"] != 1 {
+                    coverage_failures.push(format!("{phase}: linked diagnostics must survive ordinary Markdown delta: {ordinary}"));
+                }
+                check_report(phase, &ordinary, expected, &mut coverage_failures);
+                for database in [&coverage_db, &coverage_cold] {
+                    let persisted = reader::open(database, &coverage_root).unwrap();
+                    crate::core::commitments::verify(&persisted).unwrap();
+                    let errors: i64 = persisted
+                        .query_row("SELECT count(*) FROM errors", [], |row| row.get(0))
+                        .unwrap();
+                    if errors != 0 {
+                        coverage_failures.push(format!("{phase}: linked parse errors: {errors}"));
+                    }
+                    let injections: Vec<(String, String, String, String, i64)> = persisted.prepare(
+                        "SELECT sp.path,source.name,tp.path,target.name,count(*) FROM edge_occurrences occurrence JOIN nodes source ON source.node_hash=occurrence.src_hash JOIN nodes target ON target.node_hash=occurrence.dst_hash JOIN path_dictionary sp ON sp.path_id=source.path_id JOIN path_dictionary tp ON tp.path_id=target.path_id WHERE occurrence.kind='injects' GROUP BY sp.path,source.name,tp.path,target.name ORDER BY sp.path,source.name,tp.path,target.name"
+                    ).unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).unwrap().map(|row| row.unwrap()).collect();
+                    let expected_injections = vec![
+                        (
+                            "[linked]/app.py".to_owned(),
+                            linked_owner.to_owned(),
+                            "[linked]/app.py".to_owned(),
+                            linked_target.to_owned(),
+                            1,
+                        ),
+                        (
+                            "app.py".to_owned(),
+                            "project".to_owned(),
+                            "app.py".to_owned(),
+                            "project_provider".to_owned(),
+                            1,
+                        ),
+                    ];
+                    if injections != expected_injections {
+                        coverage_failures.push(format!("{phase}: workspace-local persisted DI sources/targets/occurrences: expected {expected_injections:?}, got {injections:?}"));
+                    }
+                    let routes: Vec<(String, i64)> = persisted.prepare("SELECT p.path,count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='route' AND n.name='GET /stable' GROUP BY p.path ORDER BY p.path").unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?))).unwrap().map(|row| row.unwrap()).collect();
+                    if routes != vec![("[linked]/app.py".to_owned(), 1), ("app.py".to_owned(), 1)] {
+                        coverage_failures.push(format!(
+                            "{phase}: workspace-local stable route identity: {routes:?}"
+                        ));
+                    }
+                }
+            }
+            assert!(
+                coverage_failures.is_empty(),
+                "framework rule coverage reports:\n{}",
+                coverage_failures.join("\n")
+            );
+        }
+        #[cfg(feature = "lang-typescript")]
+        {
+            use crate::db::{reader, writer};
+            let mixed_root = temporary.0.join("mixed-grammar");
+            fs::create_dir_all(mixed_root.join(".forge/frameworks")).unwrap();
+            fs::write(mixed_root.join(".forge/frameworks/mixed.toml"), "receivers=[]\nbuiltins=[]\nfilters=[]\nroutes=[]\n[[route_calls]]\ncallee='publish'\nmethod='GET'\npath_argument=0\nhandler_argument=1\n[[di_calls]]\ncallee='InjectMixed'\nargument=0\n").unwrap();
+            let database = mixed_root.join(".forge/code-map.sqlite");
+            let cold_database = mixed_root.join(".forge/cold.sqlite");
+            for revision in 0..3 {
+                for (file, route, suffix) in [
+                    ("a.ts", "/typescript", ""),
+                    ("b.tsx", "/tsx", "export const markup = <section />;"),
+                ] {
+                    fs::write(mixed_root.join(file), format!("export function endpoint() {{ return {revision}; }}\npublish('{route}', endpoint);\nInjectMixed(endpoint);\n{suffix}\n")).unwrap();
+                }
+                let report = if revision == 0 {
+                    writer::build(&mixed_root, &database, None).unwrap()
+                } else {
+                    let ordinary = writer::delta(
+                        &mixed_root,
+                        &database,
+                        &[PathBuf::from("a.ts"), PathBuf::from("b.tsx")],
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        ordinary["changed_files"], 2,
+                        "both grammars in one ordinary registry operation"
+                    );
+                    assert_eq!(ordinary["reparsed_files"], 2);
+                    ordinary
+                };
+                assert_eq!(report["framework_rule_diagnostics"], serde_json::json!([]));
+                let cold = writer::build(&mixed_root, &cold_database, None).unwrap();
+                assert_eq!(cold["framework_rule_diagnostics"], serde_json::json!([]));
+                for output in [&database, &cold_database] {
+                    let persisted = reader::open(output, &mixed_root).unwrap();
+                    crate::core::commitments::verify(&persisted).unwrap();
+                    let errors: i64 = persisted
+                        .query_row("SELECT count(*) FROM errors", [], |row| row.get(0))
+                        .unwrap();
+                    assert_eq!(errors, 0, "mixed actual grammars must parse without errors");
+                    let routes: Vec<(String,String,i64)> = persisted.prepare("SELECT p.path,n.name,count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='route' GROUP BY p.path,n.name ORDER BY p.path,n.name").unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap().map(|row| row.unwrap()).collect();
+                    assert_eq!(
+                        routes,
+                        vec![
+                            ("a.ts".to_owned(), "GET /typescript".to_owned(), 1),
+                            ("b.tsx".to_owned(), "GET /tsx".to_owned(), 1)
+                        ],
+                        "actual grammar cache dispatch, revision {revision}"
+                    );
+                    let injections: Vec<(String,String,String,i64)> = persisted.prepare("SELECT sp.path,tp.path,target.name,count(*) FROM edge_occurrences occurrence JOIN nodes source ON source.node_hash=occurrence.src_hash JOIN nodes target ON target.node_hash=occurrence.dst_hash JOIN path_dictionary sp ON sp.path_id=source.path_id JOIN path_dictionary tp ON tp.path_id=target.path_id WHERE occurrence.kind='injects' GROUP BY sp.path,tp.path,target.name ORDER BY sp.path,tp.path,target.name").unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap().map(|row| row.unwrap()).collect();
+                    assert_eq!(
+                        injections,
+                        vec![
+                            (
+                                "a.ts".to_owned(),
+                                "a.ts".to_owned(),
+                                "endpoint".to_owned(),
+                                1
+                            ),
+                            (
+                                "b.tsx".to_owned(),
+                                "b.tsx".to_owned(),
+                                "endpoint".to_owned(),
+                                1
+                            )
+                        ],
+                        "grammar-specific DI targets and occurrences, revision {revision}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

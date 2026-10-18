@@ -323,50 +323,126 @@ receipt:
 
 ```yaml
 task_ref: compiled-rule-ir-and-three-tier-profiles
-target: "Compile framework manifests into typed RuleIR indexed by Tree-sitter kind_id, add rule coverage verification, and establish Three-Tier language profiles"
+target: Compile framework manifests into typed RuleIR indexed by Tree-sitter kind_id, add rule coverage verification, and establish Three-Tier language profiles
 proof_policy: seam-test-first
-contract_revision: 7
+contract_revision: 10
 scope:
-  - src/db/writer.rs
-  - src/db/delta.rs
-  - src/engine/languages/mod.rs
-  - src/engine/languages/manifests.rs
-  - src/engine/languages/manifests/framework.rs
-  - src/engine/languages/dependency_registry.rs
-  - src/engine/ast/mod.rs
-  - src/engine/ast/visitor.rs
-  - src/engine/ast/routes.rs
-  - src/engine/languages/python.rs
-  - src/engine/languages/python/value_flow.rs
-  - src/engine/languages/rust.rs
-  - src/engine/languages/rust/value_flow.rs
-  - src/engine/languages/typescript/mod.rs
-  - src/engine/languages/typescript/value_flow.rs
-  - src/engine/languages/vue.rs
-  - src/engine/languages/vue/setup_facts.rs
-  - src/engine/languages/vue/template.rs
-  - docs/reference/framework-manifests.md
-  - docs/architecture/modularity.md
-  - docs/architecture/indexing.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/frameworks/declarative-rules.toml.example
-  - skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example
-  - tests/languages/
-  - tests/core/
-status: ready
+- src/db/writer.rs
+- src/db/delta.rs
+- src/engine/languages/mod.rs
+- src/engine/languages/manifests.rs
+- src/engine/languages/manifests/framework.rs
+- src/engine/languages/dependency_registry.rs
+- src/engine/ast/mod.rs
+- src/engine/ast/visitor.rs
+- src/engine/ast/routes.rs
+- src/engine/languages/python.rs
+- src/engine/languages/python/value_flow.rs
+- src/engine/languages/rust.rs
+- src/engine/languages/rust/value_flow.rs
+- src/engine/languages/typescript/mod.rs
+- src/engine/languages/typescript/value_flow.rs
+- src/engine/languages/vue.rs
+- src/engine/languages/html.rs
+- src/engine/languages/html/javascript.rs
+- src/engine/languages/vue/setup_facts.rs
+- src/engine/languages/vue/template.rs
+- docs/reference/framework-manifests.md
+- docs/architecture/modularity.md
+- docs/architecture/indexing.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/frameworks/declarative-rules.toml.example
+- skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example
+- tests/languages/
+- tests/core/
+- src/engine/linker/resolution.rs
+- src/engine/linker.rs
+scope_roots:
+- src/db
+- src/engine/languages
+- src/engine/ast
+- src/engine/linker
+- src/engine/linker.rs
+- docs/reference
+- docs/architecture
+- skills/contextunity-forge
+- tests/languages
+- tests/core
+status: completed
 subtasks:
-  - subtask_ref: compile-framework-rules-to-kind-ir
-    title: "Compile framework manifest rules into typed RuleIR dispatch tables indexed by Tree-sitter kind_id, re-compiling automatically on rule change"
-    status: pending
-  - subtask_ref: rule-coverage-verification-and-diagnostics
-    title: "Implement rule coverage verification diagnostics warning or reporting if effective rule coverage degrades upon manifest substitution"
-    status: pending
-  - subtask_ref: syntax-grammar-spec-definition
-    title: "Define SyntaxGrammarSpec struct for declaration, reference, scope, import, member-access, and comment kind mapping (~80 LOC)"
-    status: pending
-  - subtask_ref: single-pass-extractor-with-scope-frames
-    title: "Implement shared SinglePassExtractor in ast/mod.rs and visitor.rs with enter/exit ScopeFrame stack, integrating Python, Rust, and TS binding and value-flow hooks"
-    status: pending
+- subtask_ref: compile-framework-rules-to-kind-ir
+  title: Compile framework manifest rules into typed RuleIR dispatch tables indexed by Tree-sitter kind_id, re-compiling automatically on rule change
+  status: completed
+  evidence: 'Actual-grammar/workspace/content typed RuleIR dispatch and reload preserved; current wrong-grammar compiled runtime mutant101 and exact restoration: /tmp/021-t3-r3c1-ir-mutations/results.json. Final BUILD9 source392 digest2fec2668ea80cc7a2c7764f2b0ca4318de9a16e648ec40dcd412d17296d7209b: strictClippy; compound734/0, all-feature languages263/0, registered lib59/0. /tmp/021-t3-r3c1-green-gate-results.json; /tmp/021-t3-r3c1-green-source-currentness.json. Fresh actualCLI a5d8a86e canonical58 and Commerce38851 leaves/typed tables/graph/coverage exact; /tmp/021-t3-r3c1-current-replays.json. NoCold unmeasured, no benchmark consent or run.'
+- subtask_ref: rule-coverage-verification-and-diagnostics
+  title: Implement rule coverage verification diagnostics warning or reporting if effective rule coverage degrades upon manifest substitution
+  status: completed
+  evidence: 'Complete identity-based full/ordinary-delta/fallback report cohort and same-registry TS/TSX: /tmp/021-t3-ir-diagnostics-implementation.md. Current identity-count/lazy-delta compiled runtime kills101/exact restores: /tmp/021-t3-r3c1-ir-mutations/results.json. Final BUILD9 source392 digest2fec2668ea80cc7a2c7764f2b0ca4318de9a16e648ec40dcd412d17296d7209b: strictClippy; compound734/0, all-feature languages263/0, registered lib59/0. /tmp/021-t3-r3c1-green-gate-results.json; /tmp/021-t3-r3c1-green-source-currentness.json. Fresh actualCLI a5d8a86e canonical58 and Commerce38851 leaves/typed tables/graph/coverage exact; /tmp/021-t3-r3c1-current-replays.json. NoCold unmeasured, no benchmark consent or run.'
+- subtask_ref: syntax-grammar-spec-definition
+  title: Define SyntaxGrammarSpec struct for declaration, reference, scope, import, member-access, and comment kind mapping (~80 LOC)
+  status: completed
+  evidence: 'Six syntax categories and invalid-selector rejection exercised at real public production seam, seven refreshed compiled runtime kills101/exact restores: /tmp/021-t3-r3c1-owner-mutations/results.json. Actual source-matched Forge MCP generation68140791 works at required WT. Final BUILD9 source392 digest2fec2668ea80cc7a2c7764f2b0ca4318de9a16e648ec40dcd412d17296d7209b: strictClippy; compound734/0, all-feature languages263/0, registered lib59/0. /tmp/021-t3-r3c1-green-gate-results.json; /tmp/021-t3-r3c1-green-source-currentness.json. Fresh actualCLI a5d8a86e canonical58 and Commerce38851 leaves/typed tables/graph/coverage exact; /tmp/021-t3-r3c1-current-replays.json. NoCold unmeasured, no benchmark consent or run.'
+- subtask_ref: single-pass-extractor-with-scope-frames
+  title: Implement shared SinglePassExtractor in ast/mod.rs and visitor.rs with enter/exit ScopeFrame stack, integrating Python, Rust, and TS binding and value-flow hooks
+  status: completed
+  evidence: 'R3-C1 complete retained declaration metadata+flow and exact-root prepared bindings repair, public12-case/typed-offset/full original finish-order coverage, genuine pre-fix runtime Red, all12 author + Rust2/IR3 final-byte runtime guards. /tmp/021-t3-r3c1-author-terminal-proof.json; /tmp/021-t3-r3c1-root-mutation-sequence.json; /tmp/021-t3-r3c1-implementation.md. Final BUILD9 source392 digest2fec2668ea80cc7a2c7764f2b0ca4318de9a16e648ec40dcd412d17296d7209b: strictClippy; compound734/0, all-feature languages263/0, registered lib59/0. /tmp/021-t3-r3c1-green-gate-results.json; /tmp/021-t3-r3c1-green-source-currentness.json. Fresh actualCLI a5d8a86e canonical58 and Commerce38851 leaves/typed tables/graph/coverage exact; /tmp/021-t3-r3c1-current-replays.json. NoCold unmeasured, no benchmark consent or run.'
+receipt:
+  contract_revision: 10
+  passed_at: 2026-10-18T02:19:34.471131744+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test languages
+      exit_code: 0
+      tests_passed: 259
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS. Review is bound to snapshot 164423984d36a6e33e6716f5f28b1c95162dbc03 and baseline 04b11483d0cf180bb0a896c2a2f5ca2818f43bb9. Snapshot contains 77 scoped files; builder source-binding evidence #319 says all 77 blobs match the release-build worktree. Independently verified SHA-256 of both R3-A1 files (src/engine/languages/python/value_flow.rs and src/engine/linker/resolution.rs) against the task worktree; current release binary SHA-256 is 4f03ca349aaae9331b10b3981f14eb5a99aff58eb34b99d474ca259fcdee0c42. Repair-only diff changes only those two files; no outside-path edit was made by reviewer.'
+        claims:
+          applicable: true
+          evidence: 'PASS. Candidate repair restores local_facts.type_only_imports GraphEntry at services/router/src/contextunity/router/service/mixins/persistence.py:55:8; the repair-only diff shows its prior absence and same source digest. SKU.Availability at extensions/commerce/tests/harvester/test_pim_propagation.py:25 resolves to canonical_entities.py:148 with confidence exact/id=1; repair-only diff shows inferred→exact. Current full baseline diff has identical 3955-file source inventory/digests, 65670 nodes, and 7 parse errors. It records 339 added/18 removed aggregate edges, +321 net; all 18 removals are classified (8 stale import-alias targets, 10 false endpoint edges/12 occurrences to unrelated RAG routes), and all added categories are attributed, including the 21 exact @tool decorations to langchain_tool. Channel POST occurrence remains while GET is added; only aggregate representative evidence changes. Local facts contain 463 same-ID route-node enrichments and 288 additions (224 semantic_key, 64 injects), with no removed node or reference facts. Unrelated domain digests remain unchanged. Official five-run cold report binds the candidate binary to this worktree: paired wall change −4.639%, median wall 11.292s vs 11.842s, user CPU 37.105s vs 43.839s; same-source direct build logs report extract_ms 2769.120 and elapsed_ms 10976.033 (below 3090/14520). Strict Clippy, fmt, languages 259/259 and linker 102/102 pass. Existing Forge /login route extraction gap remains; old baseline links to unrelated RAG routes were false, so this is not a candidate semantic loss. Code Map omitted one inbound resolve call; source at src/engine/linker.rs:329 verifies it.'
+        concurrency:
+          applicable: true
+          evidence: PASS for R3-A1. The repair-only delta changes no task-store claim, revision-fencing, receipt, transaction, rollback, or lock-order code; prior reviewed writer/delta and task lifecycle content is unchanged between the previous candidate and this repair. The changed fact collector is per-module/local, and resolver fan-out uses immutable inputs under par_iter; the added precision predicate is local to each edge.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Task identity and candidate worktree match the configured forge-mcp project. The benchmark uses frozen control root /tmp/021-r9-proof/frozen-replay/control and the candidate binary at the dedicated 021 worktree; baseline and candidate see the same 3955-file inventory/source digests. The repair does not alter workspace, linked-workspace, manifest-root, or filesystem-path resolution.
+        administration:
+          applicable: true
+          evidence: PASS for review scope. The repair does not change schema/migrations, protected milestone configuration, profile pins/gate references, Git hooks, receipt/status code, or privileged administration paths. Reviewer worker reviewer-021-r3a1-independent is distinct from builder-021-r3a1-proof-replay; the candidate commit retains the validated baseline parent. No receipt or source was edited during review; delivery-specific landed-SHA and receipt checks remain for the delivery gate.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-NO-COLD-REGRESSION: Cold build indexing throughput on control repository (commerce-release-update) must not regress across runtime parser and framework extraction changes.'
+    - 'INV-FRAMEWORK-EXTEND: Project framework manifests under .forge/frameworks/*.{toml,yaml} extend bundled definitions with explicit collision precedence (project rules precede bundled rules) and support replace = true total substitution.'
+    - 'INV-RULE-EXTERNALIZATION: Class hierarchy receivers, route decorators, and route call extraction rules execute from declarative manifest definitions without hardcoded Rust match branching.'
+    - 'INV-PARSER-UNIFICATION: New language profiles adopt SyntaxGrammarSpec declarative syntax kind tables (~80 LOC) with shared SinglePassExtractor traversal, replacing ad-hoc recursive AST walks.'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Existing symbol resolution, edge counts, Merkle commitments, and cross-file relationships remain deterministic for unchanged semantics and pass cargo test --all-targets; newly admitted semantic facts deterministically increment edge counts without altering unrelated domain digests.'
+    architectural_notes:
+    - 'decisions: Bounded preparation only /tmp/forge-021-t3-ready/{README.md,baseline.py,fixtures/}, no capture/claim/repo edit/Cargo executed; T3 HOLD until root releases actual T2 delivered SHA. Clarify baseline proof sequencing within existing contract: CLI+SQLite preserves exact facts but private FlowStore/parser API cannot expose complete typed bindings/returns. Capture provisional admitted=false JSON as FIRST T3 repository edit; next add public ast::extract/shared Workspace typed binding/return/owner prevalidation in existing profiles.rs while production remains exact delivered T2. Admit/freeze baseline only after those assertions pass; no T3 production before admission. Correct unsupported fixture assumptions in staging and recapture fresh before admission, never rewrite an admitted retained root. No standalone Rust harness/private decoder/codec/API expansion. Reuse existing portability verifier for aggregate/fullroot and production reader commitments::verify for leaves/FTS.'
+    - 'decisions: T2 actually delivered and independently verified:04b11483d0cf180bb0a896c2a2f5ca2818f43bb9 parentT1f45c764f5312aff1949231c967c59e66620362dd,taskcompleted DELIVER28/contract12.17builderfiles+governedmilestonecommit,6subtaskscompleted;2foreignformatfilesexcludedandpreserved. Explicit T3CONTRACT release contract7 now; root building exactGitarchive attributablebaselineCLI via /tmp/021-t3-build-delivered-baseline.py (not yet capture/admission). Contractauthor same retainedarchitectureagent baseline/tests only; rootdocs+skill/examples. FirstT3repoedit MUSTprovisionaladmittedfalse baselineJSON; publicast::extract binding/return/owner checks+17domain/leaf portableproof inexistingprofiles.rs onexactdeliveredarchive production thenadmitfreeze, NOproductionbefore. Currentreleaseoverlay /tmp/021-t3-current-release-overlay.md supersedes alloldr7channels. CurrentT2closure /tmp/021-r12-build26-review-terminal.md + /tmp/021-r12-build26-proof-review.md andactualdeliveryverification. Mechanicalreceiptrollup/historydoesnotestablish coldperformanceorT3proof. No benchmark/maincommit/push. Root currentlyexclusiveCargo archivebuild; contractauthor awaitsrootbinaryhandoff beforeCargo/capture.'
+    - 'decisions: Baseline staging anti-loop escalation resolved by coordinator after reading complete initial/r2 matrix and actualRustsources. No canonicalretainedroot orT3repoeditexists. PreserveRustcaller conditionalwrites+block-local worker shadowing and currentuncertain run; do not require unsupported exactfactory inference. Add separate explicit typed Rust receiver control typed_receiver(worker:helper::Worker)->actualrun (canonicaltype spelling viaexistingowner ifneeded); currentcaller make/nested edges and absenceofexactrun remain required. Python/TSallcorrectedcontrolsunchanged. Thisisbaselinefixtureassumptioncorrection authorizedby268, notfeatureRed orproductionfix. Onefullsixsourcevalidation beforefreeze; if explicittypedcontrol fails, stopreturnactualowner evidence beforefurtheredits. Preserveinitial/r2 logs. No arbitrary new observable or weakened postbaseline acceptance; baseline exactfacts frozenonlyafter publicowner/binding/returnprevalidation+17domains/leavespass. IR/SyntaxSpec equivalentexternalbehavior doesnotneedinventedRed; realmissingdiagnosticreport andscopeexit hookorder supplyruntimefeatureRed, actualIRdispatch+grammarcache+sixcategoryimplementationrequireproduction/source/mutationproof.'
+    - 'decisions: Terminal baseline-staging resolution aftercomplete r3/details+existingRustprofiletests: no furtherfixture/type-spelling retries orproductionfix. Retain currentr3sixsourcebytes inclRusttyped_receiver asunresolvednegative. CaptureactualdeliveredT2semantics: Rustcaller->actualcrossfilemake+localnested exact; caller/typed_receiver run nonexact/unresolved; Python+TS exactinferredrun positives remain. PublicASTchecks actuallexicaltype/binding/NamedWorkerreturnowners; no claim localASTresolvescrossfile. Thiscorrects unsupported stronger preparation-only expectation under268; admitted4T3obligations and exact17domain/allleaf/canonicalroot pre/postparity unchanged. No featureRed fromunsupportedbaseline. Validator updatedonlyfor thisknownlimit, onefullsixsourcevalidation thencanonicalcapture/publicadmission; anyadditionalunexpectedfailure returnscombinedpacket beforechanges. Preserveinitial/r2/r3failureevidence. Canonicalroot/provisionalrepoJSON notcreatedyet. Rootactualsource/packetread supportsactualbaseline ratherthan inventing missingRustsemanticfeature.'
+    - 'decisions: Root read current full 4-obligation evidence map and agreed IR integration addendum. Freeze actual traversal boundary: shared enter/exit DFS replaces declaration-body bindings/value-flow/final-return collectors; no legacy recursive summary walker/scope_bindings may generate scope-exit summaries. Retain occurrence-local Python import/loader lexical proof queries as separately bounded syntax checks; they may revisit lexical syntax, emit no body summary, preserve delivered T2 precision. DOM/module-alias PREP also excluded. Do not claim every parser operation one DFS. Exact private RuleIRHandle/LanguageContext with_grammar+kind slices, actual root grammar binding, full-inventory tuple(path,language) registry diagnostic accessor and stable typed diagnostic wire are agreed by both owners in /tmp/021-t3-ir-diagnostics-plan.md. No production edit/BUILD authorization yet; baseline admission and actual compiled runtime Reds remain prerequisite.'
+    - 'decisions: Baseline admission accepted after root read complete /tmp/021-t3-baseline-admission-proof.json, final archive public/portable test log and production byte provenance. Actual delivered T2 04b11483d0cf180bb0a896c2a2f5ca2818f43bb9 / immutable binary90a4df812b187ecc5883f6b0ffa2949fb3cf81b9b06495c46799c95b69ef94a1. Baseline first provisional repo edit followed by public extraction tests on exact delivered archive; final expected-public/portable real test ran1 passed0failed exit0. Frozen JSONSHA9b6d0faed88c662133fe643635e620b1316275283e47320c4529a4a423bbd0d6 captures17domains/58ownerleaves/6completepublicFacts; exact same-root two-build metadata/fullroot and independent production verify preserved. Canonical root /tmp/forge-021-t3-baseline-04b11483d0cf180bb0a896c2a2f5ca2818f43bb9 remains untouched for final actualT3CLI replay. Rust run controls remain unresolved, supported Python/TS member positives and Rust make/nested positives retained. Admission freezes expected facts, sourcebytes/identity, metadata/fullroot; do not recapture/weaken duringBUILD. Proceed only compiled runtime report+hook-order Reds before CONTRACTpass/explicitBUILD.'
+    - 'decisions: Root read entire current 4-obligation map, admission packet and actual public hook-order Red log: existing public production seam compiled/executed exit101,1matched/0passed/1failed after complete frozen baseline checks passed. Exact claim6 contract_proof /tmp/021-t3-contract-proof.json accepted for CONTRACTpass. Scheduling clarification: configured gate requires this observed task seam Red; do not idle SinglePass implementation waiting for independent diagnostic test preparation. Actual report RuntimeRed is still mandatory before IR/report production edits and will run on retained exact delivered T2 archive; no claim it has passed yet. Four acceptance obligations/baseline/sensitivity unchanged. ClaimBUILD with fresh guidance, then explicit bounded owners release; source/diagnostic test lanes can proceed independently with exclusive Cargo handoffs. Root owns six admitted docs/skill/example files; no main/benchmark authorization.'
+    - 'decisions: Root verified current map generation3ea36229 actualWT305files6192nodes0parseerrors; both integrationseams reject TASK_SEAM_DISCONNECTED after refresh. explain shows actual public integration tests only resolved to Workspace::new/localtypes; self-crate ast/writer calls absent. Do not create fake graph stubs, change proof policy, invent an observed unitRed, modify gate/DB or add features. Test-only resolution: move exact new 6-state/19-report diagnostic matrix from tests/languages/manifests.rs into existing canonical registry test src/engine/languages/dependency_registry.rs::project_framework_packs_merge_replace_and_activate (actual T2 connected seam), reuse existing TestRoot/fs, remove moved duplicate, preserve all old testbytes and production prefix. Then execute that actual unitseam on delivered T2 to genuine runtime101 and use exact connectedref. No acceptance/scenario/baseline change or new harness; public profileRed retained as companion. Registered error advice mentions missing planned visitor.rs, but no greenfield stub can repair absent self-crate edges and none authorized. IR owner only edits these test regions, author exclusiveCargo; no production BUILD until supportedContractpass.'
+    - 'decisions: Root read full exact delivered archive registry unit runtime Red /tmp/021-t3-diagnostic-unit-red.log: compile succeeded; actual exit101,1executed0passed1failed56filtered; ONLY19 missing report entries, all equalcount/identity/payload/injectiontarget/route/parsererror/integrity/fullfallback/ordinarydelta controls pass. Registry productionprefixSHA717b50ac11339f3b70c85cf436bb2e58ddacb3875e279efdd540dc1b3dc96ab0 remains exactT2; removedintegrationduplicate restoredexactT2bytes. Root mapebbf4bc8 confirms current direct writer+registry paths from exact unit. Claim6 connected contractproof ref src/engine/languages/dependency_registry.rs::project_framework_packs_merge_replace_and_activate accepted; actual independent public hook-orderRed also remains accepted. Author submitsContract/claimsBuild. Four obligations, frozenbaseline and all planned BUILD proof remain unchanged. No additional preflight discovery required; production release follows actualBUILDclaim.'
+    - 'decisions: Explicit BUILD release after supportedCONTRACTpass snapshot251873ec8e564de91f96ee3f870e84db37eb2df6 and actualclaim7/contract7 builder-021-t3-three-tier; root read boundproof/rules. Architecture owner implements actual sharedDFS/ScopeFrame/SyntaxSpec and language/body/Vue/context/ASTconsumers, owns public profiles tests and consolidatedproof. IR owner implements only manifests.rs/framework.rs/dependency_registry.rs/writer.rs/delta.rs, agreedopaquehandle/accessor/diagnostics, and existingregistryexampleequivalence. Root owns six admitted docs/skill/examplefiles. Owners coordinate frozenAPIs directly; publish IRtypesfirst, no ownershipoverlap. ExclusiveCargo architectureowner with explicit handoffs, refresh generated absolute includes toWT. Preserve frozenbaseline/canonicalroot, T1/T2precision, foreign2formatfiles. All4obligations/completeaffectedtests/strictClippy/actualsensitivity/canonicalreplay then oneconsolidatedindependentreview; no more preflight permissions/discovery required. Rootreads completepacket beforeBUILDsubmit; no main/remote/benchmark authority.'
+    - 'decisions: BUILD7/contract7 boundary classification, no scope/acceptance expansion: root read TS frameworks::returned_object62-91, same_object_receiver130-162 and incremental ReturnSummary/final_return wrapper921-935. Validated AST finds same_object_receiver(node,source) in TSmod439 metadata; map75e0fc38 imported-name graph gap supplemented by AST/live source. Retain this existing occurrence-local same-object receiver proof: it may inspect enclosing-function syntax but emits no body/binding/flow summary; ScopeFrame finish uses incremental return state and must not call wrapper. This is within retained occurrence-local semantic proofs/default wrappers, not a scope-exit collector substitute. No frameworks.rs edit/new semantics. Final caller inventory and modularity docs explicitly state complete enclosing-function revisit; no universal every-node-only-once claim. Root ledger /tmp/021-t3-closure-ledger.md.'
+    - 'decisions: Root replay classification before any repair: /tmp/021-t3-replay-differences.json proves canonical6 exact all17 domains/58owner leaves/all nonphysical typed tables/public node details and original source+directory identity. Initial harness compare first failed JSON-list vs sqlite-tuple representation (values identical); retained evidence, not production defect. Canonical metadata differs ONLY index_semantics_version and derived output_root. Live unchanged build.rs::generate_profiles fingerprints all engine .rs plus writer/model inputs into FORGE_LANGUAGE_PROFILE_DIGEST; actual current Cargo output a5222... emits09a795... exactly matching current DB. Cross-source binary fingerprint/root equality was an overconstraint in root''s auxiliary replay plan, not a production requirement to falsify or freeze artifact identity. Preserve original baseline, production metadata, hash algorithm/schema and BUILD contract7. Final proof must require exact semantic domains/leaves/tables, exact other metadata, actual generated source fingerprint, fresh production root verification and honest explicit old/new output identity; never claim identical fullroot across changed source or silently normalize any digest. Separate corpus full packet still exposes local_facts/edge ordinal differences and remains FAIL pending classification/repair; no acceptance weakened for those.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

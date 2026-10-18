@@ -199,9 +199,13 @@ response:
 
 ## Declarative framework packs
 
-Project rules live in each workspace's `.forge/frameworks/<framework-id>.toml`, `.yaml`, or `.yml`. Start with the equivalent [TOML](references/frameworks/declarative-rules.toml.example) or [YAML](references/frameworks/declarative-rules.yaml.example) examples for class receivers, route decorators, route calls, and dependency-injection calls. Keep the four legacy arrays (`receivers`, `builtins`, `filters`, `routes`) even when empty. Project rules extend the bundled identifier by default; `replace = true` replaces it. Rebuild or update the index after editing rules.
+Project rules live in each workspace's `.forge/frameworks/<framework-id>.toml`, `.yaml`, or `.yml`. Start with the equivalent [TOML](references/frameworks/declarative-rules.toml.example) or [YAML](references/frameworks/declarative-rules.yaml.example) examples for class receivers, route decorators, route calls, dependency-injection calls and imported calls to actual template files. Keep the four legacy arrays (`receivers`, `builtins`, `filters`, `routes`) even when empty. Project rules extend the bundled identifier by default; `replace = true` replaces it. Rebuild or update the index after editing rules.
 
 The Forge repository's [framework manifest reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/framework-manifests.md) owns the schema, merge identities, activation rules, and validation limits. Use manifests for data supported by existing language hooks; a new language or new extraction semantics requires profile code and production-seam proof.
+
+Read `framework_rule_diagnostics` in actual build and delta reports after replacing bundled rules. Compare removed eligible identities rather than rule counts; clean reports contain an empty list. These diagnostics are ephemeral and do not belong in parser errors or persisted facts. Effective typed rules compile against the actual Tree-sitter grammar and invalidate with registry changes.
+
+For structural language support, supply the six `SyntaxGrammarSpec` categories and use the shared `SinglePassExtractor` enter/exit owner frames. Keep language-specific body events and linker semantics in their existing owners. Preserve public facts and all commitment domains against the delivered baseline; do not implement a new recursive body collector. Tree-sitter query experiments remain opt-in research outside default indexing.
 
 ## MCP Tool Reference
 

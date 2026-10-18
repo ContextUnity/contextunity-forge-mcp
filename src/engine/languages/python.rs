@@ -27,7 +27,7 @@ mod dependencies;
 #[path = "python/linker.rs"]
 pub(crate) mod linker;
 #[path = "python/value_flow.rs"]
-mod value_flow;
+pub(crate) mod value_flow;
 /// Performs language.
 pub fn language() -> tree_sitter::Language {
     tree_sitter_python::language()
@@ -298,13 +298,21 @@ pub struct Python;
 /// Shared python language profile.
 pub static PYTHON: Python = Python;
 impl LanguageProfile for Python {
+    fn scope_analysis<'source, 'tree>(
+        &self,
+        node: Syntax<'tree>,
+        source: &'source str,
+        file: &FileContext,
+    ) -> Option<ast::ScopeAnalysis<'source, 'tree>> {
+        Some(ast::ScopeAnalysis::python(
+            node,
+            source,
+            file.has_django_shortcuts_import,
+        ))
+    }
+
     fn bindings(&self, node: Syntax<'_>, source: &str) -> ast::ScopeBindings {
-        let mut bindings = ast::scope_bindings(node, source);
-        if node.kind() == "module" {
-            let aliases = value_flow::unique_module_aliases(node, source);
-            bindings.rebindings.retain(|name| !aliases.contains(name));
-        }
-        bindings
+        ast::visitor::python_bindings(node, source)
     }
     fn builtin_member(&self, receiver: &str, member: &str) -> bool {
         builtin_member(receiver, member)
@@ -394,22 +402,15 @@ impl LanguageProfile for Python {
         parse_file(self, path, source, module, facts)
     }
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
-        let mut cursor = root.walk();
-        let statements: Vec<_> = root.named_children(&mut cursor).collect();
         let mut type_checking_aliases = HashMap::new();
         let mut has_django_shortcuts_import = false;
-        let mut lazy_getters = Vec::new();
-        let exports = module_exports::collect(
+        module_exports::prepare(
             root,
             source,
-            &statements,
             &mut type_checking_aliases,
             &mut has_django_shortcuts_import,
-            &mut lazy_getters,
         );
         FileContext {
-            exports,
-            lazy_exports: lazy_exports::extract(root, source, &statements, &lazy_getters),
             type_checking_aliases,
             has_django_shortcuts_import,
             ..FileContext::default()
@@ -417,11 +418,13 @@ impl LanguageProfile for Python {
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
+        if !matches!(node.kind(), "import_from_statement" | "import_statement") {
+            return;
+        }
         let statement = text(node, source);
-        let is_type_only = matches!(node.kind(), "import_from_statement" | "import_statement")
-            && ctx
-                .type_checking_aliases
-                .is_some_and(|aliases| is_inside_type_checking(node, source, aliases));
+        let is_type_only = ctx
+            .type_checking_aliases
+            .is_some_and(|aliases| is_inside_type_checking(node, source, aliases));
         let mut add = |expression, alias, module| {
             ctx.import(facts, expression, alias, module);
             if is_type_only {
@@ -848,6 +851,9 @@ impl LanguageProfile for Python {
         fastmcp::decorator_candidates(ctx, facts);
     }
     fn extract_mutations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+        if !matches!(ctx.node.kind(), "assignment" | "augmented_assignment" | "attribute") {
+            return;
+        }
         relations::mutation(
             ctx,
             facts,
@@ -867,12 +873,19 @@ impl LanguageProfile for Python {
             routes::client_call(ctx.node, ctx.source, ctx.owner, facts, ctx.offset);
         }
         if ctx.node.kind() == "assignment" && !ctx.owner.starts_with("module:") {
-            if let Some(module_id) = facts
+            let module_id = facts
                 .nodes
-                .iter()
-                .find(|node| node.kind == "module")
+                .first()
+                .filter(|node| node.kind == "module")
                 .map(|node| node.id.clone())
-            {
+                .or_else(|| {
+                    facts
+                        .nodes
+                        .iter()
+                        .find(|node| node.kind == "module")
+                        .map(|node| node.id.clone())
+                });
+            if let Some(module_id) = module_id {
                 let module_ctx = SyntaxContext {
                     node: ctx.node,
                     source: ctx.source,
@@ -895,11 +908,29 @@ impl LanguageProfile for Python {
         rules: &super::LanguageContext,
         route_context: &crate::engine::ast::routes::RouteContext,
     ) {
+        self.extract_routes_with_rule_ir(
+            ctx,
+            facts,
+            symbols,
+            rules,
+            &rules.rule_ir,
+            route_context,
+        );
+    }
+    fn extract_routes_with_rule_ir(
+        &self,
+        ctx: &SyntaxContext<'_, '_>,
+        facts: &mut Facts,
+        symbols: &HashMap<usize, String>,
+        rules: &super::LanguageContext,
+        rule_ir: &super::manifests::RuleIRHandle,
+        route_context: &crate::engine::ast::routes::RouteContext,
+    ) {
         if matches!(ctx.node.kind(), "function_definition" | "class_definition") {
-            routes::declaration_with_context(ctx, facts, rules, route_context);
+            routes::declaration_with_context(ctx, facts, rule_ir, route_context);
         }
         if ctx.node.kind() == "call" {
-            routes::registration_with_context(ctx, facts, symbols, rules, route_context);
+            routes::registration_with_context(ctx, facts, symbols, rule_ir, route_context);
             call_to_file(ctx, facts, rules);
         }
         self.extract_routes(ctx, facts, symbols);
@@ -927,6 +958,16 @@ impl LanguageProfile for Python {
 
 fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &LanguageContext) {
     use super::manifests::{SemanticCallee, SemanticOperation};
+    let has_call_to_file = rules.semantic_rules.iter().any(|rule| {
+        rule.active
+            && matches!(
+                &rule.rule.operation,
+                SemanticOperation::CallToFile { language, .. } if language == "python"
+            )
+    });
+    if !has_call_to_file {
+        return;
+    }
     let Some(callee) = ctx
         .node
         .child_by_field_name("function")
@@ -935,31 +976,28 @@ fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &Language
         return;
     };
     let alias = text(callee, ctx.source);
-    let Some(arguments) = ctx.node.child_by_field_name("arguments") else {
-        return;
-    };
-    let mut cursor = arguments.walk();
-    let args: Vec<_> = arguments
-        .named_children(&mut cursor)
-        .filter(|node| node.kind() != "comment")
-        .collect();
-    if args.iter().any(|node| {
-        matches!(
-            node.kind(),
-            "keyword_argument" | "list_splat" | "dictionary_splat"
-        )
-    }) {
-        return;
-    }
-    let Some(import_owner) = facts
+    let import_owner = facts
         .nodes
-        .iter()
-        .find(|node| node.kind == "module")
+        .first()
+        .filter(|node| node.kind == "module")
         .map(|node| node.id.clone())
-    else {
+        .or_else(|| {
+            facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == "module")
+                .map(|node| node.id.clone())
+        });
+    let Some(import_owner) = import_owner else {
         return;
     };
-    for effective in rules.semantic_rules.iter().filter(|rule| rule.active) {
+    for effective in rules.semantic_rules.iter().filter(|rule| {
+        rule.active
+            && matches!(
+                &rule.rule.operation,
+                SemanticOperation::CallToFile { language, .. } if language == "python"
+            )
+    }) {
         let SemanticOperation::CallToFile {
             language,
             callee,
@@ -993,6 +1031,22 @@ fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &Language
         ) {
             continue;
         }
+        let Some(arguments) = ctx.node.child_by_field_name("arguments") else {
+            continue;
+        };
+        let mut cursor = arguments.walk();
+        let args: Vec<_> = arguments
+            .named_children(&mut cursor)
+            .filter(|node| node.kind() != "comment")
+            .collect();
+        if args.iter().any(|node| {
+            matches!(
+                node.kind(),
+                "keyword_argument" | "list_splat" | "dictionary_splat"
+            )
+        }) {
+            continue;
+        }
         let Some(literal) = args
             .get(*argument)
             .and_then(|node| template_loaders::literal(*node, ctx.source))
@@ -1012,7 +1066,7 @@ fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &Language
                 literal.to_owned(),
                 text(ctx.node, ctx.source).to_owned(),
                 super::semantic::SemanticFactRole::CallToFile {
-                    import_owner: import_owner.clone(),
+                    import_owner: import_owner.to_owned(),
                     alias: alias.to_owned(),
                     module: module.clone(),
                     export: export.clone(),

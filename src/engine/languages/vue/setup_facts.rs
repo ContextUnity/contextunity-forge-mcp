@@ -25,165 +25,172 @@ pub(super) fn collect_setup_facts(
     typescript: bool,
     output: &mut SetupFactOutputs<'_>,
 ) {
-    let mut stack = Vec::new();
-    let mut cursor = root.walk();
-    for statement in root.named_children(&mut cursor) {
-        let kind = statement.kind();
-        let is_const = kind == "lexical_declaration"
-            && statement
-                .child_by_field_name("kind")
-                .is_some_and(|node| text(node, source) == "const");
-        stack.push((
-            statement,
-            0usize,
-            kind,
-            is_const,
-            kind == "import_statement",
-        ));
-    }
     let mut slots_stopped = *output.typed_slots_invalid;
-
-    while let Some((node, depth, statement_kind, const_declaration, in_import)) = stack.pop() {
-        if depth == 0 {
-            if !setup_script && node.kind() == "export_statement" {
-                collect_registered_component(
-                    node,
-                    source,
-                    output.registered_components,
-                    output.duplicate_components,
-                );
+    let mut contexts = Vec::new();
+    let statements: Vec<_> = root.named_children(&mut root.walk()).collect();
+    for statement in statements.into_iter().rev() {
+        ast::visitor::walk(statement, &mut |node, entering| {
+            if !entering {
+                contexts.pop();
+                return;
             }
-            if setup_script && matches!(node.kind(), "function_declaration" | "class_declaration") {
-                if let Some(name) = node.child_by_field_name("name") {
-                    insert_macro_name(text(name, source), output.shadowed_producers);
-                }
-            }
-        }
-
-        if depth == 1 {
-            if matches!(
+            let direct = node.parent() == Some(root);
+            let (depth, statement_kind, const_declaration, in_import, active) = if direct {
+                let kind = node.kind();
+                (
+                    0usize,
+                    kind,
+                    kind == "lexical_declaration"
+                        && node
+                            .child_by_field_name("kind")
+                            .is_some_and(|keyword| text(keyword, source) == "const"),
+                    kind == "import_statement",
+                    true,
+                )
+            } else if let Some((depth, kind, constant, import, active)) = contexts.last().copied() {
+                (depth + 1, kind, constant, import, active)
+            } else {
+                (0, "", false, false, false)
+            };
+            contexts.push((
+                depth,
                 statement_kind,
-                "lexical_declaration" | "variable_declaration"
-            ) {
-                if let Some(name) = node.child_by_field_name("name") {
-                    if setup_script {
+                const_declaration,
+                in_import,
+                active && !(in_import && node.kind() == "import_specifier"),
+            ));
+            if !active {
+                return;
+            }
+            if depth == 0 {
+                if !setup_script && node.kind() == "export_statement" {
+                    collect_registered_component(
+                        node,
+                        source,
+                        output.registered_components,
+                        output.duplicate_components,
+                    );
+                }
+                if setup_script
+                    && matches!(node.kind(), "function_declaration" | "class_declaration")
+                {
+                    if let Some(name) = node.child_by_field_name("name") {
                         insert_macro_name(text(name, source), output.shadowed_producers);
                     }
                 }
+            }
+
+            if depth == 1 {
+                if matches!(
+                    statement_kind,
+                    "lexical_declaration" | "variable_declaration"
+                ) {
+                    if let Some(name) = node.child_by_field_name("name") {
+                        if setup_script {
+                            insert_macro_name(text(name, source), output.shadowed_producers);
+                        }
+                    }
+                    if setup_script
+                        && typescript
+                        && !slots_stopped
+                        && node.kind() == "variable_declarator"
+                        && node
+                            .child_by_field_name("value")
+                            .is_some_and(|value| is_define_slots(value, source))
+                    {
+                        *output.typed_slots_invalid = true;
+                        slots_stopped = true;
+                    }
+                }
+
                 if setup_script
-                    && typescript
-                    && !slots_stopped
+                    && statement_kind == "lexical_declaration"
+                    && const_declaration
                     && node.kind() == "variable_declarator"
-                    && node
-                        .child_by_field_name("value")
-                        .is_some_and(|value| is_define_slots(value, source))
                 {
-                    *output.typed_slots_invalid = true;
-                    slots_stopped = true;
+                    collect_typed_prop_declaration(
+                        node,
+                        source,
+                        output.typed_props,
+                        output.duplicate_typed_props,
+                    );
+                    collect_setup_callable_declaration(
+                        node,
+                        source,
+                        output.setup_callables,
+                        output.duplicate_callables,
+                    );
+                    if typescript {
+                        collect_typed_iterable_declaration(
+                            node,
+                            source,
+                            output.typed_iterables,
+                            output.duplicate_typed_iterables,
+                        );
+                    }
+                }
+            }
+
+            if setup_script && in_import {
+                if node.kind() == "import_specifier" {
+                    if let Some(local) = node
+                        .child_by_field_name("alias")
+                        .or_else(|| node.child_by_field_name("name"))
+                    {
+                        insert_macro_name(text(local, source), output.shadowed_producers);
+                    }
+                } else if node.kind() == "identifier" {
+                    insert_macro_name(text(node, source), output.shadowed_producers);
+                }
+            }
+
+            if matches!(
+                node.kind(),
+                "assignment_expression" | "augmented_assignment_expression"
+            ) {
+                if let Some(left) = node.child_by_field_name("left") {
+                    if left.kind() == "identifier" {
+                        let target = if setup_script {
+                            &mut *output.setup_reassignments
+                        } else {
+                            &mut *output.component_reassignments
+                        };
+                        target.insert(text(left, source).to_owned());
+                    }
+                }
+            } else if node.kind() == "update_expression" {
+                if let Some(argument) = node.child_by_field_name("argument") {
+                    if argument.kind() == "identifier" {
+                        let target = if setup_script {
+                            &mut *output.setup_reassignments
+                        } else {
+                            &mut *output.component_reassignments
+                        };
+                        target.insert(text(argument, source).to_owned());
+                    }
                 }
             }
 
             if setup_script
-                && statement_kind == "lexical_declaration"
-                && const_declaration
-                && node.kind() == "variable_declarator"
+                && typescript
+                && depth == 0
+                && !slots_stopped
+                && node.kind() == "expression_statement"
             {
-                collect_typed_prop_declaration(
-                    node,
-                    source,
-                    output.typed_props,
-                    output.duplicate_typed_props,
-                );
-                collect_setup_callable_declaration(
-                    node,
-                    source,
-                    output.setup_callables,
-                    output.duplicate_callables,
-                );
-                if typescript {
-                    collect_typed_iterable_declaration(
-                        node,
-                        source,
-                        output.typed_iterables,
-                        output.duplicate_typed_iterables,
-                    );
-                }
-            }
-        }
-
-        if setup_script && in_import {
-            if node.kind() == "import_specifier" {
-                if let Some(local) = node
-                    .child_by_field_name("alias")
-                    .or_else(|| node.child_by_field_name("name"))
+                if let Some(call) = node
+                    .named_child(0)
+                    .filter(|node| is_define_slots(*node, source))
                 {
-                    insert_macro_name(text(local, source), output.shadowed_producers);
-                }
-            } else if node.kind() == "identifier" {
-                insert_macro_name(text(node, source), output.shadowed_producers);
-            }
-        }
-
-        if matches!(
-            node.kind(),
-            "assignment_expression" | "augmented_assignment_expression"
-        ) {
-            if let Some(left) = node.child_by_field_name("left") {
-                if left.kind() == "identifier" {
-                    let target = if setup_script {
-                        &mut *output.setup_reassignments
-                    } else {
-                        &mut *output.component_reassignments
-                    };
-                    target.insert(text(left, source).to_owned());
+                    *output.typed_slot_calls += 1;
+                    if *output.typed_slot_calls > 1
+                        || collect_typed_slot_call(call, source, output.typed_slots)
+                    {
+                        *output.typed_slots_invalid = true;
+                        slots_stopped = true;
+                    }
                 }
             }
-        } else if node.kind() == "update_expression" {
-            if let Some(argument) = node.child_by_field_name("argument") {
-                if argument.kind() == "identifier" {
-                    let target = if setup_script {
-                        &mut *output.setup_reassignments
-                    } else {
-                        &mut *output.component_reassignments
-                    };
-                    target.insert(text(argument, source).to_owned());
-                }
-            }
-        }
-
-        if setup_script
-            && typescript
-            && depth == 0
-            && !slots_stopped
-            && node.kind() == "expression_statement"
-        {
-            if let Some(call) = node
-                .named_child(0)
-                .filter(|node| is_define_slots(*node, source))
-            {
-                *output.typed_slot_calls += 1;
-                if *output.typed_slot_calls > 1
-                    || collect_typed_slot_call(call, source, output.typed_slots)
-                {
-                    *output.typed_slots_invalid = true;
-                    slots_stopped = true;
-                }
-            }
-        }
-
-        if in_import && node.kind() == "import_specifier" {
-            continue;
-        }
-        let mut children: Vec<_> = node.named_children(&mut node.walk()).collect();
-        for child in children.drain(..).rev() {
-            stack.push((
-                child,
-                depth + 1,
-                statement_kind,
-                const_declaration,
-                in_import,
-            ));
-        }
+        });
     }
 }
 

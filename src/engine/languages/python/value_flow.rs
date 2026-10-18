@@ -8,7 +8,17 @@ use crate::{
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub(super) fn unique_module_aliases(node: Node<'_>, source: &str) -> HashSet<String> {
+pub(crate) struct AliasWrites {
+    writes: HashMap<String, (usize, bool)>,
+    active: crate::engine::ast::visitor::BitStack,
+}
+impl AliasWrites {
+    pub(crate) fn new() -> Self {
+        Self {
+            writes: Default::default(),
+            active: crate::engine::ast::visitor::BitStack::new(),
+        }
+    }
     fn targets(
         node: Node<'_>,
         source: &str,
@@ -16,11 +26,13 @@ pub(super) fn unique_module_aliases(node: Node<'_>, source: &str) -> HashSet<Str
         writes: &mut std::collections::HashMap<String, (usize, bool)>,
     ) {
         if node.kind() == "identifier" {
-            let entry = writes
-                .entry(text(node, source).to_owned())
-                .or_insert((0, true));
-            entry.0 += 1;
-            entry.1 &= alias;
+            let name = text(node, source);
+            if let Some(entry) = writes.get_mut(name) {
+                entry.0 += 1;
+                entry.1 &= alias;
+            } else {
+                writes.insert(name.to_owned(), (1, alias));
+            }
         } else if matches!(
             node.kind(),
             "tuple_pattern"
@@ -32,19 +44,18 @@ pub(super) fn unique_module_aliases(node: Node<'_>, source: &str) -> HashSet<Str
         ) {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
-                targets(child, source, false, writes);
+                Self::targets(child, source, false, writes);
             }
         }
     }
-    fn visit(
-        node: Node<'_>,
-        source: &str,
-        writes: &mut std::collections::HashMap<String, (usize, bool)>,
-    ) {
-        if matches!(
-            node.kind(),
-            "function_definition" | "class_definition" | "lambda"
-        ) {
+    pub(crate) fn enter(&mut self, node: Node<'_>, source: &str) {
+        let active = self.active.last().unwrap_or(true)
+            && !matches!(
+                node.kind(),
+                "function_definition" | "class_definition" | "lambda"
+            );
+        self.active.push(active);
+        if !active {
             return;
         }
         let target = match node.kind() {
@@ -56,12 +67,17 @@ pub(super) fn unique_module_aliases(node: Node<'_>, source: &str) -> HashSet<Str
             _ => None,
         };
         if let Some(target) = target {
-            targets(target, source, super::type_alias(node, source), writes);
+            Self::targets(
+                target,
+                source,
+                super::type_alias(node, source),
+                &mut self.writes,
+            );
         }
         if node.kind() == "delete_statement" {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
-                targets(child, source, false, writes);
+                Self::targets(child, source, false, &mut self.writes);
             }
         }
         if matches!(node.kind(), "import_statement" | "import_from_statement") {
@@ -76,28 +92,22 @@ pub(super) fn unique_module_aliases(node: Node<'_>, source: &str) -> HashSet<Str
                 } else {
                     name
                 };
-                let entry = writes.entry(bound.to_owned()).or_insert((0, true));
+                let entry = self.writes.entry(bound.to_owned()).or_insert((0, true));
                 entry.0 += 1;
                 entry.1 = false;
             }
         }
-        if node.kind() == "delete_statement" {
-            let mut cursor = node.walk();
-            for target in node.named_children(&mut cursor) {
-                targets(target, source, false, writes);
-            }
-        }
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            visit(child, source, writes);
-        }
     }
-    let mut writes = std::collections::HashMap::new();
-    visit(node, source, &mut writes);
-    writes
-        .into_iter()
-        .filter_map(|(name, (count, alias))| (count == 1 && alias).then_some(name))
-        .collect()
+    pub(crate) fn exit(&mut self) {
+        self.active.pop();
+    }
+    pub(crate) fn aliases(&self) -> HashSet<String> {
+        self.writes
+            .iter()
+            .filter(|(_, (count, alias))| *count == 1 && *alias)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
 }
 
 fn position(node: Node<'_>) -> SourcePosition {
@@ -226,10 +236,7 @@ fn type_only_imports(module: Node<'_>, source: &str) -> Vec<TypeOnlyImportFact> 
                     });
                     output.push(TypeOnlyImportFact {
                         alias: alias.to_owned(),
-                        position: SourcePosition {
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column,
-                        },
+                        position: crate::engine::languages::source_start(node),
                         guard_import: guard.cloned(),
                     });
                 }
@@ -306,10 +313,7 @@ fn type_only_imports(module: Node<'_>, source: &str) -> Vec<TypeOnlyImportFact> 
                             alias.to_owned(),
                             GuardImportFact {
                                 alias: alias.to_owned(),
-                                position: SourcePosition {
-                                    line: statement.start_position().row + 1,
-                                    column: statement.start_position().column,
-                                },
+                                position: crate::engine::languages::source_start(statement),
                             },
                         );
                     }
@@ -327,10 +331,7 @@ fn type_only_imports(module: Node<'_>, source: &str) -> Vec<TypeOnlyImportFact> 
                             guard,
                             GuardImportFact {
                                 alias: alias.to_owned(),
-                                position: SourcePosition {
-                                    line: statement.start_position().row + 1,
-                                    column: statement.start_position().column,
-                                },
+                                position: crate::engine::languages::source_start(statement),
                             },
                         );
                     }
@@ -629,11 +630,11 @@ fn value(node: Node<'_>, source: &str) -> ValueExpr {
         "identifier" => ValueExpr::Alias {
             name: text(node, source).to_owned(),
         },
-        "await" => node.named_child(0).map_or(ValueExpr::Unknown, |expression| {
-            ValueExpr::Await {
+        "await" => node
+            .named_child(0)
+            .map_or(ValueExpr::Unknown, |expression| ValueExpr::Await {
                 value: Box::new(value(expression, source)),
-            }
-        }),
+            }),
         "call" => node
             .child_by_field_name("function")
             .filter(|callee| static_name(*callee))
@@ -712,7 +713,15 @@ fn branch_blocks<'tree>(node: Node<'tree>) -> Option<(Vec<Node<'tree>>, bool)> {
     Some((branches, has_else))
 }
 
-struct Collector<'a> {
+pub(crate) struct Collector<'a, 'tree> {
+    root: Node<'tree>,
+    module_export_facts: Option<super::module_exports::Collector<'tree>>,
+    body: Option<Node<'tree>>,
+    body_depth: Option<usize>,
+    states: Vec<(bool, bool, bool, bool)>,
+    return_last: Option<Node<'tree>>,
+    return_prefix_valid: bool,
+    aliases: Option<AliasWrites>,
     source: &'a str,
     has_django_shortcuts_import: bool,
     class_scope: bool,
@@ -726,7 +735,7 @@ struct Collector<'a> {
     facts: ValueFlowFacts,
 }
 
-impl Collector<'_> {
+impl<'a, 'tree> Collector<'a, 'tree> {
     fn bind(&mut self, target: Node<'_>, value: ValueExpr, at: SourcePosition, conditional: bool) {
         if target.kind() == "identifier" {
             let name = text(target, self.source).to_owned();
@@ -812,7 +821,8 @@ impl Collector<'_> {
             .filter(|binding| {
                 binding.name == name
                     && !binding.conditional
-                    && (binding.position.line, binding.position.column) < (start.row + 1, start.column)
+                    && (binding.position.line, binding.position.column)
+                        < (start.row + 1, start.column)
             })
             .map(|binding| (binding.position, &binding.value));
         let prior_join = self
@@ -822,8 +832,7 @@ impl Collector<'_> {
             .filter(|join| {
                 join.name == name
                     && !join.conditional
-                    && (join.position.line, join.position.column)
-                        < (start.row + 1, start.column)
+                    && (join.position.line, join.position.column) < (start.row + 1, start.column)
             })
             .map(|join| (join.position, &join.value));
         let incoming = prior_binding
@@ -871,25 +880,46 @@ impl Collector<'_> {
         });
     }
 
-    fn visit(
-        &mut self,
-        node: Node<'_>,
-        conditional: bool,
-        collect_facts: bool,
-        lexical_scope: bool,
-    ) {
-        let inherited_conditional = conditional;
+    pub(crate) fn enter(&mut self, node: Node<'tree>) {
+        if let Some(aliases) = &mut self.aliases {
+            aliases.enter(node, self.source);
+        }
+        let (parent_active, inherited, inherited_facts, inherited_lexical) =
+            self.states.last().copied().unwrap_or_default();
+        let active = self.body == Some(node) || parent_active;
+        let conditional = if self.body == Some(node) {
+            false
+        } else {
+            inherited
+        };
+        let collect_facts = self.body == Some(node) || inherited_facts;
+        let lexical_scope = self.body == Some(node) || inherited_lexical;
+        if !active {
+            self.states.push((false, false, false, false));
+            return;
+        }
+        if self.body == Some(node) {
+            self.body_depth = Some(self.states.len());
+        }
+        let is_direct_child = self.body_depth.is_some_and(|d| self.states.len() == d + 1);
+        if is_direct_child && node.kind() != "comment" {
+            if let Some(previous) = self.return_last {
+                self.return_prefix_valid &= valid_return_prefix(previous);
+            }
+            self.return_last = Some(node);
+        }
         if self.collect_summary {
             if self.collect_return_summary
                 && matches!(
-                node.kind(),
-                "named_expression"
-                    | "conditional_expression"
-                    | "boolean_operator"
-                    | "await"
-                    | "yield"
-                    | "lambda"
-            ) {
+                    node.kind(),
+                    "named_expression"
+                        | "conditional_expression"
+                        | "boolean_operator"
+                        | "await"
+                        | "yield"
+                        | "lambda"
+                )
+            {
                 self.summary.has_uncertain_expression = true;
             }
             if lexical_scope {
@@ -912,6 +942,7 @@ impl Collector<'_> {
             "function_definition" | "class_definition" | "lambda"
         );
         if !self.local_scope && !self.class_scope && super::type_alias(node, self.source) {
+            self.states.push((false, conditional, false, false));
             return;
         }
         if collect_facts
@@ -922,25 +953,17 @@ impl Collector<'_> {
                 self.bind(name, ValueExpr::Unknown, position(node), conditional);
             }
         }
-        if collect_facts && node.kind() == "lambda" {
-            if self.collect_summary && self.collect_return_summary {
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    self.visit(child, conditional, false, false);
-                }
-            }
-            return;
-        }
-        if collect_facts && matches!(node.kind(), "function_definition" | "class_definition") {
-            if self.collect_summary && self.collect_return_summary {
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    self.visit(child, conditional, false, false);
-                }
-            }
+        if collect_facts && nested_scope {
+            self.states.push((
+                self.collect_summary && self.collect_return_summary,
+                conditional,
+                false,
+                false,
+            ));
             return;
         }
         if !collect_facts && !self.collect_summary {
+            self.states.push((false, conditional, false, false));
             return;
         }
         let conditional = conditional
@@ -960,151 +983,160 @@ impl Collector<'_> {
             );
         if collect_facts {
             match node.kind() {
-            "call" => {
-                if let Some(context) = super::render_context::extract(
-                    node,
-                    self.source,
-                    self.has_django_shortcuts_import,
-                ) {
-                    self.facts.template_contexts.push(context);
-                }
-            }
-            "assignment" => {
-                if let Some(left) = node.child_by_field_name("left") {
-                    let right = node.child_by_field_name("right");
-                    let declared = node
-                        .child_by_field_name("type")
-                        .map(|ty| annotation(ty, self.source));
-                    if !conditional && left.kind() == "identifier" {
-                        if let Some(TypeExpr::Applied { base, args }) = &declared {
-                            if matches!(base.as_str(), "list" | "List" | "Sequence" | "Iterable") && args.len() == 1 {
-                                self.facts.collection_elements.push(CollectionElementFact {
-                                    name: text(left, self.source).to_owned(),
-                                    position: position(node),
-                                    element_type: args[0].clone(),
-                                });
-                            }
-                        }
-                    }
-                    let literal = right.and_then(literal_value);
-                    let assigned = if let Some(literal) = literal {
-                        literal
-                    } else if self.class_scope && node.child_by_field_name("type").is_some() {
-                        ValueExpr::Annotated {
-                            type_expr: annotation(
-                                node.child_by_field_name("type").unwrap(),
-                                self.source,
-                            ),
-                        }
-                    } else {
-                        node.child_by_field_name("right")
-                            .map_or(ValueExpr::Unknown, |right| {
-                                node.child_by_field_name("type").map_or_else(
-                                    || value(right, self.source),
-                                    |ty| ValueExpr::Annotated {
-                                        type_expr: annotation(ty, self.source),
-                                    },
-                                )
-                            })
-                    };
-                    let branch_end = conditional.then(|| direct_branch_end(node)).flatten();
-                    let assigned = if let Some(body_end) = branch_end {
-                        ValueExpr::Scoped {
-                            value: Box::new(assigned),
-                            body_end,
-                        }
-                    } else {
-                        assigned
-                    };
-                    self.bind(left, assigned, position(node), conditional);
-                }
-            }
-            "augmented_assignment" => {
-                if let Some(left) = node.child_by_field_name("left") {
-                    self.bind(left, ValueExpr::Unknown, position(node), conditional);
-                }
-            }
-            "named_expression" => {
-                if let Some(name) = node.child_by_field_name("name") {
-                    self.bind(
-                        name,
-                        node.child_by_field_name("value")
-                            .map_or(ValueExpr::Unknown, |right| value(right, self.source)),
-                        position(node),
-                        conditional,
-                    );
-                }
-            }
-            "for_statement" => {
-                if let Some(left) = node.child_by_field_name("left") {
-                    let value = match (
-                        node.child_by_field_name("right"),
-                        node.child_by_field_name("body"),
+                "call" => {
+                    if let Some(context) = super::render_context::extract(
+                        node,
+                        self.source,
+                        self.has_django_shortcuts_import,
                     ) {
-                        (Some(iterable), Some(body))
-                            if left.kind() == "identifier" && iterable.kind() == "identifier" =>
-                        {
-                            ValueExpr::LoopElement {
-                                iterable: text(iterable, self.source).to_owned(),
-                                body_end: position(body),
+                        self.facts.template_contexts.push(context);
+                    }
+                }
+                "assignment" => {
+                    if let Some(left) = node.child_by_field_name("left") {
+                        let right = node.child_by_field_name("right");
+                        let declared = node
+                            .child_by_field_name("type")
+                            .map(|ty| annotation(ty, self.source));
+                        if !conditional && left.kind() == "identifier" {
+                            if let Some(TypeExpr::Applied { base, args }) = &declared {
+                                if matches!(
+                                    base.as_str(),
+                                    "list" | "List" | "Sequence" | "Iterable"
+                                ) && args.len() == 1
+                                {
+                                    self.facts.collection_elements.push(CollectionElementFact {
+                                        name: text(left, self.source).to_owned(),
+                                        position: position(node),
+                                        element_type: args[0].clone(),
+                                    });
+                                }
                             }
                         }
-                        _ => ValueExpr::Unknown,
-                    };
-                    let bounded = matches!(value, ValueExpr::LoopElement { .. });
-                    self.bind(left, value, position(left), !bounded);
+                        let literal = right.and_then(literal_value);
+                        let assigned = if let Some(literal) = literal {
+                            literal
+                        } else if self.class_scope && node.child_by_field_name("type").is_some() {
+                            ValueExpr::Annotated {
+                                type_expr: annotation(
+                                    node.child_by_field_name("type").unwrap(),
+                                    self.source,
+                                ),
+                            }
+                        } else {
+                            node.child_by_field_name("right")
+                                .map_or(ValueExpr::Unknown, |right| {
+                                    node.child_by_field_name("type").map_or_else(
+                                        || value(right, self.source),
+                                        |ty| ValueExpr::Annotated {
+                                            type_expr: annotation(ty, self.source),
+                                        },
+                                    )
+                                })
+                        };
+                        let branch_end = conditional.then(|| direct_branch_end(node)).flatten();
+                        let assigned = if let Some(body_end) = branch_end {
+                            ValueExpr::Scoped {
+                                value: Box::new(assigned),
+                                body_end,
+                            }
+                        } else {
+                            assigned
+                        };
+                        self.bind(left, assigned, position(node), conditional);
+                    }
                 }
-            }
-            "as_pattern" => {
-                if let Some(alias) = node.child_by_field_name("alias") {
-                    let name = if alias.kind() == "identifier" {
-                        alias
-                    } else {
-                        alias
-                            .named_child(0)
-                            .filter(|child| child.kind() == "identifier")
-                            .unwrap_or(alias)
-                    };
-                    // `with expr as name` binds name to expr. __enter__ that
-                    // returns self is that value; except-as stays unknown.
-                    let in_with = node
-                        .parent()
-                        .is_some_and(|parent| parent.kind() == "with_item");
-                    let bound = if in_with {
-                        node.named_child(0)
-                            .filter(|child| child.id() != alias.id())
-                            .map(|expr| value(expr, self.source))
-                            .unwrap_or(ValueExpr::Unknown)
-                    } else {
-                        ValueExpr::Unknown
-                    };
-                    self.bind(name, bound, position(name), !in_with || conditional);
+                "augmented_assignment" => {
+                    if let Some(left) = node.child_by_field_name("left") {
+                        self.bind(left, ValueExpr::Unknown, position(node), conditional);
+                    }
                 }
-            }
-            "delete_statement" => {
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    self.bind(child, ValueExpr::Unknown, position(node), conditional);
+                "named_expression" => {
+                    if let Some(name) = node.child_by_field_name("name") {
+                        self.bind(
+                            name,
+                            node.child_by_field_name("value")
+                                .map_or(ValueExpr::Unknown, |right| value(right, self.source)),
+                            position(node),
+                            conditional,
+                        );
+                    }
                 }
-            }
-            _ => {}
+                "for_statement" => {
+                    if let Some(left) = node.child_by_field_name("left") {
+                        let value = match (
+                            node.child_by_field_name("right"),
+                            node.child_by_field_name("body"),
+                        ) {
+                            (Some(iterable), Some(body))
+                                if left.kind() == "identifier"
+                                    && iterable.kind() == "identifier" =>
+                            {
+                                ValueExpr::LoopElement {
+                                    iterable: text(iterable, self.source).to_owned(),
+                                    body_end: position(body),
+                                }
+                            }
+                            _ => ValueExpr::Unknown,
+                        };
+                        let bounded = matches!(value, ValueExpr::LoopElement { .. });
+                        self.bind(left, value, position(left), !bounded);
+                    }
+                }
+                "as_pattern" => {
+                    if let Some(alias) = node.child_by_field_name("alias") {
+                        let name = if alias.kind() == "identifier" {
+                            alias
+                        } else {
+                            alias
+                                .named_child(0)
+                                .filter(|child| child.kind() == "identifier")
+                                .unwrap_or(alias)
+                        };
+                        // `with expr as name` binds name to expr. __enter__ that
+                        // returns self is that value; except-as stays unknown.
+                        let in_with = node
+                            .parent()
+                            .is_some_and(|parent| parent.kind() == "with_item");
+                        let bound = if in_with {
+                            node.named_child(0)
+                                .filter(|child| child.id() != alias.id())
+                                .map(|expr| value(expr, self.source))
+                                .unwrap_or(ValueExpr::Unknown)
+                        } else {
+                            ValueExpr::Unknown
+                        };
+                        self.bind(name, bound, position(name), !in_with || conditional);
+                    }
+                }
+                "delete_statement" => {
+                    let mut cursor = node.walk();
+                    for child in node.named_children(&mut cursor) {
+                        self.bind(child, ValueExpr::Unknown, position(node), conditional);
+                    }
+                }
+                _ => {}
             }
         }
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            self.visit(
-                child,
-                conditional,
-                collect_facts && !nested_scope,
-                lexical_scope && !nested_scope,
-            );
+        self.states.push((
+            true,
+            conditional,
+            collect_facts && !nested_scope,
+            lexical_scope && !nested_scope,
+        ));
+    }
+
+    pub(crate) fn exit(&mut self, node: Node<'tree>) {
+        if self.body == Some(node) {
+            self.body_depth = None;
         }
-        if collect_facts
-            && self.local_scope
-            && !self.class_scope
-            && node.kind() == "if_statement"
-        {
+        let (_, _, collect_facts, _) = self.states.pop().unwrap_or_default();
+        let inherited_conditional = self.states.last().is_some_and(|state| state.1);
+        if collect_facts && self.local_scope && !self.class_scope && node.kind() == "if_statement" {
             self.bind_if_join(node, inherited_conditional);
+        }
+        if let Some(aliases) = &mut self.aliases {
+            aliases.exit();
         }
     }
 }
@@ -1116,36 +1148,18 @@ struct BodySummary {
     nonlocal_names: HashSet<String>,
 }
 
-fn simple_return_statement(body: Node<'_>) -> Option<Node<'_>> {
-    let mut cursor = body.walk();
-    let mut last: Option<Node<'_>> = None;
-    let mut valid_prefix = true;
-    for statement in body
-        .named_children(&mut cursor)
-        .filter(|statement| statement.kind() != "comment")
-    {
-        if let Some(previous) = last {
-            valid_prefix &= match previous.kind() {
-                "pass_statement" | "import_statement" | "import_from_statement" => true,
-                "expression_statement" => previous
-                    .named_child(0)
-                    .is_some_and(|expression| {
-                        expression.kind() == "string"
-                            || (expression.kind() == "assignment"
-                                && expression
-                                    .child_by_field_name("left")
-                                    .is_some_and(|left| left.kind() == "identifier"))
-                    }),
-                _ => false,
-            };
-        }
-        last = Some(statement);
+fn valid_return_prefix(previous: Node<'_>) -> bool {
+    match previous.kind() {
+        "pass_statement" | "import_statement" | "import_from_statement" => true,
+        "expression_statement" => previous.named_child(0).is_some_and(|expression| {
+            expression.kind() == "string"
+                || (expression.kind() == "assignment"
+                    && expression
+                        .child_by_field_name("left")
+                        .is_some_and(|left| left.kind() == "identifier"))
+        }),
+        _ => false,
     }
-    if !valid_prefix {
-        return None;
-    }
-    let last = last?;
-    (last.kind() == "return_statement").then_some(last)
 }
 
 fn returned_value(statement: Node<'_>, source: &str) -> Option<(ValueExpr, SourcePosition)> {
@@ -1157,102 +1171,107 @@ fn returned_value(statement: Node<'_>, source: &str) -> Option<(ValueExpr, Sourc
     (!matches!(returned, ValueExpr::Unknown)).then(|| (returned, position(expression)))
 }
 
-pub(super) fn extract(
-    node: Node<'_>,
-    source: &str,
-    has_django_shortcuts_import: bool,
-) -> ValueFlowFacts {
-    if super::type_alias(node, source) {
-        let right = node.child_by_field_name("right").or_else(|| {
-            (node.kind() == "type_alias_statement")
-                .then(|| node.named_child(node.named_child_count().saturating_sub(1)))
-                .flatten()
-        });
-        let alias_type = right
-            .map(|right| {
-                if right.kind() == "call" {
-                    if field(right, source, "function")
-                        .is_some_and(|callee| super::typing_name(callee) == "TypeAliasType")
-                    {
-                        right
-                            .child_by_field_name("arguments")
-                            .and_then(|arguments| arguments.named_child(1))
-                            .map_or(TypeExpr::Unknown, |value| annotation(value, source))
+impl<'a, 'tree> Collector<'a, 'tree> {
+    fn empty(
+        node: Node<'tree>,
+        source: &'a str,
+        has_django_shortcuts_import: bool,
+        collect_aliases: bool,
+        facts: ValueFlowFacts,
+    ) -> Self {
+        Self {
+            root: node,
+            module_export_facts: (node.kind() == "module")
+                .then(|| super::module_exports::Collector::new(node)),
+            body: None,
+            body_depth: None,
+            states: Vec::with_capacity(32),
+            return_last: None,
+            return_prefix_valid: true,
+            aliases: collect_aliases.then(AliasWrites::new),
+            source,
+            has_django_shortcuts_import,
+            class_scope: false,
+            local_scope: false,
+            receiver: None,
+            init: false,
+            uncertain_callable: false,
+            collect_summary: false,
+            collect_return_summary: false,
+            summary: BodySummary::default(),
+            facts,
+        }
+    }
+    pub(crate) fn new(
+        node: Node<'tree>,
+        source: &'a str,
+        has_django_shortcuts_import: bool,
+        collect_aliases: bool,
+    ) -> Self {
+        if super::type_alias(node, source) {
+            let right = node.child_by_field_name("right").or_else(|| {
+                (node.kind() == "type_alias_statement")
+                    .then(|| node.named_child(node.named_child_count().saturating_sub(1)))
+                    .flatten()
+            });
+            let alias_type = right
+                .map(|right| {
+                    if right.kind() == "call" {
+                        if field(right, source, "function")
+                            .is_some_and(|callee| super::typing_name(callee) == "TypeAliasType")
+                        {
+                            right
+                                .child_by_field_name("arguments")
+                                .and_then(|arguments| arguments.named_child(1))
+                                .map_or(TypeExpr::Unknown, |value| annotation(value, source))
+                        } else {
+                            TypeExpr::Unknown
+                        }
                     } else {
-                        TypeExpr::Unknown
+                        annotation(right, source)
                     }
-                } else {
-                    annotation(right, source)
-                }
-            })
-            .unwrap_or(TypeExpr::Unknown);
-        return ValueFlowFacts {
-            alias_type: Some(alias_type),
-            ..ValueFlowFacts::default()
+                })
+                .unwrap_or(TypeExpr::Unknown);
+            return Self::empty(
+                node,
+                source,
+                has_django_shortcuts_import,
+                collect_aliases,
+                ValueFlowFacts {
+                    alias_type: Some(alias_type),
+                    ..ValueFlowFacts::default()
+                },
+            );
+        }
+        if !matches!(
+            node.kind(),
+            "module" | "class_definition" | "function_definition"
+        ) {
+            return Self::empty(
+                node,
+                source,
+                has_django_shortcuts_import,
+                collect_aliases,
+                ValueFlowFacts::default(),
+            );
+        }
+        let callable = node.kind() == "function_definition";
+        let body = if node.kind() == "module" {
+            Some(node)
+        } else {
+            node.child_by_field_name("body")
         };
-    }
-    if !matches!(
-        node.kind(),
-        "module" | "class_definition" | "function_definition"
-    ) {
-        return ValueFlowFacts::default();
-    }
-    let callable = node.kind() == "function_definition";
-    let body = if node.kind() == "module" {
-        Some(node)
-    } else {
-        node.child_by_field_name("body")
-    };
-    let decorated = node
-        .parent()
-        .is_some_and(|parent| parent.kind() == "decorated_definition");
-    let initially_uncertain = callable
-        && (decorated || text(node, source).trim_start().starts_with("async "));
-    let return_statement = body.and_then(simple_return_statement);
-    let collect_return_summary = callable && !initially_uncertain && return_statement.is_some();
-    let receiver = if callable {
-        node.child_by_field_name("parameters")
-            .and_then(|params| params.named_child(0))
-            .and_then(|parameter| {
-                if parameter.kind() == "identifier" {
-                    Some(text(parameter, source))
-                } else {
-                    field(parameter, source, "name").or_else(|| {
-                        parameter
-                            .named_child(0)
-                            .filter(|name| name.kind() == "identifier")
-                            .map(|name| text(name, source))
-                    })
-                }
-            })
-            .filter(|name| matches!(*name, "self" | "cls"))
-    } else {
-        None
-    };
-    let mut collector = Collector {
-        source,
-        has_django_shortcuts_import,
-        class_scope: node.kind() == "class_definition",
-        local_scope: callable,
-        receiver,
-        init: field(node, source, "name") == Some("__init__"),
-        uncertain_callable: initially_uncertain,
-        collect_summary: callable,
-        collect_return_summary,
-        summary: BodySummary::default(),
-        facts: ValueFlowFacts::default(),
-    };
-    if callable {
-        if let Some(parameters) = node.child_by_field_name("parameters") {
-            let mut cursor = parameters.walk();
-            for parameter in parameters.named_children(&mut cursor) {
-                if let Some(ty) = parameter.child_by_field_name("type") {
-                    annotation_reference_positions(
-                        ty,
-                        source,
-                        &mut collector.facts.annotation_references,
-                    );
-                    let param_name = if parameter.kind() == "identifier" {
+        let decorated = node
+            .parent()
+            .is_some_and(|parent| parent.kind() == "decorated_definition");
+        let initially_uncertain =
+            callable && (decorated || text(node, source).trim_start().starts_with("async "));
+        let collect_return_summary = callable && !initially_uncertain;
+        let receiver = if callable {
+            node.child_by_field_name("parameters")
+                .and_then(|params| params.named_child(0))
+                .and_then(|parameter| {
+                    if parameter.kind() == "identifier" {
                         Some(text(parameter, source))
                     } else {
                         field(parameter, source, "name").or_else(|| {
@@ -1261,91 +1280,218 @@ pub(super) fn extract(
                                 .filter(|name| name.kind() == "identifier")
                                 .map(|name| text(name, source))
                         })
-                    };
-                    if let Some(name) = param_name {
-                        let parsed = annotation(ty, source);
-                        if let TypeExpr::Applied { base, args } = &parsed {
-                            if matches!(base.as_str(), "list" | "List" | "Sequence" | "Iterable")
-                                && args.len() == 1
-                            {
-                                collector.facts.collection_elements.push(CollectionElementFact {
-                                    name: name.to_owned(),
-                                    position: crate::engine::languages::source_start(node),
-                                    element_type: args[0].clone(),
-                                });
+                    }
+                })
+                .filter(|name| matches!(*name, "self" | "cls"))
+        } else {
+            None
+        };
+        let mut collector = Collector {
+            root: node,
+            module_export_facts: (node.kind() == "module")
+                .then(|| super::module_exports::Collector::new(node)),
+            body,
+            body_depth: None,
+            states: Vec::with_capacity(32),
+            return_last: None,
+            return_prefix_valid: true,
+            aliases: collect_aliases.then(AliasWrites::new),
+            source,
+            has_django_shortcuts_import,
+            class_scope: node.kind() == "class_definition",
+            local_scope: callable,
+            receiver,
+            init: field(node, source, "name") == Some("__init__"),
+            uncertain_callable: initially_uncertain,
+            collect_summary: callable,
+            collect_return_summary,
+            summary: BodySummary::default(),
+            facts: ValueFlowFacts::default(),
+        };
+        if callable {
+            if let Some(parameters) = node.child_by_field_name("parameters") {
+                let mut cursor = parameters.walk();
+                for parameter in parameters.named_children(&mut cursor) {
+                    if let Some(ty) = parameter.child_by_field_name("type") {
+                        annotation_reference_positions(
+                            ty,
+                            source,
+                            &mut collector.facts.annotation_references,
+                        );
+                        let param_name = if parameter.kind() == "identifier" {
+                            Some(text(parameter, source))
+                        } else {
+                            field(parameter, source, "name").or_else(|| {
+                                parameter
+                                    .named_child(0)
+                                    .filter(|name| name.kind() == "identifier")
+                                    .map(|name| text(name, source))
+                            })
+                        };
+                        if let Some(name) = param_name {
+                            let parsed = annotation(ty, source);
+                            if let TypeExpr::Applied { base, args } = &parsed {
+                                if matches!(
+                                    base.as_str(),
+                                    "list" | "List" | "Sequence" | "Iterable"
+                                ) && args.len() == 1
+                                {
+                                    collector.facts.collection_elements.push(
+                                        CollectionElementFact {
+                                            name: name.to_owned(),
+                                            position: crate::engine::languages::source_start(node),
+                                            element_type: args[0].clone(),
+                                        },
+                                    );
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        if let Some(ret) = node.child_by_field_name("return_type") {
-            annotation_reference_positions(ret, source, &mut collector.facts.annotation_references);
-        }
-    }
-    if let Some(body) = body {
-        collector.visit(body, false, true, true);
-    }
-    collector.uncertain_callable |= callable && collector.summary.has_yield;
-    if collector.uncertain_callable && collector.init {
-        for field in &mut collector.facts.fields {
-            field.value = ValueExpr::Unknown;
-        }
-    }
-    for name in &collector.summary.nonlocal_names {
-        for binding in &mut collector.facts.bindings {
-            if binding.name == *name {
-                binding.value = ValueExpr::Unknown;
+            if let Some(ret) = node.child_by_field_name("return_type") {
+                annotation_reference_positions(
+                    ret,
+                    source,
+                    &mut collector.facts.annotation_references,
+                );
             }
         }
+        collector
     }
-    let mut scoped_names: Vec<_> = collector.summary.nonlocal_names.iter().collect();
-    scoped_names.sort_unstable();
-    for name in scoped_names {
-        let start = node.start_position();
-        collector.facts.bindings.push(BindingFact {
-            name: name.clone(),
-            position: SourcePosition {
-                line: start.row + 1,
-                column: start.column,
-            },
-            value: ValueExpr::Unknown,
-            conditional: false,
-        });
+    pub(crate) fn module_aliases(&self) -> HashSet<String> {
+        self.aliases
+            .as_ref()
+            .map_or_else(HashSet::new, AliasWrites::aliases)
     }
-    if callable {
-        let async_callable = text(node, source).trim_start().starts_with("async ");
-        if async_callable {
-            if !decorated && !collector.summary.has_yield {
-                // An async function's declared type describes the awaited
-                // result, not the ordinary call result (a coroutine).
-                collector.facts.async_return_type = node
+    pub(crate) fn observe_module_event(&mut self, node: Node<'tree>, entering: bool) {
+        if let Some(exports) = &mut self.module_export_facts {
+            exports.observe(node, entering, self.source);
+        }
+    }
+    pub(crate) fn module_exports(
+        &self,
+        bindings: &crate::engine::ast::ScopeBindings,
+    ) -> Option<(
+        Vec<crate::core::semantic::ExportBinding>,
+        Vec<super::LazyExport>,
+    )> {
+        self.module_export_facts
+            .as_ref()
+            .map(|exports| exports.outputs(self.source, bindings))
+    }
+    pub(crate) fn finish(mut self) -> ValueFlowFacts {
+        let node = self.root;
+        let source = self.source;
+        let callable = self.local_scope;
+        let decorated = node
+            .parent()
+            .is_some_and(|parent| parent.kind() == "decorated_definition");
+        let return_statement = self
+            .return_last
+            .filter(|last| self.return_prefix_valid && last.kind() == "return_statement");
+        self.uncertain_callable |= callable && self.summary.has_yield;
+        if self.uncertain_callable && self.init {
+            for field in &mut self.facts.fields {
+                field.value = ValueExpr::Unknown;
+            }
+        }
+        for name in &self.summary.nonlocal_names {
+            for binding in &mut self.facts.bindings {
+                if binding.name == *name {
+                    binding.value = ValueExpr::Unknown;
+                }
+            }
+        }
+        let mut scoped_names: Vec<_> = self.summary.nonlocal_names.iter().collect();
+        scoped_names.sort_unstable();
+        for name in scoped_names {
+            let start = node.start_position();
+            self.facts.bindings.push(BindingFact {
+                name: name.clone(),
+                position: SourcePosition {
+                    line: start.row + 1,
+                    column: start.column,
+                },
+                value: ValueExpr::Unknown,
+                conditional: false,
+            });
+        }
+        if callable {
+            let async_callable = text(node, source).trim_start().starts_with("async ");
+            if async_callable {
+                if !decorated && !self.summary.has_yield {
+                    // An async function's declared type describes the awaited
+                    // result, not the ordinary call result (a coroutine).
+                    self.facts.async_return_type = node
+                        .child_by_field_name("return_type")
+                        .map(|ty| annotation(ty, source));
+                }
+            } else if !self.uncertain_callable {
+                self.facts.return_type = node
                     .child_by_field_name("return_type")
                     .map(|ty| annotation(ty, source));
             }
-        } else if !collector.uncertain_callable {
-            collector.facts.return_type = node
-                .child_by_field_name("return_type")
-                .map(|ty| annotation(ty, source));
         }
-    }
-    if callable
-        && !collector.uncertain_callable
-        && collector.summary.nonlocal_names.is_empty()
-        && collector.collect_return_summary
-        && !collector.summary.has_uncertain_expression
-    {
-        if let Some((returned, at)) =
-            return_statement.and_then(|statement| returned_value(statement, source))
+        if callable
+            && !self.uncertain_callable
+            && self.summary.nonlocal_names.is_empty()
+            && self.collect_return_summary
+            && !self.summary.has_uncertain_expression
         {
-            collector.facts.return_value = Some(returned);
-            collector.facts.return_position = Some(at);
+            if let Some((returned, at)) =
+                return_statement.and_then(|statement| returned_value(statement, source))
+            {
+                self.facts.return_value = Some(returned);
+                self.facts.return_position = Some(at);
+            }
         }
+        if node.kind() == "module" {
+            self.facts.type_only_imports = type_only_imports(node, source);
+        }
+        self.facts.bindings.sort_by_key(|a| a.position);
+        self.facts.fields.sort_by_key(|a| a.position);
+        self.facts
     }
-    if node.kind() == "module" {
-        collector.facts.type_only_imports = type_only_imports(node, source);
-    }
-    collector.facts.bindings.sort_by_key(|a| a.position);
-    collector.facts.fields.sort_by_key(|a| a.position);
-    collector.facts
 }
+
+pub(super) fn extract(
+    node: Node<'_>,
+    source: &str,
+    has_django_shortcuts_import: bool,
+) -> ValueFlowFacts {
+    let mut collector = Collector::new(node, source, has_django_shortcuts_import, false);
+    crate::engine::ast::visitor::walk(node, &mut |node, entering| {
+        if entering {
+            collector.enter(node);
+        } else {
+            collector.exit(node);
+        }
+    });
+    collector.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_persistence_type_only_imports() {
+        let source = "from typing import TYPE_CHECKING\n\nclass PersistenceMixin:\n    if TYPE_CHECKING:\n        from contextunity.router.service.payloads import GraphEntry\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_python::language()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let facts = extract(tree.root_node(), source, false);
+        assert_eq!(facts.type_only_imports.len(), 1);
+        assert_eq!(facts.type_only_imports[0].alias, "GraphEntry");
+        let ast_facts = crate::engine::ast::extract("persistence.py", "python", source).unwrap();
+        let module = ast_facts
+            .nodes
+            .iter()
+            .find(|n| n.id == "module:persistence.py")
+            .unwrap();
+        let type_only = &module.details["value_flow"]["type_only_imports"];
+        assert_eq!(type_only[0]["alias"], "GraphEntry");
+    }
+}
+

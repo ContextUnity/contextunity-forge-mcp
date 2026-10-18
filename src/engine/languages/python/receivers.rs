@@ -94,7 +94,41 @@ impl<'a> PythonReceivers<'a> {
             }
             candidates.first().copied()
         };
-        let mut owner_classes = HashMap::new();
+        let mut mutating_members: HashMap<&str, Vec<&str>> = HashMap::new();
+        for facts in all.values() {
+            let facts = facts.as_ref();
+            for reference in facts.references.iter().filter(|r| r.kind == "mutates") {
+                if let Some(("self" | "cls", member)) = reference.expression.split_once('.') {
+                    mutating_members
+                        .entry(reference.source.as_str())
+                        .or_default()
+                        .push(member);
+                }
+            }
+        }
+        let mut mutation_owners = HashMap::new();
+        let mut assigned_members = HashSet::new();
+        if !mutating_members.is_empty() {
+            for facts in all.values() {
+                for node in &facts.as_ref().nodes {
+                    let Some(members) = mutating_members.get(node.id.as_str()) else {
+                        continue;
+                    };
+                    let Some((mut scope, _)) = node.qualname.rsplit_once('.') else {
+                        continue;
+                    };
+                    while !scope.is_empty() {
+                        if let Some(class) = find_class(node.path.as_str(), scope, node) {
+                            mutation_owners.insert(node.id.as_str(), class);
+                            assigned_members
+                                .extend(members.iter().map(|member| (class.id.as_str(), *member)));
+                            break;
+                        }
+                        scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+                    }
+                }
+            }
+        }
         for facts in all.values() {
             let facts = facts.as_ref();
             let assigned_fields: HashSet<&str> = facts
@@ -104,87 +138,84 @@ impl<'a> PythonReceivers<'a> {
                 .map(|edge| edge.dst.as_str())
                 .collect();
             for node in &facts.nodes {
+                let owning_class = node
+                    .qualname
+                    .rsplit_once('.')
+                    .and_then(|(parent, _)| find_class(node.path.as_str(), parent, node));
                 // Member reads create synthetic field nodes; they do not override methods.
-                if node.kind == "field" && !assigned_fields.contains(node.id.as_str()) {
+                if node.kind == "field"
+                    && !assigned_fields.contains(node.id.as_str())
+                    && !owning_class.is_some_and(|class| {
+                        assigned_members.contains(&(class.id.as_str(), node.name.as_str()))
+                    })
+                {
                     continue;
                 }
-                if let Some((parent, _)) = node.qualname.rsplit_once('.') {
-                    if let Some(class) = find_class(node.path.as_str(), parent, node) {
-                        let members = own.entry(class.id.as_str()).or_default();
-                        let callable = matches!(node.kind.as_str(), "function" | "method");
-                        let conditional = callable
-                            && node
-                                .details
-                                .get("is_conditional")
-                                .and_then(|value| value.as_bool())
-                                .unwrap_or(false);
-                        let node_is_stub = node
+                if let Some(class) = owning_class {
+                    let members = own.entry(class.id.as_str()).or_default();
+                    let callable = matches!(node.kind.as_str(), "function" | "method");
+                    let conditional = callable
+                        && node
                             .details
-                            .get("is_stub")
+                            .get("is_conditional")
                             .and_then(|value| value.as_bool())
-                            .unwrap_or(false)
-                            || node
-                                .details
-                                .get("is_overload")
-                                .and_then(|value| value.as_bool())
-                                .unwrap_or(false);
-                        match members.get(node.name.as_str()) {
-                            None => {
-                                members.insert(
-                                    node.name.as_str(),
-                                    if conditional {
-                                        Member::Unknown
-                                    } else {
-                                        Member::Local(node)
-                                    },
-                                );
-                            }
-                            Some(Member::Local(existing)) => {
-                                let existing_is_stub = existing
-                                    .details
-                                    .get("is_stub")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false)
-                                    || existing
-                                        .details
-                                        .get("is_overload")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
-                                if existing_is_stub && !node_is_stub {
-                                    members.insert(node.name.as_str(), Member::Local(node));
-                                } else if !existing_is_stub && node_is_stub {
-                                    // keep existing non-stub
-                                } else if existing_is_stub && node_is_stub {
-                                    // both are stubs/overloads; keep existing stub so runtime implementation can replace it
-                                } else if conditional || !callable {
-                                    members.insert(node.name.as_str(), Member::Ambiguous);
+                            .unwrap_or(false);
+                    let node_is_stub = node
+                        .details
+                        .get("is_stub")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false)
+                        || node
+                            .details
+                            .get("is_overload")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(false);
+                    match members.get(node.name.as_str()) {
+                        None => {
+                            members.insert(
+                                node.name.as_str(),
+                                if conditional {
+                                    Member::Unknown
                                 } else {
-                                    members.insert(node.name.as_str(), Member::Local(node));
-                                }
-                            }
-                            Some(Member::Ambiguous | Member::Unknown)
-                                if callable && !node_is_stub =>
-                            {
-                                members.insert(
-                                    node.name.as_str(),
-                                    if conditional {
-                                        Member::Ambiguous
-                                    } else {
-                                        Member::Local(node)
-                                    },
-                                );
-                            }
-                            Some(Member::Ambiguous | Member::Unknown) => {}
-                            Some(Member::External(..)) => {}
+                                    Member::Local(node)
+                                },
+                            );
                         }
-                    }
-                    let mut scope = parent;
-                    while !scope.is_empty() {
-                        if let Some(class) = find_class(node.path.as_str(), scope, node) {
-                            owner_classes.insert(node.id.as_str(), class);
-                            break;
+                        Some(Member::Local(existing)) => {
+                            let existing_is_stub = existing
+                                .details
+                                .get("is_stub")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false)
+                                || existing
+                                    .details
+                                    .get("is_overload")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                            if existing_is_stub && !node_is_stub {
+                                members.insert(node.name.as_str(), Member::Local(node));
+                            } else if !existing_is_stub && node_is_stub {
+                                // keep existing non-stub
+                            } else if existing_is_stub && node_is_stub {
+                                // both are stubs/overloads; keep existing stub so runtime implementation can replace it
+                            } else if conditional || !callable {
+                                members.insert(node.name.as_str(), Member::Ambiguous);
+                            } else {
+                                members.insert(node.name.as_str(), Member::Local(node));
+                            }
                         }
-                        scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+                        Some(Member::Ambiguous | Member::Unknown) if callable && !node_is_stub => {
+                            members.insert(
+                                node.name.as_str(),
+                                if conditional {
+                                    Member::Ambiguous
+                                } else {
+                                    Member::Local(node)
+                                },
+                            );
+                        }
+                        Some(Member::Ambiguous | Member::Unknown) => {}
+                        Some(Member::External(..)) => {}
                     }
                 }
             }
@@ -199,10 +230,16 @@ impl<'a> PythonReceivers<'a> {
                 }
                 if reference.kind == "mutates" {
                     if let Some(("self" | "cls", member)) = reference.expression.split_once('.') {
-                        if let Some(class) = owner_classes.get(reference.source.as_str()) {
-                            own.entry(class.id.as_str())
-                                .or_default()
-                                .insert(member, Member::Unknown);
+                        if let Some(class) = mutation_owners.get(reference.source.as_str()) {
+                            let members = own.entry(class.id.as_str()).or_default();
+                            // A field's identity remains known after assignment even though its
+                            // runtime value is not. Call resolution treats field members as
+                            // unknown callables, while reference resolution can still link the
+                            // exact field declaration.
+                            if !matches!(members.get(member), Some(Member::Local(node)) if node.kind == "field")
+                            {
+                                members.insert(member, Member::Unknown);
+                            }
                         }
                     }
                 }

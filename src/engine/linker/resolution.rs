@@ -2387,6 +2387,12 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     evidence,
                 });
                 if let (Some(source), [candidate]) = (source, candidates.as_slice()) {
+                    let exact_same_class_member_reference = r.kind == "references"
+                        && matches!(
+                            &receiver_member,
+                            Some(receivers::Member::Local(member))
+                                if matches!(member.kind.as_str(), "field" | "class")
+                        );
                     let target = candidate.id.clone();
                     let (src, dst) = if r.kind == "decorates" {
                         (target, source)
@@ -2411,7 +2417,16 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                         path: path.clone(),
                         line: r.line,
                         evidence: r.expression.clone(),
-                        confidence: if source_heuristic { "heuristic" } else if typed_receiver.is_some() || receiver_member.is_some() { "inferred" } else { "exact" }.into(),
+                        confidence: if source_heuristic {
+                            "heuristic"
+                        } else if typed_receiver.is_some()
+                            || (receiver_member.is_some() && !exact_same_class_member_reference)
+                        {
+                            "inferred"
+                        } else {
+                            "exact"
+                        }
+                        .into(),
                     });
                     if (kind_str == "implements" || kind_str == "inherits") && r.kind != "decorates" {
                         if let Some(target_methods) = children_by_parent.get(candidate.id.as_str()) {

@@ -259,123 +259,162 @@ pub(super) fn value(node: Node<'_>, source: &str) -> ValueExpr {
     }
 }
 
-pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
-    let mut facts = ValueFlowFacts::default();
-    let mut generics = None;
-    let mut resolve = |ty: Node<'_>| {
-        let names = generics.get_or_insert_with(|| generic_names(node, source));
-        type_expr_inner(ty, source, names, 0)
-    };
-    if node.kind() == "type_item" {
-        facts.alias_type = node.child_by_field_name("type").map(&mut resolve);
-    }
-    if matches!(node.kind(), "function_item" | "function_signature_item") {
-        facts.return_type = node.child_by_field_name("return_type").map(|ty| {
-            if is_async(node, source) {
-                TypeExpr::Unknown
-            } else {
-                resolve(ty)
-            }
-        });
-        if let Some(parameters) = node.child_by_field_name("parameters") {
-            let mut cursor = parameters.walk();
-            for parameter in parameters.named_children(&mut cursor) {
-                let (Some(pattern), Some(annotation)) = (
-                    parameter.child_by_field_name("pattern"),
-                    parameter.child_by_field_name("type"),
-                ) else {
-                    continue;
-                };
-                let resolved = resolve(annotation);
-                match &resolved {
-                    TypeExpr::Applied { .. } => {}
-                    TypeExpr::Named { .. } => {
-                        let mut nominal = annotation;
-                        while nominal.kind() == "reference_type" {
-                            let Some(inner) = nominal.child_by_field_name("type") else {
-                                break;
-                            };
-                            nominal = inner;
-                        }
-                        if nominal.kind() == "primitive_type" && text(nominal, source) != "str" {
-                            continue;
-                        }
-                    }
-                    TypeExpr::Unknown => continue,
-                }
-                let pattern = if pattern.kind() == "mut_pattern" {
-                    pattern.named_child(0).unwrap_or(pattern)
+pub(crate) struct Collector<'source, 'tree> {
+    root: Node<'tree>,
+    body: Option<Node<'tree>>,
+    source: &'source str,
+    facts: ValueFlowFacts,
+    generic_names: Option<HashSet<&'source str>>,
+    states: Vec<(bool, bool)>,
+}
+
+impl<'source, 'tree> Collector<'source, 'tree> {
+    pub(crate) fn new(node: Node<'tree>, source: &'source str) -> Self {
+        let mut facts = ValueFlowFacts::default();
+        let mut generics = None;
+        let mut resolve = |ty: Node<'_>| {
+            let names = generics.get_or_insert_with(|| generic_names(node, source));
+            type_expr_inner(ty, source, names, 0)
+        };
+        if node.kind() == "type_item" {
+            facts.alias_type = node.child_by_field_name("type").map(&mut resolve);
+        }
+        if matches!(node.kind(), "function_item" | "function_signature_item") {
+            facts.return_type = node.child_by_field_name("return_type").map(|ty| {
+                if is_async(node, source) {
+                    TypeExpr::Unknown
                 } else {
-                    pattern
-                };
-                if pattern.kind() != "identifier" {
-                    continue;
+                    resolve(ty)
                 }
-                let position = parameter.end_position();
-                facts.bindings.push(BindingFact {
-                    name: text(pattern, source).to_owned(),
+            });
+            if let Some(parameters) = node.child_by_field_name("parameters") {
+                let mut cursor = parameters.walk();
+                for parameter in parameters.named_children(&mut cursor) {
+                    let (Some(pattern), Some(annotation)) = (
+                        parameter.child_by_field_name("pattern"),
+                        parameter.child_by_field_name("type"),
+                    ) else {
+                        continue;
+                    };
+                    let resolved = resolve(annotation);
+                    match &resolved {
+                        TypeExpr::Applied { .. } => {}
+                        TypeExpr::Named { .. } => {
+                            let mut nominal = annotation;
+                            while nominal.kind() == "reference_type" {
+                                let Some(inner) = nominal.child_by_field_name("type") else {
+                                    break;
+                                };
+                                nominal = inner;
+                            }
+                            if nominal.kind() == "primitive_type" && text(nominal, source) != "str"
+                            {
+                                continue;
+                            }
+                        }
+                        TypeExpr::Unknown => continue,
+                    }
+                    let pattern = if pattern.kind() == "mut_pattern" {
+                        pattern.named_child(0).unwrap_or(pattern)
+                    } else {
+                        pattern
+                    };
+                    if pattern.kind() != "identifier" {
+                        continue;
+                    }
+                    let position = parameter.end_position();
+                    facts.bindings.push(BindingFact {
+                        name: text(pattern, source).to_owned(),
+                        position: SourcePosition {
+                            line: position.row + 1,
+                            column: position.column,
+                        },
+                        value: ValueExpr::Annotated {
+                            type_expr: resolved,
+                        },
+                        conditional: false,
+                    });
+                }
+            }
+        }
+        let Some(body) = node.child_by_field_name("body") else {
+            return Self {
+                root: node,
+                body: None,
+                source,
+                facts,
+                generic_names: generics,
+                states: Vec::new(),
+            };
+        };
+        if node.kind() == "struct_item" {
+            let mut push_field = |name, at: Node<'_>, ty| {
+                let position = at.start_position();
+                facts.fields.push(FieldFact {
+                    name,
                     position: SourcePosition {
                         line: position.row + 1,
                         column: position.column,
                     },
                     value: ValueExpr::Annotated {
-                        type_expr: resolved,
+                        type_expr: resolve(ty),
                     },
                     conditional: false,
                 });
-            }
-        }
-    }
-    let Some(body) = node.child_by_field_name("body") else {
-        return facts;
-    };
-    if node.kind() == "struct_item" {
-        let mut push_field = |name, at: Node<'_>, ty| {
-            let position = at.start_position();
-            facts.fields.push(FieldFact {
-                name,
-                position: SourcePosition {
-                    line: position.row + 1,
-                    column: position.column,
-                },
-                value: ValueExpr::Annotated {
-                    type_expr: resolve(ty),
-                },
-                conditional: false,
-            });
-        };
-        let mut cursor = body.walk();
-        if body.kind() == "ordered_field_declaration_list" {
-            for (ordinal, ty) in body.children_by_field_name("type", &mut cursor).enumerate() {
-                push_field(ordinal.to_string(), ty, ty);
-            }
-        } else {
-            for field in body.named_children(&mut cursor) {
-                if field.kind() != "field_declaration" {
-                    continue;
+            };
+            let mut cursor = body.walk();
+            if body.kind() == "ordered_field_declaration_list" {
+                for (ordinal, ty) in body.children_by_field_name("type", &mut cursor).enumerate() {
+                    push_field(ordinal.to_string(), ty, ty);
                 }
-                if let (Some(name), Some(ty)) = (
-                    field.child_by_field_name("name"),
-                    field.child_by_field_name("type"),
-                ) {
-                    push_field(text(name, source).to_owned(), field, ty);
+            } else {
+                for field in body.named_children(&mut cursor) {
+                    if field.kind() != "field_declaration" {
+                        continue;
+                    }
+                    if let (Some(name), Some(ty)) = (
+                        field.child_by_field_name("name"),
+                        field.child_by_field_name("type"),
+                    ) {
+                        push_field(text(name, source).to_owned(), field, ty);
+                    }
                 }
             }
+            return Self {
+                root: node,
+                body: None,
+                source,
+                facts,
+                generic_names: generics,
+                states: Vec::new(),
+            };
         }
-        return facts;
+        Self {
+            root: node,
+            body: Some(body),
+            source,
+            facts,
+            generic_names: generics,
+            states: Vec::new(),
+        }
     }
-    let mut stack = vec![(body, false)];
-    while let Some((current, conditional)) = stack.pop() {
-        if current != body
-            && matches!(
-                current.kind(),
-                "function_item" | "closure_expression" | "impl_item" | "trait_item" | "mod_item"
-            )
-        {
-            continue;
-        }
-        let conditional = conditional
-            || (current != body
+
+    pub(crate) fn enter(&mut self, current: Node<'tree>) {
+        let source = self.source;
+        let body = self.body;
+        let (parent_active, inherited) = self.states.last().copied().unwrap_or_default();
+        let active = body == Some(current)
+            || (parent_active
+                && !matches!(
+                    current.kind(),
+                    "function_item"
+                        | "closure_expression"
+                        | "impl_item"
+                        | "trait_item"
+                        | "mod_item"
+                ));
+        let conditional = inherited
+            || (body != Some(current)
                 && matches!(
                     current.kind(),
                     "block"
@@ -385,6 +424,10 @@ pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
                         | "for_expression"
                         | "loop_expression"
                 ));
+        self.states.push((active, conditional));
+        if !active {
+            return;
+        }
         if matches!(
             current.kind(),
             "let_declaration" | "assignment_expression" | "compound_assignment_expr"
@@ -405,7 +448,13 @@ pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
                         current
                             .child_by_field_name("type")
                             .map(|ty| ValueExpr::Annotated {
-                                type_expr: resolve(ty),
+                                type_expr: type_expr_inner(
+                                    ty,
+                                    source,
+                                    self.generic_names
+                                        .get_or_insert_with(|| generic_names(self.root, source)),
+                                    0,
+                                ),
                             })
                             .unwrap_or_else(|| {
                                 value(
@@ -416,7 +465,7 @@ pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
                     } else {
                         ValueExpr::Unknown
                     };
-                    facts.bindings.push(BindingFact {
+                    self.facts.bindings.push(BindingFact {
                         name: text(pattern, source).to_owned(),
                         position: SourcePosition {
                             line: position.row + 1,
@@ -441,24 +490,37 @@ pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
                 }
             }
         }
-        let mut cursor = current.walk();
-        stack.extend(
-            current
-                .named_children(&mut cursor)
-                .map(|child| (child, conditional)),
-        );
     }
-    facts.bindings.sort_by(|left, right| {
-        left.position
-            .cmp(&right.position)
-            .then_with(|| left.name.cmp(&right.name))
+
+    pub(crate) fn exit(&mut self, _node: Node<'tree>) {
+        self.states.pop();
+    }
+
+    pub(crate) fn finish(mut self) -> ValueFlowFacts {
+        self.facts.bindings.sort_by(|left, right| {
+            left.position
+                .cmp(&right.position)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        self.facts.fields.sort_by(|left, right| {
+            left.position
+                .cmp(&right.position)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        self.facts
+    }
+}
+
+pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
+    let mut collector = Collector::new(node, source);
+    crate::engine::ast::visitor::walk(node, &mut |node, entering| {
+        if entering {
+            collector.enter(node);
+        } else {
+            collector.exit(node);
+        }
     });
-    facts.fields.sort_by(|left, right| {
-        left.position
-            .cmp(&right.position)
-            .then_with(|| left.name.cmp(&right.name))
-    });
-    facts
+    collector.finish()
 }
 
 pub(super) fn is_async(node: Node<'_>, source: &str) -> bool {

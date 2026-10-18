@@ -685,3 +685,73 @@ mod route_extraction_contract {
         );
     }
 }
+
+#[cfg(all(test, feature = "lang-python"))]
+mod local_field_reference_contract {
+    use super::link;
+
+    fn linked_graph(source: &str) -> crate::core::models::Graph {
+        let facts = crate::engine::ast::extract("service.py", "python", source).unwrap();
+        let all = std::collections::BTreeMap::from([("service.py".to_owned(), facts)]);
+        link(&all)
+    }
+
+    #[test]
+    fn same_class_field_references_retain_exact_resolution() {
+        let graph = linked_graph(
+            "class Host:\n    request = None\n    def current(self): return self.request\n",
+        );
+        let coverage = graph
+            .coverage
+            .iter()
+            .find(|coverage| coverage.expression == "self.request")
+            .unwrap();
+        assert_eq!(coverage.status, "resolved", "{coverage:?}");
+        let edge = graph
+            .edges
+            .iter()
+            .find(|edge| edge.kind == "references" && edge.evidence == "self.request")
+            .unwrap();
+        assert_eq!(edge.confidence, "exact", "{edge:?}");
+    }
+
+    #[test]
+    fn constructor_assigned_field_reads_keep_field_identity() {
+        let source = "class Host:\n    def __init__(self, request):\n        self.request = request\n    def current(self):\n        return self.request\n";
+        let graph = linked_graph(source);
+        let coverage = graph
+            .coverage
+            .iter()
+            .find(|coverage| coverage.expression == "self.request" && coverage.line == 5)
+            .unwrap();
+        assert_eq!(coverage.status, "resolved", "{coverage:?}");
+        let edge = graph
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.kind == "references" && edge.evidence == "self.request" && edge.line == 5
+            })
+            .unwrap();
+        assert_eq!(
+            edge.dst, "field:service.py:3:service.Host.request",
+            "{edge:?}"
+        );
+    }
+
+    #[test]
+    fn field_values_do_not_become_callable_targets() {
+        let graph = linked_graph(
+            "class Host:\n    def __init__(self, request):\n        self.request = request\n    def current(self):\n        return self.request()\n",
+        );
+        let coverage = graph
+            .coverage
+            .iter()
+            .find(|coverage| coverage.expression == "self.request" && coverage.line == 5)
+            .unwrap();
+        assert_eq!(coverage.status, "unresolved", "{coverage:?}");
+        assert!(!graph
+            .edges
+            .iter()
+            .any(|edge| { edge.kind == "calls" && edge.evidence == "self.request()" }));
+    }
+}

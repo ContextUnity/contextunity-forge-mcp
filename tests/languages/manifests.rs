@@ -102,46 +102,146 @@ def unrelated():
         "from grid_view_spec.types.spec import GridViewSpec\nfrom grid_view_spec.types.block_base import GridViewBlockBase\nclass CustomSpec(GridViewSpec):\n    def config_value(self): return self.config\nclass CustomBlock(GridViewBlockBase):\n    def block_type(self): return self.type\n",
     );
     let gridview_receiver_cases = [
-        ("GridViewSpec", "grid_view_spec.types.spec.GridViewSpec", "blocks"),
-        ("GridViewMeta", "grid_view_spec.types.spec_meta.GridViewMeta", "subtitle"),
-        ("GridViewConfig", "grid_view_spec.types.spec_meta.GridViewConfig", "htmx"),
-        ("GridViewLayout", "grid_view_spec.types.layout.GridViewLayout", "root"),
+        (
+            "GridViewSpec",
+            "grid_view_spec.types.spec.GridViewSpec",
+            "blocks",
+        ),
+        (
+            "GridViewMeta",
+            "grid_view_spec.types.spec_meta.GridViewMeta",
+            "subtitle",
+        ),
+        (
+            "GridViewConfig",
+            "grid_view_spec.types.spec_meta.GridViewConfig",
+            "htmx",
+        ),
+        (
+            "GridViewLayout",
+            "grid_view_spec.types.layout.GridViewLayout",
+            "root",
+        ),
         (
             "GridViewBlockBase",
             "grid_view_spec.types.block_base.GridViewBlockBase",
             "trusted_style",
         ),
-        ("GridViewTable", "grid_view_spec.types.table_v2.GridViewTable", "column_source"),
-        ("GridViewToolbar", "grid_view_spec.types.toolbar.GridViewToolbar", "counters"),
+        (
+            "GridViewTable",
+            "grid_view_spec.types.table_v2.GridViewTable",
+            "column_source",
+        ),
+        (
+            "GridViewToolbar",
+            "grid_view_spec.types.toolbar.GridViewToolbar",
+            "counters",
+        ),
         (
             "GridViewFilters",
             "grid_view_spec.types.filters_v2.GridViewFilters",
             "drawer_sections",
         ),
-        ("GridViewActions", "grid_view_spec.types.actions.GridViewActions", "items"),
-        ("GridViewCards", "grid_view_spec.types.content.GridViewCards", "cards"),
-        ("GridViewCharts", "grid_view_spec.types.content.GridViewCharts", "charts"),
-        ("GridViewKpi", "grid_view_spec.types.content.GridViewKpi", "items"),
-        ("GridViewTabs", "grid_view_spec.types.content.GridViewTabs", "tabs"),
-        ("GridViewNav", "grid_view_spec.types.nav.GridViewNav", "levels"),
-        ("GridViewForm", "grid_view_spec.types.form.GridViewForm", "fieldsets"),
-        ("GridViewHeader", "grid_view_spec.types.header.GridViewHeader", "entity"),
-        ("GridViewTemplate", "grid_view_spec.types.content.GridViewTemplate", "mode"),
-        ("GridViewColumn", "grid_view_spec.types.table_v2.GridViewColumn", "currency_formatter"),
-        ("GridViewFilter", "grid_view_spec.types.filters_v2.GridViewFilter", "drawer_control"),
-        ("GridViewCard", "grid_view_spec.types.content.GridViewCard", "meta"),
+        (
+            "GridViewActions",
+            "grid_view_spec.types.actions.GridViewActions",
+            "items",
+        ),
+        (
+            "GridViewCards",
+            "grid_view_spec.types.content.GridViewCards",
+            "cards",
+        ),
+        (
+            "GridViewCharts",
+            "grid_view_spec.types.content.GridViewCharts",
+            "charts",
+        ),
+        (
+            "GridViewKpi",
+            "grid_view_spec.types.content.GridViewKpi",
+            "items",
+        ),
+        (
+            "GridViewTabs",
+            "grid_view_spec.types.content.GridViewTabs",
+            "tabs",
+        ),
+        (
+            "GridViewNav",
+            "grid_view_spec.types.nav.GridViewNav",
+            "levels",
+        ),
+        (
+            "GridViewForm",
+            "grid_view_spec.types.form.GridViewForm",
+            "fieldsets",
+        ),
+        (
+            "GridViewHeader",
+            "grid_view_spec.types.header.GridViewHeader",
+            "entity",
+        ),
+        (
+            "GridViewTemplate",
+            "grid_view_spec.types.content.GridViewTemplate",
+            "mode",
+        ),
+        (
+            "GridViewColumn",
+            "grid_view_spec.types.table_v2.GridViewColumn",
+            "currency_formatter",
+        ),
+        (
+            "GridViewFilter",
+            "grid_view_spec.types.filters_v2.GridViewFilter",
+            "drawer_control",
+        ),
+        (
+            "GridViewCard",
+            "grid_view_spec.types.content.GridViewCard",
+            "meta",
+        ),
         (
             "DjangoGridViewHost",
             "grid_view_spec.backends.django.host.DjangoGridViewHost",
             "url_for",
         ),
-        ("GridViewActionBase", "grid_view_spec.types.actions.GridViewActionBase", "confirm"),
-        ("GridViewExportAction", "grid_view_spec.types.actions.GridViewExportAction", "format"),
-        ("GridViewOverlayAction", "grid_view_spec.types.actions.GridViewOverlayAction", "overlay"),
-        ("GridViewLinkAction", "grid_view_spec.types.actions.GridViewLinkAction", "href"),
-        ("GridViewButtonAction", "grid_view_spec.types.actions.GridViewButtonAction", "action"),
-        ("GridViewSelectAction", "grid_view_spec.types.actions.GridViewSelectAction", "options"),
-        ("GridViewMenuAction", "grid_view_spec.types.actions.GridViewMenuAction", "items"),
+        (
+            "GridViewActionBase",
+            "grid_view_spec.types.actions.GridViewActionBase",
+            "confirm",
+        ),
+        (
+            "GridViewExportAction",
+            "grid_view_spec.types.actions.GridViewExportAction",
+            "format",
+        ),
+        (
+            "GridViewOverlayAction",
+            "grid_view_spec.types.actions.GridViewOverlayAction",
+            "overlay",
+        ),
+        (
+            "GridViewLinkAction",
+            "grid_view_spec.types.actions.GridViewLinkAction",
+            "href",
+        ),
+        (
+            "GridViewButtonAction",
+            "grid_view_spec.types.actions.GridViewButtonAction",
+            "action",
+        ),
+        (
+            "GridViewSelectAction",
+            "grid_view_spec.types.actions.GridViewSelectAction",
+            "options",
+        ),
+        (
+            "GridViewMenuAction",
+            "grid_view_spec.types.actions.GridViewMenuAction",
+            "items",
+        ),
     ];
     for (class_name, provider, member) in gridview_receiver_cases {
         let (module, symbol) = provider.rsplit_once('.').unwrap();
@@ -188,7 +288,10 @@ api.get(items)
         "catalog/endpoints.py",
         "from django.urls import path\nfrom .views import endpoint\nurlpatterns = [path('deep/', endpoint, name='deep')]\n",
     );
-    workspace.write("catalog/views.py", "def endpoint(): return 'catalog endpoint'\n");
+    workspace.write(
+        "catalog/views.py",
+        "def endpoint(): return 'catalog endpoint'\n",
+    );
     workspace.write(
         "qualified_urls.py",
         "import django.urls\nfrom django import urls\ndef endpoint(): return None\na = django.urls.path('/qualified', endpoint)\nb = urls.re_path('^regex/$', endpoint)\n",
@@ -549,7 +652,12 @@ api.get(items)
         .collect();
     assert_eq!(
         middleware_handles,
-        vec!["app.endpoint", "app.middleware", "fast.items", "fast.middleware"]
+        vec![
+            "app.endpoint",
+            "app.middleware",
+            "fast.items",
+            "fast.middleware"
+        ]
     );
     let no_handler_edges: i64 = conn
         .query_row(
@@ -703,12 +811,7 @@ api.get(items)
              JOIN path_dictionary target_path ON target_path.path_id=target.path_id \
              WHERE route.kind='route' AND route.name='ANY market/updated/'",
             [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    (row.get(1)?, row.get(2)?, row.get(3)?),
-                ))
-            },
+            |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?))),
         )
         .unwrap();
     let details: serde_json::Value = serde_json::from_str(&details).unwrap();
@@ -733,7 +836,10 @@ api.get(items)
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(parent_decoy, ("urls.py".to_owned(), "urls.endpoint".to_owned()));
+    assert_eq!(
+        parent_decoy,
+        ("urls.py".to_owned(), "urls.endpoint".to_owned())
+    );
     let market_origin_coverage: (i64, String) = conn
         .query_row(
             "SELECT coverage.line,coverage.status FROM resolution_coverage coverage \
@@ -753,7 +859,10 @@ api.get(items)
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(shop_routes, 0, "parent-only prefix update must remove old route refs");
+    assert_eq!(
+        shop_routes, 0,
+        "parent-only prefix update must remove old route refs"
+    );
     drop(conn);
 
     fs::remove_file(workspace.join("shop/urls.py")).unwrap();
@@ -778,7 +887,10 @@ api.get(items)
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(stale_route_edges, 0, "deleted route must leave no handle edge");
+    assert_eq!(
+        stale_route_edges, 0,
+        "deleted route must leave no handle edge"
+    );
     let stale_child_coverage: i64 = conn
         .query_row(
             "SELECT count(*) FROM resolution_coverage coverage \
@@ -787,7 +899,10 @@ api.get(items)
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(stale_child_coverage, 0, "deleted source must leave no handle coverage");
+    assert_eq!(
+        stale_child_coverage, 0,
+        "deleted source must leave no handle coverage"
+    );
     drop(conn);
     workspace.assert_cold_equivalent();
 
@@ -1134,9 +1249,7 @@ fn go_mod_dependencies_include_modules_and_versioned_paths() {
         [
             "github.com/gin-gonic/gin",
             "golang.org/x/sync",
-            "quote",
-            "rsc.io/quote/v3",
-            "sync"
+            "rsc.io/quote/v3"
         ]
     );
 }
@@ -1167,8 +1280,10 @@ fn gradle_and_maven_dependencies_include_configurations_and_group_ids() {
     implementation("org.springframework.boot:spring-boot-starter-web")
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.0'
 }"#;
+    let mut dependencies = profile.extract_manifest_dependencies("build.gradle.kts", gradle);
+    dependencies.sort();
     assert_eq!(
-        profile.extract_manifest_dependencies("build.gradle.kts", gradle),
+        dependencies,
         ["org.junit.jupiter", "org.springframework.boot"]
     );
 }

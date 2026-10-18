@@ -122,7 +122,144 @@ pub struct DiCallRule {
     pub argument: usize,
 }
 
+/// Typed framework rule families whose eligible identities are compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleDomain {
+    /// Inherited external members.
+    ClassHierarchyReceivers,
+    /// Dependency-injection calls.
+    DiCalls,
+    /// Route registration calls.
+    RouteCalls,
+    /// Route decorators.
+    RouteDecorators,
+    /// Common semantic rules.
+    SemanticRules,
+}
+
+/// Canonical merge identity, independent of a rule's mutable payload.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(untagged)]
+pub enum RuleIdentity {
+    /// A class hierarchy rule's ordered base list.
+    ClassHierarchy {
+        /// Fully qualified bases in their declared order.
+        bases: Vec<String>,
+    },
+    /// A route rule's callee and HTTP method.
+    Route {
+        /// Callee identity.
+        callee: String,
+        /// HTTP method.
+        method: String,
+    },
+    /// A dependency-injection rule's callee.
+    DependencyInjection {
+        /// Callee identity.
+        callee: String,
+    },
+    /// A semantic rule's stable identifier.
+    Semantic {
+        /// Manifest rule identifier.
+        id: String,
+    },
+}
+
+/// Stable reason for an ephemeral framework coverage diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleCoverageCode {
+    /// A project substitution removed a previously eligible bundled identity.
+    EligibleRuleIdentityRemoved,
+}
+
+/// A current-inventory framework substitution diagnostic, never persisted as an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuleCoverageDiagnostic {
+    /// Framework manifest name.
+    pub framework: String,
+    /// Existing workspace scope, empty for the primary workspace.
+    pub workspace: String,
+    /// Actual inventory language.
+    pub language: String,
+    /// Typed rule family.
+    pub rule_domain: RuleDomain,
+    /// Stable diagnostic code.
+    pub code: RuleCoverageCode,
+    /// Canonical identities absent from the effective substitution.
+    pub removed_eligible_rule_identities: Vec<RuleIdentity>,
+}
+
+impl ClassHierarchyReceiverRule {
+    fn identity(&self) -> RuleIdentity {
+        RuleIdentity::ClassHierarchy {
+            bases: self.bases.clone(),
+        }
+    }
+}
+
+impl RouteDecoratorRule {
+    fn identity(&self) -> RuleIdentity {
+        RuleIdentity::Route {
+            callee: self.callee.clone(),
+            method: self.method.clone(),
+        }
+    }
+}
+
+impl RouteCallRule {
+    fn identity(&self) -> RuleIdentity {
+        RuleIdentity::Route {
+            callee: self.callee.clone(),
+            method: self.method.clone(),
+        }
+    }
+}
+
+impl DiCallRule {
+    fn identity(&self) -> RuleIdentity {
+        RuleIdentity::DependencyInjection {
+            callee: self.callee.clone(),
+        }
+    }
+}
+
+impl super::SemanticRule {
+    fn identity(&self) -> RuleIdentity {
+        RuleIdentity::Semantic {
+            id: self.id.clone(),
+        }
+    }
+}
+
 impl FrameworkManifest {
+    pub(crate) fn rule_identities(&self, domain: RuleDomain) -> BTreeSet<RuleIdentity> {
+        match domain {
+            RuleDomain::ClassHierarchyReceivers => self
+                .class_hierarchy_receivers
+                .iter()
+                .map(ClassHierarchyReceiverRule::identity)
+                .collect(),
+            RuleDomain::RouteDecorators => self
+                .route_decorators
+                .iter()
+                .map(RouteDecoratorRule::identity)
+                .collect(),
+            RuleDomain::RouteCalls => self
+                .route_calls
+                .iter()
+                .map(RouteCallRule::identity)
+                .collect(),
+            RuleDomain::DiCalls => self.di_calls.iter().map(DiCallRule::identity).collect(),
+            RuleDomain::SemanticRules => self
+                .semantic_rules
+                .iter()
+                .map(super::SemanticRule::identity)
+                .collect(),
+        }
+    }
+
     fn merge_rules(
         project: &[FrameworkManifestValue],
         bundled: &[FrameworkManifestValue],
@@ -166,24 +303,24 @@ impl FrameworkManifest {
             class_hierarchy_receivers: merge_typed_rules(
                 self.class_hierarchy_receivers,
                 &bundled.class_hierarchy_receivers,
-                |rule| rule.bases.join("\u{0}"),
+                ClassHierarchyReceiverRule::identity,
             ),
             route_decorators: merge_typed_rules(
                 self.route_decorators,
                 &bundled.route_decorators,
-                |rule| format!("{}\u{0}{}", rule.callee, rule.method),
+                RouteDecoratorRule::identity,
             ),
-            route_calls: merge_typed_rules(self.route_calls, &bundled.route_calls, |rule| {
-                format!("{}\u{0}{}", rule.callee, rule.method)
-            }),
+            route_calls: merge_typed_rules(
+                self.route_calls,
+                &bundled.route_calls,
+                RouteCallRule::identity,
+            ),
             semantic_rules: merge_typed_rules(
                 self.semantic_rules,
                 &bundled.semantic_rules,
-                |rule| rule.id.clone(),
+                super::SemanticRule::identity,
             ),
-            di_calls: merge_typed_rules(self.di_calls, &bundled.di_calls, |rule| {
-                rule.callee.clone()
-            }),
+            di_calls: merge_typed_rules(self.di_calls, &bundled.di_calls, DiCallRule::identity),
         }
     }
 
@@ -299,7 +436,7 @@ impl FrameworkManifest {
 fn merge_typed_rules<T: Clone>(
     project: Vec<T>,
     bundled: &[T],
-    identity: impl Fn(&T) -> String,
+    identity: impl Fn(&T) -> RuleIdentity,
 ) -> Vec<T> {
     let mut seen = BTreeSet::new();
     project
