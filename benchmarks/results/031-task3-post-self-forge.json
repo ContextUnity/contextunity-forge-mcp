@@ -1,0 +1,789 @@
+{
+  "baseline": {
+    "graph": {
+      "components": [
+        ".",
+        "src",
+        "tests"
+      ],
+      "counts": {
+        "doc_sections": 291,
+        "edges": 20272,
+        "external_imports": 22678,
+        "files": 309,
+        "nodes": 6744,
+        "parse_errors": 2,
+        "unresolved": 38895
+      },
+      "resolution": {
+        "ambiguous": 578,
+        "external_imports": 22678,
+        "resolved": 7275,
+        "resolved_percent_excluding_external": 15.757,
+        "unresolved": 38317
+      },
+      "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+    },
+    "median": {
+      "database_bytes": 28311552.0,
+      "extracted_files": 309.0,
+      "index_and_seal_ms": 455.258,
+      "ingested_files": 309.0,
+      "peak_rss_bytes": 209039360.0,
+      "seal_ms": 355.553,
+      "system_seconds": 0.424,
+      "user_seconds": 3.937,
+      "wall_seconds": 1.946
+    },
+    "runs": [
+      {
+        "database_bytes": 28311552,
+        "graph": {
+          "components": [
+            ".",
+            "src",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 291,
+            "edges": 20272,
+            "external_imports": 22678,
+            "files": 309,
+            "nodes": 6744,
+            "parse_errors": 2,
+            "unresolved": 38895
+          },
+          "resolution": {
+            "ambiguous": 578,
+            "external_imports": 22678,
+            "resolved": 7275,
+            "resolved_percent_excluding_external": 15.757,
+            "unresolved": 38317
+          },
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+        },
+        "output_root": "9deb9785b79e98aba78163ae1e63339aa69d5ca7db5740734c34176473ae8135",
+        "peak_rss_bytes": 211861504,
+        "phases_ms": {
+          "bulk_paths_ms": 6.639142,
+          "components_ms": 6.92424,
+          "doc_fts_insert_ms": 3.592946,
+          "elapsed_ms": 2496.177389,
+          "encode_facts_ms": 15.021211,
+          "extract_ms": 3626.417684,
+          "fts_insert_ms": 27.922977,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 141.59254199999998,
+            "coverage_dictionaries": 53.587309,
+            "occurrences_and_dependencies": 33.808444,
+            "unique_edges": 25.966383999999998
+          },
+          "index_and_seal_ms": 493.020216,
+          "indexes_ms": 104.562261,
+          "link_ms": 255.826063,
+          "node_row_insert_ms": 24.672782,
+          "persist_files_ms": 164.452254,
+          "persist_graph_ms": 255.33882400000002,
+          "persist_ms": 963.360055,
+          "rows_ms": 461.458288,
+          "scan_ms": 419.97555800000004,
+          "seal_ms": 388.446804,
+          "sqlite_ingest_ms": 4.936221,
+          "verify_ms": 60.062121000000005
+        },
+        "pipeline": {
+          "budget_bytes": 4619911168,
+          "extracted_files": 309,
+          "ingested_files": 309,
+          "max_item_bytes": 2509096,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 11031600
+        },
+        "repetition": 1,
+        "system_seconds": 0.825808,
+        "user_seconds": 4.475686,
+        "wall_seconds": 2.5261446186341345
+      },
+      {
+        "database_bytes": 28311552,
+        "graph": {
+          "components": [
+            ".",
+            "src",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 291,
+            "edges": 20272,
+            "external_imports": 22678,
+            "files": 309,
+            "nodes": 6744,
+            "parse_errors": 2,
+            "unresolved": 38895
+          },
+          "resolution": {
+            "ambiguous": 578,
+            "external_imports": 22678,
+            "resolved": 7275,
+            "resolved_percent_excluding_external": 15.757,
+            "unresolved": 38317
+          },
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+        },
+        "output_root": "9deb9785b79e98aba78163ae1e63339aa69d5ca7db5740734c34176473ae8135",
+        "peak_rss_bytes": 202166272,
+        "phases_ms": {
+          "bulk_paths_ms": 6.389882,
+          "components_ms": 9.706006,
+          "doc_fts_insert_ms": 3.9552099999999997,
+          "elapsed_ms": 2465.696116,
+          "encode_facts_ms": 12.669023999999999,
+          "extract_ms": 2729.331155,
+          "fts_insert_ms": 27.689315,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 137.782626,
+            "coverage_dictionaries": 56.91733,
+            "occurrences_and_dependencies": 34.055471,
+            "unique_edges": 29.652466
+          },
+          "index_and_seal_ms": 400.244787,
+          "indexes_ms": 77.960358,
+          "link_ms": 267.770121,
+          "node_row_insert_ms": 22.168121000000003,
+          "persist_files_ms": 159.13049900000001,
+          "persist_graph_ms": 258.66725299999996,
+          "persist_ms": 867.92459,
+          "rows_ms": 459.15405300000003,
+          "scan_ms": 310.634015,
+          "seal_ms": 322.23244,
+          "sqlite_ingest_ms": 3.154619,
+          "verify_ms": 54.003394
+        },
+        "pipeline": {
+          "budget_bytes": 4771285674,
+          "extracted_files": 309,
+          "ingested_files": 309,
+          "max_item_bytes": 2509096,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 10844320
+        },
+        "repetition": 2,
+        "system_seconds": 0.591445,
+        "user_seconds": 3.936914,
+        "wall_seconds": 2.4918344039469957
+      },
+      {
+        "database_bytes": 28311552,
+        "graph": {
+          "components": [
+            ".",
+            "src",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 291,
+            "edges": 20272,
+            "external_imports": 22678,
+            "files": 309,
+            "nodes": 6744,
+            "parse_errors": 2,
+            "unresolved": 38895
+          },
+          "resolution": {
+            "ambiguous": 578,
+            "external_imports": 22678,
+            "resolved": 7275,
+            "resolved_percent_excluding_external": 15.757,
+            "unresolved": 38317
+          },
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+        },
+        "output_root": "9deb9785b79e98aba78163ae1e63339aa69d5ca7db5740734c34176473ae8135",
+        "peak_rss_bytes": 213331968,
+        "phases_ms": {
+          "bulk_paths_ms": 6.253684,
+          "components_ms": 7.034327,
+          "doc_fts_insert_ms": 3.018163,
+          "elapsed_ms": 1629.352051,
+          "encode_facts_ms": 13.845113,
+          "extract_ms": 2800.91744,
+          "fts_insert_ms": 24.115302,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 123.32330499999999,
+            "coverage_dictionaries": 48.665216,
+            "occurrences_and_dependencies": 30.742252,
+            "unique_edges": 23.178125
+          },
+          "index_and_seal_ms": 384.908372,
+          "indexes_ms": 78.132252,
+          "link_ms": 242.959958,
+          "node_row_insert_ms": 20.639916,
+          "persist_files_ms": 141.721817,
+          "persist_graph_ms": 226.121399,
+          "persist_ms": 796.506622,
+          "rows_ms": 404.571447,
+          "scan_ms": 326.55660600000004,
+          "seal_ms": 306.757374,
+          "sqlite_ingest_ms": 3.048493,
+          "verify_ms": 46.673449
+        },
+        "pipeline": {
+          "budget_bytes": 4693695146,
+          "extracted_files": 309,
+          "ingested_files": 309,
+          "max_item_bytes": 2509096,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 12039608
+        },
+        "repetition": 3,
+        "system_seconds": 0.404863,
+        "user_seconds": 3.839701,
+        "wall_seconds": 1.6507329558953643
+      },
+      {
+        "database_bytes": 28311552,
+        "graph": {
+          "components": [
+            ".",
+            "src",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 291,
+            "edges": 20272,
+            "external_imports": 22678,
+            "files": 309,
+            "nodes": 6744,
+            "parse_errors": 2,
+            "unresolved": 38895
+          },
+          "resolution": {
+            "ambiguous": 578,
+            "external_imports": 22678,
+            "resolved": 7275,
+            "resolved_percent_excluding_external": 15.757,
+            "unresolved": 38317
+          },
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+        },
+        "output_root": "9deb9785b79e98aba78163ae1e63339aa69d5ca7db5740734c34176473ae8135",
+        "peak_rss_bytes": 207929344,
+        "phases_ms": {
+          "bulk_paths_ms": 5.770453,
+          "components_ms": 5.3434989999999996,
+          "doc_fts_insert_ms": 2.8918939999999997,
+          "elapsed_ms": 1611.124505,
+          "encode_facts_ms": 11.586472,
+          "extract_ms": 2099.495273,
+          "fts_insert_ms": 22.14006,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 120.350659,
+            "coverage_dictionaries": 40.357547000000004,
+            "occurrences_and_dependencies": 29.589437,
+            "unique_edges": 22.076507
+          },
+          "index_and_seal_ms": 455.25842700000004,
+          "indexes_ms": 99.652111,
+          "link_ms": 206.09875599999998,
+          "node_row_insert_ms": 18.38198,
+          "persist_files_ms": 127.21097599999999,
+          "persist_graph_ms": 212.63800899999998,
+          "persist_ms": 836.6178560000001,
+          "rows_ms": 373.439221,
+          "scan_ms": 239.937157,
+          "seal_ms": 355.553326,
+          "sqlite_ingest_ms": 2.030155,
+          "verify_ms": 57.937053
+        },
+        "pipeline": {
+          "budget_bytes": 4581923498,
+          "extracted_files": 309,
+          "ingested_files": 309,
+          "max_item_bytes": 2509096,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 10751032
+        },
+        "repetition": 4,
+        "system_seconds": 0.361994,
+        "user_seconds": 3.256595,
+        "wall_seconds": 1.6346918251365423
+      },
+      {
+        "database_bytes": 28311552,
+        "graph": {
+          "components": [
+            ".",
+            "src",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 291,
+            "edges": 20272,
+            "external_imports": 22678,
+            "files": 309,
+            "nodes": 6744,
+            "parse_errors": 2,
+            "unresolved": 38895
+          },
+          "resolution": {
+            "ambiguous": 578,
+            "external_imports": 22678,
+            "resolved": 7275,
+            "resolved_percent_excluding_external": 15.757,
+            "unresolved": 38317
+          },
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+        },
+        "output_root": "9deb9785b79e98aba78163ae1e63339aa69d5ca7db5740734c34176473ae8135",
+        "peak_rss_bytes": 209039360,
+        "phases_ms": {
+          "bulk_paths_ms": 6.547238,
+          "components_ms": 5.080722000000001,
+          "doc_fts_insert_ms": 3.620368,
+          "elapsed_ms": 1898.414053,
+          "encode_facts_ms": 15.749445000000001,
+          "extract_ms": 2603.335107,
+          "fts_insert_ms": 27.407992999999994,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 127.69435000000001,
+            "coverage_dictionaries": 59.973424,
+            "occurrences_and_dependencies": 34.630646,
+            "unique_edges": 25.988476
+          },
+          "index_and_seal_ms": 576.53387,
+          "indexes_ms": 96.194329,
+          "link_ms": 238.233013,
+          "node_row_insert_ms": 22.629781,
+          "persist_files_ms": 159.762783,
+          "persist_graph_ms": 248.509445,
+          "persist_ms": 1033.4442130000002,
+          "rows_ms": 449.678724,
+          "scan_ms": 300.248177,
+          "seal_ms": 480.27524999999997,
+          "sqlite_ingest_ms": 3.183244,
+          "verify_ms": 83.73652299999999
+        },
+        "pipeline": {
+          "budget_bytes": 4520495786,
+          "extracted_files": 309,
+          "ingested_files": 309,
+          "max_item_bytes": 2509096,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 10811200
+        },
+        "repetition": 5,
+        "system_seconds": 0.423957,
+        "user_seconds": 4.050764,
+        "wall_seconds": 1.9457025723531842
+      }
+    ]
+  },
+  "baseline_binary": "/tmp/forge031-bench-wiysmu06/task3-baseline-35b",
+  "build_policy": "sequential cold builds; forge-mcp.yaml and enabled linked_workspaces are read from the supplied workspace",
+  "candidate": {
+    "graph": {
+      "components": [
+        ".",
+        "src",
+        "tests"
+      ],
+      "counts": {
+        "doc_sections": 291,
+        "edges": 20272,
+        "external_imports": 22678,
+        "files": 309,
+        "nodes": 6744,
+        "parse_errors": 2,
+        "unresolved": 38895
+      },
+      "resolution": {
+        "ambiguous": 578,
+        "external_imports": 22678,
+        "resolved": 7275,
+        "resolved_percent_excluding_external": 15.757,
+        "unresolved": 38317
+      },
+      "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+    },
+    "median": {
+      "database_bytes": 28311552.0,
+      "extracted_files": 309.0,
+      "extraction_cache_hits": 0.0,
+      "index_and_seal_ms": 644.211,
+      "ingested_files": 309.0,
+      "peak_rss_bytes": 219848704.0,
+      "seal_ms": 531.513,
+      "system_seconds": 0.591,
+      "user_seconds": 4.397,
+      "wall_seconds": 2.142
+    },
+    "runs": [
+      {
+        "database_bytes": 28311552,
+        "graph": {
+          "components": [
+            ".",
+            "src",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 291,
+            "edges": 20272,
+            "external_imports": 22678,
+            "files": 309,
+            "nodes": 6744,
+            "parse_errors": 2,
+            "unresolved": 38895
+          },
+          "resolution": {
+            "ambiguous": 578,
+            "external_imports": 22678,
+            "resolved": 7275,
+            "resolved_percent_excluding_external": 15.757,
+            "unresolved": 38317
+          },
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+        },
+        "output_root": "0b79c67973f2d0735ed7bf2a26e476edb56a681f0fcf6267e7c078e2f9abb6b7",
+        "peak_rss_bytes": 219848704,
+        "phases_ms": {
+          "bulk_paths_ms": 6.660963,
+          "components_ms": 5.992291000000001,
+          "doc_fts_insert_ms": 4.015272,
+          "elapsed_ms": 2114.391429,
+          "encode_facts_ms": 14.520356,
+          "extract_ms": 3146.058833,
+          "fts_insert_ms": 27.484810999999997,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 136.175075,
+            "coverage_dictionaries": 51.563732,
+            "occurrences_and_dependencies": 36.464494,
+            "unique_edges": 26.574712
+          },
+          "index_and_seal_ms": 644.211451,
+          "indexes_ms": 112.652429,
+          "link_ms": 245.33703100000002,
+          "node_row_insert_ms": 23.793424,
+          "persist_files_ms": 166.936489,
+          "persist_graph_ms": 251.104498,
+          "persist_ms": 1112.612414,
+          "rows_ms": 460.051114,
+          "scan_ms": 356.712431,
+          "seal_ms": 531.5128850000001,
+          "sqlite_ingest_ms": 4.154417,
+          "verify_ms": 56.280137
+        },
+        "pipeline": {
+          "budget_bytes": 4525965312,
+          "extracted_files": 309,
+          "extraction_cache_hits": 0,
+          "ingested_files": 309,
+          "max_item_bytes": 2509096,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 10232456
+        },
+        "repetition": 1,
+        "system_seconds": 0.590789,
+        "user_seconds": 4.3970839999999995,
+        "wall_seconds": 2.142366271931678
+      },
+      {
+        "database_bytes": 28311552,
+        "graph": {
+          "components": [
+            ".",
+            "src",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 291,
+            "edges": 20272,
+            "external_imports": 22678,
+            "files": 309,
+            "nodes": 6744,
+            "parse_errors": 2,
+            "unresolved": 38895
+          },
+          "resolution": {
+            "ambiguous": 578,
+            "external_imports": 22678,
+            "resolved": 7275,
+            "resolved_percent_excluding_external": 15.757,
+            "unresolved": 38317
+          },
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+        },
+        "output_root": "0b79c67973f2d0735ed7bf2a26e476edb56a681f0fcf6267e7c078e2f9abb6b7",
+        "peak_rss_bytes": 220057600,
+        "phases_ms": {
+          "bulk_paths_ms": 5.683549,
+          "components_ms": 6.025675000000001,
+          "doc_fts_insert_ms": 9.153213000000001,
+          "elapsed_ms": 3196.6638930000004,
+          "encode_facts_ms": 11.761012,
+          "extract_ms": 2621.808691,
+          "fts_insert_ms": 54.004006999999994,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 333.626841,
+            "coverage_dictionaries": 118.726084,
+            "occurrences_and_dependencies": 52.342411,
+            "unique_edges": 50.221071
+          },
+          "index_and_seal_ms": 975.762908,
+          "indexes_ms": 229.300074,
+          "link_ms": 229.301807,
+          "node_row_insert_ms": 45.717799,
+          "persist_files_ms": 290.900153,
+          "persist_graph_ms": 555.527729,
+          "persist_ms": 1906.426217,
+          "rows_ms": 918.5399319999999,
+          "scan_ms": 295.636298,
+          "seal_ms": 746.4516639999999,
+          "sqlite_ingest_ms": 2.85619,
+          "verify_ms": 54.834781
+        },
+        "pipeline": {
+          "budget_bytes": 4490502144,
+          "extracted_files": 309,
+          "extraction_cache_hits": 0,
+          "ingested_files": 309,
+          "max_item_bytes": 2509096,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 10280808
+        },
+        "repetition": 2,
+        "system_seconds": 0.619185,
+        "user_seconds": 4.62664,
+        "wall_seconds": 3.2308553103357553
+      },
+      {
+        "database_bytes": 28311552,
+        "graph": {
+          "components": [
+            ".",
+            "src",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 291,
+            "edges": 20272,
+            "external_imports": 22678,
+            "files": 309,
+            "nodes": 6744,
+            "parse_errors": 2,
+            "unresolved": 38895
+          },
+          "resolution": {
+            "ambiguous": 578,
+            "external_imports": 22678,
+            "resolved": 7275,
+            "resolved_percent_excluding_external": 15.757,
+            "unresolved": 38317
+          },
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+        },
+        "output_root": "0b79c67973f2d0735ed7bf2a26e476edb56a681f0fcf6267e7c078e2f9abb6b7",
+        "peak_rss_bytes": 221474816,
+        "phases_ms": {
+          "bulk_paths_ms": 9.781499,
+          "components_ms": 5.034215,
+          "doc_fts_insert_ms": 3.294133,
+          "elapsed_ms": 1779.38391,
+          "encode_facts_ms": 10.165744,
+          "extract_ms": 2403.582323,
+          "fts_insert_ms": 24.472125,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 156.05650200000002,
+            "coverage_dictionaries": 53.233931999999996,
+            "occurrences_and_dependencies": 33.130316,
+            "unique_edges": 27.086878000000002
+          },
+          "index_and_seal_ms": 584.344461,
+          "indexes_ms": 88.631474,
+          "link_ms": 215.596589,
+          "node_row_insert_ms": 20.246254,
+          "persist_files_ms": 140.608718,
+          "persist_graph_ms": 269.77739699999995,
+          "persist_ms": 1042.5175040000001,
+          "rows_ms": 450.892622,
+          "scan_ms": 270.885377,
+          "seal_ms": 495.65133,
+          "sqlite_ingest_ms": 2.634877,
+          "verify_ms": 51.372181000000005
+        },
+        "pipeline": {
+          "budget_bytes": 4641682773,
+          "extracted_files": 309,
+          "extraction_cache_hits": 0,
+          "ingested_files": 309,
+          "max_item_bytes": 2509096,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 9695112
+        },
+        "repetition": 3,
+        "system_seconds": 0.490185,
+        "user_seconds": 3.555462,
+        "wall_seconds": 1.8022255920805037
+      },
+      {
+        "database_bytes": 28311552,
+        "graph": {
+          "components": [
+            ".",
+            "src",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 291,
+            "edges": 20272,
+            "external_imports": 22678,
+            "files": 309,
+            "nodes": 6744,
+            "parse_errors": 2,
+            "unresolved": 38895
+          },
+          "resolution": {
+            "ambiguous": 578,
+            "external_imports": 22678,
+            "resolved": 7275,
+            "resolved_percent_excluding_external": 15.757,
+            "unresolved": 38317
+          },
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+        },
+        "output_root": "0b79c67973f2d0735ed7bf2a26e476edb56a681f0fcf6267e7c078e2f9abb6b7",
+        "peak_rss_bytes": 217952256,
+        "phases_ms": {
+          "bulk_paths_ms": 7.170914,
+          "components_ms": 4.919749,
+          "doc_fts_insert_ms": 3.756685,
+          "elapsed_ms": 1850.8272379999999,
+          "encode_facts_ms": 11.723641,
+          "extract_ms": 2265.377193,
+          "fts_insert_ms": 26.140433,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 122.47071700000001,
+            "coverage_dictionaries": 45.434963,
+            "occurrences_and_dependencies": 35.930307,
+            "unique_edges": 24.000225999999998
+          },
+          "index_and_seal_ms": 618.0231,
+          "indexes_ms": 98.400109,
+          "link_ms": 196.48547399999998,
+          "node_row_insert_ms": 22.789503000000003,
+          "persist_files_ms": 153.19775,
+          "persist_graph_ms": 228.04786299999998,
+          "persist_ms": 1047.423507,
+          "rows_ms": 421.65995699999996,
+          "scan_ms": 260.905304,
+          "seal_ms": 519.566114,
+          "sqlite_ingest_ms": 2.333847,
+          "verify_ms": 50.105923
+        },
+        "pipeline": {
+          "budget_bytes": 4603088896,
+          "extracted_files": 309,
+          "extraction_cache_hits": 0,
+          "ingested_files": 309,
+          "max_item_bytes": 2509096,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 10173384
+        },
+        "repetition": 4,
+        "system_seconds": 0.467902,
+        "user_seconds": 3.489528,
+        "wall_seconds": 1.8725496679544449
+      },
+      {
+        "database_bytes": 28311552,
+        "graph": {
+          "components": [
+            ".",
+            "src",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 291,
+            "edges": 20272,
+            "external_imports": 22678,
+            "files": 309,
+            "nodes": 6744,
+            "parse_errors": 2,
+            "unresolved": 38895
+          },
+          "resolution": {
+            "ambiguous": 578,
+            "external_imports": 22678,
+            "resolved": 7275,
+            "resolved_percent_excluding_external": 15.757,
+            "unresolved": 38317
+          },
+          "workspace_root": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+        },
+        "output_root": "0b79c67973f2d0735ed7bf2a26e476edb56a681f0fcf6267e7c078e2f9abb6b7",
+        "peak_rss_bytes": 214499328,
+        "phases_ms": {
+          "bulk_paths_ms": 14.045511,
+          "components_ms": 8.326304,
+          "doc_fts_insert_ms": 7.608028999999999,
+          "elapsed_ms": 3367.574317,
+          "encode_facts_ms": 24.55908,
+          "extract_ms": 4306.308152,
+          "fts_insert_ms": 58.765093,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 275.09128,
+            "coverage_dictionaries": 124.73044000000002,
+            "occurrences_and_dependencies": 93.067932,
+            "unique_edges": 63.677057999999995
+          },
+          "index_and_seal_ms": 968.001365,
+          "indexes_ms": 215.871808,
+          "link_ms": 413.11219700000004,
+          "node_row_insert_ms": 47.866040000000005,
+          "persist_files_ms": 307.938845,
+          "persist_graph_ms": 557.00039,
+          "persist_ms": 1932.500754,
+          "rows_ms": 951.3185990000001,
+          "scan_ms": 510.28674399999994,
+          "seal_ms": 752.114307,
+          "sqlite_ingest_ms": 6.477278,
+          "verify_ms": 65.961438
+        },
+        "pipeline": {
+          "budget_bytes": 4410183680,
+          "extracted_files": 309,
+          "extraction_cache_hits": 0,
+          "ingested_files": 309,
+          "max_item_bytes": 2509096,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 10173384
+        },
+        "repetition": 5,
+        "system_seconds": 0.7414149999999999,
+        "user_seconds": 5.63326,
+        "wall_seconds": 3.395538339857012
+      }
+    ]
+  },
+  "candidate_binary": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache/target/release/contextunity-forge-mcp",
+  "comparison": {
+    "candidate_database_size_change_percent": 0.0,
+    "candidate_wall_change_percent": 10.072,
+    "components_match": true,
+    "graph_count_deltas": {
+      "doc_sections": 0,
+      "edges": 0,
+      "external_imports": 0,
+      "files": 0,
+      "nodes": 0,
+      "parse_errors": 0,
+      "unresolved": 0
+    },
+    "median_paired_wall_change_percent": 14.551,
+    "resolved_coverage_change_percentage_points": 0.0
+  },
+  "config": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache/forge-mcp.yaml",
+  "database_policy": "fresh temporary database per run; removed on completion",
+  "extraction_cache_policy": "fresh temporary extraction cache per run; removed on completion",
+  "workspace": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache"
+}

@@ -29,24 +29,25 @@ def resolve_binary(value: str) -> pathlib.Path:
     return binary
 
 
-def run_build(binary: pathlib.Path, repo: pathlib.Path, db: pathlib.Path, work: pathlib.Path) -> dict[str, float | int]:
+def run_build(
+    binary: pathlib.Path,
+    repo: pathlib.Path,
+    db: pathlib.Path,
+    work: pathlib.Path,
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, float | int]:
     stdout_path = work / "build.stdout"
     stderr_path = work / "build.stderr"
     command = [str(binary), "--root", str(repo), "--db", str(db), "build"]
+    environment = os.environ.copy()
+    if extra_env:
+        environment.update(extra_env)
+    if "FORGE_EXTRACTION_CACHE_DIR" not in environment:
+        environment["FORGE_EXTRACTION_CACHE_DIR"] = str(work / "extraction-cache")
     start = time.perf_counter()
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-        process = subprocess.Popen(command, cwd=repo, stdout=stdout, stderr=stderr)
-        usage = None
-        if hasattr(os, "wait4"):
-            while True:
-                try:
-                    _, status, usage = os.wait4(process.pid, 0)
-                    break
-                except InterruptedError:
-                    continue
-            process.returncode = os.waitstatus_to_exitcode(status)
-        else:
-            process.wait()
+        process = subprocess.Popen(command, cwd=repo, env=environment, stdout=stdout, stderr=stderr)
+        process.wait()
     elapsed = time.perf_counter() - start
     if process.returncode:
         detail = stderr_path.read_text(errors="replace").strip()
@@ -56,13 +57,7 @@ def run_build(binary: pathlib.Path, repo: pathlib.Path, db: pathlib.Path, work: 
     if not db.is_file():
         raise RuntimeError(f"build succeeded without creating its database: {db}")
 
-    result: dict[str, float | int] = {"wall_seconds": elapsed}
-    if usage is not None:
-        result["user_seconds"] = usage.ru_utime
-        result["system_seconds"] = usage.ru_stime
-        peak_rss = usage.ru_maxrss
-        result["peak_rss_bytes"] = peak_rss if os.uname().sysname == "Darwin" else peak_rss * 1024
-    return result
+    return {"wall_seconds": elapsed}
 
 
 def query_overview(binary: pathlib.Path, repo: pathlib.Path, db: pathlib.Path) -> dict[str, Any]:
@@ -120,12 +115,32 @@ def database_bytes(db: pathlib.Path) -> int:
 
 
 def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    keys = ("wall_seconds", "user_seconds", "system_seconds", "peak_rss_bytes", "database_bytes")
+    keys = (
+        "wall_seconds",
+        "index_and_seal_ms",
+        "seal_ms",
+    )
     medians: dict[str, float | int] = {}
     for key in keys:
         values = [float(run[key]) for run in runs if key in run]
         if values:
             medians[key] = round(statistics.median(values), 3 if key.endswith("seconds") else 0)
+    for key in ("extraction_cache_hits", "extracted_files", "ingested_files"):
+        values = [
+            float(run["pipeline"][key])
+            for run in runs
+            if isinstance(run.get("pipeline"), dict) and key in run["pipeline"]
+        ]
+        if values:
+            medians[key] = round(statistics.median(values), 3)
+    for key in ("index_and_seal_ms", "seal_ms"):
+        values = [
+            float(run["phases_ms"][key])
+            for run in runs
+            if isinstance(run.get("phases_ms"), dict) and key in run["phases_ms"]
+        ]
+        if values:
+            medians[key] = round(statistics.median(values), 3)
     return {"runs": runs, "median": medians, "graph": runs[-1]["graph"]}
 
 
@@ -134,8 +149,6 @@ def compare(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, An
     after = candidate["median"]
     before_wall = before["wall_seconds"]
     after_wall = after["wall_seconds"]
-    before_size = before["database_bytes"]
-    after_size = after["database_bytes"]
     baseline_resolution = baseline["graph"]["resolution"]["resolved_percent_excluding_external"]
     candidate_resolution = candidate["graph"]["resolution"]["resolved_percent_excluding_external"]
     count_keys = ("files", "nodes", "edges", "doc_sections", "parse_errors", "unresolved", "external_imports")
@@ -149,9 +162,6 @@ def compare(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, An
     return {
         "candidate_wall_change_percent": round(100 * (after_wall / before_wall - 1), 3)
         if before_wall
-        else None,
-        "candidate_database_size_change_percent": round(100 * (after_size / before_size - 1), 3)
-        if before_size
         else None,
         "resolved_coverage_change_percentage_points": round(candidate_resolution - baseline_resolution, 4),
         "median_paired_wall_change_percent": round(statistics.median(paired_wall_changes), 3)
@@ -192,20 +202,33 @@ def main() -> int:
                 with tempfile.TemporaryDirectory(prefix="forge-cold-coverage-") as directory:
                     work = pathlib.Path(directory)
                     db = work / "index.sqlite"
-                    timing = run_build(binaries[label], repo, db, work)
+                    timing = run_build(
+                        binaries[label],
+                        repo,
+                        db,
+                        work,
+                        extra_env={"FORGE_EXTRACTION_CACHE_DIR": str(work / "extraction-cache")},
+                    )
+                    build = json.loads((work / "build.stdout").read_text())
                     graph = query_overview(binaries[label], repo, db)
                     run = {
                         "repetition": repetition + 1,
                         **timing,
-                        "database_bytes": database_bytes(db),
                         "graph": graph,
+                        "output_root": build.get("output_root"),
+                        "phases_ms": {
+                            key: value for key, value in build.items() if key.endswith("_ms")
+                        },
                     }
+                    if isinstance(build.get("pipeline"), dict):
+                        run["pipeline"] = build["pipeline"]
                     results[label].append(run)
 
         report = {
             "workspace": str(repo),
             "config": str(repo / "forge-mcp.yaml"),
             "database_policy": "fresh temporary database per run; removed on completion",
+            "extraction_cache_policy": "fresh temporary extraction cache per run; removed on completion",
             "build_policy": "sequential cold builds; forge-mcp.yaml and enabled linked_workspaces are read from the supplied workspace",
             "baseline_binary": str(baseline_binary),
             "candidate_binary": str(candidate_binary),

@@ -1,5 +1,5 @@
 use crate::core::models::compact_graph::Graph as CompactGraph;
-use crate::core::typed_facts::{decode_facts, TypedFacts};
+use crate::core::typed_facts::{decode_facts, encode_facts, TypedFacts};
 use crate::engine::languages::module_name;
 use crate::{
     core::{commitments, models::*, schema::SCHEMA_DDL},
@@ -32,12 +32,14 @@ use std::{
 };
 #[path = "batch.rs"]
 mod batch;
+mod cache;
 #[path = "delta.rs"]
 mod delta;
 #[path = "dictionary.rs"]
 mod dictionary;
 #[path = "ingest.rs"]
 mod ingest;
+mod seal;
 
 use batch::*;
 pub use delta::delta;
@@ -197,6 +199,7 @@ impl PipelineControl {
 struct PipelineCounters {
     extracted_files: AtomicUsize,
     ingested_files: AtomicUsize,
+    extraction_cache_hits: AtomicUsize,
     extraction_nanos: AtomicU64,
     ingestion_nanos: AtomicU64,
 }
@@ -218,10 +221,24 @@ struct ExtractionWorkerContext {
     root: PathBuf,
     adapter: Arc<scanner::Adapter>,
     dependencies: Arc<DependencyRegistry>,
+    extraction_cache: Arc<cache::ExtractionCache>,
+    effective_ruleset_hash: Arc<str>,
     work_rx: Arc<Mutex<Receiver<PipelineWork>>>,
     result_tx: SyncSender<std::result::Result<PipelineItem, String>>,
     control: Arc<PipelineControl>,
     counters: Arc<PipelineCounters>,
+    #[cfg(test)]
+    test_hooks: Option<Arc<PipelineTestHooks>>,
+}
+
+struct ColdPipelineInputs<'a> {
+    root: &'a Path,
+    adapter: &'a scanner::Adapter,
+    dependencies: Arc<DependencyRegistry>,
+    extraction_cache: Arc<cache::ExtractionCache>,
+    effective_ruleset_hash: Arc<str>,
+    connection: Connection,
+    budget_bytes: u64,
     #[cfg(test)]
     test_hooks: Option<Arc<PipelineTestHooks>>,
 }
@@ -240,6 +257,7 @@ struct PipelineMetrics {
     oversized_admissions: u64,
     extracted_files: usize,
     ingested_files: usize,
+    extraction_cache_hits: usize,
     scan_ms: f64,
     extraction_ms: f64,
     sqlite_ingest_ms: f64,
@@ -335,7 +353,7 @@ fn extract_typed_source_with_digest(
         ))
         .into());
     }
-    if file.is_doc {
+    let mut typed = if file.is_doc {
         let sections = docs::extract(&file.path, source, file.mtime_ns as f64 / 1e9)?;
         let nodes = sections
             .iter()
@@ -353,13 +371,29 @@ fn extract_typed_source_with_digest(
                 details: json!({"doc_type":d.doc_type,"is_invariant":d.is_invariant}),
             })
             .collect();
-        Ok(TypedFacts::from_public(Facts {
+        TypedFacts::from_public(Facts {
             docs: sections,
             nodes,
             ..Facts::default()
-        }))
+        })
     } else {
-        ast::extract_typed_with_registry(&file.path, &file.language, source, dependencies)
+        ast::extract_typed_with_registry(&file.path, &file.language, source, dependencies)?
+    };
+    sanitize_extracted_facts(&mut typed);
+    Ok(typed)
+}
+
+fn sanitize_extracted_facts(facts: &mut TypedFacts) {
+    for node in &mut facts.facts.nodes {
+        if node.details.get("classic_global") == Some(&serde_json::Value::Bool(true)) {
+            if facts.flows.state(node).is_some() {
+                if let Some(details) = node.details.as_object_mut() {
+                    details.insert("value_flow".into(), serde_json::Value::Null);
+                }
+            } else if let Some(details) = node.details.as_object_mut() {
+                details.remove("value_flow");
+            }
+        }
     }
 }
 
@@ -368,7 +402,9 @@ fn extract_candidate(
     candidate: &BuildCandidate,
     adapter: &scanner::Adapter,
     dependencies: &crate::engine::languages::dependency_registry::DependencyRegistry,
-) -> Result<(FileEntry, TypedFacts)> {
+    extraction_cache: &cache::ExtractionCache,
+    effective_ruleset_hash: &str,
+) -> Result<(FileEntry, TypedFacts, bool)> {
     let path = scanner::resolve_file_path(root, adapter, &candidate.path)?;
     let mut options = OpenOptions::new();
     options.read(true);
@@ -410,8 +446,29 @@ fn extract_candidate(
     }
     let source_digest = commitments::hash(source.as_bytes());
     let file = candidate.clone().into_entry(source_digest.clone());
+    let key = cache::key(
+        &source_digest,
+        &candidate.path,
+        &candidate.language,
+        scanner::INDEX_SEMANTICS_VERSION,
+        effective_ruleset_hash,
+    );
+    let cache_limit = candidate
+        .bytes
+        .saturating_mul(64)
+        .max(512 * 1024)
+        .min(adapter.limits.max_file_bytes.saturating_mul(16));
+    if let Some(mut facts) = extraction_cache.load(&key, cache_limit) {
+        let mtime = candidate.mtime_ns as f64 / 1e9;
+        for section in &mut facts.docs {
+            section.mtime = mtime;
+        }
+        sanitize_extracted_facts(&mut facts);
+        return Ok((file, facts, true));
+    }
     let facts = extract_typed_source_with_digest(&file, &source, &source_digest, dependencies)?;
-    Ok((file, facts))
+    extraction_cache.store(&key, &facts);
+    Ok((file, facts, false))
 }
 
 fn prepare_pipeline_schema(
@@ -440,13 +497,19 @@ fn prepare_pipeline_schema(
 }
 
 fn run_cold_pipeline(
-    root: &Path,
-    adapter: &scanner::Adapter,
-    dependencies: Arc<DependencyRegistry>,
-    connection: Connection,
-    budget_bytes: u64,
-    #[cfg(test)] test_hooks: Option<Arc<PipelineTestHooks>>,
+    inputs: ColdPipelineInputs<'_>,
 ) -> Result<(PipelineConsumerOutput, PipelineMetrics)> {
+    let ColdPipelineInputs {
+        root,
+        adapter,
+        dependencies,
+        extraction_cache,
+        effective_ruleset_hash,
+        connection,
+        budget_bytes,
+        #[cfg(test)]
+        test_hooks,
+    } = inputs;
     let worker_count = rayon::current_num_threads().max(1);
     let channel_capacity = worker_count.saturating_mul(2).max(1);
     let byte_budget = ByteBudget::new(budget_bytes);
@@ -488,6 +551,8 @@ fn run_cold_pipeline(
         let worker_root = root.clone();
         let worker_adapter = Arc::clone(&adapter);
         let worker_dependencies = Arc::clone(&dependencies);
+        let worker_extraction_cache = Arc::clone(&extraction_cache);
+        let worker_ruleset_hash = Arc::clone(&effective_ruleset_hash);
         let worker_rx = Arc::clone(&work_rx);
         let worker_tx = result_tx.clone();
         let worker_control = Arc::clone(&control);
@@ -500,6 +565,8 @@ fn run_cold_pipeline(
                 root: worker_root,
                 adapter: worker_adapter,
                 dependencies: worker_dependencies,
+                extraction_cache: worker_extraction_cache,
+                effective_ruleset_hash: worker_ruleset_hash,
                 work_rx: worker_rx,
                 result_tx: worker_tx,
                 control: worker_control,
@@ -617,6 +684,7 @@ fn run_cold_pipeline(
         oversized_admissions: byte_state.oversized_admissions,
         extracted_files: counters.extracted_files.load(Ordering::Acquire),
         ingested_files: counters.ingested_files.load(Ordering::Acquire),
+        extraction_cache_hits: counters.extraction_cache_hits.load(Ordering::Acquire),
         scan_ms,
         extraction_ms: counters.extraction_nanos.load(Ordering::Acquire) as f64 / 1_000_000.,
         sqlite_ingest_ms: counters.ingestion_nanos.load(Ordering::Acquire) as f64 / 1_000_000.,
@@ -631,6 +699,8 @@ fn extraction_worker(context: ExtractionWorkerContext) {
         root,
         adapter,
         dependencies,
+        extraction_cache,
+        effective_ruleset_hash,
         work_rx,
         result_tx,
         control,
@@ -660,7 +730,14 @@ fn extraction_worker(context: ExtractionWorkerContext) {
             hooks.overlap_barrier.wait();
         }
         let extraction_started = Instant::now();
-        let extracted = extract_candidate(&root, &work.candidate, &adapter, &dependencies);
+        let extracted = extract_candidate(
+            &root,
+            &work.candidate,
+            &adapter,
+            &dependencies,
+            &extraction_cache,
+            &effective_ruleset_hash,
+        );
         counters.extraction_nanos.fetch_add(
             extraction_started
                 .elapsed()
@@ -668,7 +745,7 @@ fn extraction_worker(context: ExtractionWorkerContext) {
                 .min(u64::MAX as u128) as u64,
             Ordering::AcqRel,
         );
-        let (file, facts) = match extracted {
+        let (file, facts, cache_hit) = match extracted {
             Ok(value) => value,
             Err(error) => {
                 let message = error.to_string();
@@ -678,6 +755,11 @@ fn extraction_worker(context: ExtractionWorkerContext) {
                 continue;
             }
         };
+        if cache_hit {
+            counters
+                .extraction_cache_hits
+                .fetch_add(1, Ordering::AcqRel);
+        }
         counters.extracted_files.fetch_add(1, Ordering::AcqRel);
         let item = PipelineItem {
             file,
@@ -878,152 +960,184 @@ fn populate(
     let dependencies = build_inputs.dependency_registry;
     let graph = linker::link_compact_with_typed_registry(facts, None, Some(root), dependencies);
     let link_ms = linking.elapsed().as_secs_f64() * 1000.;
-    let writing = Instant::now();
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    cached(
-        &tx,
-        "INSERT INTO node_search(node_search) VALUES('delete-all')",
-        [],
-    )?;
-    cached(
-        &tx,
-        "INSERT INTO doc_search(doc_search) VALUES('delete-all')",
-        [],
-    )
-    .ok();
-    cached(&tx, "DELETE FROM shared_keys", [])?;
-    for table in commitments::DOMAINS {
-        cached(&tx, &format!("DELETE FROM {table}"), [])?;
-    }
-    cached(&tx, "DELETE FROM path_dictionary", [])?;
-    cached(&tx, "DELETE FROM domain_commitments", [])?;
-    cached(&tx, "DELETE FROM coverage_evidence", [])?;
-    cached(&tx, "DELETE FROM coverage_expressions", [])?;
-    for (k, v) in [
-        ("schema_version", scanner::ENGINE_SCHEMA_VERSION.to_owned()),
-        (
-            "index_semantics_version",
-            scanner::INDEX_SEMANTICS_VERSION.to_owned(),
-        ),
-        ("indexer_engine", "contextunity-forge-mcp-rust".to_owned()),
-        ("workspace_root", root.to_string_lossy().into_owned()),
-        ("adapter", policy(root, adapter).to_string()),
-        (
-            "adapter_version",
-            adapter.adapter_version.clone().unwrap_or_default(),
-        ),
-        ("adapter_digest", adapter.digest.clone()),
-        ("manifest_digest", dependencies.digest().to_owned()),
-        (
-            "adapter_linked_workspaces",
-            serde_json::to_string(&adapter.linked_workspaces)?,
-        ),
-        ("inventory_snapshot", serde_json::to_string(entries)?),
-        (
-            "corpus_hash",
-            commitments::hash(&serde_json::to_vec(entries)?),
-        ),
-    ] {
+    std::thread::scope(|scope| -> Result<Value> {
+        let graph_ref = &graph;
+        let projection_started = Instant::now();
+        let projection_thread = scope.spawn(move || {
+            let mut timings = seal::ProjectionTimings::default();
+            let leaves = seal::logical_domain_leaves(
+                entries,
+                facts,
+                graph_ref,
+                encoded_facts,
+                &mut timings,
+            )?;
+            Ok::<_, anyhow::Error>((
+                leaves,
+                timings,
+                projection_started.elapsed().as_secs_f64() * 1000.,
+            ))
+        });
+        let writing = Instant::now();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         cached(
             &tx,
-            "INSERT OR REPLACE INTO metadata VALUES(?1,?2)",
-            params![k, v],
+            "INSERT INTO node_search(node_search) VALUES('delete-all')",
+            [],
         )?;
-    }
-    let mut path_cache = PathDictionaryCache::new();
-    let all_paths = entries
-        .iter()
-        .map(|e| e.path.as_str())
-        .chain(graph.edges.iter().map(|e| e.path.as_str()))
-        .chain(graph.coverage.iter().map(|c| c.path.as_str()))
-        .chain(
-            entries
-                .iter()
-                .filter_map(|entry| facts.get(&entry.path))
-                .flat_map(|file_facts| file_facts.nodes.iter().map(|node| node.path.as_str())),
-        );
-    let t_bulk = Instant::now();
-    path_cache.bulk_insert(&tx, all_paths)?;
-    let bulk_paths_ms = t_bulk.elapsed().as_secs_f64() * 1000.;
-    let mut node_paths: hashbrown::HashMap<String, Option<CachedNodePath>> =
-        hashbrown::HashMap::with_capacity(facts.values().map(|f| f.nodes.len()).sum());
-    let mut shared_paths = hashbrown::HashMap::<&str, Arc<str>>::new();
-    for f in facts.values() {
-        for n in &f.nodes {
-            let shared_path = shared_paths
-                .entry(n.path.as_str())
-                .or_insert_with(|| Arc::<str>::from(n.path.as_str()));
-            node_paths.insert(
-                n.id.clone(),
-                Some(CachedNodePath::from_shared(&n.id, Arc::clone(shared_path))),
-            );
+        cached(
+            &tx,
+            "INSERT INTO doc_search(doc_search) VALUES('delete-all')",
+            [],
+        )
+        .ok();
+        cached(&tx, "DELETE FROM shared_keys", [])?;
+        for table in commitments::DOMAINS {
+            cached(&tx, &format!("DELETE FROM {table}"), [])?;
         }
-    }
+        cached(&tx, "DELETE FROM path_dictionary", [])?;
+        cached(&tx, "DELETE FROM domain_commitments", [])?;
+        cached(&tx, "DELETE FROM coverage_evidence", [])?;
+        cached(&tx, "DELETE FROM coverage_expressions", [])?;
+        for (k, v) in [
+            ("schema_version", scanner::ENGINE_SCHEMA_VERSION.to_owned()),
+            (
+                "index_semantics_version",
+                scanner::INDEX_SEMANTICS_VERSION.to_owned(),
+            ),
+            ("indexer_engine", "contextunity-forge-mcp-rust".to_owned()),
+            ("workspace_root", root.to_string_lossy().into_owned()),
+            ("adapter", policy(root, adapter).to_string()),
+            (
+                "adapter_version",
+                adapter.adapter_version.clone().unwrap_or_default(),
+            ),
+            ("adapter_digest", adapter.digest.clone()),
+            ("manifest_digest", dependencies.digest().to_owned()),
+            (
+                "adapter_linked_workspaces",
+                serde_json::to_string(&adapter.linked_workspaces)?,
+            ),
+            ("inventory_snapshot", serde_json::to_string(entries)?),
+            (
+                "corpus_hash",
+                commitments::hash(&serde_json::to_vec(entries)?),
+            ),
+        ] {
+            cached(
+                &tx,
+                "INSERT OR REPLACE INTO metadata VALUES(?1,?2)",
+                params![k, v],
+            )?;
+        }
+        let mut path_cache = PathDictionaryCache::new();
+        let all_paths = entries
+            .iter()
+            .map(|e| e.path.as_str())
+            .chain(graph.edges.iter().map(|e| e.path.as_str()))
+            .chain(graph.coverage.iter().map(|c| c.path.as_str()))
+            .chain(
+                entries
+                    .iter()
+                    .filter_map(|entry| facts.get(&entry.path))
+                    .flat_map(|file_facts| file_facts.nodes.iter().map(|node| node.path.as_str())),
+            );
+        let t_bulk = Instant::now();
+        path_cache.bulk_insert(&tx, all_paths)?;
+        let bulk_paths_ms = t_bulk.elapsed().as_secs_f64() * 1000.;
+        let mut node_paths: hashbrown::HashMap<String, Option<CachedNodePath>> =
+            hashbrown::HashMap::with_capacity(facts.values().map(|f| f.nodes.len()).sum());
+        let mut shared_paths = hashbrown::HashMap::<&str, Arc<str>>::new();
+        for f in facts.values() {
+            for n in &f.nodes {
+                let shared_path = shared_paths
+                    .entry(n.path.as_str())
+                    .or_insert_with(|| Arc::<str>::from(n.path.as_str()));
+                node_paths.insert(
+                    n.id.clone(),
+                    Some(CachedNodePath::from_shared(&n.id, Arc::clone(shared_path))),
+                );
+            }
+        }
 
-    let t_files = Instant::now();
-    let file_timings = persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
-    let node_id = file_timings.node_id;
-    let node_row_count = file_timings.node_row_count;
-    let node_row_insert_ms = file_timings
-        .node_row_insert_ms
-        .context("cold file persistence must report node row insertion time")?;
-    let docs_count = file_timings.docs_count;
-    let fts_insert_ms = file_timings.fts_insert_ms;
-    let encode_facts_ms = file_timings.encode_facts_ms;
-    let local_facts_batch_rows = file_timings.local_facts_batch_rows;
-    let persist_files_ms = t_files.elapsed().as_secs_f64() * 1000. - fts_insert_ms;
-    let t_doc_fts = Instant::now();
-    if docs_count > 0 {
-        tx.execute(
+        let t_files = Instant::now();
+        let file_timings =
+            persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
+        let node_id = file_timings.node_id;
+        let node_row_count = file_timings.node_row_count;
+        let node_row_insert_ms = file_timings
+            .node_row_insert_ms
+            .context("cold file persistence must report node row insertion time")?;
+        let docs_count = file_timings.docs_count;
+        let fts_insert_ms = file_timings.fts_insert_ms;
+        let encode_facts_ms = file_timings.encode_facts_ms;
+        let local_facts_batch_rows = file_timings.local_facts_batch_rows;
+        let persist_files_ms = t_files.elapsed().as_secs_f64() * 1000. - fts_insert_ms;
+        let t_doc_fts = Instant::now();
+        if docs_count > 0 {
+            tx.execute(
             "INSERT INTO doc_search(rowid,section_title,content,invariants) SELECT rowid,section_title,content,invariants FROM doc_sections",
             [],
         )?;
-    }
-    let doc_fts_insert_ms = t_doc_fts.elapsed().as_secs_f64() * 1000.;
+        }
+        let doc_fts_insert_ms = t_doc_fts.elapsed().as_secs_f64() * 1000.;
 
-    let t_graph = Instant::now();
-    let graph_timings = persist_graph(
-        &tx,
-        &mut path_cache,
-        &graph,
-        facts,
-        None,
-        &mut node_paths,
-        true,
-    )?;
-    let persist_graph_ms = t_graph.elapsed().as_secs_f64() * 1000.;
+        let t_graph = Instant::now();
+        let graph_timings = persist_graph(
+            &tx,
+            &mut path_cache,
+            &graph,
+            facts,
+            None,
+            &mut node_paths,
+            true,
+        )?;
+        let persist_graph_ms = t_graph.elapsed().as_secs_f64() * 1000.;
 
-    let rows_ms = writing.elapsed().as_secs_f64() * 1000.;
-    tx.commit()?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-    let index_and_seal = Instant::now();
-    let index_sql = format!("CREATE INDEX{indexes}");
-    let index_candidate = |conn: &mut Connection| -> Result<f64> {
-        let started = Instant::now();
-        conn.execute_batch("PRAGMA cache_size=-262144; PRAGMA temp_store=MEMORY;")?;
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute_batch(&index_sql)?;
+        let rows_ms = writing.elapsed().as_secs_f64() * 1000.;
         tx.commit()?;
-        Ok(started.elapsed().as_secs_f64() * 1000.)
-    };
-    let indexes_ms = index_candidate(conn)?;
-    let started = Instant::now();
-    let seal = commitments::seal_snapshot(conn)?;
-    let seal_ms = started.elapsed().as_secs_f64() * 1000.;
-    conn.execute_batch(&format!("PRAGMA cache_size=-{cache_kb};"))?;
-    let index_and_seal_ms = index_and_seal.elapsed().as_secs_f64() * 1000.;
-    let persist_ms = writing.elapsed().as_secs_f64() * 1000.;
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-    let mut report = json!({"files":entries.len(),"nodes":node_id,"node_row_count":node_row_count,"node_row_insert_ms":node_row_insert_ms,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"doc_fts_insert_ms":doc_fts_insert_ms,"persist_graph_ms":persist_graph_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms,"encode_facts_ms":encode_facts_ms,"sqlite_ingestion":{"mode":"deferred-index-batched","secondary_indexes_deferred":true,"batch_rows":local_facts_batch_rows}});
-    report["graph_phases_ms"] = json!({"occurrences_and_dependencies":graph_timings.occurrences,"unique_edges":graph_timings.edges,"coverage_dictionaries":graph_timings.dictionaries,"coverage_and_unresolved":graph_timings.coverage});
-    report["index_and_seal_ms"] = json!(index_and_seal_ms);
-    report["framework_rule_diagnostics"] = json!(dependencies.framework_rule_diagnostics(
-        entries
-            .iter()
-            .map(|file| (file.path.as_str(), file.language.as_str()))
-    ));
-    Ok(report)
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        let index_and_seal = Instant::now();
+        let index_sql = format!("CREATE INDEX{indexes}");
+        let index_candidate = |conn: &mut Connection| -> Result<f64> {
+            let started = Instant::now();
+            conn.execute_batch(&format!(
+                "PRAGMA cache_size=-{cache_kb}; PRAGMA temp_store=MEMORY;"
+            ))?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute_batch(&index_sql)?;
+            tx.commit()?;
+            Ok(started.elapsed().as_secs_f64() * 1000.)
+        };
+        let indexes_ms = index_candidate(conn)?;
+        let t_fts = Instant::now();
+        let fts_digests = commitments::fts_commitment_digests(conn)?;
+        let seal_fts_ms = t_fts.elapsed().as_secs_f64() * 1000.;
+        let (logical_commitments, projection_timings, seal_projection_ms) = projection_thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("in-memory seal projection thread panicked"))??;
+        let seal_started = Instant::now();
+        let snapshot_started = Instant::now();
+        let (seal, snapshot_timings): (String, commitments::SnapshotTimings) =
+            commitments::seal_snapshot_from_projection(conn, logical_commitments, fts_digests)?;
+        let seal_snapshot_ms = snapshot_started.elapsed().as_secs_f64() * 1000.;
+        let seal_ms = seal_started.elapsed().as_secs_f64() * 1000.;
+        conn.execute_batch(&format!("PRAGMA cache_size=-{cache_kb};"))?;
+        let index_and_seal_ms = index_and_seal.elapsed().as_secs_f64() * 1000.;
+        let persist_ms = writing.elapsed().as_secs_f64() * 1000.;
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        let mut report = json!({"files":entries.len(),"nodes":node_id,"node_row_count":node_row_count,"node_row_insert_ms":node_row_insert_ms,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":scanner::ENGINE_SCHEMA_VERSION,"link_ms":link_ms,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"doc_fts_insert_ms":doc_fts_insert_ms,"persist_graph_ms":persist_graph_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms,"seal_projection_ms":seal_projection_ms,"seal_fts_ms":seal_fts_ms,"seal_file_domains_ms":projection_timings.file_domains_ms,"seal_node_domain_ms":projection_timings.node_domain_ms,"seal_graph_edges_ms":projection_timings.graph_edges_ms,"seal_graph_occurrences_ms":projection_timings.graph_occurrences_ms,"seal_graph_unique_edges_ms":projection_timings.graph_unique_edges_ms,"seal_graph_shared_owners_ms":projection_timings.graph_shared_owners_ms,"seal_graph_coverage_ms":projection_timings.graph_coverage_ms,"seal_graph_dependencies_ms":projection_timings.graph_dependencies_ms,"seal_graph_domains_ms":projection_timings.graph_domains_ms,"seal_snapshot_ms":seal_snapshot_ms,"seal_snapshot_logical_domains_ms":snapshot_timings.logical_domains_ms,"seal_snapshot_install_ms":snapshot_timings.install_ms,"encode_facts_ms":encode_facts_ms,"sqlite_ingestion":{"mode":"deferred-index-batched","secondary_indexes_deferred":true,"batch_rows":local_facts_batch_rows}});
+        report["graph_phases_ms"] = json!({"occurrences_and_dependencies":graph_timings.occurrences,"unique_edges":graph_timings.edges,"coverage_dictionaries":graph_timings.dictionaries,"coverage_and_unresolved":graph_timings.coverage});
+        report["index_and_seal_ms"] = json!(index_and_seal_ms);
+        report["commitment_seal_mode"] = json!("in-memory-projection");
+        report["framework_rule_diagnostics"] = json!(dependencies.framework_rule_diagnostics(
+            entries
+                .iter()
+                .map(|file| (file.path.as_str(), file.language.as_str()))
+        ));
+        Ok(report)
+    })
 }
 fn components(facts: &mut BTreeMap<String, TypedFacts>) {
     let owners = component_owners(facts.iter().filter_map(|(path, f)| {
@@ -1089,6 +1203,7 @@ fn atomic_build(
     output: &Path,
     adapter: &scanner::Adapter,
     dependencies: Arc<DependencyRegistry>,
+    extraction_cache: Arc<cache::ExtractionCache>,
     memory_budget: u64,
     #[cfg(test)] test_hooks: Option<Arc<PipelineTestHooks>>,
 ) -> Result<Value> {
@@ -1145,15 +1260,20 @@ fn atomic_build(
             #[cfg(test)]
             test_hooks.as_deref(),
         )?;
-        let (mut streamed, pipeline_metrics) = run_cold_pipeline(
+        let (mut streamed, pipeline_metrics) = run_cold_pipeline(ColdPipelineInputs {
             root,
             adapter,
-            Arc::clone(&dependencies),
-            conn,
-            memory_budget,
+            dependencies: Arc::clone(&dependencies),
+            extraction_cache: Arc::clone(&extraction_cache),
+            effective_ruleset_hash: Arc::<str>::from(cache::effective_ruleset_hash(
+                &adapter.digest,
+                dependencies.digest(),
+            )),
+            connection: conn,
+            budget_bytes: memory_budget,
             #[cfg(test)]
-            test_hooks.clone(),
-        )?;
+            test_hooks: test_hooks.clone(),
+        })?;
         streamed
             .entries
             .sort_by(|left, right| left.path.cmp(&right.path));
@@ -1161,19 +1281,29 @@ fn atomic_build(
         let _ = ast::route_includes::compose_django_route_includes(&mut streamed.facts);
         components(&mut streamed.facts);
         let components_ms = preparing_components.elapsed().as_secs_f64() * 1000.;
+        let encoding_facts = Instant::now();
+        let encoded_facts: hashbrown::HashMap<String, Vec<u8>> = streamed
+            .facts
+            .par_iter()
+            .map(|(path, facts)| encode_facts(facts).map(|encoded| (path.clone(), encoded)))
+            .collect::<Result<_>>()?;
+        let preencoded_facts_ms = encoding_facts.elapsed().as_secs_f64() * 1000.;
         let mut report = populate(
             &mut streamed.connection,
             root,
             adapter,
             &streamed.entries,
             &streamed.facts,
-            None,
+            Some(&encoded_facts),
             BuildInputs {
                 dependency_registry: &dependencies,
                 memory_budget,
                 schema_ready: true,
             },
         )?;
+        let persisted_encode_facts_ms = report["encode_facts_ms"].as_f64().unwrap_or_default();
+        report["encode_facts_ms"] = json!(preencoded_facts_ms + persisted_encode_facts_ms);
+        report["preencoded_facts_ms"] = json!(preencoded_facts_ms);
         report["memory_budget_bytes"] = json!(memory_budget);
         report["scanned_files"] = json!(pipeline_metrics.scanned_files);
         report["scanned_bytes"] = json!(pipeline_metrics.scanned_bytes);
@@ -1187,6 +1317,7 @@ fn atomic_build(
             "oversized_admissions": pipeline_metrics.oversized_admissions,
             "extracted_files": pipeline_metrics.extracted_files,
             "ingested_files": pipeline_metrics.ingested_files,
+            "extraction_cache_hits": pipeline_metrics.extraction_cache_hits,
         });
         report["sqlite_ingest_ms"] = json!(pipeline_metrics.sqlite_ingest_ms);
         let verifying = Instant::now();
@@ -1255,6 +1386,39 @@ fn build_inner(
     adapter_path: Option<&Path>,
     #[cfg(test)] test_hooks: Option<Arc<PipelineTestHooks>>,
 ) -> Result<Value> {
+    build_inner_with_cache(
+        root,
+        output,
+        adapter_path,
+        Arc::new(cache::ExtractionCache::new(cache::default_cache_root())),
+        #[cfg(test)]
+        test_hooks,
+    )
+}
+
+#[cfg(test)]
+fn build_with_cache_dir(
+    root: &Path,
+    output: &Path,
+    adapter_path: Option<&Path>,
+    cache_dir: &Path,
+) -> Result<Value> {
+    build_inner_with_cache(
+        root,
+        output,
+        adapter_path,
+        Arc::new(cache::ExtractionCache::new(Some(cache_dir.to_owned()))),
+        None,
+    )
+}
+
+fn build_inner_with_cache(
+    root: &Path,
+    output: &Path,
+    adapter_path: Option<&Path>,
+    extraction_cache: Arc<cache::ExtractionCache>,
+    #[cfg(test)] test_hooks: Option<Arc<PipelineTestHooks>>,
+) -> Result<Value> {
     let started = Instant::now();
     let root = scanner::canonical_root(root)?;
     let adapter = scanner::load_adapter(&root, adapter_path)?;
@@ -1273,6 +1437,7 @@ fn build_inner(
         output,
         &adapter,
         dependencies,
+        extraction_cache,
         budget,
         #[cfg(test)]
         test_hooks,

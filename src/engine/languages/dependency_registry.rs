@@ -347,7 +347,8 @@ impl DependencyRegistry {
             .filter(|profile| !profile.manifest_filenames().is_empty())
             .collect();
         let mut visited = HashSet::new();
-        let mut snapshots = std::collections::BTreeMap::new();
+        let mut snapshots =
+            std::collections::BTreeMap::<String, sha2::digest::Output<Sha256>>::new();
         let mut parsed_families = Vec::with_capacity(profiles.len());
         for (root, prefix, ignored_names) in roots {
             let manifest_paths = if let Some(discovered) = discovered_manifests {
@@ -387,6 +388,14 @@ impl DependencyRegistry {
                 else {
                     continue;
                 };
+                let Some(relative_path) = path.strip_prefix(&root).ok() else {
+                    continue;
+                };
+                let origin = format!(
+                    "{}{}",
+                    prefix,
+                    relative_path.to_string_lossy().replace('\\', "/")
+                );
                 let mut scope = prefix.clone();
                 scope.push_str(&directory.to_string_lossy().replace('\\', "/"));
                 let scope = scope.trim_end_matches('/').to_owned();
@@ -403,7 +412,7 @@ impl DependencyRegistry {
                         .typescript_paths
                         .record_config(&scope, filename, &content);
                 }
-                snapshots.insert(path.clone(), Sha256::digest(content.as_bytes()));
+                snapshots.insert(origin.clone(), Sha256::digest(content.as_bytes()));
                 if filename == "pnpm-workspace.yaml"
                     || (filename.starts_with("tsconfig") && filename.ends_with(".json"))
                 {
@@ -418,16 +427,6 @@ impl DependencyRegistry {
                     parsed_families.push(family);
                     let dependencies = profile.extract_manifest_dependencies(filename, &content);
                     {
-                        let origin = path
-                            .strip_prefix(&root)
-                            .map(|relative| {
-                                format!(
-                                    "{}{}",
-                                    prefix,
-                                    relative.to_string_lossy().replace('\\', "/")
-                                )
-                            })
-                            .unwrap_or_else(|_| filename.to_owned());
                         let origins = registry
                             .scoped_origins
                             .entry(family)
@@ -458,6 +457,7 @@ impl DependencyRegistry {
             load_framework_manifests(
                 &root,
                 prefix.trim_end_matches('/'),
+                &prefix,
                 &mut registry,
                 &mut snapshots,
             )?;
@@ -466,7 +466,6 @@ impl DependencyRegistry {
         registry.typescript_paths.resolve_all();
         let mut hasher = Sha256::new();
         for (path, digest) in snapshots {
-            let path = path.to_string_lossy();
             hasher.update((path.len() as u64).to_be_bytes());
             hasher.update(path.as_bytes());
             hasher.update(digest);
@@ -726,8 +725,9 @@ fn load_standard_framework_manifests(registry: &mut DependencyRegistry) -> Resul
 fn load_framework_manifests(
     root: &Path,
     workspace: &str,
+    origin_prefix: &str,
     registry: &mut DependencyRegistry,
-    snapshots: &mut std::collections::BTreeMap<PathBuf, sha2::digest::Output<Sha256>>,
+    snapshots: &mut std::collections::BTreeMap<String, sha2::digest::Output<Sha256>>,
 ) -> Result<()> {
     let forge_directory = root.join(".forge");
     let forge_metadata = match fs::symlink_metadata(&forge_directory) {
@@ -842,7 +842,19 @@ fn load_framework_manifests(
         {
             bail!("duplicate framework manifest {name} in workspace {workspace}");
         }
-        snapshots.insert(path, Sha256::digest(content.as_bytes()));
+        let relative_path = path.strip_prefix(root).with_context(|| {
+            format!(
+                "framework manifest {} escaped its workspace root {}",
+                path.display(),
+                root.display()
+            )
+        })?;
+        let origin = format!(
+            "{}{}",
+            origin_prefix,
+            relative_path.to_string_lossy().replace('\\', "/")
+        );
+        snapshots.insert(origin, Sha256::digest(content.as_bytes()));
     }
     Ok(())
 }
@@ -875,6 +887,62 @@ pub fn is_dependency_manifest_filename(filename: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn dependency_registry_digest_is_stable_across_worktrees() {
+        struct TemporaryDirectory(PathBuf);
+        impl Drop for TemporaryDirectory {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temporary = TemporaryDirectory(std::env::temp_dir().join(format!(
+            "forge-cross-worktree-registry-{}-{nonce}",
+            std::process::id()
+        )));
+        let first_root = temporary.0.join("commerce");
+        let second_root = temporary.0.join("commerce-worktree-b");
+        for root in [&first_root, &second_root] {
+            fs::create_dir_all(root.join(".forge/frameworks")).unwrap();
+            fs::write(
+                root.join("pyproject.toml"),
+                "[project]\nname='commerce-fixture'\ndependencies=['django']\n",
+            )
+            .unwrap();
+            fs::write(
+                root.join(".forge/frameworks/django.toml"),
+                "replace = true\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n",
+            )
+            .unwrap();
+        }
+
+        let first = DependencyRegistry::try_collect(&first_root, None, None).unwrap();
+        let second = DependencyRegistry::try_collect(&second_root, None, None).unwrap();
+
+        assert_eq!(
+            first.digest(),
+            second.digest(),
+            "identical manifests must produce one registry digest across worktree roots"
+        );
+
+        fs::write(
+            first_root.join("pyproject.toml"),
+            "[project]\nname='commerce-fixture'\ndependencies=['django', 'fastapi']\n",
+        )
+        .unwrap();
+        let changed = DependencyRegistry::try_collect(&first_root, None, None).unwrap();
+        assert_ne!(
+            changed.digest(),
+            second.digest(),
+            "manifest content changes must produce a new registry digest"
+        );
+    }
 
     #[cfg(feature = "lang-python")]
     #[test]

@@ -8,7 +8,9 @@ mod coverage_leaves;
 mod domain_leaves;
 mod snapshot;
 
+#[cfg(test)]
 pub(crate) use snapshot::seal_snapshot;
+pub(crate) use snapshot::{fts_commitment_digests, seal_snapshot_from_projection, SnapshotTimings};
 /// Domain-separated owner commitment algorithm persisted in index metadata.
 pub const ALGORITHM: &str = "forge-owner-sha256-v2";
 /// Logical table domains included in the deterministic output root.

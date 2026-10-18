@@ -1,4 +1,4 @@
-use super::{build, populate, sqlite_cache_size_kib};
+use super::{build, build_with_cache_dir, cache, populate, sqlite_cache_size_kib};
 use crate::engine::scanner;
 use rusqlite::Connection;
 use std::{
@@ -490,4 +490,218 @@ fn cold_pipeline_consumer_error_cancels_stages_and_preserves_previous_database()
     let verified_root = commitments::seal_snapshot(&connection).unwrap();
     assert_eq!(verified_root, original_root);
     assert_no_pipeline_stage(database.parent().unwrap());
+}
+
+#[test]
+fn extraction_cache_key_covers_all_semantic_inputs_and_ignores_roots() {
+    let base = cache::key("source", "src/lib.rs", "rust", "extractor-v1", "rules-v1");
+    for changed in [
+        cache::key("source-2", "src/lib.rs", "rust", "extractor-v1", "rules-v1"),
+        cache::key("source", "src/main.rs", "rust", "extractor-v1", "rules-v1"),
+        cache::key(
+            "source",
+            "src/lib.rs",
+            "typescript",
+            "extractor-v1",
+            "rules-v1",
+        ),
+        cache::key("source", "src/lib.rs", "rust", "extractor-v2", "rules-v1"),
+        cache::key("source", "src/lib.rs", "rust", "extractor-v1", "rules-v2"),
+    ] {
+        assert_ne!(
+            base, changed,
+            "each cache identity field must invalidate reuse"
+        );
+    }
+}
+
+#[test]
+fn extraction_cache_corruption_and_write_failures_fall_back_cleanly() {
+    let workspace = TemporaryRoot::new();
+    let cache_dir = workspace.0.join("cache");
+    let cache = cache::ExtractionCache::new(Some(cache_dir.clone()));
+    let key = cache::key("source", "src/lib.rs", "rust", "extractor", "rules");
+    let facts = crate::core::typed_facts::TypedFacts::default();
+    assert!(cache.store(&key, &facts));
+    assert!(cache.load(&key, 1024).is_some());
+
+    let entry = cache_dir.join(&key[..2]).join(format!("{key}.facts"));
+    fs::write(entry, b"corrupt").unwrap();
+    assert!(cache.load(&key, 1024).is_none());
+
+    let blocked = workspace.0.join("cache-path-is-a-file");
+    fs::write(&blocked, b"block directory creation").unwrap();
+    let failing_cache = cache::ExtractionCache::new(Some(blocked));
+    assert!(!failing_cache.store(&key, &facts));
+}
+
+#[test]
+fn extraction_cache_concurrent_publication_never_exposes_partial_facts() {
+    let workspace = TemporaryRoot::new();
+    let cache = std::sync::Arc::new(cache::ExtractionCache::new(Some(workspace.0.join("cache"))));
+    let key = cache::key("source", "src/lib.rs", "rust", "extractor", "rules");
+    let facts = crate::core::typed_facts::TypedFacts::default();
+    let mut writers = Vec::new();
+    for _ in 0..8 {
+        let cache = std::sync::Arc::clone(&cache);
+        let key = key.clone();
+        let facts = facts.clone();
+        writers.push(std::thread::spawn(move || {
+            assert!(cache.store(&key, &facts));
+        }));
+    }
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    assert!(cache.load(&key, 1024).is_some());
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn cross_worktree_cached_facts_keep_all_commitments_valid() {
+    let workspace = TemporaryRoot::new();
+    let marker = workspace
+        .0
+        .join("cache-key-unique-marker")
+        .display()
+        .to_string();
+    let source = format!(
+        "pub fn cache_fixture() -> &'static str {{ {:?} }}\n",
+        marker
+    );
+    let first_root = workspace.0.join("worktrees/first");
+    let second_root = workspace.0.join("worktrees/second");
+    for root in [&first_root, &second_root] {
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), &source).unwrap();
+    }
+
+    let first_db = workspace.0.join("first.sqlite");
+    let cache_dir = workspace.0.join("shared-cache");
+    build_with_cache_dir(&first_root, &first_db, None, &cache_dir).unwrap();
+    let first_node_root: String = Connection::open(&first_db)
+        .unwrap()
+        .query_row(
+            "SELECT lower(hex(digest)) FROM domain_commitments WHERE domain='nodes' AND owner_id=0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let second_db = workspace.0.join("second.sqlite");
+    let second_report = build_with_cache_dir(&second_root, &second_db, None, &cache_dir).unwrap();
+
+    assert_eq!(
+        first_node_root,
+        Connection::open(&second_db)
+            .unwrap()
+            .query_row(
+                "SELECT lower(hex(digest)) FROM domain_commitments WHERE domain='nodes' AND owner_id=0",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "identical relative paths and source bytes must retain the same logical node commitment across worktrees"
+    );
+    assert_eq!(
+        second_report["commitment_seal_mode"].as_str(),
+        Some("in-memory-projection"),
+        "cold builds must seal the 13 logical domains from the post-linking in-memory projection"
+    );
+    assert!(
+        second_report["pipeline"]["extraction_cache_hits"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0,
+        "the second worktree must reuse cached facts for identical source inputs"
+    );
+
+    for path in [&first_db, &second_db] {
+        let conn = Connection::open(path).unwrap();
+        crate::core::commitments::verify(&conn).unwrap();
+        let domain_count: i64 = conn
+            .query_row(
+                "SELECT count(DISTINCT domain) FROM domain_commitments",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            domain_count, 17,
+            "all logical and FTS domains must be sealed"
+        );
+    }
+}
+
+#[cfg(feature = "lang-html")]
+#[test]
+fn html_script_cache_preserves_linking_coverage() {
+    let workspace = TemporaryRoot::new();
+    let root = workspace.0.join("root");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("base.html"),
+        r#"
+<script>
+    function toggleTheme() {
+        const html = document.documentElement;
+        const current = html.getAttribute('data-theme');
+        const next = current === 'dark' ? 'light' : 'dark';
+        html.setAttribute('data-theme', next);
+    }
+</script>
+"#,
+    )
+    .unwrap();
+
+    let cache_dir = workspace.0.join("cache");
+    let cold_db = workspace.0.join("cold.sqlite");
+    let warm_db = workspace.0.join("warm.sqlite");
+
+    let cold_report = build_with_cache_dir(&root, &cold_db, None, &cache_dir).unwrap();
+    let warm_report = build_with_cache_dir(&root, &warm_db, None, &cache_dir).unwrap();
+
+    assert_eq!(
+        warm_report["pipeline"]["extraction_cache_hits"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        cold_report["output_root"], warm_report["output_root"],
+        "output roots must be identical between cold and warm cached runs"
+    );
+
+    let cold_conn = Connection::open(&cold_db).unwrap();
+    let warm_conn = Connection::open(&warm_db).unwrap();
+
+    let query = "
+        SELECT p.path, c.line, exp.expression, c.status, ev.evidence
+        FROM resolution_coverage c
+        JOIN path_dictionary p ON c.path_id = p.path_id
+        JOIN coverage_expressions exp ON c.expression_id = exp.expression_id
+        JOIN coverage_evidence ev ON c.evidence_id = ev.evidence_id
+        ORDER BY p.path, c.line, exp.expression, c.status
+    ";
+    let cold_coverage: Vec<(String, i64, String, String, String)> = cold_conn
+        .prepare(query)
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    let warm_coverage: Vec<(String, i64, String, String, String)> = warm_conn
+        .prepare(query)
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    assert_eq!(
+        cold_coverage, warm_coverage,
+        "coverage must be bit-identical between cold and cached builds"
+    );
 }

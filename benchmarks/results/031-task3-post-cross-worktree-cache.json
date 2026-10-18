@@ -1,0 +1,1404 @@
+{
+  "cache_seed_workspace_a": {
+    "graph": {
+      "components": [
+        "[gridviewspec]",
+        "[traverse]",
+        "extensions",
+        "packages",
+        "scripts",
+        "services",
+        "tests"
+      ],
+      "counts": {
+        "doc_sections": 2133,
+        "edges": 288620,
+        "external_imports": 140301,
+        "files": 3990,
+        "nodes": 66482,
+        "parse_errors": 7,
+        "unresolved": 45552
+      },
+      "resolution": {
+        "ambiguous": 38,
+        "external_imports": 140301,
+        "resolved": 130079,
+        "resolved_percent_excluding_external": 74.0638,
+        "unresolved": 45514
+      },
+      "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+    },
+    "median": {
+      "extracted_files": 3990.0,
+      "extraction_cache_hits": 0.0,
+      "index_and_seal_ms": 1473.789,
+      "ingested_files": 3990.0,
+      "seal_ms": 103.015,
+      "wall_seconds": 13.144
+    },
+    "runs": [
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "output_root": "4749f33e45f65bb13903f8cae331a2a3a95e0e0aeb4fb8506d3c7d34092a3c98",
+        "phases_ms": {
+          "bulk_paths_ms": 74.625452,
+          "components_ms": 73.969785,
+          "doc_fts_insert_ms": 20.287215,
+          "elapsed_ms": 13153.55459,
+          "encode_facts_ms": 123.735655,
+          "extract_ms": 53536.893008,
+          "fts_insert_ms": 265.80002799999994,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 706.080975,
+            "coverage_dictionaries": 220.203936,
+            "occurrences_and_dependencies": 475.28570599999995,
+            "unique_edges": 351.259082
+          },
+          "index_and_seal_ms": 1473.788629,
+          "indexes_ms": 1358.432793,
+          "link_ms": 2491.18986,
+          "node_row_insert_ms": 318.655128,
+          "persist_files_ms": 1629.7768190000002,
+          "persist_graph_ms": 1754.0847290000002,
+          "persist_ms": 5360.822402,
+          "preencoded_facts_ms": 123.735655,
+          "rows_ms": 3801.106709,
+          "scan_ms": 3334.367302,
+          "seal_file_domains_ms": 58.627238999999996,
+          "seal_fts_ms": 1361.702182,
+          "seal_graph_coverage_ms": 317.909413,
+          "seal_graph_dependencies_ms": 385.199385,
+          "seal_graph_domains_ms": 2101.583488,
+          "seal_graph_edges_ms": 481.295856,
+          "seal_graph_occurrences_ms": 3.285168,
+          "seal_graph_shared_owners_ms": 522.305687,
+          "seal_graph_unique_edges_ms": 391.523868,
+          "seal_ms": 111.02514500000001,
+          "seal_node_domain_ms": 148.631175,
+          "seal_projection_ms": 2308.9515079999996,
+          "seal_snapshot_install_ms": 96.389503,
+          "seal_snapshot_logical_domains_ms": 14.572774,
+          "seal_snapshot_ms": 111.02491500000001,
+          "sqlite_ingest_ms": 57.546302,
+          "verify_ms": 428.894182
+        },
+        "pipeline": {
+          "budget_bytes": 4553758037,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 0,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 8374896
+        },
+        "repetition": 1,
+        "wall_seconds": 13.295173224061728
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "output_root": "4749f33e45f65bb13903f8cae331a2a3a95e0e0aeb4fb8506d3c7d34092a3c98",
+        "phases_ms": {
+          "bulk_paths_ms": 99.598356,
+          "components_ms": 62.764694,
+          "doc_fts_insert_ms": 23.229266,
+          "elapsed_ms": 13144.592761,
+          "encode_facts_ms": 75.612523,
+          "extract_ms": 53430.833959,
+          "fts_insert_ms": 251.77369299999998,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 800.813086,
+            "coverage_dictionaries": 253.26707399999998,
+            "occurrences_and_dependencies": 572.378783,
+            "unique_edges": 522.952484
+          },
+          "index_and_seal_ms": 1616.451913,
+          "indexes_ms": 1485.08998,
+          "link_ms": 2274.105693,
+          "node_row_insert_ms": 298.3029839999999,
+          "persist_files_ms": 1497.7607200000002,
+          "persist_graph_ms": 2150.2435069999997,
+          "persist_ms": 5749.143507000001,
+          "preencoded_facts_ms": 75.612523,
+          "rows_ms": 4067.2105949999996,
+          "scan_ms": 3334.182661,
+          "seal_file_domains_ms": 67.307955,
+          "seal_fts_ms": 1485.780383,
+          "seal_graph_coverage_ms": 243.30638199999999,
+          "seal_graph_dependencies_ms": 399.704048,
+          "seal_graph_domains_ms": 2046.0896860000003,
+          "seal_graph_edges_ms": 477.025105,
+          "seal_graph_occurrences_ms": 4.659972,
+          "seal_graph_shared_owners_ms": 515.4871290000001,
+          "seal_graph_unique_edges_ms": 405.878828,
+          "seal_ms": 128.967926,
+          "seal_node_domain_ms": 129.42137200000002,
+          "seal_projection_ms": 2242.92806,
+          "seal_snapshot_install_ms": 116.698428,
+          "seal_snapshot_logical_domains_ms": 12.233099000000001,
+          "seal_snapshot_ms": 128.967716,
+          "sqlite_ingest_ms": 72.68375,
+          "verify_ms": 459.217278
+        },
+        "pipeline": {
+          "budget_bytes": 4511346688,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 0,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 7649624
+        },
+        "repetition": 2,
+        "wall_seconds": 13.269770615268499
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "output_root": "4749f33e45f65bb13903f8cae331a2a3a95e0e0aeb4fb8506d3c7d34092a3c98",
+        "phases_ms": {
+          "bulk_paths_ms": 68.91852399999999,
+          "components_ms": 53.642373,
+          "doc_fts_insert_ms": 27.655826,
+          "elapsed_ms": 13006.241932,
+          "encode_facts_ms": 87.74951,
+          "extract_ms": 53947.439341,
+          "fts_insert_ms": 289.91183900000004,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 792.780381,
+            "coverage_dictionaries": 327.115055,
+            "occurrences_and_dependencies": 717.096704,
+            "unique_edges": 449.682342
+          },
+          "index_and_seal_ms": 1907.2128770000002,
+          "indexes_ms": 1798.30556,
+          "link_ms": 2064.43469,
+          "node_row_insert_ms": 338.3937450000001,
+          "persist_files_ms": 1701.503169,
+          "persist_graph_ms": 2287.478018,
+          "persist_ms": 6454.398571,
+          "preencoded_facts_ms": 87.74951,
+          "rows_ms": 4420.889039000001,
+          "scan_ms": 3355.929904,
+          "seal_file_domains_ms": 56.838653,
+          "seal_fts_ms": 1803.19828,
+          "seal_graph_coverage_ms": 254.450574,
+          "seal_graph_dependencies_ms": 479.272339,
+          "seal_graph_domains_ms": 2254.9921299999996,
+          "seal_graph_edges_ms": 479.397444,
+          "seal_graph_occurrences_ms": 3.882104,
+          "seal_graph_shared_owners_ms": 646.0919250000001,
+          "seal_graph_unique_edges_ms": 391.853662,
+          "seal_ms": 103.015332,
+          "seal_node_domain_ms": 120.256008,
+          "seal_projection_ms": 2432.245291,
+          "seal_snapshot_install_ms": 94.357377,
+          "seal_snapshot_logical_domains_ms": 8.637436,
+          "seal_snapshot_ms": 103.015141,
+          "sqlite_ingest_ms": 65.737966,
+          "verify_ms": 463.686002
+        },
+        "pipeline": {
+          "budget_bytes": 4412575744,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 0,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 7890888
+        },
+        "repetition": 3,
+        "wall_seconds": 13.144323070067912
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "output_root": "4749f33e45f65bb13903f8cae331a2a3a95e0e0aeb4fb8506d3c7d34092a3c98",
+        "phases_ms": {
+          "bulk_paths_ms": 65.812413,
+          "components_ms": 56.306540000000005,
+          "doc_fts_insert_ms": 20.269511,
+          "elapsed_ms": 12391.403826,
+          "encode_facts_ms": 75.901888,
+          "extract_ms": 59307.086316,
+          "fts_insert_ms": 252.7758480000001,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 804.381903,
+            "coverage_dictionaries": 224.000023,
+            "occurrences_and_dependencies": 533.701242,
+            "unique_edges": 491.027753
+          },
+          "index_and_seal_ms": 1442.09785,
+          "indexes_ms": 1234.2741560000002,
+          "link_ms": 2313.526479,
+          "node_row_insert_ms": 306.029331,
+          "persist_files_ms": 1507.7584729999999,
+          "persist_graph_ms": 2053.835378,
+          "persist_ms": 5455.43171,
+          "preencoded_facts_ms": 75.901888,
+          "rows_ms": 3956.579785,
+          "scan_ms": 3705.322114,
+          "seal_file_domains_ms": 62.196721000000004,
+          "seal_fts_ms": 1359.9324450000001,
+          "seal_graph_coverage_ms": 243.74235,
+          "seal_graph_dependencies_ms": 380.80102700000003,
+          "seal_graph_domains_ms": 1920.818857,
+          "seal_graph_edges_ms": 435.120027,
+          "seal_graph_occurrences_ms": 2.876507,
+          "seal_graph_shared_owners_ms": 553.307722,
+          "seal_graph_unique_edges_ms": 304.88615400000003,
+          "seal_ms": 81.352711,
+          "seal_node_domain_ms": 139.639837,
+          "seal_projection_ms": 2122.751898,
+          "seal_snapshot_install_ms": 74.475998,
+          "seal_snapshot_logical_domains_ms": 6.841277,
+          "seal_snapshot_ms": 81.352531,
+          "sqlite_ingest_ms": 76.522359,
+          "verify_ms": 367.99662900000004
+        },
+        "pipeline": {
+          "budget_bytes": 4561731584,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 0,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 7569616
+        },
+        "repetition": 4,
+        "wall_seconds": 12.484559664968401
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce"
+        },
+        "output_root": "4749f33e45f65bb13903f8cae331a2a3a95e0e0aeb4fb8506d3c7d34092a3c98",
+        "phases_ms": {
+          "bulk_paths_ms": 70.276254,
+          "components_ms": 51.086861,
+          "doc_fts_insert_ms": 21.019434999999998,
+          "elapsed_ms": 11601.69185,
+          "encode_facts_ms": 84.491292,
+          "extract_ms": 50330.394029,
+          "fts_insert_ms": 252.30910699999993,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 705.976793,
+            "coverage_dictionaries": 215.234484,
+            "occurrences_and_dependencies": 486.12755400000003,
+            "unique_edges": 394.031815
+          },
+          "index_and_seal_ms": 1325.746336,
+          "indexes_ms": 1147.260703,
+          "link_ms": 2129.9982489999998,
+          "node_row_insert_ms": 286.92916900000006,
+          "persist_files_ms": 1444.65762,
+          "persist_graph_ms": 1802.4121499999999,
+          "persist_ms": 5056.0353190000005,
+          "preencoded_facts_ms": 84.491292,
+          "rows_ms": 3664.582901,
+          "scan_ms": 3142.072071,
+          "seal_file_domains_ms": 64.475189,
+          "seal_fts_ms": 1259.326418,
+          "seal_graph_coverage_ms": 251.659964,
+          "seal_graph_dependencies_ms": 366.78456900000003,
+          "seal_graph_domains_ms": 1892.682175,
+          "seal_graph_edges_ms": 435.453151,
+          "seal_graph_occurrences_ms": 3.579433,
+          "seal_graph_shared_owners_ms": 509.998999,
+          "seal_graph_unique_edges_ms": 325.16884699999997,
+          "seal_ms": 65.266974,
+          "seal_node_domain_ms": 163.592014,
+          "seal_projection_ms": 2120.843296,
+          "seal_snapshot_install_ms": 58.090925,
+          "seal_snapshot_logical_domains_ms": 7.135282,
+          "seal_snapshot_ms": 65.266803,
+          "sqlite_ingest_ms": 51.057174,
+          "verify_ms": 360.94355
+        },
+        "pipeline": {
+          "budget_bytes": 4558120277,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 0,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 7535776
+        },
+        "repetition": 5,
+        "wall_seconds": 11.699240176007152
+      }
+    ]
+  },
+  "cached_workspace_b": {
+    "graph": {
+      "components": [
+        "[gridviewspec]",
+        "[traverse]",
+        "extensions",
+        "packages",
+        "scripts",
+        "services",
+        "tests"
+      ],
+      "counts": {
+        "doc_sections": 2133,
+        "edges": 288620,
+        "external_imports": 140301,
+        "files": 3990,
+        "nodes": 66482,
+        "parse_errors": 7,
+        "unresolved": 45552
+      },
+      "resolution": {
+        "ambiguous": 38,
+        "external_imports": 140301,
+        "resolved": 130079,
+        "resolved_percent_excluding_external": 74.0638,
+        "unresolved": 45514
+      },
+      "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+    },
+    "median": {
+      "extracted_files": 3990.0,
+      "extraction_cache_hits": 3990.0,
+      "index_and_seal_ms": 1555.605,
+      "ingested_files": 3990.0,
+      "seal_ms": 112.11,
+      "wall_seconds": 9.377
+    },
+    "runs": [
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+        },
+        "output_root": "a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209",
+        "phases_ms": {
+          "bulk_paths_ms": 76.650081,
+          "components_ms": 36.41386,
+          "doc_fts_insert_ms": 19.094984999999998,
+          "elapsed_ms": 9226.187708,
+          "encode_facts_ms": 76.942714,
+          "extract_ms": 10964.204699,
+          "fts_insert_ms": 266.7210039999999,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 657.012389,
+            "coverage_dictionaries": 196.91988800000001,
+            "occurrences_and_dependencies": 480.80299399999996,
+            "unique_edges": 378.350764
+          },
+          "index_and_seal_ms": 1555.605273,
+          "indexes_ms": 1448.316087,
+          "link_ms": 2106.327374,
+          "node_row_insert_ms": 296.50811200000015,
+          "persist_files_ms": 1540.238097,
+          "persist_graph_ms": 1713.712025,
+          "persist_ms": 5285.162983,
+          "preencoded_facts_ms": 76.942714,
+          "rows_ms": 3668.230618,
+          "scan_ms": 695.747319,
+          "seal_file_domains_ms": 58.412815,
+          "seal_fts_ms": 1420.469179,
+          "seal_graph_coverage_ms": 264.774665,
+          "seal_graph_dependencies_ms": 350.09211899999997,
+          "seal_graph_domains_ms": 2050.936749,
+          "seal_graph_edges_ms": 425.35152700000003,
+          "seal_graph_occurrences_ms": 4.278291,
+          "seal_graph_shared_owners_ms": 564.219752,
+          "seal_graph_unique_edges_ms": 439.015626,
+          "seal_ms": 106.713871,
+          "seal_node_domain_ms": 117.434678,
+          "seal_projection_ms": 2226.895912,
+          "seal_snapshot_install_ms": 95.333521,
+          "seal_snapshot_logical_domains_ms": 11.355183,
+          "seal_snapshot_ms": 106.713661,
+          "sqlite_ingest_ms": 40.158652,
+          "verify_ms": 405.66209
+        },
+        "pipeline": {
+          "budget_bytes": 4556211541,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 3990,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 7846912
+        },
+        "repetition": 1,
+        "wall_seconds": 9.376649725716561
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+        },
+        "output_root": "a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209",
+        "phases_ms": {
+          "bulk_paths_ms": 99.472298,
+          "components_ms": 69.598357,
+          "doc_fts_insert_ms": 21.856294,
+          "elapsed_ms": 9878.440961,
+          "encode_facts_ms": 107.45292500000001,
+          "extract_ms": 9926.217173,
+          "fts_insert_ms": 305.0195500000001,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 789.751344,
+            "coverage_dictionaries": 220.127751,
+            "occurrences_and_dependencies": 555.976807,
+            "unique_edges": 452.51931
+          },
+          "index_and_seal_ms": 1730.82033,
+          "indexes_ms": 1608.520214,
+          "link_ms": 2104.0476080000003,
+          "node_row_insert_ms": 345.7428929999999,
+          "persist_files_ms": 1733.4409070000002,
+          "persist_graph_ms": 2019.299266,
+          "persist_ms": 6039.021694999999,
+          "preencoded_facts_ms": 107.45292500000001,
+          "rows_ms": 4241.701214,
+          "scan_ms": 630.152961,
+          "seal_file_domains_ms": 74.576459,
+          "seal_fts_ms": 1609.7011320000001,
+          "seal_graph_coverage_ms": 264.252829,
+          "seal_graph_dependencies_ms": 390.10557800000004,
+          "seal_graph_domains_ms": 2222.178898,
+          "seal_graph_edges_ms": 535.016162,
+          "seal_graph_occurrences_ms": 3.735758,
+          "seal_graph_shared_owners_ms": 578.594929,
+          "seal_graph_unique_edges_ms": 446.198355,
+          "seal_ms": 120.040773,
+          "seal_node_domain_ms": 141.875238,
+          "seal_projection_ms": 2438.7478749999996,
+          "seal_snapshot_install_ms": 109.836381,
+          "seal_snapshot_logical_domains_ms": 10.175428,
+          "seal_snapshot_ms": 120.040523,
+          "sqlite_ingest_ms": 49.582446,
+          "verify_ms": 446.000992
+        },
+        "pipeline": {
+          "budget_bytes": 4483989504,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 3990,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 7917936
+        },
+        "repetition": 2,
+        "wall_seconds": 10.041040377225727
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+        },
+        "output_root": "a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209",
+        "phases_ms": {
+          "bulk_paths_ms": 82.857832,
+          "components_ms": 43.680417999999996,
+          "doc_fts_insert_ms": 31.493937,
+          "elapsed_ms": 10137.372894,
+          "encode_facts_ms": 85.232151,
+          "extract_ms": 10267.585486,
+          "fts_insert_ms": 297.9739470000001,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 684.2680260000001,
+            "coverage_dictionaries": 278.45144300000004,
+            "occurrences_and_dependencies": 622.2715330000001,
+            "unique_edges": 373.648104
+          },
+          "index_and_seal_ms": 1654.89801,
+          "indexes_ms": 1497.2392770000001,
+          "link_ms": 2336.552057,
+          "node_row_insert_ms": 339.24189100000035,
+          "persist_files_ms": 1692.716529,
+          "persist_graph_ms": 1959.30432,
+          "persist_ms": 5822.067232,
+          "preencoded_facts_ms": 85.232151,
+          "rows_ms": 4111.44384,
+          "scan_ms": 654.503593,
+          "seal_file_domains_ms": 63.58177499999999,
+          "seal_fts_ms": 1497.97235,
+          "seal_graph_coverage_ms": 273.30316999999997,
+          "seal_graph_dependencies_ms": 527.263619,
+          "seal_graph_domains_ms": 2298.9326619999997,
+          "seal_graph_edges_ms": 536.531474,
+          "seal_graph_occurrences_ms": 3.553615,
+          "seal_graph_shared_owners_ms": 544.819079,
+          "seal_graph_unique_edges_ms": 408.09998199999995,
+          "seal_ms": 155.941703,
+          "seal_node_domain_ms": 116.553783,
+          "seal_projection_ms": 2479.228203,
+          "seal_snapshot_install_ms": 144.043967,
+          "seal_snapshot_logical_domains_ms": 11.881536,
+          "seal_snapshot_ms": 155.941383,
+          "sqlite_ingest_ms": 41.004305,
+          "verify_ms": 385.49295
+        },
+        "pipeline": {
+          "budget_bytes": 4556107776,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 3990,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 8211360
+        },
+        "repetition": 3,
+        "wall_seconds": 10.310049579013139
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+        },
+        "output_root": "a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209",
+        "phases_ms": {
+          "bulk_paths_ms": 60.750603,
+          "components_ms": 41.181334,
+          "doc_fts_insert_ms": 21.715689,
+          "elapsed_ms": 8131.44183,
+          "encode_facts_ms": 72.599548,
+          "extract_ms": 6059.766574,
+          "fts_insert_ms": 243.55771599999989,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 619.649292,
+            "coverage_dictionaries": 179.76549899999998,
+            "occurrences_and_dependencies": 459.428426,
+            "unique_edges": 364.249099
+          },
+          "index_and_seal_ms": 1393.13822,
+          "indexes_ms": 1201.12832,
+          "link_ms": 1758.398078,
+          "node_row_insert_ms": 264.91724600000003,
+          "persist_files_ms": 1390.8605180000002,
+          "persist_graph_ms": 1623.738305,
+          "persist_ms": 4841.392531,
+          "preencoded_facts_ms": 72.599548,
+          "rows_ms": 3397.302885,
+          "scan_ms": 386.31480899999997,
+          "seal_file_domains_ms": 53.195369,
+          "seal_fts_ms": 1296.286077,
+          "seal_graph_coverage_ms": 269.574515,
+          "seal_graph_dependencies_ms": 347.692654,
+          "seal_graph_domains_ms": 1780.355933,
+          "seal_graph_edges_ms": 409.326323,
+          "seal_graph_occurrences_ms": 2.849475,
+          "seal_graph_shared_owners_ms": 457.667033,
+          "seal_graph_unique_edges_ms": 289.630422,
+          "seal_ms": 96.09643700000001,
+          "seal_node_domain_ms": 109.865004,
+          "seal_projection_ms": 1943.5699849999999,
+          "seal_snapshot_install_ms": 88.136309,
+          "seal_snapshot_logical_domains_ms": 7.907418,
+          "seal_snapshot_ms": 96.09622700000001,
+          "sqlite_ingest_ms": 30.343693,
+          "verify_ms": 414.234161
+        },
+        "pipeline": {
+          "budget_bytes": 4592888490,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 3990,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 8328584
+        },
+        "repetition": 4,
+        "wall_seconds": 8.280296572018415
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+        },
+        "output_root": "a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209",
+        "phases_ms": {
+          "bulk_paths_ms": 64.646373,
+          "components_ms": 37.745181,
+          "doc_fts_insert_ms": 20.145607,
+          "elapsed_ms": 8780.771992,
+          "encode_facts_ms": 72.800927,
+          "extract_ms": 6969.864783,
+          "fts_insert_ms": 254.75948400000001,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 685.383289,
+            "coverage_dictionaries": 198.69187399999998,
+            "occurrences_and_dependencies": 492.519793,
+            "unique_edges": 394.667133
+          },
+          "index_and_seal_ms": 1426.519994,
+          "indexes_ms": 1311.925309,
+          "link_ms": 1948.980405,
+          "node_row_insert_ms": 277.869412,
+          "persist_files_ms": 1426.661259,
+          "persist_graph_ms": 1771.9923159999998,
+          "persist_ms": 5089.976683,
+          "preencoded_facts_ms": 72.800927,
+          "rows_ms": 3583.581015,
+          "scan_ms": 442.92197100000004,
+          "seal_file_domains_ms": 51.400072,
+          "seal_fts_ms": 1313.6649710000002,
+          "seal_graph_coverage_ms": 230.26944799999998,
+          "seal_graph_dependencies_ms": 363.56090800000004,
+          "seal_graph_domains_ms": 1816.061277,
+          "seal_graph_edges_ms": 415.414515,
+          "seal_graph_occurrences_ms": 3.03714,
+          "seal_graph_shared_owners_ms": 487.036547,
+          "seal_graph_unique_edges_ms": 315.949443,
+          "seal_ms": 112.11048799999999,
+          "seal_node_domain_ms": 100.745567,
+          "seal_projection_ms": 1968.3764159999998,
+          "seal_snapshot_install_ms": 102.201103,
+          "seal_snapshot_logical_domains_ms": 9.877806,
+          "seal_snapshot_ms": 112.110288,
+          "sqlite_ingest_ms": 25.69716,
+          "verify_ms": 395.214134
+        },
+        "pipeline": {
+          "budget_bytes": 4665393152,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 3990,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 8237976
+        },
+        "repetition": 5,
+        "wall_seconds": 8.935411003883928
+      }
+    ]
+  },
+  "candidate_binary": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-in-memory-merkle-sealing-and-content-addressed-cache/target/release/contextunity-forge-mcp",
+  "candidate_binary_sha256": "fe1bedae85954020c5ffc0da3c1a0d8207a7212de4b90d75aa0487a93767775a",
+  "cold_workspace_b": {
+    "graph": {
+      "components": [
+        "[gridviewspec]",
+        "[traverse]",
+        "extensions",
+        "packages",
+        "scripts",
+        "services",
+        "tests"
+      ],
+      "counts": {
+        "doc_sections": 2133,
+        "edges": 288620,
+        "external_imports": 140301,
+        "files": 3990,
+        "nodes": 66482,
+        "parse_errors": 7,
+        "unresolved": 45552
+      },
+      "resolution": {
+        "ambiguous": 38,
+        "external_imports": 140301,
+        "resolved": 130079,
+        "resolved_percent_excluding_external": 74.0638,
+        "unresolved": 45514
+      },
+      "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+    },
+    "median": {
+      "extracted_files": 3990.0,
+      "extraction_cache_hits": 0.0,
+      "index_and_seal_ms": 1455.157,
+      "ingested_files": 3990.0,
+      "seal_ms": 103.323,
+      "wall_seconds": 12.355
+    },
+    "runs": [
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+        },
+        "output_root": "a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209",
+        "phases_ms": {
+          "bulk_paths_ms": 149.670006,
+          "components_ms": 55.869396,
+          "doc_fts_insert_ms": 20.79861,
+          "elapsed_ms": 13580.420441999999,
+          "encode_facts_ms": 81.427575,
+          "extract_ms": 47177.20364,
+          "fts_insert_ms": 260.63627900000006,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 773.750788,
+            "coverage_dictionaries": 228.856272,
+            "occurrences_and_dependencies": 541.3654789999999,
+            "unique_edges": 487.709649
+          },
+          "index_and_seal_ms": 1657.511145,
+          "indexes_ms": 1437.8395209999999,
+          "link_ms": 2337.0111100000004,
+          "node_row_insert_ms": 306.661316,
+          "persist_files_ms": 1527.225104,
+          "persist_graph_ms": 2032.514979,
+          "persist_ms": 5795.825975,
+          "preencoded_facts_ms": 81.427575,
+          "rows_ms": 4041.99589,
+          "scan_ms": 2940.260184,
+          "seal_file_domains_ms": 100.267871,
+          "seal_fts_ms": 1439.621474,
+          "seal_graph_coverage_ms": 244.416319,
+          "seal_graph_dependencies_ms": 352.26927,
+          "seal_graph_domains_ms": 1958.4832780000002,
+          "seal_graph_edges_ms": 473.97622900000005,
+          "seal_graph_occurrences_ms": 3.0446039999999996,
+          "seal_graph_shared_owners_ms": 576.966525,
+          "seal_graph_unique_edges_ms": 307.758874,
+          "seal_ms": 216.74364,
+          "seal_node_domain_ms": 153.40014299999999,
+          "seal_projection_ms": 2212.354194,
+          "seal_snapshot_install_ms": 199.354232,
+          "seal_snapshot_logical_domains_ms": 17.352598,
+          "seal_snapshot_ms": 216.743469,
+          "sqlite_ingest_ms": 65.630981,
+          "verify_ms": 472.261412
+        },
+        "pipeline": {
+          "budget_bytes": 4582065493,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 0,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 7855184
+        },
+        "repetition": 1,
+        "wall_seconds": 13.741954750847071
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+        },
+        "output_root": "a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209",
+        "phases_ms": {
+          "bulk_paths_ms": 87.804565,
+          "components_ms": 61.638389000000004,
+          "doc_fts_insert_ms": 26.091576,
+          "elapsed_ms": 12229.67557,
+          "encode_facts_ms": 89.346805,
+          "extract_ms": 48740.997296,
+          "fts_insert_ms": 270.7016539999999,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 823.3530559999999,
+            "coverage_dictionaries": 233.35681899999997,
+            "occurrences_and_dependencies": 528.655179,
+            "unique_edges": 350.078159
+          },
+          "index_and_seal_ms": 1455.156647,
+          "indexes_ms": 1345.393485,
+          "link_ms": 2203.654523,
+          "node_row_insert_ms": 333.295173,
+          "persist_files_ms": 1631.140026,
+          "persist_graph_ms": 1936.4821029999998,
+          "persist_ms": 5524.454162999999,
+          "preencoded_facts_ms": 89.346805,
+          "rows_ms": 4003.3606969999996,
+          "scan_ms": 3036.81265,
+          "seal_file_domains_ms": 74.270481,
+          "seal_fts_ms": 1350.8541570000002,
+          "seal_graph_coverage_ms": 228.229726,
+          "seal_graph_dependencies_ms": 396.16550900000004,
+          "seal_graph_domains_ms": 2143.408518,
+          "seal_graph_edges_ms": 461.92787899999996,
+          "seal_graph_occurrences_ms": 3.891111,
+          "seal_graph_shared_owners_ms": 650.649427,
+          "seal_graph_unique_edges_ms": 402.502465,
+          "seal_ms": 103.322813,
+          "seal_node_domain_ms": 135.372899,
+          "seal_projection_ms": 2353.18475,
+          "seal_snapshot_install_ms": 93.05815700000001,
+          "seal_snapshot_logical_domains_ms": 10.232174,
+          "seal_snapshot_ms": 103.32261199999999,
+          "sqlite_ingest_ms": 62.971566,
+          "verify_ms": 444.240148
+        },
+        "pipeline": {
+          "budget_bytes": 4456400213,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 0,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 7689384
+        },
+        "repetition": 2,
+        "wall_seconds": 12.35469173034653
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+        },
+        "output_root": "a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209",
+        "phases_ms": {
+          "bulk_paths_ms": 76.412733,
+          "components_ms": 68.98355600000001,
+          "doc_fts_insert_ms": 21.872806,
+          "elapsed_ms": 13538.715129,
+          "encode_facts_ms": 97.483766,
+          "extract_ms": 58616.062037,
+          "fts_insert_ms": 265.639895,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 833.95264,
+            "coverage_dictionaries": 265.924141,
+            "occurrences_and_dependencies": 583.785157,
+            "unique_edges": 419.858969
+          },
+          "index_and_seal_ms": 1625.9128550000003,
+          "indexes_ms": 1408.7454109999999,
+          "link_ms": 2372.290558,
+          "node_row_insert_ms": 306.3253390000001,
+          "persist_files_ms": 1543.4122790000001,
+          "persist_graph_ms": 2104.324563,
+          "persist_ms": 5804.921842,
+          "preencoded_facts_ms": 97.483766,
+          "rows_ms": 4058.8142530000005,
+          "scan_ms": 3648.168873,
+          "seal_file_domains_ms": 56.983978,
+          "seal_fts_ms": 1415.398022,
+          "seal_graph_coverage_ms": 256.244028,
+          "seal_graph_dependencies_ms": 422.337846,
+          "seal_graph_domains_ms": 2104.44992,
+          "seal_graph_edges_ms": 483.68354200000005,
+          "seal_graph_occurrences_ms": 3.258568,
+          "seal_graph_shared_owners_ms": 537.957217,
+          "seal_graph_unique_edges_ms": 400.886836,
+          "seal_ms": 208.858238,
+          "seal_node_domain_ms": 130.245425,
+          "seal_projection_ms": 2291.866095,
+          "seal_snapshot_install_ms": 192.825681,
+          "seal_snapshot_logical_domains_ms": 15.983686,
+          "seal_snapshot_ms": 208.857717,
+          "sqlite_ingest_ms": 75.462097,
+          "verify_ms": 504.14086700000007
+        },
+        "pipeline": {
+          "budget_bytes": 4492326229,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 0,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 7432872
+        },
+        "repetition": 3,
+        "wall_seconds": 13.668002927210182
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+        },
+        "output_root": "a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209",
+        "phases_ms": {
+          "bulk_paths_ms": 59.737862,
+          "components_ms": 41.63532,
+          "doc_fts_insert_ms": 16.409678,
+          "elapsed_ms": 10071.243463,
+          "encode_facts_ms": 84.217315,
+          "extract_ms": 39698.793509,
+          "fts_insert_ms": 215.771278,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 669.824882,
+            "coverage_dictionaries": 213.773147,
+            "occurrences_and_dependencies": 560.874374,
+            "unique_edges": 321.993318
+          },
+          "index_and_seal_ms": 1379.2798010000001,
+          "indexes_ms": 1184.970654,
+          "link_ms": 1722.078953,
+          "node_row_insert_ms": 241.62895099999992,
+          "persist_files_ms": 1245.593206,
+          "persist_graph_ms": 1767.118354,
+          "persist_ms": 4786.468789,
+          "preencoded_facts_ms": 84.217315,
+          "rows_ms": 3354.914246,
+          "scan_ms": 2479.461996,
+          "seal_file_domains_ms": 51.386246,
+          "seal_fts_ms": 1285.973287,
+          "seal_graph_coverage_ms": 225.6366,
+          "seal_graph_dependencies_ms": 365.559421,
+          "seal_graph_domains_ms": 1735.624858,
+          "seal_graph_edges_ms": 378.605493,
+          "seal_graph_occurrences_ms": 3.383623,
+          "seal_graph_shared_owners_ms": 462.634614,
+          "seal_graph_unique_edges_ms": 299.78110200000003,
+          "seal_ms": 92.393681,
+          "seal_node_domain_ms": 111.170857,
+          "seal_projection_ms": 1898.282861,
+          "seal_snapshot_install_ms": 83.64975500000001,
+          "seal_snapshot_logical_domains_ms": 8.67678,
+          "seal_snapshot_ms": 92.39344100000001,
+          "sqlite_ingest_ms": 41.160635,
+          "verify_ms": 376.023662
+        },
+        "pipeline": {
+          "budget_bytes": 4589046442,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 0,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 7856728
+        },
+        "repetition": 4,
+        "wall_seconds": 10.175019048154354
+      },
+      {
+        "graph": {
+          "components": [
+            "[gridviewspec]",
+            "[traverse]",
+            "extensions",
+            "packages",
+            "scripts",
+            "services",
+            "tests"
+          ],
+          "counts": {
+            "doc_sections": 2133,
+            "edges": 288620,
+            "external_imports": 140301,
+            "files": 3990,
+            "nodes": 66482,
+            "parse_errors": 7,
+            "unresolved": 45552
+          },
+          "resolution": {
+            "ambiguous": 38,
+            "external_imports": 140301,
+            "resolved": 130079,
+            "resolved_percent_excluding_external": 74.0638,
+            "unresolved": 45514
+          },
+          "workspace_root": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+        },
+        "output_root": "a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209",
+        "phases_ms": {
+          "bulk_paths_ms": 73.917944,
+          "components_ms": 58.782098999999995,
+          "doc_fts_insert_ms": 21.391387,
+          "elapsed_ms": 10682.970118,
+          "encode_facts_ms": 89.44361500000001,
+          "extract_ms": 43021.504119,
+          "fts_insert_ms": 257.0147259999999,
+          "graph_phases_ms": {
+            "coverage_and_unresolved": 598.082651,
+            "coverage_dictionaries": 187.447801,
+            "occurrences_and_dependencies": 466.808296,
+            "unique_edges": 318.31112
+          },
+          "index_and_seal_ms": 1216.261675,
+          "indexes_ms": 1041.997997,
+          "link_ms": 1924.485852,
+          "node_row_insert_ms": 288.45440000000013,
+          "persist_files_ms": 1469.6646810000002,
+          "persist_graph_ms": 1571.194827,
+          "persist_ms": 4802.060271,
+          "preencoded_facts_ms": 89.44361500000001,
+          "rows_ms": 3457.72461,
+          "scan_ms": 2671.6140560000003,
+          "seal_file_domains_ms": 65.480196,
+          "seal_fts_ms": 1141.915722,
+          "seal_graph_coverage_ms": 235.557716,
+          "seal_graph_dependencies_ms": 349.30293,
+          "seal_graph_domains_ms": 1896.002645,
+          "seal_graph_edges_ms": 403.32826500000004,
+          "seal_graph_occurrences_ms": 4.636678,
+          "seal_graph_shared_owners_ms": 523.358886,
+          "seal_graph_unique_edges_ms": 379.793193,
+          "seal_ms": 72.720055,
+          "seal_node_domain_ms": 145.432405,
+          "seal_projection_ms": 2107.019551,
+          "seal_snapshot_install_ms": 65.564825,
+          "seal_snapshot_logical_domains_ms": 7.122488,
+          "seal_snapshot_ms": 72.719875,
+          "sqlite_ingest_ms": 56.270015,
+          "verify_ms": 357.247208
+        },
+        "pipeline": {
+          "budget_bytes": 4605961557,
+          "extracted_files": 3990,
+          "extraction_cache_hits": 0,
+          "ingested_files": 3990,
+          "max_item_bytes": 1075696,
+          "oversized_admissions": 0,
+          "peak_in_flight_bytes": 8008816
+        },
+        "repetition": 5,
+        "wall_seconds": 10.78144503198564
+      }
+    ]
+  },
+  "config_sha256": "5cc23854d59e2f689814c7899ec8bae267a54f01d5d1f7c1be0215b699b350a6",
+  "coverage_match": true,
+  "cross_worktree_cache_hits": [
+    3990,
+    3990,
+    3990,
+    3990,
+    3990
+  ],
+  "cross_worktree_cached_wall_change_percent": -24.105,
+  "host": {
+    "cpu_count": 16,
+    "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+    "rayon_num_threads": null
+  },
+  "output_roots_match": true,
+  "policy": "Forge-only sequential builds with a fresh database for every run; each repetition uses a new cache seeded in workspace A and consumed in workspace B",
+  "runner_sha256": "aee74df51d358d4a7c6f75203cffb8cee5cb46cc68bc262c5f9bc33489d6a2aa",
+  "workspace_a": "/tmp/forge031-bench-wiysmu06/commerce",
+  "workspace_b": "/tmp/forge031-bench-wiysmu06/commerce-worktree-b"
+}

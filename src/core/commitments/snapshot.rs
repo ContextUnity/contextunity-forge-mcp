@@ -1,26 +1,90 @@
+#[cfg(test)]
+use super::seal;
 use super::{
-    aggregate, batch_insert_commitments, ensure_fts_vocab, fts_digest, leaves, root, seal,
-    ALGORITHM, DOMAINS, FTS,
+    aggregate, batch_insert_commitments, ensure_fts_vocab, fts_digest, root, ALGORITHM, DOMAINS,
+    FTS,
 };
-use anyhow::Result;
-use rayon::prelude::*;
-use rusqlite::{params, Connection, OpenFlags};
+use anyhow::{Context, Result};
+use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
+use std::time::Instant;
 
-/// Seal a committed, private build candidate; published and delta databases use `seal`.
+#[derive(Default)]
+pub(crate) struct SnapshotTimings {
+    pub(crate) logical_domains_ms: f64,
+    pub(crate) install_ms: f64,
+}
+
+/// Retained as the SQL-backed test oracle for the in-memory snapshot path.
+#[cfg(test)]
 pub(crate) fn seal_snapshot(conn: &Connection) -> Result<String> {
+    seal(conn)
+}
+
+/// Computes the FTS commitment digests independently from the logical table leaves.
+pub(crate) fn fts_commitment_digests(conn: &Connection) -> Result<BTreeMap<&'static str, String>> {
+    let mut digests = BTreeMap::new();
+    for &(table, order_by) in FTS {
+        if let Some(index) = table.strip_suffix("_postings") {
+            ensure_fts_vocab(conn, index)?;
+        }
+        digests.insert(table, fts_digest(conn, table, order_by)?);
+    }
+    Ok(digests)
+}
+
+/// Seal logical owner leaves produced from the post-linking in-memory projection.
+/// FTS commitments remain sourced from their SQLite virtual tables.
+pub(crate) fn seal_snapshot_from_projection(
+    conn: &Connection,
+    mut logical: BTreeMap<&'static str, BTreeMap<String, String>>,
+    mut fts_digests: BTreeMap<&'static str, String>,
+) -> Result<(String, SnapshotTimings)> {
     anyhow::ensure!(
         conn.is_autocommit(),
         "snapshot sealing requires committed ingestion"
     );
-    let nodes: usize = conn.query_row("SELECT count(*) FROM nodes", [], |row| row.get(0))?;
-    let Some(path) = conn.path().filter(|path| !path.is_empty()) else {
-        return seal(conn);
-    };
-    if nodes < 8192 || rayon::current_num_threads() == 1 {
-        return seal(conn);
+    let mut domains = Vec::with_capacity(DOMAINS.len() + FTS.len());
+    let logical_started = Instant::now();
+    for &table in DOMAINS {
+        let entries = logical
+            .remove(table)
+            .with_context(|| format!("in-memory projection is missing domain {table}"))?;
+        domains.push(DomainCommitment {
+            table,
+            digest: aggregate(table, &entries),
+            entries: Some(entries),
+        });
     }
-    install_snapshot(conn, hash_snapshot(path)?)
+    let logical_domains_ms = logical_started.elapsed().as_secs_f64() * 1000.;
+    anyhow::ensure!(
+        logical.is_empty(),
+        "in-memory projection contains an unknown logical domain"
+    );
+    for &(table, _) in FTS {
+        let digest = fts_digests
+            .remove(table)
+            .with_context(|| format!("precomputed FTS commitments are missing domain {table}"))?;
+        domains.push(DomainCommitment {
+            table,
+            entries: None,
+            digest,
+        });
+    }
+    anyhow::ensure!(
+        fts_digests.is_empty(),
+        "precomputed FTS commitments contain an unknown domain"
+    );
+    let install_started = Instant::now();
+    let root = install_snapshot(conn, SnapshotCommitments { domains })?;
+    let install_ms = install_started.elapsed().as_secs_f64() * 1000.;
+    Ok((
+        root,
+        SnapshotTimings {
+            logical_domains_ms,
+            install_ms,
+        },
+    ))
 }
 
 struct DomainCommitment {
@@ -31,47 +95,6 @@ struct DomainCommitment {
 
 struct SnapshotCommitments {
     domains: Vec<DomainCommitment>,
-}
-
-/// Hash committed candidate rows while its logical domains remain immutable.
-fn hash_snapshot(path: &str) -> Result<SnapshotCommitments> {
-    let domains = (0..DOMAINS.len() + FTS.len())
-        .into_par_iter()
-        .map(|index| -> Result<_> {
-            let reader = Connection::open_with_flags(
-                path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )?;
-            reader.busy_timeout(std::time::Duration::from_secs(5))?;
-            if index >= DOMAINS.len() {
-                let (table, _) = FTS[index - DOMAINS.len()];
-                if let Some(fts_index) = table.strip_suffix("_postings") {
-                    ensure_fts_vocab(&reader, fts_index)?;
-                }
-            }
-            reader.execute_batch(
-                "PRAGMA query_only=ON; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-4096; PRAGMA mmap_size=268435456;",
-            )?;
-            if index < DOMAINS.len() {
-                let table = DOMAINS[index];
-                let entries = leaves(&reader, table, None)?;
-                let digest = aggregate(table, &entries);
-                Ok(DomainCommitment {
-                    table,
-                    entries: Some(entries),
-                    digest,
-                })
-            } else {
-                let (table, order_by) = FTS[index - DOMAINS.len()];
-                Ok(DomainCommitment {
-                    table,
-                    entries: None,
-                    digest: fts_digest(&reader, table, order_by)?,
-                })
-            }
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(SnapshotCommitments { domains })
 }
 
 fn install_snapshot(conn: &Connection, snapshot: SnapshotCommitments) -> Result<String> {
