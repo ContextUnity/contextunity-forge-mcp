@@ -1,5 +1,126 @@
 use super::support::*;
 
+#[test]
+fn task_mutations_bound_payloads_and_initialized_readers_avoid_writer_locks() {
+    use contextunity_forge_mcp::{core::response::ResponsePolicy, mcp::response};
+
+    for action in [
+        "sync",
+        "sync_many",
+        "claim",
+        "minimal",
+        "next",
+        "context",
+        "reader",
+    ] {
+        let (root, mut store, _) = fixture();
+        let task_id = "forge-mcp/m-test:first";
+        if action == "reader" {
+            let tx = store
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            let reader = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).expect(
+                "initialized readers must open while another connection holds the writer lock",
+            );
+            assert_eq!(reader.inspect(task_id).unwrap().task_id, task_id);
+            tx.rollback().unwrap();
+            continue;
+        }
+        let large = if action == "sync_many" {
+            "isolated".into()
+        } else {
+            "\\\"λ\n".repeat(20_000)
+        };
+        let mut spec = SPEC.replace(
+            "invariants: [isolated]",
+            &format!("invariants: [{}]", serde_json::to_string(&large).unwrap()),
+        );
+        if action == "sync_many" {
+            for index in 0..200 {
+                spec.push_str(&format!("```yaml\ntask_ref: extra-{index}\ntarget: Extra task\nproof_policy: seam-test-first\nscope: [src/extra-{index}.rs]\n```\n"));
+            }
+        }
+        root.write("docs/010-test.md", &spec);
+        let milestone = Milestone::parse(&spec, "forge-mcp").unwrap();
+        // Use the same initial contract with large, valid authority metadata.
+        store
+            .delete(
+                None,
+                Some("docs/010-test.md"),
+                true,
+                contextunity_forge_mcp::db::tasks_store::now(),
+            )
+            .unwrap();
+        store.sync(&milestone, "docs/010-test.md", &root.0).unwrap();
+        let value = if matches!(action, "claim" | "minimal") {
+            tasks::claim(
+                &root.0,
+                tasks::Claim {
+                    task_id: task_id.into(),
+                    stage: "contract".into(),
+                    worker_id: "builder".into(),
+                    worktree: root.0.to_string_lossy().into_owned(),
+                    bundle: Some(action != "minimal"),
+                },
+            )
+            .unwrap()
+        } else {
+            tasks::manage(
+                &root.0,
+                tasks::Manage {
+                    action: match action {
+                        "sync" | "sync_many" => tasks::ManageAction::Sync,
+                        "next" => tasks::ManageAction::Next,
+                        _ => tasks::ManageAction::Context,
+                    },
+                    milestone_ref: action
+                        .starts_with("sync")
+                        .then(|| "docs/010-test.md".into()),
+                    task_id: (action == "context").then(|| task_id.into()),
+                    worker_id: (action == "next").then(|| "builder".into()),
+                    worktree: (action == "next").then(|| root.0.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let wire = response::result(Ok(value.clone()), &ResponsePolicy::default());
+        assert_ne!(
+            wire.is_error,
+            Some(true),
+            "{action}: mutation must return usable success: {wire:?}"
+        );
+        assert!(response::serialized_bytes(&wire) < 65536, "{action}");
+        assert!(value.to_string().len() <= 24 * 1024, "{action}");
+        if action == "sync_many" {
+            assert_eq!(value["total"], 202);
+            assert_eq!(value["byte_limited"], true);
+            assert!(value["returned"].as_u64().unwrap() < 202);
+            let count: usize = store
+                .connection
+                .query_row("SELECT count(*) FROM tasks", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 202, "response bounding must not skip sync effects");
+        } else if !action.starts_with("sync") {
+            assert_eq!(value["byte_limited"], true);
+            assert!(!value["omitted_fields"].as_array().unwrap().is_empty());
+        }
+        assert_eq!(
+            store.inspect(task_id).unwrap().applicable_invariants,
+            vec![large]
+        );
+        if matches!(action, "claim" | "minimal" | "next") {
+            assert_eq!(value["task_id"], task_id);
+            assert_eq!(
+                value["claim_revision"],
+                store.inspect(task_id).unwrap().claim_revision
+            );
+            assert!(value["workflow_guidance"].is_object());
+        }
+    }
+}
+
 fn prepare_indexed_boundary_workspace(
     api: &str,
     caller: &str,

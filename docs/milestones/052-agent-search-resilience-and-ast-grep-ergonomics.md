@@ -402,25 +402,75 @@ receipt:
 
 ```yaml
 task_ref: task-response-budget-and-sqlite-read-concurrency
-target: "Bound task_claim and task_manage sync/context payloads under the 64 KiB MCP response limit and eliminate write locks when opening initialized SQLite task stores"
+target: Bound task_claim and task_manage sync/context payloads under the 64 KiB MCP response limit and eliminate write locks when opening initialized SQLite task stores
 proof_policy: seam-test-first
 contract_revision: 1
 depends_on:
-  - mcp-and-cli-parameter-ergonomics
+- mcp-and-cli-parameter-ergonomics
 scope:
-  - src/engine/tasks/lifecycle.rs
-  - src/db/tasks_store/mod.rs
-  - src/mcp/response.rs
-  - docs/reference/tasks.md
-  - tests/acdd/tasks.rs
-status: planned
+- src/engine/tasks/lifecycle.rs
+- src/db/tasks_store/mod.rs
+- src/mcp/response.rs
+- docs/reference/tasks.md
+- tests/acdd/tasks.rs
+status: completed
 subtasks:
-  - subtask_ref: bounded-task-claim-and-sync-payloads
-    title: "Compact task_manage(sync) task records and bound context_bundle in task_claim/next/context so serialized responses stay within the 64 KiB MCP limit"
-    status: pending
-  - subtask_ref: sqlite-read-only-fast-path
-    title: "Skip DDL/DML writes in TasksStore::open_project when schema_version is already initialized to prevent SQLITE_BUSY during concurrent reads"
-    status: pending
+- subtask_ref: bounded-task-claim-and-sync-payloads
+  title: Compact task_manage(sync) task records and bound context_bundle in task_claim/next/context so serialized responses stay within the 64 KiB MCP limit
+  status: completed
+  evidence: 'tests/acdd/tasks.rs::task_mutations_bound_payloads_and_initialized_readers_avoid_writer_locks passed; full cargo test --test acdd: 104 passed, 0 failed. Covers full/minimal claim, next/context, escape-heavy authority, 202-task sync with complete SQLite readback; compact spec.task_ref retained for MCP compatibility. Final gate archive 3fc9f67fd83c6986.'
+- subtask_ref: sqlite-read-only-fast-path
+  title: Skip DDL/DML writes in TasksStore::open_project when schema_version is already initialized to prevent SQLITE_BUSY during concurrent reads
+  status: completed
+  evidence: 'src/db/tasks_store/mod.rs::initialized_task_store_opens_during_a_write_transaction: observed red SQLITE_BUSY exit 101, now green. Supported schema skips schema writes and journal-mode writes; new initialization is atomic. cargo test --lib: 69 passed, 0 failed; strict all-targets/all-features Clippy passed. Final gate archive 3fc9f67fd83c6986.'
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-19T03:28:23.801111878+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd && cargo test --lib
+      exit_code: 0
+      tests_passed: 173
+      tests_failed: 0
+  review:
+    review_proof:
+      contours:
+        administration:
+          applicable: true
+          evidence: Candidate afa9c13 cleanly isolates admitted files against baseline b83956c; schema version 5 preserved.
+        claims:
+          applicable: true
+          evidence: INV-TASK-MUTATION-RESPONSE-BUDGET proven by seam test src/db/tasks_store/mod.rs::initialized_task_store_opens_during_a_write_transaction and tests/acdd/tasks.rs::task_mutations_bound_payloads_and_initialized_readers_avoid_writer_locks. Strict Clippy clean, 104 ACDD + 69 lib + 84 MCP tests pass.
+        concurrency:
+          applicable: true
+          evidence: Initialized SQLite task stores avoid write transactions during open, allowing concurrent readers during active write locks without SQLITE_BUSY.
+        paths:
+          applicable: true
+          evidence: Changes strictly bounded to src/db/tasks_store/mod.rs, src/engine/tasks/lifecycle.rs, docs/reference/tasks.md, tests/acdd/tasks.rs.
+        project_isolation:
+          applicable: true
+          evidence: All task bounds and SQLite transactions remain strictly scoped to workspace task database.
+      decision: pass
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SEARCH-PREVIEW-RESILIENCE: Source preview failures for an individual hit (unresolved AST boundary, stale file, or digest mismatch) must never fail code_map_search; matching symbol records, file paths, line numbers, and inspect_selector hints must always be returned.'
+    - 'INV-SYMBOL-WITH-SOURCE: Tree-sitter symbol boundary recovery in symbol_range must invoke profile.symbol_with_source(syntax, text) and fall back to verified indexed line..=end_line bounds for field: and template/relational nodes so code_map_inspect, code_map_explain, and get_code_snippet do not fail with unavailable boundaries.'
+    - 'INV-AST-LANGUAGE-INFERENCE: When the language parameter is omitted in ast_grep_search, the engine must infer it from the file extension of path; if path is missing or lacks a recognized extension, it must return an informative error listing all compiled languages and usage examples.'
+    - 'INV-AST-ACTIONABLE-DIAGNOSTICS: AST pattern search syntax errors must return structured, actionable diagnostics with actionable hints and concrete language-specific pattern examples rather than raw JSON serialization dumps.'
+    - 'INV-BODYLESS-DECLARATION-PATTERNS: AST pattern normalization and completion must support bodyless Python class/function declarations without trailing colons (class Foo, def bar($$$)) and Rust function header patterns without parameter lists (fn foo).'
+    - 'INV-AST-PREFILTER-SOUNDNESS: Pattern symbol candidate prefiltering in cli::ast::search_paged must fall back to all candidate files of the language if the declaration identifier is not found in the indexed top-level nodes table, preventing false negatives for local/nested constructs.'
+    - 'INV-ERGONOMIC-PARAMETER-TOLERANCE: MCP and CLI entrypoints must normalize empty path strings, clamp or clearly guide out-of-range source preview line budgets, and support common parameter and subcommand aliases.'
+    - 'INV-TASK-MUTATION-RESPONSE-BUDGET: State-mutating task lifecycle calls (task_claim, task_manage next/sync) must bound their serialized payload below the 64 KiB MCP response limit and avoid write transactions when opening already-initialized SQLite task stores for read operations.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
