@@ -528,7 +528,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Full-text search of indexed Markdown sections. Returns paths and section anchors for get_doc. include_excerpt adds a short match-centered preview."
+        description = "Search indexed Markdown sections with natural-language terms: common English stop words are ignored, any remaining term can match, and section-title matches receive three times the BM25 weight of body text. Returns paths and section anchors for get_doc. include_excerpt adds a short match-centered preview."
     )]
     fn search_docs(&self, Parameters(p): Parameters<SearchDocs>) -> CallToolResult {
         self.responding(|adapter, policy| {

@@ -962,14 +962,27 @@ pub fn search_docs_with_options(
     let component = request.component;
     let include_excerpt = request.include_excerpt;
     let options = request.page;
-    let query = query
-        .split_whitespace()
-        .map(|s| format!("\"{}\"", s.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(" AND ");
-    if query.is_empty() {
+    if query.trim().is_empty() {
         bail!("search query is empty");
     }
+    let terms = query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .filter(|term| {
+            !DOC_SEARCH_ENGLISH_STOP_WORDS
+                .iter()
+                .any(|stop_word| term.eq_ignore_ascii_case(stop_word))
+        })
+        .map(|term| format!("\"{term}\""))
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        let sql = format!(
+            "SELECT {} FROM doc_sections d WHERE 0",
+            paging::docs("d", options.detail)
+        );
+        return Ok(json!({"sections":paging::query(conn, &sql, &[], options)?}));
+    }
+    let query = terms.join(" OR ");
     let kind = doc_type.unwrap_or("");
     let resolved = resolve_component_prefix(conn, component.unwrap_or(""));
     let component = resolved.as_str();
@@ -979,11 +992,27 @@ pub fn search_docs_with_options(
     } else {
         ""
     };
-    let sql = format!("SELECT {},bm25(doc_search) rank{excerpt} FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 AND (?2='' OR d.doc_type=?2) AND (?3='' OR d.path=?3 OR (d.path>=?4 AND d.path<?5)) ORDER BY rank,d.path,d.doc_id", paging::docs("d", options.detail));
+    let sql = format!(
+        "SELECT {},bm25(doc_search,3.0,1.0,1.0) rank{excerpt} FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 AND (?2='' OR d.doc_type=?2) AND (?3='' OR d.path=?3 OR (d.path>=?4 AND d.path<?5)) ORDER BY rank,d.path,d.doc_id",
+        paging::docs("d", options.detail)
+    );
     Ok(
         json!({"sections":paging::query(conn, &sql, &[&query,&kind,&component,&prefix,&end], options)?}),
     )
 }
+
+const DOC_SEARCH_ENGLISH_STOP_WORDS: &[&str] = &[
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are",
+    "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but",
+    "by", "can", "could", "did", "do", "does", "doing", "down", "during", "each", "few", "for",
+    "from", "further", "had", "has", "have", "having", "he", "her", "here", "hers", "him", "his",
+    "how", "i", "if", "in", "into", "is", "it", "its", "just", "me", "more", "most", "my", "no",
+    "nor", "not", "now", "of", "off", "on", "once", "only", "or", "other", "our", "out", "over",
+    "own", "same", "she", "should", "so", "some", "such", "than", "that", "the", "their", "them",
+    "then", "there", "these", "they", "this", "those", "through", "to", "too", "under", "until",
+    "up", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
+    "why", "will", "with", "would", "you", "your",
+];
 
 /// Returns the doc paged.
 pub fn get_doc_paged(

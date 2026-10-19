@@ -44,7 +44,8 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     )
     .unwrap();
     let nodes = result["nodes"]["items"].as_array().unwrap();
-    assert_eq!(result["nodes"]["total"], 4);
+    assert_eq!(result["nodes"]["total"], 2);
+    assert_eq!(nodes.len(), 2);
     assert_eq!(
         nodes[0]["path"], "z.py",
         "inbound graph connectivity breaks equivalent exact-name scores"
@@ -52,10 +53,6 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     assert_eq!(nodes[1]["path"], "a.py");
     assert_eq!(nodes[0]["name"], "process");
     assert_eq!(nodes[1]["name"], "process");
-    assert_eq!(nodes[2]["name"], "process_work");
-    assert_eq!(nodes[2]["path"], "z.py");
-    assert_eq!(nodes[3]["name"], "process_work");
-    assert_eq!(nodes[3]["path"], "a.py");
     let prefix = symbols::search_with_options(
         &conn,
         "process_*",
@@ -91,11 +88,30 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         None,
     )
     .unwrap();
+    let exact = symbols::search_with_options(
+        &conn,
+        "rankterm",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &page_options,
+        },
+    )
+    .unwrap();
+    let exact_nodes = exact["nodes"]["items"].as_array().unwrap();
+    assert_eq!(exact["nodes"]["total"], 2);
+    assert_eq!(exact_nodes.len(), 2);
+    assert_eq!(exact_nodes[0]["name"], "rankterm");
+    assert_eq!(exact_nodes[1]["name"], "rankterm");
+    assert_eq!(exact_nodes[0]["path"], "exact_z.py");
+    assert_eq!(exact_nodes[1]["path"], "exact_a.py");
     let mut all = Vec::new();
     loop {
         let result = symbols::search_with_options(
             &conn,
-            "rankterm",
+            "rankterm*",
             &symbols::SearchOptions {
                 kind: Some("function"),
                 path: None,
@@ -120,14 +136,19 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         .map(|item| item["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids.len(), 503);
-    assert_eq!(all[0]["path"], "exact_z.py");
-    assert_eq!(all[1]["path"], "exact_a.py");
-    assert!(all[2]["name"].as_str().unwrap().starts_with("rankterm_"));
+    assert!(all.iter().all(|item| {
+        item["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("rankterm"))
+    }));
+    assert!(exact_nodes
+        .iter()
+        .all(|item| ids.contains(item["id"].as_str().unwrap())));
     page_options.offset = 501;
     page_options.limit = 2;
     let tail = symbols::search_with_options(
         &conn,
-        "rankterm",
+        "rankterm*",
         &symbols::SearchOptions {
             kind: Some("function"),
             path: None,

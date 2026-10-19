@@ -52,7 +52,52 @@ pub fn search_with_options(
     let (path_start, path_end) = reader::path_bounds(path);
     let columns = paging::nodes_with_path("n", options.detail, "pd.path");
     let graph_boost = "CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind NOT IN('contains','documents','references_doc')) THEN 50 ELSE 0 END";
-    let mut nodes = if exact && pattern != "*" {
+    let default_exact = if !exact && !pattern.contains('*') {
+        let fts_query = pattern
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(|part| format!("\"{part}\""))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let candidates = if fts_query.is_empty() {
+            let sql = format!("WITH exact_probe AS MATERIALIZED (SELECT n.node_id,CASE WHEN n.name=?1 THEN 0 ELSE 2 END AS match_rank,pd.path,n.line,n.id FROM (SELECT node_id FROM nodes WHERE name=?1 UNION SELECT node_id FROM nodes WHERE qualname=?1) exact JOIN nodes n ON n.node_id=exact.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY match_rank,pd.path,n.line,n.id LIMIT 1001), result_total AS (SELECT CASE WHEN count(*)>=1001 THEN NULL ELSE count(*) END AS search_total FROM exact_probe), graph_window AS MATERIALIZED (SELECT node_id,match_rank,path,line,id FROM exact_probe ORDER BY match_rank,path,line,id LIMIT 50), boosted AS MATERIALIZED (SELECT p.node_id,{graph_boost} AS graph_boost FROM graph_window p JOIN nodes n ON n.node_id=p.node_id) SELECT {columns},CASE WHEN n.name=?1 THEN 0 ELSE 2 END AS match_rank,COALESCE(b.graph_boost,0) AS graph_boost,r.search_total FROM (SELECT node_id FROM nodes WHERE name=?1 UNION SELECT node_id FROM nodes WHERE qualname=?1) exact JOIN nodes n ON n.node_id=exact.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id CROSS JOIN result_total r LEFT JOIN boosted b ON b.node_id=n.node_id WHERE (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY match_rank,CASE WHEN b.node_id IS NULL THEN 1 ELSE 0 END,COALESCE(b.graph_boost,0) DESC,pd.path,n.line,n.id");
+            ranked_search_page(
+                conn,
+                &sql,
+                &[
+                    &pattern,
+                    &kind,
+                    &path,
+                    &path_start,
+                    &path_end,
+                    &include_docs,
+                ],
+                options,
+            )?
+        } else {
+            let sql = format!("WITH exact_probe AS MATERIALIZED (SELECT n.node_id,CASE WHEN n.name=?2 COLLATE NOCASE THEN 0 ELSE 2 END AS match_rank,pd.path,n.line,n.id FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY match_rank,pd.path,n.line,n.id LIMIT 1001), result_total AS (SELECT CASE WHEN count(*)>=1001 THEN NULL ELSE count(*) END AS search_total FROM exact_probe), graph_window AS MATERIALIZED (SELECT node_id,match_rank,path,line,id FROM exact_probe ORDER BY match_rank,path,line,id LIMIT 50), boosted AS MATERIALIZED (SELECT p.node_id,{graph_boost} AS graph_boost FROM graph_window p JOIN nodes n ON n.node_id=p.node_id) SELECT {columns},CASE WHEN n.name=?2 COLLATE NOCASE THEN 0 ELSE 2 END AS match_rank,COALESCE(b.graph_boost,0) AS graph_boost,r.search_total FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id CROSS JOIN result_total r LEFT JOIN boosted b ON b.node_id=n.node_id WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY match_rank,CASE WHEN b.node_id IS NULL THEN 1 ELSE 0 END,COALESCE(b.graph_boost,0) DESC,pd.path,n.line,n.id");
+            ranked_search_page(
+                conn,
+                &sql,
+                &[
+                    &fts_query,
+                    &pattern,
+                    &kind,
+                    &path,
+                    &path_start,
+                    &path_end,
+                    &include_docs,
+                ],
+                options,
+            )?
+        };
+        (candidates["total"].as_u64() != Some(0)).then_some(candidates)
+    } else {
+        None
+    };
+    let mut nodes = if let Some(candidates) = default_exact {
+        candidates
+    } else if exact && pattern != "*" {
         let fts_query = pattern
             .split(|c: char| !c.is_alphanumeric())
             .filter(|part| !part.is_empty())

@@ -1,7 +1,8 @@
 use super::*;
 
 #[test]
-fn search_ranks_symbol_names_before_doc_text_and_preserves_pages() {
+fn exact_symbol_match_filters_text_only_candidates_by_default() {
+    let mut failures = Vec::new();
     let workspace = Workspace::new();
     workspace.write(
         "a.py",
@@ -27,7 +28,9 @@ fn search_ranks_symbol_names_before_doc_text_and_preserves_pages() {
         )
         .unwrap();
         let page = &result["nodes"];
-        assert_eq!(page["total"], 3);
+        if page["total"] != 1 {
+            failures.push(format!("exact-name total must be 1: {page}"));
+        }
         let item = &page["items"][0];
         names.push(item["name"].as_str().unwrap().to_owned());
         reasons.push(
@@ -40,8 +43,11 @@ fn search_ranks_symbol_names_before_doc_text_and_preserves_pages() {
             break;
         }
     }
-    assert_eq!(names, ["as_str", "_as_str", "unrelated"]);
-    assert_eq!(reasons, ["visible_name", "visible_name", "indexed_text"]);
+    if names != ["as_str"] {
+        failures.push(format!(
+            "exact-name isolation: {names:?}, reasons={reasons:?}"
+        ));
+    }
     let mut full = options(10);
     full.detail = Detail::Full;
     let detailed = symbols::search_with_options(
@@ -56,11 +62,24 @@ fn search_ranks_symbol_names_before_doc_text_and_preserves_pages() {
         },
     )
     .unwrap();
+    if detailed["nodes"]["total"] != 1 {
+        failures.push(format!("full exact-name total must be 1: {detailed}"));
+    }
     assert_eq!(detailed["nodes"]["items"][0]["match_reason"], "exact_name");
-    assert_eq!(
-        detailed["nodes"]["items"][1]["match_reason"],
-        "name_fragment"
-    );
+    let exploratory = symbols::search_with_options(
+        &conn,
+        "helper",
+        &symbols::SearchOptions {
+            kind: Some("function"),
+            path: None,
+            include_docs: false,
+            exact: false,
+            page: &options(10),
+        },
+    )
+    .unwrap();
+    assert_eq!(exploratory["nodes"]["total"], 1);
+    assert_eq!(exploratory["nodes"]["items"][0]["name"], "unrelated");
     let prefix = symbols::search_with_options(
         &conn,
         "as_str*",
@@ -74,6 +93,270 @@ fn search_ranks_symbol_names_before_doc_text_and_preserves_pages() {
     )
     .unwrap();
     assert_eq!(prefix["nodes"]["total"], 1);
+
+    workspace.write("pkg/a.py", "def as_str(): pass\n");
+    workspace.write("pkg/b.py", "def as_str(): pass\n");
+    workspace.write("pkg/explore.py", "def as_str_extra(): pass\n");
+    workspace.write(
+        "pkg/noise.py",
+        "class Other:\n    \"\"\"as_str helper\"\"\"\n    pass\n",
+    );
+    workspace.write(
+        "other.py",
+        "def fallback():\n    \"\"\"as_str helper\"\"\"\n    pass\n",
+    );
+    workspace.write("types.py", "class as_str: pass\n");
+    workspace.write("README.md", "# as_str\n\nConversion.\n");
+    let conn = workspace.build();
+    let qualified: String = conn.query_row(
+        "SELECT n.qualname FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name='as_str' AND p.path='pkg/a.py'",
+        [], |row| row.get(0),
+    ).unwrap();
+    let cases = [
+        (
+            "as_str",
+            Some("function"),
+            Some("pkg"),
+            false,
+            vec!["pkg/a.py:as_str", "pkg/b.py:as_str"],
+        ),
+        (
+            "as_str",
+            Some("method"),
+            Some("pkg"),
+            false,
+            vec!["pkg/a.py:as_str", "pkg/b.py:as_str"],
+        ),
+        (
+            qualified.as_str(),
+            Some("function"),
+            None,
+            false,
+            vec!["pkg/a.py:as_str"],
+        ),
+        (
+            "as_str",
+            Some("class"),
+            Some("pkg"),
+            false,
+            vec!["pkg/noise.py:Other"],
+        ),
+        (
+            "as_str",
+            Some("function"),
+            Some("file:other.py"),
+            false,
+            vec!["other.py:fallback"],
+        ),
+        ("as_str", None, Some("README.md"), false, vec![]),
+        (
+            "as_str",
+            None,
+            Some("README.md"),
+            true,
+            vec!["README.md:as_str"],
+        ),
+        ("as_str", Some("function"), Some("README.md"), true, vec![]),
+        (
+            "as_str",
+            None,
+            None,
+            false,
+            vec![
+                "pkg/a.py:as_str",
+                "pkg/b.py:as_str",
+                "types.py:as_str",
+                "z.py:as_str",
+            ],
+        ),
+        (
+            "as_str",
+            None,
+            None,
+            true,
+            vec![
+                "README.md:as_str",
+                "pkg/a.py:as_str",
+                "pkg/b.py:as_str",
+                "types.py:as_str",
+                "z.py:as_str",
+            ],
+        ),
+        (
+            "helper",
+            Some("function"),
+            Some("other.py"),
+            false,
+            vec!["other.py:fallback"],
+        ),
+        (
+            "as_str*",
+            Some("function"),
+            Some("pkg"),
+            false,
+            vec![
+                "pkg/a.py:as_str",
+                "pkg/b.py:as_str",
+                "pkg/explore.py:as_str_extra",
+            ],
+        ),
+        (
+            "as_st",
+            Some("function"),
+            Some("pkg"),
+            false,
+            vec![
+                "pkg/a.py:as_str",
+                "pkg/b.py:as_str",
+                "pkg/explore.py:as_str_extra",
+            ],
+        ),
+    ];
+    for (pattern, kind, path, include_docs, expected) in cases {
+        for detail in [Detail::Compact, Detail::Full] {
+            let mut query = options(1);
+            query.detail = detail;
+            let mut actual = Vec::new();
+            loop {
+                let found = symbols::search_with_options(
+                    &conn,
+                    pattern,
+                    &symbols::SearchOptions {
+                        kind,
+                        path,
+                        include_docs,
+                        exact: false,
+                        page: &query,
+                    },
+                )
+                .unwrap();
+                let page = &found["nodes"];
+                if query.offset == 0 && page["total"] != expected.len() {
+                    failures.push(format!("{pattern}, {kind:?}, {path:?}, docs={include_docs}, expected total {}, actual={}", expected.len(), page["total"]));
+                }
+                actual.extend(page["items"].as_array().unwrap().iter().map(|item| {
+                    format!(
+                        "{}:{}",
+                        item["path"].as_str().unwrap(),
+                        item["name"].as_str().unwrap()
+                    )
+                }));
+                if !continue_page(&mut query, page) {
+                    break;
+                }
+            }
+            actual.sort();
+            let mut expected = expected.clone();
+            expected.sort();
+            if actual != expected {
+                failures.push(format!("{pattern}, {kind:?}, {path:?}, docs={include_docs}: actual={actual:?}, expected={expected:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn natural_document_search_ignores_stop_words_and_boosts_section_titles() {
+    let mut failures = Vec::new();
+    let workspace = Workspace::new();
+    workspace.write(
+        "a.md",
+        "# Request Processing\n\nSubscribers receive queued events.\n",
+    );
+    workspace.write(
+        "b.md",
+        "# Architecture\n\nRequest processing routes subscribers.\n",
+    );
+    let conn = workspace.build();
+    let result = reader::search_docs_with_options(
+        &conn,
+        "How is the request processing for subscribers?",
+        &reader::DocSearchOptions {
+            doc_type: None,
+            component: None,
+            include_excerpt: false,
+            page: &options(10),
+        },
+    )
+    .unwrap();
+
+    if result["sections"]["total"] != 2 {
+        failures.push(format!("natural query must retrieve 2 sections: {result}"));
+    }
+    if result["sections"]["items"][0]["section_title"] != "Request Processing" {
+        failures.push(format!("title match must rank first: {result}"));
+    }
+
+    let stripped = reader::search_docs_with_options(
+        &conn,
+        "request processing subscribers",
+        &reader::DocSearchOptions {
+            doc_type: None,
+            component: None,
+            include_excerpt: false,
+            page: &options(10),
+        },
+    )
+    .unwrap();
+    if result["sections"] != stripped["sections"] {
+        failures.push(format!(
+            "stop words must not affect retrieval or rank: natural={result}, stripped={stripped}"
+        ));
+    }
+
+    workspace.write("c.md", "# Delivery\n\nSubscribers receive events.\n");
+    let conn = workspace.build();
+    let conceptual = reader::search_docs_with_options(
+        &conn,
+        "request subscribers",
+        &reader::DocSearchOptions {
+            doc_type: None,
+            component: None,
+            include_excerpt: false,
+            page: &options(10),
+        },
+    )
+    .unwrap();
+    if conceptual["sections"]["total"] != 3 {
+        failures.push(format!(
+            "conceptual terms must not require every term, expected total 3: {conceptual}"
+        ));
+    }
+
+    let weighted = reader::search_docs_with_options(
+        &conn,
+        "request",
+        &reader::DocSearchOptions {
+            doc_type: None,
+            component: None,
+            include_excerpt: false,
+            page: &options(10),
+        },
+    )
+    .unwrap();
+    let expected = reader::rows(&conn,
+        "SELECT d.doc_id,bm25(doc_search,3.0,1.0,1.0) rank FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 ORDER BY rank,d.path,d.doc_id",
+        &[&"\"request\""], 10,
+    ).unwrap();
+    for (actual, expected) in weighted["sections"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(&expected)
+    {
+        assert_eq!(actual["doc_id"], expected["doc_id"]);
+        let actual_rank = actual["rank"].as_f64().unwrap();
+        let expected_rank = expected["rank"].as_f64().unwrap();
+        if (actual_rank - expected_rank).abs() > expected_rank.abs() * 1e-10 {
+            failures.push(format!("section-title BM25 must have exactly 3x body weight: actual={actual_rank}, expected={expected_rank}"));
+        }
+    }
+    assert_eq!(
+        weighted["sections"]["items"].as_array().unwrap().len(),
+        expected.len()
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -102,10 +385,6 @@ fn search_ranking_applies_to_other_names_and_wildcard_pages() {
     )
     .unwrap();
     let names = ranked["nodes"]["items"].as_array().unwrap();
-    assert_eq!(ranked["nodes"]["total"], 3);
-    assert_eq!(names[0]["name"], "resolve_conflict");
-    assert_eq!(names[1]["name"], "_resolve_conflict");
-    assert_eq!(names[2]["name"], "unrelated");
 
     let mut page_options = options(1);
     let mut wildcard_names = Vec::new();
@@ -151,6 +430,8 @@ fn search_ranking_applies_to_other_names_and_wildcard_pages() {
         "build_target"
     );
     assert_eq!(interior_wildcard["nodes"]["items"][1]["name"], "unrelated");
+    assert_eq!(ranked["nodes"]["total"], 1);
+    assert_eq!(names[0]["name"], "resolve_conflict");
 }
 
 #[test]

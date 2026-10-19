@@ -714,19 +714,22 @@ fn stdio_symbol_search_groups_the_current_page_by_file() {
         "def target(): return 1\ndef target_helper(): return target()\n",
     );
     let mut client = Client::new(&workspace);
-    let response = client.payload(
-        "code_map_search",
-        json!({"pattern":"target","kind":"function","group_by_file":true}),
-    );
-    assert_eq!(response["nodes"]["total"], 2);
-    assert_eq!(response["nodes"]["items"], json!([]));
-    assert_eq!(
-        response["nodes"]["grouped_by_file"]["service.py"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
+    for (pattern, expected) in [("target", 1), ("target*", 2)] {
+        let response = client.payload(
+            "code_map_search",
+            json!({"pattern":pattern,"kind":"function","group_by_file":true}),
+        );
+        assert_eq!(response["nodes"]["total"], expected, "{pattern}");
+        assert_eq!(response["nodes"]["items"], json!([]));
+        assert_eq!(
+            response["nodes"]["grouped_by_file"]["service.py"]
+                .as_array()
+                .unwrap()
+                .len(),
+            expected,
+            "{pattern}"
+        );
+    }
 }
 #[cfg(feature = "lang-python")]
 #[test]
