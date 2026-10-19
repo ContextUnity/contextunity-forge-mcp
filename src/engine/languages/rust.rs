@@ -132,6 +132,118 @@ pub struct Rust;
 /// Shared rust language profile.
 pub static RUST: Rust = Rust;
 
+pub(crate) fn cargo_manifest_metadata(content: &str) -> (Option<String>, Vec<String>) {
+    let mut package_name = None;
+    let mut library_name = None;
+    let mut invalid_name = false;
+    let mut library_path = None;
+    let mut autolib = None;
+    let mut explicit_library = false;
+    let mut invalid_layout = false;
+    let mut dependencies = Vec::new();
+    super::toml_manifest::visit_toml_pairs(content, &mut |path, value| {
+        explicit_library |= path.starts_with("lib.");
+        if path == "lib.path" {
+            let declared = super::toml_manifest::toml_string(value, content);
+            invalid_layout |= library_path.is_some()
+                || !matches!(declared.as_deref(), Some("src/lib.rs" | "./src/lib.rs"));
+            library_path = declared;
+        } else if path == "package.autolib" {
+            let declared = match &content[value.byte_range()] {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            };
+            invalid_layout |= autolib.is_some() || declared.is_none();
+            autolib = declared;
+            if declared == Some(false) {
+                let mut document = value;
+                while let Some(parent) = document.parent() {
+                    document = parent;
+                }
+                let mut cursor = document.walk();
+                explicit_library |= document.named_children(&mut cursor).any(|node| {
+                    node.kind() == "table"
+                        && node.named_child(0).is_some_and(|header| {
+                            matches!(&content[header.byte_range()], "lib" | "'lib'" | "\"lib\"")
+                        })
+                });
+            }
+        }
+        if matches!(path, "package.name" | "lib.name") {
+            let name = super::toml_manifest::toml_string(value, content);
+            let slot = if path == "package.name" {
+                &mut package_name
+            } else {
+                &mut library_name
+            };
+            invalid_name |= slot.is_some()
+                || name.as_deref().is_none_or(|name| {
+                    name.is_empty()
+                        || !name
+                            .chars()
+                            .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-'))
+                });
+            *slot = name;
+        }
+        let parts: Vec<_> = path.split('.').collect();
+        let is_dependency_section = |section: &str| {
+            matches!(
+                section,
+                "dependencies" | "dev-dependencies" | "build-dependencies"
+            )
+        };
+        let dependency_name = match parts.as_slice() {
+            [section, name, ..] if is_dependency_section(section) => Some(*name),
+            ["workspace", "dependencies", name, ..] => Some(*name),
+            ["target", _, section, name, ..] if is_dependency_section(section) => Some(*name),
+            _ => None,
+        };
+        if let Some(name) = dependency_name {
+            let name = name.replace('-', "_");
+            if !name.is_empty() {
+                dependencies.push(name);
+            }
+        }
+    });
+    dependencies.sort();
+    dependencies.dedup();
+    let crate_name = if invalid_name
+        || invalid_layout
+        || (autolib == Some(false) && !explicit_library)
+        || package_name.is_none()
+    {
+        None
+    } else {
+        library_name
+            .or(package_name)
+            .map(|name| name.replace('-', "_"))
+    };
+    (crate_name, dependencies)
+}
+
+impl Rust {
+    pub(crate) fn normalize_root_crate_import(
+        &self,
+        crate_name: &str,
+        module: &str,
+    ) -> Option<ImportPath> {
+        let (head, tail) = module.split_once("::").unwrap_or((module, ""));
+        if head != crate_name {
+            return None;
+        }
+        Some(ImportPath {
+            namespace: if tail.is_empty() || tail == "*" {
+                "src".into()
+            } else {
+                format!("src.{}", tail.replace("::", "."))
+            },
+            relative: true,
+            symbol_path: true,
+        })
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn test_ast_parameterless_declaration() {
@@ -193,31 +305,7 @@ impl LanguageProfile for Rust {
         if filename != "Cargo.toml" {
             return Vec::new();
         }
-        let mut dependencies = Vec::new();
-        super::toml_manifest::visit_toml_pairs(content, &mut |path, _value| {
-            let parts: Vec<_> = path.split('.').collect();
-            let is_dependency_section = |section: &str| {
-                matches!(
-                    section,
-                    "dependencies" | "dev-dependencies" | "build-dependencies"
-                )
-            };
-            let dependency_name = match parts.as_slice() {
-                [section, name, ..] if is_dependency_section(section) => Some(*name),
-                ["workspace", "dependencies", name, ..] => Some(*name),
-                ["target", _, section, name, ..] if is_dependency_section(section) => Some(*name),
-                _ => None,
-            };
-            if let Some(name) = dependency_name {
-                let name = name.replace('-', "_");
-                if !name.is_empty() {
-                    dependencies.push(name);
-                }
-            }
-        });
-        dependencies.sort();
-        dependencies.dedup();
-        dependencies
+        cargo_manifest_metadata(content).1
     }
     fn is_stdlib(&self, module: &str) -> bool {
         matches!(

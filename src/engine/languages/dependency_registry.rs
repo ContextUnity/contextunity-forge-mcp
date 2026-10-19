@@ -34,6 +34,8 @@ pub struct DependencyRegistry {
     rule_ir: RuleIRHandle,
     javascript_packages: JavascriptPackageRegistry,
     typescript_paths: TypeScriptPathsRegistry,
+    #[cfg(feature = "lang-rust")]
+    rust_root_crates: HashMap<String, String>,
     digest: String,
 }
 
@@ -281,6 +283,16 @@ impl DependencyRegistry {
         self.javascript_packages.normalize_import(owner, module)
     }
 
+    #[cfg(feature = "lang-rust")]
+    pub(crate) fn root_rust_crate_for_path(&self, path: &str) -> Option<&str> {
+        let workspace = super::workspace_path(path).0;
+        let name = self.rust_root_crates.get(workspace)?;
+        if self.nearest_manifest_scope_for_path(LanguageFamily("rust"), path)? != workspace {
+            return None;
+        }
+        Some(name)
+    }
+
     /// Collects workspace dependencies and framework rules.
     pub fn collect(root: Option<&Path>) -> Self {
         let Some(root) = root else {
@@ -430,6 +442,21 @@ impl DependencyRegistry {
                         continue;
                     }
                     parsed_families.push(family);
+                    #[cfg(feature = "lang-rust")]
+                    let dependencies =
+                        if filename == "Cargo.toml" && family == LanguageFamily("rust") {
+                            let (crate_name, dependencies) =
+                                super::rust::cargo_manifest_metadata(&content);
+                            if directory.as_os_str().is_empty() {
+                                if let Some(crate_name) = crate_name {
+                                    registry.rust_root_crates.insert(scope.clone(), crate_name);
+                                }
+                            }
+                            dependencies
+                        } else {
+                            profile.extract_manifest_dependencies(filename, &content)
+                        };
+                    #[cfg(not(feature = "lang-rust"))]
                     let dependencies = profile.extract_manifest_dependencies(filename, &content);
                     {
                         let origins = registry
@@ -954,6 +981,34 @@ mod tests {
                 "replace = true\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n",
             )
             .unwrap();
+            #[cfg(feature = "lang-rust")]
+            {
+                fs::create_dir_all(root.join("src")).unwrap();
+                fs::create_dir_all(root.join("tests")).unwrap();
+                fs::write(
+                    root.join("Cargo.toml"),
+                    "[package]\nname='commerce-fixture'\nversion='0.1.0'\n",
+                )
+                .unwrap();
+                fs::write(root.join("src/lib.rs"), "pub mod api;\n").unwrap();
+                fs::write(root.join("src/api.rs"), "pub fn route() {}\n").unwrap();
+                fs::write(
+                    root.join("tests/connected.rs"),
+                    "use commerce_fixture::api::route;\n#[test]\nfn connected() { route(); }\n",
+                )
+                .unwrap();
+                let database = root.join(".forge/code-map.sqlite");
+                crate::engine::pipeline::build(root, &database, None).unwrap();
+                let connection = crate::db::reader::open(&database, root).unwrap();
+                let calls: i64 = connection.query_row(
+                    "SELECT count(*) FROM edges edge JOIN nodes caller ON caller.node_hash=edge.src_hash JOIN nodes target ON target.node_hash=edge.dst_hash WHERE edge.kind='calls' AND caller.name='connected' AND caller.is_test=1 AND target.name='route' AND target.is_test=0",
+                    [], |row| row.get(0),
+                ).unwrap();
+                assert_eq!(
+                    calls, 1,
+                    "Cargo identity must connect integration tests in every worktree"
+                );
+            }
         }
 
         let first = DependencyRegistry::try_collect(&first_root, None, None).unwrap();

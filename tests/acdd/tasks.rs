@@ -472,6 +472,37 @@ fn signature_boundary_protects_implicitly_public_trait_methods() {
 }
 
 #[test]
+fn contract_seam_accepts_root_cargo_package_imports_from_integration_tests() {
+    let root = prepare_indexed_boundary_workspace(
+        "pub fn route() -> usize { 1 }\n",
+        "",
+        "use crate::api::route;\n#[test]\nfn test_connected() { let actual = route(); assert_eq!(actual, 1); }\n",
+        "route",
+        None,
+        None,
+    );
+    root.write(
+        "tests/connected.rs",
+        "use boundary_fixture::api::route;\n#[test]\nfn integration_connected() { let actual = route(); assert_eq!(actual, 1); }\n",
+    );
+    commit_fixture_baseline(&root);
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(json!({"task_id":"forge-mcp/m-current-boundary:routing","stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap(),
+    ).unwrap();
+    submit_indexed_boundary(&root, "contract", "tests/connected.rs").unwrap();
+    assert_eq!(
+        tasks::store_for_task(&root.0, "forge-mcp/m-current-boundary:routing")
+            .unwrap()
+            .inspect("forge-mcp/m-current-boundary:routing")
+            .unwrap()
+            .stage,
+        "build"
+    );
+}
+
+#[test]
 fn contract_seam_requires_current_indexed_paths_at_every_hop() {
     let api = "pub fn route() -> usize { 1 }\n";
     let caller = "use crate::api::route;\npub fn helper() -> usize { route() }\npub fn outer() -> usize { helper() }\n";
@@ -1074,6 +1105,7 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
                                     command.starts_with(canonical_command)
                                         && (command.ends_with("--test connected")
                                             || command.ends_with("--test acdd")
+                                            || command.ends_with("--test external")
                                             || command.ends_with("--lib"))
                                 })
                         })
@@ -1083,9 +1115,15 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
                                     .as_str()
                                     .is_some_and(|command| command.ends_with("--test acdd"))
                         })
+                        && entries.iter().any(|entry| {
+                            entry["test_path"] == "tests/external.rs"
+                                && entry["command"]
+                                    .as_str()
+                                    .is_some_and(|command| command.ends_with("--test external"))
+                        })
                 })
             {
-                failures.push(format!("{stage}/{seam}: scoped commands must append seam and covering-test suffixes only to the canonical combined command"));
+                failures.push(format!("{stage}/{seam}: scoped commands must append seam and covering-test suffixes only to the canonical combined command: {scoped}"));
             }
         }
         if change_signature {

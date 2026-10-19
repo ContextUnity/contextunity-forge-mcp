@@ -56,6 +56,18 @@ impl<'a> NamespaceIndexes<'a> {
         for (path, facts) in all {
             let facts = facts.as_ref();
             let profile = profiles.get(path.as_str()).copied();
+            #[cfg(feature = "lang-rust")]
+            let root_rust_crate = profile
+                .filter(|profile| profile.id() == "rust")
+                .and_then(|_| dependency_registry.root_rust_crate_for_path(path))
+                .filter(|_| {
+                    let workspace = languages::workspace_path(path).0;
+                    if workspace.is_empty() {
+                        profiles.contains_key("src/lib.rs")
+                    } else {
+                        profiles.contains_key(format!("{workspace}/src/lib.rs").as_str())
+                    }
+                });
             for reference in facts
                 .references
                 .iter()
@@ -66,6 +78,12 @@ impl<'a> NamespaceIndexes<'a> {
                     .entry((path.as_str(), module))
                     .or_insert_with(|| {
                         profile.and_then(|profile| {
+                            #[cfg(feature = "lang-rust")]
+                            if let Some(normalized) = root_rust_crate.and_then(|name| {
+                                languages::rust::RUST.normalize_root_crate_import(name, module)
+                            }) {
+                                return Some(normalized);
+                            }
                             dependency_registry
                                 .normalize_javascript_import(
                                     profile.id(),
@@ -90,6 +108,9 @@ impl<'a> NamespaceIndexes<'a> {
                 }
                 if !namespaces.contains(&local_module) {
                     namespaces.push(local_module);
+                }
+                if profile.id() == "rust" && local_path == "src/lib.rs" {
+                    namespaces.push("src".to_owned());
                 }
                 if let Some((_, source_relative)) = local_path.split_once("/src/") {
                     let source_module = profile.module_name(source_relative);

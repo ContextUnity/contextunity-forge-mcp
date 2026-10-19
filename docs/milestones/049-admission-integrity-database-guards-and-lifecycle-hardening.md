@@ -904,26 +904,81 @@ receipt:
 task_ref: cargo-root-crate-import-resolution-and-seam-connectivity
 target: Resolve root Cargo package name imports to src/ in Rust import normalization, enabling integration test files in tests/ to establish static seam edges to local library symbols
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 invariants:
 - 'INV-RUST-ROOT-CRATE-IMPORT-NORMALIZATION: When Rust code (e.g. integration tests in tests/) imports the workspace crate by its Cargo package name (or normalized identifier with underscores replacing hyphens), Rust::normalize_import maps the root crate identifier directly to src/, resolving public module and symbol paths identically to internal crate:: imports.'
 - 'INV-INTEGRATION-TEST-SEAM-CONNECTIVITY: Integration test functions importing library symbols via use <pkg_name>::... produce directed graph call edges to the indexed library symbols, satisfying ACDD contract gate seam connectivity without failing TASK_SEAM_DISCONNECTED.'
 scope:
 - src/engine/languages/rust.rs
-- tests/engine/languages.rs
+- src/engine/languages/dependency_registry.rs
+- src/engine/linker/indexing.rs
+- tests/languages/profiles.rs
 - tests/acdd/tasks.rs
 - docs/reference/tasks.md
-status: ready
+status: completed
 subtasks:
 - subtask_ref: cargo-package-name-crate-resolution
   title: Detect root package name from Cargo.toml or directory identity and map pkg_name identifiers to src in Rust::normalize_import
-  status: pending
+  status: completed
+  evidence: Cargo identity from existing one-pass admitted manifest parse. Full lib92/languages263/acdd115/mcp91 PASS; root normalization matrix covers underscore/hyphen, lib.name, supported/default explicit lib layout, missing/malformed/nested/binary-only/custom-path/autolib guards; independent real CLI layout probe7/7 at /tmp/forge-049-implementation-20261019/cargo-final-layout-probe.json.
 - subtask_ref: integration-test-graph-edge-emission
   title: Verify directed edge emission from tests/ call sites to src/ symbols when using crate package imports
-  status: pending
+  status: completed
+  evidence: Persisted directed integration test -> library calls pass ordinary/alias/module/glob/root-symbol cases; cold/delta parity after source edits and Cargo rename invalidation pass. Complete languages263 PASS, lib92 PASS.
 - subtask_ref: seam-connectivity-contract-gate-tests
   title: Add seam tests proving integration-test contract gate passage without TASK_SEAM_DISCONNECTED
-  status: pending
+  status: completed
+  evidence: Real production ACDD contract seam test passes via Cargo package import without TASK_SEAM_DISCONNECTED. Complete acdd115 PASS; existing boundary target test now requires exact newly connected external covering target while retaining strict canonical commands/caller admission. Strict Clippy + total561 tests PASS0failed0ignored; H/cargo-import-build-{clippy,targets}.log.
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-19T23:32:57.033742001+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib --test languages --test acdd --test mcp
+      exit_code: 0
+      tests_passed: 561
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS. Reviewed full base5914910 scoped diff and all staged/unstaged/untracked status: six admitted files plus authorized current task manifest revision/scope correction only. All six files match frozen64628f7 before/after independent gates; no profile/config/generated-source/credential changes. Ten neighboring task blocks remain bytewise unchanged. Every change implements root Cargo identity, import normalization, real seam proof or its admitted docs. Artifacts H=/tmp/forge-049-implementation-20261019: cargo-review-binding.json and cargo-review-inspect.json.'
+        claims:
+          applicable: true
+          evidence: 'PASS. Traced both task invariants through one existing TOML parse -> workspace-root registry identity -> cached normalization -> workspace-relative module/symbol resolution. Package hyphen normalization and lib.name override work; wrong/missing/malformed/nested/binary-only metadata decline identity. Real persisted calls cover ordinary/alias/module/glob/root-symbol imports, source cold/delta parity and Cargo rename invalidation. Real TasksStore contract submission reaches build. F1 closed: fixture uses existing engine::pipeline::build and preexisting db::reader edge, preserving ADR0018. F2 red cargo-preflight-layout-probe.json retained; current real CLI cargo-final-layout-probe.json passes7/7, rejecting custom library and disabled implicit layout while retaining explicit standard/empty bare/single/double-quoted lib tables. Own strict Clippy exit0; complete cargo test --lib --test languages --test acdd --test mcp exit0,92+115+263+91=561 passed,0failed/ignored/filtered. cargo-review-gates.json and cargo-review-{clippy,targets}.log. No remaining findings.'
+        concurrency:
+          applicable: true
+          evidence: PASS. New registry map is built once from the admitted manifest snapshot and read immutably during normalization; normalized imports remain cached by file/module before parallel resolution. No new transaction, claim mutation, lock, connection, receipt write or publication path. Existing manifest digest and semantic fingerprint fence stale Cargo identities; cold/delta and rename cases pass complete affected targets. ADR0002/0003/0010 publication and rollback behavior are unchanged. No new per-request filesystem/SQLite work; autolib check walks existing AST only. No benchmark or zero-measured-regression claim; existing user performance disposition449 remains unchanged.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Review claim5/contract2 is rooted in assigned049 worktree and distinct from accepted builder. Exact-W fresh CLI overview confirms worktree metadata, generation96e23a27,313 files,7108 nodes,zero parse errors. Root identities are keyed by primary/linked workspace; nearest Cargo manifest must equal that workspace root. New normalized imports are relative, so existing owner-workspace filter prevents cross-root resolution. Nested package cannot borrow root identity; malformed/missing/unrelated names decline mapping. Scanner root/symlink guards, profiles, task namespaces and database paths are unchanged. cargo-review-seam-graph.json shows actual direct registry collection calls; unresolved references are retained honestly.
+        administration:
+          applicable: true
+          evidence: PASS. No schema migration, profile pin, gate proof/receipt policy, CLI/MCP dispatch, Git helper, global installation or protected milestone header changed. Full10 neighboring task definitions preserved; current manifest amendment is the admitted revision2 scope correction. ADR0009 classification owner and ADR0018 frozen edges preserved. Actual installed Forge skill was used by complete MCP suite without override. Independent worker codex-049-cargo-reviewer differs from codex-049-builder; MCP review claim succeeded. Existing Forge auto-commit/hook/candidate-parent/atomic receipt checks remain authoritative; delivery will use same reviewer with no manual commit or source edits, followed by landed receipt/HEAD/clean-status verification.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ADMISSION-DETERMINISM: Dependency manifest collection across cold build, incremental delta, and MCP source admission must yield identical path sets and digests for unchanged workspace state, eliminating false-positive rebuild loops.'
+    - 'INV-DATABASE-SEPARATION: Task tracking databases (tasks.sqlite) and code map indices (code-map.sqlite) are mutually exclusive; attempts to target a task database for code-map output or open a code-map database as task store fail closed with TASK_DATABASE_COLLISION.'
+    - 'INV-WORKSPACE-UNIQUENESS: Subproject milestone resolution honors declared_projects frontmatter and configured owner mappings, preventing duplicate phantom workspaces from conflicting on milestone references.'
+    - 'INV-DAEMON-RESOURCE-BOUND: MCP servers preserve live connections regardless of inactivity, terminate on Unix when their launching parent disappears, and trim free heap pages after batch operations without removing the allocator trims delivered in milestone 031.'
+    - 'INV-GREENFIELD-SEAM-ACTIONABILITY: Greenfield contract validation failure for uncreated scope files outputs deterministic remediation guidance with file paths and stub requirements.'
+    - 'INV-PERFORMANCE-PRESERVATION: Preserve the indexing optimizations delivered on main; paired release measurements on an identical frozen corpus must show no cold-build, delta, or warm MCP latency regression before milestone delivery.'
+    - 'INV-RUST-ROOT-CRATE-IMPORT-NORMALIZATION: When Rust code (e.g. integration tests in tests/) imports the workspace crate by its Cargo package name (or normalized identifier with underscores replacing hyphens), Rust::normalize_import maps the root crate identifier directly to src/, resolving public module and symbol paths identically to internal crate:: imports.'
+    - 'INV-INTEGRATION-TEST-SEAM-CONNECTIVITY: Integration test functions importing library symbols via use <pkg_name>::... produce directed graph call edges to the indexed library symbols, satisfying ACDD contract gate seam connectivity without failing TASK_SEAM_DISCONNECTED.'
+    architectural_notes:
+    - 'decisions: Contract accepted via MCP snapshot58e4518 (red registry unit exit101, direct indexed production collect calls); build claim4/revision2 active. Implementation uses one existing Cargo TOML visitor pass for dependencies and crate identity, stores borrowed-read root names per workspace, and normalizes Rust imports at existing NamespaceIndexes cache construction. Preserve actual Cargo library identity ([lib].name override), root library presence and nearest-manifest/workspace boundary; no arbitrary directory-name guess for missing/virtual/malformed metadata. Planned mutation matrix: missing normalized name => positive direct/alias/module/glob/root call edges fail; permissive prefix/no library => unrelated/prefix/binary-only negatives fail; stale snapshot => Cargo rename cold/delta parity fails; absolute-root-based identity => existing two-worktree regression fails. No per-import source/manifest read, no new global cache/schema/connections, no allocator/index-publication changes.'
+    - 'decisions: Independent review closure at frozen64628f7/base5914910, claim5/contract2: all five contours PASS; strict all-target/all-feature Clippy0 plus complete lib92/acdd115/languages263/mcp91=561pass0fail0ignored0filtered. Proof H/cargo-review-evidence.json; gates/binding/logs H/cargo-review-*. F1 frozen-layer edge closed using existing pipeline/reader seams. F2 original red H/cargo-preflight-layout-probe.json retained; final real CLI H/cargo-final-layout-probe.json7/7 includes unsupported/disabled negatives and explicit standard/empty quoted-table positives. Six scoped bytes equal candidate and ten neighbor task blocks unchanged. No new benchmark; accepted user performance decision449 retained without zero-regression claim. Proceed same-reviewer automatic delivery, no source edits/manual duplicate commit.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ## Delivered task commits

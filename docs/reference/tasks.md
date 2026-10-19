@@ -350,6 +350,19 @@ otherwise it uses the workspace's read-only code map. Missing or stale indexed
 evidence does not prove a seam, so refresh the claimed-worktree code map after
 changing a test, helper, import, or binding used by the witness.
 
+Rust integration tests can import the root library through its Cargo crate name,
+including the underscore form of a hyphenated package name. An explicit
+`[lib].name` supplies the library name instead. Forge normalizes these imports
+against the indexed root `src/lib.rs`, using the admitted Cargo manifest snapshot
+for the owning workspace. Ordinary imports, aliases, module-qualified calls and
+glob imports provide the same seam evidence as internal `crate::` imports.
+Missing or malformed package metadata and unrelated crate names do not establish
+a local library identity. Refresh the index after changing the Cargo identity;
+existing manifest-digest admission invalidates its previous bindings.
+This mapping covers the root `src/lib.rs` layout. A different `[lib].path` or
+`autolib = false` without an explicit library target does not establish that
+identity, even when an unused `src/lib.rs` exists in the index.
+
 For greenfield features with uncreated scope files, create minimal compiling
 production stubs and module/import declarations in admitted scope, then refresh
 the index. Changing proof policy does not bypass seam reachability validation.
