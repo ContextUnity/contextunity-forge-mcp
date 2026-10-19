@@ -1,6 +1,125 @@
 use super::*;
 
 #[test]
+fn symbol_boundary_recovery_and_search_preview_resilience() {
+    use contextunity_forge_mcp::core::response::{QueryOptions, ResponsePolicy, SourceOptions};
+    use serde_json::json;
+    let cases = [
+        ("alias.py", "from typing import Literal\nStrategy = Literal['direct', 'fallback']; neighbor = 1\n", "Strategy", "type", "Strategy = Literal['direct', 'fallback']"),
+        ("variable.py", "pool_size = 3; neighbor = 1\n", "pool_size", "variable", "pool_size = 3"),
+        ("fields.py", "class Pool:\n    size = (\n        3\n    )\n    def __init__(self):\n        self.strategy = 'direct'\n", "size", "field", "    size = (\n        3\n    )\n"),
+        ("instance.py", "class Pool:\n    def __init__(self):\n        self.strategy = 'direct'\n", "strategy", "field", "        self.strategy = 'direct'\n"),
+    ];
+    for (path, text, name, kind, expected) in
+        cases
+            .into_iter()
+            .chain(cfg!(feature = "lang-html").then_some((
+                "template.html",
+                "<main>\n{% set strategy = 'direct' %}\n</main>\n",
+                "strategy",
+                "variable",
+                "{% set strategy = 'direct' %}\n",
+            )))
+    {
+        let w = Workspace::new();
+        w.write(path, text);
+        w.build();
+        let conn = w.open();
+        let rows = reader::rows(
+            &conn,
+            "SELECT id,line,end_line FROM nodes WHERE name=?1 AND kind=?2",
+            &[&name, &kind],
+            10,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1, "{path}: {rows:?}");
+        let id = rows[0]["id"].as_str().unwrap();
+        let page = QueryOptions::resolve(&ResponsePolicy::default(), None, 0, None, None).unwrap();
+        let source = SourceOptions {
+            enabled: true,
+            leading_lines: 0,
+            max_body_lines: 35,
+            offset: 0,
+        };
+        let snippet =
+            contextunity_forge_mcp::db::symbols::snippet_paged(&conn, w.root(), id, &source, &page)
+                .unwrap();
+        assert_eq!(snippet["source"], expected, "{path}: {snippet}");
+        let mut m = Mcp::new(&w);
+        for tool in ["code_map_inspect", "code_map_explain", "get_code_snippet"] {
+            let result = m.ok(
+                tool,
+                json!({"selector":id,"show_source":true,"leading_lines":0}),
+            );
+            assert_eq!(result["source"], expected, "{path}: {tool}: {result}");
+            assert_eq!(result["source_preview"]["start_line"], rows[0]["line"]);
+            assert_eq!(result["source_preview"]["end_line"], rows[0]["end_line"]);
+        }
+        let result = m.ok("code_map_search", json!({"pattern":name,"exact":true}));
+        let hit = &result["nodes"]["items"][0];
+        assert_eq!(hit["id"], id);
+        assert!(hit["source"].as_str().unwrap().contains(expected));
+    }
+
+    // Warm the real server's read snapshot before changing source so these calls
+    // exercise per-hit preview verification rather than index refresh.
+    for failure in ["boundary", "digest", "missing"] {
+        let w = Workspace::new();
+        w.write("a.py", "def resilient_hit(): return 1\n# no declaration\n");
+        w.write("z.py", "def resilient_hit(): return 2\n");
+        w.build();
+        if failure == "boundary" {
+            let conn = rusqlite::Connection::open(w.db()).unwrap();
+            conn.execute("UPDATE nodes SET line=2,end_line=2 WHERE name='resilient_hit' AND path_id=(SELECT path_id FROM path_dictionary WHERE path='a.py')", []).unwrap();
+            contextunity_forge_mcp::core::commitments::seal(&conn).unwrap();
+        }
+        let mut m = Mcp::new(&w);
+        m.ok("code_map_overview", json!({}));
+        match failure {
+            "digest" => w.write("a.py", "def resilient_hit(): return 9\n"),
+            "missing" => fs::remove_file(w.path("a.py")).unwrap(),
+            _ => {}
+        }
+        for include_preview in [false, true] {
+            let result = m.ok(
+                "code_map_search",
+                json!({"pattern":"resilient_hit","exact":true,"include_preview":include_preview}),
+            );
+            assert_eq!(result["nodes"]["total"], 2, "{failure}: {result}");
+            let hits = result["nodes"]["items"].as_array().unwrap();
+            assert_eq!(hits.len(), 2);
+            for (hit, path) in hits.iter().zip(["a.py", "z.py"]) {
+                assert_eq!(hit["path"], path, "{failure}: {result}");
+                assert_eq!(
+                    hit["line"],
+                    if failure == "boundary" && path == "a.py" {
+                        2
+                    } else {
+                        1
+                    }
+                );
+                assert_eq!(hit["inspect_selector"]["selector"], hit["id"]);
+                assert_eq!(hit["inspect_selector"]["show_source"], true);
+            }
+            assert!(
+                hits[0].get("source_preview").is_none(),
+                "{failure}: {result}"
+            );
+            assert!(hits[1]["source_preview"].is_object(), "{failure}: {result}");
+        }
+        if failure == "boundary" {
+            for tool in ["code_map_inspect", "code_map_explain", "get_code_snippet"] {
+                m.err(
+                    tool,
+                    json!({"selector":"a.py:resilient_hit","show_source":true}),
+                    "indexed symbol boundary is unavailable",
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn mcp_selector_and_source_boundaries() {
     use serde_json::json;
     let w = Workspace::new();
@@ -158,7 +277,7 @@ fn mcp_search_ast_and_document_boundaries() {
     let w = Workspace::new();
     w.write(
         "src/app.py",
-        "def item_name(): pass\ndef itemXname(): pass\nprint(item_name())\n",
+        "from typing import Literal\nModelPoolStrategy = Literal[\"direct\", \"fallback\"]\ndef item_name(): pass\ndef itemXname(): pass\nprint(item_name())\n",
     );
     w.write(
         "docs/intro.md",
@@ -200,11 +319,16 @@ fn mcp_search_ast_and_document_boundaries() {
         assert_eq!(result["nodes"]["total"], 0, "{pattern}: {result}");
     }
 
+    let type_search = m.ok("code_map_search", json!({"pattern":"ModelPoolStrategy"}));
+    assert_eq!(type_search["nodes"]["total"], 1);
+    assert!(type_search["nodes"]["items"][0]["source_preview"].is_object());
+
     let ast = m.ok(
         "ast_grep_search",
         json!({"pattern":"print($VALUE)","language":"python","path":"src/app.py"}),
     );
     assert!(!ast["matches"]["items"].as_array().unwrap().is_empty());
+
     let ranked = m.ok("code_map_search", json!({"pattern":"item_name","limit":10}));
     let ranked_total = ranked["nodes"]["total"].clone();
     assert!(ranked_total.as_u64().unwrap() > 0);
