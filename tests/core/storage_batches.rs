@@ -534,3 +534,25 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() {
     assert_eq!(delta_meta, fresh_meta);
 }
 
+#[test]
+fn bundled_framework_manifests_are_fingerprinted_in_dependency_digest() {
+    let ws = Workspace::new();
+    let adapter = scanner::load_adapter(ws.root(), None).unwrap();
+    let registry = contextunity_forge_mcp::engine::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
+        ws.root(),
+        Some(&adapter),
+    );
+
+    let empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    assert_ne!(
+        registry.digest(),
+        empty_sha256,
+        "dependency registry digest must include bundled framework rule manifests"
+    );
+    assert!(
+        !registry.standard_manifests_digest().is_empty(),
+        "registry must expose a deterministic standard manifests digest"
+    );
+}
+
+

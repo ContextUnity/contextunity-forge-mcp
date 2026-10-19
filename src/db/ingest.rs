@@ -37,6 +37,7 @@ pub(super) struct FilePersistenceTimings {
     pub(super) node_row_insert_ms: Option<f64>,
     pub(super) encode_facts_ms: f64,
     pub(super) local_facts_batch_rows: usize,
+    pub(super) local_facts_leaves: std::collections::BTreeMap<String, String>,
 }
 
 pub(super) fn persist_files(
@@ -44,7 +45,7 @@ pub(super) fn persist_files(
     path_cache: &mut PathDictionaryCache,
     entries: &[FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
-    encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
+    _encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
     bulk_search: bool,
 ) -> Result<FilePersistenceTimings> {
     let mut node_id: i64 = tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
@@ -53,6 +54,7 @@ pub(super) fn persist_files(
     let initial_node_id = node_id;
     let mut docs_count = 0;
     let mut encode_facts_ms = 0.0;
+    let mut local_facts_leaves = std::collections::BTreeMap::new();
 
     let mut stmt_source_inv = (!bulk_search)
         .then(|| tx.prepare("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)"))
@@ -128,19 +130,27 @@ pub(super) fn persist_files(
     };
 
     for file_chunk in entries.chunks(local_facts_batch_rows.unwrap_or(1)) {
-        let encoded_chunk = if encoded_facts.is_none() && local_facts_batch_rows.is_some() {
+        let encoded_chunk: Vec<(Vec<u8>, (String, String))> = if local_facts_batch_rows.is_some() {
             let started = Instant::now();
             let encoded = file_chunk
                 .par_iter()
                 .map(|file| {
                     let facts = facts.get(&file.path).context("missing extracted facts")?;
-                    encode_facts(facts)
+                    let blob = encode_facts(facts)?;
+                    let leaf = seal::local_facts_leaf(
+                        &file.path,
+                        &file.digest,
+                        &file.language,
+                        is_test(&file.path),
+                        &blob,
+                    )?;
+                    Ok((blob, leaf))
                 })
                 .collect::<Result<Vec<_>>>()?;
             encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
-            Some(encoded)
+            encoded
         } else {
-            None
+            Vec::new()
         };
         let mut local_facts_batch = Vec::<[BorrowedSqlValue<'_>; 6]>::with_capacity(
             local_facts_batch_rows.unwrap_or_default(),
@@ -190,26 +200,15 @@ pub(super) fn persist_files(
                     ])?;
             }
             if let Some(batch_rows) = local_facts_batch_rows {
-                let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)).or_else(|| {
-                    encoded_chunk
-                        .as_ref()
-                        .and_then(|blobs| blobs.get(chunk_index))
-                }) {
-                    Some(blob) => BorrowedSqlValue::Blob(blob),
-                    None => {
-                        let started = Instant::now();
-                        let blob = encode_facts(f)?;
-                        encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
-                        BorrowedSqlValue::OwnedBlob(blob)
-                    }
-                };
+                let (blob, leaf) = &encoded_chunk[chunk_index];
+                local_facts_leaves.insert(leaf.0.clone(), leaf.1.clone());
                 local_facts_batch.push([
                     BorrowedSqlValue::Text(&file.path),
                     BorrowedSqlValue::Text(&file.digest),
                     BorrowedSqlValue::Text(&file.language),
                     BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
                     BorrowedSqlValue::Integer(0),
-                    facts_blob,
+                    BorrowedSqlValue::Blob(blob),
                 ]);
                 if local_facts_batch.len() == batch_rows {
                     insert_multi_value_batch(
@@ -220,15 +219,17 @@ pub(super) fn persist_files(
                     local_facts_batch.clear();
                 }
             } else {
-                let facts_blob = match encoded_facts.and_then(|m| m.get(&file.path)) {
-                    Some(blob) => std::borrow::Cow::Borrowed(blob.as_slice()),
-                    None => {
-                        let started = Instant::now();
-                        let blob = encode_facts(f)?;
-                        encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
-                        std::borrow::Cow::Owned(blob)
-                    }
-                };
+                let started = Instant::now();
+                let blob = encode_facts(f)?;
+                encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
+                let (leaf_key, leaf_hash) = seal::local_facts_leaf(
+                    &file.path,
+                    &file.digest,
+                    &file.language,
+                    is_test(&file.path),
+                    &blob,
+                )?;
+                local_facts_leaves.insert(leaf_key, leaf_hash);
                 stmt_local_facts
                     .as_mut()
                     .context("missing incremental local facts insert")?
@@ -237,7 +238,7 @@ pub(super) fn persist_files(
                         file.digest,
                         file.language,
                         is_test(&file.path),
-                        facts_blob.as_ref()
+                        blob.as_slice()
                     ])?;
             }
             for n in &f.nodes {
@@ -415,6 +416,7 @@ pub(super) fn persist_files(
         node_row_insert_ms,
         encode_facts_ms,
         local_facts_batch_rows: local_facts_batch_rows.unwrap_or(1),
+        local_facts_leaves,
     })
 }
 

@@ -47,7 +47,17 @@ def run_build(
     start = time.perf_counter()
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         process = subprocess.Popen(command, cwd=repo, env=environment, stdout=stdout, stderr=stderr)
-        process.wait()
+        usage = None
+        if hasattr(os, "wait4"):
+            while True:
+                try:
+                    _, status, usage = os.wait4(process.pid, 0)
+                    break
+                except InterruptedError:
+                    continue
+            process.returncode = os.waitstatus_to_exitcode(status)
+        else:
+            process.wait()
     elapsed = time.perf_counter() - start
     if process.returncode:
         detail = stderr_path.read_text(errors="replace").strip()
@@ -57,7 +67,13 @@ def run_build(
     if not db.is_file():
         raise RuntimeError(f"build succeeded without creating its database: {db}")
 
-    return {"wall_seconds": elapsed}
+    result: dict[str, float | int] = {"wall_seconds": elapsed}
+    if usage is not None:
+        result["user_seconds"] = usage.ru_utime
+        result["system_seconds"] = usage.ru_stime
+        peak_rss = usage.ru_maxrss
+        result["peak_rss_bytes"] = peak_rss if os.uname().sysname == "Darwin" else peak_rss * 1024
+    return result
 
 
 def query_overview(binary: pathlib.Path, repo: pathlib.Path, db: pathlib.Path) -> dict[str, Any]:
@@ -117,6 +133,10 @@ def database_bytes(db: pathlib.Path) -> int:
 def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     keys = (
         "wall_seconds",
+        "user_seconds",
+        "system_seconds",
+        "peak_rss_bytes",
+        "database_bytes",
         "index_and_seal_ms",
         "seal_ms",
     )
@@ -214,6 +234,7 @@ def main() -> int:
                     run = {
                         "repetition": repetition + 1,
                         **timing,
+                        "database_bytes": database_bytes(db),
                         "graph": graph,
                         "output_root": build.get("output_root"),
                         "phases_ms": {

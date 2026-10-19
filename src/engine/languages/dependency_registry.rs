@@ -465,6 +465,10 @@ impl DependencyRegistry {
         registry.javascript_packages.apply_pnpm_workspaces();
         registry.typescript_paths.resolve_all();
         let mut hasher = Sha256::new();
+        hasher.update(b"forge-dependency-registry-v1\0");
+        let standard_digest = Self::standard_manifests_digest_static();
+        hasher.update((standard_digest.len() as u64).to_be_bytes());
+        hasher.update(standard_digest.as_bytes());
         for (path, digest) in snapshots {
             hasher.update((path.len() as u64).to_be_bytes());
             hasher.update(path.as_bytes());
@@ -477,6 +481,26 @@ impl DependencyRegistry {
     /// Performs digest.
     pub fn digest(&self) -> &str {
         &self.digest
+    }
+
+    /// Exposes the deterministic digest of bundled standard framework manifests.
+    pub fn standard_manifests_digest(&self) -> &str {
+        Self::standard_manifests_digest_static()
+    }
+
+    /// Exposes the static deterministic digest of bundled standard framework manifests.
+    pub fn standard_manifests_digest_static() -> &'static str {
+        STANDARD_FRAMEWORK_MANIFESTS_DIGEST.get_or_init(|| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"forge-standard-framework-manifests-v1\0");
+            for (name, source) in STANDARD_FRAMEWORK_MANIFEST_SOURCES {
+                hasher.update((name.len() as u64).to_be_bytes());
+                hasher.update(name.as_bytes());
+                hasher.update((source.len() as u64).to_be_bytes());
+                hasher.update(source.as_bytes());
+            }
+            hex::encode(hasher.finalize())
+        })
     }
 
     pub(crate) fn declares_for_path(
@@ -701,18 +725,23 @@ fn walked_manifest_paths(
         .collect()
 }
 
+const STANDARD_FRAMEWORK_MANIFEST_SOURCES: [(&str, &str); 9] = [
+    ("alpinejs", include_str!("manifests/alpinejs.toml")),
+    ("django", include_str!("manifests/django.toml")),
+    ("fastapi", include_str!("manifests/fastapi.toml")),
+    ("gridviewspec", include_str!("manifests/gridviewspec.toml")),
+    ("jinja2", include_str!("manifests/jinja2.toml")),
+    ("nestjs", include_str!("manifests/nestjs.toml")),
+    ("nuxt", include_str!("manifests/nuxt.toml")),
+    ("pydantic", include_str!("manifests/pydantic.toml")),
+    ("unittest", include_str!("manifests/unittest.toml")),
+];
+
+static STANDARD_FRAMEWORK_MANIFESTS_DIGEST: std::sync::OnceLock<String> =
+    std::sync::OnceLock::new();
+
 fn load_standard_framework_manifests(registry: &mut DependencyRegistry) -> Result<()> {
-    for (name, source) in [
-        ("alpinejs", include_str!("manifests/alpinejs.toml")),
-        ("django", include_str!("manifests/django.toml")),
-        ("fastapi", include_str!("manifests/fastapi.toml")),
-        ("gridviewspec", include_str!("manifests/gridviewspec.toml")),
-        ("jinja2", include_str!("manifests/jinja2.toml")),
-        ("nestjs", include_str!("manifests/nestjs.toml")),
-        ("nuxt", include_str!("manifests/nuxt.toml")),
-        ("pydantic", include_str!("manifests/pydantic.toml")),
-        ("unittest", include_str!("manifests/unittest.toml")),
-    ] {
+    for (name, source) in STANDARD_FRAMEWORK_MANIFEST_SOURCES {
         let manifest = FrameworkManifest::parse(name.to_owned(), "toml", source)
             .with_context(|| format!("invalid standard framework manifest {name}"))?;
         registry

@@ -8,7 +8,7 @@ use crate::core::{
     },
     fs::canonical_root,
     models::{stable_hash64, Edge, Facts, FileEntry, Node},
-    typed_facts::{decode_facts, encode_facts, TypedFacts},
+    typed_facts::{decode_facts, TypedFacts},
 };
 use crate::db::writer::cache::{self, ExtractionCache};
 use crate::engine::{
@@ -18,7 +18,6 @@ use crate::engine::{
     scanner::{self, BuildCandidate},
 };
 use anyhow::{bail, Context, Result};
-use rayon::prelude::*;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
@@ -524,6 +523,7 @@ fn run_cold_pipeline(
         }));
     }
     drop(result_tx);
+    drop(work_rx);
 
     let producer_control = Arc::clone(&control);
     let producer_adapter = Arc::clone(&adapter);
@@ -599,7 +599,6 @@ fn run_cold_pipeline(
             control.cancel("cold pipeline extraction worker thread panicked");
         }
     }
-    drop(work_rx);
     let consumer_result = match consumer.join() {
         Ok(result) => result,
         Err(_) => {
@@ -918,13 +917,6 @@ fn atomic_build(
         let _ = ast::route_includes::compose_django_route_includes(&mut streamed.facts);
         components(&mut streamed.facts);
         let components_ms = preparing_components.elapsed().as_secs_f64() * 1000.;
-        let encoding_facts = Instant::now();
-        let encoded_facts: hashbrown::HashMap<String, Vec<u8>> = streamed
-            .facts
-            .par_iter()
-            .map(|(path, facts)| encode_facts(facts).map(|encoded| (path.clone(), encoded)))
-            .collect::<Result<_>>()?;
-        let preencoded_facts_ms = encoding_facts.elapsed().as_secs_f64() * 1000.;
 
         let linking = Instant::now();
         let graph = linker::link_compact_with_typed_registry(&streamed.facts, None, Some(root), &dependencies);
@@ -936,7 +928,6 @@ fn atomic_build(
             adapter,
             &streamed.entries,
             &streamed.facts,
-            Some(&encoded_facts),
             &graph,
             crate::db::writer::BuildInputs {
                 manifest_digest: dependencies.digest(),
@@ -945,9 +936,7 @@ fn atomic_build(
             },
         )?;
         report["link_ms"] = json!(link_ms);
-        let persisted_encode_facts_ms = report["encode_facts_ms"].as_f64().unwrap_or_default();
-        report["encode_facts_ms"] = json!(preencoded_facts_ms + persisted_encode_facts_ms);
-        report["preencoded_facts_ms"] = json!(preencoded_facts_ms);
+        report["preencoded_facts_ms"] = json!(0.0);
         report["memory_budget_bytes"] = json!(memory_budget);
         report["scanned_files"] = json!(pipeline_metrics.scanned_files);
         report["scanned_bytes"] = json!(pipeline_metrics.scanned_bytes);

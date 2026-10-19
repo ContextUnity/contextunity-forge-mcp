@@ -290,8 +290,6 @@ struct FtsDocument {
 
 type FtsDocumentMap = HashMap<i64, FtsDocument>;
 type FtsOwnerIds = Vec<Vec<u8>>;
-type FtsTerms = Vec<Vec<u8>>;
-type FtsTermRanks = HashMap<Vec<u8>, u32>;
 
 struct FtsPosting {
     term: u32,
@@ -306,7 +304,7 @@ fn fts_commitment_spec(index: &str) -> Result<FtsCommitmentSpec> {
         "node_search" => FtsCommitmentSpec {
             docsize_table: "node_search_docsize",
             fts_table: "node_search",
-            owner_join: "LEFT JOIN nodes AS n ON n.node_hash=f.rowid",
+            owner_join: "LEFT JOIN nodes AS n ON n.node_hash=d.id",
             identity: "n.node_hash",
             identity_kind: FtsIdentityKind::NodeHash,
             columns: &["search_text"],
@@ -314,7 +312,7 @@ fn fts_commitment_spec(index: &str) -> Result<FtsCommitmentSpec> {
         "doc_search" => FtsCommitmentSpec {
             docsize_table: "doc_search_docsize",
             fts_table: "doc_search",
-            owner_join: "LEFT JOIN doc_sections AS s ON s.rowid=f.rowid",
+            owner_join: "LEFT JOIN doc_sections AS s ON s.rowid=d.id",
             identity: "s.doc_id",
             identity_kind: FtsIdentityKind::DocId,
             columns: &["section_title", "content", "invariants"],
@@ -328,12 +326,10 @@ fn load_fts_documents(
     spec: &FtsCommitmentSpec,
 ) -> Result<(FtsDocumentMap, FtsOwnerIds)> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT f.rowid,{identity},d.sz
-         FROM {fts} AS f
-         {owner_join}
-         LEFT JOIN {docsize} AS d ON d.id=f.rowid",
+        "SELECT d.id,{identity},d.sz
+         FROM {docsize} AS d
+         {owner_join}",
         identity = spec.identity,
-        fts = spec.fts_table,
         owner_join = spec.owner_join,
         docsize = spec.docsize_table,
     ))?;
@@ -395,25 +391,6 @@ fn load_fts_documents(
     Ok((by_doc, owner_ids))
 }
 
-fn load_fts_terms(conn: &Connection, vocab: &str) -> Result<(FtsTerms, FtsTermRanks)> {
-    let mut stmt = conn.prepare(&format!("SELECT DISTINCT term FROM temp.{vocab}"))?;
-    let mut rows = stmt.query([])?;
-    let mut terms = Vec::new();
-    while let Some(row) = rows.next()? {
-        match row.get_ref(0)? {
-            ValueRef::Text(term) => terms.push(term.to_vec()),
-            _ => anyhow::bail!("invalid FTS5 vocabulary term: {vocab}"),
-        }
-    }
-    terms.sort_unstable();
-    let term_ranks = terms
-        .iter()
-        .enumerate()
-        .map(|(rank, term)| Ok((term.clone(), u32::try_from(rank)?)))
-        .collect::<Result<_>>()?;
-    Ok((terms, term_ranks))
-}
-
 fn validate_fts_docsize(
     spec: &FtsCommitmentSpec,
     documents: &HashMap<i64, FtsDocument>,
@@ -441,7 +418,6 @@ fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> 
         let vocab = ensure_fts_vocab(conn, index)?;
         let spec = fts_commitment_spec(index)?;
         let (mut documents, owner_ids) = load_fts_documents(conn, &spec)?;
-        let (terms, term_ranks) = load_fts_terms(conn, vocab)?;
         let mut column_order: Vec<usize> = (0..spec.columns.len()).collect();
         column_order.sort_unstable_by_key(|column| spec.columns[*column].as_bytes());
         let mut column_sort_keys = vec![0; spec.columns.len()];
@@ -452,16 +428,33 @@ fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> 
             "SELECT v.term,v.col,v.offset,v.doc FROM temp.{vocab} AS v"
         ))?;
         let mut rows = stmt.query([])?;
+        let mut term_map: HashMap<Vec<u8>, u32> = HashMap::new();
+        let mut terms: Vec<Vec<u8>> = Vec::new();
+        let mut last_term: Vec<u8> = Vec::new();
+        let mut last_term_id: u32 = 0;
         let mut postings = Vec::new();
         while let Some(row) = rows.next()? {
-            let term = match row.get_ref(0)? {
+            let term_bytes = match row.get_ref(0)? {
                 ValueRef::Text(term) => term,
                 _ => anyhow::bail!("invalid FTS5 vocabulary term in {table}"),
             };
-            let term_rank = term_ranks
-                .get(term)
-                .copied()
-                .with_context(|| format!("FTS5 vocabulary term was not interned: {table}"))?;
+            let term_id = if !terms.is_empty() && term_bytes == last_term.as_slice() {
+                last_term_id
+            } else if let Some(&id) = term_map.get(term_bytes) {
+                last_term.clear();
+                last_term.extend_from_slice(term_bytes);
+                last_term_id = id;
+                id
+            } else {
+                let id = u32::try_from(terms.len())?;
+                let owned = term_bytes.to_vec();
+                term_map.insert(owned.clone(), id);
+                last_term.clear();
+                last_term.extend_from_slice(term_bytes);
+                last_term_id = id;
+                terms.push(owned);
+                id
+            };
             let column = match row.get_ref(1)? {
                 ValueRef::Text(column) => column,
                 _ => anyhow::bail!("invalid FTS5 document-size column in {table}"),
@@ -487,7 +480,7 @@ fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> 
                 .checked_add(1)
                 .context("FTS5 token count exceeds document-size range")?;
             postings.push(FtsPosting {
-                term: term_rank,
+                term: term_id,
                 identity_sort_key,
                 column_index: u8::try_from(column_index)?,
                 column_sort_key: column_sort_keys[column_index],
@@ -496,6 +489,28 @@ fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> 
         }
         drop(rows);
         drop(stmt);
+
+        let terms = if terms.windows(2).all(|w| w[0] < w[1]) {
+            terms
+        } else {
+            let mut sorted_indexed: Vec<(u32, Vec<u8>)> = terms
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| (i as u32, t))
+                .collect();
+            sorted_indexed.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+            let mut remap = vec![0u32; sorted_indexed.len()];
+            let mut sorted_terms = Vec::with_capacity(sorted_indexed.len());
+            for (new_rank, (old_id, term)) in sorted_indexed.into_iter().enumerate() {
+                remap[old_id as usize] = u32::try_from(new_rank)?;
+                sorted_terms.push(term);
+            }
+            for posting in &mut postings {
+                posting.term = remap[posting.term as usize];
+            }
+            sorted_terms
+        };
+
         postings.sort_unstable_by_key(|posting| {
             (
                 posting.term,

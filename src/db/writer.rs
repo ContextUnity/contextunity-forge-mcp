@@ -84,14 +84,12 @@ pub(crate) fn sqlite_cache_size_kib(memory_budget: u64) -> usize {
     raw.clamp(4_096, 128_000) as usize
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn populate(
     conn: &mut Connection,
     root: &Path,
     adapter: &Adapter,
     entries: &[FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
-    encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
     graph: &CompactGraph,
     build_inputs: BuildInputs<'_>,
 ) -> Result<Value> {
@@ -115,7 +113,6 @@ pub(crate) fn populate(
                 entries,
                 facts,
                 graph_ref,
-                encoded_facts,
                 &mut timings,
             )?;
             Ok::<_, anyhow::Error>((
@@ -208,7 +205,7 @@ pub(crate) fn populate(
 
         let t_files = Instant::now();
         let file_timings =
-            persist_files(&tx, &mut path_cache, entries, facts, encoded_facts, true)?;
+            persist_files(&tx, &mut path_cache, entries, facts, None, true)?;
         let node_id = file_timings.node_id;
         let node_row_count = file_timings.node_row_count;
         let node_row_insert_ms = file_timings
@@ -260,9 +257,10 @@ pub(crate) fn populate(
         let t_fts = Instant::now();
         let fts_digests = commitments::fts_commitment_digests(conn)?;
         let seal_fts_ms = t_fts.elapsed().as_secs_f64() * 1000.;
-        let (logical_commitments, projection_timings, seal_projection_ms) = projection_thread
+        let (mut logical_commitments, projection_timings, seal_projection_ms) = projection_thread
             .join()
             .map_err(|_| anyhow::anyhow!("in-memory seal projection thread panicked"))??;
+        logical_commitments.insert("local_facts", file_timings.local_facts_leaves);
         let seal_started = Instant::now();
         let snapshot_started = Instant::now();
         let (seal, snapshot_timings): (String, commitments::SnapshotTimings) =

@@ -411,3 +411,99 @@ receipt:
 4. `NodeSemanticMeta` maintains exact symbol binding and receiver hint round-tripping across cold and delta builds.
 5. `docs/architecture/indexing.md` and `docs/architecture/performance.md` reflect the decoupled architecture.
 6. Pre- and post-benchmarks on `commerce-release-update` confirm clean execution with zero regressions.
+
+---
+
+### task: sqlite-bulk-pipeline-and-binary-cache-optimization
+
+```yaml
+task_ref: sqlite-bulk-pipeline-and-binary-cache-optimization
+target: Implement bundled-manifest cache fingerprinting, shared canonical row preparation, in-memory FTS posting sealing, and binary extraction cache DTO
+proof_policy: seam-test-first
+contract_revision: 1
+scope:
+- build.rs
+- src/db/writer.rs
+- src/db/writer/seal.rs
+- src/db/writer/cache.rs
+- src/db/writer/ingest.rs
+- src/engine/pipeline.rs
+- src/engine/languages/dependency_registry.rs
+- src/core/commitments.rs
+- src/core/commitments/snapshot.rs
+- docs/architecture/performance.md
+- docs/architecture/indexing.md
+- benchmarks/
+- tests/commitment_integrity.rs
+- tests/core/storage_batches.rs
+status: completed
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-19T00:13:50.273228234+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib db::writer::cache && cargo test --test core && cargo test --test commitment_integrity
+      exit_code: 0
+      tests_passed: 55
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Candidate snapshot 69f57ecce82c4f4de37ff9a31a078bafe2450e9d modifies files strictly within allowed_write_scope.
+        claims:
+          applicable: true
+          evidence: All 4 subtasks implemented, bounds check guards added to cache.rs, 55 tests pass, strict clippy clean, 17-domain Merkle roots bit-identical.
+        concurrency:
+          applicable: true
+          evidence: Rayon streaming and Leaf hashing are thread-safe and isolated.
+        project_isolation:
+          applicable: true
+          evidence: All changes confined to worktree without external leakage.
+        administration:
+          applicable: true
+          evidence: No admin files or profile tampered.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-BENCHMARK-EACH-TASK: Every task in this milestone requires strict before-and-after benchmark measurements on the control repository (commerce-release-update); no task may be accepted without verified throughput and memory profiling.'
+    - 'INV-NO-COLD-REGRESSION: Cold build indexing duration on the control repository (commerce-release-update) must decrease by at least 20% (elapsed time <= 80%) compared to baseline commit cf4aa29 under identical hardware and thread configuration.'
+    - 'INV-DETERMINISTIC-MERKLE: In-memory Merkle tree sealing produces bit-identical commitment digests matching existing SQLite table seal queries across all 17 domains (13 logical in-memory + 4 SQLite FTS search domains).'
+    - 'INV-ZERO-SEMANTIC-REGRESSION: Symbol counts, edge counts, reference resolution, and commitments remain bit-identical across cargo test --all-targets.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+subtasks:
+- subtask_ref: bundled-manifest-cache-identity
+  title: Bundle framework rule manifests into extraction cache fingerprint and isolate cache phase timings
+  status: completed
+  evidence: cargo test --test core storage_batches::bundled_framework_manifests_are_fingerprinted_in_dependency_digest (passed exit 0)
+- subtask_ref: shared-canonical-row-preparation
+  title: Shared canonical row preparation for SQLite ingestion and Merkle sealing with bounded encoded facts
+  status: completed
+  evidence: cargo test --test core && cargo test --test commitment_integrity (51 passed, clippy strict passed)
+- subtask_ref: in-memory-fts-posting-sealing
+  title: In-memory Merkle sealing of the two FTS search indexes using SQLite FTS5 tokenizer C-API
+  status: completed
+  evidence: cargo test --test commitment_integrity (16 passed) && cargo test --test core (35 passed) with docsize table scan and single-pass stream
+- subtask_ref: binary-extraction-cache-dto
+  title: Fast binary DTO serialization (bincode) for cross-worktree extraction cache
+  status: completed
+  evidence: cargo test --lib db::writer::cache (3 passed) && cargo test --test core && cargo test --test commitment_integrity (51 passed, strict clippy passed)
+```
+
+#### Acceptance
+
+1. Bundled framework manifests in `src/engine/languages/manifests/` are included in the dependency digest, preventing stale cache reuse across manifest updates.
+2. In-memory Merkle sealing of the 4 FTS domains reduces post-indexing SQL scan overhead while maintaining bit-identical Merkle roots across all 17 domains.
+3. Fact preparation and leaf hashing run in bounded chunks, dropping serialized payloads early to reduce peak memory.
+4. Binary extraction cache DTO eliminates JSON parsing overhead for cached AST facts across worktrees.
+

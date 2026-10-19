@@ -18,6 +18,7 @@ pub(super) enum BorrowedSqlValue<'a> {
     OwnedJsonText(Vec<u8>),
     SharedText(Arc<str>),
     Blob(&'a [u8]),
+    #[allow(dead_code)]
     OwnedBlob(Vec<u8>),
     Null,
 }

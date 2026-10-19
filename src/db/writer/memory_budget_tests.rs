@@ -59,7 +59,6 @@ fn sqlite_cache_size_is_clamped_in_kibibytes() {
         &adapter,
         &[],
         &BTreeMap::new(),
-        None,
         &crate::core::models::compact_graph::Graph::default(),
         super::BuildInputs {
             manifest_digest: dependencies.digest(),

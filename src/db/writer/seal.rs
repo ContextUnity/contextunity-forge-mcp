@@ -2,12 +2,10 @@ use super::{reference_keys, CompactGraph, FileEntry, TypedFacts};
 use crate::core::{
     commitments::{ALGORITHM, DOMAINS},
     models::{compact_graph::Coverage, compact_graph::Edge, is_test, stable_hash64, Node},
-    typed_facts::encode_facts,
 };
 use anyhow::{ensure, Context, Result};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
@@ -76,17 +74,36 @@ struct OwnerLanguageLeafRow<'a> {
     language: &'a str,
 }
 
+pub(super) fn local_facts_leaf(
+    path: &str,
+    digest: &str,
+    language: &str,
+    is_test: bool,
+    facts_blob: &[u8],
+) -> Result<(String, String)> {
+    let mut hasher = new_leaf_hasher("local_facts", path);
+    hasher.update([0xff]);
+    encode_text(&mut hasher, path);
+    encode_text(&mut hasher, digest);
+    encode_text(&mut hasher, language);
+    encode_integer(&mut hasher, i64::from(is_test));
+    encode_integer(&mut hasher, 0);
+    encode_blob(&mut hasher, facts_blob);
+    let key = leaf_key("local_facts", path)?;
+    let digest = hex::encode(hasher.finalize());
+    Ok((key, digest))
+}
+
 /// Builds all thirteen logical commitment domains without querying their SQLite tables.
 pub(super) fn logical_domain_leaves(
     entries: &[FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
     graph: &CompactGraph,
-    encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
     timings: &mut ProjectionTimings,
 ) -> Result<BTreeMap<&'static str, Leaves>> {
     let mut domains = BTreeMap::new();
     let started = Instant::now();
-    let projected_nodes = project_file_domains(entries, facts, encoded_facts, &mut domains)?;
+    let projected_nodes = project_file_domains(entries, facts, &mut domains)?;
     timings.file_domains_ms = started.elapsed().as_secs_f64() * 1000.;
     let started = Instant::now();
     let (node_by_id, file_by_hash) =
@@ -107,6 +124,9 @@ pub(super) fn logical_domain_leaves(
     )?;
     timings.graph_domains_ms = started.elapsed().as_secs_f64() * 1000.;
     for &domain in DOMAINS {
+        if domain == "local_facts" {
+            continue;
+        }
         ensure!(
             domains.contains_key(domain),
             "in-memory projection did not produce domain {domain}"
@@ -172,12 +192,10 @@ fn finish_hashers(table: &'static str, hashers: OwnerHashers<'_>) -> Result<Leav
 fn project_file_domains<'a>(
     entries: &'a [FileEntry],
     facts: &'a BTreeMap<String, TypedFacts>,
-    encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
     domains: &mut BTreeMap<&'static str, Leaves>,
 ) -> Result<Vec<ProjectedNode<'a>>> {
     let mut inventory = OwnerHashers::new();
     let mut files = OwnerHashers::new();
-    let mut local_facts = OwnerHashers::new();
     let mut errors = OwnerHashers::new();
     let mut docs = OwnerHashers::new();
     let mut projected_nodes = Vec::new();
@@ -207,19 +225,6 @@ fn project_file_domains<'a>(
             encode_integer(hasher, test);
             encode_integer(hasher, 0);
             encode_integer(hasher, path_hash);
-        }
-        let facts_blob = match encoded_facts.and_then(|blobs| blobs.get(&file.path)) {
-            Some(blob) => Cow::Borrowed(blob.as_slice()),
-            None => Cow::Owned(encode_facts(file_facts)?),
-        };
-        {
-            let hasher = row_hasher(&mut local_facts, "local_facts", &file.path);
-            encode_text(hasher, &file.path);
-            encode_text(hasher, &file.digest);
-            encode_text(hasher, &file.language);
-            encode_integer(hasher, test);
-            encode_integer(hasher, 0);
-            encode_blob(hasher, facts_blob.as_ref());
         }
 
         let mut file_errors: Vec<_> = file_facts.errors.iter().collect();
@@ -271,7 +276,6 @@ fn project_file_domains<'a>(
         finish_hashers("source_inventory", inventory)?,
     );
     domains.insert("files", finish_hashers("files", files)?);
-    domains.insert("local_facts", finish_hashers("local_facts", local_facts)?);
     domains.insert("errors", finish_hashers("errors", errors)?);
     domains.insert("doc_sections", finish_hashers("doc_sections", docs)?);
     Ok(projected_nodes)
