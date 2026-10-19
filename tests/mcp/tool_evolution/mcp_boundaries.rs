@@ -659,6 +659,24 @@ fn ast_language_inference_and_actionable_diagnostics() {
 }
 
 #[test]
+fn ast_diagnostics_reject_invalid_patterns_without_language_candidates() {
+    use serde_json::json;
+    let w = Workspace::new();
+    w.write("README.md", "# No Python sources\n");
+    w.build();
+    let mut m = Mcp::new(&w);
+    let (_, response) = m.call(
+        "ast_grep_search",
+        json!({"pattern":"def (","language":"python"}),
+    );
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let message = response["result"]["content"][0]["text"].as_str().unwrap();
+    for expected in ["unsupported_ast_pattern", "python", "Hint:", "Examples"] {
+        assert!(message.contains(expected), "{message}");
+    }
+}
+
+#[test]
 fn ast_grep_empty_symbol_prefilter_preserves_local_matches() {
     use serde_json::json;
     let w = Workspace::new();

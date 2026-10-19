@@ -8,6 +8,94 @@ use contextunity_forge_mcp::{
 
 #[cfg(feature = "lang-rust")]
 #[test]
+fn bare_rust_headers_match_signatures_without_weakening_explicit_parameters() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "src/lib.rs",
+        "fn target() {}\nfn target(value: i32) {}\nfn target() -> i32 { 1 }\nfn target<T>(value: T) -> T { value }\nfn other() {}\n",
+    );
+    let conn = workspace.build();
+    let options =
+        QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
+    for (pattern, expected) in [
+        ("fn target", 4),
+        ("fn target()", 1),
+        ("fn target(value: i32)", 1),
+        ("fn target<T>", 1),
+    ] {
+        let result =
+            cli::ast::search_paged(&conn, &workspace.0, pattern, "rust", None, &options).unwrap();
+        assert_eq!(result["matches"]["total"], expected, "{pattern}: {result}");
+    }
+}
+
+#[cfg(all(feature = "lang-python", feature = "lang-rust"))]
+#[test]
+fn invalid_ast_patterns_report_diagnostics_without_candidate_files() {
+    for rust_only in [false, true] {
+        let workspace = Workspace::new();
+        if rust_only {
+            workspace.write("src/lib.rs", "fn valid() {}\n");
+        }
+        let conn = workspace.build();
+        let options =
+            QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
+        let result =
+            cli::ast::search_paged(&conn, &workspace.0, "def (", "python", None, &options).unwrap();
+        let diagnostic = &result["diagnostic"];
+        assert_eq!(diagnostic["code"], "unsupported_ast_pattern", "{result}");
+        assert_eq!(diagnostic["language"], "python");
+        assert!(diagnostic["span"].is_object());
+        assert!(!diagnostic["hint"].as_str().unwrap().is_empty());
+        assert!(!diagnostic["examples"].as_array().unwrap().is_empty());
+        let valid = cli::ast::search_paged(
+            &conn,
+            &workspace.0,
+            "def target()",
+            "python",
+            None,
+            &options,
+        )
+        .unwrap();
+        assert_eq!(valid["matches"]["total"], 0, "{valid}");
+    }
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn upfront_ast_validation_accepts_tsx_grammar_patterns() {
+    let workspace = Workspace::new();
+    workspace.write("src/view.tsx", "const view = <Widget value={value} />;\n");
+    let conn = workspace.build();
+    let options =
+        QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
+    for path in [None, Some("src/view.tsx")] {
+        let result = cli::ast::search_paged(
+            &conn,
+            &workspace.0,
+            "<Widget value={$VALUE} />",
+            "typescript",
+            path,
+            &options,
+        )
+        .unwrap();
+        assert_eq!(result["matches"]["total"], 1, "{result}");
+        assert_eq!(result["matches"]["items"][0]["captures"]["VALUE"], "value");
+    }
+    let invalid = cli::ast::search_paged(
+        &conn,
+        &workspace.0,
+        "function (",
+        "typescript",
+        None,
+        &options,
+    )
+    .unwrap();
+    assert_eq!(invalid["diagnostic"]["code"], "unsupported_ast_pattern");
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
 fn ast_search_matches_root_rejected_rust_method_call_fragment() {
     let matches = ast::search(
         "fn invoke() { client.fetch(value); }",

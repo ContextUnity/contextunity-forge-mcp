@@ -129,7 +129,15 @@ pub fn search_paged(
     }
     let path = path.unwrap_or("");
     let (path_start, path_end) = crate::db::reader::path_bounds(path);
-    let declaration = ast::pattern_symbol_name(pattern, language)?;
+    let declaration = match ast::pattern_symbol_name(pattern, language) {
+        Ok(declaration) => declaration,
+        Err(error) => {
+            if let Some(diagnostic) = error.downcast_ref::<ast::PatternSearchDiagnostic>() {
+                return Ok(json!({"diagnostic":diagnostic}));
+            }
+            return Err(error);
+        }
+    };
     let files = if let Some(name) = declaration.as_deref() {
         let candidate_files = crate::db::reader::rows(
             conn,

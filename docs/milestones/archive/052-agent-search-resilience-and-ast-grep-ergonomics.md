@@ -2,40 +2,49 @@
 id: m-agent-search-resilience-and-ast-grep-ergonomics
 title: Agent search resilience, AST grep error diagnostics, and symbol boundary recovery
 doc_type: contract
-status: active
+status: completed
 depends_on: []
 owners:
-  - src/db/symbols.rs
-  - src/db/symbols/search.rs
-  - src/db/tasks_store/mod.rs
-  - src/core/response.rs
-  - src/engine/languages/python.rs
-  - src/engine/languages/rust.rs
-  - src/engine/tasks/lifecycle.rs
-  - src/engine/tasks/mod.rs
-  - src/mcp/response.rs
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - src/cli/args.rs
-  - src/cli/ast.rs
-  - src/cli/task.rs
-  - docs/reference/cli.md
-  - docs/reference/mcp-tools.md
-  - docs/reference/tasks.md
-  - tests/acdd/tasks.rs
-  - tests/languages/ast_patterns.rs
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
+- src/db/symbols.rs
+- src/db/symbols/search.rs
+- src/db/tasks_store/mod.rs
+- src/core/response.rs
+- src/engine/languages/python.rs
+- src/engine/languages/rust.rs
+- src/engine/tasks/lifecycle.rs
+- src/engine/tasks/mod.rs
+- src/mcp/response.rs
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- src/cli/args.rs
+- src/cli/ast.rs
+- src/cli/task.rs
+- docs/reference/cli.md
+- docs/reference/mcp-tools.md
+- docs/reference/tasks.md
+- tests/acdd/tasks.rs
+- tests/languages/ast_patterns.rs
+- tests/mcp/tool_evolution/mcp_boundaries.rs
 invariants:
-  - 'INV-SEARCH-PREVIEW-RESILIENCE: Source preview failures for an individual hit (unresolved AST boundary, stale file, or digest mismatch) must never fail code_map_search; matching symbol records, file paths, line numbers, and inspect_selector hints must always be returned.'
-  - 'INV-SYMBOL-WITH-SOURCE: Tree-sitter symbol boundary recovery in symbol_range must invoke profile.symbol_with_source(syntax, text) and fall back to verified indexed line..=end_line bounds for field: and template/relational nodes so code_map_inspect, code_map_explain, and get_code_snippet do not fail with unavailable boundaries.'
-  - 'INV-AST-LANGUAGE-INFERENCE: When the language parameter is omitted in ast_grep_search, the engine must infer it from the file extension of path; if path is missing or lacks a recognized extension, it must return an informative error listing all compiled languages and usage examples.'
-  - 'INV-AST-ACTIONABLE-DIAGNOSTICS: AST pattern search syntax errors must return structured, actionable diagnostics with actionable hints and concrete language-specific pattern examples rather than raw JSON serialization dumps.'
-  - 'INV-BODYLESS-DECLARATION-PATTERNS: AST pattern normalization and completion must support bodyless Python class/function declarations without trailing colons (class Foo, def bar($$$)) and Rust function header patterns without parameter lists (fn foo).'
-  - 'INV-AST-PREFILTER-SOUNDNESS: Pattern symbol candidate prefiltering in cli::ast::search_paged must fall back to all candidate files of the language if the declaration identifier is not found in the indexed top-level nodes table, preventing false negatives for local/nested constructs.'
-  - 'INV-ERGONOMIC-PARAMETER-TOLERANCE: MCP and CLI entrypoints must normalize empty path strings, clamp or clearly guide out-of-range source preview line budgets, and support common parameter and subcommand aliases.'
-  - 'INV-TASK-MUTATION-RESPONSE-BUDGET: State-mutating task lifecycle calls (task_claim, task_manage next/sync) must bound their serialized payload below the 64 KiB MCP response limit and avoid write transactions when opening already-initialized SQLite task stores for read operations.'
+- 'INV-SEARCH-PREVIEW-RESILIENCE: Source preview failures for an individual hit (unresolved AST boundary, stale file, or digest mismatch) must never fail code_map_search; matching symbol records, file paths, line numbers, and inspect_selector hints must always be returned.'
+- 'INV-SYMBOL-WITH-SOURCE: Tree-sitter symbol boundary recovery in symbol_range must invoke profile.symbol_with_source(syntax, text) and fall back to verified indexed line..=end_line bounds for field: and template/relational nodes so code_map_inspect, code_map_explain, and get_code_snippet do not fail with unavailable boundaries.'
+- 'INV-AST-LANGUAGE-INFERENCE: When the language parameter is omitted in ast_grep_search, the engine must infer it from the file extension of path; if path is missing or lacks a recognized extension, it must return an informative error listing all compiled languages and usage examples.'
+- 'INV-AST-ACTIONABLE-DIAGNOSTICS: AST pattern search syntax errors must return structured, actionable diagnostics with actionable hints and concrete language-specific pattern examples rather than raw JSON serialization dumps.'
+- 'INV-BODYLESS-DECLARATION-PATTERNS: AST pattern normalization and completion must support bodyless Python class/function declarations without trailing colons (class Foo, def bar($$$)) and Rust function header patterns without parameter lists (fn foo).'
+- 'INV-AST-PREFILTER-SOUNDNESS: Pattern symbol candidate prefiltering in cli::ast::search_paged must fall back to all candidate files of the language if the declaration identifier is not found in the indexed top-level nodes table, preventing false negatives for local/nested constructs.'
+- 'INV-ERGONOMIC-PARAMETER-TOLERANCE: MCP and CLI entrypoints must normalize empty path strings, clamp or clearly guide out-of-range source preview line budgets, and support common parameter and subcommand aliases.'
+- 'INV-TASK-MUTATION-RESPONSE-BUDGET: State-mutating task lifecycle calls (task_claim, task_manage next/sync) must bound their serialized payload below the 64 KiB MCP response limit and avoid write transactions when opening already-initialized SQLite task stores for read operations.'
 related_plans: []
 started_at: 2026-10-19T00:23:28.230838525+00:00
+handoff:
+  completed_at: 2026-10-19T04:08:07.447558970+00:00
+  duration: 3h 44m
+  commit: 0eba107a923691db571762672246e7fc6efc0af0
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 752
+    tests_failed: 0
 ---
 
 # Agent search resilience, AST grep error diagnostics, and symbol boundary recovery
@@ -77,6 +86,7 @@ subtasks:
   status: completed
   evidence: 'symbol_range uses symbol_with_source, matches field qualnames, and limits indexed-line fallback to field:/template: IDs. Focused lib seam 1 passed/0 failed; full MCP 79 passed/0 failed. Python aliases/module variables keep same-line precision; multiline class/instance fields and HTML template source recover through inspect/explain/snippet. Corrected red c0d4749fe1cb25ca rejects broad ordinary-AST fallback.'
 receipt:
+  commit: c9d0ffd470bfce759b0979608114e6a968872006
   contract_revision: 2
   passed_at: 2026-10-19T02:03:15.068238157+00:00
   evidence:
@@ -166,6 +176,7 @@ subtasks:
   status: completed
   evidence: 'cargo test --lib: 66 passed; cargo test --test languages: 259 passed; cargo test --test mcp: 80 passed; 0 failed. Rust in-module seam failed before implementation with exit 101 and passes now; profile and MCP seams cover colonless Python class/functions including $$$ and Rust fn target.'
 receipt:
+  commit: 295b46297dc86034f7de1e3431bb2ba2a55b5abe
   contract_revision: 3
   passed_at: 2026-10-19T02:25:08.589329746+00:00
   evidence:
@@ -245,6 +256,7 @@ subtasks:
   status: completed
   evidence: 'src/cli/ast.rs::test_prefilter_empty_candidate_fallback proves real search_paged local assignment matching with zero indexed name candidates. Sensitivity: cargo test --lib test_prefilter_empty_candidate_fallback exited 101 with fallback bypassed (0 passed, 1 failed); restored code exited 0 (1 passed, 0 failed). MCP coverage verifies all files, directory/file scope, continuation, and absent name. cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp exited 0; 81 passed, 0 failed. Logs: red 206f53e8b3f2a965, green seam 8f421e7a10336def, full checks 25f7d3cdcc546bf9.'
 receipt:
+  commit: 15683fb34bc4f24ef9cd6c0984108681711e5105
   contract_revision: 3
   passed_at: 2026-10-19T02:39:02.422283382+00:00
   evidence:
@@ -338,6 +350,7 @@ subtasks:
   status: completed
   evidence: 'cargo test --test mcp: 84 passed, 0 failed. ergonomic_task_aliases_reach_existing_operations exercises actual CLI show/inspect --task, submit --task error-path equivalence, sync --file, list --detail compact/full and conflicts. Definitions are in src/cli/task.rs; scoped args.rs does not exist. Strict all-feature Clippy exit 0.'
 receipt:
+  commit: b83956c1b9ac23bf054f07758ff7417acc1cfcd4
   contract_revision: 1
   passed_at: 2026-10-19T03:00:01.495728803+00:00
   evidence:
@@ -424,6 +437,7 @@ subtasks:
   status: completed
   evidence: 'src/db/tasks_store/mod.rs::initialized_task_store_opens_during_a_write_transaction: observed red SQLITE_BUSY exit 101, now green. Supported schema skips schema writes and journal-mode writes; new initialization is atomic. cargo test --lib: 69 passed, 0 failed; strict all-targets/all-features Clippy passed. Final gate archive 3fc9f67fd83c6986.'
 receipt:
+  commit: 0eba107a923691db571762672246e7fc6efc0af0
   contract_revision: 1
   passed_at: 2026-10-19T03:28:23.801111878+00:00
   evidence:
