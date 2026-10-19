@@ -415,7 +415,13 @@ impl TasksStore {
                 bail!("tasks_db must be a dedicated task store");
             }
         }
-        connection.execute_batch("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA mmap_size=268435456; PRAGMA foreign_keys=ON;
+        connection.execute_batch(
+            "PRAGMA synchronous=NORMAL; PRAGMA mmap_size=268435456; PRAGMA foreign_keys=ON;",
+        )?;
+        // A supported initialized store needs only connection-local settings. Even
+        // INSERT OR IGNORE takes the writer lock, blocking otherwise independent readers.
+        if !known {
+            connection.execute_batch("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
             INSERT OR IGNORE INTO meta VALUES('generation',0);
             CREATE TABLE IF NOT EXISTS task_store_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -437,7 +443,9 @@ impl TasksStore {
             CREATE INDEX IF NOT EXISTS idx_task_subtasks_task ON task_subtasks(task_id);
             CREATE TRIGGER IF NOT EXISTS task_insert_generation AFTER INSERT ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
             CREATE TRIGGER IF NOT EXISTS task_update_generation AFTER UPDATE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
-            CREATE TRIGGER IF NOT EXISTS task_delete_generation AFTER DELETE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;")?;
+            CREATE TRIGGER IF NOT EXISTS task_delete_generation AFTER DELETE ON tasks BEGIN UPDATE meta SET value=value+1 WHERE key='generation'; END;
+            COMMIT;")?;
+        }
         let version: String = connection.query_row(
             "SELECT value FROM task_store_metadata WHERE key='schema_version'",
             [],
@@ -1367,4 +1375,37 @@ fn dependencies_ready(conn: &Connection, id: &str) -> Result<bool> {
 /// Performs now.
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialized_task_store_opens_during_a_write_transaction() {
+        let directory = std::env::temp_dir().join(format!(
+            "forge-task-reader-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("tasks.sqlite");
+        let mut writer = TasksStore::open(&path).unwrap();
+        let tx = writer
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let opened = TasksStore::open(&path);
+        tx.rollback().unwrap();
+        let failure = opened.err();
+        drop(writer);
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(
+            failure.is_none(),
+            "initialized store open requires no writer lock: {failure:?}"
+        );
+    }
 }

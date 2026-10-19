@@ -78,6 +78,7 @@ struct PreparedPattern {
     tree: Tree,
     mode: PatternMode,
     fragment_range: Option<Range<usize>>,
+    declaration_prefix_end: Option<usize>,
 }
 
 impl SearchBudget {
@@ -129,6 +130,7 @@ impl SearchBudget {
 struct StructuralMatchOptions<'a> {
     capabilities: &'a AstSearchCapabilities,
     declaration_root: bool,
+    declaration_prefix_end: Option<usize>,
 }
 
 fn structural_match(
@@ -178,6 +180,11 @@ fn structural_match(
     let mut pc = pattern.walk();
     let p: Vec<_> = pattern
         .children(&mut pc)
+        .take_while(|n| {
+            options
+                .declaration_prefix_end
+                .is_none_or(|end| n.start_byte() < end)
+        })
         .filter(|n| {
             !n.kind().contains("comment")
                 && !(omit_declaration_body
@@ -188,7 +195,7 @@ fn structural_match(
         })
         .collect();
     let mut tc = target.walk();
-    let t: Vec<_> = target
+    let mut t: Vec<_> = target
         .children(&mut tc)
         .filter(|n| {
             !n.kind().contains("comment")
@@ -199,6 +206,9 @@ fn structural_match(
                         .contains(&n.kind()))
         })
         .collect();
+    if options.declaration_prefix_end.is_some() {
+        t.truncate(p.len());
+    }
     fn sequence(
         p: &[Syntax<'_>],
         t: &[Syntax<'_>],
@@ -257,6 +267,7 @@ fn structural_match(
                 StructuralMatchOptions {
                     capabilities,
                     declaration_root: false,
+                    declaration_prefix_end: None,
                 },
             )
         {
@@ -555,6 +566,7 @@ fn prepare_search_pattern(
                         tree: candidate_tree,
                         mode: PatternMode::Declaration,
                         fragment_range: None,
+                        declaration_prefix_end: None,
                     }));
                 }
             }
@@ -573,6 +585,7 @@ fn prepare_search_pattern(
             tree,
             mode,
             fragment_range: None,
+            declaration_prefix_end: None,
         }));
     }
 
@@ -589,11 +602,17 @@ fn prepare_search_pattern(
             continue;
         };
         if capabilities.declaration_kinds.contains(&node.kind()) {
+            // Parameters supplied only by completion must not constrain the signature.
+            let declaration_prefix_end = node
+                .child_by_field_name("parameters")
+                .filter(|parameters| parameters.start_byte() >= normalized.source.len())
+                .map(|_| normalized.source.len());
             return Ok(Some(PreparedPattern {
                 source: candidate_source,
                 tree: candidate_tree,
                 mode: PatternMode::Declaration,
                 fragment_range: None,
+                declaration_prefix_end,
             }));
         }
     }
@@ -621,6 +640,7 @@ fn prepare_search_pattern(
                     tree: candidate_tree,
                     mode: PatternMode::Fragment,
                     fragment_range: Some(range),
+                    declaration_prefix_end: None,
                 }));
             }
         }
@@ -642,7 +662,25 @@ pub(crate) fn pattern_symbol_name(pattern: &str, language: &str) -> Result<Optio
         Ok(Some(prepared)) => prepared,
         Ok(None) => return Ok(None),
         Err(error) if error.downcast_ref::<PatternSearchDiagnostic>().is_some() => {
-            return Ok(None);
+            let mut grammars = vec![profile.grammar("__forge_pattern__")];
+            for extension in profile.extensions() {
+                let grammar = profile.grammar(&format!("__forge_pattern__.{extension}"));
+                if grammars.contains(&grammar) {
+                    continue;
+                }
+                parser.set_language(&grammar)?;
+                grammars.push(grammar);
+                match prepare_search_pattern(&mut parser, profile, pattern, &mut budget) {
+                    Ok(Some(_)) => return Ok(None),
+                    Ok(None) => {}
+                    Err(alternate)
+                        if alternate
+                            .downcast_ref::<PatternSearchDiagnostic>()
+                            .is_some() => {}
+                    Err(alternate) => return Err(alternate),
+                }
+            }
+            return Err(error);
         }
         Err(error) => return Err(error),
     };
@@ -705,6 +743,7 @@ fn search_range(
             StructuralMatchOptions {
                 capabilities: &capabilities,
                 declaration_root: prepared.mode == PatternMode::Declaration,
+                declaration_prefix_end: prepared.declaration_prefix_end,
             },
         );
         if budget.exhausted {

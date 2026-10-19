@@ -218,14 +218,15 @@ impl Explain {
 #[derive(Deserialize, JsonSchema)]
 /// Represents search symbols data.
 pub struct SearchSymbols {
-    /// The pattern value.
+    /// Symbol pattern; query is accepted as an alias. Use '*' with a path or kind scope to list all symbols in that scope.
+    #[serde(alias = "query")]
     pub pattern: String,
     /// Match only the complete symbol name or qualified name, without full-text search.
     #[serde(default)]
     pub exact: bool,
     /// Optional kind value.
     pub kind: Option<String>,
-    /// Restrict results to a workspace-relative file or directory.
+    /// Restrict results to a workspace-relative file or directory; an empty string leaves results unfiltered.
     pub path: Option<String>,
     /// Group results by file path.
     #[serde(default)]
@@ -315,8 +316,8 @@ pub struct Analyze {
 pub struct Ast {
     /// The pattern value.
     pub pattern: String,
-    /// The language value.
-    pub language: String,
+    /// The language value (e.g. 'python', 'rust', 'typescript'). Optional if 'path' has a recognized file extension.
+    pub language: Option<String>,
     /// Optional path value.
     pub path: Option<String>,
     #[serde(flatten)]

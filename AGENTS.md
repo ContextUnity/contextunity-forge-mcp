@@ -44,3 +44,41 @@ Worktrees live at `.worktrees/<milestone-prefix>-<slug>` for milestones and `.wo
 - Remote publications: `git push`, tagging, releases, and credential publication require explicit user approval.
 
 Do not run benchmarks without explicit user approval. Read [benchmark instructions](benchmarks/AGENTS.md) before benchmarking.
+
+## Launching Codex agents (Antigravity Managed Background Task)
+
+Launch Codex agents (`codex exec` / `codex exec resume`) directly through the native platform tool `run_command` with `WaitMsBeforeAsync: 500`:
+
+```json
+{
+  "CommandLine": "codex exec resume -c model=\"gpt-6.1-sol\" -c model_reasoning_effort=\"medium\" <SESSION_ID> \"<PROMPT>\"",
+  "Cwd": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/<milestone-prefix>-<task-slug>",
+  "WaitMsBeforeAsync": 500,
+  "toolAction": "Starting Codex Sol builder agent",
+  "toolSummary": "Start Codex Sol builder for task"
+}
+```
+
+For a new session without an existing `<SESSION_ID>`, run `codex exec -c model="gpt-6.1-sol" -c model_reasoning_effort="medium" "<PROMPT>"` with the same `WaitMsBeforeAsync: 500` parameter.
+
+### Review execution and findings feedback loop
+
+1. **Review Stage (`model_reasoning_effort="xhigh"`)**:
+   - Run the independent reviewer agent with maximum reasoning effort:
+     `codex exec -c model="gpt-6.1-sol" -c model_reasoning_effort="xhigh" "<REVIEW_PROMPT>"`
+   - Use an independent `worker_id` (e.g. `codex-sol-reviewer`) distinct from the builder worker.
+2. **Builder feedback loop (`codex exec resume <BUILDER_SESSION_ID>`)**:
+   - Always route review findings, rejection details, and remediation tasks back into the **same builder session**:
+     `codex exec resume -c model="gpt-6.1-sol" -c model_reasoning_effort="medium" <BUILDER_SESSION_ID> "<REVIEW_FINDINGS>"`
+   - This preserves the builder's complete context, file history, and reasoning continuity without cold restarts.
+
+### Why this execution pattern is required
+
+1. **`WaitMsBeforeAsync: 500` (Managed Background Task)**:
+   - The platform spawns the command directly in the Linux shell (`bash -c`).
+   - When the process runs longer than 500 ms, the platform kernel automatically promotes it to a Managed Background Task and displays the live status bar (`[HH:MM:SS] codex exec ... running`).
+2. **Reactive wakeup (Zero-Polling)**:
+   - Do not poll task status in a loop. Stop calling tools at the end of the turn when waiting on the background agent.
+   - When the process finishes (success or error), the platform event bus delivers `<SYSTEM_MESSAGE> Task id "task-XXXX" finished with result...` and reactively wakes the coordinator for the next step.
+3. **Real-time log streaming**:
+   - The platform streams process output in real time to `.system_generated/tasks/task-XXXX.log`, which can be inspected on disk without losing context.

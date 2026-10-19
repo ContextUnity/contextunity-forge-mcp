@@ -1,6 +1,81 @@
 use super::*;
 use std::fs::{File, OpenOptions};
 
+// JSON is embedded in an MCP text block and escaped a second time. Keeping
+// task JSON below 24 KiB leaves room for that expansion and protocol metadata.
+const TASK_RESPONSE_BYTES: usize = 24 * 1024;
+
+fn task_response_bytes(value: &Value) -> usize {
+    value.to_string().len()
+}
+
+fn bound_task_response(mut value: Value) -> Value {
+    if task_response_bytes(&value) <= TASK_RESPONSE_BYTES {
+        return value;
+    }
+    // Remove whole fields, never partial authority text. Preserve claim identity
+    // and proof templates ahead of optional context, including duplicate copies.
+    fn largest_field(value: &Value, prefix: &str) -> Option<(bool, usize, String)> {
+        value
+            .as_object()?
+            .iter()
+            .filter_map(|(key, child)| {
+                let path = format!("{prefix}/{}", key.replace('~', "~0").replace('/', "~1"));
+                if matches!(
+                    key.as_str(),
+                    "context_bundle"
+                        | "contract"
+                        | "guidance"
+                        | "workflow_guidance"
+                        | "authority_snapshot"
+                ) && child.as_object().is_some_and(|object| !object.is_empty())
+                {
+                    return largest_field(child, &path);
+                }
+                let optional = !matches!(
+                    key.as_str(),
+                    "task_id"
+                        | "stage"
+                        | "status"
+                        | "claim_revision"
+                        | "contract_revision"
+                        | "worker_id"
+                        | "worktree"
+                        | "expected_evidence_template"
+                        | "contract_seam_test"
+                        | "candidate_snapshot"
+                        | "latest_snapshot"
+                        | "proof_schema"
+                );
+                Some((optional, task_response_bytes(child) + key.len(), path))
+            })
+            .max()
+    }
+    let mut omitted = Vec::new();
+    let mut omitted_count = 0;
+    while task_response_bytes(&value) > TASK_RESPONSE_BYTES - 4096 {
+        let Some((_, _, path)) = largest_field(&value, "") else {
+            break;
+        };
+        let (parent, field) = path.rsplit_once('/').expect("field pointer");
+        let field = field.replace("~1", "/").replace("~0", "~");
+        value
+            .pointer_mut(parent)
+            .and_then(Value::as_object_mut)
+            .expect("field object")
+            .remove(&field);
+        omitted_count += 1;
+        if omitted.len() < 16 && serde_json::to_string(&path).expect("JSON pointer").len() <= 128 {
+            omitted.push(path);
+        }
+    }
+    value["byte_limited"] = json!(true);
+    value["omitted_fields"] = json!(omitted);
+    value["omitted_field_count"] = json!(omitted_count);
+    value["retrieval_hint"] = json!("Context is incomplete. Read the milestone file for full authority and use CLI task inspect <task_id> for full stored details; use task_blackboard inspect for message payloads. Do not infer missing authority from this summary.");
+    value
+}
+
 /// Performs claim.
 pub fn claim(root: &Path, p: Claim) -> Result<Value> {
     let id = p.task_id.clone();
@@ -88,7 +163,7 @@ fn finish_claim(
     } else {
         store.finish_resume(id, claimed.claim_revision)?;
     }
-    response
+    response.map(bound_task_response)
 }
 pub(super) fn lock_receipts(database: &Path) -> Result<File> {
     let lock_path = database.with_extension("receipt.lock");
@@ -448,6 +523,8 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                 workspace.manifests()?
             };
             let mut result = Vec::new();
+            let mut total = 0usize;
+            let mut returned_bytes = 0usize;
             for reference in references {
                 let rel_path = Path::new(&reference);
                 let inferred = crate::core::tasks::infer_project_from_path(rel_path);
@@ -492,10 +569,30 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                     store.sync(&parsed, &reference, &workspace.root)?
                 };
                 for task in tasks {
-                    result.push(workspace.envelope(serde_json::to_value(task)?)?);
+                    total += 1;
+                    let summary = workspace.envelope(json!({
+                        "task_id": task.task_id,
+                        "spec": {"task_ref": task.spec.task_ref},
+                        "milestone_ref": task.milestone_ref,
+                        "status": task.status,
+                        "stage": task.stage,
+                        "claim_revision": task.claim_revision,
+                        "contract_revision": task.contract_revision,
+                        "wave_index": task.wave_index,
+                    }))?;
+                    let bytes = task_response_bytes(&summary) + 1;
+                    if result.len() == total - 1
+                        && returned_bytes + bytes <= TASK_RESPONSE_BYTES - 1024
+                    {
+                        returned_bytes += bytes;
+                        result.push(summary);
+                    }
                 }
             }
-            Ok(json!({"tasks":result}))
+            let returned = result.len();
+            Ok(json!({"tasks":result,"total":total,"returned":returned,
+                "byte_limited":returned < total,
+                "retrieval_hint":"All selected tasks were synchronized. Use task_list or CLI task list for task summaries and CLI task inspect <task_id> for full details."}))
         }
         ManageAction::Inspect => {
             workspace.guidance_envelope(store.inspect_details(id.context("task_id required")?)?)
@@ -503,7 +600,7 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
         ManageAction::Context => {
             let task_id = id.context("task_id required")?;
             let details = workspace.guidance_envelope(store.inspect_details(task_id)?)?;
-            context_bundle(root, workspace, task_id, details)
+            context_bundle(root, workspace, task_id, details).map(bound_task_response)
         }
         ManageAction::Delete => Ok(serde_json::to_value(store.delete(
             id,

@@ -54,7 +54,9 @@ Use a symbol identifier returned by search whenever possible. A file path select
 
 Depth is limited to 16. A deep traversal whose first frontier exceeds 1,000 links is rejected; retry with depth 1 or a narrower selector. Removal analysis rejects scopes above 10,000 nodes. Graph results describe indexed, statically resolved relationships.
 
-`code_map_search.path` accepts an exact indexed file or a directory whose descendants should be searched. `code_map_impact` and node-scoped `code_map_query` operations `impact` and `slice` mark the selected node with `is_seed=true`; at depth greater than one, other nodes include one `via` predecessor ID and edge kind along a shortest indexed path. Page totals and offsets include the seed. A directory selector in `code_map_query(operation="slice")` lists its indexed nodes with `graph_depth_applied=0` and exact selectors for subsequent graph traversal. A unique directory suffix is accepted; ambiguous suffixes return candidate full paths. `code_map_tests` puts direct edge witnesses before `scope_or_transitive` results, which identify a relationship through a broader scope or multiple graph steps. Inbound searches cap graph walking at four steps and search test-file names when the graph returns none. `code_map_prove_removal.assessment` leads with a verdict and candidate-scoped blocking reasons; `safe_to_remove` is separate from workspace-wide unresolved and parse-error diagnostics.
+`code_map_search` accepts `query` as an alias for `pattern`. Its `path` accepts an exact indexed file or a directory whose descendants should be searched; `path: ""` leaves results unfiltered. Use `pattern: "*"` with a nonempty `path` or `kind` to list all symbols in that scope, including when `exact: true`. Unscoped `*` and repeated wildcard-only patterns remain invalid. For example, `{"query":"*","path":"src","kind":"function"}` lists functions under `src` with normal pagination.
+
+`code_map_impact` and node-scoped `code_map_query` operations `impact` and `slice` mark the selected node with `is_seed=true`; at depth greater than one, other nodes include one `via` predecessor ID and edge kind along a shortest indexed path. Page totals and offsets include the seed. A directory selector in `code_map_query(operation="slice")` lists its indexed nodes with `graph_depth_applied=0` and exact selectors for subsequent graph traversal. A unique directory suffix is accepted; ambiguous suffixes return candidate full paths. `code_map_tests` puts direct edge witnesses before `scope_or_transitive` results, which identify a relationship through a broader scope or multiple graph steps. Inbound searches cap graph walking at four steps and search test-file names when the graph returns none. `code_map_prove_removal.assessment` leads with a verdict and candidate-scoped blocking reasons; `safe_to_remove` is separate from workspace-wide unresolved and parse-error diagnostics.
 
 `code_map_explain` accepts `incoming`, `outgoing`, or `both`; `inbound` and `outbound` are aliases. Compact inspect and explain results include the exact indexed signature and docstring, a lexical container resolved from method receiver metadata when available, inbound/outbound distinct-edge and occurrence counts, and up to five direct callers/callees per direction. Set `include_coverage=true` to add paged resolution coverage, or `show_doc=false` to omit linked document results.
 
@@ -70,11 +72,18 @@ Compact `code_map_explain` edge rows identify the other endpoint relative to the
 
 ## Result size and source
 
+Source options on `code_map_inspect`, `code_map_explain`, and `get_code_snippet`
+clamp `leading_lines` above 20 to 20 and `max_body_lines` above 100 to 100.
+Zero body lines, negative values, and overflowing source offsets remain invalid.
+Adapter `response.source_context` defaults retain strict range validation.
+
 Paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 65,536 bytes.
 
 Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `get_code_snippet` supports `leading_lines` from 0 to 20 and `max_body_lines` from 1 to 100. If source changed, refresh the index before relying on the result.
 
 ## AST pattern capabilities
+
+`ast_grep_search.language` accepts a compiled profile ID such as `python`, `rust`, or `typescript`. Omit it when `path` names a file with a recognized extension: `{"pattern":"class Widget","path":"src/example.py"}` infers Python. An explicit language takes precedence; directory scopes require an explicit language. A null or empty language also requests inference. When inference fails, the tool returns the compiled language list and usage examples.
 
 Call `forge_guide` with `topic:"ast"` for the profile matrix and syntax examples. Profiles declare these independent capabilities:
 
@@ -85,7 +94,9 @@ Call `forge_guide` with `topic:"ast"` for the profile matrix and syntax examples
 | `fragment_probe` | Wraps root-rejected expressions, calls, macros, or assignments in a profile-provided probe container and unwraps the target syntax node. |
 | `attribute` | Matches declared decorators or annotations layered over declarations. |
 
-The registered matrix is: Rust supports all four capabilities; Python and TypeScript/JavaScript support `complete_syntax`, `declaration_without_body`, and `attribute`; HTML and Vue support `complete_syntax`. `$NAME` captures one syntax node. `$$$SEQ` captures a sequence of zero or more syntax nodes. Unsupported fragments and invalid syntax return a structured diagnostic with the profile language, error span, hint, and valid examples.
+The registered matrix is: Rust supports all four capabilities; Python and TypeScript/JavaScript support `complete_syntax`, `declaration_without_body`, and `attribute`; HTML and Vue support `complete_syntax`. `$NAME` captures one syntax node. `$$$SEQ` captures a sequence of zero or more syntax nodes. Python declaration patterns accept `class Widget`, `class Widget:`, `def target($$$)`, and `def target($$$):`. Rust accepts a parameterless function header such as `fn target`, completed as an empty parameter list with a wildcard body.
+
+Unsupported fragments and invalid syntax produce an MCP tool error with the diagnostic code, profile language, one-based line and column range, repair hint, and indented valid examples. The error text presents these fields directly without appending a raw JSON dump.
 
 ## SQL and checkpoints
 

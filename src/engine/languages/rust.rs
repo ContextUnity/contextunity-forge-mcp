@@ -131,6 +131,24 @@ fn call_result_hint(node: Syntax<'_>, source: &str) -> Option<ReceiverHint> {
 pub struct Rust;
 /// Shared rust language profile.
 pub static RUST: Rust = Rust;
+
+#[cfg(test)]
+#[test]
+fn test_ast_parameterless_declaration() {
+    let capabilities = Rust.ast_search_capabilities();
+    assert!(capabilities.declaration_kinds.contains(&"function_item"));
+    let matches = crate::engine::ast::search(
+        "fn target() { call(value); }\nfn other() {}",
+        "lib.rs",
+        "rust",
+        "fn target",
+        10,
+    )
+    .expect("a Rust function header without parameters is searchable");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0]["text"], "fn target() { call(value); }");
+}
+
 impl LanguageProfile for Rust {
     fn id(&self) -> &'static str {
         "rust"
@@ -153,18 +171,19 @@ impl LanguageProfile for Rust {
                 "enum_variant_list",
                 "declaration_list",
             ],
-            declaration_completions: &[" {}"],
+            declaration_completions: &[" {}", "() { __forge_meta_body(); }"],
             fragment_probe: Some(AstSearchProbe {
                 prefix: "fn __forge_ast_pattern_probe() { ",
                 suffix: " }",
             }),
             attribute_kinds: &["attribute_item"],
             valid_examples: &[
+                "fn example",
                 "fn example() {}",
                 "client.fetch($VALUE)",
                 "#[derive(Debug)] struct Item {}",
             ],
-            diagnostic_hint: "Use a complete Rust item or expression, or a supported expression or macro fragment.",
+            diagnostic_hint: "Use a complete Rust item or expression, a bodyless declaration such as 'fn example', or a supported expression or macro fragment.",
         }
     }
     fn manifest_filenames(&self) -> &'static [&'static str] {

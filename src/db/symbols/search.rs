@@ -18,7 +18,10 @@ pub fn search_with_options(
         page: options,
     } = *options;
     let pattern = pattern.trim();
-    if pattern.is_empty() || pattern.len() > 1024 || pattern.chars().all(|c| c == '*') {
+    if pattern.is_empty()
+        || pattern.len() > 1024
+        || (pattern.chars().all(|c| c == '*') && pattern != "*")
+    {
         bail!("pattern must contain a symbol fragment and be at most 1024 bytes");
     }
     let kind = kind.unwrap_or("");
@@ -43,10 +46,13 @@ pub fn search_with_options(
         }
     }
     let path = path.unwrap_or("");
+    if pattern == "*" && kind.is_empty() && path.is_empty() {
+        bail!("pattern must contain a symbol fragment, or use '*' with a path or kind scope");
+    }
     let (path_start, path_end) = reader::path_bounds(path);
     let columns = paging::nodes_with_path("n", options.detail, "pd.path");
     let graph_boost = "CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind NOT IN('contains','documents','references_doc')) THEN 50 ELSE 0 END";
-    let mut nodes = if exact {
+    let mut nodes = if exact && pattern != "*" {
         let fts_query = pattern
             .split(|c: char| !c.is_alphanumeric())
             .filter(|part| !part.is_empty())

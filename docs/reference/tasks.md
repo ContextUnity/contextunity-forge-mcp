@@ -108,6 +108,16 @@ Every task contract declares an explicit file perimeter (`scope`) bounding allow
 
 ## Five flat MCP tools
 
+`task_list` accepts `milestone` as an alias for `milestone_ref`, with the same
+milestone resolution and status defaults. Supply one name per request.
+
+The CLI accepts `task show` for `task inspect`, `--task TASK_ID` in place of
+the positional task ID on inspect/show and submit, and `--file PATH` in place
+of the positional milestone reference on sync. `task list --detail compact|full`
+selects subtask detail explicitly; `--full` selects full detail. Selector forms
+and the two detail flags are mutually exclusive within one invocation. See the
+[CLI reference](cli.md#repository-tasks) for examples.
+
 | Tool | Arguments and behavior |
 | --- | --- |
 | `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
@@ -579,7 +589,9 @@ To guarantee responses remain well below the 64 KiB ceiling of [ADR 0011](../adr
 - **Minimal claim mode (`bundle: false`)**: Delivers lean task metadata (`task_id`, `stage`, `status`, `allowed_write_scope`, `subtasks`, `depends_on`, `workflow_guidance`) strictly pruned of heavy `gates`, `attempts`, `findings`, `receipt`, and raw `spec` archives, ensuring minimal claim mode never exhausts response budgets.
 - **Zero root duplication**: Substructures are scoped to `context_bundle` without duplicating `adrs`, `scope_symbols`, or `covering_tests` at root.
 - **Bounded blackboard**: Aggregates the 15 most recent chronological messages; payloads exceeding 500 Unicode characters are safely truncated along character boundaries (use `task_blackboard(action: "inspect", message_id: <id>)` for full text).
-- **Size budget**: Bounded context bundles typically range between 6 KiB and 20 KiB, eliminating response limit exhaustion.
+- **Size budget**: Claim (including `bundle: false`), next, and context responses are bounded to 24 KiB of serialized JSON, leaving room for MCP text escaping and protocol metadata under the 64 KiB ceiling. Oversized responses omit whole fields, prioritizing claim identity and revisions. `byte_limited`, `omitted_fields` (up to 16 JSON pointers), `omitted_field_count`, and `retrieval_hint` identify incomplete context. Read the milestone file for full authority and CLI `task inspect <task-id>` for stored details before relying on omitted information. Stored contracts and evidence are unchanged.
+- **Sync summaries**: Create and sync return compact task records with identity (including `spec.task_ref`), milestone reference, status, stage, revisions, and wave index. `total` counts all synchronized tasks, while `returned` counts the bounded prefix in `tasks`. `byte_limited: true` means additional summaries were omitted; all selected tasks were synchronized. Use `task_list` or CLI `task list` to retrieve task summaries.
+- **Initialized SQLite stores**: Opening a supported schema applies connection-local settings without schema writes or write transactions, allowing task readers to open while another connection holds the writer lock. New dedicated stores still initialize schema version 5 in WAL mode; unsupported versions remain rejected.
 
 ### Context Bundle Example
 

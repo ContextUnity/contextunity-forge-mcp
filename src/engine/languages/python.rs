@@ -943,14 +943,17 @@ impl LanguageProfile for Python {
         AstSearchCapabilities {
             declaration_kinds: &["function_definition", "class_definition"],
             declaration_body_kinds: &["block"],
-            declaration_completions: &["\n    __FORGE_META_BODY\n"],
+            declaration_completions: &[":\n    __FORGE_META_BODY\n", "\n    __FORGE_META_BODY\n"],
             attribute_kinds: &["decorator"],
             valid_examples: &[
+                "class Example",
+                "class Example:",
+                "def example($$$)",
                 "def example():\n    pass",
                 "client.fetch($VALUE)",
                 "@property\ndef value(self):\n    return 1",
             ],
-            diagnostic_hint: "Use a complete Python statement or expression, or a supported bodyless function or class declaration.",
+            diagnostic_hint: "Use a complete Python statement or expression, or a supported bodyless function or class declaration (e.g. 'class Foo', 'class Foo:', or 'def bar($$$):').",
             ..AstSearchCapabilities::default()
         }
     }

@@ -100,7 +100,7 @@ impl MilestoneStatusFilter {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 /// Controls how much subtask information task listings return.
 pub enum TaskListDetail {
@@ -117,7 +117,8 @@ pub enum TaskListDetail {
 pub struct List {
     /// Repository or workspace name filter (e.g. 'forge-mcp', a linked workspace name, or 'all').
     pub repository: Option<String>,
-    /// Filter tasks by milestone: relative file path (e.g. 'docs/milestones/030-*.md'), numeric prefix ('030'), milestone ID ('m-...'), or slug.
+    /// Filter tasks by milestone: relative file path (e.g. 'docs/milestones/030-*.md'), numeric prefix ('030'), milestone ID ('m-...'), or slug. Accepts milestone as an alias.
+    #[serde(alias = "milestone")]
     pub milestone_ref: Option<String>,
     /// Filter by milestone lifecycle status: 'active' (default), 'planned', 'completed', or 'all'. A milestone_ref without this filter selects all statuses.
     pub milestone_status: Option<MilestoneStatusFilter>,

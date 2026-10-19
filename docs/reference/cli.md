@@ -77,6 +77,8 @@ references/statuses. Use `--milestone-status planned|completed|all` or the
 mutually exclusive `--planned`, `--completed`, and `--all` shorthands to select
 other milestone sets. A targeted `--milestone REF` defaults to all milestone
 statuses. Use `--full` to include subtask titles and verification evidence.
+`--detail compact|full` selects the same subtask detail explicitly; use either
+`--full` or `--detail` in one invocation.
 Task `--status` accepts `ready` (default), `in_progress`, `blocked`, `parked`,
 `completed`, or `all`. Use `--status parked` to list tasks retaining their worker
 and worktree while waiting for a scope owner; `--status all` includes them.
@@ -85,6 +87,17 @@ and worktree while waiting for a scope owner; `--status all` includes them.
 contextunity-forge-mcp task claim TASK_ID --stage deliver --worker REVIEWER --worktree PATH [--bundle]
 contextunity-forge-mcp task submit TASK_ID --stage deliver --action pass --evidence '<JSON_OBJECT>'
 contextunity-forge-mcp task context TASK_ID
+```
+
+`task show` is an alias for `task inspect`. Inspect, show, and submit accept
+`--task TASK_ID` in place of the positional task ID. `task sync` accepts
+`--file PATH` in place of its positional milestone reference. Supply one selector
+form per invocation:
+
+```sh
+contextunity-forge-mcp task show --task TASK_ID
+contextunity-forge-mcp task submit --task TASK_ID --stage build --action pass --evidence '<JSON_OBJECT>'
+contextunity-forge-mcp task sync --file docs/milestones/010-example.md
 ```
 
 Dispatch the highest-priority eligible gate atomically:

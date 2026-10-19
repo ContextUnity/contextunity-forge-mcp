@@ -139,11 +139,14 @@ pub(crate) fn search_results_with_navigation(
             .get("path")
             .and_then(Value::as_str)
             .context("search result has no path")?;
-        let text = verified_source(conn, root, path)?;
+        let Ok(text) = verified_source(conn, root, path) else {
+            continue;
+        };
         let node = json!({
             "id": id,
             "kind": object.get("kind"),
             "name": object.get("name"),
+            "qualname": object.get("qualname"),
             "path": path,
             "line": object.get("line"),
             "end_line": object.get("end_line"),
@@ -155,10 +158,12 @@ pub(crate) fn search_results_with_navigation(
             max_body_lines: 15,
             offset: 0,
         };
-        let (source, preview) =
-            source_preview(conn, &node, &text, &options, PREVIEW_BYTES_PER_HIT)?;
-        object.insert("source".into(), json!(source));
-        object.insert("source_preview".into(), preview);
+        if let Ok((source, preview)) =
+            source_preview(conn, &node, &text, &options, PREVIEW_BYTES_PER_HIT)
+        {
+            object.insert("source".into(), json!(source));
+            object.insert("source_preview".into(), preview);
+        }
     }
     Ok(result)
 }
@@ -832,7 +837,9 @@ fn symbol_range(node: &Value, text: &str) -> Result<Option<std::ops::Range<usize
         if syntax.start_position().row + 1 > start || syntax.end_position().row + 1 < start {
             continue;
         }
-        if syntax.start_position().row + 1 == start && profile.symbol(syntax) == Some(kind) {
+        if syntax.start_position().row + 1 == start
+            && profile.symbol_with_source(syntax, text) == Some(kind)
+        {
             let candidate = profile
                 .symbol_name(syntax, text)
                 .map(str::to_owned)
@@ -847,19 +854,92 @@ fn symbol_range(node: &Value, text: &str) -> Result<Option<std::ops::Range<usize
         stack.extend(syntax.named_children(&mut cursor));
     }
     matches.sort_by_key(|range| range.start);
+    let qualname = node["qualname"].as_str().unwrap_or(name);
     let base = format!("{}:{path}:{start}:{name}", profile.node_prefix(kind));
+    let field_base = format!("field:{path}:{start}:{qualname}");
     let id = node["id"].as_str().context("invalid node id")?;
-    let selected = if id == base {
+    let selected = if id == base || id == field_base {
         matches.into_iter().next()
     } else {
         matches.into_iter().find(|range| {
-            id == format!(
-                "{base}:{}",
-                text[..range.start].rsplit('\n').next().unwrap_or("").len()
-            )
+            let col = text[..range.start].rsplit('\n').next().unwrap_or("").len();
+            id == format!("{base}:{col}") || id == format!("{field_base}:{col}")
         })
     };
+    if selected.is_none() && (id.starts_with("field:") || id.starts_with("template:")) {
+        return Ok(None);
+    }
     selected
         .map(Some)
         .context("indexed symbol boundary is unavailable; read the local file instead")
+}
+
+#[cfg(all(test, feature = "lang-python"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_symbol_boundary_recovery_and_preview_resilience() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::core::schema::SCHEMA_DDL).unwrap();
+        let options = SourceOptions {
+            enabled: true,
+            leading_lines: 0,
+            max_body_lines: 35,
+            offset: 0,
+        };
+        for (id, kind, name, text, expected) in [
+            (
+                "type:case.py:1:Strategy",
+                "type",
+                "Strategy",
+                "Strategy = Literal['direct']; neighbor = 1\n",
+                "Strategy = Literal['direct']",
+            ),
+            (
+                "py:case.py:1:pool_size",
+                "variable",
+                "pool_size",
+                "pool_size = 3; neighbor = 1\n",
+                "pool_size = 3",
+            ),
+            (
+                "type:case.py:1:Strategy",
+                "type",
+                "Strategy",
+                "type Strategy = str; neighbor = 1\n",
+                "type Strategy = str",
+            ),
+            (
+                "field:case.py:1:Pool.size",
+                "field",
+                "size",
+                "    self.size = (\n        3\n    )\n",
+                "    self.size = (\n        3\n    )\n",
+            ),
+        ] {
+            let node = json!({"id":id,"kind":kind,"name":name,"qualname":format!("Pool.{name}"),"path":"case.py","line":1,"end_line":text.lines().count(),"language":"python"});
+            let (source, _) = source_preview(&conn, &node, text, &options, 8192).unwrap();
+            assert_eq!(source, expected, "{id}");
+        }
+        if cfg!(feature = "lang-html") {
+            let node = json!({"id":"template:case.html:1:strategy","kind":"variable","name":"strategy","path":"case.html","line":1,"end_line":1,"language":"html"});
+            let text = "{% set strategy = 'direct' %}\n";
+            assert_eq!(
+                source_preview(&conn, &node, text, &options, 8192)
+                    .unwrap()
+                    .0,
+                text
+            );
+        }
+        let unresolved = json!({"id":"py:case.py:1:missing","kind":"function","name":"missing","path":"case.py","line":1,"end_line":1,"language":"python"});
+        assert!(symbol_range(&unresolved, "# no declaration\n").is_err());
+        let results = json!({"nodes":{"total":1,"items":[unresolved]}});
+        let result = search_results_with_navigation(&conn, Path::new("."), results, true).unwrap();
+        let hit = &result["nodes"]["items"][0];
+        assert_eq!(hit["path"], "case.py");
+        assert_eq!(hit["line"], 1);
+        assert_eq!(hit["inspect_selector"]["selector"], hit["id"]);
+        assert!(hit.get("source_preview").is_none());
+    }
 }

@@ -110,6 +110,7 @@ fn rejected_selector_fields(
         ],
         "code_map_search" => &[
             "pattern",
+            "query",
             "exact",
             "kind",
             "path",
@@ -291,7 +292,7 @@ impl Server {
                     &p.pattern,
                     &symbols::SearchOptions {
                         kind: p.kind.as_deref(),
-                        path: p.path.as_deref(),
+                        path: p.path.as_deref().filter(|path| !path.is_empty()),
                         include_docs: p.include_docs,
                         exact: p.exact,
                         page: &page,
@@ -448,21 +449,70 @@ impl Server {
         })
     }
     #[tool(
-        description = "Tree-sitter structural search over admitted source. Language profiles declare complete_syntax, declaration_without_body, fragment_probe, and attribute capabilities. $NAME captures one syntax node; $$$SEQ captures a syntax-node sequence. language must be a compiled profile id. Call forge_guide with topic=ast for the profile capability matrix and examples."
+        description = "Tree-sitter structural search over admitted source. Language profiles declare complete_syntax, declaration_without_body, fragment_probe, and attribute capabilities. $NAME captures one syntax node; $$$SEQ captures a syntax-node sequence. language must be a compiled profile id (e.g. 'python', 'rust', 'typescript') or omitted if path has a recognized file extension. Call forge_guide with topic=ast for the profile capability matrix and examples."
     )]
     fn ast_grep_search(&self, Parameters(p): Parameters<Ast>) -> CallToolResult {
         self.responding(|adapter, policy| {
             self.read_with_adapter(adapter, |conn| {
+                let language = match p.language.as_deref().filter(|l| !l.is_empty()) {
+                    Some(lang) => lang.to_owned(),
+                    None => {
+                        let inferred = p
+                            .path
+                            .as_deref()
+                            .and_then(|path| {
+                                crate::engine::languages::for_path(std::path::Path::new(path))
+                            })
+                            .map(|profile| profile.id());
+                        match inferred {
+                            Some(lang) => lang.to_owned(),
+                            None => {
+                                let compiled = crate::engine::languages::profiles()
+                                    .map(|p| p.id())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let compiled = if compiled.is_empty() {
+                                    "none (document-only build)"
+                                } else {
+                                    &compiled
+                                };
+                                anyhow::bail!(
+                                    "Cannot infer AST language. Specify 'language' or provide a file 'path' with a recognized extension.\nCompiled languages: {compiled}.\nExamples: language='python' with pattern='class Widget', or path='src/example.py' with pattern='class Widget'.\nCall forge_guide(topic='ast') for profile capabilities and examples."
+                                );
+                            }
+                        }
+                    }
+                };
                 let result = cli::ast::search_paged(
                     conn,
                     &self.root,
                     &p.pattern,
-                    &p.language,
+                    &language,
                     p.path.as_deref(),
                     &p.page.resolve(policy)?,
                 )?;
-                if result.get("diagnostic").is_some() {
-                    return Err(anyhow::anyhow!(result.to_string()));
+                if let Some(diagnostic) = result.get("diagnostic") {
+                    let hint = diagnostic["hint"].as_str().unwrap_or("");
+                    let lang = diagnostic["language"].as_str().unwrap_or(&language);
+                    let code = diagnostic["code"].as_str().unwrap_or("unsupported_ast_pattern");
+                    let span = &diagnostic["span"];
+                    let start_line = span["start_line"].as_u64().unwrap_or(1);
+                    let start_column = span["start_column"].as_u64().unwrap_or(1);
+                    let end_line = span["end_line"].as_u64().unwrap_or(start_line);
+                    let end_column = span["end_column"].as_u64().unwrap_or(start_column);
+                    let examples = diagnostic["examples"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| format!("  - {}", s.replace('\n', "\n    ")))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default();
+                    return Err(anyhow::anyhow!(
+                        "{code}: Unsupported AST pattern for language '{lang}' at {start_line}:{start_column} to {end_line}:{end_column}.\nHint: {hint}\nExamples of valid patterns for {lang}:\n{examples}"
+                    ));
                 }
                 Ok(result)
             })
