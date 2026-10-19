@@ -144,3 +144,119 @@ pub fn git_scoped_differing_files(
         .map(str::to_owned)
         .collect())
 }
+
+fn file_entry(worktree: &Path, commit: &str, path: &str) -> Result<Option<(String, String)>> {
+    let output = git_command(
+        worktree,
+        &["--literal-pathspecs", "ls-tree", "-z", commit, "--", path],
+    )?;
+    if !output.status.success() {
+        bail!("TASK_MERGE_INVALID: unable to inspect file entry");
+    }
+    if output.stdout.is_empty() {
+        return Ok(None);
+    }
+    let header = output
+        .stdout
+        .split(|byte| *byte == b'\t')
+        .next()
+        .unwrap_or_default();
+    let fields = std::str::from_utf8(header)?
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    if fields.len() != 3 || fields[1] != "blob" {
+        bail!("TASK_MERGE_INVALID: expected a file entry");
+    }
+    Ok(Some((fields[0].into(), fields[2].into())))
+}
+
+/// Verify a file's clean three-way merge from committed inputs without changing the index.
+pub fn git_clean_file_merge_matches(
+    worktree: &Path,
+    ours: &str,
+    theirs: &str,
+    result: &str,
+    path: &str,
+) -> Result<bool> {
+    let bases = git_stdout(
+        worktree,
+        &["merge-base", "--all", ours, theirs],
+        "TASK_MERGE_INVALID",
+    )?;
+    let bases = bases.lines().collect::<Vec<_>>();
+    if bases.len() != 1 {
+        return Ok(false);
+    }
+    let base = file_entry(worktree, bases[0], path)?;
+    let ours = file_entry(worktree, ours, path)?;
+    let theirs = file_entry(worktree, theirs, path)?;
+    let result = file_entry(worktree, result, path)?;
+    if ours == base {
+        return Ok(result == theirs);
+    }
+    if theirs == base || ours == theirs {
+        return Ok(result == ours);
+    }
+    let (Some(base), Some(ours), Some(theirs), Some(result)) = (base, ours, theirs, result) else {
+        return Ok(false);
+    };
+    if !matches!(base.0.as_str(), "100644" | "100755")
+        || base.0 != ours.0
+        || base.0 != theirs.0
+        || base.0 != result.0
+    {
+        return Ok(false);
+    }
+    struct MergeFiles(Vec<std::path::PathBuf>);
+    impl Drop for MergeFiles {
+        fn drop(&mut self) {
+            for path in &self.0 {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    let mut files = MergeFiles(Vec::new());
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    for (index, entry) in [&ours, &base, &theirs].iter().enumerate() {
+        let blob = git_command(worktree, &["cat-file", "blob", &entry.1])?;
+        if !blob.status.success() {
+            bail!("TASK_MERGE_INVALID: file blob is unavailable");
+        }
+        let path = std::env::temp_dir().join(format!(
+            "forge-merge-{}-{nonce}-{index}",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path)?;
+        files.0.push(path);
+        std::io::Write::write_all(&mut file, &blob.stdout)?;
+    }
+    let paths = files
+        .0
+        .iter()
+        .map(|path| {
+            path.to_str()
+                .ok_or_else(|| anyhow::anyhow!("TASK_MERGE_INVALID: temporary path is not UTF-8"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let merged = git_command(
+        worktree,
+        &["merge-file", "-p", "--", paths[0], paths[1], paths[2]],
+    )?;
+    if !merged.status.success() {
+        return Ok(false);
+    }
+    let expected = git_command(worktree, &["cat-file", "blob", &result.1])?;
+    if !expected.status.success() {
+        bail!("TASK_MERGE_INVALID: result blob is unavailable");
+    }
+    Ok(merged.stdout == expected.stdout)
+}

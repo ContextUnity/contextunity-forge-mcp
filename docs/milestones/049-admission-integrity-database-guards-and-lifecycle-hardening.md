@@ -539,28 +539,79 @@ receipt:
 
 ```yaml
 task_ref: upstream-aware-handoff-provenance-and-safe-diagnostics
-target: "Explain later scope changes using reviewed upstream deliveries reachable through Git ancestry, and avoid destructive checkout guidance"
+target: Explain later scope changes using reviewed upstream deliveries reachable through Git ancestry, and avoid destructive checkout guidance
 proof_policy: seam-test-first
 contract_revision: 1
 invariants:
-  - 'INV-UPSTREAM-HANDOFF-PROVENANCE: In handoff verification, validate_later_scope_changes must explain changed files either by local reviewed deliveries or reviewed upstream deliveries reachable through merge history; a reproducible three-way combination (git merge-file) of reviewed local and upstream inputs is accepted without failing handoff.'
-  - 'INV-SAFE-REMEDIATION-GUIDANCE: Handoff diagnostics must never suggest unconditional git checkout or history destruction when differences are explained by valid integration branches.'
+- 'INV-UPSTREAM-HANDOFF-PROVENANCE: In handoff verification, validate_later_scope_changes must explain changed files either by local reviewed deliveries or reviewed upstream deliveries reachable through merge history; a reproducible three-way combination (git merge-file) of reviewed local and upstream inputs is accepted without failing handoff.'
+- 'INV-SAFE-REMEDIATION-GUIDANCE: Handoff diagnostics must never suggest unconditional git checkout or history destruction when differences are explained by valid integration branches.'
 scope:
-  - src/engine/milestones/handoff.rs
-  - src/core/git.rs
-  - tests/acdd/milestones.rs
-  - docs/reference/tasks.md
-status: ready
+- src/engine/milestones/handoff.rs
+- src/core/git.rs
+- tests/acdd/milestones.rs
+- docs/reference/tasks.md
+status: completed
 subtasks:
-  - subtask_ref: upstream-delivery-provenance-resolution
-    title: "Traverse merge ancestry in validate_later_scope_changes to discover reviewed upstream deliveries explaining post-task file changes"
-    status: pending
-  - subtask_ref: three-way-clean-combination-acceptance
-    title: "Verify clean three-way combinations of local and upstream reviewed changes using reproducible merge-base reconstruction"
-    status: pending
-  - subtask_ref: non-destructive-handoff-diagnostics
-    title: "Replace unconditional git checkout suggestions with actionable branch-reconciliation diagnostics"
-    status: pending
+- subtask_ref: upstream-delivery-provenance-resolution
+  title: Traverse merge ancestry in validate_later_scope_changes to discover reviewed upstream deliveries explaining post-task file changes
+  status: completed
+  evidence: 'Strict Clippy all targets/all features; cargo test --lib:89 passed; cargo test --test acdd:109 passed. Real-Git integration table covers reviewed upstream-only, clean local+upstream combination, archived upstream, corrupted review, unreviewed/unreachable/dirty/post-merge/conflicting changes; native diagnostic seam verifies user files unchanged and safe reconciliation guidance. Logs: /tmp/forge-049-implementation-20261019/task7-build-gate-{0,1,2}.log.'
+- subtask_ref: three-way-clean-combination-acceptance
+  title: Verify clean three-way combinations of local and upstream reviewed changes using reproducible merge-base reconstruction
+  status: completed
+  evidence: 'Strict Clippy all targets/all features; cargo test --lib:89 passed; cargo test --test acdd:109 passed. Real-Git integration table covers reviewed upstream-only, clean local+upstream combination, archived upstream, corrupted review, unreviewed/unreachable/dirty/post-merge/conflicting changes; native diagnostic seam verifies user files unchanged and safe reconciliation guidance. Logs: /tmp/forge-049-implementation-20261019/task7-build-gate-{0,1,2}.log.'
+- subtask_ref: non-destructive-handoff-diagnostics
+  title: Replace unconditional git checkout suggestions with actionable branch-reconciliation diagnostics
+  status: completed
+  evidence: 'Strict Clippy all targets/all features; cargo test --lib:89 passed; cargo test --test acdd:109 passed. Real-Git integration table covers reviewed upstream-only, clean local+upstream combination, archived upstream, corrupted review, unreviewed/unreachable/dirty/post-merge/conflicting changes; native diagnostic seam verifies user files unchanged and safe reconciliation guidance. Logs: /tmp/forge-049-implementation-20261019/task7-build-gate-{0,1,2}.log.'
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-19T20:35:15.997262311+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 198
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'Read all four admitted diffs: handoff.rs, core/git.rs, tests/acdd/milestones.rs, docs/reference/tasks.md. Exact byte comparison to frozen bf5d669 passed for all four; H/task7-review-binding.json. No other source modifications or reviewer source/docs/manifest edits. Other task definitions, including T8, hashed for post-delivery preservation.'
+        claims:
+          applicable: true
+          evidence: Review confirms fallback accepts reviewed incoming ancestry only when receipt pointer is newly introduced through the incoming parent and file equals that accepted delivery. Existing durable receipt/profile/accepted gate provenance and independent review validation are reused. Local input equals a landed reviewed file or earlier verified merge. A unique merge base and exact clean git merge-file bytes/mode must reproduce committed result; unsupported/conflicted cases fail closed. Native safe diagnostic seam has indexed direct edge to task_landed_commit generationeb8d36b2. Full public-handoff integration table covers upstream-only, combination, archive accept; corrupt review, unreviewed, dirty incoming, unreachable receipt, post-merge edit and conflict rejection. Strict Clippy0, full lib89/0+ACDD109/0=198, zero ignored/filtered; current logs and command proof retained.
+        concurrency:
+          applicable: true
+          evidence: Git provenance compares immutable commit objects. Accepted upstream provenance cache exists only within one handoff, not across requests. New merge reconstruction reads blobs and writes only exclusively created private temporary files (Unix0600) with RAII cleanup; no checkout/index mutation. Rejection occurs before existing archive/SQLite publication; negative real-Git scenarios preserve manifest, task descriptors, Git status and archive absence. No MCP/indexing hot-path changes.
+        project_isolation:
+          applicable: true
+          evidence: Core git helper uses explicit worktree and literal file pathspec, reads exact committed file entries including modes, and compares result bytes. Upstream candidates come from same configured project store outside current milestone; ownership scope must cover the path, commit must be reachable from incoming and not local parent, accepted review/candidate/baseline/pointer validation all remain required. Tests create isolated real repositories/stores and exercise archived upstream identity. Unreachable identical bytes and unreviewed incoming edits reject.
+        administration:
+          applicable: true
+          evidence: Same independent codex-049-reviewer differs from codex-049-builder, reviewclaim4/contract1. Required strict Clippy and unfiltered full affected lib/ACDD targets independently run,198 passes. No manual commit/receipt edits, benchmarks, main integration or handoff invocation outside test fixtures. Safe remediation text removes unconditional checkout and requires preservation/reconciliation. User-accepted performance disposition447 is unchanged. Automatic Forge delivery only; T8 definition preserved.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ADMISSION-DETERMINISM: Dependency manifest collection across cold build, incremental delta, and MCP source admission must yield identical path sets and digests for unchanged workspace state, eliminating false-positive rebuild loops.'
+    - 'INV-DATABASE-SEPARATION: Task tracking databases (tasks.sqlite) and code map indices (code-map.sqlite) are mutually exclusive; attempts to target a task database for code-map output or open a code-map database as task store fail closed with TASK_DATABASE_COLLISION.'
+    - 'INV-WORKSPACE-UNIQUENESS: Subproject milestone resolution honors declared_projects frontmatter and configured owner mappings, preventing duplicate phantom workspaces from conflicting on milestone references.'
+    - 'INV-DAEMON-RESOURCE-BOUND: MCP servers preserve live connections regardless of inactivity, terminate on Unix when their launching parent disappears, and trim free heap pages after batch operations without removing the allocator trims delivered in milestone 031.'
+    - 'INV-GREENFIELD-SEAM-ACTIONABILITY: Greenfield contract validation failure for uncreated scope files outputs deterministic remediation guidance with file paths and stub requirements.'
+    - 'INV-PERFORMANCE-PRESERVATION: Preserve the indexing optimizations delivered on main; paired release measurements on an identical frozen corpus must show no cold-build, delta, or warm MCP latency regression before milestone delivery.'
+    - 'INV-UPSTREAM-HANDOFF-PROVENANCE: In handoff verification, validate_later_scope_changes must explain changed files either by local reviewed deliveries or reviewed upstream deliveries reachable through merge history; a reproducible three-way combination (git merge-file) of reviewed local and upstream inputs is accepted without failing handoff.'
+    - 'INV-SAFE-REMEDIATION-GUIDANCE: Handoff diagnostics must never suggest unconditional git checkout or history destruction when differences are explained by valid integration branches.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: build-gate-deletion-scope-and-file-retirement

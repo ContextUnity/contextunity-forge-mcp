@@ -113,6 +113,162 @@ fn complete_task_through_engine(root: &ScopedWorkspace, store: &TasksStore, task
 }
 
 #[test]
+fn handoff_recognizes_reviewed_upstream_merge_provenance() {
+    for scenario in [
+        "upstream-only",
+        "combined",
+        "archived-upstream",
+        "corrupt-review",
+        "unreviewed",
+        "dirty-upstream",
+        "unreachable",
+        "post-merge",
+        "conflict",
+    ] {
+        let root = ScopedWorkspace::new("forge_upstream_handoff");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root.0)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{scenario}: {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        root.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        );
+        let source = |id: &str| {
+            format!("---\nid: m-{id}\ntitle: {id}\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# {id}\n```yaml\ntask_ref: change\ntarget: Review source changes\nproof_policy: seam-test-first\nscope: [src/shared.rs, src/local.rs]\n```\n")
+        };
+        let local_ref = "docs/milestones/010-local.md";
+        let upstream_ref = "docs/milestones/011-upstream.md";
+        let local = source("local");
+        let upstream = source("upstream");
+        root.write(local_ref, &local);
+        root.write(upstream_ref, &upstream);
+        let base = (0..24)
+            .map(|i| format!("pub fn f{i}() -> u8 {{ 0 }}\n"))
+            .collect::<String>();
+        root.write("src/shared.rs", &base);
+        root.write("src/local.rs", "pub fn local() -> u8 { 0 }\n");
+        git(&["add", "forge-mcp.yaml", "docs", "src"]);
+        git(&["commit", "-m", "admit milestones"]);
+        let baseline = git_head(&root.0);
+        let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+        let local_spec = Milestone::parse(&local, "forge-mcp").unwrap();
+        let upstream_spec = Milestone::parse(&upstream, "forge-mcp").unwrap();
+        store.sync(&local_spec, local_ref, &root.0).unwrap();
+        store.sync(&upstream_spec, upstream_ref, &root.0).unwrap();
+        git(&["checkout", "-b", "local"]);
+        root.write("src/local.rs", "pub fn local() -> u8 { 1 }\n");
+        if matches!(scenario, "combined" | "conflict") {
+            root.write("src/shared.rs", &base.replacen("{ 0 }", "{ 1 }", 1));
+        }
+        complete_task_through_engine(&root, &store, &local_spec.task_id(&local_spec.tasks[0]));
+        git(&["checkout", "-b", "upstream", &baseline]);
+        let upstream_text = if scenario == "conflict" {
+            base.replacen("{ 0 }", "{ 2 }", 1)
+        } else {
+            base.replace("f23() -> u8 { 0 }", "f23() -> u8 { 2 }")
+        };
+        root.write("src/shared.rs", &upstream_text);
+        if scenario == "unreviewed" {
+            git(&["add", "src/shared.rs"]);
+            git(&["commit", "-m", "unreviewed change"]);
+        } else {
+            complete_task_through_engine(
+                &root,
+                &store,
+                &upstream_spec.task_id(&upstream_spec.tasks[0]),
+            );
+        }
+        if scenario == "dirty-upstream" {
+            root.write("src/shared.rs", &format!("{upstream_text}// unreviewed\n"));
+            git(&["add", "src/shared.rs"]);
+            git(&["commit", "-m", "extra unreviewed change"]);
+        }
+        if scenario == "archived-upstream" {
+            milestone_engine::handoff(&root.0, "m-upstream", None, "cargo test", 1, 0).unwrap();
+            git(&["add", "docs"]);
+            git(&["commit", "-m", "archive upstream milestone"]);
+        }
+        if scenario == "corrupt-review" {
+            assert_eq!(store.connection.execute(
+                "UPDATE task_gates SET evidence=json_set(evidence, '$.worker_id', 'builder') WHERE task_id=?1 AND gate='review' AND state='passed'",
+                [upstream_spec.task_id(&upstream_spec.tasks[0])],
+            ).unwrap(), 1);
+        }
+        if scenario == "unreachable" {
+            git(&["checkout", "-b", "unrelated", &baseline]);
+            root.write("src/shared.rs", &upstream_text);
+            git(&["add", "src/shared.rs"]);
+            git(&["commit", "-m", "identical but unrelated change"]);
+        }
+        git(&["checkout", "local"]);
+        let branch = if scenario == "unreachable" {
+            "unrelated"
+        } else {
+            "upstream"
+        };
+        if scenario == "conflict" {
+            let output = std::process::Command::new("git")
+                .args(["merge", "--no-ff", branch, "-m", "merge upstream"])
+                .current_dir(&root.0)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            root.write("src/shared.rs", &base.replacen("{ 0 }", "{ 9 }", 1));
+            git(&["add", "src/shared.rs"]);
+            git(&["commit", "-m", "manual conflict resolution"]);
+        } else {
+            git(&["merge", "--no-ff", branch, "-m", "merge upstream"]);
+        }
+        if scenario == "post-merge" {
+            root.write("src/shared.rs", &format!("{upstream_text}// post merge\n"));
+            git(&["add", "src/shared.rs"]);
+            git(&["commit", "-m", "unreviewed final edit"]);
+        }
+        let before = std::fs::read(root.0.join(local_ref)).unwrap();
+        let before_store = serde_json::to_value(store.list(None, "all", None).unwrap()).unwrap();
+        let before_status = git(&["status", "--porcelain"]);
+        let result = milestone_engine::handoff(&root.0, "m-local", None, "cargo test", 1, 0);
+        if matches!(scenario, "upstream-only" | "combined" | "archived-upstream") {
+            assert!(result.is_ok(), "{scenario}: {result:?}");
+            assert!(root.0.join("docs/milestones/archive/010-local.md").exists());
+            let final_text = std::fs::read_to_string(root.0.join("src/shared.rs")).unwrap();
+            assert!(final_text.contains("f23() -> u8 { 2 }"));
+            if scenario == "combined" {
+                assert!(final_text.contains("f0() -> u8 { 1 }"));
+            }
+        } else {
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains(if scenario == "corrupt-review" {
+                    "TASK_RECEIPT_INVALID"
+                } else {
+                    "TASK_LANDED_COMMIT_NOT_FOUND"
+                }),
+                "{scenario}: {error}"
+            );
+            assert!(!error.contains("git checkout"), "{error}");
+            assert_eq!(std::fs::read(root.0.join(local_ref)).unwrap(), before);
+            assert_eq!(
+                serde_json::to_value(store.list(None, "all", None).unwrap()).unwrap(),
+                before_store
+            );
+            assert_eq!(git(&["status", "--porcelain"]), before_status);
+            assert!(!root.0.join("docs/milestones/archive/010-local.md").exists());
+        }
+    }
+}
+
+#[test]
 fn handoff_validates_reviewed_shared_scope_and_repacked_landings_atomically() {
     #[derive(Clone, Copy, Debug)]
     enum Scenario {
@@ -4504,7 +4660,8 @@ scope:
         msg.contains("Differing paths in task scope:\n  - src/lib.rs"),
         "{msg}"
     );
-    assert!(msg.contains("git checkout"), "{msg}");
+    assert!(!msg.contains("git checkout"), "{msg}");
+    assert!(msg.contains("reconcile"), "{msg}");
     assert!(msg.contains("src/lib.rs"), "{msg}");
 }
 

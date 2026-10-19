@@ -387,19 +387,21 @@ fn task_landed_commit(
             differing.join("\n  - ")
         )
     };
-    let restore_cmd = if differing.is_empty() {
-        format!("git checkout {delivery} -- <paths>")
-    } else {
-        format!("git checkout {delivery} -- {}", differing.join(" "))
-    };
     bail!(
         "TASK_LANDED_COMMIT_NOT_FOUND: task '{task_ref}'. No first-parent commit after baseline '{candidate_baseline_head}' lands the accepted delivery tree '{delivery}'.{detail}\n\
-         Do: merge a scope-equivalent task delivery after the accepted baseline.\n\
-         To restore scoped files from delivery, run: {restore_cmd}"
+         Do: reconcile the branch with the reviewed task delivery after the accepted baseline; preserve integrated upstream changes and review any conflict resolution."
     )
 }
 
-fn validate_later_scope_changes(root: &Path, handoff: &str, tasks: &[LandedTask]) -> Result<()> {
+fn validate_later_scope_changes(
+    root: &Path,
+    handoff: &str,
+    tasks: &[LandedTask],
+    store: &TasksStore,
+    upstream: &[&crate::db::tasks_store::Task],
+    history: &[Vec<String>],
+) -> Result<()> {
+    let mut validated_upstream = BTreeMap::new();
     for earlier in tasks {
         let differing = crate::core::git::git_scoped_differing_files(
             root,
@@ -422,17 +424,113 @@ fn validate_later_scope_changes(root: &Path, handoff: &str, tasks: &[LandedTask]
                 }
             }
             if !explained {
+                let mut trusted_merges: Vec<String> = Vec::new();
+                for (index, parents) in history.iter().enumerate().skip(earlier.landing_index + 1) {
+                    if parents.len() != 3 {
+                        continue;
+                    }
+                    let (merge, ours, theirs) = (&parents[0], &parents[1], &parents[2]);
+                    let scope = std::slice::from_ref(&path);
+                    let mut trusted_local = false;
+                    for local in tasks.iter().filter(|task| {
+                        task.landing_index < index
+                            && task.scope.iter().any(|entry| {
+                                crate::core::tasks::path_matches_scope_entry(&path, entry)
+                            })
+                    }) {
+                        if !git_changed(root, &local.delivery, ours, scope)? {
+                            trusted_local = true;
+                            break;
+                        }
+                    }
+                    for previous in &trusted_merges {
+                        if !git_changed(root, previous, ours, scope)? {
+                            trusted_local = true;
+                            break;
+                        }
+                    }
+                    if !trusted_local {
+                        continue;
+                    }
+                    for task in upstream.iter().filter(|task| {
+                        task.spec
+                            .scope
+                            .iter()
+                            .any(|entry| crate::core::tasks::path_matches_scope_entry(&path, entry))
+                    }) {
+                        let Some(receipt) = task.receipt.as_ref() else {
+                            continue;
+                        };
+                        let Some(pointer) = receipt.commit.as_deref() else {
+                            continue;
+                        };
+                        if !git_ancestor(root, pointer, theirs)?
+                            || git_ancestor(root, pointer, ours)?
+                            || git_changed(root, pointer, theirs, scope)?
+                        {
+                            continue;
+                        }
+                        let accepted = if let Some(accepted) = validated_upstream.get(&task.task_id)
+                        {
+                            accepted
+                        } else {
+                            let profile = store.profile_for_task(task)?;
+                            crate::core::tasks::gates::validate_durable_receipt_with_profile(
+                                receipt,
+                                task.contract_revision,
+                                &profile,
+                            )?;
+                            let (accepted, baseline) = validate_task_provenance(
+                                root,
+                                store,
+                                TaskProvenance {
+                                    task_id: &task.task_id,
+                                    contract_revision: task.contract_revision,
+                                    proof_policy: &task.spec.proof_policy,
+                                    profile: &profile,
+                                    receipt,
+                                    milestone_path: &task.milestone_ref,
+                                    scope: &task.spec.scope,
+                                },
+                            )?;
+                            validate_delivery_pointer(
+                                root,
+                                pointer,
+                                &accepted,
+                                &baseline,
+                                &task.spec.scope,
+                                &task.milestone_ref,
+                            )?;
+                            validated_upstream
+                                .entry(task.task_id.clone())
+                                .or_insert(accepted)
+                        };
+                        if !git_changed(root, accepted, theirs, scope)?
+                            && crate::core::git::git_clean_file_merge_matches(
+                                root, ours, theirs, merge, &path,
+                            )?
+                        {
+                            trusted_merges.push(merge.clone());
+                            break;
+                        }
+                    }
+                }
+                for merge in trusted_merges {
+                    if !git_changed(root, &merge, handoff, std::slice::from_ref(&path))? {
+                        explained = true;
+                        break;
+                    }
+                }
+            }
+            if !explained {
                 bail!(
                     "TASK_LANDED_COMMIT_NOT_FOUND: task '{}' path '{}' differs from its accepted delivery, and no later reviewed delivery explains the final tree.\n\
                      Differing paths in task scope:\n  - {}\n\
-                     Do: merge a scope-equivalent reviewed delivery for task '{}'.\n\
-                     To restore the scoped file from the accepted delivery, run: git checkout {} -- {}",
+                     Do: reconcile the branch with a reviewed delivery for task '{}' or a reviewed upstream merge; preserve integrated changes and review any conflict resolution.",
                     earlier.task_ref,
                     path,
                     path,
                     earlier.task_ref,
-                    earlier.delivery,
-                    path,
                 );
             }
         }
@@ -520,14 +618,24 @@ pub fn handoff(
         .unwrap_or(true);
     let mut original_receipts = BTreeMap::new();
     let mut landed_receipts = BTreeMap::new();
-    let history_output =
-        crate::core::git::git_command(root, &["rev-list", "--first-parent", "--reverse", &sha])?;
+    let history_output = crate::core::git::git_command(
+        root,
+        &["rev-list", "--first-parent", "--reverse", "--parents", &sha],
+    )?;
     if !history_output.status.success() {
         bail!("unable to inspect milestone first-parent history");
     }
-    let first_parent = String::from_utf8(history_output.stdout)?
+    let history = String::from_utf8(history_output.stdout)?
         .lines()
-        .map(str::to_owned)
+        .map(|line| {
+            line.split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let first_parent = history
+        .iter()
+        .map(|parents| parents[0].clone())
         .collect::<Vec<_>>();
     let milestone_rel = item
         .path
@@ -639,7 +747,11 @@ pub fn handoff(
         original_receipts.insert(task.task_id.clone(), original.clone());
         landed_receipts.insert(task.task_id.clone(), landed);
     }
-    validate_later_scope_changes(root, &sha, &landed_tasks)?;
+    let upstream = stored
+        .iter()
+        .filter(|task| !task.task_id.starts_with(&prefix) && task.status == "completed")
+        .collect::<Vec<_>>();
+    validate_later_scope_changes(root, &sha, &landed_tasks, &store, &upstream, &history)?;
     let started = match item.frontmatter["started_at"].as_str() {
         Some(value) => chrono::DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc),
         None => Utc
@@ -742,6 +854,56 @@ fn prune_snapshot_refs(root: &Path, prefix: &str) {
             }
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn missing_landing_diagnostic_preserves_user_work() {
+    let root = std::env::temp_dir().join(format!(
+        "forge-safe-handoff-{}-{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let git = |args: &[&str]| {
+        let output = crate::core::git::git_command(&root, args).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "--quiet"]);
+    git(&["config", "user.name", "ACDD test"]);
+    git(&["config", "user.email", "acdd-test@example.invalid"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    fs::write(root.join("source.rs"), "baseline\n").unwrap();
+    git(&["add", "source.rs"]);
+    git(&["commit", "-m", "baseline"]);
+    let baseline = git(&["rev-parse", "HEAD"]);
+    fs::write(root.join("source.rs"), "reviewed\n").unwrap();
+    git(&["commit", "-am", "reviewed"]);
+    let delivery = git(&["rev-parse", "HEAD"]);
+    git(&["checkout", "-b", "different", &baseline]);
+    fs::write(root.join("source.rs"), "user work\n").unwrap();
+    git(&["commit", "-am", "different"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    let before = fs::read(root.join("source.rs")).unwrap();
+    let error = task_landed_commit(
+        &root,
+        &[baseline.clone(), head],
+        &delivery,
+        &baseline,
+        &["source.rs".into()],
+        "change",
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(fs::read(root.join("source.rs")).unwrap(), before);
+    fs::remove_dir_all(root).unwrap();
+    assert!(!error.contains("git checkout"), "{error}");
+    assert!(error.contains("reconcile"), "{error}");
 }
 
 #[cfg(test)]

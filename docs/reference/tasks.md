@@ -497,6 +497,17 @@ the document to the selected directory's `archive/`, and updates the stored
 `milestone_ref` of its tasks. The subsequent milestone archive commit occurs after handoff and is excluded from `receipt.commit`, avoiding any hash cycle. When creating the handoff commit, stage both the newly archived document in `archive/` and the removal of the pre-archive working document in `docs/milestones/`; ensure any untracked or stale pre-archive working copies remaining in the repository or main worktree are unlinked so that landing into `main` encounters no duplicate or untracked files. Follow root [AGENTS.md](../../AGENTS.md#worktrees-and-git-permissions) and [TESTS.md](../../TESTS.md#milestone-handoff-gate) for the final
 verification gate, handoff, and archiving.
 
+For paths changed after task delivery, handoff accepts a later reviewed local
+delivery or a reviewed upstream delivery introduced by a two-parent merge. The
+upstream receipt and accepted gate evidence must validate, and its delivery must
+be reachable from the incoming parent and newly introduced by the merge. The
+local input must match a landed reviewed delivery or an already verified merge.
+Handoff reconstructs the file from a unique merge base; clean content merges
+retain the committed file mode. Unreviewed edits, unreachable receipts, manual
+conflict resolutions, and unsupported merge shapes require a reviewed delivery.
+On failure, reconcile the branch while preserving integrated changes; inspect
+the differing paths and review the resolution before retrying handoff.
+
 ### Deferred and out-of-scope defects
 
 Milestone documents maintain a typed block for out-of-scope defects, uncovered edge cases, or deferred review findings directly below the tasks:
