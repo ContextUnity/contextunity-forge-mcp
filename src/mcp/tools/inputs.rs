@@ -315,8 +315,8 @@ pub struct Analyze {
 pub struct Ast {
     /// The pattern value.
     pub pattern: String,
-    /// The language value.
-    pub language: String,
+    /// The language value (e.g. 'python', 'rust', 'typescript'). Optional if 'path' has a recognized file extension.
+    pub language: Option<String>,
     /// Optional path value.
     pub path: Option<String>,
     #[serde(flatten)]

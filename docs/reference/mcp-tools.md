@@ -76,6 +76,8 @@ Code source previews from `code_map_search` appear automatically when the total 
 
 ## AST pattern capabilities
 
+`ast_grep_search.language` accepts a compiled profile ID such as `python`, `rust`, or `typescript`. Omit it when `path` names a file with a recognized extension: `{"pattern":"class Widget","path":"src/example.py"}` infers Python. An explicit language takes precedence; directory scopes require an explicit language. A null or empty language also requests inference. When inference fails, the tool returns the compiled language list and usage examples.
+
 Call `forge_guide` with `topic:"ast"` for the profile matrix and syntax examples. Profiles declare these independent capabilities:
 
 | Capability | Behavior |
@@ -85,7 +87,9 @@ Call `forge_guide` with `topic:"ast"` for the profile matrix and syntax examples
 | `fragment_probe` | Wraps root-rejected expressions, calls, macros, or assignments in a profile-provided probe container and unwraps the target syntax node. |
 | `attribute` | Matches declared decorators or annotations layered over declarations. |
 
-The registered matrix is: Rust supports all four capabilities; Python and TypeScript/JavaScript support `complete_syntax`, `declaration_without_body`, and `attribute`; HTML and Vue support `complete_syntax`. `$NAME` captures one syntax node. `$$$SEQ` captures a sequence of zero or more syntax nodes. Unsupported fragments and invalid syntax return a structured diagnostic with the profile language, error span, hint, and valid examples.
+The registered matrix is: Rust supports all four capabilities; Python and TypeScript/JavaScript support `complete_syntax`, `declaration_without_body`, and `attribute`; HTML and Vue support `complete_syntax`. `$NAME` captures one syntax node. `$$$SEQ` captures a sequence of zero or more syntax nodes. Python declaration patterns accept `class Widget`, `class Widget:`, `def target($$$)`, and `def target($$$):`. Rust accepts a parameterless function header such as `fn target`, completed as an empty parameter list with a wildcard body.
+
+Unsupported fragments and invalid syntax produce an MCP tool error with the diagnostic code, profile language, one-based line and column range, repair hint, and indented valid examples. The error text presents these fields directly without appending a raw JSON dump.
 
 ## SQL and checkpoints
 

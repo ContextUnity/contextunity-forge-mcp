@@ -138,30 +138,82 @@ receipt:
 
 ```yaml
 task_ref: ast-grep-language-inference-and-actionable-diagnostics
-target: "Infer AST language from file path, format actionable diagnostic errors, and support colonless Python and parameterless Rust declarations"
+target: Infer AST language from file path, format actionable diagnostic errors, and support colonless Python and parameterless Rust declarations
 proof_policy: seam-test-first
 contract_revision: 3
 depends_on:
-  - symbol-boundary-recovery-and-preview-resilience
+- symbol-boundary-recovery-and-preview-resilience
 scope:
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - src/engine/languages/python.rs
-  - src/engine/languages/rust.rs
-  - docs/reference/mcp-tools.md
-  - tests/languages/ast_patterns.rs
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
-status: planned
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- src/engine/languages/python.rs
+- src/engine/languages/rust.rs
+- docs/reference/mcp-tools.md
+- tests/languages/ast_patterns.rs
+- tests/mcp/tool_evolution/mcp_boundaries.rs
+status: completed
 subtasks:
-  - subtask_ref: language-inference-and-missing-hint
-    title: "Make language optional in Ast input, infer from path extension, and return compiled language list on failure"
-    status: pending
-  - subtask_ref: actionable-diagnostic-formatting
-    title: "Format AST syntax error diagnostics into readable messages with hints and valid pattern examples"
-    status: pending
-  - subtask_ref: colonless-python-and-rust-bodyless-declarations
-    title: "Add colon prefix to Python declaration completions and parameterless () { __forge_meta_body(); } completion to Rust declarations"
-    status: pending
+- subtask_ref: language-inference-and-missing-hint
+  title: Make language optional in Ast input, infer from path extension, and return compiled language list on failure
+  status: completed
+  evidence: 'cargo test --test mcp: 80 passed, 0 failed. ast_language_inference_and_actionable_diagnostics verifies omitted/null/empty language inference from .py/.rs, explicit-language workspace search, and compiled-profile guidance for missing/empty/unrecognized paths.'
+- subtask_ref: actionable-diagnostic-formatting
+  title: Format AST syntax error diagnostics into readable messages with hints and valid pattern examples
+  status: completed
+  evidence: 'cargo test --test mcp: 80 passed, 0 failed. Contract test verifies diagnostic code, one-based location, hint, each profile''s indented valid examples, and absence of raw diagnostic JSON for Python and Rust.'
+- subtask_ref: colonless-python-and-rust-bodyless-declarations
+  title: Add colon prefix to Python declaration completions and parameterless () { __forge_meta_body(); } completion to Rust declarations
+  status: completed
+  evidence: 'cargo test --lib: 66 passed; cargo test --test languages: 259 passed; cargo test --test mcp: 80 passed; 0 failed. Rust in-module seam failed before implementation with exit 101 and passes now; profile and MCP seams cover colonless Python class/functions including $$$ and Rust fn target.'
+receipt:
+  contract_revision: 3
+  passed_at: 2026-10-19T02:25:08.589329746+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib && cargo test --test languages && cargo test --test mcp
+      exit_code: 0
+      tests_passed: 405
+      tests_failed: 0
+      log: 'Strict Clippy exit 0. Complete targets: --lib 66 passed, --test languages 259 passed, --test mcp 80 passed; zero failed/ignored. Focused unit/language/MCP contract chain also passed (3 tests). Baseline in-module Rust seam observed exit 101. git diff --check passed.'
+  review:
+    review_proof:
+      contours:
+        administration:
+          applicable: true
+          evidence: Candidate 2cbc625 cleanly isolates the admitted files against baseline c9d0ffd; candidate snapshot is immutable and verifiable.
+        claims:
+          applicable: true
+          evidence: INV-AST-LANGUAGE-INFERENCE, INV-AST-ACTIONABLE-DIAGNOSTICS, INV-BODYLESS-DECLARATION-PATTERNS fully proven by in-module seam test src/engine/languages/rust.rs::test_ast_parameterless_declaration, 259 language tests, and 80 MCP tests. Strict Clippy clean.
+        concurrency:
+          applicable: true
+          evidence: AST inference and search operations are stateless and thread-safe; error formatting does not mutate shared state.
+        paths:
+          applicable: true
+          evidence: Candidate touches strictly the admitted scope of 7 files; uncontracted drafts remain excluded.
+        project_isolation:
+          applicable: true
+          evidence: Path inference is scoped to workspace file extensions and recognized profiles; no traversal or unverified filesystem operations.
+      decision: pass
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SEARCH-PREVIEW-RESILIENCE: Source preview failures for an individual hit (unresolved AST boundary, stale file, or digest mismatch) must never fail code_map_search; matching symbol records, file paths, line numbers, and inspect_selector hints must always be returned.'
+    - 'INV-SYMBOL-WITH-SOURCE: Tree-sitter symbol boundary recovery in symbol_range must invoke profile.symbol_with_source(syntax, text) and fall back to verified indexed line..=end_line bounds for field: and template/relational nodes so code_map_inspect, code_map_explain, and get_code_snippet do not fail with unavailable boundaries.'
+    - 'INV-AST-LANGUAGE-INFERENCE: When the language parameter is omitted in ast_grep_search, the engine must infer it from the file extension of path; if path is missing or lacks a recognized extension, it must return an informative error listing all compiled languages and usage examples.'
+    - 'INV-AST-ACTIONABLE-DIAGNOSTICS: AST pattern search syntax errors must return structured, actionable diagnostics with actionable hints and concrete language-specific pattern examples rather than raw JSON serialization dumps.'
+    - 'INV-BODYLESS-DECLARATION-PATTERNS: AST pattern normalization and completion must support bodyless Python class/function declarations without trailing colons (class Foo, def bar($$$)) and Rust function header patterns without parameter lists (fn foo).'
+    - 'INV-AST-PREFILTER-SOUNDNESS: Pattern symbol candidate prefiltering in cli::ast::search_paged must fall back to all candidate files of the language if the declaration identifier is not found in the indexed top-level nodes table, preventing false negatives for local/nested constructs.'
+    - 'INV-ERGONOMIC-PARAMETER-TOLERANCE: MCP and CLI entrypoints must normalize empty path strings, clamp or clearly guide out-of-range source preview line budgets, and support common parameter and subcommand aliases.'
+    - 'INV-TASK-MUTATION-RESPONSE-BUDGET: State-mutating task lifecycle calls (task_claim, task_manage next/sync) must bound their serialized payload below the 64 KiB MCP response limit and avoid write transactions when opening already-initialized SQLite task stores for read operations.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

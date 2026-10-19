@@ -68,6 +68,12 @@ fn ast_search_profile_capabilities_cover_complete_declaration_and_attribute_patt
             (
                 "rust",
                 "src/lib.rs",
+                "fn target() { call(value); }",
+                "fn target",
+            ),
+            (
+                "rust",
+                "src/lib.rs",
                 "struct Config { field: u32 }",
                 "struct Config",
             ),
@@ -113,7 +119,25 @@ fn ast_search_profile_capabilities_cover_complete_declaration_and_attribute_patt
                 "python",
                 "service.py",
                 "def target():\n    return value\nclass Widget:\n    pass\n",
+                "def target()",
+            ),
+            (
+                "python",
+                "service.py",
+                "def target(value):\n    return value\n",
+                "def target($$$)",
+            ),
+            (
+                "python",
+                "service.py",
+                "def target():\n    return value\nclass Widget:\n    pass\n",
                 "class Widget:",
+            ),
+            (
+                "python",
+                "service.py",
+                "def target():\n    return value\nclass Widget:\n    pass\n",
+                "class Widget",
             ),
             (
                 "python",

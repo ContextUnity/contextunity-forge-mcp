@@ -386,6 +386,85 @@ fn mcp_search_ast_and_document_boundaries() {
 }
 
 #[test]
+fn ast_language_inference_and_actionable_diagnostics() {
+    use contextunity_forge_mcp::engine::languages;
+    use serde_json::json;
+    let w = Workspace::new();
+    w.write(
+        "app.py",
+        "class Widget:\n    pass\ndef target(value):\n    return value\n",
+    );
+    w.write("lib.rs", "fn target() {}\n");
+    w.build();
+    let mut m = Mcp::new(&w);
+    for (path, pattern) in [("app.py", "class Widget"), ("app.py", "def target($$$)")]
+        .into_iter()
+        .chain(cfg!(feature = "lang-rust").then_some(("lib.rs", "fn target")))
+    {
+        let result = m.ok("ast_grep_search", json!({"pattern":pattern,"path":path}));
+        assert_eq!(result["matches"]["total"], 1, "{pattern}: {result}");
+    }
+    // Explicit language supports a workspace scope without a file extension.
+    let explicit = m.ok(
+        "ast_grep_search",
+        json!({"pattern":"class Widget","language":"python"}),
+    );
+    assert_eq!(explicit["matches"]["total"], 1);
+    for language in [json!(null), json!("")] {
+        let inferred = m.ok(
+            "ast_grep_search",
+            json!({"pattern":"class Widget","language":language,"path":"app.py"}),
+        );
+        assert_eq!(inferred["matches"]["total"], 1);
+    }
+    for path in [None, Some(""), Some("src"), Some("unknown.xyz")] {
+        let (_, response) = m.call(
+            "ast_grep_search",
+            json!({"pattern":"class Widget","path":path}),
+        );
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let message = response["result"]["content"][0]["text"].as_str().unwrap();
+        for profile in languages::profiles() {
+            assert!(message.contains(profile.id()), "{message}");
+        }
+        assert!(
+            message.contains("language") && message.contains("path"),
+            "{message}"
+        );
+        assert!(message.contains("forge_guide"), "{message}");
+        assert!(message.contains("Examples:"), "{message}");
+    }
+    for language in ["python"]
+        .into_iter()
+        .chain(cfg!(feature = "lang-rust").then_some("rust"))
+    {
+        let (_, response) = m.call(
+            "ast_grep_search",
+            json!({"pattern":"def (","language":language}),
+        );
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let message = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(message.contains("unsupported_ast_pattern"), "{message}");
+        assert!(message.contains(" at 1:"), "{message}");
+        assert!(
+            message.contains("Hint:") && message.contains("Examples"),
+            "{message}"
+        );
+        for example in languages::require(language)
+            .unwrap()
+            .ast_search_capabilities()
+            .valid_examples
+        {
+            assert!(
+                message.contains(&example.replace('\n', "\n    ")),
+                "{message}"
+            );
+        }
+        assert!(!message.contains("\"diagnostic\":"), "{message}");
+    }
+}
+
+#[test]
 fn ast_grep_prefilter_preserves_matches_for_body_only_literals() {
     use serde_json::json;
     let w = Workspace::new();
