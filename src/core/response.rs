@@ -77,7 +77,14 @@ impl ResponsePolicy {
             (MIN_OUTPUT_BYTES..=MAX_OUTPUT_BYTES).contains(&self.max_output_bytes),
             "response.max_output_bytes must be 1024..=65536"
         );
-        SourceOptions::resolve(self, None, None, None, 0)?;
+        anyhow::ensure!(
+            self.source_context.leading_lines <= 20,
+            "source leading_lines must be 0..=20"
+        );
+        anyhow::ensure!(
+            (1..=100).contains(&self.source_context.max_body_lines),
+            "source max_body_lines must be 1..=100"
+        );
         Ok(())
     }
 }
@@ -158,9 +165,8 @@ impl SourceOptions {
         offset: usize,
     ) -> anyhow::Result<Self> {
         let defaults = &policy.source_context;
-        let leading_lines = leading_lines.unwrap_or(defaults.leading_lines);
-        let max_body_lines = max_body_lines.unwrap_or(defaults.max_body_lines);
-        anyhow::ensure!(leading_lines <= 20, "source leading_lines must be 0..=20");
+        let leading_lines = leading_lines.unwrap_or(defaults.leading_lines).min(20);
+        let max_body_lines = max_body_lines.unwrap_or(defaults.max_body_lines).min(100);
         anyhow::ensure!(
             (1..=100).contains(&max_body_lines),
             "source max_body_lines must be 1..=100"
@@ -176,4 +182,19 @@ impl SourceOptions {
             offset,
         })
     }
+}
+
+#[cfg(test)]
+#[test]
+fn source_preview_line_budgets_are_clamped() {
+    let options = SourceOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(true),
+        Some(30),
+        Some(150),
+        0,
+    )
+    .expect("oversized source budgets are accepted");
+    assert_eq!(options.leading_lines, 20);
+    assert_eq!(options.max_body_lines, 100);
 }

@@ -1,6 +1,200 @@
 use super::*;
 
 #[test]
+fn ergonomic_search_parameters_preserve_scope_and_paging() {
+    use serde_json::json;
+    let w = Workspace::new();
+    w.write("src/app.py", "def first(): pass\ndef second(): pass\n");
+    w.write("other.py", "def outside(): pass\n");
+    w.build();
+    let mut m = Mcp::new(&w);
+    let canonical = m.ok("code_map_search", json!({"pattern":"first"}));
+    for args in [
+        json!({"query":"first"}),
+        json!({"pattern":"first","path":""}),
+        json!({"query":"first","path":""}),
+    ] {
+        let result = m.ok("code_map_search", args);
+        assert_eq!(result["nodes"], canonical["nodes"]);
+    }
+    for args in [
+        json!({"pattern":"*","path":"src"}),
+        json!({"query":"*","path":"src/app.py"}),
+        json!({"pattern":"*","path":"src","exact":true}),
+    ] {
+        let scope = args["path"].as_str().unwrap().to_owned();
+        let result = m.ok("code_map_search", args);
+        let hits = result["nodes"]["items"].as_array().unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|hit| {
+            let path = hit["path"].as_str().unwrap();
+            path == scope || path.starts_with(&format!("{scope}/"))
+        }));
+        assert!(hits.iter().any(|hit| hit["name"] == "first"));
+        assert!(hits.iter().any(|hit| hit["name"] == "second"));
+    }
+    let all_functions = m.ok(
+        "code_map_search",
+        json!({"pattern":"*","kind":"function","path":""}),
+    );
+    assert_eq!(all_functions["nodes"]["total"], 3);
+    let first = m.ok(
+        "code_map_search",
+        json!({"pattern":"*","path":"src","kind":"function","limit":1}),
+    );
+    assert_eq!(first["nodes"]["total"], 2);
+    let next = m.ok("code_map_search", json!({"pattern":"*","path":"src","kind":"function","limit":1,"offset":first["nodes"]["next_offset"],"generation":first["nodes"]["generation"]}));
+    assert_eq!(next["nodes"]["total"], 2);
+    assert_ne!(
+        first["nodes"]["items"][0]["id"],
+        next["nodes"]["items"][0]["id"]
+    );
+    for args in [
+        json!({"pattern":"*"}),
+        json!({"query":"*","path":""}),
+        json!({"pattern":"*","kind":""}),
+        json!({"pattern":"***","path":"src"}),
+    ] {
+        m.err("code_map_search", args, "pattern must contain");
+    }
+    for path in ["../src", "/src", "src//app.py"] {
+        m.err(
+            "code_map_search",
+            json!({"pattern":"*","path":path}),
+            "workspace-relative",
+        );
+    }
+}
+
+#[test]
+fn ergonomic_source_budgets_are_clamped_at_mcp_boundary() {
+    use serde_json::json;
+    let w = Workspace::new();
+    let source = format!(
+        "{}def preview():\n{}",
+        "# context\n".repeat(30),
+        "    value = 1\n".repeat(150)
+    );
+    w.write("app.py", &source);
+    w.build();
+    let mut m = Mcp::new(&w);
+    for tool in ["code_map_inspect", "code_map_explain", "get_code_snippet"] {
+        let clamped = m.ok(tool, json!({"selector":"app.py:preview","show_source":true,"leading_lines":30,"max_body_lines":150}));
+        let bounded = m.ok(tool, json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":100}));
+        assert_eq!(clamped["source"], bounded["source"], "{tool}");
+        assert_eq!(
+            clamped["source_preview"], bounded["source_preview"],
+            "{tool}"
+        );
+        assert_eq!(clamped["source_preview"]["body_lines"], 100);
+        assert_eq!(clamped["source_preview"]["leading_lines"], 20);
+        assert_eq!(clamped["source_preview"]["has_more"], true);
+        m.err(
+            tool,
+            json!({"selector":"app.py:preview","max_body_lines":0}),
+            "max_body_lines",
+        );
+    }
+}
+
+#[test]
+fn ergonomic_task_aliases_reach_existing_operations() {
+    use serde_json::json;
+    let w = Workspace::new();
+    w.write(
+        "forge-mcp.yaml",
+        "roots: [.]\ndocs: [docs]\nmilestones: [docs/milestones]\n",
+    );
+    w.write("app.py", "def first(): pass\n");
+    w.write("docs/milestones/010-aliases.md", "---\nid: m-aliases\ntitle: Parameter aliases\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: aliases\ntarget: Accept parameter aliases\nproof_policy: seam-test-first\nscope: [app.py]\nsubtasks:\n  - subtask_ref: parameters\n    title: Accept alternate parameter names\n```\n");
+    w.build();
+    w.query(&["task", "sync", "--file", "docs/milestones/010-aliases.md"]);
+    let task_id = "forge-mcp/m-aliases:aliases";
+    let inspected = w.query(&["task", "inspect", task_id]);
+    for args in [
+        vec!["task", "show", task_id],
+        vec!["task", "inspect", "--task", task_id],
+        vec!["task", "show", "--task", task_id],
+    ] {
+        assert_eq!(w.query(&args), inspected);
+    }
+    let compact = w.query(&["task", "list", "--milestone", "010", "--detail", "compact"]);
+    assert_eq!(compact["tasks"].as_array().unwrap().len(), 1);
+    let full = w.query(&["task", "list", "--milestone", "010", "--full"]);
+    assert_eq!(
+        w.query(&["task", "list", "--milestone", "010", "--detail", "full"]),
+        full
+    );
+    let mut m = Mcp::new(&w);
+    let canonical = m.ok("task_list", json!({"milestone_ref":"010","detail":"full"}));
+    assert_eq!(
+        m.ok("task_list", json!({"milestone":"010","detail":"full"})),
+        canonical
+    );
+    assert_eq!(canonical["tasks"].as_array().unwrap().len(), 1);
+    let positional = run_cli(
+        &w,
+        &[
+            "task",
+            "submit",
+            task_id,
+            "--stage",
+            "contract",
+            "--action",
+            "pass",
+            "--evidence",
+            "{}",
+        ],
+    );
+    let flagged = run_cli(
+        &w,
+        &[
+            "task",
+            "submit",
+            "--task",
+            task_id,
+            "--stage",
+            "contract",
+            "--action",
+            "pass",
+            "--evidence",
+            "{}",
+        ],
+    );
+    assert!(!positional.status.success());
+    assert_eq!(flagged.status.code(), positional.status.code());
+    assert_eq!(flagged.stderr, positional.stderr);
+    for args in [
+        vec!["task", "inspect"],
+        vec!["task", "inspect", task_id, "--task", task_id],
+        vec![
+            "task",
+            "submit",
+            task_id,
+            "--task",
+            task_id,
+            "--stage",
+            "contract",
+            "--action",
+            "pass",
+            "--evidence",
+            "{}",
+        ],
+        vec![
+            "task",
+            "sync",
+            "010",
+            "--file",
+            "docs/milestones/010-aliases.md",
+        ],
+        vec!["task", "list", "--detail", "verbose"],
+        vec!["task", "list", "--full", "--detail", "compact"],
+    ] {
+        assert_eq!(run_cli(&w, &args).status.code(), Some(2), "{args:?}");
+    }
+}
+
+#[test]
 fn symbol_boundary_recovery_and_search_preview_resilience() {
     use contextunity_forge_mcp::core::response::{QueryOptions, ResponsePolicy, SourceOptions};
     use serde_json::json;

@@ -306,34 +306,86 @@ receipt:
 
 ```yaml
 task_ref: mcp-and-cli-parameter-ergonomics
-target: "Normalize empty path filters, clamp source preview line budgets, and support common MCP parameter and CLI task aliases"
+target: Normalize empty path filters, clamp source preview line budgets, and support common MCP parameter and CLI task aliases
 proof_policy: seam-test-first
 contract_revision: 1
 depends_on:
-  - ast-search-candidate-fallback
+- ast-search-candidate-fallback
 scope:
-  - src/core/response.rs
-  - src/db/symbols/search.rs
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - src/engine/tasks/mod.rs
-  - src/cli/args.rs
-  - src/cli/task.rs
-  - docs/reference/cli.md
-  - docs/reference/mcp-tools.md
-  - docs/reference/tasks.md
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
-status: planned
+- src/core/response.rs
+- src/db/symbols/search.rs
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- src/engine/tasks/mod.rs
+- src/cli/args.rs
+- src/cli/task.rs
+- docs/reference/cli.md
+- docs/reference/mcp-tools.md
+- docs/reference/tasks.md
+- tests/mcp/tool_evolution/mcp_boundaries.rs
+status: completed
 subtasks:
-  - subtask_ref: mcp-search-and-task-parameter-normalization
-    title: "Normalize empty path: '' to None, accept query/milestone aliases in code_map_search and task_list, and support pattern: '*' when scoped by path or kind"
-    status: pending
-  - subtask_ref: source-preview-line-budget-clamping
-    title: "Clamp out-of-range max_body_lines and leading_lines in SourceOptions::resolve instead of rejecting inspect/snippet requests"
-    status: pending
-  - subtask_ref: cli-task-ergonomic-aliases
-    title: "Support task show alias for inspect, --task on inspect/submit, --detail on list, and --file on sync"
-    status: pending
+- subtask_ref: mcp-search-and-task-parameter-normalization
+  title: 'Normalize empty path: '''' to None, accept query/milestone aliases in code_map_search and task_list, and support pattern: ''*'' when scoped by path or kind'
+  status: completed
+  evidence: 'cargo test --test mcp: 84 passed, 0 failed. ergonomic_search_parameters_preserve_scope_and_paging proves query alias, empty path normalization, path/kind wildcard filtering and continuation; ergonomic_task_aliases_reach_existing_operations proves milestone alias. Strict all-feature Clippy exit 0.'
+- subtask_ref: source-preview-line-budget-clamping
+  title: Clamp out-of-range max_body_lines and leading_lines in SourceOptions::resolve instead of rejecting inspect/snippet requests
+  status: completed
+  evidence: 'Baseline cargo test --lib source_preview_line_budgets_are_clamped: exit 101, 0 passed/1 failed. Final focused command: exit 0, 1 passed. cargo test --lib: 68 passed; cargo test --test mcp: 84 passed. Three MCP source tools clamp identically; existing adapter policy boundary retains strict defaults validation.'
+- subtask_ref: cli-task-ergonomic-aliases
+  title: Support task show alias for inspect, --task on inspect/submit, --detail on list, and --file on sync
+  status: completed
+  evidence: 'cargo test --test mcp: 84 passed, 0 failed. ergonomic_task_aliases_reach_existing_operations exercises actual CLI show/inspect --task, submit --task error-path equivalence, sync --file, list --detail compact/full and conflicts. Definitions are in src/cli/task.rs; scoped args.rs does not exist. Strict all-feature Clippy exit 0.'
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-19T03:00:01.495728803+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib source_preview_line_budgets_are_clamped && cargo test --lib && cargo test --test mcp
+      exit_code: 0
+      tests_passed: 153
+      tests_failed: 0
+      log: 'Final command exit 0. Strict Clippy all-targets/all-features: exit 0. Focused contract seam: 1 passed, 0 failed. Complete library target: 68 passed, 0 failed. Complete MCP target: 84 passed, 0 failed (includes 3 new ergonomics boundary cases and existing adapter-policy range validation). 153 passing executions across focused and target lanes, 152 unique tests. Baseline focused seam failed exit 101 before production changes. git diff --check exit 0. Actual Cargo target is mcp; generated guidance''s tool_evolution target is stale. CLI args.rs is absent; changes are solely in admitted task.rs. Clamps preserve zero-body/overflow validation and strict adapter default validation; aliases retain unknown-argument/conflicting-selector rejection.'
+  review:
+    review_proof:
+      contours:
+        administration:
+          applicable: true
+          evidence: Candidate 1a135fb cleanly isolates admitted files against baseline 15683fb; candidate snapshot is immutable.
+        claims:
+          applicable: true
+          evidence: INV-ERGONOMIC-PARAMETER-TOLERANCE proven by seam test src/core/response.rs::source_preview_line_budgets_are_clamped and 3 comprehensive integration tests in mcp_boundaries.rs. 84 MCP tests pass, strict Clippy clean.
+        concurrency:
+          applicable: true
+          evidence: Parameter normalization and clamping are purely functional and thread-safe without mutation of shared state.
+        paths:
+          applicable: true
+          evidence: Candidate touches strictly the admitted scope of files; CLI changes are properly placed in src/cli/task.rs.
+        project_isolation:
+          applicable: true
+          evidence: All path normalization and task operations remain strictly bounded to the active repository root.
+      decision: pass
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SEARCH-PREVIEW-RESILIENCE: Source preview failures for an individual hit (unresolved AST boundary, stale file, or digest mismatch) must never fail code_map_search; matching symbol records, file paths, line numbers, and inspect_selector hints must always be returned.'
+    - 'INV-SYMBOL-WITH-SOURCE: Tree-sitter symbol boundary recovery in symbol_range must invoke profile.symbol_with_source(syntax, text) and fall back to verified indexed line..=end_line bounds for field: and template/relational nodes so code_map_inspect, code_map_explain, and get_code_snippet do not fail with unavailable boundaries.'
+    - 'INV-AST-LANGUAGE-INFERENCE: When the language parameter is omitted in ast_grep_search, the engine must infer it from the file extension of path; if path is missing or lacks a recognized extension, it must return an informative error listing all compiled languages and usage examples.'
+    - 'INV-AST-ACTIONABLE-DIAGNOSTICS: AST pattern search syntax errors must return structured, actionable diagnostics with actionable hints and concrete language-specific pattern examples rather than raw JSON serialization dumps.'
+    - 'INV-BODYLESS-DECLARATION-PATTERNS: AST pattern normalization and completion must support bodyless Python class/function declarations without trailing colons (class Foo, def bar($$$)) and Rust function header patterns without parameter lists (fn foo).'
+    - 'INV-AST-PREFILTER-SOUNDNESS: Pattern symbol candidate prefiltering in cli::ast::search_paged must fall back to all candidate files of the language if the declaration identifier is not found in the indexed top-level nodes table, preventing false negatives for local/nested constructs.'
+    - 'INV-ERGONOMIC-PARAMETER-TOLERANCE: MCP and CLI entrypoints must normalize empty path strings, clamp or clearly guide out-of-range source preview line budgets, and support common parameter and subcommand aliases.'
+    - 'INV-TASK-MUTATION-RESPONSE-BUDGET: State-mutating task lifecycle calls (task_claim, task_manage next/sync) must bound their serialized payload below the 64 KiB MCP response limit and avoid write transactions when opening already-initialized SQLite task stores for read operations.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

@@ -110,6 +110,7 @@ fn rejected_selector_fields(
         ],
         "code_map_search" => &[
             "pattern",
+            "query",
             "exact",
             "kind",
             "path",
@@ -291,7 +292,7 @@ impl Server {
                     &p.pattern,
                     &symbols::SearchOptions {
                         kind: p.kind.as_deref(),
-                        path: p.path.as_deref(),
+                        path: p.path.as_deref().filter(|path| !path.is_empty()),
                         include_docs: p.include_docs,
                         exact: p.exact,
                         page: &page,

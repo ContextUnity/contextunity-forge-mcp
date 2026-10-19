@@ -108,6 +108,16 @@ Every task contract declares an explicit file perimeter (`scope`) bounding allow
 
 ## Five flat MCP tools
 
+`task_list` accepts `milestone` as an alias for `milestone_ref`, with the same
+milestone resolution and status defaults. Supply one name per request.
+
+The CLI accepts `task show` for `task inspect`, `--task TASK_ID` in place of
+the positional task ID on inspect/show and submit, and `--file PATH` in place
+of the positional milestone reference on sync. `task list --detail compact|full`
+selects subtask detail explicitly; `--full` selects full detail. Selector forms
+and the two detail flags are mutually exclusive within one invocation. See the
+[CLI reference](cli.md#repository-tasks) for examples.
+
 | Tool | Arguments and behavior |
 | --- | --- |
 | `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |

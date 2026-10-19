@@ -163,14 +163,22 @@ pub enum TaskCommand {
         #[arg(long, conflicts_with_all = ["milestone_status", "planned", "completed"])]
         /// Show tasks from all statuses, including cancelled tasks pending sync pruning.
         all: bool,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "detail")]
         /// Include subtask titles and verification evidence.
         full: bool,
+        #[arg(long, value_enum)]
+        /// Subtask detail level: compact (default) or full.
+        detail: Option<TaskListDetail>,
     },
     /// Represents the inspect case.
+    #[command(visible_alias = "show")]
     Inspect {
         /// The task id value.
-        task_id: String,
+        #[arg(required_unless_present = "task", conflicts_with = "task")]
+        task_id: Option<String>,
+        /// Task identifier as an alternative to the positional argument.
+        #[arg(long)]
+        task: Option<String>,
     },
     /// Represents the create case.
     Create {
@@ -185,7 +193,11 @@ pub enum TaskCommand {
     /// Represents the sync case.
     Sync {
         /// Optional milestone ref value.
+        #[arg(conflicts_with = "file")]
         milestone_ref: Option<String>,
+        /// Milestone file as an alternative to the positional reference.
+        #[arg(long)]
+        file: Option<String>,
         #[arg(long)]
         /// Optional workspace value.
         workspace: Option<String>,
@@ -210,7 +222,11 @@ pub enum TaskCommand {
     /// Represents the submit case.
     Submit {
         /// The task id value.
-        task_id: String,
+        #[arg(required_unless_present = "task", conflicts_with = "task")]
+        task_id: Option<String>,
+        /// Task identifier as an alternative to the positional argument.
+        #[arg(long)]
+        task: Option<String>,
         #[arg(long)]
         /// The stage value.
         stage: String,
@@ -365,6 +381,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             completed,
             all,
             full,
+            detail,
         } => {
             let milestone_status = milestone_status.or({
                 if planned {
@@ -385,7 +402,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                     milestone_status,
                     status,
                     stage,
-                    detail: full.then_some(TaskListDetail::Full),
+                    detail: detail.or(full.then_some(TaskListDetail::Full)),
                 },
             );
         }
@@ -409,6 +426,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
         }
         TaskCommand::Submit {
             task_id,
+            task,
             stage,
             action,
             evidence,
@@ -417,7 +435,9 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             return tasks::submit(
                 root,
                 Submit {
-                    task_id,
+                    task_id: task_id
+                        .or(task)
+                        .ok_or_else(|| anyhow::anyhow!("task id is required"))?,
                     stage,
                     action,
                     evidence: serde_json::from_str(&evidence)?,
@@ -471,7 +491,13 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
                 manage.workspace = workspace;
             }
         },
-        TaskCommand::Inspect { task_id } => manage.task_id = Some(task_id),
+        TaskCommand::Inspect { task_id, task } => {
+            manage.task_id = Some(
+                task_id
+                    .or(task)
+                    .ok_or_else(|| anyhow::anyhow!("task id is required"))?,
+            );
+        }
         TaskCommand::Create {
             milestone_ref,
             task_ref,
@@ -484,10 +510,11 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
         }
         TaskCommand::Sync {
             milestone_ref,
+            file,
             workspace,
         } => {
             manage.action = ManageAction::Sync;
-            manage.milestone_ref = milestone_ref;
+            manage.milestone_ref = milestone_ref.or(file);
             manage.workspace = workspace;
         }
         TaskCommand::ExtendScope { task_id, paths } => {
