@@ -920,9 +920,11 @@ fn validate_public_signature_scope(
         let source_path = super::confined_path(worktree, path).map_err(|error| {
             anyhow::anyhow!("TASK_SCOPE_INCOMPLETE: {task_id}. current source '{path}' is not confined: {error}")
         })?;
-        let source = std::fs::read_to_string(source_path).map_err(|error| {
-            anyhow::anyhow!("TASK_SCOPE_INCOMPLETE: {task_id}. current source '{path}' cannot be read for signature validation: {error}")
-        })?;
+        let source = match std::fs::read_to_string(source_path) {
+            Ok(source) => source,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => bail!("TASK_SCOPE_INCOMPLETE: {task_id}. current source '{path}' cannot be read for signature validation: {error}"),
+        };
         let symbols = public_callable_nodes(path, &source).map_err(|error| {
             anyhow::anyhow!("TASK_SCOPE_INCOMPLETE: {task_id}. could not parse current source '{path}' for signature validation: {error}")
         })?;
@@ -973,6 +975,53 @@ fn validate_public_signature_scope(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn deleted_source_retires_public_symbols_without_read_errors() {
+    let root = std::env::temp_dir().join(format!(
+        "forge-retire-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let git = |args: &[&str]| {
+        let output = crate::core::git::git_command(&root, args).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "--quiet"]);
+    git(&["config", "user.name", "ACDD test"]);
+    git(&["config", "user.email", "acdd-test@example.invalid"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("forge-mcp.yaml"), "roots: [src]\n").unwrap();
+    std::fs::write(root.join("src/api.rs"), "pub fn retired() -> usize { 1 }\n").unwrap();
+    git(&["add", "forge-mcp.yaml", "src"]);
+    git(&["commit", "-m", "baseline"]);
+    let index = root.join(".forge/code-map.sqlite");
+    crate::db::writer::build(&root, &index, None).unwrap();
+    let connection = rusqlite::Connection::open(index).unwrap();
+    std::fs::remove_file(root.join("src/api.rs")).unwrap();
+    let result = validate_public_signature_scope(
+        &connection,
+        "retirement",
+        &root,
+        &["src/api.rs".into()],
+        None,
+        None,
+    );
+    drop(connection);
+    std::fs::remove_dir_all(root).unwrap();
+    result.expect(
+        "deleted tracked source has retired symbols, rather than unreadable current source",
+    );
 }
 
 fn commit_tree_and_parent(worktree: &Path, commit: &str) -> Result<(String, String)> {

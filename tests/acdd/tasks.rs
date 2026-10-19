@@ -254,6 +254,72 @@ fn submit_indexed_boundary(
 }
 
 #[test]
+fn build_gate_handles_file_retirement_and_preserves_caller_safety() {
+    for staged in [false, true] {
+        for refresh in [false, true] {
+            for case in [
+                "no-callers",
+                "external-live",
+                "admitted-caller",
+                "removed-caller",
+                "unadmitted-removed-caller",
+            ] {
+                let root = prepare_indexed_boundary_workspace(
+                    "pub fn route() -> usize { 1 }\n",
+                    if case == "no-callers" { "" } else { "use crate::api::route;\npub fn invoke() -> usize { route() }\n" },
+                    "use crate::api::route;\n#[test]\nfn test_connected() { let actual = route(); assert_eq!(actual, 1); }\n",
+                    "route", None, None,
+                );
+                let task_id = "forge-mcp/m-current-boundary:routing";
+                if matches!(case, "admitted-caller" | "removed-caller") {
+                    tasks::manage(&root.0, serde_json::from_value(json!({"action":"extend_scope", "task_id":task_id, "paths":["src/caller.rs"]})).unwrap()).unwrap();
+                }
+                tasks::claim(&root.0, serde_json::from_value(json!({"task_id":task_id,"stage":"contract","worker_id":"contract-author","worktree":root.0})).unwrap()).unwrap();
+                submit_indexed_boundary(&root, "contract", "src/seam.rs::test_connected").unwrap();
+                tasks::claim(&root.0, serde_json::from_value(json!({"task_id":task_id,"stage":"build","worker_id":"builder","worktree":root.0})).unwrap()).unwrap();
+                std::fs::remove_file(root.0.join("src/api.rs")).unwrap();
+                if case == "admitted-caller" {
+                    root.write("src/caller.rs", "pub fn invoke() -> usize { 0 }\n");
+                }
+                if matches!(case, "removed-caller" | "unadmitted-removed-caller") {
+                    std::fs::remove_file(root.0.join("src/caller.rs")).unwrap();
+                }
+                if staged {
+                    let output = std::process::Command::new("git")
+                        .args(["add", "-u", "src"])
+                        .current_dir(&root.0)
+                        .output()
+                        .unwrap();
+                    assert!(output.status.success());
+                }
+                if refresh {
+                    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+                }
+                let result = submit_indexed_boundary(&root, "build", "src/seam.rs::test_connected");
+                if matches!(case, "external-live" | "unadmitted-removed-caller") {
+                    let error = result.unwrap_err().to_string();
+                    assert!(
+                        error.contains("TASK_SCOPE_INCOMPLETE")
+                            && error.contains("src/caller.rs")
+                            && error.contains("route"),
+                        "{case}/{staged}/{refresh}: {error}"
+                    );
+                    let task = tasks::store_for_task(&root.0, task_id)
+                        .unwrap()
+                        .inspect(task_id)
+                        .unwrap();
+                    assert_eq!(task.stage, "build");
+                    assert_eq!(task.status, "in_progress");
+                } else {
+                    assert!(result.is_ok(), "{case}/{staged}/{refresh}: {result:?}");
+                    assert_eq!(result.unwrap()["stage"], "review");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn signature_boundary_protects_implicitly_public_trait_methods() {
     let anchor = "pub fn anchor() -> usize { 1 }\n";
     let connected =

@@ -618,27 +618,78 @@ receipt:
 
 ```yaml
 task_ref: build-gate-deletion-scope-and-file-retirement
-target: "Allow intentional file deletions in task scope during BUILD gate validation, verifying that deleted public symbols have no remaining live callers outside scope"
+target: Allow intentional file deletions in task scope during BUILD gate validation, verifying that deleted public symbols have no remaining live callers outside scope
 proof_policy: seam-test-first
 contract_revision: 1
 invariants:
-  - 'INV-INTENTIONAL-SCOPE-DELETION: When a scoped file is intentionally deleted (deleted in working tree or staged deletion), BUILD gate validation must treat the file as removed rather than failing with TASK_SCOPE_INCOMPLETE read errors.'
-  - 'INV-RETIRED-SYMBOL-CALLER-SAFETY: Public symbols removed by file deletion must satisfy existing caller safety: validation passes if all callers are within admitted scope or removed; external unadmitted callers fail with actionable diagnostics.'
+- 'INV-INTENTIONAL-SCOPE-DELETION: When a scoped file is intentionally deleted (deleted in working tree or staged deletion), BUILD gate validation must treat the file as removed rather than failing with TASK_SCOPE_INCOMPLETE read errors.'
+- 'INV-RETIRED-SYMBOL-CALLER-SAFETY: Public symbols removed by file deletion must satisfy existing caller safety: validation passes if all callers are within admitted scope or removed; external unadmitted callers fail with actionable diagnostics.'
 scope:
-  - src/engine/tasks/gates.rs
-  - tests/acdd/tasks.rs
-  - docs/reference/tasks.md
-status: ready
+- src/engine/tasks/gates.rs
+- tests/acdd/tasks.rs
+- docs/reference/tasks.md
+status: completed
 subtasks:
-  - subtask_ref: scope-file-existence-and-status-tolerance
-    title: "Update current_scope_files and validate_public_signature_scope to detect deleted files without aborting on fs::read_to_string"
-    status: pending
-  - subtask_ref: retired-public-symbol-caller-verification
-    title: "Verify that symbols from deleted files in baseline are cleanly retired or fail closed when unadmitted external callers remain"
-    status: pending
-  - subtask_ref: deletion-scope-seam-tests
-    title: "Add unit and integration tests proving that intentional file deletion in task scope passes build validation cleanly"
-    status: pending
+- subtask_ref: scope-file-existence-and-status-tolerance
+  title: Update current_scope_files and validate_public_signature_scope to detect deleted files without aborting on fs::read_to_string
+  status: completed
+  evidence: Strict Clippy all targets/all features passed; cargo test --lib 90 passed; cargo test --test acdd 110 passed, no failures/ignored/filtered. Native deleted-source seam red101 then green; real task build table covers 20 combinations of staged/unstaged, stale/refreshed index, no callers, live external caller rejection, admitted caller update/deletion acceptance, unadmitted deleted baseline caller rejection. Production only handles read NotFound; baseline caller checks unchanged and no new successful-read operations. Logs /tmp/forge-049-implementation-20261019/task8-build-gate-{0,1,2}.log.
+- subtask_ref: retired-public-symbol-caller-verification
+  title: Verify that symbols from deleted files in baseline are cleanly retired or fail closed when unadmitted external callers remain
+  status: completed
+  evidence: Strict Clippy all targets/all features passed; cargo test --lib 90 passed; cargo test --test acdd 110 passed, no failures/ignored/filtered. Native deleted-source seam red101 then green; real task build table covers 20 combinations of staged/unstaged, stale/refreshed index, no callers, live external caller rejection, admitted caller update/deletion acceptance, unadmitted deleted baseline caller rejection. Production only handles read NotFound; baseline caller checks unchanged and no new successful-read operations. Logs /tmp/forge-049-implementation-20261019/task8-build-gate-{0,1,2}.log.
+- subtask_ref: deletion-scope-seam-tests
+  title: Add unit and integration tests proving that intentional file deletion in task scope passes build validation cleanly
+  status: completed
+  evidence: Strict Clippy all targets/all features passed; cargo test --lib 90 passed; cargo test --test acdd 110 passed, no failures/ignored/filtered. Native deleted-source seam red101 then green; real task build table covers 20 combinations of staged/unstaged, stale/refreshed index, no callers, live external caller rejection, admitted caller update/deletion acceptance, unadmitted deleted baseline caller rejection. Production only handles read NotFound; baseline caller checks unchanged and no new successful-read operations. Logs /tmp/forge-049-implementation-20261019/task8-build-gate-{0,1,2}.log.
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-19T20:47:12.890335832+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 200
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'All three admitted diffs reviewed and byte-bound to frozen b7bdddb: gates.rs, tests/acdd/tasks.rs, docs/reference/tasks.md. Production delta only handles read_to_string NotFound after confinement; tests and documentation describe existing caller safety. H/task8-review-binding.json records scope hashes and other seven task sections for preservation. No reviewer source/docs/contract edits.'
+        claims:
+          applicable: true
+          evidence: Missing Git-enumerated source contributes no current public symbols, so baseline symbols retire; only NotFound is skipped, other reads and parse failures remain rejecting. Existing captured accepted baseline caller evidence plus live indexed callers remain unioned, with out-of-scope callers rejected unchanged. Actual gate integration table20 cases spans staged/unstaged, stale/refreshed index, no caller/live external/admitted update/admitted deletion/unadmitted deleted caller. Last case rejects because unadmitted baseline caller remains outside scoped candidate. Native deletion seam directly calls production validator, generation859688b4. Independent strict all-target/all-feature Clippy0, unfiltered lib90/0+ACDD110/0=200, no ignored/filtered.
+        concurrency:
+          applicable: true
+          evidence: Change only reads current source and recognizes NotFound, without deleting files, adding locks, changing shared state, or changing snapshot publication. Confined path validation precedes read; errors other than absence remain fail-closed. Accepted baseline-commit matching/caller capture and scope comparison are unchanged. Real gate rejection cases retain build stage and in_progress claim state; success advances review. No server/indexing hot path changes.
+        project_isolation:
+          applicable: true
+          evidence: Git scope enumeration and baseline symbol extraction are unchanged and rooted in claimed worktree. Missing current source does not remove captured external caller ownership; refreshing index cannot erase accepted baseline callers. Admitted caller update/deletion succeeds, unadmitted live or deleted caller rejects with path and retired symbol. Isolated real Git/index/task-store fixtures exercise both staged and unstaged source changes.
+        administration:
+          applicable: true
+          evidence: Same independent codex-049-reviewer differs from builder; reviewclaim4/contract1. Required strict Clippy and full lib/ACDD targets independently passed with200 actual passes. No extra policy/schema/scope, benchmark, manual commit, receipt edit, main integration, or milestone handoff. User-accepted performance decisions447/449 unchanged. Automatic Forge task delivery only, preserving other seven task definitions.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ADMISSION-DETERMINISM: Dependency manifest collection across cold build, incremental delta, and MCP source admission must yield identical path sets and digests for unchanged workspace state, eliminating false-positive rebuild loops.'
+    - 'INV-DATABASE-SEPARATION: Task tracking databases (tasks.sqlite) and code map indices (code-map.sqlite) are mutually exclusive; attempts to target a task database for code-map output or open a code-map database as task store fail closed with TASK_DATABASE_COLLISION.'
+    - 'INV-WORKSPACE-UNIQUENESS: Subproject milestone resolution honors declared_projects frontmatter and configured owner mappings, preventing duplicate phantom workspaces from conflicting on milestone references.'
+    - 'INV-DAEMON-RESOURCE-BOUND: MCP servers preserve live connections regardless of inactivity, terminate on Unix when their launching parent disappears, and trim free heap pages after batch operations without removing the allocator trims delivered in milestone 031.'
+    - 'INV-GREENFIELD-SEAM-ACTIONABILITY: Greenfield contract validation failure for uncreated scope files outputs deterministic remediation guidance with file paths and stub requirements.'
+    - 'INV-PERFORMANCE-PRESERVATION: Preserve the indexing optimizations delivered on main; paired release measurements on an identical frozen corpus must show no cold-build, delta, or warm MCP latency regression before milestone delivery.'
+    - 'INV-INTENTIONAL-SCOPE-DELETION: When a scoped file is intentionally deleted (deleted in working tree or staged deletion), BUILD gate validation must treat the file as removed rather than failing with TASK_SCOPE_INCOMPLETE read errors.'
+    - 'INV-RETIRED-SYMBOL-CALLER-SAFETY: Public symbols removed by file deletion must satisfy existing caller safety: validation passes if all callers are within admitted scope or removed; external unadmitted callers fail with actionable diagnostics.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ## Acceptance and performance proof

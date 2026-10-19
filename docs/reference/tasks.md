@@ -497,6 +497,13 @@ the document to the selected directory's `archive/`, and updates the stored
 `milestone_ref` of its tasks. The subsequent milestone archive commit occurs after handoff and is excluded from `receipt.commit`, avoiding any hash cycle. When creating the handoff commit, stage both the newly archived document in `archive/` and the removal of the pre-archive working document in `docs/milestones/`; ensure any untracked or stale pre-archive working copies remaining in the repository or main worktree are unlinked so that landing into `main` encounters no duplicate or untracked files. Follow root [AGENTS.md](../../AGENTS.md#worktrees-and-git-permissions) and [TESTS.md](../../TESTS.md#milestone-handoff-gate) for the final
 verification gate, handoff, and archiving.
 
+Build validation treats a missing Git-enumerated scoped source file as deleted,
+including an unstaged deletion. Other read failures still reject the submission.
+Removed public symbols retain their accepted baseline caller checks, even after
+reindexing: admit each affected caller's update or deletion in the task scope.
+An unadmitted baseline caller still blocks retirement; deleting its working copy
+does not remove it from the scoped candidate snapshot.
+
 For paths changed after task delivery, handoff accepts a later reviewed local
 delivery or a reviewed upstream delivery introduced by a two-parent merge. The
 upstream receipt and accepted gate evidence must validate, and its delivery must
