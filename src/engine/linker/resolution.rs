@@ -28,6 +28,7 @@ pub(super) struct ResolutionInput<'a, F> {
     pub(super) dependency_registry: &'a DependencyRegistry,
     pub(super) flows: Option<&'a HashMap<&'a str, &'a FlowState>>,
     pub(super) sort_per_file: bool,
+    pub(super) occurrences: Option<&'a BTreeMap<String, Vec<u8>>>,
     pub(super) by_name: &'a HashMap<&'a str, Vec<&'a Node>>,
     pub(super) by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
     pub(super) by_suffix: &'a HashMap<&'a str, Vec<&'a Node>>,
@@ -46,7 +47,7 @@ pub(super) struct ResolutionInput<'a, F> {
     pub(super) value_flow: &'a value_flow::ValueFlowIndex<'a>,
 }
 
-pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>) -> Vec<Graph> {
+pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>) -> Vec<GraphPart> {
     let ResolutionInput {
         all,
         public_all,
@@ -55,6 +56,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
         dependency_registry,
         flows,
         sort_per_file,
+        occurrences,
         by_name,
         by_qual,
         by_suffix,
@@ -97,19 +99,22 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
         dependency_registry,
     );
 
-    let parts: Vec<Graph> = all
+    let parts: Vec<GraphPart> = all
         .par_iter()
         .filter(|(path, _)| owners.is_none_or(|o| o.contains(*path)))
         .map(|(path, facts)| {
             let facts = facts.as_ref();
+            let restored_references = occurrences.and_then(|files| files.get(path))
+                .map(|bytes| crate::core::semantic::decode_catalog_references(bytes, &facts.references));
+            let references = restored_references.as_deref().unwrap_or(&facts.references);
             let mut graph = Graph {
                 edges: facts.edges.iter().map(Edge::from).collect(),
-                coverage: Vec::with_capacity(facts.references.len()),
+                coverage: Vec::with_capacity(references.len()),
             };
             let profile = profiles.get(path.as_str()).copied();
             #[cfg(feature = "lang-html")]
             let template_loads: Vec<&Reference> = if profile.is_some_and(|profile| profile.id() == "html") {
-                facts.references.iter().filter(|reference| reference.kind == "template_loads").collect()
+                references.iter().filter(|reference| reference.kind == "template_loads").collect()
             } else {
                 Vec::new()
             };
@@ -123,7 +128,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
             let returned_object_field_writes: HashSet<(&str, &str)> = if profile
                 .is_some_and(|profile| matches!(profile.id(), "javascript" | "html"))
             {
-                facts.references.iter()
+                references.iter()
                     .filter(|reference| reference.kind == "mutates")
                     .filter_map(|reference| {
                         let field = reference.expression.strip_prefix("this.")?;
@@ -287,7 +292,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 .map(|n| n.qualname.clone())
                 .unwrap_or_else(|| profile.map_or_else(|| module_name(path), |p| p.module_name(path)));
             let mut aliases: HashMap<&str, HashMap<&'a str, Vec<&'a Node>>> = HashMap::new();
-            let mut external_aliases: HashMap<&str, ExternalAliases<'a>> = HashMap::new();
+            let mut external_aliases: HashMap<&str, ExternalAliases<'_>> = HashMap::new();
             let mut type_only_aliases: HashMap<&str, HashSet<&'a str>> = HashMap::new();
             let mut lookup_key = String::new();
             for r in facts.references.iter().filter(|r| r.kind == "imports") {
@@ -608,7 +613,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 if *import_line > node.line {
                     return false;
                 }
-                facts.references.iter().any(|reference| {
+                references.iter().any(|reference| {
                     if reference.kind != "imports"
                         || reference.line != *import_line
                         || reference.alias.as_deref() != Some(head)
@@ -642,8 +647,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 }
             };
             #[cfg(feature = "lang-html")]
-            for r in facts
-                .references
+            for r in references
                 .iter()
                 .filter(|r| r.kind == "extends" || r.kind == "includes" || r.kind == "template_imports")
             {
@@ -743,7 +747,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
             }
 
             let mut alias_import_positions: HashMap<(&str, &str), crate::core::semantic::SourcePosition> = HashMap::new();
-            for reference in facts.references.iter().filter(|reference| reference.kind == "imports") {
+            for reference in references.iter().filter(|reference| reference.kind == "imports") {
                 if let Some(alias) = reference.alias.as_deref() {
                     let scope = by_id.get(reference.source.as_str()).map_or(file_module.as_str(), |node| node.qualname.as_str());
                     let position = alias_import_positions.entry((scope, alias)).or_default();
@@ -753,13 +757,13 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     });
                 }
             }
-            let path_constructor_aliases: HashMap<(&str, &str), &Reference> = facts.references.iter().filter(|reference| reference.kind == "imports" && reference.module.as_deref() == Some("pathlib")).filter_map(|reference| {
+            let path_constructor_aliases: HashMap<(&str, &str), &Reference> = references.iter().filter(|reference| reference.kind == "imports" && reference.module.as_deref() == Some("pathlib")).filter_map(|reference| {
                 let alias = reference.alias.as_deref()?;
                 let scope = by_id.get(reference.source.as_str()).map_or(file_module.as_str(), |node| node.qualname.as_str());
                 Some(((scope, alias), reference))
             }).collect();
             let mut dynamic_type_aliases: HashMap<&str, HashSet<&str>> = HashMap::new();
-            for reference in facts.references.iter().filter(|reference| reference.kind == "imports" && reference.expression == "Any" && matches!(reference.module.as_deref(), Some("typing" | "typing_extensions"))) {
+            for reference in references.iter().filter(|reference| reference.kind == "imports" && reference.expression == "Any" && matches!(reference.module.as_deref(), Some("typing" | "typing_extensions"))) {
                 let scope = by_id.get(reference.source.as_str()).map_or(file_module.as_str(), |node| node.qualname.as_str());
                 dynamic_type_aliases.entry(scope).or_default().insert(reference.alias.as_deref().unwrap_or("Any"));
             }
@@ -881,7 +885,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     && node.details["receiver_type"].is_string())
                     || node.details["receiver"].as_str().is_some_and(|value| value.starts_with("alpine_data:"))
             }) {
-                facts.references.iter().filter(|reference| {
+                references.iter().filter(|reference| {
                     reference.kind == "calls" && reference.expression.starts_with("this.")
                 }).map(|reference| {
                     (reference.source.as_str(), reference.line, reference.column, reference.expression.as_str())
@@ -890,7 +894,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 HashSet::new()
             };
             let mut candidates = Vec::new();
-            for r in facts.references.iter().filter(|r| {
+            for r in references.iter().filter(|r| {
                 matches!(
                     r.kind.as_str(),
                     "calls" | "inherits" | "implements" | "bases" | "decorates" | "mutates" | "handles" | "references" | "injects"
@@ -2490,6 +2494,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
             }
             graph
         })
+        .map(|graph| GraphPart::new(graph, occurrences.is_some()))
         .collect();
     parts
 }

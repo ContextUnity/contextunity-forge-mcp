@@ -1,0 +1,134 @@
+{
+  "accepted": false,
+  "candidate": "lazy-symbol-parent",
+  "candidate_max_peak_rss_bytes": 795619328,
+  "candidate_median_wall_at_most_historical11seconds": false,
+  "checks": {
+    "candidate_all17domains_graph_and_input_roots_match_ed10832": true,
+    "candidate_every_peak_below800000000_bytes": true,
+    "median_average_cpu_load_reduced_against_both_references": true,
+    "median_total_process_cpu_reduced_against_both_references": false,
+    "median_user_cpu_reduced_against_both_references": false,
+    "median_wall_not_regressed_against_both_references": false,
+    "paired_median_cpu_load_reduced_against_both": true,
+    "paired_median_total_cpu_reduced_against_both": false,
+    "paired_median_user_cpu_reduced_against_both": false,
+    "paired_median_wall_not_regressed_against_both": false
+  },
+  "installed_reference_semantically_compatible_with_starting_baseline": false,
+  "median_changes_percent": {
+    "ed10832": {
+      "average_cpu_percent": -0.17126195275390943,
+      "process_cpu_seconds": 2.0375252910867614,
+      "system_seconds": 8.143724622024573,
+      "user_seconds": 2.327682966074418,
+      "wall_seconds": 1.4735726809379068
+    },
+    "installed": {
+      "average_cpu_percent": -0.7226947380109872,
+      "process_cpu_seconds": -1.114115477002342,
+      "system_seconds": 44.719572795616955,
+      "user_seconds": -3.1014235187763584,
+      "wall_seconds": -2.2478743348389396
+    }
+  },
+  "medians": {
+    "ed10832": {
+      "average_cpu_percent": 392.6798373278134,
+      "process_cpu_seconds": 46.627593,
+      "system_seconds": 3.2407529999999998,
+      "user_seconds": 43.267748,
+      "wall_seconds": 11.738096272107214
+    },
+    "installed": {
+      "average_cpu_percent": 394.8609655911213,
+      "process_cpu_seconds": 48.113684,
+      "system_seconds": 2.421698,
+      "user_seconds": 45.691986,
+      "wall_seconds": 12.184968430083245
+    },
+    "lazy-symbol-parent": {
+      "average_cpu_percent": 392.0073261703349,
+      "process_cpu_seconds": 47.577642,
+      "system_seconds": 3.504671,
+      "user_seconds": 44.274884,
+      "wall_seconds": 11.911065652035177
+    }
+  },
+  "milestone20percent_vs_cf4aa29_proven": false,
+  "paired_changes_percent": {
+    "ed10832": {
+      "average_cpu_percent": [
+        1.7217196014938096,
+        -1.3155207484391251,
+        -10.001077056677875
+      ],
+      "process_cpu_seconds": [
+        7.213790567152567,
+        -2.2539722348524416,
+        9.310422518197537
+      ],
+      "system_seconds": [
+        8.229626156065905,
+        8.143724622024573,
+        25.279581864710888
+      ],
+      "user_seconds": [
+        7.1387764039699375,
+        -3.0306217276943936,
+        7.949690379078667
+      ],
+      "wall_seconds": [
+        5.39911337241894,
+        -0.9509615833519947,
+        21.45747853786768
+      ]
+    },
+    "installed": {
+      "average_cpu_percent": [
+        -2.130360465492531,
+        13.958525819711598,
+        -13.18641666235747
+      ],
+      "process_cpu_seconds": [
+        11.021020484953482,
+        -6.728979930447565,
+        6.677060937591062
+      ],
+      "system_seconds": [
+        41.467973767183096,
+        28.030731721395053,
+        90.72832368032677
+      ],
+      "user_seconds": [
+        9.266763922362076,
+        -8.791749363447076,
+        2.222302177891766
+      ],
+      "wall_seconds": [
+        13.437651362564829,
+        -18.153539282254204,
+        22.88061019517402
+      ]
+    }
+  },
+  "paired_median_changes_percent": {
+    "ed10832": {
+      "average_cpu_percent": -1.3155207484391251,
+      "process_cpu_seconds": 7.213790567152567,
+      "system_seconds": 8.229626156065905,
+      "user_seconds": 7.1387764039699375,
+      "wall_seconds": 5.39911337241894
+    },
+    "installed": {
+      "average_cpu_percent": -2.130360465492531,
+      "process_cpu_seconds": 6.677060937591062,
+      "system_seconds": 41.467973767183096,
+      "user_seconds": 2.222302177891766,
+      "wall_seconds": 13.437651362564829
+    }
+  },
+  "policy": "Three repeats each immutable binary; fresh database/cache;60s initial/between-run settling; alternating order; retain all outliers; require both contemporaneous raw medians and median paired changes to pass.",
+  "receipt": "benchmarks/results/031-task6-turn7-lazy-comparison.json",
+  "reference_semantics_note": "ed10832 is the starting semantic baseline. Installed is a CPU/wall timing control and already differs fromed10832 in9domains and454resolved references. Do not claim installed semantic parity."
+}

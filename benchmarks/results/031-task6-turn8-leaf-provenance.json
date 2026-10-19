@@ -1,0 +1,10 @@
+{
+  "base_commit": "200a9e2300725c7496c6c3869c99cea1193aded8",
+  "binary_path": "/tmp/031-task8-leaf-children",
+  "binary_sha256": "8eafa1b7118cc30bc85d32b0aa8f11c79ba78dbc2374e63f2956665ed915c8c7",
+  "patch_sha256": "876ced72044c9811dd6c4a043dc3b596bd2097f2b7f8980a839c04b565a27faa",
+  "patch_utf8": "diff --git a/src/engine/ast/visitor.rs b/src/engine/ast/visitor.rs\nindex cbda3ff..96487e4 100644\n--- a/src/engine/ast/visitor.rs\n+++ b/src/engine/ast/visitor.rs\n@@ -173,6 +173,9 @@ fn walk_in_order<'tree>(\n     visitor: &mut impl FnMut(Syntax<'tree>, bool),\n ) {\n     fn first_named_child(cursor: &mut tree_sitter::TreeCursor<'_>, reversed: bool) -> bool {\n+        if cursor.node().named_child_count() == 0 {\n+            return false;\n+        }\n         if !cursor.goto_first_child() {\n             return false;\n         }\n",
+  "production_base": "ed10832ac31243aaf0e47cea7462309a17cc5d87",
+  "source_hash_policy": "sorted git ls-files src Cargo.toml Cargo.lock build.rs; path,NUL,bytes",
+  "source_sha256": "f6f3ace89261658070dea4eb0e4b0c042f2536160fd7c3d3f16b1e08181f21e0"
+}

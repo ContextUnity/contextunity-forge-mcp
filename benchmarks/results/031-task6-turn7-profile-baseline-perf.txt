@@ -1,0 +1,2 @@
+[ perf record: Woken up 250 times to write data ]
+[ perf record: Captured and wrote 71.585 MB /tmp/031-task7-baseline.data (8829 samples) ]

@@ -1,0 +1,122 @@
+{
+  "build_gate_pass_submitted": false,
+  "cache_decision": {
+    "all_17_domains_match_cold": true,
+    "cache_hits_per_warm_run": [
+      3990,
+      3990,
+      3990
+    ],
+    "max_peak_rss_bytes": 746004480,
+    "median_user_seconds": 16.337385,
+    "median_wall_seconds": 8.574793803039938,
+    "reason": "Existing warm-cache behavior validated, not a new cold indexing optimization. Source and cache key/checksum hashes serve distinct integrity requirements; cache v3 uses a binary DTO and does not use Zstd. DTO cloning identified as potential overhead without a proven candidate, so no production change retained."
+  },
+  "claim_revision": 11,
+  "constraints": {
+    "all_nine_runs_17_domains_graph_and_root_inputs_identical": true,
+    "all_nine_runs_peak_rss_below_800000000": true,
+    "milestone_20percent_speedup_vs_cf4aa29_proven": false,
+    "resolved_edges": 130079,
+    "sqlite_pragmas_changed": false
+  },
+  "cpu_objective_met": false,
+  "filtering_decision": {
+    "existing_trivial_fast_path_files": 41,
+    "file_count": 3990,
+    "indexed_json_files": 0,
+    "module_only_paths": 202,
+    "pass_only_python_files": 0,
+    "python_files": 3168,
+    "reason": "No new safe high-value category demonstrated. Module-only files may still carry references, docs, value flow, or provider facts. YAML/TOML and Markdown already bypass Python/Rust/TypeScript scope collectors; filtering them could change committed documentation/configuration facts.",
+    "yaml_and_toml_files": 35
+  },
+  "leaf_guard_decision": "Rejected. Favorable raw end-to-end medians are not sufficient attribution: user CPU increased in pair2, average CPU utilization increased in every pair, and two alternating per-file screens show the guarded balanced traversal slower by4.44percent and5.89percent. Strict original CPU-load objective is not met. Restore production rather than claim host variation as an optimization.",
+  "limitations": [
+    "Contemporary cold baseline wall12.33..14.45seconds and user42.38..46.12seconds indicate host variability; historical10.5..11second absolute timing is not re-established. No outlier removed.",
+    "Query screen covers non-trivial .py files, not .pyi stubs or other languages; it is a rejection screen, not proof of a replacement extractor.",
+    "One incomplete harness attempt failed before emitting timed measurements because inventory initially lacked linked-workspace mapping; the full three-pair batch restarted after fixing this. All3990 inventory sources subsequently resolved using gridviewspec and traverse roots."
+  ],
+  "median_paired_candidate_change_percent": {
+    "average_cpu_percent": 5.492468312642873,
+    "process_cpu_seconds": -2.724725823356,
+    "user_seconds": -3.1629460969696654,
+    "wall_seconds": -6.022227845938333
+  },
+  "paired_candidate_change_percent": [
+    {
+      "average_cpu_percent": 13.732923264738272,
+      "process_cpu_seconds": -7.614421801220828,
+      "repetition": 1,
+      "user_seconds": -7.948778679042334,
+      "wall_seconds": -18.769714567406727
+    },
+    {
+      "average_cpu_percent": 5.492468312642873,
+      "process_cpu_seconds": -0.8605284894487752,
+      "repetition": 2,
+      "user_seconds": 0.5490323398518626,
+      "wall_seconds": -6.022227845938333
+    },
+    {
+      "average_cpu_percent": 2.4984070082141763,
+      "process_cpu_seconds": -2.724725823356,
+      "repetition": 3,
+      "user_seconds": -3.1629460969696654,
+      "wall_seconds": -5.095818543942421
+    }
+  ],
+  "production_changes_retained": false,
+  "query_decision": "Rejected before production integration. Reused precompiled wildcard query cursor preserves entry order on screened non-trivial .py files but costs2.90..2.96times the balanced manual walk even without reconstructing exits. Existing empty/comment-only fast path is excluded. Empty-root query difference retained separately. This is an optimistic screening comparison, not a production semantic-parity claim for a query-based extractor.",
+  "raw_median_candidate_change_percent": {
+    "average_cpu_percent": 4.76677436003019,
+    "process_cpu_seconds": -4.338296076088765,
+    "user_seconds": -4.2388244127986034,
+    "wall_seconds": -7.782215018971684
+  },
+  "receipts": [
+    "031-task6-turn8-comparison.json",
+    "031-task6-turn8-query-probe.json",
+    "031-task6-turn8-query-probe-initial.json",
+    "031-task6-turn8-query-empty-root-screen.json",
+    "031-task6-turn8-inventory.json",
+    "031-task6-turn8-cache-analysis.json",
+    "031-task6-turn8-leaf-provenance.json",
+    "031-task6-turn8-verification.json"
+  ],
+  "selected_production": "ed10832ac31243aaf0e47cea7462309a17cc5d87",
+  "summary": {
+    "ed10832": {
+      "max_peak_rss_bytes": 786575360,
+      "median_average_cpu_percent": 373.91559257655473,
+      "median_process_cpu_seconds": 48.058707,
+      "median_system_seconds": 3.640582,
+      "median_user_seconds": 44.49453,
+      "median_wall_seconds": 12.726188718806952,
+      "peak_rss_limit_passed": true,
+      "semantic_parity": true
+    },
+    "leaf-children": {
+      "max_peak_rss_bytes": 787357696,
+      "median_average_cpu_percent": 391.7393051716489,
+      "median_process_cpu_seconds": 45.973778,
+      "median_system_seconds": 3.517586,
+      "median_user_seconds": 42.608485,
+      "median_wall_seconds": 11.735809348989278,
+      "peak_rss_limit_passed": true,
+      "semantic_parity": true
+    },
+    "warm-ed10832": {
+      "max_peak_rss_bytes": 746004480,
+      "median_average_cpu_percent": 215.0123072751179,
+      "median_process_cpu_seconds": 18.436862,
+      "median_system_seconds": 1.9519989999999998,
+      "median_user_seconds": 16.337385,
+      "median_wall_seconds": 8.574793803039938,
+      "peak_rss_limit_passed": true,
+      "semantic_parity": true
+    }
+  },
+  "task_id": "forge-mcp/m-cold-indexing-throughput-and-memory-optimization:symbol-catalog-decomposition-and-memory-trimming",
+  "worker_id": "031-task6-builder"
+}

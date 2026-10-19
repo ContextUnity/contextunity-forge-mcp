@@ -1,0 +1,25 @@
+{
+  "decision": "Do not retain overlap or parallel FTS sort/lazy term-map combination: neither improved wall-time median in this cohort.",
+  "policy": "Existing controlled three-repeat cohort; no new experiment needed to retain previously rejected candidates. All roots and graph counts were identical and peaks below800MB.",
+  "source": "benchmarks/results/031-task6-turn6-spaced-experiments.json",
+  "variants": {
+    "prepared-memory": {
+      "median_average_cpu_percent": 413.83063934699004,
+      "median_process_cpu_seconds": 42.210734,
+      "median_user_seconds": 39.397705,
+      "median_wall_seconds": 10.2682208516635
+    },
+    "prepared-memory-overlap": {
+      "median_average_cpu_percent": 407.2766749676063,
+      "median_process_cpu_seconds": 41.99248,
+      "median_user_seconds": 39.196201,
+      "median_wall_seconds": 10.290344519075006
+    },
+    "prepared-memory-overlap-fts": {
+      "median_average_cpu_percent": 399.06751273224125,
+      "median_process_cpu_seconds": 42.181134,
+      "median_user_seconds": 39.20439,
+      "median_wall_seconds": 10.439433765597641
+    }
+  }
+}

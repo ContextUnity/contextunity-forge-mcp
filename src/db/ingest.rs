@@ -48,6 +48,41 @@ pub(super) fn persist_files(
     _encoded_facts: Option<&hashbrown::HashMap<String, Vec<u8>>>,
     bulk_search: bool,
 ) -> Result<FilePersistenceTimings> {
+    persist_files_impl(tx, path_cache, entries, facts, bulk_search, None)
+}
+
+pub(super) struct LoadedCatalogFile {
+    pub(super) facts: TypedFacts,
+    pub(super) encoded: Vec<u8>,
+    pub(super) local_facts_leaf: (String, String),
+    pub(super) details_json: Vec<String>,
+    pub(super) search_texts: Vec<String>,
+    pub(super) reference_keys: Vec<String>,
+}
+
+type ChunkLoader<'a> = &'a mut dyn FnMut(
+    &[FileEntry],
+    &BTreeMap<String, TypedFacts>,
+) -> Result<Vec<LoadedCatalogFile>>;
+
+pub(super) fn persist_catalog_files(
+    tx: &Connection,
+    path_cache: &mut PathDictionaryCache,
+    entries: &[FileEntry],
+    facts: &BTreeMap<String, TypedFacts>,
+    loader: ChunkLoader<'_>,
+) -> Result<FilePersistenceTimings> {
+    persist_files_impl(tx, path_cache, entries, facts, true, Some(loader))
+}
+
+fn persist_files_impl(
+    tx: &Connection,
+    path_cache: &mut PathDictionaryCache,
+    entries: &[FileEntry],
+    facts: &BTreeMap<String, TypedFacts>,
+    bulk_search: bool,
+    mut loader: Option<ChunkLoader<'_>>,
+) -> Result<FilePersistenceTimings> {
     let mut node_id: i64 = tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
         r.get(0)
     })?;
@@ -105,19 +140,23 @@ pub(super) fn persist_files(
     let local_facts_batch_rows = bulk_search
         .then(|| multi_value_batch_rows::<6>(tx).map(|rows| rows.min(COLD_LOCAL_FACTS_BATCH_ROWS)))
         .transpose()?;
-    let mut doc_sections_batch = bulk_search
-        .then(|| {
-            MultiValueBatch::<10, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO doc_sections VALUES")
-        })
-        .transpose()?;
     let mut file_batch = Vec::<[SqlValue; 8]>::new();
-    let mut node_batch = Vec::<[BorrowedSqlValue<'_>; 14]>::new();
     let mut reusable_detail_buffers = Vec::<Vec<u8>>::new();
     let mut owned_search_batch = Vec::<SearchRow>::new();
     let mut fts_insert_ms = 0.0;
     let mut node_row_insert_ms = bulk_search.then_some(0.0);
     let mut reusable_search_buffers = Vec::<String>::new();
     let mut incremental_search_buffer = String::new();
+    let mut node_batch = Vec::<[BorrowedSqlValue<'static>; 14]>::new();
+    let mut local_facts_batch = Vec::<(&FileEntry, Vec<u8>)>::new();
+    let mut doc_sections_batch = bulk_search
+        .then(|| {
+            MultiValueBatch::<10, BorrowedSqlValue<'static>>::new(
+                tx,
+                "INSERT INTO doc_sections VALUES",
+            )
+        })
+        .transpose()?;
     let mut shared_owner_rows = Vec::<[i64; 4]>::new();
     let (file_batch_rows, node_batch_rows, owned_search_batch_rows) = if bulk_search {
         (
@@ -129,12 +168,26 @@ pub(super) fn persist_files(
         (None, None, None)
     };
 
-    for file_chunk in entries.chunks(local_facts_batch_rows.unwrap_or(1)) {
-        let encoded_chunk: Vec<(Vec<u8>, (String, String))> = if local_facts_batch_rows.is_some() {
-            let started = Instant::now();
-            let encoded = file_chunk
-                .par_iter()
-                .map(|file| {
+    let chunk_rows = local_facts_batch_rows.unwrap_or(1);
+    for file_chunk in entries.chunks(chunk_rows) {
+        let mut loaded = loader
+            .as_mut()
+            .map(|loader| loader(file_chunk, facts))
+            .transpose()?;
+        let mut encoded_chunk: Vec<(Vec<u8>, (String, String))> =
+            if let Some(loaded) = loaded.as_mut() {
+                loaded
+                    .iter_mut()
+                    .map(|file| {
+                        (
+                            std::mem::take(&mut file.encoded),
+                            std::mem::take(&mut file.local_facts_leaf),
+                        )
+                    })
+                    .collect()
+            } else if local_facts_batch_rows.is_some() {
+                let started = Instant::now();
+                let encode = |file: &FileEntry| {
                     let facts = facts.get(&file.path).context("missing extracted facts")?;
                     let blob = encode_facts(facts)?;
                     let leaf = seal::local_facts_leaf(
@@ -145,18 +198,38 @@ pub(super) fn persist_files(
                         &blob,
                     )?;
                     Ok((blob, leaf))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
-            encoded
-        } else {
-            Vec::new()
-        };
-        let mut local_facts_batch = Vec::<[BorrowedSqlValue<'_>; 6]>::with_capacity(
-            local_facts_batch_rows.unwrap_or_default(),
-        );
+                };
+                let encoded = if file_chunk.len() == 1 {
+                    file_chunk.iter().map(encode).collect::<Result<Vec<_>>>()?
+                } else {
+                    file_chunk
+                        .par_iter()
+                        .map(encode)
+                        .collect::<Result<Vec<_>>>()?
+                };
+                encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
+                encoded
+            } else {
+                Vec::new()
+            };
         for (chunk_index, file) in file_chunk.iter().enumerate() {
-            let f = facts.get(&file.path).context("missing extracted facts")?;
+            let (f, mut details_json, mut search_texts, prepared_references) =
+                if let Some(loaded) = loaded.as_mut() {
+                    let loaded = &mut loaded[chunk_index];
+                    (
+                        &loaded.facts,
+                        Some(&mut loaded.details_json),
+                        Some(&mut loaded.search_texts),
+                        Some(&loaded.reference_keys),
+                    )
+                } else {
+                    (
+                        facts.get(&file.path).context("missing extracted facts")?,
+                        None,
+                        None,
+                        None,
+                    )
+                };
             let owner_id = path_cache.get_or_insert(tx, &file.path)?;
             if let Some(batch) = source_inventory_batch.as_mut() {
                 batch.push([
@@ -200,22 +273,11 @@ pub(super) fn persist_files(
                     ])?;
             }
             if let Some(batch_rows) = local_facts_batch_rows {
-                let (blob, leaf) = &encoded_chunk[chunk_index];
-                local_facts_leaves.insert(leaf.0.clone(), leaf.1.clone());
-                local_facts_batch.push([
-                    BorrowedSqlValue::Text(&file.path),
-                    BorrowedSqlValue::Text(&file.digest),
-                    BorrowedSqlValue::Text(&file.language),
-                    BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
-                    BorrowedSqlValue::Integer(0),
-                    BorrowedSqlValue::Blob(blob),
-                ]);
+                let (blob, leaf) = &mut encoded_chunk[chunk_index];
+                local_facts_leaves.insert(std::mem::take(&mut leaf.0), std::mem::take(&mut leaf.1));
+                local_facts_batch.push((file, std::mem::take(blob)));
                 if local_facts_batch.len() == batch_rows {
-                    insert_multi_value_batch(
-                        tx,
-                        "INSERT INTO local_facts VALUES",
-                        &local_facts_batch,
-                    )?;
+                    flush_local_facts_batch(tx, &local_facts_batch)?;
                     local_facts_batch.clear();
                 }
             } else {
@@ -241,7 +303,7 @@ pub(super) fn persist_files(
                         blob.as_slice()
                     ])?;
             }
-            for n in &f.nodes {
+            for (node_index, n) in f.nodes.iter().enumerate() {
                 node_id += 1;
                 let search_id = stable_hash64(&n.id);
                 let node_path_id = if n.path == file.path {
@@ -250,20 +312,26 @@ pub(super) fn persist_files(
                     path_cache.get_or_insert(tx, &n.path)?
                 };
                 if bulk_search {
-                    let mut details = reusable_detail_buffers.pop().unwrap_or_default();
-                    details.clear();
-                    serde_json::to_writer(&mut details, &n.navigation_details())?;
+                    let details = if let Some(prepared) = details_json.as_mut() {
+                        reusable_detail_buffers.pop();
+                        std::mem::take(&mut prepared[node_index]).into_bytes()
+                    } else {
+                        let mut details = reusable_detail_buffers.pop().unwrap_or_default();
+                        details.clear();
+                        serde_json::to_writer(&mut details, &n.navigation_details())?;
+                        details
+                    };
                     node_batch.push([
                         BorrowedSqlValue::Integer(node_id),
-                        BorrowedSqlValue::Text(&n.id),
-                        BorrowedSqlValue::Text(&n.kind),
-                        BorrowedSqlValue::Text(&n.name),
-                        BorrowedSqlValue::Text(&n.qualname),
+                        BorrowedSqlValue::OwnedText(n.id.clone()),
+                        BorrowedSqlValue::OwnedText(n.kind.clone()),
+                        BorrowedSqlValue::OwnedText(n.name.clone()),
+                        BorrowedSqlValue::OwnedText(n.qualname.clone()),
                         BorrowedSqlValue::Integer(node_path_id),
                         BorrowedSqlValue::Integer(i64::try_from(n.line)?),
                         BorrowedSqlValue::Integer(i64::try_from(n.end_line)?),
                         BorrowedSqlValue::Integer(i64::from(n.is_test)),
-                        BorrowedSqlValue::Text(&n.language),
+                        BorrowedSqlValue::OwnedText(n.language.clone()),
                         BorrowedSqlValue::Integer(i64::from(n.generated)),
                         BorrowedSqlValue::OwnedJsonText(details),
                         BorrowedSqlValue::Integer(search_id),
@@ -301,8 +369,14 @@ pub(super) fn persist_files(
                         ])?;
                 }
                 if bulk_search {
-                    let mut search = reusable_search_buffers.pop().unwrap_or_default();
-                    write_node_search_text(&mut search, n, f);
+                    let search = if let Some(prepared) = search_texts.as_mut() {
+                        reusable_search_buffers.pop();
+                        std::mem::take(&mut prepared[node_index])
+                    } else {
+                        let mut search = reusable_search_buffers.pop().unwrap_or_default();
+                        write_node_search_text(&mut search, n, f);
+                        search
+                    };
                     owned_search_batch.push(SearchRow {
                         search_id,
                         text: search,
@@ -326,7 +400,11 @@ pub(super) fn persist_files(
                 let key_hash = shared_key_cache.get_or_insert_node(&n.qualname, node_id)?;
                 shared_owner_rows.push([0, key_hash, owner_id, node_id]);
             }
-            for key in reference_keys(f) {
+            let keys = prepared_references.map_or_else(
+                || reference_keys(f),
+                |keys| keys.iter().map(String::as_str).collect(),
+            );
+            for key in keys {
                 let key_hash = shared_key_cache.get_or_insert(key)?;
                 shared_owner_rows.push([1, key_hash, owner_id, 0]);
             }
@@ -348,11 +426,11 @@ pub(super) fn persist_files(
                 docs_count += 1;
                 if let Some(batch) = doc_sections_batch.as_mut() {
                     batch.push([
-                        BorrowedSqlValue::Text(&d.doc_id),
-                        BorrowedSqlValue::Text(&d.path),
-                        BorrowedSqlValue::Text(&d.section_title),
-                        BorrowedSqlValue::Text(&d.doc_type),
-                        BorrowedSqlValue::Text(&d.content),
+                        BorrowedSqlValue::OwnedText(d.doc_id.clone()),
+                        BorrowedSqlValue::OwnedText(d.path.clone()),
+                        BorrowedSqlValue::OwnedText(d.section_title.clone()),
+                        BorrowedSqlValue::OwnedText(d.doc_type.clone()),
+                        BorrowedSqlValue::OwnedText(d.content.clone()),
                         BorrowedSqlValue::OwnedText(serde_json::to_string(&d.invariants)?),
                         BorrowedSqlValue::OwnedText(serde_json::to_string(&d.referenced_symbols)?),
                         BorrowedSqlValue::Real(d.mtime),
@@ -386,23 +464,20 @@ pub(super) fn persist_files(
                 stmt_errors.execute(params![e.path, e.line, e.message])?;
             }
         }
-        if !local_facts_batch.is_empty() {
-            insert_multi_value_batch(tx, "INSERT INTO local_facts VALUES", &local_facts_batch)?;
-            local_facts_batch.clear();
-        }
     }
 
-    insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
+    flush_local_facts_batch(tx, &local_facts_batch)?;
+    if let Some(batch) = doc_sections_batch.as_mut() {
+        batch.flush()?;
+    }
     let insert_ms = flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
     if let Some(total_ms) = node_row_insert_ms.as_mut() {
         *total_ms += insert_ms;
     }
+    insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
     fts_insert_ms +=
         flush_owned_search_batch(tx, &mut owned_search_batch, &mut reusable_search_buffers)?;
     if let Some(batch) = source_inventory_batch.as_mut() {
-        batch.flush()?;
-    }
-    if let Some(batch) = doc_sections_batch.as_mut() {
         batch.flush()?;
     }
 
@@ -418,6 +493,23 @@ pub(super) fn persist_files(
         local_facts_batch_rows: local_facts_batch_rows.unwrap_or(1),
         local_facts_leaves,
     })
+}
+
+fn flush_local_facts_batch(tx: &Connection, batch: &[(&FileEntry, Vec<u8>)]) -> Result<()> {
+    let rows: Vec<_> = batch
+        .iter()
+        .map(|(file, blob)| {
+            [
+                BorrowedSqlValue::Text(&file.path),
+                BorrowedSqlValue::Text(&file.digest),
+                BorrowedSqlValue::Text(&file.language),
+                BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
+                BorrowedSqlValue::Integer(0),
+                BorrowedSqlValue::Blob(blob),
+            ]
+        })
+        .collect();
+    insert_multi_value_batch(tx, "INSERT INTO local_facts VALUES", &rows)
 }
 
 fn flush_node_batch(
@@ -441,7 +533,7 @@ fn flush_node_batch(
     Ok(insert_ms)
 }
 
-fn write_node_search_text(search: &mut String, node: &Node, facts: &Facts) {
+pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &Facts) {
     search.clear();
     let doc = node
         .details
@@ -581,6 +673,132 @@ struct StoredDependency<'a> {
     resolution: &'a str,
 }
 
+#[derive(Default)]
+struct DependencyInput<'a> {
+    edges: Vec<&'a [crate::core::models::compact_graph::Edge]>,
+    coverage: Vec<&'a [crate::core::models::compact_graph::Coverage]>,
+}
+
+fn persist_dependencies(
+    tx: &Connection,
+    path_cache: &mut PathDictionaryCache,
+    graph: &CompactGraph,
+    facts: &BTreeMap<String, TypedFacts>,
+    dependency_owners: Option<&std::collections::BTreeSet<String>>,
+    node_paths: &mut hashbrown::HashMap<String, Option<CachedNodePath>>,
+    stmt_select_path: &mut rusqlite::Statement<'_>,
+) -> Result<()> {
+    let mut inputs = BTreeMap::<&str, DependencyInput<'_>>::new();
+    for path in facts.keys() {
+        inputs.entry(path).or_default();
+    }
+    for edges in graph.edges.chunk_by(|left, right| left.path == right.path) {
+        inputs.entry(&edges[0].path).or_default().edges.push(edges);
+    }
+    for rows in graph
+        .coverage
+        .chunk_by(|left, right| left.path == right.path)
+    {
+        inputs.entry(&rows[0].path).or_default().coverage.push(rows);
+    }
+    let mut batch =
+        MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO dependencies VALUES")?;
+    for (path, input) in inputs {
+        let owner = path_cache.get_or_insert(tx, path)?;
+        let mut dependencies = Vec::new();
+        #[cfg(feature = "lang-html")]
+        if dependency_owners.is_none_or(|owners| owners.contains(path)) {
+            if let Some(file_facts) = facts.get(path) {
+                for node in file_facts.nodes.iter().filter(|node| {
+                    node.language == "python"
+                        && matches!(node.kind.as_str(), "module" | "function" | "method")
+                }) {
+                    let Some(flow) = file_facts.flows.get(node) else {
+                        continue;
+                    };
+                    for context in &flow.template_contexts {
+                        let Some(target) =
+                            crate::core::config::local_template_target(path, &context.target)
+                        else {
+                            continue;
+                        };
+                        if crate::core::config::workspace_path(path).0
+                            != crate::core::config::workspace_path(&target).0
+                        {
+                            continue;
+                        }
+                        dependencies.push(StoredDependency {
+                            owner,
+                            target: Some(stable_hash64(&target)),
+                            kind: "renders",
+                            symbol: &context.target,
+                            resolution: "resolved",
+                        });
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "lang-html"))]
+        let _ = dependency_owners;
+        for edge in input.edges.into_iter().flatten() {
+            let (_, src_target) = graph_endpoint_hashes(
+                node_paths,
+                stmt_select_path,
+                &edge.src,
+                path,
+                edge.kind.as_str(),
+            )?;
+            let (_, dst_target) = graph_endpoint_hashes(
+                node_paths,
+                stmt_select_path,
+                &edge.dst,
+                path,
+                edge.kind.as_str(),
+            )?;
+            for target in [src_target, dst_target].into_iter().flatten() {
+                dependencies.push(StoredDependency {
+                    owner,
+                    target: Some(target),
+                    kind: edge.kind.as_str(),
+                    symbol: &edge.evidence,
+                    resolution: "resolved",
+                });
+            }
+        }
+        for row in input
+            .coverage
+            .into_iter()
+            .flatten()
+            .filter(|row| row.status != "resolved")
+        {
+            dependencies.push(StoredDependency {
+                owner,
+                target: None,
+                kind: "unresolved",
+                symbol: &row.expression,
+                resolution: row.status.as_str(),
+            });
+        }
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        for (ordinal, dependency) in dependencies.into_iter().enumerate() {
+            batch.push([
+                BorrowedSqlValue::Integer(owner),
+                BorrowedSqlValue::Integer(
+                    i64::try_from(ordinal).context("dependency ordinal overflow")?,
+                ),
+                dependency
+                    .target
+                    .map_or(BorrowedSqlValue::Null, BorrowedSqlValue::Integer),
+                BorrowedSqlValue::Text(dependency.kind),
+                BorrowedSqlValue::Text(dependency.symbol),
+                BorrowedSqlValue::Text(dependency.resolution),
+            ])?;
+        }
+    }
+    batch.flush()
+}
+
 pub(super) struct GraphPersistenceTimings {
     pub(super) occurrences: f64,
     pub(super) edges: f64,
@@ -612,8 +830,6 @@ pub(super) fn persist_graph(
     } else {
         0
     });
-    let mut dependency_batch =
-        MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO dependencies VALUES")?;
     let mut stmt_select_path = tx.prepare_cached(
         "SELECT p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id=?1",
     )?;
@@ -624,53 +840,6 @@ pub(super) fn persist_graph(
         tx,
         "INSERT OR IGNORE INTO coverage_owner_language(path_id,line,expression_id,status,evidence_id,language) VALUES",
     )?;
-    let mut dependencies = Vec::<StoredDependency<'_>>::with_capacity(
-        graph.edges.len().saturating_add(graph.coverage.len()),
-    );
-    #[cfg(feature = "lang-html")]
-    for (provider_path, file_facts) in facts {
-        if dependency_owners.is_some_and(|owners| !owners.contains(provider_path)) {
-            continue;
-        }
-        let mut owner_id = None;
-        for node in file_facts.nodes.iter().filter(|node| {
-            node.language == "python"
-                && matches!(node.kind.as_str(), "module" | "function" | "method")
-        }) {
-            let Some(flow) = file_facts.flows.get(node) else {
-                continue;
-            };
-            for context in &flow.template_contexts {
-                let Some(target) = crate::core::config::local_template_target(
-                    provider_path,
-                    &context.target,
-                ) else {
-                    continue;
-                };
-                if crate::core::config::workspace_path(provider_path).0
-                    != crate::core::config::workspace_path(&target).0
-                {
-                    continue;
-                }
-                let owner = match owner_id {
-                    Some(owner) => owner,
-                    None => {
-                        let owner = path_cache.get_or_insert(tx, provider_path)?;
-                        owner_id = Some(owner);
-                        owner
-                    }
-                };
-                dependencies.push(StoredDependency {
-                    owner,
-                    target: Some(stable_hash64(&target)),
-                    kind: "renders",
-                    symbol: context.target.as_str(),
-                    resolution: "resolved",
-                });
-            }
-        }
-    }
-
     for (first, e) in graph.edges.iter().enumerate() {
         if current_path != Some(e.path.as_str()) {
             if let Some(previous_path) = current_path {
@@ -688,14 +857,14 @@ pub(super) fn persist_graph(
         let confidence_id = *evidence_ids
             .get(e.confidence.as_str())
             .context("missing edge confidence")?;
-        let (src_hash, src_target) = graph_endpoint_hashes(
+        let (src_hash, _) = graph_endpoint_hashes(
             node_paths,
             &mut stmt_select_path,
             &e.src,
             &e.path,
             e.kind.as_str(),
         )?;
-        let (dst_hash, dst_target) = graph_endpoint_hashes(
+        let (dst_hash, _) = graph_endpoint_hashes(
             node_paths,
             &mut stmt_select_path,
             &e.dst,
@@ -727,23 +896,6 @@ pub(super) fn persist_graph(
                 confidence: confidence_id,
                 count: 1,
                 first,
-            });
-        }
-        let mut target_hashes = [None, None];
-        let mut targets_len = 0;
-        for target_hash in [src_target, dst_target].into_iter().flatten() {
-            if !target_hashes[..targets_len].contains(&Some(target_hash)) {
-                target_hashes[targets_len] = Some(target_hash);
-                targets_len += 1;
-            }
-        }
-        for target_hash in target_hashes[..targets_len].iter().flatten() {
-            dependencies.push(StoredDependency {
-                owner: owner_id,
-                target: Some(*target_hash),
-                kind: e.kind.as_str(),
-                symbol: e.evidence.as_str(),
-                resolution: "resolved",
             });
         }
     }
@@ -779,6 +931,11 @@ pub(super) fn persist_graph(
             ])?;
         }
         edge_batch.flush()?;
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        // SAFETY: unique edge scratch storage has dropped; glibc synchronizes arenas.
+        libc::malloc_trim(0);
     }
     let edges = phase.elapsed().as_secs_f64() * 1000.;
     let phase = Instant::now();
@@ -973,15 +1130,6 @@ pub(super) fn persist_graph(
                 owner_language_counts.push((item_language, c.status.as_str(), 1));
             }
         }
-        if c.status != "resolved" {
-            dependencies.push(StoredDependency {
-                owner: owner_id,
-                target: None,
-                kind: "unresolved",
-                symbol: c.expression.as_str(),
-                resolution: c.status.as_str(),
-            });
-        }
     }
     if let Some(owner_id) = current_owner_id {
         flush_owner_language_counts(owner_id, &mut owner_language_counts, &mut language_counts);
@@ -1002,34 +1150,15 @@ pub(super) fn persist_graph(
         ])?;
     }
     language_count_batch.flush()?;
-    if dependencies.len() >= 8192 {
-        dependencies.par_sort_unstable();
-    } else {
-        dependencies.sort_unstable();
-    }
-    dependencies.dedup();
-    let mut owner = None;
-    let mut ordinal = 0i64;
-    for dependency in dependencies {
-        if owner != Some(dependency.owner) {
-            owner = Some(dependency.owner);
-            ordinal = 0;
-        }
-        dependency_batch.push([
-            BorrowedSqlValue::Integer(dependency.owner),
-            BorrowedSqlValue::Integer(ordinal),
-            dependency
-                .target
-                .map_or(BorrowedSqlValue::Null, BorrowedSqlValue::Integer),
-            BorrowedSqlValue::Text(dependency.kind),
-            BorrowedSqlValue::Text(dependency.symbol),
-            BorrowedSqlValue::Text(dependency.resolution),
-        ])?;
-        ordinal = ordinal
-            .checked_add(1)
-            .context("dependency ordinal overflow")?;
-    }
-    dependency_batch.flush()?;
+    persist_dependencies(
+        tx,
+        path_cache,
+        graph,
+        facts,
+        dependency_owners,
+        node_paths,
+        &mut stmt_select_path,
+    )?;
     Ok(GraphPersistenceTimings {
         occurrences,
         edges,

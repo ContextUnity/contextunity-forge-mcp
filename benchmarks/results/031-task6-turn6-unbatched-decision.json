@@ -1,0 +1,73 @@
+{
+  "all_17_domains_and_graph_parity": true,
+  "baseline_commit": "a16620df96bbad00e9536864f86a35f066a7b8fe",
+  "baseline_median_wall_seconds": 10.635126804932952,
+  "candidate_all_rss_below_800_mb": true,
+  "candidate_change_percent_vs_periodic_trim_control": 5.3218942615144815,
+  "candidate_median_phases_ms": {
+    "bulk_paths_ms": 54.635818,
+    "components_ms": 40.218118999999994,
+    "doc_fts_insert_ms": 17.480665,
+    "elapsed_ms": 11175.661275,
+    "encode_facts_ms": 17.30272400000001,
+    "extract_ms": 43542.236166,
+    "fts_insert_ms": 207.15254800000002,
+    "index_and_seal_ms": 2116.56898,
+    "indexes_ms": 1096.976322,
+    "link_ms": 1941.52603,
+    "node_row_insert_ms": 228.5705270000001,
+    "persist_files_ms": 1284.6029589999998,
+    "persist_graph_ms": 1676.6212569999998,
+    "persist_ms": 5703.690151,
+    "preencoded_facts_ms": 0.0,
+    "restore_payload_ms": 205.58764499999975,
+    "rows_ms": 3486.636963,
+    "scan_ms": 2672.2553279999997,
+    "seal_file_domains_ms": 34.464878,
+    "seal_fts_ms": 878.683004,
+    "seal_graph_coverage_ms": 167.02223,
+    "seal_graph_dependencies_ms": 324.98510200000004,
+    "seal_graph_domains_ms": 1097.854315,
+    "seal_graph_edges_ms": 311.321303,
+    "seal_graph_occurrences_ms": 4.163799,
+    "seal_graph_shared_owners_ms": 0.00015,
+    "seal_graph_unique_edges_ms": 331.473719,
+    "seal_ms": 81.813762,
+    "seal_node_domain_ms": 11.380464,
+    "seal_projection_ms": 1158.4761600000002,
+    "seal_snapshot_install_ms": 68.30391399999999,
+    "seal_snapshot_logical_domains_ms": 11.478922,
+    "seal_snapshot_ms": 81.81362200000001,
+    "sqlite_ingest_ms": 54.131524,
+    "verify_ms": 387.735442
+  },
+  "candidate_median_wall_seconds": 11.270042245741934,
+  "candidate_paired_wall_changes_percent": [
+    29.820305171333406,
+    -1.7323502426150106,
+    3.6971488563796395
+  ],
+  "candidate_peak_rss_bytes": [
+    795566080,
+    789127168,
+    789704704
+  ],
+  "candidate_wall_change_percent": 5.969984678645157,
+  "candidate_wall_median_improves": false,
+  "discarded": [
+    "CatalogStoragePayload serialization of whole semantic nodes",
+    "Projection overlap with index construction: no measured median benefit",
+    "FTS parallel sorting and lazy term map: no measured median benefit"
+  ],
+  "max_peak_rss_bytes": 795566080,
+  "milestone_20_percent_cf4aa29_claim": "Not established by this a16620d task comparison; existing milestone requirement remains separate.",
+  "periodic_trim_control_median_wall_seconds": 10.700569264125079,
+  "retained": [
+    "PreparedCatalogStorage and insert_typed(false)",
+    "Consume compact compressed payloads from an in-memory BTreeMap one file at a time",
+    "Cache only source payloads needed by composed nodes",
+    "Skip restored file-domain projections globally",
+    "Trim after workers join; omit active-worker periodic trimming"
+  ],
+  "selected_variant": "prepared-memory-no-periodic-trim"
+}

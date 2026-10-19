@@ -1,0 +1,36 @@
+{
+  "baseline_commit": "ed10832ac31243aaf0e47cea7462309a17cc5d87",
+  "baseline_profile_build": "CARGO_PROFILE_RELEASE_STRIP=false cargo build --release -p contextunity-forge-mcp; unchanged ed10832 source; optimized but symbols retained; not a benchmark contender.",
+  "candidate_changes": "Keep compressed bounded staging. Pack navigation JSON, search text, reference keys and leaf strings with length prefixes rather than reserializing them as JSON. Store only documentation/errors in staged TypedFacts. Recreate scalar node rows from the existing lean catalog inside each bounded persistence chunk. No SQLite PRAGMA changes.",
+  "candidate_diff_vs_ed10832_sha256": "ebc1ff26b14fc923762a2b4f4d0fa815446d75b8abcf8e837e850ef2e26f7c78",
+  "candidate_source_sha256": "9cf4a685b79177b4c17b28324e3b614bd55d418272690e2bce539682d10094bc",
+  "claim_revision": 11,
+  "direct_rows_rejected": "Diagnostic user time38.004s vs39.210s; wall9.907s vs10.075s; peak869502976bytes exceeded800000000. Field JSON-size instrumentation ran separately and is not CPU acceptance evidence.",
+  "fixtures": "/tmp/forge031-bench-wiysmu06/commerce;3990files; fresh database and extraction cache for every run",
+  "milestone_parent": "97228a1b12615e90e5c7f468ec64af645dc29a3f",
+  "profile_interpretation": "Leaf samples; no complete inclusive attribution due to inlining/unwind limits. Tree-sitter traversal remains the largest observed leaf-symbol group, deferred from production changes in this candidate.",
+  "source_hash_policy": "SHA256 over sorted git ls-files src Cargo.toml Cargo.lock build.rs: path, NUL, exact source bytes",
+  "variants": {
+    "direct-rows": {
+      "path": "/tmp/031-task7-variants/direct-rows",
+      "sha256": "a068af56b5e0bb3fd300256d344920979cccec10331c72510d5f505a2f7745c3"
+    },
+    "ed10832": {
+      "path": "/tmp/031-task7-variants/ed10832",
+      "sha256": "6b0dc19606cd2b1271d17c48f23d6dba247a8c21a975ea59316a9422197718e6"
+    },
+    "ed10832-symbols": {
+      "path": "/tmp/031-task7-variants/ed10832-symbols",
+      "sha256": "6f84e1930066da42848669ea03ce362b7cf2ee1bc20195bb2f50bd4f043e4be0"
+    },
+    "installed": {
+      "path": "/tmp/031-task7-variants/installed",
+      "sha256": "60ef6f5c63cb78dba8ac18682806a0ee34c66f56824dbde29ea4c6b141c6292e"
+    },
+    "packed-rows": {
+      "path": "/tmp/031-task7-variants/packed-rows",
+      "sha256": "d73d7d90ff89954effb14f52e7021c803e9601e6788e543a08050732e82898db"
+    }
+  },
+  "worker_id": "031-task6-builder"
+}

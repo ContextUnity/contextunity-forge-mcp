@@ -7,6 +7,217 @@ use contextunity_forge_mcp::{
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 
+#[cfg(feature = "lang-python")]
+#[test]
+fn lean_symbol_catalog_retains_no_full_facts_in_memory() {
+    use contextunity_forge_mcp::{core::semantic::SymbolCatalog, engine::linker};
+
+    let ws = Workspace::new();
+    ws.write("forge-mcp.yaml", "roots: [src]\ndocs: [README.md]\n");
+    ws.write(
+        "src/provider.py",
+        "class Service:\n    '''Service documentation.'''\n    def run(self):\n        return 1\n",
+    );
+    ws.write(
+        "src/consumer.py",
+        "from provider import Service\n\ndef caller():\n    service = Service()\n    return service.run()\n",
+    );
+    ws.write(
+        "README.md",
+        "# Service\n\nMUST retain `Service` discovery.\n",
+    );
+    let adapter = scanner::load_adapter(ws.root(), None).unwrap();
+    let scan = scanner::scan_with_adapter(ws.root(), &adapter).unwrap();
+    let mut full: BTreeMap<_, _> = scan
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.path.clone(),
+                writer::extract(ws.root(), entry, &adapter).unwrap(),
+            )
+        })
+        .collect();
+    let extracted = full.clone();
+    for facts in full.values_mut() {
+        for node in &mut facts.nodes {
+            node.details["syntax_tree"] = serde_json::json!({"body": "syntax".repeat(1024)});
+            node.details["occurrence_token_spans"] = serde_json::json!([[0, 10], [11, 20]]);
+        }
+    }
+    let expected = linker::link(&full);
+    let service = full["src/provider.py"]
+        .nodes
+        .iter()
+        .find(|node| node.name == "Service")
+        .unwrap();
+    let run = full["src/provider.py"]
+        .nodes
+        .iter()
+        .find(|node| node.name == "run")
+        .unwrap();
+    let caller = full["src/consumer.py"]
+        .nodes
+        .iter()
+        .find(|node| node.name == "caller")
+        .unwrap();
+    for target in [&service.id, &run.id] {
+        assert!(expected
+            .edges
+            .iter()
+            .any(|edge| { edge.src == caller.id && edge.dst == *target && edge.kind == "calls" }));
+    }
+
+    let catalog = SymbolCatalog::from_facts(full.clone());
+    assert!(catalog
+        .file("src/consumer.py")
+        .unwrap()
+        .references
+        .iter()
+        .all(|reference| {
+            !matches!(reference.kind.as_str(), "calls" | "references")
+                || reference.receiver_hint.is_some()
+        }));
+    for (path, original) in &full {
+        let lean = catalog.file(path).unwrap();
+        assert_eq!(
+            serde_json::to_value(catalog.references(path).unwrap()).unwrap(),
+            serde_json::to_value(&original.references).unwrap()
+        );
+        assert_eq!(lean.nodes.len(), original.nodes.len());
+        for (node, original) in lean.nodes.iter().zip(&original.nodes) {
+            assert_eq!(
+                (&node.id, &node.kind, &node.qualname),
+                (&original.id, &original.kind, &original.qualname)
+            );
+            for key in [
+                "namespace",
+                "bases",
+                "param_types",
+                "imports",
+                "exports",
+                "receiver_type",
+            ] {
+                assert_eq!(node.details.get(key), original.details.get(key));
+            }
+            for key in ["doc", "docstring", "syntax_tree", "occurrence_token_spans"] {
+                assert!(node.details.get(key).is_none(), "retained {key}");
+            }
+        }
+        for doc in &lean.docs {
+            assert!(doc.content.is_empty());
+            assert!(doc.invariants.is_empty());
+        }
+    }
+    // This includes constructor calls, the method call inferred from the local
+    // binding's typed value flow, import resolution, and document discovery.
+    let actual = linker::link_catalog(&catalog);
+    assert_eq!(
+        serde_json::to_value((&actual.edges, &actual.coverage)).unwrap(),
+        serde_json::to_value((&expected.edges, &expected.coverage)).unwrap()
+    );
+
+    let database = ws.root().join(".forge/catalog.sqlite");
+    let report = pipeline::build(ws.root(), &database, None).unwrap();
+    assert_eq!(report["linking_facts_mode"], "symbol-catalog");
+    let conn = Connection::open(database).unwrap();
+    let payload_tables: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='catalog_payloads'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        payload_tables, 0,
+        "staging payloads must not survive publication"
+    );
+    for (path, expected) in extracted {
+        let blob: Vec<u8> = conn
+            .query_row(
+                "SELECT facts_blob FROM local_facts WHERE path=?1",
+                [&path],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let bytes = zstd::stream::decode_all(blob.as_slice()).unwrap();
+        let mut stored: Facts = serde_json::from_slice(&bytes).unwrap();
+        stored.nodes.retain(|node| node.kind != "component");
+        stored
+            .edges
+            .retain(|edge| !edge.src.starts_with("component:"));
+        assert_eq!(
+            serde_json::to_vec(&stored).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
+    }
+    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+
+    let routes = Workspace::new();
+    routes.write(
+        "pyproject.toml",
+        "[project]\nname = 'routes'\ndependencies = ['django']\n",
+    );
+    routes.write("urls.py", "from django.urls import path, include\nurlpatterns = [path('shop/', include('shop.urls'))]\n");
+    routes.write("shop/urls.py", "from django.urls import path, include\nurlpatterns = [path('nested/', include('catalog.urls'))]\n");
+    routes.write("catalog/urls.py", "from django.urls import path\nfrom catalog.views import endpoint\nurlpatterns = [path('detail/', endpoint, name='detail')]\n");
+    routes.write("catalog/views.py", "def endpoint(): return 'handler'\n");
+    let database = routes.root().join(".forge/catalog.sqlite");
+    pipeline::build(routes.root(), &database, None).unwrap();
+    let conn = Connection::open(database).unwrap();
+    let handles: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT route.name, handler.qualname FROM edge_occurrences edge
+         JOIN nodes route ON route.node_hash=edge.src_hash
+         JOIN nodes handler ON handler.node_hash=edge.dst_hash
+         WHERE edge.kind='handles' ORDER BY route.name",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        handles,
+        vec![
+            ("ANY detail/".into(), "catalog.views.endpoint".into()),
+            ("ANY nested/detail/".into(), "catalog.views.endpoint".into()),
+            (
+                "ANY shop/nested/detail/".into(),
+                "catalog.views.endpoint".into()
+            ),
+        ]
+    );
+    let blob: Vec<u8> = conn
+        .query_row(
+            "SELECT facts_blob FROM local_facts WHERE path='catalog/urls.py'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let bytes = zstd::stream::decode_all(blob.as_slice()).unwrap();
+    let stored: Facts = serde_json::from_slice(&bytes).unwrap();
+    let catalog =
+        SymbolCatalog::from_facts(BTreeMap::from([("catalog/urls.py".into(), stored.clone())]));
+    assert_eq!(
+        serde_json::to_value(catalog.references("catalog/urls.py").unwrap()).unwrap(),
+        serde_json::to_value(&stored.references).unwrap(),
+        "already composed facts must not duplicate references"
+    );
+    assert_eq!(
+        stored
+            .references
+            .iter()
+            .filter(
+                |reference| reference.source.contains(":included:") && reference.kind == "handles"
+            )
+            .count(),
+        2,
+        "both composed handlers must survive durable fact restoration"
+    );
+    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+}
+
 #[cfg(feature = "lang-rust")]
 #[test]
 fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() {
@@ -554,5 +765,3 @@ fn bundled_framework_manifests_are_fingerprinted_in_dependency_digest() {
         "registry must expose a deterministic standard manifests digest"
     );
 }
-
-

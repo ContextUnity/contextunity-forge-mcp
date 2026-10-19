@@ -1,0 +1,23 @@
+{
+  "cache_priming": {
+    "warm-ed10832": {
+      "peak_rss_bytes": 783368192,
+      "system_seconds": 3.5445599999999997,
+      "user_seconds": 43.589878,
+      "wall_seconds": 12.318886518012732
+    }
+  },
+  "cold_path": [
+    "pipeline.rs:426 hashes source once, reusing digest for FileEntry and cache key",
+    "pipeline.rs:428-434 derives cache key from digest, path, language, semantics version and effective ruleset hash",
+    "pipeline.rs:448-450 extracts once and publishes cache entry before preparing persistence data",
+    "writer/cache.rs:431-476 facts_to_dto clones node scalar fields, edges, references, docs and errors; serializes flow values into BinaryValue",
+    "writer/cache.rs:506-519 writes binary DTO and computes SHA256 checksum",
+    "core/typed_facts.rs:9-17 independently encodes durable local_facts as JSON+Zstd level1; cache and durable bytes have different wire formats"
+  ],
+  "decision": "Warm reuse is existing behavior, not a cold CPU optimization. No cache correctness checks or encodings changed. Eliminating DTO cloning needs a separate byte-equivalence test and controlled experiment; no empirical cold speed claim is made here.",
+  "disk_bytes": 143771040,
+  "entry_count": 3990,
+  "format": "Extraction cache v3 custom binary, SHA256 payload checksum; no Zstd compression",
+  "max_entry_bytes": 446402
+}

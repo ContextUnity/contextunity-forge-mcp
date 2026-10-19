@@ -1,6 +1,245 @@
 //! Language-neutral evidence for statically inferred receiver types.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use super::{models::Facts, typed_facts::TypedFacts};
+
+/// Workspace linking inputs, without storage-only syntax and documentation.
+///
+/// Definitions retain their namespace, container, import and export metadata.
+/// References and typed value flow remain intact, including source positions
+/// used by lexical visibility and assignment ordering.
+#[derive(Default)]
+pub struct SymbolCatalog {
+    pub(crate) files: BTreeMap<String, TypedFacts>,
+    pub(crate) occurrences: BTreeMap<String, Vec<u8>>,
+}
+
+impl SymbolCatalog {
+    /// Consumes extracted facts and keeps their linking projection.
+    pub fn from_facts(files: BTreeMap<String, Facts>) -> Self {
+        let mut catalog = Self::default();
+        for (path, facts) in files {
+            catalog.insert_typed(path, TypedFacts::from_public(facts), false);
+        }
+        catalog
+    }
+
+    /// Borrows declarations and references for one workspace file.
+    /// Typed value flow is retained separately and borrowed by the linker.
+    pub fn file(&self, path: &str) -> Option<&Facts> {
+        self.files.get(path).map(AsRef::as_ref)
+    }
+
+    /// Restores one file's reference occurrences while definitions stay borrowed.
+    pub fn references(&self, path: &str) -> Option<Vec<super::models::Reference>> {
+        self.files.get(path).map(|facts| {
+            self.occurrences.get(path).map_or_else(
+                || facts.references.clone(),
+                |bytes| decode_catalog_references(bytes, &facts.references),
+            )
+        })
+    }
+
+    pub(crate) fn into_files(self) -> BTreeMap<String, TypedFacts> {
+        self.files
+    }
+
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.files.extend(other.files);
+        self.occurrences.extend(other.occurrences);
+    }
+
+    pub(crate) fn insert_typed(
+        &mut self,
+        path: String,
+        mut facts: TypedFacts,
+        retain_storage: bool,
+    ) -> CatalogStoragePayload {
+        let mut payload = CatalogStoragePayload::default();
+        if facts
+            .nodes
+            .iter()
+            .any(|node| node.kind == "module" && node.language == "python")
+        {
+            let bytes = serde_json::to_vec(&facts.references)
+                .expect("reference occurrences serialize to JSON");
+            let packed = zstd::stream::encode_all(bytes.as_slice(), 1)
+                .expect("in-memory reference compression");
+            self.occurrences.insert(path.clone(), packed);
+            if retain_storage {
+                payload.references = Some(facts.references.clone());
+            }
+            // Imports and receiver hints participate in workspace indexes. Plain
+            // Python occurrences are consumed only by the per-file reference pass.
+            facts.facts.references.retain(|reference| {
+                !matches!(reference.kind.as_str(), "calls" | "references")
+                    || reference.receiver_hint.is_some()
+            });
+        }
+        for node in &facts.facts.nodes {
+            if let Some(super::typed_facts::FlowState::Valid {
+                original: Some(original),
+                ..
+            }) = facts.flows.state(node)
+            {
+                if retain_storage {
+                    payload.flows.push((node.id.clone(), original.clone()));
+                }
+                facts.flows.get_mut(&node.id);
+            }
+            if let Some(flow) = facts.flows.get_mut(&node.id) {
+                flow.bindings.shrink_to_fit();
+                flow.branch_joins.shrink_to_fit();
+                flow.immutable_initializers.shrink_to_fit();
+                flow.collection_elements.shrink_to_fit();
+                flow.vue_slots.shrink_to_fit();
+                flow.template_contexts.shrink_to_fit();
+                flow.type_only_imports.shrink_to_fit();
+                flow.annotation_references.shrink_to_fit();
+                flow.fields.shrink_to_fit();
+            }
+        }
+        for node in &mut facts.nodes {
+            if !retain_storage {
+                if let Some(details) = node.details.as_object_mut() {
+                    details.retain(|key, _| !storage_only_detail(key));
+                }
+                continue;
+            }
+            let Some(details) = node.details.as_object() else {
+                continue;
+            };
+            if !details.keys().any(|key| storage_only_detail(key)) {
+                continue;
+            }
+            // Keep the original object, including property order, for durable
+            // facts and commitment bytes. Only the smaller linking view is copied.
+            let lean = details
+                .iter()
+                .filter(|(key, _)| !storage_only_detail(key))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            let original = std::mem::replace(&mut node.details, serde_json::Value::Object(lean));
+            if retain_storage {
+                payload.node_details.push((node.id.clone(), original));
+            }
+        }
+        for (index, doc) in facts.docs.iter_mut().enumerate() {
+            let stored = (
+                index,
+                std::mem::take(&mut doc.content),
+                std::mem::take(&mut doc.invariants),
+            );
+            if retain_storage {
+                payload.docs.push(stored);
+            }
+        }
+        facts.facts.nodes.shrink_to_fit();
+        facts.facts.edges.shrink_to_fit();
+        facts.facts.references.shrink_to_fit();
+        facts.facts.docs.shrink_to_fit();
+        facts.facts.errors.shrink_to_fit();
+        self.files.insert(path, facts);
+        payload
+    }
+}
+
+fn storage_only_detail(key: &str) -> bool {
+    matches!(
+        key,
+        "doc" | "docstring" | "syntax_tree" | "occurrence_token_spans"
+    )
+}
+
+/// Storage-only fields recovered from one file's durable fact blob.
+#[derive(Default)]
+pub(crate) struct CatalogStoragePayload {
+    node_details: Vec<(String, serde_json::Value)>,
+    docs: Vec<(usize, String, Vec<String>)>,
+    flows: Vec<(String, serde_json::Value)>,
+    references: Option<Vec<super::models::Reference>>,
+}
+
+impl CatalogStoragePayload {
+    pub(crate) fn restore_composed_node(&self, node: &mut super::models::Node) {
+        let Some(source_id) = node.details["source_id"].as_str() else {
+            return;
+        };
+        if let Some((_, original)) = self.node_details.iter().find(|(id, _)| id == source_id) {
+            let mut original = original.clone();
+            if let (Some(original), Some(lean)) =
+                (original.as_object_mut(), node.details.as_object_mut())
+            {
+                original.extend(std::mem::take(lean));
+            }
+            node.details = original;
+        }
+    }
+
+    pub(crate) fn restore(self, facts: &mut TypedFacts) {
+        if let Some(mut references) = self.references {
+            append_composed_references(&mut references, &facts.references);
+            facts.facts.references = references;
+        }
+        let mut originals: hashbrown::HashMap<_, _> = self.node_details.into_iter().collect();
+        for node in &mut facts.nodes {
+            if let Some(mut original) = originals.remove(&node.id) {
+                if let (Some(original), Some(lean)) =
+                    (original.as_object_mut(), node.details.as_object_mut())
+                {
+                    // Preserve semantic updates made during workspace composition.
+                    original.extend(std::mem::take(lean));
+                }
+                node.details = original;
+            }
+        }
+        for (index, content, invariants) in self.docs {
+            facts.docs[index].content = content;
+            facts.docs[index].invariants = invariants;
+        }
+        let mut originals: hashbrown::HashMap<_, _> = self.flows.into_iter().collect();
+        for node in &mut facts.facts.nodes {
+            if let Some(original) = originals.remove(&node.id) {
+                node.details["value_flow"] = original;
+                facts.flows.ingest(node);
+            }
+        }
+    }
+}
+
+fn append_composed_references(
+    references: &mut Vec<super::models::Reference>,
+    composed: &[super::models::Reference],
+) {
+    let original_len = references.len();
+    for reference in composed
+        .iter()
+        .filter(|reference| reference.source.contains(":included:"))
+    {
+        if !references[..original_len].iter().any(|original| {
+            original.source == reference.source
+                && original.kind == reference.kind
+                && original.expression == reference.expression
+                && original.line == reference.line
+                && original.column == reference.column
+        }) {
+            references.push(reference.clone());
+        }
+    }
+}
+
+pub(crate) fn decode_catalog_references(
+    bytes: &[u8],
+    composed: &[super::models::Reference],
+) -> Vec<super::models::Reference> {
+    let bytes = zstd::stream::decode_all(bytes).expect("catalog reference compression is lossless");
+    let mut references =
+        serde_json::from_slice(&bytes).expect("catalog reference JSON was serialized internally");
+    append_composed_references(&mut references, composed);
+    references
+}
 
 pub(crate) const DEFAULT_FACTS_PER_SCOPE: usize = 65_536;
 
@@ -689,7 +928,8 @@ impl ReceiverCatalog {
 
     /// Registers a receiver hint for a canonical type or expression.
     pub fn register(&mut self, type_name: impl Into<String>, receiver_hint: impl Into<String>) {
-        self.receivers.insert(type_name.into(), receiver_hint.into());
+        self.receivers
+            .insert(type_name.into(), receiver_hint.into());
     }
 
     /// Looks up a receiver hint for a type or expression.
@@ -814,7 +1054,10 @@ mod tests {
                 alias: "express".into(),
                 module: "express".into(),
                 declaration: SourcePosition { line: 1, column: 1 },
-                completed: SourcePosition { line: 1, column: 25 },
+                completed: SourcePosition {
+                    line: 1,
+                    column: 25,
+                },
                 invalidated: false,
                 captured_safe: true,
             }],
@@ -825,4 +1068,3 @@ mod tests {
         assert_eq!(bindings, deserialized_bindings);
     }
 }
-

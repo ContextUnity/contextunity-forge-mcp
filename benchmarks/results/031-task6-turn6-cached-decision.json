@@ -1,0 +1,15 @@
+{
+  "accepted": true,
+  "all_17_domains_graph_and_root_inputs_match": true,
+  "baseline": "a16620d",
+  "baseline_median_wall_seconds": 11.379054559394717,
+  "candidate": "prepared-cached-chunks",
+  "candidate_all_peak_rss_below_800000000": true,
+  "candidate_max_peak_rss_bytes": 788557824,
+  "candidate_median_faster": true,
+  "candidate_median_wall_seconds": 10.823624109849334,
+  "milestone_20_percent_vs_cf4aa29_proven": false,
+  "report": "benchmarks/results/031-task6-turn6-cached-confirmation.json",
+  "three_repeats": true,
+  "wall_change_percent": -4.881165185088355
+}

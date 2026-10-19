@@ -4,9 +4,10 @@ use crate::core::{
     models::{compact_graph::Coverage, compact_graph::Edge, is_test, stable_hash64, Node},
 };
 use anyhow::{ensure, Context, Result};
+use hashbrown::HashMap;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 type OwnerHashers<'a> = HashMap<&'a str, Sha256>;
@@ -94,20 +95,48 @@ pub(super) fn local_facts_leaf(
     Ok((key, digest))
 }
 
+pub(super) fn file_domain_leaves(
+    entries: &[FileEntry],
+    facts: &BTreeMap<String, TypedFacts>,
+    details_json: &[String],
+    reference_keys: &[String],
+) -> Result<BTreeMap<&'static str, Leaves>> {
+    let mut domains = BTreeMap::new();
+    let projected_nodes = project_file_domains(entries, facts, &mut domains, true)?;
+    project_node_domain(
+        entries,
+        facts,
+        &projected_nodes,
+        &mut domains,
+        Some(details_json),
+    )?;
+    domains.insert(
+        "shared_owners",
+        project_shared_owner_domain(facts, &projected_nodes, Some(reference_keys))?,
+    );
+    domains.retain(|domain, _| matches!(*domain, "nodes" | "doc_sections" | "shared_owners"));
+    Ok(domains)
+}
+
 /// Builds all thirteen logical commitment domains without querying their SQLite tables.
 pub(super) fn logical_domain_leaves(
     entries: &[FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
     graph: &CompactGraph,
     timings: &mut ProjectionTimings,
+    include_restored_file_domains: bool,
 ) -> Result<BTreeMap<&'static str, Leaves>> {
     let mut domains = BTreeMap::new();
     let started = Instant::now();
-    let projected_nodes = project_file_domains(entries, facts, &mut domains)?;
+    let projected_nodes =
+        project_file_domains(entries, facts, &mut domains, include_restored_file_domains)?;
     timings.file_domains_ms = started.elapsed().as_secs_f64() * 1000.;
     let started = Instant::now();
-    let (node_by_id, file_by_hash) =
-        project_node_domain(entries, facts, &projected_nodes, &mut domains)?;
+    let (node_by_id, file_by_hash) = if include_restored_file_domains {
+        project_node_domain(entries, facts, &projected_nodes, &mut domains, None)?
+    } else {
+        node_lookup_maps(entries, facts, &projected_nodes)?
+    };
     timings.node_domain_ms = started.elapsed().as_secs_f64() * 1000.;
     let started = Instant::now();
     project_graph_domains(
@@ -121,10 +150,14 @@ pub(super) fn logical_domain_leaves(
         },
         &mut domains,
         timings,
+        include_restored_file_domains,
     )?;
     timings.graph_domains_ms = started.elapsed().as_secs_f64() * 1000.;
     for &domain in DOMAINS {
-        if domain == "local_facts" {
+        if domain == "local_facts"
+            || (!include_restored_file_domains
+                && matches!(domain, "nodes" | "doc_sections" | "shared_owners"))
+        {
             continue;
         }
         ensure!(
@@ -193,6 +226,7 @@ fn project_file_domains<'a>(
     entries: &'a [FileEntry],
     facts: &'a BTreeMap<String, TypedFacts>,
     domains: &mut BTreeMap<&'static str, Leaves>,
+    include_documents: bool,
 ) -> Result<Vec<ProjectedNode<'a>>> {
     let mut inventory = OwnerHashers::new();
     let mut files = OwnerHashers::new();
@@ -241,7 +275,11 @@ fn project_file_domains<'a>(
             encode_text(hasher, &error.message);
         }
 
-        let mut file_docs: Vec<_> = file_facts.docs.iter().collect();
+        let mut file_docs: Vec<_> = file_facts
+            .docs
+            .iter()
+            .filter(|_| include_documents)
+            .collect();
         file_docs.sort_unstable_by(|left, right| left.doc_id.cmp(&right.doc_id));
         for doc in file_docs {
             let size = i64::try_from(doc.size).context("document size exceeds SQLite range")?;
@@ -277,7 +315,9 @@ fn project_file_domains<'a>(
     );
     domains.insert("files", finish_hashers("files", files)?);
     domains.insert("errors", finish_hashers("errors", errors)?);
-    domains.insert("doc_sections", finish_hashers("doc_sections", docs)?);
+    if include_documents {
+        domains.insert("doc_sections", finish_hashers("doc_sections", docs)?);
+    }
     Ok(projected_nodes)
 }
 
@@ -286,28 +326,36 @@ fn project_node_domain<'a>(
     facts: &BTreeMap<String, TypedFacts>,
     projected_nodes: &[ProjectedNode<'a>],
     domains: &mut BTreeMap<&'static str, Leaves>,
+    prepared_details: Option<&[String]>,
 ) -> Result<NodeLookupMaps<'a>> {
-    let mut ordered_nodes: Vec<_> = projected_nodes.iter().collect();
+    let mut ordered_nodes: Vec<_> = projected_nodes.iter().enumerate().collect();
     ordered_nodes.sort_unstable_by(|left, right| {
-        left.owner
-            .cmp(right.owner)
-            .then_with(|| left.node.id.cmp(&right.node.id))
+        left.1
+            .owner
+            .cmp(right.1.owner)
+            .then_with(|| left.1.node.id.cmp(&right.1.node.id))
     });
-    let serialized_details: Vec<String> = ordered_nodes
-        .par_iter()
-        .map(|projected| serde_json::to_string(&projected.node.navigation_details()))
-        .collect::<std::result::Result<_, _>>()?;
-
-    let mut node_by_id = HashMap::with_capacity(projected_nodes.len());
-    for projected in projected_nodes {
-        node_by_id.insert(
-            projected.node.id.as_str(),
-            (projected.node.path.as_str(), projected.node_hash),
-        );
-    }
+    let serialized_details: Vec<String>;
+    let serialized_details = if let Some(prepared) = prepared_details {
+        prepared
+    } else {
+        serialized_details = if projected_nodes.len() < 256 {
+            projected_nodes
+                .iter()
+                .map(|projected| serde_json::to_string(&projected.node.navigation_details()))
+                .collect::<std::result::Result<_, _>>()?
+        } else {
+            projected_nodes
+                .par_iter()
+                .map(|projected| serde_json::to_string(&projected.node.navigation_details()))
+                .collect::<std::result::Result<_, _>>()?
+        };
+        &serialized_details
+    };
 
     let mut nodes = OwnerHashers::new();
-    for (projected, details) in ordered_nodes.into_iter().zip(serialized_details) {
+    for (index, projected) in ordered_nodes {
+        let details = &serialized_details[index];
         let hasher = row_hasher(&mut nodes, "nodes", projected.owner);
         let node = projected.node;
         let line = i64::try_from(node.line).context("node line exceeds SQLite range")?;
@@ -323,10 +371,28 @@ fn project_node_domain<'a>(
         encode_integer(hasher, i64::from(node.is_test));
         encode_text(hasher, &node.language);
         encode_integer(hasher, i64::from(node.generated));
-        encode_text(hasher, &details);
+        encode_text(hasher, details);
         encode_integer(hasher, projected.node_hash);
     }
 
+    domains.insert("nodes", finish_hashers("nodes", nodes)?);
+    node_lookup_maps(entries, facts, projected_nodes)
+}
+
+fn node_lookup_maps<'a>(
+    entries: &'a [FileEntry],
+    facts: &BTreeMap<String, TypedFacts>,
+    projected_nodes: &[ProjectedNode<'a>],
+) -> Result<NodeLookupMaps<'a>> {
+    let node_by_id = projected_nodes
+        .iter()
+        .map(|projected| {
+            (
+                projected.node.id.as_str(),
+                (projected.node.path.as_str(), projected.node_hash),
+            )
+        })
+        .collect();
     let mut file_by_hash = HashMap::with_capacity(entries.len());
     for file in entries {
         file_by_hash.insert(stable_hash64(&file.path), file.path.as_str());
@@ -336,7 +402,6 @@ fn project_node_domain<'a>(
             file.path
         );
     }
-    domains.insert("nodes", finish_hashers("nodes", nodes)?);
     Ok((node_by_id, file_by_hash))
 }
 
@@ -344,6 +409,7 @@ fn project_graph_domains<'a>(
     projection: GraphProjection<'a>,
     domains: &mut BTreeMap<&'static str, Leaves>,
     timings: &mut ProjectionTimings,
+    include_shared_owners: bool,
 ) -> Result<()> {
     let GraphProjection {
         entries,
@@ -432,6 +498,8 @@ fn project_graph_domains<'a>(
             }
         }
     }
+    drop(unique_edge_indexes);
+    drop(ordinals);
     timings.graph_edges_ms = edges_started.elapsed().as_secs_f64() * 1000.;
 
     let occurrences_finished = Instant::now();
@@ -471,11 +539,17 @@ fn project_graph_domains<'a>(
         encode_integer(hasher, row.count);
     }
     domains.insert("edges", finish_hashers("edges", edge_hashers)?);
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
     timings.graph_unique_edges_ms = unique_edges_started.elapsed().as_secs_f64() * 1000.;
 
     let shared_started = Instant::now();
-    let shared_owners = project_shared_owner_domain(facts, projected_nodes)?;
-    domains.insert("shared_owners", shared_owners);
+    if include_shared_owners {
+        let shared_owners = project_shared_owner_domain(facts, projected_nodes, None)?;
+        domains.insert("shared_owners", shared_owners);
+    }
     timings.graph_shared_owners_ms = shared_started.elapsed().as_secs_f64() * 1000.;
     let coverage_started = Instant::now();
     let (coverage_domains, unresolved) = project_coverage_domains(entries, facts, graph)?;
@@ -494,6 +568,7 @@ fn project_graph_domains<'a>(
 fn project_shared_owner_domain<'a>(
     facts: &'a BTreeMap<String, TypedFacts>,
     projected_nodes: &[ProjectedNode<'a>],
+    prepared_references: Option<&'a [String]>,
 ) -> Result<Leaves> {
     let mut key_by_hash = HashMap::<i64, &str>::new();
     let mut owner_rows = Vec::<(&str, i64, i64, i64)>::new();
@@ -511,7 +586,11 @@ fn project_shared_owner_domain<'a>(
                 owner_rows.push((owner.as_str(), 0, key_hash, projected.node_id));
             }
         }
-        for key in reference_keys(file_facts) {
+        let keys = prepared_references.map_or_else(
+            || reference_keys(file_facts),
+            |keys| keys.iter().map(String::as_str).collect(),
+        );
+        for key in keys {
             let key_hash = register_shared_key(&mut key_by_hash, key)?;
             owner_rows.push((owner.as_str(), 1, key_hash, 0));
         }
@@ -828,10 +907,9 @@ fn project_dependency_domain<'a>(
                 continue;
             };
             for context in &flow.template_contexts {
-                let Some(target) = crate::core::config::local_template_target(
-                    provider_path,
-                    &context.target,
-                ) else {
+                let Some(target) =
+                    crate::core::config::local_template_target(provider_path, &context.target)
+                else {
                     continue;
                 };
                 if crate::core::config::workspace_path(provider_path).0

@@ -1,0 +1,18 @@
+{
+  "capture_preorder_identical": true,
+  "existing_trivial_files_excluded": 41,
+  "guarded_balanced_ns": 1825804390,
+  "guarded_events_identical": true,
+  "guarded_mismatch_files": 0,
+  "guarded_to_manual_ratio": 1.0443548035895172,
+  "manual_balanced_ns": 1748260633,
+  "named_nodes": 3312170,
+  "policy": "Initial six alternating per-file repeats before rustfmt; parse and validation excluded; query entries only versus balanced cursor events; screening only",
+  "python_files": 3101,
+  "query_entries_only_ns": 5180158971,
+  "query_mismatch_files": 0,
+  "query_to_manual_ratio": 2.9630358730385025,
+  "repeats": 6,
+  "source_sha256": "6cef09a5eeb7e0d5212f440b3a8f411251712b0eaebc59aca2bf33c3b3ce102f",
+  "workspace": "/tmp/forge031-bench-wiysmu06/commerce"
+}

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
 import shutil
+import sqlite3
 import statistics
 import subprocess
 import tempfile
@@ -108,6 +110,7 @@ def query_overview(binary: pathlib.Path, repo: pathlib.Path, db: pathlib.Path) -
 
     return {
         "workspace_root": metadata["workspace_root"],
+        "index_semantics_version": metadata.get("index_semantics_version"),
         "counts": counts,
         "resolution": {
             "resolved": resolved,
@@ -128,6 +131,26 @@ def database_bytes(db: pathlib.Path) -> int:
         for path in (db, pathlib.Path(f"{db}-wal"), pathlib.Path(f"{db}-shm"))
         if path.exists()
     )
+
+
+def domain_commitments(db: pathlib.Path) -> dict[str, str]:
+    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
+        return dict(connection.execute(
+            "SELECT domain, CASE WHEN typeof(digest)='blob' THEN lower(hex(digest)) ELSE digest END "
+            "FROM domain_commitments WHERE owner_id=0 ORDER BY domain"
+        ))
+
+
+def root_inputs_digest(db: pathlib.Path) -> str:
+    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
+        metadata = dict(connection.execute(
+            "SELECT key,value FROM metadata WHERE key IN "
+            "('schema_version','indexer_engine','workspace_root','adapter','corpus_hash',"
+            "'commitment_algorithm','inventory_snapshot','manifest_digest')"
+        ))
+    if len(metadata) != 8:
+        raise RuntimeError("missing commitment root input metadata")
+    return hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
 
 
 def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -191,6 +214,14 @@ def compare(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, An
             key: int(after_counts.get(key, 0)) - int(before_counts.get(key, 0)) for key in count_keys
         },
         "components_match": baseline["graph"]["components"] == candidate["graph"]["components"],
+        "resolution_match": baseline["graph"]["resolution"] == candidate["graph"]["resolution"],
+        "domain_commitments_match": len(baseline["runs"][0]["domain_commitments"]) == 17
+        and all(run["domain_commitments"] == baseline["runs"][0]["domain_commitments"]
+                for run in baseline["runs"] + candidate["runs"]),
+        "root_inputs_match": len({run["root_inputs_digest"]
+                                  for run in baseline["runs"] + candidate["runs"]}) == 1,
+        "output_roots_match": len({run["output_root"] for run in baseline["runs"] + candidate["runs"]}) == 1
+        and baseline["runs"][0]["output_root"] is not None,
     }
 
 
@@ -200,6 +231,8 @@ def main() -> int:
     parser.add_argument("--baseline-binary", required=True, help="older Forge executable or PATH command")
     parser.add_argument("--candidate-binary", required=True, help="newer Forge executable or PATH command")
     parser.add_argument("--repeats", type=int, default=5, help="fresh-database builds per binary (default: 5)")
+    parser.add_argument("--max-peak-rss-mb", type=float, help="require every candidate run to stay below this RSS limit in decimal MB")
+    parser.add_argument("--output", type=pathlib.Path, help="write the JSON report to this file")
     args = parser.parse_args()
 
     repo = args.repo.expanduser().resolve()
@@ -209,6 +242,8 @@ def main() -> int:
         parser.error(f"workspace must contain forge-mcp.yaml: {repo}")
     if args.repeats < 1:
         parser.error("--repeats must be at least 1")
+    if args.max_peak_rss_mb is not None and args.max_peak_rss_mb <= 0:
+        parser.error("--max-peak-rss-mb must be positive")
     try:
         baseline_binary = resolve_binary(args.baseline_binary)
         candidate_binary = resolve_binary(args.candidate_binary)
@@ -237,6 +272,8 @@ def main() -> int:
                         "database_bytes": database_bytes(db),
                         "graph": graph,
                         "output_root": build.get("output_root"),
+                        "domain_commitments": domain_commitments(db),
+                        "root_inputs_digest": root_inputs_digest(db),
                         "phases_ms": {
                             key: value for key, value in build.items() if key.endswith("_ms")
                         },
@@ -253,12 +290,36 @@ def main() -> int:
             "build_policy": "sequential cold builds; forge-mcp.yaml and enabled linked_workspaces are read from the supplied workspace",
             "baseline_binary": str(baseline_binary),
             "candidate_binary": str(candidate_binary),
+            "environment": {
+                key: os.environ[key]
+                for key in ("RAYON_NUM_THREADS", "MALLOC_ARENA_MAX", "FORGE_MEMORY_BUDGET_MB")
+                if key in os.environ
+            },
             "baseline": summarize_runs(results["baseline"]),
             "candidate": summarize_runs(results["candidate"]),
         }
         report["comparison"] = compare(report["baseline"], report["candidate"])
-        print(json.dumps(report, indent=2, sort_keys=True))
-        return 0
+        comparison = report["comparison"]
+        report["semantic_parity"] = (
+            all(delta == 0 for delta in comparison["graph_count_deltas"].values())
+            and comparison["components_match"]
+            and comparison["resolution_match"]
+            and comparison["domain_commitments_match"]
+            and comparison["root_inputs_match"]
+        )
+        if args.max_peak_rss_mb is not None:
+            report["peak_rss_limit_bytes"] = args.max_peak_rss_mb * 1_000_000
+            report["peak_rss_limit_passed"] = all(
+                "peak_rss_bytes" in run
+                and run["peak_rss_bytes"] < report["peak_rss_limit_bytes"]
+                for run in results["candidate"]
+            )
+        rendered = json.dumps(report, indent=2, sort_keys=True)
+        if args.output is not None:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(rendered + "\n")
+        print(rendered)
+        return 0 if report["semantic_parity"] and report.get("peak_rss_limit_passed", True) else 1
     except (OSError, RuntimeError, ValueError) as error:
         parser.error(str(error))
     return 2

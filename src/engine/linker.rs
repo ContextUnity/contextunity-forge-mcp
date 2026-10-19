@@ -14,7 +14,9 @@ use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
+mod compact;
 pub(crate) mod contracts;
+use compact::GraphPart;
 mod framework_relations;
 #[cfg(feature = "lang-html")]
 mod html_scripts;
@@ -130,6 +132,39 @@ pub(crate) fn required_full_typed_facts(
 pub fn link(all: &BTreeMap<String, Facts>) -> PublicGraph {
     link_with_root(all, None, None)
 }
+
+/// Resolves the lean catalog with the same semantic rules as extracted facts.
+pub fn link_catalog(catalog: &crate::core::semantic::SymbolCatalog) -> PublicGraph {
+    let dependencies = languages::dependency_registry::DependencyRegistry::collect(None);
+    link_compact_catalog_with_registry(catalog, None, &dependencies).into()
+}
+
+pub(crate) fn link_compact_catalog_with_registry(
+    catalog: &crate::core::semantic::SymbolCatalog,
+    root: Option<&Path>,
+    dependencies: &languages::dependency_registry::DependencyRegistry,
+) -> Graph {
+    let flows: HashMap<_, _> = catalog
+        .files
+        .values()
+        .flat_map(|file| {
+            file.facts.nodes.iter().filter_map(|node| {
+                file.flows
+                    .state(node)
+                    .map(|state| (node.id.as_str(), state))
+            })
+        })
+        .collect();
+    link_compact_impl(
+        &catalog.files,
+        None,
+        None,
+        root,
+        dependencies,
+        Some(&flows),
+        Some(&catalog.occurrences),
+    )
+}
 /// Performs link owners.
 pub fn link_owners(
     all: &BTreeMap<String, Facts>,
@@ -163,7 +198,15 @@ pub(crate) fn link_compact_with_registry(
     root: Option<&Path>,
     dependency_registry: &languages::dependency_registry::DependencyRegistry,
 ) -> Graph {
-    link_compact_impl(all, Some(all), owners, root, dependency_registry, None)
+    link_compact_impl(
+        all,
+        Some(all),
+        owners,
+        root,
+        dependency_registry,
+        None,
+        None,
+    )
 }
 
 pub(crate) fn link_compact_with_typed_registry(
@@ -182,7 +225,15 @@ pub(crate) fn link_compact_with_typed_registry(
             })
         })
         .collect();
-    link_compact_impl(all, None, owners, root, dependency_registry, Some(&flows))
+    link_compact_impl(
+        all,
+        None,
+        owners,
+        root,
+        dependency_registry,
+        Some(&flows),
+        None,
+    )
 }
 
 fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
@@ -192,6 +243,7 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
     root: Option<&Path>,
     dependency_registry: &languages::dependency_registry::DependencyRegistry,
     flows: Option<&'a HashMap<&'a str, &'a crate::core::typed_facts::FlowState>>,
+    occurrences: Option<&BTreeMap<String, Vec<u8>>>,
 ) -> Graph {
     let profiling = std::env::var_os("FORGE_PROFILE_LINKER").is_some();
     let mut checkpoint = std::time::Instant::now();
@@ -204,171 +256,222 @@ fn link_compact_impl<'a, F: AsRef<Facts> + Sync>(
             checkpoint = std::time::Instant::now();
         }
     };
-    let nodes: Vec<&Node> = all.values().flat_map(|f| f.as_ref().nodes.iter()).collect();
-    let sort_per_file = nodes.len() >= 8192 && all.len() >= 32;
-    let mut by_name: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
-    let mut by_qual: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
-    let mut by_suffix: HashMap<&str, Vec<&Node>> = HashMap::new();
-    let mut by_id: HashMap<&str, &Node> = HashMap::with_capacity(nodes.len());
-    let mut by_module: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(all.len());
-    let needs_discovery = all.iter().any(|(path, facts)| {
-        let facts = facts.as_ref();
-        owners.is_none_or(|o| o.contains(path))
-            && facts
-                .docs
-                .iter()
-                .any(|doc| !doc.referenced_symbols.is_empty())
-    });
-    for n in &nodes {
-        by_name.entry(&n.name).or_default().push(n);
-        by_qual.entry(&n.qualname).or_default().push(n);
-        by_id.insert(&n.id, n);
-        by_module.entry(&n.path).or_default().push(n);
-        if needs_discovery {
-            for (i, c) in n.qualname.char_indices() {
-                if c == '.' {
-                    by_suffix.entry(&n.qualname[i + 1..]).or_default().push(n);
+    let (parts, sort_per_file) = {
+        let nodes: Vec<&Node> = all.values().flat_map(|f| f.as_ref().nodes.iter()).collect();
+        let sort_per_file = nodes.len() >= 8192 && all.len() >= 32;
+        let mut by_name: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
+        let mut by_qual: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
+        let mut by_suffix: HashMap<&str, Vec<&Node>> = HashMap::new();
+        let mut by_id: HashMap<&str, &Node> = HashMap::with_capacity(nodes.len());
+        let mut by_module: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(all.len());
+        let needs_discovery = all.iter().any(|(path, facts)| {
+            let facts = facts.as_ref();
+            owners.is_none_or(|o| o.contains(path))
+                && facts
+                    .docs
+                    .iter()
+                    .any(|doc| !doc.referenced_symbols.is_empty())
+        });
+        for n in &nodes {
+            by_name.entry(&n.name).or_default().push(n);
+            by_qual.entry(&n.qualname).or_default().push(n);
+            by_id.insert(&n.id, n);
+            by_module.entry(&n.path).or_default().push(n);
+            if needs_discovery {
+                for (i, c) in n.qualname.char_indices() {
+                    if c == '.' {
+                        by_suffix.entry(&n.qualname[i + 1..]).or_default().push(n);
+                    }
                 }
             }
         }
-    }
-    let mut node_bindings: HashMap<&str, hashbrown::HashSet<&str>> = HashMap::new();
-    let mut node_rebindings: HashMap<&str, hashbrown::HashSet<&str>> = HashMap::new();
-    for n in &nodes {
-        if let Some(arr) = n.details["bindings"].as_array() {
-            if !arr.is_empty() {
-                let set: hashbrown::HashSet<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
-                node_bindings.insert(&n.id, set);
+        let mut node_bindings: HashMap<&str, hashbrown::HashSet<&str>> = HashMap::new();
+        let mut node_rebindings: HashMap<&str, hashbrown::HashSet<&str>> = HashMap::new();
+        for n in &nodes {
+            if let Some(arr) = n.details["bindings"].as_array() {
+                if !arr.is_empty() {
+                    let set: hashbrown::HashSet<&str> =
+                        arr.iter().filter_map(|v| v.as_str()).collect();
+                    node_bindings.insert(&n.id, set);
+                }
             }
-        }
-        if let Some(arr) = n.details["rebindings"].as_array() {
-            if !arr.is_empty() {
-                let set: hashbrown::HashSet<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
-                node_rebindings.insert(&n.id, set);
-            }
-        }
-    }
-    let mut children_by_parent: HashMap<&str, Vec<&Node>> = HashMap::new();
-    for f in all.values() {
-        let f = f.as_ref();
-        for e in &f.edges {
-            if e.kind == "contains" {
-                if let Some(target_node) = by_id.get(e.dst.as_str()) {
-                    children_by_parent
-                        .entry(e.src.as_str())
-                        .or_default()
-                        .push(target_node);
+            if let Some(arr) = n.details["rebindings"].as_array() {
+                if !arr.is_empty() {
+                    let set: hashbrown::HashSet<&str> =
+                        arr.iter().filter_map(|v| v.as_str()).collect();
+                    node_rebindings.insert(&n.id, set);
                 }
             }
         }
-    }
-    let namespace_indexes =
-        indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry);
-    let borrowed_all = public_all.is_none().then(|| {
-        all.iter()
-            .map(|(path, facts)| (path.clone(), facts.as_ref()))
-            .collect::<BTreeMap<_, _>>()
-    });
-    let package_exports = indexing::package_exports(
-        &namespace_indexes.profiles,
-        &namespace_indexes.modules_by_namespace,
-        &by_module,
-        public_all,
-        borrowed_all.as_ref(),
-        root,
-    );
-    mark("namespace indexes and exports");
-    let inheritance_indexes = indexing::InheritanceIndexes::build(
-        all,
-        &by_id,
-        &by_qual,
-        &node_bindings,
-        &node_rebindings,
-        &by_module,
-        &namespace_indexes,
-        &package_exports,
-        dependency_registry,
-    );
-    let profiles = &namespace_indexes.profiles;
-    let nuxt_config_scopes = &namespace_indexes.nuxt_config_scopes;
-    let normalized_imports = &namespace_indexes.normalized_imports;
-    let modules_by_namespace = &namespace_indexes.modules_by_namespace;
-    let python_receivers = inheritance_indexes.python_receivers;
-    #[cfg(feature = "lang-rust")]
-    let rust_members = inheritance_indexes.rust_members;
-    mark("inheritance indexes");
-    let semantic_context = semantic_context::Context::build(
-        all,
-        modules_by_namespace,
-        &by_module,
-        &by_qual,
-        &package_exports,
-        normalized_imports,
-        dependency_registry,
-    )
-    .with_python(&python_receivers)
-    .with_flows(flows);
-    #[cfg(feature = "lang-rust")]
-    let semantic_context = semantic_context.with_rust(&rust_members);
-    #[cfg(feature = "lang-typescript")]
-    let typescript_members =
-        languages::typescript::linker::TypeScriptMembers::build(all, &semantic_context);
-    #[cfg(feature = "lang-typescript")]
-    let semantic_context = semantic_context.with_typescript(&typescript_members);
-    mark("semantic admission and members");
-    // Preserve inventory order for path/suffix selection after value flow takes
-    // the full inventory and sorts it by lexical ownership.
-    let module_nodes: Vec<&Node> = nodes
-        .iter()
-        .copied()
-        .filter(|node| node.kind == "module")
-        .collect();
-    let value_flow =
-        value_flow::ValueFlowIndex::build_parallel(all, nodes.clone(), &by_id, &semantic_context);
-    mark("value flow");
-    let mut parts = resolution::resolve(resolution::ResolutionInput {
-        all,
-        public_all,
-        owners,
-        root,
-        dependency_registry,
-        flows,
-        sort_per_file,
-        by_name: &by_name,
-        by_qual: &by_qual,
-        by_suffix: &by_suffix,
-        by_id: &by_id,
-        by_module: &by_module,
-        node_bindings: &node_bindings,
-        node_rebindings: &node_rebindings,
-        children_by_parent: &children_by_parent,
-        profiles,
-        nuxt_config_scopes,
-        normalized_imports,
-        modules_by_namespace,
-        package_exports: &package_exports,
-        semantic_context: &semantic_context,
-        module_nodes: &module_nodes,
-        value_flow: &value_flow,
-    });
-    mark("reference linking");
-    parts.extend(framework_relations::compose(
-        all,
-        owners,
-        flows,
-        dependency_registry,
-        profiles,
-        &semantic_context,
-        &nodes,
-    ));
-    mark("framework relation composition");
-    let mut result = Graph {
-        edges: Vec::with_capacity(parts.iter().map(|g| g.edges.len()).sum()),
-        coverage: Vec::with_capacity(parts.iter().map(|g| g.coverage.len()).sum()),
+        let mut children_by_parent: HashMap<&str, Vec<&Node>> = HashMap::new();
+        for f in all.values() {
+            let f = f.as_ref();
+            for e in &f.edges {
+                if e.kind == "contains" {
+                    if let Some(target_node) = by_id.get(e.dst.as_str()) {
+                        children_by_parent
+                            .entry(e.src.as_str())
+                            .or_default()
+                            .push(target_node);
+                    }
+                }
+            }
+        }
+        let namespace_indexes =
+            indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry);
+        let borrowed_all = public_all.is_none().then(|| {
+            all.iter()
+                .map(|(path, facts)| (path.clone(), facts.as_ref()))
+                .collect::<BTreeMap<_, _>>()
+        });
+        let package_exports = indexing::package_exports(
+            &namespace_indexes.profiles,
+            &namespace_indexes.modules_by_namespace,
+            &by_module,
+            public_all,
+            borrowed_all.as_ref(),
+            root,
+        );
+        mark("namespace indexes and exports");
+        let inheritance_indexes = indexing::InheritanceIndexes::build(
+            all,
+            &by_id,
+            &by_qual,
+            &node_bindings,
+            &node_rebindings,
+            &by_module,
+            &namespace_indexes,
+            &package_exports,
+            dependency_registry,
+        );
+        let profiles = &namespace_indexes.profiles;
+        let nuxt_config_scopes = &namespace_indexes.nuxt_config_scopes;
+        let normalized_imports = &namespace_indexes.normalized_imports;
+        let modules_by_namespace = &namespace_indexes.modules_by_namespace;
+        let python_receivers = inheritance_indexes.python_receivers;
+        #[cfg(feature = "lang-rust")]
+        let rust_members = inheritance_indexes.rust_members;
+        mark("inheritance indexes");
+        let semantic_context = semantic_context::Context::build(
+            all,
+            modules_by_namespace,
+            &by_module,
+            &by_qual,
+            &package_exports,
+            normalized_imports,
+            dependency_registry,
+        )
+        .with_python(&python_receivers)
+        .with_flows(flows);
+        #[cfg(feature = "lang-rust")]
+        let semantic_context = semantic_context.with_rust(&rust_members);
+        #[cfg(feature = "lang-typescript")]
+        let typescript_members =
+            languages::typescript::linker::TypeScriptMembers::build(all, &semantic_context);
+        #[cfg(feature = "lang-typescript")]
+        let semantic_context = semantic_context.with_typescript(&typescript_members);
+        mark("semantic admission and members");
+        // Preserve inventory order for path/suffix selection after value flow takes
+        // the full inventory and sorts it by lexical ownership.
+        let module_nodes: Vec<&Node> = nodes
+            .iter()
+            .copied()
+            .filter(|node| node.kind == "module")
+            .collect();
+        let value_flow = value_flow::ValueFlowIndex::build_parallel(
+            all,
+            nodes.clone(),
+            &by_id,
+            &semantic_context,
+        );
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            // SAFETY: initialization buffers have dropped; glibc synchronizes arenas.
+            libc::malloc_trim(0);
+        }
+        mark("value flow");
+        let mut parts = resolution::resolve(resolution::ResolutionInput {
+            all,
+            public_all,
+            owners,
+            root,
+            dependency_registry,
+            flows,
+            sort_per_file,
+            occurrences,
+            by_name: &by_name,
+            by_qual: &by_qual,
+            by_suffix: &by_suffix,
+            by_id: &by_id,
+            by_module: &by_module,
+            node_bindings: &node_bindings,
+            node_rebindings: &node_rebindings,
+            children_by_parent: &children_by_parent,
+            profiles,
+            nuxt_config_scopes,
+            normalized_imports,
+            modules_by_namespace,
+            package_exports: &package_exports,
+            semantic_context: &semantic_context,
+            module_nodes: &module_nodes,
+            value_flow: &value_flow,
+        });
+        drop(value_flow);
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            // SAFETY: the reference pass no longer borrows the value-flow cache.
+            libc::malloc_trim(0);
+        }
+        mark("reference linking");
+        parts.extend(
+            framework_relations::compose(
+                all,
+                owners,
+                flows,
+                dependency_registry,
+                profiles,
+                &semantic_context,
+                &nodes,
+            )
+            .into_iter()
+            .map(GraphPart::Resident),
+        );
+        mark("framework relation composition");
+        (parts, sort_per_file)
     };
-    for g in parts {
-        result.edges.extend(g.edges);
-        result.coverage.extend(g.coverage);
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        // SAFETY: glibc synchronizes arenas; all resolution caches have dropped.
+        libc::malloc_trim(0);
+    }
+    let mut result = Graph {
+        edges: Vec::with_capacity(parts.iter().map(|g| g.counts().0).sum()),
+        coverage: Vec::with_capacity(parts.iter().map(|g| g.counts().1).sum()),
+    };
+    let mut remaining = parts.into_iter();
+    loop {
+        let mut batch = Vec::new();
+        let mut rows = 0;
+        for part in remaining.by_ref() {
+            let (edges, coverage) = part.counts();
+            rows += edges + coverage;
+            batch.push(part);
+            if rows >= 4096 || occurrences.is_none() {
+                break;
+            }
+        }
+        if batch.is_empty() {
+            break;
+        }
+        let graphs: Vec<_> = if occurrences.is_some() {
+            batch.into_par_iter().map(GraphPart::into_graph).collect()
+        } else {
+            batch.into_iter().map(GraphPart::into_graph).collect()
+        };
+        for graph in graphs {
+            result.edges.extend(graph.edges);
+            result.coverage.extend(graph.coverage);
+        }
     }
     if !sort_per_file
         || !result

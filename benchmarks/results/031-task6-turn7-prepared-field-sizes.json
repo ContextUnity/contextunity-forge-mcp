@@ -1,0 +1,24 @@
+{
+  "aggregate_field_json_bytes": {
+    "details_json": 8797067,
+    "facts": 30581661,
+    "leaves": 1475267,
+    "reference_keys": 4190820,
+    "search_texts": 15296267
+  },
+  "files_measured": 3990,
+  "instrumented_timing": {
+    "peak_rss_bytes": 869466112,
+    "system_seconds": 3.333024,
+    "user_seconds": 37.907266,
+    "wall_seconds": 10.21767815714702
+  },
+  "largest_single_file_field_json_bytes": {
+    "details_json": 62855,
+    "facts": 199420,
+    "leaves": 619,
+    "reference_keys": 36667,
+    "search_texts": 57951
+  },
+  "purpose": "Diagnostic only: serialized UTF8 JSON bytes of each PreparedCatalogStorage field, not allocated heap bytes. Includes extra diagnostic serialization; timing is not an acceptance measurement."
+}

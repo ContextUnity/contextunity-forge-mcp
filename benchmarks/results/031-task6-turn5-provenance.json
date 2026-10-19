@@ -1,0 +1,22 @@
+{
+  "baseline_binary": "/tmp/031-task6-cf4aa29-source/target/release/contextunity-forge-mcp",
+  "baseline_binary_sha256": "7b26b1257202e10389ea4c140373e50bc64cb0cc83b53cedcf79f9c902aa2f21",
+  "baseline_build_command": "cargo build --offline --release --manifest-path /tmp/031-task6-cf4aa29-source/Cargo.toml -p contextunity-forge-mcp",
+  "baseline_source_archive_sha256": "32f1a61978263d399e6866d1a5120860c5362f356926a724f59082ef0447199b",
+  "baseline_source_commit": "cf4aa2931b023005b5da12c913dba33fe3f2873b",
+  "baseline_source_preparation": "git archive of exact commit extracted into /tmp/031-task6-cf4aa29-source; package artifacts cleaned before offline release build",
+  "benchmark_policy": "Same commerce checkout and forge-mcp.yaml, same host, default thread configuration, sequential fresh database and extraction-cache runs; alternating run order across repetitions",
+  "candidate_base_commit": "24d5af4962b6a5e9fa0e8d69744a7e0d46c10e4a",
+  "candidate_binary": "/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-symbol-catalog-decomposition-and-memory-trimming/target/release/contextunity-forge-mcp",
+  "candidate_binary_sha256": "6ed1d38a110a2cb5285a434989e4f0cbc6af6e8216b13393481c212759c630ea",
+  "candidate_build_command": "cargo build --release -p contextunity-forge-mcp",
+  "candidate_changed_source_paths": [
+    "src/core/semantic.rs",
+    "src/db/ingest.rs",
+    "src/db/writer.rs",
+    "src/db/writer/seal.rs",
+    "src/engine/pipeline.rs"
+  ],
+  "candidate_source_diff_sha256": "eef4b67a58b19ac9acfaa9a7e64ca7a85169f6b215936e1f97be37a1f1b7412d",
+  "logical_cpus": 16
+}

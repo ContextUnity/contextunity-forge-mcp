@@ -1,0 +1,62 @@
+{
+  "all_checks_passed": true,
+  "baseline_binary_sha256": "6b0dc19606cd2b1271d17c48f23d6dba247a8c21a975ea59316a9422197718e6",
+  "binary_sha256": "6b0dc19606cd2b1271d17c48f23d6dba247a8c21a975ea59316a9422197718e6",
+  "build_gate_pass_submitted": false,
+  "commands": [
+    {
+      "command": "cargo clippy --all-targets --all-features -- -D warnings",
+      "elapsed_seconds": 5.982117674779147,
+      "exit_code": 0,
+      "log": "/tmp/031-task8-verification/1.log"
+    },
+    {
+      "command": "cargo test --test core",
+      "elapsed_seconds": 9.906610426027328,
+      "exit_code": 0,
+      "log": "/tmp/031-task8-verification/2.log",
+      "tests_failed": 0,
+      "tests_ignored": 1,
+      "tests_passed": 36
+    },
+    {
+      "command": "cargo test --test commitment_integrity",
+      "elapsed_seconds": 4.0523089338094,
+      "exit_code": 0,
+      "log": "/tmp/031-task8-verification/3.log",
+      "tests_failed": 0,
+      "tests_ignored": 0,
+      "tests_passed": 16
+    },
+    {
+      "command": "cargo test --all-targets",
+      "elapsed_seconds": 138.6151906242594,
+      "exit_code": 0,
+      "log": "/tmp/031-task8-verification/4.log",
+      "tests_failed": 0,
+      "tests_ignored": 1,
+      "tests_passed": 776
+    },
+    {
+      "command": "cargo build --release -p contextunity-forge-mcp",
+      "elapsed_seconds": 334.4302512179129,
+      "exit_code": 0,
+      "log": "/tmp/031-task8-verification/5.log"
+    },
+    {
+      "command": "python3 -m py_compile benchmarks/cold_catalog_experiments.py benchmarks/tree_cursor_probe.py",
+      "elapsed_seconds": 0.08494509616866708,
+      "exit_code": 0,
+      "log": "/tmp/031-task8-verification/6.log"
+    },
+    {
+      "command": "git diff --exit-code ed10832ac31243aaf0e47cea7462309a17cc5d87 -- src Cargo.toml Cargo.lock build.rs",
+      "elapsed_seconds": 0.010227988939732313,
+      "exit_code": 0,
+      "log": "/tmp/031-task8-verification/7.log"
+    }
+  ],
+  "cpu_reduction_proven": false,
+  "production_restored_to": "ed10832ac31243aaf0e47cea7462309a17cc5d87",
+  "source_sha256": "3b82250f2103c10e36788265483a6b766b1128fe39877dd07c7df6c522969982"
+}

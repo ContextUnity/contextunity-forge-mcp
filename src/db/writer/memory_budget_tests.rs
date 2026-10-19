@@ -39,7 +39,7 @@ impl Drop for TemporaryRoot {
 fn sqlite_cache_size_is_clamped_in_kibibytes() {
     assert_eq!(sqlite_cache_size_kib(0), 4_096);
     assert_eq!(sqlite_cache_size_kib(64 * 1024 * 1024), 8_192);
-    assert_eq!(sqlite_cache_size_kib(u64::MAX), 128_000);
+    assert_eq!(sqlite_cache_size_kib(u64::MAX), 32_768);
 
     let root = TemporaryRoot::new();
     let adapter = scanner::load_adapter(&root.0, None).unwrap();

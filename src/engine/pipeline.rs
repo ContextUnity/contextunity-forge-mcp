@@ -8,9 +8,13 @@ use crate::core::{
     },
     fs::canonical_root,
     models::{stable_hash64, Edge, Facts, FileEntry, Node},
+    semantic::SymbolCatalog,
     typed_facts::{decode_facts, TypedFacts},
 };
-use crate::db::writer::cache::{self, ExtractionCache};
+use crate::db::writer::{
+    cache::{self, ExtractionCache},
+    StagedFilePayload,
+};
 use crate::engine::{
     ast, docs,
     languages::{dependency_registry::DependencyRegistry, module_name},
@@ -190,7 +194,9 @@ struct PipelineWork {
 
 struct PipelineItem {
     file: FileEntry,
-    facts: TypedFacts,
+    catalog: SymbolCatalog,
+    encoded_facts: Vec<u8>,
+    storage_rows: Vec<u8>,
     permit: MemoryPermit,
 }
 
@@ -221,7 +227,8 @@ struct ColdPipelineInputs<'a> {
 struct PipelineConsumerOutput {
     connection: Connection,
     entries: Vec<FileEntry>,
-    facts: BTreeMap<String, TypedFacts>,
+    catalog: SymbolCatalog,
+    staged_payloads: BTreeMap<String, StagedFilePayload>,
 }
 
 #[derive(Clone)]
@@ -608,6 +615,12 @@ fn run_cold_pipeline(
             ))
         }
     };
+    // Extraction threads have exited and released their parser/source buffers.
+    // SAFETY: glibc's allocator entry point is thread-safe and takes no pointers.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
     if let Some(failure) = control.failure() {
         bail!("{failure}");
     }
@@ -672,7 +685,17 @@ fn extraction_worker(context: ExtractionWorkerContext) {
             &dependencies,
             &extraction_cache,
             &effective_ruleset_hash,
-        );
+        )
+        .and_then(|(file, facts, cache_hit)| {
+            let mut files = BTreeMap::from([(file.path.clone(), facts)]);
+            assign_components(&mut files, &BTreeMap::new());
+            let storage_rows = crate::db::writer::prepare_catalog_storage(&file, &files)?;
+            let facts = files.remove(&file.path).expect("single extracted file");
+            let encoded_facts = crate::core::typed_facts::encode_facts(&facts)?;
+            let mut catalog = SymbolCatalog::default();
+            catalog.insert_typed(file.path.clone(), facts, false);
+            Ok((file, catalog, encoded_facts, storage_rows, cache_hit))
+        });
         counters.extraction_nanos.fetch_add(
             extraction_started
                 .elapsed()
@@ -680,7 +703,7 @@ fn extraction_worker(context: ExtractionWorkerContext) {
                 .min(u64::MAX as u128) as u64,
             Ordering::AcqRel,
         );
-        let (file, facts, cache_hit) = match extracted {
+        let (file, catalog, encoded_facts, storage_rows, cache_hit) = match extracted {
             Ok(value) => value,
             Err(error) => {
                 let message = error.to_string();
@@ -698,7 +721,9 @@ fn extraction_worker(context: ExtractionWorkerContext) {
         counters.extracted_files.fetch_add(1, Ordering::AcqRel);
         let item = PipelineItem {
             file,
-            facts,
+            catalog,
+            encoded_facts,
+            storage_rows,
             permit: work.permit,
         };
         if let Err(error) = result_tx.send(Ok(item)) {
@@ -718,7 +743,8 @@ fn consume_pipeline_results(
     let mut statement =
         transaction.prepare_cached("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
     let mut entries = Vec::new();
-    let mut facts = BTreeMap::new();
+    let mut catalog = SymbolCatalog::default();
+    let mut staged_payloads = BTreeMap::new();
     while let Ok(result) = result_rx.recv() {
         let item = match result {
             Ok(item) => item,
@@ -741,7 +767,9 @@ fn consume_pipeline_results(
         let ingestion_started = Instant::now();
         let PipelineItem {
             file,
-            facts: typed_facts,
+            catalog: file_catalog,
+            encoded_facts,
+            storage_rows,
             permit,
         } = item;
         let inserted =
@@ -754,7 +782,14 @@ fn consume_pipeline_results(
             Ok(_) => {
                 let path = file.path.clone();
                 entries.push(file);
-                facts.insert(path, typed_facts);
+                catalog.extend(file_catalog);
+                staged_payloads.insert(
+                    path,
+                    StagedFilePayload {
+                        encoded_facts,
+                        storage_rows: Some(storage_rows),
+                    },
+                );
                 counters.ingested_files.fetch_add(1, Ordering::AcqRel);
             }
             Err(error) => control.cancel(error),
@@ -770,11 +805,12 @@ fn consume_pipeline_results(
     Ok(PipelineConsumerOutput {
         connection,
         entries,
-        facts,
+        catalog,
+        staged_payloads,
     })
 }
 
-fn components(facts: &mut BTreeMap<String, TypedFacts>) {
+fn components(facts: &mut BTreeMap<String, TypedFacts>) -> BTreeSet<String> {
     let owners = component_owners(facts.iter().filter_map(|(path, f)| {
         f.nodes
             .iter()
@@ -782,6 +818,7 @@ fn components(facts: &mut BTreeMap<String, TypedFacts>) {
             .then_some(path.as_str())
     }));
     assign_components(facts, &owners);
+    owners.into_values().collect()
 }
 
 fn component_owners<'a>(paths: impl Iterator<Item = &'a str>) -> BTreeMap<String, String> {
@@ -914,28 +951,48 @@ fn atomic_build(
             .entries
             .sort_by(|left, right| left.path.cmp(&right.path));
         let preparing_components = Instant::now();
-        let _ = ast::route_includes::compose_django_route_includes(&mut streamed.facts);
-        components(&mut streamed.facts);
+        let mut changed_paths =
+            ast::route_includes::compose_django_route_includes(&mut streamed.catalog.files);
+        changed_paths.extend(components(&mut streamed.catalog.files));
+        for path in changed_paths {
+            if let Some(payload) = streamed.staged_payloads.get_mut(&path) {
+                payload.storage_rows = None;
+            }
+        }
         let components_ms = preparing_components.elapsed().as_secs_f64() * 1000.;
 
         let linking = Instant::now();
-        let graph = linker::link_compact_with_typed_registry(&streamed.facts, None, Some(root), &dependencies);
+        let graph = linker::link_compact_catalog_with_registry(
+            &streamed.catalog,
+            Some(root),
+            &dependencies,
+        );
         let link_ms = linking.elapsed().as_secs_f64() * 1000.;
 
-        let mut report = crate::db::writer::populate(
+        // Linker caches have been dropped before storage payloads are restored.
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            // SAFETY: no pointers are passed; glibc synchronizes allocator arenas.
+            libc::malloc_trim(0);
+        }
+        let facts = streamed.catalog.into_files();
+
+        let mut report = crate::db::writer::populate_owned(
             &mut streamed.connection,
             root,
             adapter,
             &streamed.entries,
-            &streamed.facts,
+            facts,
             &graph,
             crate::db::writer::BuildInputs {
                 manifest_digest: dependencies.digest(),
                 memory_budget,
                 schema_ready: true,
             },
+            &mut streamed.staged_payloads,
         )?;
         report["link_ms"] = json!(link_ms);
+        report["linking_facts_mode"] = json!("symbol-catalog");
         report["preencoded_facts_ms"] = json!(0.0);
         report["memory_budget_bytes"] = json!(memory_budget);
         report["scanned_files"] = json!(pipeline_metrics.scanned_files);
@@ -1050,11 +1107,7 @@ fn build_inner_with_cache(
     config::check_root_scope(&root, adapter.limits.allow_broad_root)?;
     let dependency_manifests = scanner::dependency_manifests_for_build(&root, &adapter)?;
     let dependencies =
-        DependencyRegistry::try_collect_with_paths(
-            &root,
-            Some(&adapter),
-            &dependency_manifests,
-        )?;
+        DependencyRegistry::try_collect_with_paths(&root, Some(&adapter), &dependency_manifests)?;
     let budget = resolve_memory_budget_bytes(&adapter.limits)?;
     let dependencies = Arc::new(dependencies);
     let mut report = atomic_build(
@@ -1287,9 +1340,7 @@ fn django_route_include_closure(
 
     let mut relations = BTreeSet::new();
     for (parent, module) in include_rows {
-        let workspace = crate::core::config::workspace_path(&parent)
-            .0
-            .to_owned();
+        let workspace = crate::core::config::workspace_path(&parent).0.to_owned();
         if let Some(child) = module_paths.get(&(workspace, module)) {
             relations.insert((parent, child.clone()));
         }
@@ -1676,8 +1727,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         drop(generation_lock);
         return build(&root, db, adapter.adapter_path.as_deref());
     }
-    let dependencies =
-        DependencyRegistry::try_collect_with_scan_config(&root, Some(&adapter))?;
+    let dependencies = DependencyRegistry::try_collect_with_scan_config(&root, Some(&adapter))?;
     let previous_manifest_digest = admitted
         .query_row(
             "SELECT value FROM metadata WHERE key='manifest_digest'",
@@ -1889,8 +1939,7 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                     ))
                 })? {
                     let (owner, symbol, hash) = row?;
-                    let Some(target) =
-                        crate::core::config::local_template_target(&owner, &symbol)
+                    let Some(target) = crate::core::config::local_template_target(&owner, &symbol)
                     else {
                         continue;
                     };
@@ -2100,10 +2149,9 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                         continue;
                     };
                     for context in &flow.template_contexts {
-                        let Some(target) = crate::core::config::local_template_target(
-                            provider,
-                            &context.target,
-                        ) else {
+                        let Some(target) =
+                            crate::core::config::local_template_target(provider, &context.target)
+                        else {
                             continue;
                         };
                         if inventory
@@ -2163,10 +2211,9 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
                     .iter()
                     .filter(|reference| reference.kind == "includes")
                 {
-                    let Some(target) = crate::core::config::local_template_target(
-                        owner,
-                        &reference.expression,
-                    ) else {
+                    let Some(target) =
+                        crate::core::config::local_template_target(owner, &reference.expression)
+                    else {
                         continue;
                     };
                     if inventory

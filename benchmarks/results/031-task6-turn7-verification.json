@@ -1,0 +1,72 @@
+{
+  "benchmark_runner_update": "Record per-run and median user_seconds, system_seconds, total process_cpu_seconds and average_cpu_percent.",
+  "build_gate_pass_submitted": false,
+  "claim_revision": 11,
+  "contract_revision": 1,
+  "cpu_optimization_objective_met": false,
+  "experiment_decisions": [
+    {
+      "name": "direct-rows",
+      "reason": "RSS869502976bytes exceeds800000000; one-pair screening failed; no three-pair acceptance attempted.",
+      "retained": false
+    },
+    {
+      "name": "packed-rows",
+      "reason": "Median paired userCPU+1.380% and median paired averageCPUload+2.019% vsed10832; raw medians biased by drift.",
+      "receipt": "benchmarks/results/031-task6-turn7-decision.json",
+      "retained": false
+    },
+    {
+      "name": "lazy-symbol-parent",
+      "reason": "Median wall+1.474%, userCPU+2.328% vsed10832; paired medians also regress.",
+      "receipt": "benchmarks/results/031-task6-turn7-lazy-decision.json",
+      "retained": false
+    }
+  ],
+  "final_release_binary_sha256": "6b0dc19606cd2b1271d17c48f23d6dba247a8c21a975ea59316a9422197718e6",
+  "installed_reference_incompatibility": "Installed copy already resolves129625 vs130079 ined10832;9domain roots differ; rootinputs differ; peak1.49..1.50GB. User clarification requested; no claim of installed semantic parity.",
+  "milestone20percent_vs_cf4aa29_proven": false,
+  "performance_limitations": "Both nine-run cohorts had substantial control drift despite60s intervals and no concurrent own compilation/tests; retain all runs and reject unproven improvements.",
+  "production_source_identical_to": "ed10832ac31243aaf0e47cea7462309a17cc5d87",
+  "quality_gates": [
+    {
+      "command": "python3 -m py_compile benchmarks/cold_catalog_experiments.py",
+      "exit_code": 0
+    },
+    {
+      "command": "cargo clippy --all-targets --all-features -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "command": "cargo test --test core",
+      "exit_code": 0,
+      "failed": 0,
+      "ignored": 1,
+      "passed": 36
+    },
+    {
+      "command": "cargo test --test commitment_integrity",
+      "exit_code": 0,
+      "failed": 0,
+      "ignored": 0,
+      "passed": 16
+    },
+    {
+      "command": "cargo test --all-targets",
+      "exit_code": 0,
+      "failed": 0,
+      "ignored": 1,
+      "passed": 776
+    },
+    {
+      "command": "cargo build --release -p contextunity-forge-mcp",
+      "exit_code": 0
+    }
+  ],
+  "quality_timing": "All gates rerun after reverting failed experiments; full test suite ran after the final benchmark cohort.",
+  "semantic_preservation": "Every candidate run matched all17domains, graph counts, resolution130079 and rootinputs vsed10832. No experimental production code retained.",
+  "source_sha256": "3b82250f2103c10e36788265483a6b766b1128fe39877dd07c7df6c522969982",
+  "sqlite_pragmas_changed": false,
+  "task_id": "forge-mcp/m-cold-indexing-throughput-and-memory-optimization:symbol-catalog-decomposition-and-memory-trimming",
+  "worker_id": "031-task6-builder"
+}

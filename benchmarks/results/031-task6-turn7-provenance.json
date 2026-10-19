@@ -1,0 +1,67 @@
+{
+  "build_gate_pass_submitted": false,
+  "claim_revision": 11,
+  "contract_revision": 1,
+  "cpu_objective_met": false,
+  "production_and_sqlite_pragmas_identical_to_ed10832": true,
+  "profile_dependency_verification": {
+    "crate": "tree-sitter0.22.6",
+    "file": "src/node.c",
+    "finding": "ts_node_parent starts at ts_tree_root_node and repeatedly calls ts_node_child_containing_descendant; supports testing lazy unused parent lookup, not proof of a speed improvement.",
+    "lines": "506-537"
+  },
+  "profile_note": "Optimized ed10832 with symbols retained; profile used CARGO_PROFILE_RELEASE_STRIP=false. Acceptance comparisons used normal stripped release binaries and immutable installed reference copy.",
+  "scope_note": "Admitted src/engine/ast/mod.rs through Forge task extend-scope before testing lazy symbol-name parent lookup; claim11/contract1 preserved. No AST production change retained.",
+  "selected_production_source_sha256": "3b82250f2103c10e36788265483a6b766b1128fe39877dd07c7df6c522969982",
+  "selected_production_variant": "ed10832 unchanged; all experimental production changes reverted",
+  "source_hash_policy": "SHA256 over sorted git ls-files src Cargo.toml Cargo.lock build.rs: path,NUL,exact bytes",
+  "starting_commit": "ed10832ac31243aaf0e47cea7462309a17cc5d87",
+  "variants": {
+    "direct-rows": {
+      "binary_sha256": "a068af56b5e0bb3fd300256d344920979cccec10331c72510d5f505a2f7745c3",
+      "diff_from_a16620d_sha256": "1aaaa088e8b833154b8ddbf01c32162ead78f77ced924b2d40da5ab8fc3cfef7",
+      "patch_base_commit": "a16620df96bbad00e9536864f86a35f066a7b8fe",
+      "path": "/tmp/031-task7-variants/direct-rows",
+      "source_commit": "ed10832ac31243aaf0e47cea7462309a17cc5d87",
+      "source_patch": "benchmarks/results/031-task6-turn7-direct-rows-source.patch.json",
+      "source_patch_encoding": "JSON patch_utf8 field preserves exact unified diff, including context whitespace",
+      "source_sha256": "7d45c7041bf187e7d579a5227bb964c0d83c4fe47309ad72da9bc6be4e89bb8f",
+      "status": "rejected; not retained in production"
+    },
+    "ed10832": {
+      "binary_sha256": "6b0dc19606cd2b1271d17c48f23d6dba247a8c21a975ea59316a9422197718e6",
+      "path": "/tmp/031-task7-variants/ed10832"
+    },
+    "ed10832-symbols": {
+      "binary_sha256": "6f84e1930066da42848669ea03ce362b7cf2ee1bc20195bb2f50bd4f043e4be0",
+      "path": "/tmp/031-task7-variants/ed10832-symbols"
+    },
+    "installed": {
+      "binary_sha256": "60ef6f5c63cb78dba8ac18682806a0ee34c66f56824dbde29ea4c6b141c6292e",
+      "path": "/tmp/031-task7-variants/installed"
+    },
+    "lazy-symbol-parent": {
+      "binary_sha256": "13d5c6617067ccaaec444bc570aa7277e044bff3074f7c1bf215bf347f09f9fb",
+      "diff_from_a16620d_sha256": "f5d04e634f60eeb958347cb089af1b878cdb482010c3e4f861de54b564e157ab",
+      "patch_base_commit": "a16620df96bbad00e9536864f86a35f066a7b8fe",
+      "path": "/tmp/031-task7-variants/lazy-symbol-parent",
+      "source_commit": "ed10832ac31243aaf0e47cea7462309a17cc5d87",
+      "source_patch": "benchmarks/results/031-task6-turn7-lazy-symbol-parent-source.patch.json",
+      "source_patch_encoding": "JSON patch_utf8 field preserves exact unified diff, including context whitespace",
+      "source_sha256": "c3b72845d19eadcf9c5b40c35aae99b1f9a61276a5f6b2a21237ec1c46e0ca0d",
+      "status": "rejected; not retained in production"
+    },
+    "packed-rows": {
+      "binary_sha256": "d73d7d90ff89954effb14f52e7021c803e9601e6788e543a08050732e82898db",
+      "diff_from_a16620d_sha256": "b1efaa7881a7f831a93071c554746ec16da0f4f125192c688eb7a257860fe340",
+      "patch_base_commit": "a16620df96bbad00e9536864f86a35f066a7b8fe",
+      "path": "/tmp/031-task7-variants/packed-rows",
+      "source_commit": "ed10832ac31243aaf0e47cea7462309a17cc5d87",
+      "source_patch": "benchmarks/results/031-task6-turn7-packed-rows-source.patch.json",
+      "source_patch_encoding": "JSON patch_utf8 field preserves exact unified diff, including context whitespace",
+      "source_sha256": "9cf4a685b79177b4c17b28324e3b614bd55d418272690e2bce539682d10094bc",
+      "status": "rejected; not retained in production"
+    }
+  },
+  "worker_id": "031-task6-builder"
+}

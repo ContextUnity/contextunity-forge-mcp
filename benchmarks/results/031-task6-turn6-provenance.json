@@ -1,0 +1,93 @@
+{
+  "baseline_archive_commit": "a16620df96bbad00e9536864f86a35f066a7b8fe",
+  "baseline_archive_sha256": "94c71977d4273058b1634e9ef5f39ae0e1f539442dae58b17df63fb1c00e444c",
+  "baseline_build_command": "cargo build --release --offline --manifest-path /tmp/031-task6-a16620d-source/Cargo.toml (git archive a16620d)",
+  "build_command": "cargo build --release -p contextunity-forge-mcp",
+  "cached_confirmation_decision": "benchmarks/results/031-task6-turn6-cached-decision.json",
+  "cached_confirmation_receipt": "benchmarks/results/031-task6-turn6-cached-confirmation.json",
+  "fixture_note": "Requested /tmp/forge-031-bench-input absent; use previously authorized isolated commerce fixture /tmp/forge031-bench-wiysmu06/commerce. Checkout CLI supports --root ... build, not --workspace ... status.",
+  "registered_scope_note": "Reconciled user-authorized commitments.rs and commitments/snapshot.rs scope with Forge task extend-scope; claim_revision 9 and contract_revision 1 preserved.",
+  "source_hash_policy": "SHA256 over sorted git ls-files src Cargo.toml Cargo.lock build.rs: path, NUL, exact source bytes",
+  "unbatched_confirmation_decision": "benchmarks/results/031-task6-turn6-unbatched-decision.json",
+  "unbatched_confirmation_receipt": "benchmarks/results/031-task6-turn6-unbatched-confirmation.json",
+  "unbatched_confirmation_variants": {
+    "a16620d": "a16620d",
+    "prepared-memory-final": "prepared-memory-no-periodic-trim",
+    "prepared-memory-periodic": "prepared-memory-formatted"
+  },
+  "variant_changes": {
+    "a16620d": "Exact historical source archive; PreparedCatalogStorage in SQLite; insert_typed false.",
+    "prepared-cached-chunks": "Prepared compact storage in memory, insert_typed false, no active-worker periodic trim; cache canonical navigation JSON once and reuse it for file leaves and node rows, along with search text and reference keys; restore compact prepared rows in parallel 500-file chunks; only changed composed/component files restore original full facts.",
+    "prepared-memory": "Prepared compact storage in an owned in-memory map; per-file consumption; composed-source payload cache. Same periodic extraction trim behavior as SQLite control.",
+    "prepared-memory-formatted": "Measured in-memory prepared implementation rebuilt after rustfmt-only writer import wrapping; intermediate final-artifact control.",
+    "prepared-memory-no-periodic-trim": "Remove restored historical per-512-file malloc_trim during active extraction, as required by Turn4. Preserve post-join, post-link, and persistence-phase trimming. All other source equals prepared-memory-formatted.",
+    "prepared-memory-overlap": "Move logical projection after row transaction commit, overlapping CREATE INDEX and FTS digests; drop stripped facts on projection thread.",
+    "prepared-memory-overlap-fts": "Add lazy term-map fallback and parallel canonical posting sort.",
+    "prepared-sqlite": "Historical prepared SQLite staging plus skip restored file-domain projections globally."
+  },
+  "variants": {
+    "a16620d": {
+      "binary": "/tmp/031-task6-variants/a16620d",
+      "binary_sha256": "f3ca81464d19c6dc3fa4b3713bc06c024b7ad7886f90d1cc5d19ec829d944511",
+      "source_commit": "a16620df96bbad00e9536864f86a35f066a7b8fe",
+      "source_sha256": "0ae5c51c5329c07ffa036a8a7de448a0c8def14068c81daecbeed1ffc1b46a83",
+      "variant": "a16620d"
+    },
+    "prepared-cached-chunks": {
+      "binary": "/tmp/031-task6-variants/prepared-cached-chunks",
+      "binary_sha256": "6b0dc19606cd2b1271d17c48f23d6dba247a8c21a975ea59316a9422197718e6",
+      "diff_from_a16620d_sha256": "c62ed906284b2d083324a8912b1358f2451b202832ec33e091b787449a981161",
+      "source_commit": "2990d6d1a3d8efd52e047eb1ec612241eecb1a84",
+      "source_sha256": "3b82250f2103c10e36788265483a6b766b1128fe39877dd07c7df6c522969982",
+      "variant": "prepared-cached-chunks"
+    },
+    "prepared-memory": {
+      "binary": "/tmp/031-task6-variants/prepared-memory",
+      "binary_sha256": "91e7b52ec359c85d89963171ae4a371fb8b6f6589f062c82303173bd75adf8ad",
+      "diff_from_a16620d_sha256": "c2a619cac457691c9eaf709c4923d2f72acf878642a3c756c84ee23e23cdb734",
+      "source_commit": "2990d6d1a3d8efd52e047eb1ec612241eecb1a84",
+      "source_sha256": "677899283a50fc73124a4a03ba40523f054c658790ede8a16b0346b3e384267e",
+      "variant": "prepared-memory"
+    },
+    "prepared-memory-formatted": {
+      "binary": "/tmp/031-task6-variants/prepared-memory-formatted",
+      "binary_sha256": "50883bd43361819ae37de1a5d627b8da973c6afbd874d34c27a657c51f33a8ba",
+      "diff_from_a16620d_sha256": "43d585e2fbadd48e671596d27f36d291eff13e369da6f7d152fc9d2a605d1a60",
+      "source_commit": "2990d6d1a3d8efd52e047eb1ec612241eecb1a84",
+      "source_sha256": "79735a0af025b914382fd3d16c438af3603ad1c8f301720547be39e46c740295",
+      "variant": "prepared-memory-formatted"
+    },
+    "prepared-memory-no-periodic-trim": {
+      "binary": "/tmp/031-task6-variants/prepared-memory-no-periodic-trim",
+      "binary_sha256": "d90b6a658b8eb7b255a4bf1437e2101a00c3da072ada3c3e04e026cc50120937",
+      "diff_from_a16620d_sha256": "b55dd5b82ddd3fbe33c1b1f4a02f73e5c599a5ebeaf11e8bab899da490afd247",
+      "source_commit": "2990d6d1a3d8efd52e047eb1ec612241eecb1a84",
+      "source_sha256": "454218e68f5a874cb6a460cc003c4654967fca86fdc1c00f1deb9e9e127e6410",
+      "variant": "prepared-memory-no-periodic-trim"
+    },
+    "prepared-memory-overlap": {
+      "binary": "/tmp/031-task6-variants/prepared-memory-overlap",
+      "binary_sha256": "64570450a743baa968ba5247389786572cc8cd5bb83f164c30ae58655aed92f0",
+      "diff_from_a16620d_sha256": "e16191669fddf1eb82454b8737b9517e41d7819107860b43399c4e9dc70b592f",
+      "source_commit": "2990d6d1a3d8efd52e047eb1ec612241eecb1a84",
+      "source_sha256": "4698f30c6c0660f4fccf64839c5c7487a140060423e3385c5af85549c5c03134",
+      "variant": "prepared-memory-overlap"
+    },
+    "prepared-memory-overlap-fts": {
+      "binary": "/tmp/031-task6-variants/prepared-memory-overlap-fts",
+      "binary_sha256": "25d15e52e8326c718c7297387c1424a2f95de73adf2b6b6abec12b46b2a1c8a1",
+      "diff_from_a16620d_sha256": "7f07425cb650c5e52cc57a226e3e0e11ef2f73fc9634cc5404d1b307bf6522a6",
+      "source_commit": "2990d6d1a3d8efd52e047eb1ec612241eecb1a84",
+      "source_sha256": "f32fb57f9a3aa17b8c200f8e3b1fb169f23091b5cbc525dba80b59a37563661e",
+      "variant": "prepared-memory-overlap-fts"
+    },
+    "prepared-sqlite": {
+      "binary": "/tmp/031-task6-variants/prepared-sqlite",
+      "binary_sha256": "8423d8e075b1d32f61f7439fef92982d0dd697d837051e3506f808609bfb059a",
+      "diff_from_a16620d_sha256": "21e9766b8e1fa2b9416fbd75ea638ea2695848ce0410146bbacdeec622f4ed8e",
+      "source_commit": "2990d6d1a3d8efd52e047eb1ec612241eecb1a84",
+      "source_sha256": "c50145fcecd92a3c5d8df14a1c27a0680f0a7ac73fcb89ceda6aeaa030b70ef1",
+      "variant": "prepared-sqlite"
+    }
+  }
+}

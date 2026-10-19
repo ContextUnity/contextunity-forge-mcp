@@ -288,7 +288,26 @@ pub struct ValueFlowIndex<'a> {
     limits: SemanticLimits,
 }
 
-type InitializedScope<'a> = (&'a Node, Cow<'a, ValueFlowFacts>, Scope<'a>, TypeTarget<'a>);
+enum ScopeFacts<'a> {
+    Borrowed(&'a ValueFlowFacts),
+    Decoded(Box<ValueFlowFacts>),
+}
+
+impl std::ops::Deref for ScopeFacts<'_> {
+    type Target = ValueFlowFacts;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(facts) => facts,
+            Self::Decoded(facts) => facts,
+        }
+    }
+}
+
+static EMPTY_SCOPE_FACTS: std::sync::LazyLock<ValueFlowFacts> =
+    std::sync::LazyLock::new(ValueFlowFacts::default);
+
+type InitializedScope<'a> = (&'a Node, ScopeFacts<'a>, Scope<'a>, TypeTarget<'a>);
 
 #[derive(Default)]
 struct Epochs<'a> {
@@ -369,11 +388,11 @@ fn initialize_scope<'a>(
     }) || crate::core::typed_facts::encoded_scope_fact_count(encoded)
         > limits.facts_per_scope;
     let decoded = if oversized {
-        Ok(Cow::Owned(ValueFlowFacts::default()))
+        Ok(ScopeFacts::Borrowed(&EMPTY_SCOPE_FACTS))
     } else if let Some(facts) = typed {
-        Ok(Cow::Borrowed(facts))
+        Ok(ScopeFacts::Borrowed(facts))
     } else if resolver.has_typed_flows() || encoded.is_null() || oversized {
-        Ok(Cow::Owned(ValueFlowFacts::default()))
+        Ok(ScopeFacts::Borrowed(&EMPTY_SCOPE_FACTS))
     } else {
         ValueFlowFacts::deserialize_for_scope(
             encoded,
@@ -381,11 +400,11 @@ fn initialize_scope<'a>(
                 && node.language == "javascript"
                 && node.details["classic_global"] == true,
         )
-        .map(Cow::Owned)
+        .map(|facts| ScopeFacts::Decoded(Box::new(facts)))
     };
     let (facts, mut invalid) = match decoded {
         Ok(facts) => (facts, false),
-        Err(_) => (Cow::Owned(ValueFlowFacts::default()), true),
+        Err(_) => (ScopeFacts::Borrowed(&EMPTY_SCOPE_FACTS), true),
     };
     invalid |=
         oversized || resolver.invalid_value_flow(node) || !valid_scope_facts(node, &facts, limits);

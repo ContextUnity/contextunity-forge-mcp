@@ -1,0 +1,5 @@
+{
+  "exit_code": -6,
+  "source_sha256": "21c8223f5f30b7f0ea3b7c1cd549813afdda93ba234a992b9a0163df5a473c57",
+  "stderr": "\nthread 'main' (1200795) panicked at /home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/031-symbol-catalog-decomposition-and-memory-trimming/benchmarks/tree_cursor_probe.rs:89:9:\ncapture order: /tmp/forge031-bench-wiysmu06/linked/gridviewspec/src/grid_view_spec/backends/django/migrations/__init__.py, query=0, cursor=1, first_difference=None\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+}

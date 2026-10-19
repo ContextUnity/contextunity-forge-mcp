@@ -1,0 +1,60 @@
+{
+  "candidate": {
+    "binary": "/tmp/031-task6-variants/prepared-cached-chunks",
+    "binary_sha256": "6b0dc19606cd2b1271d17c48f23d6dba247a8c21a975ea59316a9422197718e6",
+    "diff_from_a16620d_sha256": "c62ed906284b2d083324a8912b1358f2451b202832ec33e091b787449a981161",
+    "source_commit": "2990d6d1a3d8efd52e047eb1ec612241eecb1a84",
+    "source_sha256": "3b82250f2103c10e36788265483a6b766b1128fe39877dd07c7df6c522969982",
+    "variant": "prepared-cached-chunks"
+  },
+  "claim_revision": 9,
+  "contract_revision": 1,
+  "discarded_experiments": [
+    "unbatched prepared map (failed independent throughput confirmation)",
+    "logical projection overlap after tx.commit (no measured benefit)",
+    "parallel FTS sort and monotonic term-map fast path (no measured benefit)"
+  ],
+  "fixture_note": "Requested /tmp/forge-031-bench-input absent; use previously authorized isolated commerce fixture /tmp/forge031-bench-wiysmu06/commerce. Checkout CLI supports --root ... build, not --workspace ... status.",
+  "focused_command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test core && cargo test --test commitment_integrity",
+  "focused_exit_code": 0,
+  "focused_tests_failed": 0,
+  "focused_tests_ignored": 1,
+  "focused_tests_passed": 52,
+  "gnu_time": {
+    "all_17_domains_graph_and_inputs_identical": true,
+    "maximum_resident_set_size_kib": 766024,
+    "note": "/usr/bin/time absent; executable extracted to /tmp without changing system installation.",
+    "package_sha256": "fbbd81a7ee136c4698e0bd94196dd63a2e174460fe419a7d7681ede77d4f30c8",
+    "peak_rss_bytes": 784408576,
+    "receipt": "benchmarks/results/031-task6-turn6-time-v.json",
+    "source_url": "https://archlinux.org/packages/extra/x86_64/time/",
+    "version": "GNU Time 1.10",
+    "wall_seconds": 10.508071727585047
+  },
+  "milestone_20_percent_vs_cf4aa29_proven": false,
+  "post_benchmark_command": "cargo test --all-targets --no-fail-fast",
+  "post_benchmark_exit_code": 0,
+  "post_benchmark_tests_failed": 0,
+  "post_benchmark_tests_ignored": 1,
+  "post_benchmark_tests_passed": 776,
+  "release_command": "cargo build --release -p contextunity-forge-mcp",
+  "release_exit_code": 0,
+  "selected_architecture": "PreparedCatalogStorage in-memory compressed staging; insert_typed false; cached canonical JSON, search text and reference keys; parallel bounded compact-row chunk loads; preserve global projection skip.",
+  "spaced_comparison": {
+    "accepted": true,
+    "all_17_domains_graph_and_root_inputs_match": true,
+    "baseline": "a16620d",
+    "baseline_median_wall_seconds": 11.379054559394717,
+    "candidate": "prepared-cached-chunks",
+    "candidate_all_peak_rss_below_800000000": true,
+    "candidate_max_peak_rss_bytes": 788557824,
+    "candidate_median_faster": true,
+    "candidate_median_wall_seconds": 10.823624109849334,
+    "milestone_20_percent_vs_cf4aa29_proven": false,
+    "report": "benchmarks/results/031-task6-turn6-cached-confirmation.json",
+    "three_repeats": true,
+    "wall_change_percent": -4.881165185088355
+  },
+  "task_id": "forge-mcp/m-cold-indexing-throughput-and-memory-optimization:symbol-catalog-decomposition-and-memory-trimming",
+  "worker_id": "031-task6-builder"
+}

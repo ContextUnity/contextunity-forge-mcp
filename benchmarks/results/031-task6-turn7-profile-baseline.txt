@@ -1,0 +1,55 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 8K of event 'cpu/cycles/Pu'
+# Event count (approx.): 110454612011
+#
+# Overhead  Command          Shared Object         Symbol
+# ........  ...............  ....................  ..................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+     5.84%  ed10832-symbols  ed10832-symbols       [.] ts_node_child_containing_descendant
+     3.35%  ed10832-symbols  ed10832-symbols       [.] core::str::converts::from_utf8
+     3.14%  ed10832-symbols  ed10832-symbols       [.] ts_tree_cursor_goto_first_child_internal
+     2.71%  ed10832-symbols  ed10832-symbols       [.] ts_tree_cursor_goto_sibling_internal.constprop.0
+     2.52%  ed10832-symbols  ed10832-symbols       [.] sqlite3VdbeExec
+     1.66%  ed10832-symbols  ed10832-symbols       [.] sha2::sha256::x86::digest_blocks
+     1.51%  ed10832-symbols  ed10832-symbols       [.] ts_tree_cursor_child_iterator_next
+     1.39%  ed10832-symbols  libc.so.6             [.] malloc
+     1.37%  ed10832-symbols  ed10832-symbols       [.] ts_node_type
+     1.34%  ed10832-symbols  libc.so.6             [.] cfree
+     1.30%  ed10832-symbols  ed10832-symbols       [.] ts_parser_parse
+     1.27%  ed10832-symbols  ed10832-symbols       [.] ZSTD_compressBlock_fast
+     1.21%  ed10832-symbols  ed10832-symbols       [.] <hashbrown::map::HashMap<&str, core::option::Option<alloc::vec::Vec<&contextunity_forge_mcp::core::models::Node>>>>::get_inner::<str>
+     1.17%  ed10832-symbols  libc.so.6             [.] 0x0000000000175c36
+     1.11%  ed10832-symbols  libc.so.6             [.] 0x00000000000a4efb
+     1.09%  ed10832-symbols  ed10832-symbols       [.] ts_language_table_entry
+     1.04%  ed10832-symbols  ed10832-symbols       [.] ts_lexer__advance
+     0.91%  ed10832-symbols  ed10832-symbols       [.] ts_tree_cursor_current_node
+     0.87%  ed10832-symbols  ed10832-symbols       [.] stack__iter.constprop.1
+     0.86%  ed10832-symbols  ed10832-symbols       [.] <contextunity_forge_mcp::engine::ast::visitor::SinglePassExtractor>::visit_event
+     0.85%  ed10832-symbols  libc.so.6             [.] 0x00000000000a4fbe
+     0.84%  ed10832-symbols  ed10832-symbols       [.] ts_tree_cursor_iterate_children
+     0.82%  ed10832-symbols  ed10832-symbols       [.] ts_subtree_release
+     0.79%  ed10832-symbols  ed10832-symbols       [.] contextunity_forge_mcp::core::commitments::fts_digest
+     0.79%  ed10832-symbols  ed10832-symbols       [.] ts_node_parent
+     0.76%  ed10832-symbols  ed10832-symbols       [.] ts_language_next_state
+     0.74%  ed10832-symbols  ed10832-symbols       [.] ts_node_start_byte
+     0.72%  ed10832-symbols  ed10832-symbols       [.] ts_subtree_summarize_children
+     0.71%  ed10832-symbols  libc.so.6             [.] 0x0000000000179127
+     0.69%  ed10832-symbols  ed10832-symbols       [.] ts_parser__lex
+     0.67%  ed10832-symbols  ed10832-symbols       [.] sqlite3BtreeTableMoveto
+     0.67%  ed10832-symbols  libc.so.6             [.] pthread_mutex_lock
+     0.66%  ed10832-symbols  ed10832-symbols       [.] ts_node_child_count
+     0.66%  ed10832-symbols  libc.so.6             [.] 0x0000000000179121
+     0.64%  ed10832-symbols  ed10832-symbols       [.] <indexmap::map::IndexMap<alloc::string::String, serde_json::value::Value>>::get_index_of::<str>
+     0.64%  ed10832-symbols  ed10832-symbols       [.] ts_node_child_by_field_id
+     0.63%  ed10832-symbols  ed10832-symbols       [.] <&mut serde_json::ser::Serializer<&mut alloc::io::buffered::bufwriter::BufWriter<&mut zstd::stream::write::Encoder<alloc::vec::Vec<u8>>>> as serde_core::ser::Serializer>::serialize_str
+     0.61%  ed10832-symbols  ed10832-symbols       [.] vdbeSorterSort
+     0.53%  ed10832-symbols  ed10832-symbols       [.] vdbeSorterCompareInt
+
+
+#
+# (Tip: To set sample time separation other than 100ms with --sort time use --time-quantum)
+#
