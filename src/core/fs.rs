@@ -21,6 +21,27 @@ pub fn canonical_root(path: &Path) -> std::io::Result<PathBuf> {
     Ok(root)
 }
 
+/// Lexically normalize a path without requiring it to exist on disk.
+/// Resolves `.` and `..` components.
+pub fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if let Some(Component::Normal(_)) = components.last() {
+                    components.pop();
+                } else if !matches!(components.last(), Some(Component::RootDir)) {
+                    components.push(component);
+                }
+            }
+            c => components.push(c),
+        }
+    }
+    components.into_iter().collect()
+}
+
 /// Return whether a path consists only of normal relative components.
 pub fn safe_relative(path: &Path) -> bool {
     !path.as_os_str().is_empty()

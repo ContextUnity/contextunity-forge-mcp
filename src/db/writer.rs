@@ -147,7 +147,9 @@ pub struct BuildInputs<'a> {
 }
 
 pub use crate::core::config::{policy, read_policy};
-pub use crate::engine::pipeline::{build, delta, extract, SourceSnapshotMismatch};
+pub use crate::engine::pipeline::{
+    build, delta, extract, validate_code_map_target, SourceSnapshotMismatch,
+};
 
 pub(crate) fn prepare_pipeline_schema(
     conn: &mut Connection,

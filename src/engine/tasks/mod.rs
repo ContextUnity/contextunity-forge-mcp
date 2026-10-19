@@ -247,10 +247,13 @@ pub struct Manage {
 /// Configuration for repository tasks.
 pub struct TaskSettings {
     #[serde(default = "default_tasks_db")]
-    tasks_db: std::path::PathBuf,
+    /// Configured path to tasks SQLite database.
+    pub tasks_db: std::path::PathBuf,
     #[serde(default = "default_repository")]
-    task_repository: String,
-    task_project: Option<String>,
+    /// Configured task repository name.
+    pub task_repository: String,
+    /// Configured task project name.
+    pub task_project: Option<String>,
     /// Optional path to agents guidance file.
     pub agents_guidance: Option<String>,
     #[allow(dead_code)]
@@ -327,7 +330,10 @@ fn default_milestones() -> Vec<String> {
 fn default_plans() -> Vec<String> {
     vec!["docs/plans".into()]
 }
-fn primary_worktree_root(root: &Path) -> Option<std::path::PathBuf> {
+pub(crate) fn primary_worktree_root(root: &Path) -> Option<std::path::PathBuf> {
+    if root.join(".git").is_dir() {
+        return root.canonicalize().ok();
+    }
     if !root.join(".git").exists() {
         return None;
     }
@@ -370,7 +376,7 @@ impl TaskSettings {
         }
         Ok(settings)
     }
-    fn path(&self, root: &Path) -> Result<std::path::PathBuf> {
+    pub(crate) fn path(&self, root: &Path) -> Result<std::path::PathBuf> {
         let path = &self.tasks_db;
         let (base, path) = if path.is_absolute() {
             (root.to_path_buf(), path.to_path_buf())

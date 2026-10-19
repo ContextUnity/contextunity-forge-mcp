@@ -302,6 +302,7 @@ fn command_root(global: Option<&Path>, positional: Option<&Path>) -> Result<Path
 }
 
 fn open_or_rebuild(db: &Path, root: &Path) -> Result<crate::db::reader::LockedConnection> {
+    writer::validate_code_map_target(root, db)?;
     match crate::db::reader::open_locked(db, root) {
         Ok(conn) => Ok(conn),
         Err(err) => {
@@ -333,6 +334,7 @@ impl Cli {
             Command::Task { command } => task::run(&root, command)?,
             Command::Milestone { command } => milestone::run(&root, command)?,
             Command::Serve => {
+                writer::validate_code_map_target(&root, &db)?;
                 crate::mcp::server::serve(root, db).await?;
                 return Ok(());
             }
@@ -347,6 +349,7 @@ impl Cli {
                 let output = output
                     .or(self.db)
                     .unwrap_or_else(|| default_db(&workspace_root));
+                writer::validate_code_map_target(&workspace_root, &output)?;
                 writer::build(&workspace_root, &output, adapter.as_deref())?
             }
             Command::Scan {

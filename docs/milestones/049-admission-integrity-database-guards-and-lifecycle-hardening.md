@@ -131,29 +131,79 @@ receipt:
 
 ```yaml
 task_ref: database-collision-and-overwrite-guard
-target: "Protect tasks.sqlite and code-map.sqlite from mutual overwrite and corruption across CLI commands, MCP server startup, and cold build execution"
+target: Protect tasks.sqlite and code-map.sqlite from mutual overwrite and corruption across CLI commands, MCP server startup, and cold build execution
 proof_policy: seam-test-first
-contract_revision: 4
+contract_revision: 5
 scope:
-  - src/db/writer.rs
-  - src/engine/pipeline.rs
-  - src/core/fs.rs
-  - src/engine/tasks/mod.rs
-  - src/db/tasks_store/mod.rs
-  - src/cli/mod.rs
-  - tests/core/database_guard.rs
-  - tests/core.rs
-status: ready
+- src/db/writer.rs
+- src/engine/pipeline.rs
+- src/core/fs.rs
+- src/engine/tasks/mod.rs
+- src/db/tasks_store/mod.rs
+- src/cli/mod.rs
+- tests/core/database_guard.rs
+- tests/core.rs
+- docs/reference/configuration.md
+status: completed
 subtasks:
-  - subtask_ref: validate-code-map-target-guard
-    title: "Reject code-map build/serve output targets matching tasks.sqlite, matching configured tasks_db, or containing task tracking schema tables"
-    status: completed
-  - subtask_ref: tasks-store-code-map-guard
-    title: "Reject tasks store project initialization on databases named code-map.sqlite or containing code map tables (nodes, edges, files)"
-    status: completed
-  - subtask_ref: cli-command-boundary-validation
-    title: "Validate code-map output target in open_or_rebuild, serve, and build subcommands before acquiring locks or creating files"
-    status: completed
+- subtask_ref: validate-code-map-target-guard
+  title: Reject code-map build/serve output targets matching tasks.sqlite, matching configured tasks_db, or containing task tracking schema tables
+  status: completed
+  evidence: null
+- subtask_ref: tasks-store-code-map-guard
+  title: Reject tasks store project initialization on databases named code-map.sqlite or containing code map tables (nodes, edges, files)
+  status: completed
+  evidence: null
+- subtask_ref: cli-command-boundary-validation
+  title: Validate code-map output target in open_or_rebuild, serve, and build subcommands before acquiring locks or creating files
+  status: completed
+  evidence: null
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-19T16:11:53.555040200+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib && cargo test --test core
+      exit_code: 0
+      tests_passed: 126
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All 9 scope paths implement collision protection, its real proof or matching configuration documentation. Tracked files match candidate49e381; new database_guard.rs bytes also match via git show/cmp. git diff --check passed. Manifest changes are admitted authority; 2 unrelated untracked planning reports remain excluded. No reviewer source edits; source hashes retained in H/task2-review-source-sha256.txt, where H=/tmp/forge-049-implementation-20261019.
+        claims:
+          applicable: true
+          evidence: Verified canonical target guard at public build/delta, atomic build, final locked publication and 3 CLI boundaries; reserved names/custom paths/task schema/invalid settings/locked SQLite/nonregular targets fail closed. Task opener rejects code-map names/schema. Recovered invalid-configuration and initialization race defects are closed. Independently ran strict all-target/all-feature Clippy exit0, cargo test --lib 85/0, cargo test --test core 41/0 +1 existing ignored, 0 filtered. Exact logs H/task2-review-gates.json. Full049 paired performance acceptance and tasks3–6 remain pending.
+        concurrency:
+          applicable: true
+          evidence: Unknown-store initializer closes its old SQLite handle, takes canonical generation lock, reopens/rechecks, and holds lock through initialization. Publisher revalidates under same lock before sidecar removal/rename. Real separate child-process direct/alias race passes and preserves published index bytes; initialized-store opener still succeeds during writer transaction. Unix conditional leaves existing non-Unix opener available (source checked).
+        project_isolation:
+          applicable: true
+          evidence: Actual MCP stdio server overview confirms assigned WT generation d34ad12f,313 files/7018 nodes/0 parse errors. Paths are normalized/canonicalized for configured DB separation and canonical initialization locking; code publication retains symlink/parent guards. MCP impact/seam plus validated CLI AST evidence retained H/task2-review-{guard-callers,opener-impact,seam,cli-ast}.json. Tests and skill copy are isolated.
+        administration:
+          applicable: true
+          evidence: No migration/schema version/profile/privilege changes. Known task stores retain main connection-local open; config docs match runtime. Candidate49e381 binds to delivery base56eb0cd. Forge owns scoped automatic commit/receipt; reviewer makes no manual commit or receipt edit. Existing streaming remains; no milestone performance completion claim. Full contour rationale H/task2-independent-review.md.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ADMISSION-DETERMINISM: Dependency manifest collection across cold build, incremental delta, and MCP source admission must yield identical path sets and digests for unchanged workspace state, eliminating false-positive rebuild loops.'
+    - 'INV-DATABASE-SEPARATION: Task tracking databases (tasks.sqlite) and code map indices (code-map.sqlite) are mutually exclusive; attempts to target a task database for code-map output or open a code-map database as task store fail closed with TASK_DATABASE_COLLISION.'
+    - 'INV-WORKSPACE-UNIQUENESS: Subproject milestone resolution honors declared_projects frontmatter and configured owner mappings, preventing duplicate phantom workspaces from conflicting on milestone references.'
+    - 'INV-DAEMON-RESOURCE-BOUND: MCP servers preserve live connections regardless of inactivity, terminate on Unix when their launching parent disappears, and trim free heap pages after batch operations without removing the allocator trims delivered in milestone 031.'
+    - 'INV-GREENFIELD-SEAM-ACTIONABILITY: Greenfield contract validation failure for uncreated scope files outputs deterministic remediation guidance with file paths and stub requirements.'
+    - 'INV-PERFORMANCE-PRESERVATION: Preserve the indexing optimizations delivered on main; paired release measurements on an identical frozen corpus must show no cold-build, delta, or warm MCP latency regression before milestone delivery.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: subproject-workspace-deduplication

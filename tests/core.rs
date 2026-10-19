@@ -11,6 +11,8 @@ mod build_query_roundtrip;
 mod compact_schema;
 #[path = "core/coverage_diagnostics.rs"]
 mod coverage_diagnostics;
+#[path = "core/database_guard.rs"]
+mod database_guard;
 #[path = "core/debug_logging.rs"]
 mod debug_logging;
 #[path = "core/edge_aggregation.rs"]

@@ -82,6 +82,13 @@ qualified task namespace. See [repository tasks](tasks.md) for identity,
 concurrency, receipts, and administration. Code indexing works without task
 storage configuration.
 
+Code-map output and task storage use separate databases. Index commands reject
+reserved task filenames, the configured `tasks_db` path, and existing task schemas
+with `TASK_DATABASE_COLLISION`. A present invalid task configuration also rejects
+index output because its reserved path cannot be validated. Opening a task store
+rejects code-map filenames and schemas. New task-store initialization shares the
+index publication lock; opening an initialized task store needs no writer lock.
+
 Set root `agents_guidance` to a path inside the root repository. It defaults to
 `AGENTS.md`. Claim and inspect include that path and stage-specific
 `workflow_guidance`. A `TASK_GUIDANCE_MISSING` warning is raised if the `agents_guidance`

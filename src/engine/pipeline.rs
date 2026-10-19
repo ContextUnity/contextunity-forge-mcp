@@ -873,6 +873,165 @@ fn assign_components(facts: &mut BTreeMap<String, TypedFacts>, owners: &BTreeMap
     }
 }
 
+/// Validates that a code map database output target does not point to or overwrite
+/// a task tracking database.
+///
+/// # Errors
+/// Returns an error if:
+/// - The target filename matches known task database names (e.g. `tasks.sqlite`, `tasks.db`).
+/// - The target matches the configured `tasks_db` path in `forge-mcp.yaml`.
+/// - The target file exists and contains task tracking tables (e.g. `tasks`, `task_gates`, etc.).
+pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
+    // Resolve output path to absolute matching atomic_build (cwd-based for relative paths)
+    let output_abs = if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| root.to_path_buf())
+            .join(output)
+    };
+    let norm_output = crate::core::fs::normalize_path(&output_abs);
+
+    let file_name = norm_output
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or_default();
+
+    // 1. Rejection by filename pattern (case-insensitive and covering common variants)
+    let file_name_lower = file_name.to_ascii_lowercase();
+    if file_name_lower == "tasks.sqlite"
+        || file_name_lower.starts_with("tasks.sqlite")
+        || file_name_lower == "tasks.db"
+        || file_name_lower.ends_with(".tasks.sqlite")
+        || file_name_lower == "tasks.sqlite3"
+    {
+        bail!(
+            "TASK_DATABASE_COLLISION: Refusing to use task database path '{}' as code map output. The code map database must be separate (default: '.forge/code-map.sqlite').",
+            output.display()
+        );
+    }
+
+    // 2. Rejection by configured tasks_db path
+    let settings = crate::engine::tasks::TaskSettings::load(root);
+    let base =
+        crate::engine::tasks::primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+    if let Err(error) = &settings {
+        if root.join("forge-mcp.yaml").try_exists().unwrap_or(true)
+            || base.join("forge-mcp.yaml").try_exists().unwrap_or(true)
+        {
+            bail!(
+                "TASK_DATABASE_COLLISION: Cannot validate the reserved tasks database because task configuration is invalid ({error:#}). Refusing code map output '{}'.",
+                output.display()
+            );
+        }
+    }
+    if let Ok(settings) = settings {
+        let task_db_path = if settings.tasks_db.is_absolute() {
+            settings.tasks_db.clone()
+        } else {
+            base.join(&settings.tasks_db)
+        };
+        let norm_task_db = crate::core::fs::normalize_path(&task_db_path);
+        let same_path = norm_output == norm_task_db
+            || match (output_abs.canonicalize(), task_db_path.canonicalize()) {
+                (Ok(c1), Ok(c2)) => c1 == c2,
+                _ => false,
+            };
+        if same_path {
+            bail!(
+                "TASK_DATABASE_COLLISION: Refusing to use configured tasks database '{}' as code map output. The code map database must be separate (default: '.forge/code-map.sqlite').",
+                output.display()
+            );
+        }
+        if let Err(err) = settings.path(root) {
+            let default_db_path =
+                crate::core::fs::normalize_path(&root.join(".forge/code-map.sqlite"));
+            let default_base_db_path =
+                crate::core::fs::normalize_path(&base.join(".forge/code-map.sqlite"));
+            if norm_output == default_db_path || norm_output == default_base_db_path {
+                bail!(
+                    "TASK_DATABASE_COLLISION: Configured tasks database conflicts with code map output '{}' ({}).",
+                    output.display(),
+                    err
+                );
+            }
+        }
+    }
+
+    // 3. Rejection by existing task table schema (with fail-closed validation)
+    match fs::symlink_metadata(&output_abs) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                bail!(
+                    "code map target must be a regular file: '{}'",
+                    output.display()
+                );
+            }
+            if meta.len() == 0 {
+                return Ok(());
+            }
+            if crate::db::reader::validate_database_header(&output_abs).is_ok() {
+                let conn = Connection::open_with_flags(
+                    &output_abs,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                )
+                .and_then(|c| {
+                    c.busy_timeout(std::time::Duration::from_secs(2))?;
+                    Ok(c)
+                });
+                match conn {
+                    Ok(conn) => {
+                        let is_task_db = conn.query_row(
+                            "SELECT EXISTS(
+                                SELECT 1 FROM sqlite_schema
+                                WHERE type='table' AND name IN (
+                                    'tasks', 'task_gates', 'task_claims', 'task_subtasks',
+                                    'task_blackboard', 'task_findings', 'task_submissions',
+                                    'task_revisions', 'task_store_metadata'
+                                )
+                            )",
+                            [],
+                            |r| r.get::<_, bool>(0),
+                        );
+                        match is_task_db {
+                            Ok(true) => {
+                                bail!(
+                                    "TASK_DATABASE_COLLISION: Refusing to overwrite task database at '{}' with code map index. The target database contains active task tracking tables. The code map database must be separate (default: '.forge/code-map.sqlite').",
+                                    output.display()
+                                );
+                            }
+                            Ok(false) => {}
+                            Err(err) => {
+                                bail!(
+                                    "TASK_DATABASE_COLLISION: Cannot inspect SQLite database schema at '{}' ({}). Refusing to overwrite potentially active task database.",
+                                    output.display(),
+                                    err
+                                );
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        bail!(
+                            "TASK_DATABASE_COLLISION: Cannot inspect SQLite database at '{}' ({}). Refusing to overwrite potentially active task database.",
+                            output.display(),
+                            err
+                        );
+                    }
+                }
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            bail!(
+                "cannot access code map target '{}': {err}",
+                output.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn atomic_build(
     root: &Path,
     output: &Path,
@@ -882,6 +1041,7 @@ fn atomic_build(
     memory_budget: u64,
     test_hooks: Option<Arc<PipelineTestHooks>>,
 ) -> Result<Value> {
+    validate_code_map_target(root, output)?;
     let output = if output.is_absolute() {
         output.to_owned()
     } else {
@@ -1029,6 +1189,7 @@ fn atomic_build(
             .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
         streamed.connection.close().map_err(|(_, e)| e)?;
         let _generation_lock = crate::db::cache::exclusive_lock(&output)?;
+        validate_code_map_target(root, &output)?;
         let wal = PathBuf::from(format!("{}-wal", output.display()));
         let shm = PathBuf::from(format!("{}-shm", output.display()));
         let _ = fs::remove_file(&wal);
@@ -1101,6 +1262,7 @@ fn build_inner_with_cache(
     extraction_cache: Arc<ExtractionCache>,
     test_hooks: Option<Arc<PipelineTestHooks>>,
 ) -> Result<Value> {
+    validate_code_map_target(root, output)?;
     let started = Instant::now();
     let root = canonical_root(root)?;
     let adapter = load_adapter(&root, adapter_path)?;
@@ -1661,6 +1823,7 @@ fn reference_keys(facts: &TypedFacts) -> Vec<&str> {
 
 /// Performs incremental delta indexing for modified source files.
 pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
+    validate_code_map_target(root, db)?;
     let started = Instant::now();
     if modified.is_empty() {
         bail!("delta requires at least one modified path");

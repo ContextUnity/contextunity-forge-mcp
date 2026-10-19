@@ -365,6 +365,29 @@ pub fn task_candidate_baseline(connection: &Connection, task_id: &str) -> Result
     Ok(None)
 }
 
+fn validate_task_store_target(path: &Path) -> Result<()> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if name.starts_with("code-map.sqlite") {
+        bail!(
+            "TASK_DATABASE_COLLISION: Refusing to use code map database '{}' as tasks database. The tasks database must be separate (default: '.forge/tasks.sqlite').",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn has_task_store_metadata(connection: &Connection) -> Result<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='task_store_metadata')",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
 fn task_belongs_to(repository: &str, project: &str, id: &str) -> bool {
     let Some((head, _)) = id.split_once(':') else {
         return false;
@@ -390,12 +413,30 @@ impl TasksStore {
     pub fn open_project(path: &Path, repository: &str, project: &str) -> Result<Self> {
         crate::core::tasks::valid_identity(repository)?;
         crate::core::tasks::valid_identity(project)?;
+        validate_task_store_target(path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let connection = Connection::open(path)?;
         connection.execute_batch("PRAGMA busy_timeout=5000")?;
-        let known:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='task_store_metadata')",[],|r|r.get(0))?;
+        let known = has_task_store_metadata(&connection)?;
+        // Only initialization participates in index publication fencing. Supported
+        // task stores retain their connection-local, writer-independent open.
+        #[cfg(unix)]
+        let (connection, known, _initialization_lock) = if known {
+            (connection, known, None)
+        } else {
+            let target = path.canonicalize()?;
+            validate_task_store_target(&target)?;
+            drop(connection);
+            let lock = crate::db::cache::exclusive_lock(&target)?;
+            // Publication may have replaced the inode while we waited. Never
+            // initialize through the pre-lock SQLite handle.
+            let connection = Connection::open(&target)?;
+            connection.execute_batch("PRAGMA busy_timeout=5000")?;
+            let known = has_task_store_metadata(&connection)?;
+            (connection, known, Some(lock))
+        };
         if known {
             let version: String = connection.query_row(
                 "SELECT value FROM task_store_metadata WHERE key='schema_version'",
@@ -406,6 +447,19 @@ impl TasksStore {
                 bail!("unsupported tasks schema; use recovery tooling");
             }
         } else {
+            let code_map_table_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('nodes', 'edges', 'files')",
+                    [],
+                    |row| row.get(0),
+                )
+                ?;
+            if code_map_table_count >= 2 {
+                bail!(
+                    "TASK_DATABASE_COLLISION: Refusing to open code map database at '{}' as tasks database. The tasks database must be separate (default: '.forge/tasks.sqlite').",
+                    path.display()
+                );
+            }
             let populated: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
                 [],
@@ -1383,6 +1437,16 @@ mod tests {
 
     #[test]
     fn initialized_task_store_opens_during_a_write_transaction() {
+        // A separate process exercises the same public opener while publication
+        // holds the generation lock. Its environment is local to that child.
+        if let Some(path) = std::env::var_os("FORGE_TEST_TASK_INITIALIZER") {
+            std::fs::write(std::env::var_os("FORGE_TEST_TASK_READY").unwrap(), "ready").unwrap();
+            let error = TasksStore::open(Path::new(&path))
+                .err()
+                .expect("published code index must not become a task store");
+            assert!(error.to_string().contains("TASK_DATABASE_COLLISION"));
+            return;
+        }
         let directory = std::env::temp_dir().join(format!(
             "forge-task-reader-{}-{}",
             std::process::id(),
@@ -1402,10 +1466,67 @@ mod tests {
         tx.rollback().unwrap();
         let failure = opened.err();
         drop(writer);
-        std::fs::remove_dir_all(directory).unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
         assert!(
             failure.is_none(),
             "initialized store open requires no writer lock: {failure:?}"
         );
+
+        std::fs::create_dir_all(&directory).unwrap();
+        let reserved = directory.join("code-map.sqlite");
+        let error = TasksStore::open(&reserved)
+            .err()
+            .expect("code-map path must not become a task store");
+        assert!(error.to_string().contains("TASK_DATABASE_COLLISION"));
+        assert!(!reserved.exists());
+
+        #[cfg(unix)]
+        for alias in [false, true] {
+            let target = directory.join(format!("published-{alias}.sqlite"));
+            let input = if alias {
+                std::fs::write(&target, []).unwrap();
+                let link = directory.join("task-alias.sqlite");
+                std::os::unix::fs::symlink(&target, &link).unwrap();
+                link
+            } else {
+                target.clone()
+            };
+            let root = directory.join(format!("source-{alias}"));
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("app.py"), "def published():\n    return 1\n").unwrap();
+            let index = directory.join(format!("generation-{alias}.sqlite"));
+            crate::engine::pipeline::build(&root, &index, None).unwrap();
+            let expected = std::fs::read(&index).unwrap();
+            let lock = crate::db::cache::exclusive_lock(&target).unwrap();
+            crate::engine::pipeline::validate_code_map_target(&root, &target).unwrap();
+            let ready = directory.join(format!("ready-{alias}"));
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "db::tasks_store::tests::initialized_task_store_opens_during_a_write_transaction",
+                    "--nocapture",
+                ])
+                .env("FORGE_TEST_TASK_INITIALIZER", &input)
+                .env("FORGE_TEST_TASK_READY", &ready)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let started = std::time::Instant::now();
+            while !ready.exists() && started.elapsed() < std::time::Duration::from_secs(5) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let blocked = child.try_wait().unwrap().is_none();
+            // Match atomic_build's final replacement while holding its real lock.
+            std::fs::rename(&index, &target).unwrap();
+            drop(lock);
+            let output = child.wait_with_output().unwrap();
+            assert!(ready.exists(), "initializer process did not start");
+            assert!(blocked, "task initialization bypassed the publication lock");
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(std::fs::read(&target).unwrap(), expected);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
