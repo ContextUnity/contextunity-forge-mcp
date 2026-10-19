@@ -308,7 +308,13 @@ impl DependencyRegistry {
         root: &Path,
         adapter: Option<&crate::engine::scanner::Adapter>,
     ) -> Result<Self> {
-        Self::try_collect(root, adapter, None)
+        if let Some(adapter) = adapter {
+            let dependency_manifests =
+                crate::engine::scanner::dependency_manifests_for_build(root, adapter)?;
+            Self::try_collect(root, Some(adapter), Some(&dependency_manifests))
+        } else {
+            Self::try_collect(root, None, None)
+        }
     }
 
     /// Collects dependency metadata from scanner-discovered manifests and direct workspace roots.

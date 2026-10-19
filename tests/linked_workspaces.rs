@@ -304,3 +304,61 @@ linked_workspaces:
 
     let _ = fs::remove_dir_all(&temp_base);
 }
+
+#[test]
+fn test_linked_workspace_manifest_outside_roots_does_not_cause_admission_loop() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temp_base =
+        std::env::temp_dir().join(format!("test_forge_mw_loop_{}_{}", std::process::id(), nonce));
+
+    let ws_main = temp_base.join("main");
+    fs::create_dir_all(ws_main.join("src")).unwrap();
+    fs::write(ws_main.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let ws_linked = temp_base.join("linked");
+    fs::create_dir_all(ws_linked.join("src")).unwrap();
+    fs::write(ws_linked.join("src/lib.rs"), "pub fn linked() {}\n").unwrap();
+
+    // Create a manifest OUTSIDE of roots in the linked workspace
+    fs::create_dir_all(ws_linked.join("other_dir")).unwrap();
+    fs::write(
+        ws_linked.join("other_dir/package.json"),
+        r#"{"name": "outside", "version": "1.0.0"}"#,
+    )
+    .unwrap();
+
+    let adapter_content = format!(
+        r#"roots:
+  - src
+linked_workspaces:
+  - name: linked
+    path: "{}"
+    roots:
+      - src
+"#,
+        ws_linked.display()
+    );
+    fs::write(ws_main.join("forge-mcp.yaml"), &adapter_content).unwrap();
+
+    let db_path = ws_main.join(".forge/code-map.sqlite");
+    let server = Server::new(ws_main.clone(), db_path);
+
+    // Initial read must succeed without looping or erroring on admission
+    let res = server.read(|conn| {
+        let ov = reader::overview_with_options(
+            conn,
+            &reader::OverviewOptions {
+                aspects: None,
+                page: &page(100),
+            },
+        )?;
+        Ok(ov)
+    });
+
+    assert!(res.is_ok(), "server read must succeed without admission failure: {:?}", res.err());
+
+    let _ = fs::remove_dir_all(&temp_base);
+}
