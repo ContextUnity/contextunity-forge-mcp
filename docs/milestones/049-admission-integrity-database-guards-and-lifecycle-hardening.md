@@ -371,27 +371,77 @@ receipt:
 
 ```yaml
 task_ref: greenfield-seam-guidance-and-diagnostics
-target: "Provide actionable error diagnostics and contract author workflow guidance for greenfield features where admitted scope files do not yet exist on disk"
+target: Provide actionable error diagnostics and contract author workflow guidance for greenfield features where admitted scope files do not yet exist on disk
 proof_policy: seam-test-first
 contract_revision: 4
 scope:
-  - src/engine/tasks/gates.rs
-  - src/core/tasks/acdd.default.yaml
-  - docs/reference/tasks.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/acdd_profile.yaml.example
-  - tests/acdd/tasks.rs
-status: ready
+- src/engine/tasks/gates.rs
+- src/core/tasks/acdd.default.yaml
+- docs/reference/tasks.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/acdd_profile.yaml.example
+- tests/acdd/tasks.rs
+status: completed
 subtasks:
-  - subtask_ref: validate-seam-missing-scope-diagnostic
-    title: "Detect uncreated scope files in validate_seam_reachability and output targeted remediation instructions for scaffolding minimal stubs and refreshing the index"
-    status: completed
-  - subtask_ref: acdd-profile-greenfield-guidance
-    title: "Update contract_author role guidance and steps in acdd.default.yaml to mandate minimal file scaffolding for new modules in scope"
-    status: completed
-  - subtask_ref: reference-and-skill-alignment
-    title: "Update docs/reference/tasks.md and skills/contextunity-forge/SKILL.md with greenfield seam reachability rules and proof policy alternatives"
-    status: completed
+- subtask_ref: validate-seam-missing-scope-diagnostic
+  title: Detect uncreated scope files in validate_seam_reachability and output targeted remediation instructions for scaffolding minimal stubs and refreshing the index
+  status: completed
+  evidence: null
+- subtask_ref: acdd-profile-greenfield-guidance
+  title: Update contract_author role guidance and steps in acdd.default.yaml to mandate minimal file scaffolding for new modules in scope
+  status: completed
+  evidence: null
+- subtask_ref: reference-and-skill-alignment
+  title: Update docs/reference/tasks.md and skills/contextunity-forge/SKILL.md with greenfield seam reachability rules and proof policy alternatives
+  status: completed
+  evidence: null
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-19T17:53:17.825293952+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 195
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Exactly six admitted paths byte-match candidate84b2a5e against basef6cfe153; git diff --check passed, no extra tracked changes. Untracked successor plan excluded; no reviewer source edits. H/task5-review-binding.json and task5-review-source-sha256.txt; H=/tmp/forge-049-implementation-20261019.
+        claims:
+          applicable: true
+          evidence: Real TasksStore::submit regression proves missing production file actionable error, unindexed real stub rejection, unchanged stage/claim after both rejections, then actual writer rebuild and same proof advancing to build. Original diagnostic red H/task5-contract-red.log and direct helper red H/task5-unit-contract-red.log retained. Independent strict Clippy exit0; complete lib87/0 + acdd108/0, zero ignored/filtered,195 actual passes. Profile/reference/skill/example all require compiling stubs, module/import declarations and current index; proof policies never waive reachability. H/task5-review-gates.json and task5-independent-review.md.
+        concurrency:
+          applicable: true
+          evidence: Only existing final disconnected error branch calls missing_scope_files; ordered metadata reads have no mutation, locks or new state. Successful paths and existing reachability/current-source/evidence/policy checks are unchanged. Real-store failure keeps claim and contract stage intact. No MCP dispatch/index work, extra allocator trims, workers or public signatures.
+        project_isolation:
+          applicable: true
+          evidence: Actual W-rooted MCP generation5d0290a0, 313 files/7054 nodes/zero parse errors; direct helper contract edge. Cross-module store-call graph gap remains documented, with actual store integration providing behavioral proof. Independent tests use disposable fixtures, isolated repository skill copy and Cargo target. Missing scope reads use the claimed worktree; existing confinement/authority is unchanged.
+        administration:
+          applicable: true
+          evidence: Independent codex-049-reviewer differs from builder; same session continues delivery. Six-path scope and contract4 unchanged; instruction-only YAML strings preserve gates/policies. No schema, privilege, install, profile acceptance bypass, manual source/manifest/receipt edit or commit. Task4 source hash retained. Full049 performance acceptance, task6, main checkpoint integration and milestone landing remain open/outside this disposition.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ADMISSION-DETERMINISM: Dependency manifest collection across cold build, incremental delta, and MCP source admission must yield identical path sets and digests for unchanged workspace state, eliminating false-positive rebuild loops.'
+    - 'INV-DATABASE-SEPARATION: Task tracking databases (tasks.sqlite) and code map indices (code-map.sqlite) are mutually exclusive; attempts to target a task database for code-map output or open a code-map database as task store fail closed with TASK_DATABASE_COLLISION.'
+    - 'INV-WORKSPACE-UNIQUENESS: Subproject milestone resolution honors declared_projects frontmatter and configured owner mappings, preventing duplicate phantom workspaces from conflicting on milestone references.'
+    - 'INV-DAEMON-RESOURCE-BOUND: MCP servers preserve live connections regardless of inactivity, terminate on Unix when their launching parent disappears, and trim free heap pages after batch operations without removing the allocator trims delivered in milestone 031.'
+    - 'INV-GREENFIELD-SEAM-ACTIONABILITY: Greenfield contract validation failure for uncreated scope files outputs deterministic remediation guidance with file paths and stub requirements.'
+    - 'INV-PERFORMANCE-PRESERVATION: Preserve the indexing optimizations delivered on main; paired release measurements on an identical frozen corpus must show no cold-build, delta, or warm MCP latency regression before milestone delivery.'
+    architectural_notes:
+    - 'decisions: Task5 build closure: only final disconnected-contract error gains deterministic missing-scope paths, compiling stub/module/import guidance and index refresh command; existing reachability/current-index/proof-policy gates stay unchanged. Small missing_scope_files helper is called only in that error branch. Real TasksStore::submit test reuses existing indexed-boundary fixture and covers missing file rejection, unindexed stub rejection with unchanged stage/claim, then actual index refresh and accepted contract to build. Original implementation fails this exact error assertion (H/task5-contract-red.log,101,0/1); direct indexed missing_scope_files_contract also fails empty scaffold (H/task5-unit-contract-red.log,101,0/1), and both pass in complete green gates. Cross-module TasksStore::submit graph calls remain unresolved (including equivalent UFCS, reverted); no synthetic edges, graph fix, scope expansion or validation bypass added. Direct unit metadata witness plus real-store integration prove complementary boundaries. Strict all-target/all-feature Clippy0, complete lib87/0 + acdd108/0 =195, no ignored/filtered; H/task5-build-gates.json. Documentation, packaged skill, embedded role guidance and profile example agree on compiling production stubs and index refresh; proof-policy alternatives never waive reachability. Future stage5/6 carry retains all accepted tasks1–4 and T4-R1. H=/tmp/forge-049-implementation-20261019. Final milestone paired performance acceptance remains open.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: mcp-worktree-context-and-task-claim-resolution

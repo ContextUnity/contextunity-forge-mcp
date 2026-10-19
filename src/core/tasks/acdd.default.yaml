@@ -19,7 +19,7 @@ roles:
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "As contract author, define the production-seam contract and red proof, then post a build-targeted draft for the builder."
+    guidance: "As contract author, define the production-seam contract and red proof. For greenfield/new modules in task.scope, you MUST create minimal file scaffolding with compiling production stubs and module/import declarations so AST imports resolve before index refresh, then post a build-targeted draft for the builder."
   builder:
     mode: subagent
     reuse_on_reject: true
@@ -96,7 +96,7 @@ gates:
       - "search_docs"
       - "code_map_inspect"
     steps:
-      - "Author a sensitive failing seam test in the designated test suite (or verify existing seam directly with exit code 0 if proof_policy: direct-proof or deferred-final-test)."
+      - "Author a sensitive failing seam test in the designated test suite (for greenfield/new modules in task.scope, create minimal file scaffolding with compiling production stubs and module/import declarations so AST imports resolve; or verify existing seam directly with exit code 0 if proof_policy: direct-proof or deferred-final-test)."
       - "Post the contract draft to task_blackboard with topic=draft and gate=\"build\" so the builder receives a targeted handoff."
       - "Submit contract proof with seam test and red_exit_code."
 

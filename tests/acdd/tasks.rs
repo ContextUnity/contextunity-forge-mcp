@@ -8212,3 +8212,71 @@ gates:
         )
     );
 }
+
+#[test]
+fn greenfield_seam_diagnostic_reports_missing_scope_files_and_scaffolding_guidance() {
+    let root = prepare_indexed_boundary_workspace(
+        "pub fn route() -> usize { 1 }\n",
+        "",
+        "use crate::api::route;\n#[test]\nfn test_connected() { let actual = route(); assert_eq!(actual, 1); }\n",
+        "route",
+        None,
+        None,
+    );
+    std::fs::remove_file(root.0.join("src/api.rs")).unwrap();
+    writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+    let task_id = "forge-mcp/m-current-boundary:routing";
+    tasks::claim(
+        &root.0,
+        serde_json::from_value(json!({
+            "task_id": task_id,
+            "stage": "contract",
+            "worker_id": "contract-author",
+            "worktree": root.0
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut store = tasks::store_for_task(&root.0, task_id).unwrap();
+    let claimed = store.inspect(task_id).unwrap();
+    let mut proof = evidence(&claimed);
+    proof.proof = json!({
+        "contract_proof": {
+            "seam_test_ref": "src/seam.rs::test_connected",
+            "red_exit_code": 101
+        }
+    });
+
+    for phase in ["missing", "stub_unindexed", "stub_indexed"] {
+        if phase == "stub_unindexed" {
+            root.write("src/api.rs", "pub fn route() -> usize { 0 }\n");
+        } else if phase == "stub_indexed" {
+            writer::build(&root.0, &root.0.join(".forge/code-map.sqlite"), None).unwrap();
+        }
+        let result = store.submit(task_id, "contract", &proof, "pass", None);
+        if phase == "stub_indexed" {
+            result.expect("indexed real production stub must permit red contract proof");
+            assert_eq!(store.inspect(task_id).unwrap().stage, "build");
+            continue;
+        }
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("TASK_SEAM_DISCONNECTED"), "{phase}: {error}");
+        if phase == "missing" {
+            assert!(
+                error.contains("target scope files do not exist yet on disk (src/api.rs)"),
+                "{error}"
+            );
+            assert!(error.contains("create minimal file scaffolding"), "{error}");
+            assert!(error.contains("contextunity-forge-mcp build"), "{error}");
+        } else {
+            assert!(!error.contains("do not exist yet"), "{error}");
+            assert!(
+                error.contains("refresh the claimed-worktree code map"),
+                "{error}"
+            );
+        }
+        let rejected = store.inspect(task_id).unwrap();
+        assert_eq!(rejected.stage, "contract", "{phase}");
+        assert_eq!(rejected.claim_revision, claimed.claim_revision, "{phase}");
+    }
+}

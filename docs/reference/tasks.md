@@ -329,7 +329,12 @@ typed outgoing references, and applicable import bindings against source parsed
 from the claimed worktree. It uses that worktree's code map when present;
 otherwise it uses the workspace's read-only code map. Missing or stale indexed
 evidence does not prove a seam, so refresh the claimed-worktree code map after
-changing a test, helper, import, or binding used by the witness. A changed indexed public
+changing a test, helper, import, or binding used by the witness.
+
+For greenfield features with uncreated scope files, create minimal compiling
+production stubs and module/import declarations in admitted scope, then refresh
+the index. Changing proof policy does not bypass seam reachability validation.
+A changed indexed public
 function or method signature with a caller outside admitted scope returns
 `TASK_SCOPE_INCOMPLETE`, allowing the task to admit that caller or preserve the
 signature. Rust trait methods are implicitly callable at the visibility of

@@ -7,7 +7,7 @@ roles:
     mode: subagent
     reuse_on_reject: true
     models: ['sol-6.1:high']
-    guidance: "Define a production-seam contract and submit its red proof."
+    guidance: "Define a production-seam contract and submit its red proof. For greenfield files, create compiling production stubs and module/import declarations in admitted scope, then refresh the index. Changing proof policy does not bypass seam reachability."
   builder:
     mode: subagent
     reuse_on_reject: true

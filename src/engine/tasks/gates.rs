@@ -706,6 +706,37 @@ fn indexed_edge_is_current(
     ))
 }
 
+fn missing_scope_files(worktree: &Path, scope: &[String]) -> Vec<String> {
+    scope
+        .iter()
+        .filter(|relative| !worktree.join(relative).exists())
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn missing_scope_files_contract() {
+    let root = std::env::temp_dir().join(format!(
+        "forge-missing-scope-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("present.rs"), "").unwrap();
+    let scope = vec![
+        "present.rs".into(),
+        "new.rs".into(),
+        "nested/module.rs".into(),
+    ];
+    let missing = missing_scope_files(&root, &scope);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(missing, ["new.rs", "nested/module.rs"]);
+}
+
 fn validate_seam_reachability(
     connection: &rusqlite::Connection,
     task_id: &str,
@@ -792,6 +823,14 @@ fn validate_seam_reachability(
         }
     }
     if !connected {
+        let missing_scope_files = missing_scope_files(worktree, scope);
+        if !missing_scope_files.is_empty() {
+            bail!(
+                "TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no current indexed one- or two-hop path into admitted production scope; target scope files do not exist yet on disk ({}). Do: for greenfield/new modules in task.scope, create minimal file scaffolding with compiling production stubs and module/import declarations so AST imports resolve, refresh the index (`contextunity-forge-mcp build`), and resubmit contract proof.",
+                reference.path,
+                missing_scope_files.join(", ")
+            );
+        }
         bail!("TASK_SEAM_DISCONNECTED: {task_id}. seam_test_ref '{}' has no current indexed one- or two-hop path into admitted production scope. Do: refresh the claimed-worktree code map, then choose a connected test seam or admit its production dependency.", reference.path);
     }
     Ok(())
