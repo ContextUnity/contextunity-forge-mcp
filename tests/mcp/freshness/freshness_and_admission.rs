@@ -1,4 +1,5 @@
 use super::*;
+use contextunity_forge_mcp::engine::pipeline::{build, delta};
 use std::{path::PathBuf, time::SystemTime};
 
 #[test]
@@ -29,6 +30,63 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
     let removed = evidence();
     assert_eq!(removed["manifest_digest"], before["manifest_digest"]);
     assert!(!removed["evidence"].as_str().unwrap().contains("manifest"));
+}
+
+#[test]
+fn manifest_changes_trigger_deterministic_rebuild_in_both_admit_and_delta() {
+    let ws = Workspace::new();
+    ws.write("forge-mcp.yaml", "roots: [src]\n");
+    ws.write("requirements.txt", "requests>=2.0\n");
+    ws.write("unindexed/requirements.txt", "unindexed_library>=1\n");
+    ws.write("src/app.py", "import requests\n");
+
+    let db = ws.path(".forge/index.sqlite");
+    build(ws.root(), &db, None).unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let initial_digest: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='manifest_digest'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    drop(conn);
+
+    let server = in_process_server(&ws);
+    let unchanged = server.read(|_| Ok(json!({}))).unwrap();
+    assert_eq!(unchanged["freshness"]["refresh"], "none");
+    ws.write("unindexed/requirements.txt", "unindexed_library>=2\n");
+    invalidate_mcp_connection_cache(&server.db).unwrap();
+    let outside_roots = server.read(|_| Ok(json!({}))).unwrap();
+    assert_eq!(outside_roots["freshness"]["refresh"], "none");
+
+    // 1. Change manifest on disk and verify Server::admit performs rebuild
+    ws.write("requirements.txt", "requests>=2.1\n");
+    let server = in_process_server(&ws);
+    let after_admit = server
+        .read(|c| {
+            Ok(json!({
+                "manifest_digest": c.query_row("SELECT value FROM metadata WHERE key='manifest_digest'", [], |r| r.get::<_, String>(0))?
+            }))
+        })
+        .unwrap();
+    let admit_digest = after_admit["manifest_digest"].as_str().unwrap();
+    assert_ne!(admit_digest, initial_digest);
+
+    // 2. Change manifest on disk and verify delta performs rebuild
+    ws.write("requirements.txt", "requests>=2.2\n");
+    let delta_res = delta(ws.root(), &db, &[PathBuf::from("src/app.py")]).unwrap();
+    assert!(delta_res.is_object());
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let after_delta: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='manifest_digest'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(after_delta, admit_digest);
+    assert_ne!(after_delta, initial_digest);
 }
 
 #[test]

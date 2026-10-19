@@ -22,8 +22,8 @@ fn error(message: impl Into<String>) -> std::io::Error {
 #[path = "adapter.rs"]
 mod adapter;
 pub use crate::core::config::*;
-pub use crate::core::models::FileEntry;
 pub use crate::core::config::{ENGINE_SCHEMA_VERSION, INDEX_SEMANTICS_VERSION};
+pub use crate::core::models::FileEntry;
 
 #[derive(Debug, Clone, Serialize)]
 /// Represents scan report data.
@@ -36,6 +36,8 @@ pub struct ScanReport {
     pub elapsed_ms: u128,
     /// The entries value.
     pub entries: Vec<FileEntry>,
+    /// Dependency manifest paths discovered during the same inventory walk.
+    pub dependency_manifests: Vec<PathBuf>,
 }
 
 /// Source metadata captured by the cold-build walk before opening file content.
@@ -324,7 +326,7 @@ pub fn scan_reusing(
     previous: &[FileEntry],
 ) -> std::io::Result<ScanReport> {
     let started = Instant::now();
-    let (candidates, _) = collect_candidates(root, adapter)?;
+    let (candidates, dependency_manifests) = collect_candidates(root, adapter)?;
 
     let previous: std::collections::BTreeMap<_, _> =
         previous.iter().map(|f| (f.path.as_str(), f)).collect();
@@ -365,6 +367,7 @@ pub fn scan_reusing(
         bytes,
         elapsed_ms: started.elapsed().as_millis(),
         entries,
+        dependency_manifests,
     })
 }
 

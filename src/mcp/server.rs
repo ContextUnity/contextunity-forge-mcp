@@ -76,6 +76,7 @@ impl Server {
             request_adapter: None,
         }
     }
+
     pub(crate) fn with_request_adapter(&self, adapter: RequestAdapter) -> Self {
         Self {
             root: self.root.clone(),
@@ -225,7 +226,7 @@ impl Server {
         let root = scanner::canonical_root(&self.root)?;
         let mut refresh = "none";
         let mut reloaded_adapter = None;
-        for attempt in 0..3 {
+        for attempt in 0..5 {
             if attempt > 0 {
                 let latest = scanner::load_adapter(&root, None)?;
                 anyhow::ensure!(
@@ -308,16 +309,19 @@ impl Server {
             let started = Instant::now();
             let scan = scanner::scan_reusing(&root, adapter, &previous)?;
             let manifests =
-                crate::engine::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
+                crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_paths(
                     &root,
                     Some(adapter),
-                );
-            let previous_manifest_digest = conn.query_row(
-                "SELECT value FROM metadata WHERE key='manifest_digest'",
-                [],
-                |row| row.get::<_, String>(0),
-            )?;
-            if manifests.digest() != previous_manifest_digest {
+                    &scan.dependency_manifests,
+                )?;
+            let previous_manifest_digest = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key='manifest_digest'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            if previous_manifest_digest.as_deref() != Some(manifests.digest()) {
                 *slot = None;
                 crate::db::writer::build(&root, &self.db, adapter.adapter_path.as_deref())?;
                 refresh = "rebuild";
@@ -389,11 +393,17 @@ impl Server {
                 refresh = "rebuild";
             } else {
                 match crate::db::writer::delta(&root, &self.db, &modified) {
-                    Ok(_) => refresh = "delta",
+                    Ok(_) => {
+                        refresh = "delta";
+                    }
                     Err(error) if error.is::<crate::db::writer::SourceSnapshotMismatch>() => {
+                        let backoff_ms = (25 * (1 << attempt)).min(200);
+                        std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
                         continue;
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        return Err(error);
+                    }
                 }
             }
         }
@@ -451,6 +461,7 @@ impl Server {
         Ok(result)
     }
 }
+
 const MCP_SESSION_ENV: &str = "CONTEXTUNITY_FORGE_MCP_SESSION";
 
 fn resumed_initialize_params(server: &Server) -> Option<rmcp::model::InitializeRequestParams> {

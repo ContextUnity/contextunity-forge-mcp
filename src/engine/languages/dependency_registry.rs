@@ -308,7 +308,12 @@ impl DependencyRegistry {
         root: &Path,
         adapter: Option<&crate::engine::scanner::Adapter>,
     ) -> Result<Self> {
-        Self::try_collect(root, adapter, None)
+        if let Some(adapter) = adapter {
+            let manifests = crate::engine::scanner::dependency_manifests_for_build(root, adapter)?;
+            Self::try_collect(root, Some(adapter), Some(&manifests))
+        } else {
+            Self::try_collect(root, None, None)
+        }
     }
 
     /// Collects dependency metadata from scanner-discovered manifests and direct workspace roots.
@@ -971,6 +976,33 @@ mod tests {
             second.digest(),
             "manifest content changes must produce a new registry digest"
         );
+
+        fs::create_dir_all(first_root.join("src")).unwrap();
+        fs::create_dir_all(first_root.join("unindexed")).unwrap();
+        fs::write(first_root.join("forge-mcp.yaml"), "roots: [src]\n").unwrap();
+        fs::write(
+            first_root.join("unindexed/requirements.txt"),
+            "outside_source_roots>=1\n",
+        )
+        .unwrap();
+        let adapter = crate::engine::scanner::load_adapter(&first_root, None).unwrap();
+        let cold =
+            DependencyRegistry::try_collect_with_paths(&first_root, Some(&adapter), &[]).unwrap();
+        let admission =
+            DependencyRegistry::try_collect_with_scan_config(&first_root, Some(&adapter)).unwrap();
+        assert_eq!(
+            cold.digest(),
+            admission.digest(),
+            "cold and admission discovery must exclude manifests outside configured source roots"
+        );
+        fs::write(
+            first_root.join("unindexed/requirements.txt"),
+            "outside_source_roots>=2\n",
+        )
+        .unwrap();
+        let unchanged =
+            DependencyRegistry::try_collect_with_scan_config(&first_root, Some(&adapter)).unwrap();
+        assert_eq!(cold.digest(), unchanged.digest());
     }
 
     #[cfg(feature = "lang-python")]

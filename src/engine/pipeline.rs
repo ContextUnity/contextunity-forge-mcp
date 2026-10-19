@@ -1727,7 +1727,15 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         drop(generation_lock);
         return build(&root, db, adapter.adapter_path.as_deref());
     }
-    let dependencies = DependencyRegistry::try_collect_with_scan_config(&root, Some(&adapter))?;
+    let previous = crate::db::reader::inventory_snapshot(&admitted)?;
+    let scanning = Instant::now();
+    let scan = scanner::scan_reusing(&root, &adapter, &previous)?;
+    let scan_ms = scanning.elapsed().as_secs_f64() * 1000.;
+    let dependencies = DependencyRegistry::try_collect_with_paths(
+        &root,
+        Some(&adapter),
+        &scan.dependency_manifests,
+    )?;
     let previous_manifest_digest = admitted
         .query_row(
             "SELECT value FROM metadata WHERE key='manifest_digest'",
@@ -1740,10 +1748,6 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
         drop(generation_lock);
         return build(&root, db, adapter.adapter_path.as_deref());
     }
-    let previous = crate::db::reader::inventory_snapshot(&admitted)?;
-    let scanning = Instant::now();
-    let scan = scanner::scan_reusing(&root, &adapter, &previous)?;
-    let scan_ms = scanning.elapsed().as_secs_f64() * 1000.;
     let modified: BTreeSet<String> = modified
         .iter()
         .map(|p| {
