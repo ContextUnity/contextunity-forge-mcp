@@ -55,6 +55,15 @@ struct Freshness {
     refresh: &'static str,
 }
 
+struct WorktreeContext {
+    source_root: PathBuf,
+    config_digest: String,
+    config_present: bool,
+    root: PathBuf,
+    repository: PathBuf,
+    tasks_db: Option<PathBuf>,
+}
+
 #[derive(Clone)]
 /// Represents server data.
 pub struct Server {
@@ -65,6 +74,7 @@ pub struct Server {
     /// The connection value.
     pub connection: Arc<Mutex<ConnectionSlot>>,
     request_adapter: Option<RequestAdapter>,
+    worktree_context: Arc<Mutex<Option<Arc<WorktreeContext>>>>,
 }
 impl Server {
     /// Creates a new instance.
@@ -74,15 +84,22 @@ impl Server {
             db,
             connection: Arc::new(Mutex::new(None)),
             request_adapter: None,
+            worktree_context: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub(crate) fn with_request_adapter(&self, adapter: RequestAdapter) -> Self {
+    pub(crate) fn with_root_and_db(
+        &self,
+        root: PathBuf,
+        db: PathBuf,
+        adapter: RequestAdapter,
+    ) -> Self {
         Self {
-            root: self.root.clone(),
-            db: self.db.clone(),
+            root,
+            db,
             connection: Arc::clone(&self.connection),
             request_adapter: Some(adapter),
+            worktree_context: Arc::clone(&self.worktree_context),
         }
     }
 
@@ -462,6 +479,154 @@ impl Server {
     }
 }
 
+impl Server {
+    /// Resolves explicit worktrees or a fresh active claim without reparsing task settings per request.
+    pub(crate) fn resolve_target_root_and_db(
+        &self,
+        requested_worktree: Option<&str>,
+        adapter: &std::io::Result<scanner::Adapter>,
+    ) -> Result<(PathBuf, PathBuf)> {
+        let (root, target) = if let Some(requested) = requested_worktree.map(str::trim) {
+            if requested.is_empty() {
+                anyhow::bail!("WORKTREE_NOT_FOUND: worktree must not be empty. Do: pass a path or unique name.");
+            }
+            let root = self.root.canonicalize()?;
+            let repository =
+                crate::engine::tasks::primary_worktree_root(&root).unwrap_or_else(|| root.clone());
+            let target = resolve_explicit_worktree(&root, &repository, requested)?;
+            (root, target)
+        } else {
+            let adapter = adapter
+                .as_ref()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            // Empty configuration and no configuration share an adapter digest.
+            let config_present =
+                !adapter.digest.is_empty() || self.root.join("forge-mcp.yaml").is_file();
+            let context = {
+                let mut cache = self
+                    .worktree_context
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("worktree context lock poisoned"))?;
+                match cache.as_ref() {
+                    Some(cached)
+                        if cached.source_root == self.root
+                            && cached.config_digest == adapter.digest
+                            && cached.config_present == config_present =>
+                    {
+                        Arc::clone(cached)
+                    }
+                    _ => {
+                        let root = self.root.canonicalize()?;
+                        let repository = crate::engine::tasks::primary_worktree_root(&root)
+                            .unwrap_or_else(|| root.clone());
+                        let tasks_db = if root == repository && config_present {
+                            Some(crate::engine::tasks::TaskSettings::load(&root)?.path(&root)?)
+                        } else {
+                            None
+                        };
+                        let context = Arc::new(WorktreeContext {
+                            source_root: self.root.clone(),
+                            config_digest: adapter.digest.clone(),
+                            config_present,
+                            root,
+                            repository,
+                            tasks_db,
+                        });
+                        *cache = Some(Arc::clone(&context));
+                        context
+                    }
+                }
+            };
+            let target = if context.root != context.repository {
+                context.root.clone()
+            } else if let Some(database) = &context.tasks_db {
+                crate::engine::tasks::active_claim_worktree(&context.repository, database)?
+                    .unwrap_or_else(|| context.root.clone())
+            } else {
+                context.root.clone()
+            };
+            (context.root.clone(), target)
+        };
+        let db = if target == root {
+            self.db.clone()
+        } else {
+            crate::cli::default_db(&target)
+        };
+        Ok((target, db))
+    }
+}
+
+fn resolve_explicit_worktree(
+    root: &std::path::Path,
+    repository: &std::path::Path,
+    requested: &str,
+) -> Result<PathBuf> {
+    let path = root.join(requested);
+    if path.is_dir() {
+        return Ok(path.canonicalize()?);
+    }
+    if std::path::Path::new(requested).components().count() != 1 {
+        anyhow::bail!("WORKTREE_NOT_FOUND: worktree directory '{requested}' not found");
+    }
+    let mut candidates = BTreeSet::new();
+    // Git also knows worktrees outside the repository's conventional directory.
+    let output =
+        crate::core::git::git_command(repository, &["worktree", "list", "--porcelain", "-z"])?;
+    if output.status.success() {
+        for field in String::from_utf8(output.stdout)?.split('\0') {
+            if let Some(path) = field.strip_prefix("worktree ") {
+                if let Ok(canonical) = std::path::Path::new(path).canonicalize() {
+                    if canonical.is_dir() {
+                        candidates.insert(canonical);
+                    }
+                }
+            }
+        }
+    }
+    match std::fs::read_dir(repository.join(".worktrees")) {
+        Ok(entries) => {
+            for entry in entries {
+                let path = entry?.path();
+                if path.is_dir() {
+                    candidates.insert(path.canonicalize()?);
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let suffix = format!("-{requested}");
+    let exact: Vec<_> = candidates
+        .iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == requested))
+        .cloned()
+        .collect();
+    let matches: Vec<_> = if exact.is_empty() {
+        candidates
+            .into_iter()
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(&suffix))
+            })
+            .collect()
+    } else {
+        exact
+    };
+    match matches.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => anyhow::bail!("WORKTREE_NOT_FOUND: no worktree named or ending in '{requested}'"),
+        _ => anyhow::bail!(
+            "WORKTREE_AMBIGUOUS: '{requested}' matches {}. Do: pass a full worktree name or path.",
+            matches
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 const MCP_SESSION_ENV: &str = "CONTEXTUNITY_FORGE_MCP_SESSION";
 #[cfg(unix)]
 const MCP_RELOAD_PARENT_ENV: &str = "CONTEXTUNITY_FORGE_MCP_RELOAD_PARENT";
@@ -595,4 +760,34 @@ fn parent_identity_contract() {
     assert!(current);
     assert!(detached.into_iter().all(|alive| alive));
     assert!(!changed);
+}
+
+#[cfg(test)]
+#[test]
+fn worktree_name_contract() {
+    let root = std::env::temp_dir().join(format!(
+        "forge-worktree-name-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let selected = root.join(".worktrees/049-selected");
+    std::fs::create_dir_all(&selected).unwrap();
+    let selected = selected.canonicalize().unwrap();
+    let result = resolve_explicit_worktree(&root, &root, "selected");
+    std::fs::create_dir_all(root.join(".worktrees/050-selected")).unwrap();
+    let ambiguous = resolve_explicit_worktree(&root, &root, "selected");
+    let missing = resolve_explicit_worktree(&root, &root, "absent");
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(result.unwrap(), selected);
+    assert!(ambiguous
+        .unwrap_err()
+        .to_string()
+        .contains("WORKTREE_AMBIGUOUS"));
+    assert!(missing
+        .unwrap_err()
+        .to_string()
+        .contains("WORKTREE_NOT_FOUND"));
 }

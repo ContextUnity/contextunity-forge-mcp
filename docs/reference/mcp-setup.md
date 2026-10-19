@@ -65,6 +65,11 @@ For clients without a `cwd` setting, pass the repository root to Forge:
 
 ## First request and subsequent reads
 
+Code tools accept a worktree path, exact name, or unique name suffix; see
+[worktree selection](mcp-tools.md#worktree-selection). A server rooted in a linked
+worktree retains that context by default. Requests do not transmit the client's
+current directory.
+
 The server keeps connected clients alive regardless of inactivity. On Unix it
 exits when its launching parent disappears, including while awaiting MCP
 initialization. SIGHUP reload preserves the established session and stdio pipes.

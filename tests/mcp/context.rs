@@ -984,3 +984,372 @@ fn stdio_symbol_search_matches_methods_and_functions_interchangeably() {
     assert_eq!(result_fn["nodes"]["total"], 1);
     assert_eq!(result_fn["nodes"]["items"][0]["name"], "admit");
 }
+
+#[test]
+fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots:\n  - src\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    std::fs::create_dir_all(workspace.path("src")).unwrap();
+    workspace.write("src/main.rs", "pub fn primary_func() {}\n");
+
+    let worktree_dir = workspace.path(".worktrees/021-task");
+    std::fs::create_dir_all(worktree_dir.join("src")).unwrap();
+    std::fs::write(
+        worktree_dir.join("src/semantic.rs"),
+        "pub fn semantic_worktree_func() {}\n",
+    )
+    .unwrap();
+
+    let mut client = Client::new(&workspace);
+
+    let get_workspace_root = |v: &Value| -> String {
+        v["metadata"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["key"] == "workspace_root")
+            .unwrap()["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // 1. Without claim and without worktree parameter -> returns primary workspace
+    let overview_primary = client.payload(
+        "code_map_overview",
+        json!({"aspects":["counts","metadata"]}),
+    );
+    assert_eq!(
+        get_workspace_root(&overview_primary),
+        workspace.root().canonicalize().unwrap().to_str().unwrap()
+    );
+
+    // 2. Explicit worktree parameter -> scopes to worktree and auto-indexes
+    let wt_str = worktree_dir.to_str().unwrap();
+    let overview_wt = client.payload(
+        "code_map_overview",
+        json!({"worktree": wt_str, "aspects":["counts","metadata"]}),
+    );
+    assert_eq!(
+        get_workspace_root(&overview_wt),
+        worktree_dir.canonicalize().unwrap().to_str().unwrap()
+    );
+
+    // Search in worktree finds semantic_worktree_func
+    let search_wt = client.payload(
+        "code_map_search",
+        json!({"pattern": "semantic_worktree_func", "exact": true, "worktree": wt_str}),
+    );
+    assert_eq!(search_wt["nodes"]["total"], 1);
+    assert_eq!(
+        search_wt["nodes"]["items"][0]["name"],
+        "semantic_worktree_func"
+    );
+
+    for alias in ["021-task", "task"] {
+        let result = client.payload(
+            "code_map_search",
+            json!({"pattern":"semantic_worktree_func", "exact":true, "worktree":alias}),
+        );
+        assert_eq!(result["nodes"]["total"], 1, "alias {alias}: {result}");
+    }
+
+    // Search in primary does NOT find semantic_worktree_func
+    let search_primary = client.payload(
+        "code_map_search",
+        json!({"pattern": "semantic_worktree_func", "exact": true}),
+    );
+    assert_eq!(search_primary["nodes"]["total"], 0);
+
+    // 3. Invalid worktree parameter -> returns tool error
+    for invalid in ["nonexistent_dir_12345", "", "src/main.rs"] {
+        let (_, invalid_res) = client.call("code_map_overview", json!({"worktree": invalid}));
+        assert_eq!(invalid_res["result"]["isError"], true);
+        assert!(
+            invalid_res["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("WORKTREE_NOT_FOUND"),
+            "{invalid_res}"
+        );
+    }
+
+    // 4. Active claimed task auto-resolution:
+    let tasks_db_path = workspace.path(".forge/tasks.sqlite");
+    std::fs::create_dir_all(tasks_db_path.parent().unwrap()).unwrap();
+    let conn = rusqlite::Connection::open(&tasks_db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tasks(task_id TEXT PRIMARY KEY, milestone_ref TEXT, descriptor TEXT, status TEXT);
+         CREATE TABLE task_claims(task_id TEXT, revision INTEGER, worker_id TEXT, worktree TEXT, claimed_at INTEGER, ended INTEGER, PRIMARY KEY(task_id, revision));"
+    ).unwrap();
+    let canonical_wt = worktree_dir.canonicalize().unwrap();
+    conn.execute(
+        "INSERT INTO task_claims(task_id, revision, worker_id, worktree, claimed_at, ended) VALUES('021-task', 1, 'worker-1', ?1, 1000, 0)",
+        rusqlite::params![canonical_wt.to_str().unwrap()],
+    ).unwrap();
+
+    // Call code_map_overview with NO worktree parameter -> automatically resolves to active claim worktree!
+    let overview_auto = client.payload(
+        "code_map_overview",
+        json!({"aspects":["counts","metadata"]}),
+    );
+    assert_eq!(
+        get_workspace_root(&overview_auto),
+        canonical_wt.to_str().unwrap()
+    );
+
+    // Search with NO worktree parameter -> automatically discovers symbols from the claimed worktree!
+    let search_auto = client.payload(
+        "code_map_search",
+        json!({"pattern": "semantic_worktree_func", "exact": true}),
+    );
+    assert_eq!(search_auto["nodes"]["total"], 1);
+    assert_eq!(
+        search_auto["nodes"]["items"][0]["name"],
+        "semantic_worktree_func"
+    );
+
+    // Multiple claims for the same physical tree are still unambiguous.
+    conn.execute(
+        "INSERT INTO task_claims VALUES('same-tree', 1, 'worker-2', ?1, 2000, 0)",
+        [".worktrees/021-task/../021-task"],
+    )
+    .unwrap();
+    assert_eq!(
+        get_workspace_root(&client.payload("code_map_overview", json!({"aspects":["metadata"]}))),
+        canonical_wt.to_str().unwrap()
+    );
+
+    let other = workspace.path(".worktrees/022-task");
+    fs::create_dir_all(other.join("src")).unwrap();
+    fs::write(other.join("src/lib.rs"), "pub fn other_tree() {}\n").unwrap();
+    conn.execute(
+        "INSERT INTO task_claims VALUES('other-tree', 1, 'worker-3', ?1, 3000, 0)",
+        [other.to_str().unwrap()],
+    )
+    .unwrap();
+    for arguments in [json!({}), json!({"worktree":"task"})] {
+        let (_, response) = client.call("code_map_overview", arguments);
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("WORKTREE_AMBIGUOUS"),
+            "{response}"
+        );
+    }
+    assert_eq!(
+        get_workspace_root(&client.payload(
+            "code_map_overview",
+            json!({"worktree":"021-task", "aspects":["metadata"]})
+        )),
+        canonical_wt.to_str().unwrap()
+    );
+    assert_eq!(
+        get_workspace_root(&client.payload(
+            "code_map_overview",
+            json!({"worktree":".", "aspects":["metadata"]})
+        )),
+        workspace.root().canonicalize().unwrap().to_str().unwrap()
+    );
+    conn.execute(
+        "UPDATE task_claims SET ended = 1 WHERE task_id != '021-task'",
+        [],
+    )
+    .unwrap();
+
+    // 5. When claim is ended (ended = 1) -> automatically falls back to primary root
+    conn.execute(
+        "UPDATE task_claims SET ended = 1 WHERE task_id = '021-task'",
+        [],
+    )
+    .unwrap();
+    let overview_ended = client.payload(
+        "code_map_overview",
+        json!({"aspects":["counts","metadata"]}),
+    );
+    assert_eq!(
+        get_workspace_root(&overview_ended),
+        workspace.root().canonicalize().unwrap().to_str().unwrap()
+    );
+
+    // Changing tasks_db invalidates only cached configuration, never claim results.
+    conn.execute(
+        "UPDATE task_claims SET ended = 0 WHERE task_id = '021-task'",
+        [],
+    )
+    .unwrap();
+    let alternate =
+        rusqlite::Connection::open(workspace.path(".forge/alternate-tasks.sqlite")).unwrap();
+    alternate
+        .execute_batch("CREATE TABLE task_claims(worktree TEXT, ended INTEGER);")
+        .unwrap();
+    alternate
+        .execute(
+            "INSERT INTO task_claims VALUES(?1, 0)",
+            [other.to_str().unwrap()],
+        )
+        .unwrap();
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ntasks_db: .forge/alternate-tasks.sqlite\n",
+    );
+    assert_eq!(
+        get_workspace_root(&client.payload("code_map_overview", json!({"aspects":["metadata"]}))),
+        other.canonicalize().unwrap().to_str().unwrap()
+    );
+
+    // Missing and empty configurations have the same digest, but only the latter
+    // enables the default task database. Observe every transition without restart.
+    let primary = workspace.root().canonicalize().unwrap();
+    let other = other.canonicalize().unwrap();
+    for (configuration, expected) in [
+        (None, &primary),
+        (Some("{}\n"), &canonical_wt),
+        (None, &primary),
+        (
+            Some("roots: [src]\ntasks_db: .forge/alternate-tasks.sqlite\n"),
+            &other,
+        ),
+    ] {
+        match configuration {
+            Some(content) => workspace.write("forge-mcp.yaml", content),
+            None => fs::remove_file(workspace.path("forge-mcp.yaml")).unwrap(),
+        }
+        assert_eq!(
+            get_workspace_root(
+                &client.payload("code_map_overview", json!({"aspects":["metadata"]}))
+            ),
+            expected.to_str().unwrap(),
+            "configuration {configuration:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        let alias = workspace.path(".forge/alias-tasks.sqlite");
+        std::os::unix::fs::symlink("alternate-tasks.sqlite", &alias).unwrap();
+        workspace.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ntasks_db: .forge/alias-tasks.sqlite\n",
+        );
+        for (target, expected) in [
+            ("alternate-tasks.sqlite", other.canonicalize().unwrap()),
+            ("tasks.sqlite", canonical_wt.clone()),
+            ("missing-tasks.sqlite", primary.clone()),
+        ] {
+            fs::remove_file(&alias).unwrap();
+            std::os::unix::fs::symlink(target, &alias).unwrap();
+            assert_eq!(
+                get_workspace_root(
+                    &client.payload("code_map_overview", json!({"aspects":["metadata"]}))
+                ),
+                expected.to_str().unwrap(),
+                "task DB symlink target {target}"
+            );
+        }
+    }
+
+    workspace.write("forge-mcp.yaml", "roots: [src]\ntasks_db: [invalid]\n");
+    let (_, malformed) = client.call("code_map_overview", json!({}));
+    assert_eq!(malformed["result"]["isError"], true, "{malformed}");
+    assert!(
+        malformed["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("invalid task configuration"),
+        "{malformed}"
+    );
+    // An explicit target does not depend on the primary task-store configuration.
+    assert_eq!(
+        client.payload(
+            "code_map_search",
+            json!({
+                "pattern":"semantic_worktree_func", "exact":true, "worktree":"021-task"
+            })
+        )["nodes"]["total"],
+        1
+    );
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ntasks_db: .forge/alternate-tasks.sqlite\n",
+    );
+    assert_eq!(
+        get_workspace_root(&client.payload("code_map_overview", json!({"aspects":["metadata"]}))),
+        other.canonicalize().unwrap().to_str().unwrap()
+    );
+}
+
+#[test]
+fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() {
+    let primary = Workspace::new();
+    primary.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    primary.write("src/lib.rs", "pub fn primary_only() {}\n");
+    let git = |args: &[&str]| {
+        let output = contextunity_forge_mcp::core::git::git_command(primary.root(), args).unwrap();
+        assertions::assert_command_succeeded(&output);
+    };
+    git(&["init", "-q"]);
+    git(&["add", "forge-mcp.yaml", "src"]);
+    git(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-qm",
+        "fixture",
+    ]);
+    let linked = primary.path(".worktrees/049-current");
+    let sibling_container = Workspace::new();
+    let sibling = sibling_container.path("051-external");
+    git(&["worktree", "add", "--detach", linked.to_str().unwrap()]);
+    git(&["worktree", "add", "--detach", sibling.to_str().unwrap()]);
+    fs::write(linked.join("src/lib.rs"), "pub fn linked_only() {}\n").unwrap();
+    fs::write(sibling.join("src/lib.rs"), "pub fn sibling_only() {}\n").unwrap();
+    fs::create_dir_all(primary.path(".forge")).unwrap();
+    let conn = rusqlite::Connection::open(primary.path(".forge/tasks.sqlite")).unwrap();
+    conn.execute_batch("CREATE TABLE task_claims(worktree TEXT, ended INTEGER);")
+        .unwrap();
+    for path in [&linked, &sibling] {
+        conn.execute(
+            "INSERT INTO task_claims VALUES(?1, 0)",
+            [path.to_str().unwrap()],
+        )
+        .unwrap();
+    }
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+    let custom_db = linked.join(".forge/custom.sqlite");
+    command
+        .arg("--root")
+        .arg(&linked)
+        .arg("--db")
+        .arg(&custom_db)
+        .arg("serve");
+    let mut client = Client::with_command(&mut command);
+    for worktree in [None, Some(".")] {
+        let mut args = json!({"pattern":"linked_only", "exact":true});
+        if let Some(worktree) = worktree {
+            args["worktree"] = json!(worktree);
+        }
+        assert_eq!(client.payload("code_map_search", args)["nodes"]["total"], 1);
+    }
+    assert!(custom_db.is_file());
+    assert!(!linked.join(".forge/code-map.sqlite").exists());
+    assert_eq!(
+        client.payload(
+            "code_map_search",
+            json!({"pattern":"sibling_only", "exact":true, "worktree":"external"})
+        )["nodes"]["total"],
+        1
+    );
+}

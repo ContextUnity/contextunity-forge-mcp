@@ -448,57 +448,161 @@ receipt:
 
 ```yaml
 task_ref: mcp-worktree-context-and-task-claim-resolution
-target: "Resolve explicit worktree paths, exact names or unique name suffixes; preserve a server-bound linked worktree and reject ambiguous automatic claim selection"
+target: Resolve explicit worktree paths, exact names or unique name suffixes; preserve a server-bound linked worktree and reject ambiguous automatic claim selection
 proof_policy: seam-test-first
 contract_revision: 4
 invariants:
-  - 'INV-WORKTREE-AWARENESS: Explicit worktree paths, exact basenames and unique hyphen-delimited suffixes take priority. Without an explicit value, retain the server-bound linked worktree, otherwise select one unique active claimed worktree or the primary root when none exists. Multiple active worktrees or matching names fail with WORKTREE_AMBIGUOUS; never select the latest unrelated claim.'
+- 'INV-WORKTREE-AWARENESS: Explicit worktree paths, exact basenames and unique hyphen-delimited suffixes take priority. Without an explicit value, retain the server-bound linked worktree, otherwise select one unique active claimed worktree or the primary root when none exists. Multiple active worktrees or matching names fail with WORKTREE_AMBIGUOUS; never select the latest unrelated claim.'
 scope:
-  - src/mcp/tools/inputs.rs
-  - src/mcp/tools.rs
-  - src/mcp/server.rs
-  - src/engine/tasks/mod.rs
-  - docs/reference/tasks.md
-  - docs/reference/mcp-tools.md
-  - docs/reference/mcp-setup.md
-  - skills/contextunity-forge/SKILL.md
-  - tests/mcp/context.rs
-status: ready
+- src/mcp/tools/inputs.rs
+- src/mcp/tools.rs
+- src/mcp/server.rs
+- src/engine/tasks/mod.rs
+- docs/reference/tasks.md
+- docs/reference/mcp-tools.md
+- docs/reference/mcp-setup.md
+- skills/contextunity-forge/SKILL.md
+- tests/mcp/context.rs
+status: completed
 subtasks:
-  - subtask_ref: page-input-worktree-schema-and-selector-allowlist
-    title: "Add worktree field to PageInput and allow worktree in rejected_selector_fields for all query and inspect tools"
-    status: completed
-  - subtask_ref: active-claim-worktree-discovery-and-resolution
-    title: "Implement active_claim_worktree helper querying tasks.sqlite and resolve_target_root_and_db in server module"
-    status: completed
-  - subtask_ref: server-worktree-dispatch-and-auto-rebuild
-    title: "Dispatch code navigation MCP tools with resolved worktree root and db in ServerHandler::call_tool with auto-indexing"
-    status: completed
-  - subtask_ref: worktree-context-integration-tests
-    title: "Add integration tests in tests/mcp/context.rs proving automatic worktree discovery and explicit worktree query execution"
-    status: completed
+- subtask_ref: page-input-worktree-schema-and-selector-allowlist
+  title: Add worktree field to PageInput and allow worktree in rejected_selector_fields for all query and inspect tools
+  status: completed
+  evidence: null
+- subtask_ref: active-claim-worktree-discovery-and-resolution
+  title: Implement active_claim_worktree helper querying tasks.sqlite and resolve_target_root_and_db in server module
+  status: completed
+  evidence: null
+- subtask_ref: server-worktree-dispatch-and-auto-rebuild
+  title: Dispatch code navigation MCP tools with resolved worktree root and db in ServerHandler::call_tool with auto-indexing
+  status: completed
+  evidence: null
+- subtask_ref: worktree-context-integration-tests
+  title: Add integration tests in tests/mcp/context.rs proving automatic worktree discovery and explicit worktree query execution
+  status: completed
+  evidence: null
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-19T20:15:29.833930474+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib && cargo test --test mcp
+      exit_code: 0
+      tests_passed: 178
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All nine admitted source/doc/skill paths byte-match frozen candidate99f899 and existing independent Arc binding; current scope hashes H/task6-final-review-binding.json. No source/manifest edits by reviewer. Other task sections including T7/T8 captured before automatic delivery for preservation check.
+        claims:
+          applicable: true
+          evidence: 'Functional claims verified: explicit path/exact name/unique hyphen suffix, physical dedup, bound linked-root precedence, fresh unique active claim or primary, ambiguity failure, own custom DB, server-bound task operations. Independent strict all-target/all-feature Clippy0, full lib88/0+MCP90/0=178, zero ignored/filtered, unchanged source. Direct indexed worktree_name_contract→resolve_explicit_worktree generationa4cb143c; contract red retained. T6-R1 supported DB symlink repair and live retarget cases green. T6-R2 performance differences accepted explicitly by user decision447; this pass does not assert zero measured regression.'
+        concurrency:
+          applicable: true
+          evidence: One shared immutable Arc<WorktreeContext> caches only canonical roots/repository/configured DB path keyed by source root, digest, and config presence. Mutex drops before fresh readonly SQLite query; no claim TTL/cache. Config changes and configured DB alias retarget remain next-request visible. Arc repair does not alter lock boundary, presence key, fresh alias canonicalization, parent lifecycle, streaming, or allocator trim behavior.
+        project_isolation:
+          applicable: true
+          evidence: Real stdio coverage includes primary/linked/external registered worktrees, custom DB, live duplicate/ended/ambiguous claims, alternate task DB and symlink retarget, missing/empty/malformed/restored config, explicit override. Target adapter and DB are rooted correctly; task tools remain bound to server. Graph/domain commitments equal in retained paired receipts; no performance equality inferred.
+        administration:
+          applicable: true
+          evidence: Independent codex-049-reviewer distinct from codex-049-builder, review claim13/contract4. User explicitly superseded performance stop in decision447; prior blocker records and paired-1/2/3 raw data preserved. No further benchmark or repeated tests after exact source/evidence binding. Review accepts observed performance differences as an authorized exception, not zero regression. T7/T8 definitions preserved; Forge alone may write receipt/automatic task commit. No manual commit, main integration, install, push, or milestone handoff.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ADMISSION-DETERMINISM: Dependency manifest collection across cold build, incremental delta, and MCP source admission must yield identical path sets and digests for unchanged workspace state, eliminating false-positive rebuild loops.'
+    - 'INV-DATABASE-SEPARATION: Task tracking databases (tasks.sqlite) and code map indices (code-map.sqlite) are mutually exclusive; attempts to target a task database for code-map output or open a code-map database as task store fail closed with TASK_DATABASE_COLLISION.'
+    - 'INV-WORKSPACE-UNIQUENESS: Subproject milestone resolution honors declared_projects frontmatter and configured owner mappings, preventing duplicate phantom workspaces from conflicting on milestone references.'
+    - 'INV-DAEMON-RESOURCE-BOUND: MCP servers preserve live connections regardless of inactivity, terminate on Unix when their launching parent disappears, and trim free heap pages after batch operations without removing the allocator trims delivered in milestone 031.'
+    - 'INV-GREENFIELD-SEAM-ACTIONABILITY: Greenfield contract validation failure for uncreated scope files outputs deterministic remediation guidance with file paths and stub requirements.'
+    - 'INV-PERFORMANCE-PRESERVATION: Preserve the indexing optimizations delivered on main; paired release measurements on an identical frozen corpus must show no cold-build, delta, or warm MCP latency regression before milestone delivery.'
+    - 'INV-WORKTREE-AWARENESS: Explicit worktree paths, exact basenames and unique hyphen-delimited suffixes take priority. Without an explicit value, retain the server-bound linked worktree, otherwise select one unique active claimed worktree or the primary root when none exists. Multiple active worktrees or matching names fail with WORKTREE_AMBIGUOUS; never select the latest unrelated claim.'
+    architectural_notes:
+    - 'decisions: Task6 functional build closure, revision4/claim6, before performance acceptance: strict all-target/all-feature Clippy exit0, full lib88/0 + MCP90/0=178, zero ignored/filtered (H/task6-build-gates.json). Explicit paths/exact names/unique hyphen suffixes, physical dedup, linked-server binding, fresh unique active claims/ambiguity, custom server DB and task-tool binding covered through real stdio. Direct indexed worktree_name_contract calls production resolver; original compiling scaffold genuinely fails path assertion101 (H/task6-contract-red.log). One private server context entry caches only canonical repository/configured task-DB path by source root, adapter digest and config presence; mutex drops before fresh readonly SQLite query. No claim cache/TTL, public Adapter schema change, duplicate task YAML parsing per request, extra trim, or graph/policy bypass. T6-B1 (#426) repaired: adapter_path represented explicit override only; default config now recognized. Original wrong-predicate implementation fails real newly-created-DB/claim assertion; final same test passes plus alternate DB, malformed config, explicit override and missing->empty->missing->restored configuration transitions (empty and missing share digest). Additional hypothetical digest/presence/claim-cache mutants were not executed; original wrong-predicate red and full production-path transitions are actual evidence. Source diff only9 admitted paths plus nonprotected milestone acceptance paragraph; main checkpoint8473951 and upstream test/version retained; accepted Tasks1–5 unchanged except admitted shared Task6 paths. Source-preservation checker retains main cold/streaming paths, 5-second warm inventory TTL and all10 main batch trims. H=/tmp/forge-049-implementation-20261019. Release pair preparation running; build submission/review/delivery and full milestone performance acceptance remain pending.'
+    - 'decisions: T6-R1 repair route in same builder session/claim8 after formal independent rejection (#428). Reachable invariant INV-WORKTREE-AWARENESS: task operations accept configured symlink DB aliases; implicit code routing must read the same supported store and observe alias retargeting on the next request. Canonical owner active_claim_worktree consumes cached configured PathBuf -> fresh filesystem canonicalization -> readonly SQLite with NOFOLLOW -> distinct physical claim roots -> call_tool target -> real stdio overview. Preserve missing DB fallback, ambiguity failures, readonly/no migration/no schema changes/no claim cache. Existing actual-process red H/task6-review-symlink-db.json shows direct real DB success, alias error14, task list alias exit0, explicit target success; raw reviewed candidate/source hashes bound in H/task6-review-reject-binding.json. Minimum fix canonicalizes existing configured database immediately before opening, leaving NOFOLLOW on resolved path; no canonical DB target cached. Same stdio regression now configures a symlink and retargets unchanged alias to alternate claim DB, default claim DB, then missing DB, asserting next-request other/selected/primary. Existing config/claim/linked/custom DB cases retained. Original NOFOLLOW-on-alias mutation is killed by independent actual-process red; retarget assertions protect against canonical-target caching. Strict/full lib/MCP rerunning; finding remains pending green/re-review. Release preparation separately caught shared Cargo target root-package freshness collision (identical baseline/candidate SHA; candidate build0.08s). No measurements executed with that pair. Invalid preparation records retained; candidate now requires an isolated target with freshly compiled artifact bound to W source path and distinct SHA before any benchmark. H=/tmp/forge-049-implementation-20261019.'
+    - 'decisions: T6-R1 builder green after bounded repair under buildclaim8: strict Clippy0, full lib88/0 + MCP90/0=178, no ignored/filtered. Same actual stdio test now verifies symlink-configured DB plus same-path retargeting to alternate/default/missing stores without restart; all prior selection/config/claim cases pass. Original independent production red remains H/task6-review-symlink-db.json, source-bound to rejected candidate dbe1f0645b7e95c8d8a70ad468a4afe2bb0a47d8. Only repair beyond prior reviewed candidate: fresh existing-DB canonicalization before readonly NOFOLLOW open, and expanded existing stdio seam; no public API, schema, ownership, cached claim/canonical DB target or Task2 guard changes. Required independent re-review and paired performance are still pending. H/task6-build-gates.json and logs are current green, earlier results retained under H/verification-history. Isolated candidate release compilation is in progress; no benchmark has run with invalid shared-target preparation.'
+    - 'decisions: T6-R2 bounded repair under buildclaim10/contract4: the existing one-entry context cache now owns an Arc<WorktreeContext>; each request shares its immutable snapshot instead of cloning five path/string allocations, including configured DB. Cache invalidation remains source_root+adapter digest+config presence; the mutex still drops before a fresh active_claim_worktree lookup. Existing database existence/canonicalization, readonly NOFOLLOW connection, fresh claims, ambiguity behavior and config/alias-retarget tests are unchanged. Only admitted server.rs changes; no TTL, claim cache, configuration schema or public adapter modifications. Scoped strict Clippy/lib/MCP verification is running. Paired-2 original binary, patch, raw samples and all failed metrics are retained. Independent re-review and a new explicitly authorized five-pair measurement after this actual code repair are required; no performance acceptance is claimed.'
+    - 'decisions: User explicitly accepted the measured performance differences and instructed: ''який нахер блокер? 3 мс ? не відволікайся, працюй''. This supersedes the prior request to halt on T6-R2 / blockers 445 and 446. Retain all measured results without claiming zero measured differences. Close the performance-only acceptance objection by user decision; no further benchmarks. Continue functional independent review and delivery, then T7/T8. No source change is justified merely to chase the accepted small timing differences.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
-## Scope boundary and related ACDD work
+### task: upstream-aware-handoff-provenance-and-safe-diagnostics
 
-Upstream delivery provenance at handoff, automatic verification accounting, and
-reuse of verification receipts belong to a successor of milestones 017/019.
-The [handoff plan](../plans/acdd-handoff-upstream-provenance-and-verification.md)
-records the observed 031/052 overlap, safe acceptance requirements, scope hygiene,
-and verification options. They do not add implementation tasks to 049.
+```yaml
+task_ref: upstream-aware-handoff-provenance-and-safe-diagnostics
+target: "Explain later scope changes using reviewed upstream deliveries reachable through Git ancestry, and avoid destructive checkout guidance"
+proof_policy: seam-test-first
+contract_revision: 1
+invariants:
+  - 'INV-UPSTREAM-HANDOFF-PROVENANCE: In handoff verification, validate_later_scope_changes must explain changed files either by local reviewed deliveries or reviewed upstream deliveries reachable through merge history; a reproducible three-way combination (git merge-file) of reviewed local and upstream inputs is accepted without failing handoff.'
+  - 'INV-SAFE-REMEDIATION-GUIDANCE: Handoff diagnostics must never suggest unconditional git checkout or history destruction when differences are explained by valid integration branches.'
+scope:
+  - src/engine/milestones/handoff.rs
+  - src/core/git.rs
+  - tests/acdd/milestones.rs
+  - docs/reference/tasks.md
+status: ready
+subtasks:
+  - subtask_ref: upstream-delivery-provenance-resolution
+    title: "Traverse merge ancestry in validate_later_scope_changes to discover reviewed upstream deliveries explaining post-task file changes"
+    status: pending
+  - subtask_ref: three-way-clean-combination-acceptance
+    title: "Verify clean three-way combinations of local and upstream reviewed changes using reproducible merge-base reconstruction"
+    status: pending
+  - subtask_ref: non-destructive-handoff-diagnostics
+    title: "Replace unconditional git checkout suggestions with actionable branch-reconciliation diagnostics"
+    status: pending
+```
 
-Existing subtask completion labels describe the recovered WIP. They are not
-accepted task deliveries; the milestone remains subject to its ACDD gates.
+### task: build-gate-deletion-scope-and-file-retirement
+
+```yaml
+task_ref: build-gate-deletion-scope-and-file-retirement
+target: "Allow intentional file deletions in task scope during BUILD gate validation, verifying that deleted public symbols have no remaining live callers outside scope"
+proof_policy: seam-test-first
+contract_revision: 1
+invariants:
+  - 'INV-INTENTIONAL-SCOPE-DELETION: When a scoped file is intentionally deleted (deleted in working tree or staged deletion), BUILD gate validation must treat the file as removed rather than failing with TASK_SCOPE_INCOMPLETE read errors.'
+  - 'INV-RETIRED-SYMBOL-CALLER-SAFETY: Public symbols removed by file deletion must satisfy existing caller safety: validation passes if all callers are within admitted scope or removed; external unadmitted callers fail with actionable diagnostics.'
+scope:
+  - src/engine/tasks/gates.rs
+  - tests/acdd/tasks.rs
+  - docs/reference/tasks.md
+status: ready
+subtasks:
+  - subtask_ref: scope-file-existence-and-status-tolerance
+    title: "Update current_scope_files and validate_public_signature_scope to detect deleted files without aborting on fs::read_to_string"
+    status: pending
+  - subtask_ref: retired-public-symbol-caller-verification
+    title: "Verify that symbols from deleted files in baseline are cleanly retired or fail closed when unadmitted external callers remain"
+    status: pending
+  - subtask_ref: deletion-scope-seam-tests
+    title: "Add unit and integration tests proving that intentional file deletion in task scope passes build validation cleanly"
+    status: pending
+```
 
 ## Acceptance and performance proof
 
-The builder implements all six tasks; an independent reviewer checks their
+The builder implements all admitted tasks; an independent reviewer checks their
 contracts, correctness, concurrency, isolation, administration, and production-seam
 proof before delivery. Task ordering follows Forge's shared-scope dependencies.
 The initial restored implementation is retained as a backup; each delivery
 contains only its admitted behavior and subsequent tasks may refine shared files.
 
-Use release binaries from the unchanged `main` base `9f358ec` and the candidate.
+The initial comparison uses `main` base `9f358ec`; its failed measurements remain
+recorded on the milestone blackboard. Final acceptance compares release binaries
+from the integrated `main` checkpoint `1dc907d` and the final candidate. Merge
+checkpoint `8473951` retains all accepted task commits and brings in upstream
+version 0.3.1 and its linked-workspace regression test.
 The user explicitly authorizes five sequential paired benchmark repetitions on
 an identical isolated repository snapshot. Alternate baseline/candidate order;
 keep toolchain, features, thread limits, extraction-cache state, and corpus fixed.

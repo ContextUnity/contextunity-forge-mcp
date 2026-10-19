@@ -39,6 +39,7 @@ fn rejected_selector_fields(
             "offset",
             "detail",
             "generation",
+            "worktree",
         ],
         "get_code_snippet" => &[
             "selector",
@@ -51,6 +52,7 @@ fn rejected_selector_fields(
             "offset",
             "detail",
             "generation",
+            "worktree",
         ],
         "code_map_tests" => &[
             "selector",
@@ -60,6 +62,7 @@ fn rejected_selector_fields(
             "offset",
             "detail",
             "generation",
+            "worktree",
         ],
         "code_map_impact" => &[
             "selector",
@@ -72,6 +75,7 @@ fn rejected_selector_fields(
             "offset",
             "detail",
             "generation",
+            "worktree",
         ],
         "code_map_explain" => &[
             "selector",
@@ -87,6 +91,7 @@ fn rejected_selector_fields(
             "offset",
             "detail",
             "generation",
+            "worktree",
         ],
         "code_map_query" => &[
             "operation",
@@ -99,6 +104,7 @@ fn rejected_selector_fields(
             "offset",
             "detail",
             "generation",
+            "worktree",
         ],
         "code_map_prove_removal" => &[
             "selector",
@@ -107,6 +113,7 @@ fn rejected_selector_fields(
             "offset",
             "detail",
             "generation",
+            "worktree",
         ],
         "code_map_search" => &[
             "pattern",
@@ -121,6 +128,7 @@ fn rejected_selector_fields(
             "offset",
             "detail",
             "generation",
+            "worktree",
         ],
         "ast_grep_search" => &[
             "pattern",
@@ -130,6 +138,7 @@ fn rejected_selector_fields(
             "offset",
             "detail",
             "generation",
+            "worktree",
         ],
         _ => return Vec::new(),
     };
@@ -201,7 +210,7 @@ impl Server {
         self.responding(|_, _| crate::engine::tasks::blackboard(&self.root, p, "mcp"))
     }
     #[tool(
-        description = "Workspace root, counts, languages, and resolution coverage. Call this first and confirm workspace_root is the active worktree before an absence claim."
+        description = "Workspace root, counts, languages, and resolution coverage. Call this first and confirm workspace_root is the active worktree before an absence claim. Automatically targets active claimed task worktree if available, or explicit worktree parameter."
     )]
     fn code_map_overview(&self, Parameters(p): Parameters<OverviewInput>) -> CallToolResult {
         self.responding(|adapter, policy| {
@@ -581,6 +590,19 @@ impl Server {
     }
 }
 
+fn is_task_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "task_list"
+            | "task_claim"
+            | "task_submit"
+            | "task_manage"
+            | "task_blackboard"
+            | "forge_guide"
+            | "session_checkpoint"
+    )
+}
+
 #[tool_handler(
     name = "contextunity-forge-mcp",
     version = "0.3.0",
@@ -596,16 +618,43 @@ impl ServerHandler for Server {
         if !rejected.is_empty() {
             return Ok(response::rejected_arguments(&rejected).into());
         }
-        let tool_name = request.name.clone();
-        let tool_args = serde_json::to_string_pretty(&request.arguments).unwrap_or_default();
-        let adapter = match scanner::load_adapter(&self.root, None) {
+        let primary_adapter = scanner::load_adapter(&self.root, None);
+        let requested_worktree = request
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("worktree"))
+            .and_then(|v| v.as_str());
+        let (target_root, target_db) = if is_task_tool(&request.name) {
+            (self.root.clone(), self.db.clone())
+        } else {
+            match self.resolve_target_root_and_db(requested_worktree, &primary_adapter) {
+                Ok(pair) => pair,
+                Err(error) => {
+                    return Ok(response::result(Err(error), &ResponsePolicy::default()).into());
+                }
+            }
+        };
+        let adapter_result = if target_root == self.root {
+            primary_adapter
+        } else {
+            scanner::load_adapter(&target_root, None)
+        };
+        let adapter = match adapter_result {
             Ok(adapter) => super::server::RequestAdapter::Loaded(std::sync::Arc::new(adapter)),
             Err(error) => super::server::RequestAdapter::Failed {
                 kind: error.kind(),
                 message: error.to_string(),
             },
         };
-        let request_server = self.with_request_adapter(adapter.clone());
+        let debug_request =
+            matches!(&adapter, super::server::RequestAdapter::Loaded(adapter) if adapter.debug)
+                .then(|| {
+                    (
+                        request.name.clone(),
+                        serde_json::to_string_pretty(&request.arguments).unwrap_or_default(),
+                    )
+                });
+        let request_server = self.with_root_and_db(target_root, target_db, adapter.clone());
         let call =
             rmcp::handler::server::tool::ToolCallContext::new(&request_server, request, context);
         let result = Self::tool_router().call(call).await;
@@ -622,7 +671,7 @@ impl ServerHandler for Server {
                 Ok(response::result(Err(anyhow::anyhow!(error.to_string())), &policy).into())
             }
         };
-        if matches!(&adapter, super::server::RequestAdapter::Loaded(adapter) if adapter.debug) {
+        if let Some((tool_name, tool_args)) = debug_request {
             let output_val = match &final_response {
                 Ok(rmcp::model::CallToolResponse::Complete(res)) => {
                     let mut text_val = None;

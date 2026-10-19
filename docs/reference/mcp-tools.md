@@ -46,6 +46,28 @@ Selector grammar, SQL shape, proof objects, and examples stay in this page and i
 
 See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI parity, and the `contextunity-forge` skill for the task lifecycle.
 
+## Worktree selection
+
+Code navigation and documentation tools accept `worktree`: an absolute path,
+a path relative to the server root, an exact worktree directory name, or a unique
+hyphen-delimited suffix. For `.worktrees/049-admission-integrity-database-guards-and-lifecycle-hardening`,
+both the full directory name and `lifecycle-hardening` select that tree.
+Short names search Git's registered worktrees and immediate children of the
+repository's `.worktrees/` directory. Existing explicit paths take precedence,
+then exact names, then suffixes. Multiple matches return `WORKTREE_AMBIGUOUS`.
+
+With no argument, a server rooted in a linked Git worktree retains that root.
+A server in the primary tree selects the one physical directory used by active
+task claims; duplicate claims for that directory count once. Multiple active
+directories require explicit selection; no active directory uses the server root.
+Use `worktree: "."` to explicitly select the server root. Missing or empty explicit
+values fail with `WORKTREE_NOT_FOUND`. Each selected tree uses its own index;
+selecting the server root retains a custom `--db` path. Task tools, checkpoints,
+and `forge_guide` retain the server root.
+
+The MCP request does not carry the client's current working directory. Set the
+server's `cwd`/`--root` to bind a session to a worktree, or pass `worktree` per call.
+
 ## Selectors and graph queries
 
 Use a symbol identifier returned by search whenever possible. A file path selects a module or file. Selectors accept an exact ID, `path:name` or `path::name`, `path:known_kind:name` when the middle token is a registered node kind, and `path:line` or `path#Lline` for the narrowest symbol covering that line. Relative paths may use `./`, `file:`, or `file://` prefixes. A bare name can be ambiguous when a module and symbol share that name; specify the path. Markdown belongs in `get_doc` and `search_docs`.

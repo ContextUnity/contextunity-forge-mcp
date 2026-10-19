@@ -446,6 +446,42 @@ pub fn store(root: &Path) -> Result<TasksStore> {
     Ok(store)
 }
 
+/// Resolves a single physical worktree from all active claims; ambiguity requires explicit selection.
+pub(crate) fn active_claim_worktree(
+    repository: &Path,
+    database: &Path,
+) -> Result<Option<std::path::PathBuf>> {
+    if !database.exists() {
+        return Ok(None);
+    }
+    let database = database.canonicalize()?;
+    let conn = rusqlite::Connection::open_with_flags(
+        &database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_millis(200))?;
+    let mut stmt = conn.prepare("SELECT DISTINCT worktree FROM task_claims WHERE ended = 0")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut worktrees = std::collections::BTreeSet::new();
+    for row in rows {
+        let p = std::path::PathBuf::from(row?);
+        let resolved = if p.is_absolute() {
+            p
+        } else {
+            repository.join(p)
+        };
+        if let Ok(canonical) = resolved.canonicalize() {
+            if canonical.is_dir() {
+                worktrees.insert(canonical);
+            }
+        }
+    }
+    if worktrees.len() > 1 {
+        bail!("WORKTREE_AMBIGUOUS: multiple active worktrees: {}. Do: pass an explicit worktree path or unique name.", worktrees.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+    }
+    Ok(worktrees.into_iter().next())
+}
+
 fn resolve_manifest_status(root: &Path, milestone_ref: &str) -> Result<String> {
     let path = confined_path(root, milestone_ref)?;
     let Ok(text) = std::fs::read_to_string(&path) else {

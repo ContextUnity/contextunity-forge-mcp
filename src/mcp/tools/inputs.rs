@@ -33,6 +33,8 @@ pub struct PageInput {
     pub detail: Option<Detail>,
     /// Use the generation returned by the previous page when offset is nonzero.
     pub generation: Option<String>,
+    /// Worktree path, exact directory name, or unique hyphen-delimited name suffix. Defaults to the server's linked worktree, otherwise one unique active claim or the primary root. Multiple matches require an explicit path/name.
+    pub worktree: Option<String>,
 }
 impl PageInput {
     pub(super) fn resolve(&self, policy: &ResponsePolicy) -> anyhow::Result<QueryOptions> {

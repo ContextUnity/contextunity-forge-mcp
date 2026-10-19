@@ -192,7 +192,7 @@ response:
 ### Default Behavior (Without `forge-mcp.yaml`)
 - **Code Graph**: Scans workspace root (`.`), respects `.gitignore`, excludes common build/cache folders (`target`, `node_modules`, `.git`, `.venv`, `__pycache__`), and outputs `.forge/code-map.sqlite`.
 - **Tasks Database**: Defaults to `.forge/tasks.sqlite`.
-- **Git Worktrees Auto-Resolution**: When operating inside a Git worktree, relative `tasks_db` paths automatically resolve to the primary worktree root (via `git rev-parse --git-common-dir`). All parallel worktree workers seamlessly coordinate on the single shared tasks database without configuration changes or absolute paths.
+- **Git Worktrees Auto-Resolution**: Relative `tasks_db` paths resolve to the primary worktree root, so parallel workers share the task database. Code-tool worktree selection is described under Discovery & Search below.
 - **Identity Defaults**: `task_repository` and `task_project` default to `forge-mcp`; `agents_guidance` defaults to `AGENTS.md`; milestone directory defaults to `docs/milestones/`.
 
 ---
@@ -219,18 +219,19 @@ For structural language support, supply the six `SyntaxGrammarSpec` categories a
 `task_list` accepts `parked` to select tasks waiting for a scope owner while retaining worker/worktree affinity. `task next --worker WORKER --worktree PATH [--workspace WS]` exposes the same atomic dispatch as `task_manage(action: "next", worker_id, worktree, workspace?)`; it prioritizes independent delivery, independent review, the requesting worker's unblocked parked work, then ordinary ready work by wave and task ID. It returns claim context or `status: "idle"` when no work is eligible.
 
 ### Discovery & Search
-- `code_map_overview(aspects?, limit?, offset?, detail?, generation?)`: Workspace component inventory, module hierarchy, indexing metrics, coverage diagnostics, and paged `analysis_gaps`.
-- `code_map_search(pattern, kind?, detail?, limit?, offset?, generation?)`: Fast BM25 full-text and prefix symbol search.
-- `ast_grep_search(pattern, language, path?, limit?, offset?, generation?)`: Tree-sitter AST syntax matching with `$NAME` and `$$$ARGS` captures.
-- `search_docs(query, doc_type?, component?, limit?)`: Full-text search across documentation, guides, and ADRs.
-- `get_doc(path_or_id, section?)`: Read indexed markdown doc or exact heading anchor.
+Code discovery and inspection tools accept `worktree`: an absolute or server-relative path, exact directory name, or unique hyphen-delimited name suffix. Without it, retain the server's linked worktree; otherwise use one unique active claimed worktree or the primary root when none exists. Multiple active directories or matching names return `WORKTREE_AMBIGUOUS`; pass an explicit path/name. Use `worktree: "."` for the server root. MCP requests do not transmit the client's current directory.
+- `code_map_overview(aspects?, worktree?, limit?, offset?, detail?, generation?)`: Workspace component inventory, module hierarchy, indexing metrics, coverage diagnostics, and paged `analysis_gaps`.
+- `code_map_search(pattern, kind?, worktree?, detail?, limit?, offset?, generation?)`: Fast BM25 full-text and prefix symbol search.
+- `ast_grep_search(pattern, language, path?, worktree?, limit?, offset?, generation?)`: Tree-sitter AST syntax matching with `$NAME` and `$$$ARGS` captures.
+- `search_docs(query, doc_type?, component?, worktree?, limit?)`: Full-text search across documentation, guides, and ADRs.
+- `get_doc(path_or_id, section?, worktree?)`: Read indexed markdown doc or exact heading anchor.
 
 ### Inspection & Hierarchy
-- `code_map_inspect(selector, include_coverage?, show_doc?, show_source?, leading_lines?, max_body_lines?)`: Symbol summary, receiver metadata, exact callers/callees, paged `analysis_gaps` (e.g. `trait_object_dispatch`, `macro_expansion_not_analyzed`), and candidate dispatch targets (`possible_calls`).
-- `get_code_snippet(selector, leading_lines?, max_body_lines?, source_offset?, generation?)`: Bounded, digest-verified AST source preview.
-- `code_map_explain(selector, direction?, include_coverage?, show_doc?, show_source?)`: Direct relationships, candidate dispatch edges, symbol ownership, and architectural invariants.
-- `code_map_impact(selector, direction?, depth?, detail?, limit?, offset?, generation?)`: Inbound blast radius (`direction="inbound"`, default, traversing both exact `calls` and candidate `possible_calls`) or outbound dependencies.
-- `code_map_tests(selector, direction?, detail?, limit?, offset?, generation?)`: Find tests covering a target, or production dependencies of a test.
+- `code_map_inspect(selector, worktree?, include_coverage?, show_doc?, show_source?, leading_lines?, max_body_lines?)`: Symbol summary, receiver metadata, exact callers/callees, paged `analysis_gaps` (e.g. `trait_object_dispatch`, `macro_expansion_not_analyzed`), and candidate dispatch targets (`possible_calls`).
+- `get_code_snippet(selector, worktree?, leading_lines?, max_body_lines?, source_offset?, generation?)`: Bounded, digest-verified AST source preview.
+- `code_map_explain(selector, direction?, worktree?, include_coverage?, show_doc?, show_source?)`: Direct relationships, candidate dispatch edges, symbol ownership, and architectural invariants.
+- `code_map_impact(selector, direction?, depth?, worktree?, detail?, limit?, offset?, generation?)`: Inbound blast radius (`direction="inbound"`, default, traversing both exact `calls` and candidate `possible_calls`) or outbound dependencies.
+- `code_map_tests(selector, direction?, worktree?, detail?, limit?, offset?, generation?)`: Find tests covering a target, or production dependencies of a test.
 
 ### Verification & Safety
 - `code_map_prove_removal(selector)`: Proves whether a symbol can be safely removed based on static references; treats candidate callers (`possible_calls`) as potential incoming dependencies that block safe removal.
