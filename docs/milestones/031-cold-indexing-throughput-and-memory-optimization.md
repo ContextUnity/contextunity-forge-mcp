@@ -214,7 +214,7 @@ receipt:
 task_ref: in-memory-merkle-sealing-and-content-addressed-cache
 target: Compute 13 logical domain commitments directly in memory and implement cross-worktree content-addressed extraction cache
 proof_policy: seam-test-first
-contract_revision: 5
+contract_revision: 4
 scope:
 - src/core/commitments/snapshot.rs
 - src/core/commitments.rs
@@ -506,4 +506,51 @@ subtasks:
 2. In-memory Merkle sealing of the 4 FTS domains reduces post-indexing SQL scan overhead while maintaining bit-identical Merkle roots across all 17 domains.
 3. Fact preparation and leaf hashing run in bounded chunks, dropping serialized payloads early to reduce peak memory.
 4. Binary extraction cache DTO eliminates JSON parsing overhead for cached AST facts across worktrees.
+
+---
+
+### task: symbol-catalog-decomposition-and-memory-trimming
+
+```yaml
+task_ref: symbol-catalog-decomposition-and-memory-trimming
+target: Decompose TypedFacts into a lean SymbolCatalog for linking, stream heavy AST details directly to storage, and apply allocator memory trimming to reduce cold-build peak RSS below 800 MB
+proof_policy: seam-test-first
+contract_revision: 1
+scope:
+- src/engine/pipeline.rs
+- src/engine/linker/mod.rs
+- src/engine/linker/compact.rs
+- src/core/semantic.rs
+- src/db/writer.rs
+- src/db/ingest.rs
+- benchmarks/
+- tests/core/storage_batches.rs
+status: planned
+subtasks:
+- subtask_ref: symbol-catalog-extraction-isolation
+  title: Extract lean SymbolCatalog for linker resolution and stream heavyweight AST details directly to storage
+  status: pending
+  evidence: null
+- subtask_ref: lean-linker-resolution
+  title: Refactor link_compact_graph to resolve edges over SymbolCatalog without holding full AST facts in memory
+  status: pending
+  evidence: null
+- subtask_ref: glibc-allocator-trimming-and-arena-control
+  title: Add allocator trimming (malloc_trim / jemalloc background thread) after extraction phase to reclaim glibc arenas
+  status: pending
+  evidence: null
+- subtask_ref: verify-rss-reduction-benchmark
+  title: Benchmark commerce-release-update confirming peak RSS < 800 MB with zero coverage loss and unregressed throughput
+  status: pending
+  evidence: null
+```
+
+#### Acceptance
+
+1. `facts: BTreeMap<String, TypedFacts>` is no longer retained in whole-workspace memory during the linking phase.
+2. `link_compact_graph` resolves symbols using a lightweight `SymbolCatalog`, preserving 100% of reference resolution coverage (`INV-ZERO-SEMANTIC-REGRESSION`) and identical graph edge counts.
+3. Allocator trimming reclaims fragmented thread-arena memory after the extraction phase.
+4. Cold build peak RSS on `commerce-release-update` drops below 800 MB.
+5. Invariants `INV-BENCHMARK-EACH-TASK`, `INV-NO-COLD-REGRESSION`, `INV-DETERMINISTIC-MERKLE`, and `INV-ZERO-SEMANTIC-REGRESSION` remain fully satisfied.
+
 
