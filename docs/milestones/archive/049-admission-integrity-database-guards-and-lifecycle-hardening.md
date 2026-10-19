@@ -2,7 +2,7 @@
 id: m-admission-integrity-database-guards-and-lifecycle-hardening
 title: Admission integrity, database collision protection, and MCP lifecycle hardening
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-declarative-framework-packs-and-cold-build-pipeline
 owners:
@@ -25,6 +25,15 @@ invariants:
 related_plans:
 - docs/plans/forge-mcp-audit-and-architecture.md
 started_at: 2026-10-19T14:47:39+00:00
+handoff:
+  completed_at: 2026-10-19T20:49:28.591965779+00:00
+  duration: 6h 1m
+  commit: c80b6239e4309ca90c8d1cb030c1c094847bab65
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 798
+    tests_failed: 0
 ---
 
 # Admission integrity, database collision protection, and MCP lifecycle hardening
@@ -80,6 +89,7 @@ subtasks:
   status: completed
   evidence: null
 receipt:
+  commit: 56eb0cdca04b3033b2bd5135991c2b35fa81361d
   contract_revision: 4
   passed_at: 2026-10-19T15:10:10.443822227+00:00
   evidence:
@@ -159,6 +169,7 @@ subtasks:
   status: completed
   evidence: null
 receipt:
+  commit: a6e379eb64676b4c52686133dfc143861e2b6d56
   contract_revision: 5
   passed_at: 2026-10-19T16:11:53.555040200+00:00
   evidence:
@@ -241,6 +252,7 @@ subtasks:
   status: completed
   evidence: null
 receipt:
+  commit: 22e64ad8922b072bb28ae0ae5f18bdd40efd8833
   contract_revision: 5
   passed_at: 2026-10-19T17:01:02.592705271+00:00
   evidence:
@@ -317,6 +329,7 @@ subtasks:
   status: completed
   evidence: null
 receipt:
+  commit: f6cfe1533bf4bd654410afe4f6a6dddb5a7da6e0
   contract_revision: 5
   passed_at: 2026-10-19T17:39:30.564757828+00:00
   evidence:
@@ -396,6 +409,7 @@ subtasks:
   status: completed
   evidence: null
 receipt:
+  commit: fef1545e1b5217eccb269b5b8dfb8cba8c31fffd
   contract_revision: 4
   passed_at: 2026-10-19T17:53:17.825293952+00:00
   evidence:
@@ -482,6 +496,7 @@ subtasks:
   status: completed
   evidence: null
 receipt:
+  commit: 472fb65538e2d9c4e79153b3402b82a2f55069da
   contract_revision: 4
   passed_at: 2026-10-19T20:15:29.833930474+00:00
   evidence:
@@ -565,6 +580,7 @@ subtasks:
   status: completed
   evidence: 'Strict Clippy all targets/all features; cargo test --lib:89 passed; cargo test --test acdd:109 passed. Real-Git integration table covers reviewed upstream-only, clean local+upstream combination, archived upstream, corrupted review, unreviewed/unreachable/dirty/post-merge/conflicting changes; native diagnostic seam verifies user files unchanged and safe reconciliation guidance. Logs: /tmp/forge-049-implementation-20261019/task7-build-gate-{0,1,2}.log.'
 receipt:
+  commit: 9ec8e696c89bcd580c090b07c656262798952054
   contract_revision: 1
   passed_at: 2026-10-19T20:35:15.997262311+00:00
   evidence:
@@ -643,6 +659,7 @@ subtasks:
   status: completed
   evidence: Strict Clippy all targets/all features passed; cargo test --lib 90 passed; cargo test --test acdd 110 passed, no failures/ignored/filtered. Native deleted-source seam red101 then green; real task build table covers 20 combinations of staged/unstaged, stale/refreshed index, no callers, live external caller rejection, admitted caller update/deletion acceptance, unadmitted deleted baseline caller rejection. Production only handles read NotFound; baseline caller checks unchanged and no new successful-read operations. Logs /tmp/forge-049-implementation-20261019/task8-build-gate-{0,1,2}.log.
 receipt:
+  commit: c80b6239e4309ca90c8d1cb030c1c094847bab65
   contract_revision: 1
   passed_at: 2026-10-19T20:47:12.890335832+00:00
   evidence:
@@ -692,6 +709,19 @@ receipt:
         project_isolation: accepted
 ```
 
+## Delivered task commits
+
+| Task | Delivery commit |
+| --- | --- |
+| Manifest discovery symmetry | `56eb0cdca04b3033b2bd5135991c2b35fa81361d` |
+| Database collision guard | `a6e379eb64676b4c52686133dfc143861e2b6d56` |
+| Subproject workspace deduplication | `22e64ad8922b072bb28ae0ae5f18bdd40efd8833` |
+| MCP lifecycle and memory reclamation | `f6cfe1533bf4bd654410afe4f6a6dddb5a7da6e0` |
+| Greenfield seam guidance | `fef1545e1b5217eccb269b5b8dfb8cba8c31fffd` |
+| MCP worktree context | `472fb65538e2d9c4e79153b3402b82a2f55069da` |
+| Reviewed upstream handoff provenance | `9ec8e696c89bcd580c090b07c656262798952054` |
+| Build-gate file retirement | `c80b6239e4309ca90c8d1cb030c1c094847bab65` |
+
 ## Acceptance and performance proof
 
 The builder implements all admitted tasks; an independent reviewer checks their
@@ -713,13 +743,26 @@ initial admission and warmup. Record raw samples, commands, binary/source hashes
 corpus cardinality, host context, peak RSS, graph counts, and domain commitments.
 Exclude compilation and initialization from warm request latency. Use median
 wall time and median paired change for cold/delta; warm requests also report p95
-using nearest rank over a fixed request count. A positive latency regression
-blocks delivery; retain unsuccessful measurements and investigate rather than
-discarding samples or relaxing this requirement. An unstable host prevents a
-performance conclusion. Functional equality and source preservation checks
-support these measurements but do not substitute for them.
+using nearest rank over a fixed request count. Retain unsuccessful measurements
+and host limitations alongside the successful runs. Functional equality and
+source preservation checks support these measurements but do not substitute
+for them.
+
+The user accepts the measured timing differences and directs continued delivery
+without further benchmarks; milestone blackboard decision `449` records this
+acceptance and supersedes the earlier performance-only blockers. This acceptance
+governs the performance requirement above and in the retained task receipts; it
+does not assert zero observed timing differences. Existing upstream indexing
+optimizations and allocator trims remain preserved.
 
 The full handoff gate remains the exact command in `TESTS.md`; the milestone is
 implemented and reviewed on its branch before any separate installation or
 landing operation.
+
+Final verification at delivery commit `c80b6239e4309ca90c8d1cb030c1c094847bab65`
+passes commitment integrity (16 tests), strict Clippy, and all targets (798
+passed, zero failed). The existing scanner filesystem stress test remains
+ignored by default because it creates more than 100,000 files. The verification
+receipt and complete logs are retained in
+`/tmp/forge-049-implementation-20261019/handoff-verification-1792442850983785671/`.
 
