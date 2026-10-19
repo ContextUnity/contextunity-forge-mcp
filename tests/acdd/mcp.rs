@@ -931,7 +931,7 @@ fn subtask_mcp_and_cli_operations() {
         }),
     );
     assert_eq!(add_res["subtask"]["subtask_ref"], "step-1");
-    assert_eq!(add_res["subtask"]["status"], "pending");
+    assert_eq!(add_res["subtask"]["status"], "ready");
 
     // MCP task_manage subtask_update
     let update_res = client.payload(
@@ -946,6 +946,24 @@ fn subtask_mcp_and_cli_operations() {
     );
     assert_eq!(update_res["subtask"]["status"], "completed");
     assert_eq!(update_res["subtask"]["evidence"], "Explored symbols");
+
+    for (input, expected) in [
+        ("ready", "ready"),
+        ("in_progress", "in_progress"),
+        ("cancelled", "cancelled"),
+        ("blocked", "blocked"),
+        ("pending", "ready"),
+    ] {
+        let updated = client.payload(
+            "task_manage",
+            json!({
+                "action": "subtask_update", "task_id": task_id,
+                "subtask_ref": "step-1", "subtask_status": input,
+            }),
+        );
+        assert_eq!(updated["subtask"]["status"], expected);
+        assert_eq!(updated["subtask"]["evidence"], "Explored symbols");
+    }
 
     // CLI task subtask add
     let cli_add = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
@@ -968,6 +986,28 @@ fn subtask_mcp_and_cli_operations() {
     );
     let cli_add_json: Value = serde_json::from_slice(&cli_add.stdout).unwrap();
     assert_eq!(cli_add_json["subtask"]["subtask_ref"], "step-2");
+    assert_eq!(cli_add_json["subtask"]["status"], "ready");
+    let legacy_update = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "subtask",
+            "update",
+            task_id,
+            "step-2",
+            "--status",
+            "pending",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        legacy_update.status.success(),
+        "{}",
+        String::from_utf8_lossy(&legacy_update.stderr)
+    );
+    let legacy_json: Value = serde_json::from_slice(&legacy_update.stdout).unwrap();
+    assert_eq!(legacy_json["subtask"]["status"], "ready");
 
     // CLI task subtask list
     let cli_list = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
@@ -995,6 +1035,49 @@ fn subtask_mcp_and_cli_operations() {
         json!({"action": "inspect", "task_id": task_id}),
     );
     assert_eq!(inspected["subtasks"].as_array().unwrap().len(), 2);
+
+    workspace.write(
+        "docs/milestones/010-subtasks.md",
+        &manifest.replace(
+            "task_ref: sub-demo",
+            "task_ref: sub-demo\nstatus: cancelled",
+        ),
+    );
+    client.payload(
+        "task_manage",
+        json!({"action": "sync", "milestone_ref": "docs/milestones/010-subtasks.md"}),
+    );
+    let cancelled = client.payload(
+        "task_list",
+        json!({"status": "cancelled", "milestone_ref": "docs/milestones/010-subtasks.md"}),
+    );
+    assert_eq!(cancelled["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(cancelled["tasks"][0]["status"], "cancelled");
+    let idle = client.payload(
+        "task_manage",
+        json!({"action": "next", "worker_id": "worker", "worktree": workspace.0.to_str().unwrap()}),
+    );
+    assert_eq!(idle["status"], "idle");
+    let cli_cancelled = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--milestone",
+            "010",
+            "--status",
+            "cancelled",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_cancelled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_cancelled.stderr)
+    );
+    let cancelled_json: Value = serde_json::from_slice(&cli_cancelled.stdout).unwrap();
+    assert_eq!(cancelled_json["tasks"][0]["status"], "cancelled");
 }
 
 #[test]
@@ -1377,6 +1460,7 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
         "blocked",
         "parked",
         "completed",
+        "cancelled",
         "all",
     ] {
         assert!(task_status_schema.contains(status));
@@ -1469,7 +1553,7 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
     assert!(cli_help.status.success());
     let cli_help = String::from_utf8(cli_help.stdout).unwrap();
     assert!(cli_help.contains("--all"));
-    assert!(cli_help.contains("cancelled tasks pending sync pruning"));
+    assert!(cli_help.contains("cancelled milestones pending sync pruning"));
 
     assert_eq!(cli_filter(&["--full"]), [task_id]);
 

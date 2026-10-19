@@ -36,6 +36,8 @@ The repository `AGENTS.md` names the verification command and the Git permission
 - **Repository Setup**: Repositories declare tool routing using the canonical template in [references/agents.md.example](references/agents.md.example).
 - **CLI-Only Operations**: Milestone lifecycle commands (`milestone init/list/show/handoff`) are intentionally CLI-only.
 - **Task Dispatch**: `task next --worker WORKER --worktree PATH [--workspace WS]` and `task_manage(action: "next", worker_id, worktree, workspace?)` atomically claim the next eligible task. Both return claim context or `status: "idle"`; a parked task resumes in its retained worktree.
+- **CLI Task Aliases**: `task show TASK_ID` aliases `task inspect TASK_ID`. Inspect and submit accept `--task TASK_ID` instead of the positional ID; sync accepts `--file PATH` instead of the positional milestone reference. Use `task list --detail compact|full`; `--full` remains supported and cannot combine with `--detail`.
+- **AST Surfaces**: Use MCP `ast_grep_search(pattern, path="file.rs")` to infer the language from a recognized file extension, or supply `language` explicitly. CLI uses `contextunity-forge-mcp ast grep --lang rust --path file.rs 'PATTERN'`; `--lang` is required on the CLI.
 - **Session Kickoff**: Start with `code_map_overview()` to verify active workspace, components, and indexing coverage.
 - **Hot Reload**: On Unix, `contextunity-forge-mcp reload` sends `SIGHUP` to running servers, replacing the executable in-place without breaking client connections.
 
@@ -121,6 +123,13 @@ Stay inside the admitted scope. Use `task_manage(action=extend_scope)` to add pa
 ### Subtasks
 
 Record discoveries with `task subtask add`. Do not add a root milestone task for them. `context_bundle.guidance.subtask_dod` is advisory. A status update records the caller-provided status and evidence and does not score it.
+
+Use `ready`, `in_progress`, `completed`, `cancelled`, or `blocked` for subtasks.
+New subtasks default to `ready`; legacy `pending` is accepted as an alias and
+responses use `ready`. Reserve `parked` for top-level task worktree affinity.
+Cancelled tasks retain their history and do not satisfy dependencies or enter
+dispatch. Follow the task reference for cancellation through specification sync
+and explicit reset/reopen; reopen a terminal parent before editing its subtasks.
 
 - Contract slice resolution: Demonstrably resolves an explicit, bounded slice of the contract without breaking boundaries.
 - Milestone and ADR alignment: Builds upon existing architectural seams rather than ad-hoc isolated patches.
@@ -210,7 +219,7 @@ For structural language support, supply the six `SyntaxGrammarSpec` categories a
 ## MCP Tool Reference
 
 ### Operational Task Lifecycle
-- `task_list(repository?, milestone_ref?, milestone_status?, status?, stage?, detail?)`: Query task cards; defaults to ready tasks in active milestones.
+- `task_list(repository?, milestone_ref?, milestone_status?, status?, stage?, detail?)`: Query task cards; defaults to ready tasks in active milestones. `milestone` is accepted as an alias for `milestone_ref`; `status: "cancelled"` selects retained cancelled tasks.
 - `task_claim(task_id, stage, worker_id, worktree, bundle?)`: Claim the current gate; returns stage-specific guidance and context bundles.
 - `task_submit(task_id, stage, action, evidence, findings?)`: Submit claim-bound JSON proof or review findings.
 - `task_manage`: Manage tasks via flat actions (`create`, `sync`, `inspect`, `context`, `next`, `delete`, `extend_scope`, `subtask_add`, `subtask_update`, `subtask_list`, `reset`, `reopen`).
@@ -221,14 +230,15 @@ For structural language support, supply the six `SyntaxGrammarSpec` categories a
 ### Discovery & Search
 Code discovery and inspection tools accept `worktree`: an absolute or server-relative path, exact directory name, or unique hyphen-delimited name suffix. Without it, retain the server's linked worktree; otherwise use one unique active claimed worktree or the primary root when none exists. Multiple active directories or matching names return `WORKTREE_AMBIGUOUS`; pass an explicit path/name. Use `worktree: "."` for the server root. MCP requests do not transmit the client's current directory.
 - `code_map_overview(aspects?, worktree?, limit?, offset?, detail?, generation?)`: Workspace component inventory, module hierarchy, indexing metrics, coverage diagnostics, and paged `analysis_gaps`.
-- `code_map_search(pattern, kind?, worktree?, detail?, limit?, offset?, generation?)`: Fast BM25 full-text and prefix symbol search.
-- `ast_grep_search(pattern, language, path?, worktree?, limit?, offset?, generation?)`: Tree-sitter AST syntax matching with `$NAME` and `$$$ARGS` captures.
+- `code_map_search(pattern, kind?, path?, exact?, include_docs?, include_preview?, group_by_file?, worktree?, detail?, limit?, offset?, generation?)`: Full-text and prefix symbol search; `query` is accepted as an alias for `pattern`. Use `exact=true` for an indexed name or qualified name, or `pattern="*"` with a `path` or `kind` scope to list symbols. An empty `path` leaves results unfiltered. Results include signatures and `inspect_selector`; source previews appear automatically for at most three total hits, or on request via `include_preview=true` for larger result sets, capped at three previews.
+- `ast_grep_search(pattern, language?, path?, worktree?, detail?, limit?, offset?, generation?)`: Tree-sitter AST syntax matching with `$NAME` and `$$$ARGS` captures. Omit `language` only when `path` has a recognized file extension; otherwise use a compiled profile ID from `code_map_overview`.
 - `search_docs(query, doc_type?, component?, worktree?, limit?)`: Full-text search across documentation, guides, and ADRs.
 - `get_doc(path_or_id, section?, worktree?)`: Read indexed markdown doc or exact heading anchor.
 
 ### Inspection & Hierarchy
 - `code_map_inspect(selector, worktree?, include_coverage?, show_doc?, show_source?, leading_lines?, max_body_lines?)`: Symbol summary, receiver metadata, exact callers/callees, paged `analysis_gaps` (e.g. `trait_object_dispatch`, `macro_expansion_not_analyzed`), and candidate dispatch targets (`possible_calls`).
 - `get_code_snippet(selector, worktree?, leading_lines?, max_body_lines?, source_offset?, generation?)`: Bounded, digest-verified AST source preview.
+  Preview line budgets for inspect and snippet requests are clamped to supported bounds. Continue a truncated preview with the returned `next_source_offset` as `source_offset` and the same `generation`.
 - `code_map_explain(selector, direction?, worktree?, include_coverage?, show_doc?, show_source?)`: Direct relationships, candidate dispatch edges, symbol ownership, and architectural invariants.
 - `code_map_impact(selector, direction?, depth?, worktree?, detail?, limit?, offset?, generation?)`: Inbound blast radius (`direction="inbound"`, default, traversing both exact `calls` and candidate `possible_calls`) or outbound dependencies.
 - `code_map_tests(selector, direction?, worktree?, detail?, limit?, offset?, generation?)`: Find tests covering a target, or production dependencies of a test.

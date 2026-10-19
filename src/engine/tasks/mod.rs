@@ -42,6 +42,8 @@ pub enum Status {
     Parked,
     /// Completed tasks with durable receipts.
     Completed,
+    /// Abandoned tasks retained without satisfying dependencies.
+    Cancelled,
     /// Query tasks across all statuses.
     All,
 }
@@ -54,6 +56,7 @@ impl Status {
             Self::Blocked => "blocked",
             Self::Parked => "parked",
             Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
             Self::All => "all",
         }
     }
@@ -127,7 +130,7 @@ pub struct List {
     pub milestone_ref: Option<String>,
     /// Filter by milestone lifecycle status: 'active' (default), 'planned', 'completed', or 'all'. A milestone_ref without this filter selects all statuses.
     pub milestone_status: Option<MilestoneStatusFilter>,
-    /// Filter by task status: ready (default), in_progress, blocked, parked, completed, or all.
+    /// Filter by task status: ready (default), in_progress, blocked, parked, completed, cancelled, or all.
     pub status: Option<Status>,
     /// Filter by any gate identifier in the active workflow profile.
     pub stage: Option<String>,
@@ -241,7 +244,7 @@ pub struct Manage {
     /// Subtask title or goal description for subtask_add.
     pub title: Option<String>,
     #[serde(default)]
-    /// Subtask status for subtask_update: 'pending', 'in_progress', or 'completed'.
+    /// Subtask status: ready, in_progress, completed, cancelled, or blocked; pending aliases ready.
     pub subtask_status: Option<String>,
     #[serde(default)]
     /// Subtask verification evidence, test command, or receipt for subtask_update.

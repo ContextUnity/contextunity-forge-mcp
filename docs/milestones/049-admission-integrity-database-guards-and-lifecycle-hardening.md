@@ -806,7 +806,7 @@ about measured performance remain in force.
 task_ref: unified-task-and-subtask-status-lifecycle
 target: Unify task and subtask status lifecycle into a symmetric taxonomy (ready, in_progress, completed, cancelled, blocked), retain parked as task-only for worktree affinity, and support pending as a backward-compatible alias
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 invariants:
 - 'INV-STATUS-TAXONOMY-SYMMETRY: Task and subtask lifecycle statuses share symmetric core states: ready (canonical initial status replacing subtask pending), in_progress, completed, cancelled (abandoned/obsoleted without manifest deletion), and blocked.'
 - 'INV-TASK-WORKTREE-PARKED-AFFINITY: The parked status remains exclusively valid for top-level tasks to preserve worker ID and worktree routing on scope or concurrency conflicts; subtasks cannot be parked.'
@@ -815,20 +815,115 @@ invariants:
 scope:
 - src/core/tasks/mod.rs
 - src/engine/tasks/mod.rs
+- src/cli/task.rs
+- src/db/tasks_store/mod.rs
 - src/db/tasks_store/subtasks.rs
 - src/db/tasks_store/lifecycle.rs
+- tests/acdd/tasks.rs
+- tests/acdd/subtasks.rs
+- tests/acdd/mcp.rs
+- docs/reference/tasks.md
+- docs/reference/cli.md
+- docs/reference/mcp-tools.md
+- skills/contextunity-forge/SKILL.md
+status: completed
+subtasks:
+- subtask_ref: symmetric-status-enum-and-subtask-ready
+  title: Unify SubtaskStatus to support ready, in_progress, completed, cancelled, and blocked, accepting legacy pending as alias for ready
+  status: completed
+  evidence: 'Full affected targets: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib --test acdd --test mcp; exit0, 297 passed,0 failed. status-build-targets-final.log. Includes cancellation cached dependency same-digest/higher-revision/fresh-import red→green regression; independent final review pending.'
+- subtask_ref: task-cancelled-status-and-scheduler-omission
+  title: Add cancelled status to TaskStatus and exclude cancelled tasks/subtasks from candidate selection, task next, and dependency chains
+  status: completed
+  evidence: 'Full affected targets: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib --test acdd --test mcp; exit0, 297 passed,0 failed. status-build-targets-final.log. Includes cancellation cached dependency same-digest/higher-revision/fresh-import red→green regression; independent final review pending.'
+- subtask_ref: store-and-manifest-status-normalization
+  title: Normalize status parsing and serialization across SQLite tasks_store, milestone manifest readers, and MCP task tools
+  status: completed
+  evidence: 'Full affected targets: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib --test acdd --test mcp; exit0, 297 passed,0 failed. status-build-targets-final.log. Includes cancellation cached dependency same-digest/higher-revision/fresh-import red→green regression; independent final review pending.'
+- subtask_ref: status-lifecycle-seam-tests
+  title: Add integration tests verifying symmetric lifecycle transitions, cancelled task retention, and pending backward compatibility
+  status: completed
+  evidence: 'Full affected targets: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib --test acdd --test mcp; exit0, 297 passed,0 failed. status-build-targets-final.log. Includes cancellation cached dependency same-digest/higher-revision/fresh-import red→green regression; independent final review pending.'
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-19T22:58:43.749842907+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib --test acdd --test mcp
+      exit_code: 0
+      tests_passed: 297
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS. Compared actual unstaged/staged/untracked status and full scoped candidate diff against claim authority: exactly13 changed admitted paths, permitted src/engine/tasks/lifecycle.rs extension unchanged; only authorized manifest contract/subtask metadata plus pre-existing external successor definition. No profile/config/credentials/generated source changes. All14 allowed paths equal immutable candidate33a248c and pre/post independent gate hashes (status-review-final-binding.json);10 other manifest task blocks preserved bytewise. Each change implements status normalization, cancellation, real seams, or admitted docs/skill reconciliation.'
+        claims:
+          applicable: true
+          evidence: 'PASS. Traced all4 task invariants: pure core SubtaskStatus accepts pending and emits ready, manifest/descriptors/storage/CLI/MCP use shared normalization; parked remains task-only and prior affinity selection unchanged; cancelled task sync revokes claims/revisions, retains history, excludes ready/next/claim/dependency completion and freezes child mutation. P2 lineage blackboard476-478 plus raw status-cached-dependency-red.log confirms pre-fix real failure. Shared transaction invalidation now covers same digest, higher revision and fresh reimport, preserving durable completion for absent deleted history. Real lib/SQLite/engine/stdio/CLI tests exercised. Independently ran cargo clippy --all-targets --all-features -- -D warnings (exit0) and complete cargo test --lib --test acdd --test mcp (exit0):92+114+91=297 passed,0failed,0ignored,0filtered. Artifacts status-review-gates.json,status-review-clippy.log,status-review-targets.log. ADR0001/0014/0018 boundaries retained; no invented TaskStatus API. Existing performance waiver remains explicit, no benchmark/zero-regression claim.'
+        concurrency:
+          applicable: true
+          evidence: PASS. Reviewed sync_selected existing Immediate transaction, claim/next/reset/child update transactions and end_claim/next_revision/save fencing. Cache clear, descriptor cancellation and claim revocation commit together; malformed receipt/completed cancellation errors roll back all writes, preserving historical completion. No new lock/connection/read query/schema/cache subsystem; ordinary reader and dependency query paths unchanged. Canonical cancelled filter uses existing shared status enum; same-digest cancellation idempotence and reset/re-admission covered. Existing concurrent/rollback/parked tests pass in complete targets.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Current review explicitly rooted in assigned049 worktree; snapshot baseline4339366 and worker identity bound to claim5/contract2. New writes use existing fully-qualified task ID and assert_id boundaries; dependency invalidation matches exact dependency_id only. Registry/owner/alias/profile/path resolution, traversal/symlink guards and task database separation unchanged. Real isolated SQLite workspaces plus CLI/MCP parity passed. Core enum imports no db/engine; db only uses shared core normalizer. No neighboring project or global skill writes.
+        administration:
+          applicable: true
+          evidence: 'PASS. Reviewed protected manifest headers/profile pins/gate proof/receipt logic: unchanged, no migration or policy weakening. Repo skill reconciles valid global CLI/search guidance while preserving049 routing; global installation untouched, test fixture isolated via CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR=H/repair-global-skill (host installation drift not claimed fixed). Independent worker codex-049-status-reviewer differs from builder codex-049-builder. Registered MCP old-parser claim failed before mutation; blackboard479 records exact incompatibility and parent-authorized fresh explicit-W CLI fallback. Automatic delivery only, hooks/atomic receipt/candidate parent checks remain in existing Forge; landed SHA and neighbor preservation to be checked after delivery.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ADMISSION-DETERMINISM: Dependency manifest collection across cold build, incremental delta, and MCP source admission must yield identical path sets and digests for unchanged workspace state, eliminating false-positive rebuild loops.'
+    - 'INV-DATABASE-SEPARATION: Task tracking databases (tasks.sqlite) and code map indices (code-map.sqlite) are mutually exclusive; attempts to target a task database for code-map output or open a code-map database as task store fail closed with TASK_DATABASE_COLLISION.'
+    - 'INV-WORKSPACE-UNIQUENESS: Subproject milestone resolution honors declared_projects frontmatter and configured owner mappings, preventing duplicate phantom workspaces from conflicting on milestone references.'
+    - 'INV-DAEMON-RESOURCE-BOUND: MCP servers preserve live connections regardless of inactivity, terminate on Unix when their launching parent disappears, and trim free heap pages after batch operations without removing the allocator trims delivered in milestone 031.'
+    - 'INV-GREENFIELD-SEAM-ACTIONABILITY: Greenfield contract validation failure for uncreated scope files outputs deterministic remediation guidance with file paths and stub requirements.'
+    - 'INV-PERFORMANCE-PRESERVATION: Preserve the indexing optimizations delivered on main; paired release measurements on an identical frozen corpus must show no cold-build, delta, or warm MCP latency regression before milestone delivery.'
+    - 'INV-STATUS-TAXONOMY-SYMMETRY: Task and subtask lifecycle statuses share symmetric core states: ready (canonical initial status replacing subtask pending), in_progress, completed, cancelled (abandoned/obsoleted without manifest deletion), and blocked.'
+    - 'INV-TASK-WORKTREE-PARKED-AFFINITY: The parked status remains exclusively valid for top-level tasks to preserve worker ID and worktree routing on scope or concurrency conflicts; subtasks cannot be parked.'
+    - 'INV-STATUS-BACKWARD-COMPATIBILITY: Legacy subtask status pending is parsed and accepted as a direct alias for ready across SQLite storage, CLI serialization, and manifest parsing.'
+    - 'INV-CANCELLED-SCHEDULER-EXCLUSION: Cancelled tasks and subtasks are excluded from task next, claim candidacy, and dependency unblocking, but remain preserved in history and manifest queries.'
+    architectural_notes:
+    - 'decisions: Admitted task contract revision 2 before implementation; synchronized explicit 049 manifest and claimed contract via MCP (claim revision 3). Scope now includes docs/reference/{tasks,cli,mcp-tools}.md, skills/contextunity-forge/SKILL.md, CLI status descriptions, tasks_store sync owner, and existing ACDD domain suites. Instruction changes are part of reviewed task delivery; external installed skill remains outside task writes. Reconcile existing valid CLI/search guidance without dropping 049 worktree/greenfield instructions.'
+    - 'decisions: Build design: preserve existing public String status fields and use core SubtaskStatus for canonical parsing/serialization; pending remains an accepted alias on all existing subtask boundaries. Cancelled top-level task specifications enter through existing manifest sync, without adding a new command/API. Existing ready/parked-only dispatch and completed-only dependency rules already exclude cancellation; sync revokes claims and increments revision, retains history, and rejects cancelling accepted completion. Reset/re-admission restores eligibility explicitly. SQLite schema/open behavior and code indexing/allocator paths remain unchanged. Repo skill reconciles valid global CLI/search descriptions with 049 worktree/greenfield guidance. All 14 changed paths are in task scope or the task manifest; git diff --check passes. Strict Clippy passed; current complete lib/ACDD/MCP rerun pending.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```
+
+### task: cargo-root-crate-import-resolution-and-seam-connectivity
+
+```yaml
+task_ref: cargo-root-crate-import-resolution-and-seam-connectivity
+target: Resolve root Cargo package name imports to src/ in Rust import normalization, enabling integration test files in tests/ to establish static seam edges to local library symbols
+proof_policy: seam-test-first
+contract_revision: 1
+invariants:
+- 'INV-RUST-ROOT-CRATE-IMPORT-NORMALIZATION: When Rust code (e.g. integration tests in tests/) imports the workspace crate by its Cargo package name (or normalized identifier with underscores replacing hyphens), Rust::normalize_import maps the root crate identifier directly to src/, resolving public module and symbol paths identically to internal crate:: imports.'
+- 'INV-INTEGRATION-TEST-SEAM-CONNECTIVITY: Integration test functions importing library symbols via use <pkg_name>::... produce directed graph call edges to the indexed library symbols, satisfying ACDD contract gate seam connectivity without failing TASK_SEAM_DISCONNECTED.'
+scope:
+- src/engine/languages/rust.rs
+- tests/engine/languages.rs
 - tests/acdd/tasks.rs
 - docs/reference/tasks.md
 status: ready
 subtasks:
-- subtask_ref: symmetric-status-enum-and-subtask-ready
-  title: Unify SubtaskStatus to support ready, in_progress, completed, cancelled, and blocked, accepting legacy pending as alias for ready
-- subtask_ref: task-cancelled-status-and-scheduler-omission
-  title: Add cancelled status to TaskStatus and exclude cancelled tasks/subtasks from candidate selection, task next, and dependency chains
-- subtask_ref: store-and-manifest-status-normalization
-  title: Normalize status parsing and serialization across SQLite tasks_store, milestone manifest readers, and MCP task tools
-- subtask_ref: status-lifecycle-seam-tests
-  title: Add integration tests verifying symmetric lifecycle transitions, cancelled task retention, and pending backward compatibility
+- subtask_ref: cargo-package-name-crate-resolution
+  title: Detect root package name from Cargo.toml or directory identity and map pkg_name identifiers to src in Rust::normalize_import
+  status: pending
+- subtask_ref: integration-test-graph-edge-emission
+  title: Verify directed edge emission from tests/ call sites to src/ symbols when using crate package imports
+  status: pending
+- subtask_ref: seam-connectivity-contract-gate-tests
+  title: Add seam tests proving integration-test contract gate passage without TASK_SEAM_DISCONNECTED
+  status: pending
 ```
 
 ## Delivered task commits

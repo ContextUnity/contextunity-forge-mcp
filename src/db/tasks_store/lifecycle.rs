@@ -168,11 +168,12 @@ impl TasksStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
         let profile = resolve_task_profile(workspace_root.as_deref(), &base_profile, &task)?;
-        if task.status == "completed" {
+        if matches!(task.status.as_str(), "completed" | "cancelled") {
             task.gate = 0;
             task.stage = profile.gate_id(0).to_owned();
             task.completed_at = None;
             task.receipt = None;
+            task.spec.status = Some("ready".into());
         }
         end_claim(&tx, id)?;
         task.claim_revision = next_revision(&tx, id)?;
@@ -208,8 +209,8 @@ impl TasksStore {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
-        if task.status == "completed" {
-            bail!("TASK_TERMINAL: cannot extend scope of completed task; reopen or reset the task first (e.g. `task reset <task-id>`)");
+        if matches!(task.status.as_str(), "completed" | "cancelled") {
+            bail!("TASK_TERMINAL: cannot extend scope of completed or cancelled task; reopen or reset the task first (e.g. `task reset <task-id>`)");
         }
         let worktree = task.worktree.as_deref().map(Path::new).unwrap_or(root);
         let bases: Vec<String> = if !task.spec.scope_roots.is_empty() {
@@ -241,7 +242,7 @@ impl TasksStore {
                  JOIN tasks t ON t.task_id = p.task_id \
                  WHERE p.task_id != ?1 AND t.milestone_ref = ?2 \
                    AND (substr(p.task_id, 1, length(?3)) = ?3 OR substr(p.task_id, 1, length(?4)) = ?4) \
-                   AND json_extract(t.descriptor, '$.status') != 'completed' ORDER BY p.task_id",
+                    AND json_extract(t.descriptor, '$.status') NOT IN ('completed', 'cancelled') ORDER BY p.task_id",
             )?
             .query_map(params![id, task.milestone_ref, id_prefix, namespace], |r| {
                 let owner: String = r.get(0)?;

@@ -4232,7 +4232,7 @@ fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
         .subtask_add(task_id, "sub-audit", "Post-completion audit")
         .unwrap();
     assert_eq!(sub.subtask_ref, "sub-audit");
-    assert_eq!(sub.status, "pending");
+    assert_eq!(sub.status, "ready");
 
     // Reopened task can be claimed again at contract
     let re_claimed = tasks::claim(

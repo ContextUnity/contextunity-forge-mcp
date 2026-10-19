@@ -851,8 +851,34 @@ impl TasksStore {
             if task_profile.gates.is_empty() {
                 bail!("ACDD_PROFILE_INVALID: gates must not be empty");
             }
+            let cancelled = spec.status.as_deref() == Some("cancelled");
+            if cancelled && spec.receipt.is_some() {
+                bail!("TASK_RECEIPT_INVALID: cancelled tasks cannot import a completion receipt");
+            }
+            if cancelled {
+                // Cached completion may survive reset or deletion of this predecessor.
+                // A live cancelled task must block its dependents again.
+                tx.execute(
+                    "UPDATE task_dependencies SET satisfied=0 WHERE dependency_id=?1",
+                    [&id],
+                )?;
+            }
             if let Some(mut existing) = load(&tx, &id)? {
+                if cancelled && existing.status == "completed" {
+                    bail!("TASK_TERMINAL: reopen the completed task before cancelling it");
+                }
                 if existing.digest == digest {
+                    if cancelled && existing.status != "cancelled" {
+                        end_claim(&tx, &id)?;
+                        existing.claim_revision = next_revision(&tx, &id)?;
+                        existing.status = "cancelled".into();
+                        existing.spec.status = Some("cancelled".into());
+                        existing.worker_id = None;
+                        existing.worktree = None;
+                        existing.parked_worker_id = None;
+                        existing.parked_worktree = None;
+                        existing.blocked_by = None;
+                    }
                     if spec.status.as_deref() == Some("completed") {
                         if existing.status != "completed" {
                             bail!("TASK_RECEIPT_INVALID: imported receipt differs from accepted completion");
@@ -894,21 +920,14 @@ impl TasksStore {
                             "INSERT INTO task_subtasks(task_id, subtask_ref, title, status, evidence, updated_at) \
                              VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
                              ON CONFLICT(task_id, subtask_ref) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
-                            params![id, sub.subtask_ref, sub.title, sub.status, sub.evidence, now()],
+                            params![id, sub.subtask_ref, sub.title, crate::core::tasks::SubtaskStatus::parse(&sub.status)?.as_str(), sub.evidence, now()],
                         )?;
                     }
                     let mut stmt = tx.prepare(
                         "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
                     )?;
                     let current_subtasks = stmt
-                        .query_map([&id], |r| {
-                            Ok(SubtaskSpec {
-                                subtask_ref: r.get(0)?,
-                                title: r.get(1)?,
-                                status: r.get(2)?,
-                                evidence: r.get(3)?,
-                            })
-                        })?
+                        .query_map([&id], subtasks::read_subtask)?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     existing.spec.subtasks = current_subtasks;
                     existing.milestone_ref = reference.into();
@@ -957,7 +976,7 @@ impl TasksStore {
                                 id,
                                 subtask.subtask_ref,
                                 subtask.title,
-                                subtask.status,
+                                crate::core::tasks::SubtaskStatus::parse(&subtask.status)?.as_str(),
                                 subtask.evidence,
                                 now()
                             ],
@@ -1037,7 +1056,14 @@ impl TasksStore {
                 digest,
                 contract_revision: spec.contract_revision,
                 claim_revision: revision,
-                status: if completed { "completed" } else { "ready" }.into(),
+                status: if completed {
+                    "completed"
+                } else if cancelled {
+                    "cancelled"
+                } else {
+                    "ready"
+                }
+                .into(),
                 stage: if completed { last_gate } else { first_gate },
                 wave_index: 0,
                 parked_worker_id: None,
@@ -1064,7 +1090,7 @@ impl TasksStore {
                     "INSERT INTO task_subtasks(task_id, subtask_ref, title, status, evidence, updated_at) \
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
                      ON CONFLICT(task_id, subtask_ref) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
-                    params![id, sub.subtask_ref, sub.title, sub.status, sub.evidence, now()],
+                    params![id, sub.subtask_ref, sub.title, crate::core::tasks::SubtaskStatus::parse(&sub.status)?.as_str(), sub.evidence, now()],
                 )?;
             }
             {
@@ -1072,14 +1098,7 @@ impl TasksStore {
                     "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
                 )?;
                 task.spec.subtasks = stmt
-                    .query_map([&id], |row| {
-                        Ok(SubtaskSpec {
-                            subtask_ref: row.get(0)?,
-                            title: row.get(1)?,
-                            status: row.get(2)?,
-                            evidence: row.get(3)?,
-                        })
-                    })?
+                    .query_map([&id], subtasks::read_subtask)?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
             }
             save(&tx, &task)?;

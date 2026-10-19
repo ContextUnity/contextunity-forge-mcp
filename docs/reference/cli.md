@@ -80,7 +80,7 @@ statuses. Use `--full` to include subtask titles and verification evidence.
 `--detail compact|full` selects the same subtask detail explicitly; use either
 `--full` or `--detail` in one invocation.
 Task `--status` accepts `ready` (default), `in_progress`, `blocked`, `parked`,
-`completed`, or `all`. Use `--status parked` to list tasks retaining their worker
+`completed`, `cancelled`, or `all`. Use `--status parked` to list tasks retaining their worker
 and worktree while waiting for a scope owner; `--status all` includes them.
 
 ```sh
@@ -143,12 +143,18 @@ Manage iterative subtasks within an admitted task:
 
 ```sh
 contextunity-forge-mcp task subtask add TASK_ID SUBTASK_REF "Description of subtask" [--workspace WS]
-contextunity-forge-mcp task subtask update TASK_ID SUBTASK_REF --status in_progress|completed|pending [--evidence "Test notes"] [--workspace WS]
+contextunity-forge-mcp task subtask update TASK_ID SUBTASK_REF --status ready|in_progress|completed|cancelled|blocked [--evidence "Test notes"] [--workspace WS]
 contextunity-forge-mcp task subtask list TASK_ID [--workspace WS]
 contextunity-forge-mcp task reset TASK_ID
 contextunity-forge-mcp task reopen TASK_ID
 contextunity-forge-mcp task context TASK_ID
 ```
+
+Subtasks default to `ready`; legacy `pending` aliases `ready` and responses use
+the canonical spelling. `parked` is valid only for top-level tasks. Cancelled
+subtasks remain visible without satisfying task dependencies. Task cancellation
+is imported from a task's `status: cancelled` specification through `task sync`;
+see [task lifecycle](tasks.md#subtasks-and-iterative-deepening) for retention and reopening.
 
 Subtasks allow tracking fine-grained discoveries, checklists, and verification steps
 without altering the parent task contract digest or inflating the milestone queue.

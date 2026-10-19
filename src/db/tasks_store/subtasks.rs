@@ -1,5 +1,18 @@
 use super::*;
 
+pub(super) fn read_subtask(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubtaskSpec> {
+    let status: String = row.get(2)?;
+    let status = crate::core::tasks::SubtaskStatus::parse(&status).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, error.into())
+    })?;
+    Ok(SubtaskSpec {
+        subtask_ref: row.get(0)?,
+        title: row.get(1)?,
+        status: status.as_str().into(),
+        evidence: row.get(3)?,
+    })
+}
+
 impl TasksStore {
     /// Add a subtask to an existing task.
     pub fn subtask_add(
@@ -18,12 +31,12 @@ impl TasksStore {
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut task = load(&tx, task_id)?.context("TASK_NOT_FOUND")?;
-        if task.status == "completed" {
-            bail!("TASK_TERMINAL: cannot add subtasks to completed task; reopen or reset the task first (e.g. `task reset <task-id>`)");
+        if matches!(task.status.as_str(), "completed" | "cancelled") {
+            bail!("TASK_TERMINAL: cannot add subtasks to completed or cancelled task; reopen or reset the task first (e.g. `task reset <task-id>`)");
         }
         let updated_at = now();
         let inserted = tx.execute(
-            "INSERT OR IGNORE INTO task_subtasks(task_id, subtask_ref, title, status, evidence, updated_at) VALUES(?1, ?2, ?3, 'pending', NULL, ?4)",
+            "INSERT OR IGNORE INTO task_subtasks(task_id, subtask_ref, title, status, evidence, updated_at) VALUES(?1, ?2, ?3, 'ready', NULL, ?4)",
             params![task_id, subtask_ref, title, updated_at],
         )?;
         if inserted == 0 {
@@ -36,14 +49,7 @@ impl TasksStore {
             "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
         )?;
         let subtasks = stmt
-            .query_map([task_id], |r| {
-                Ok(SubtaskSpec {
-                    subtask_ref: r.get(0)?,
-                    title: r.get(1)?,
-                    status: r.get(2)?,
-                    evidence: r.get(3)?,
-                })
-            })?
+            .query_map([task_id], read_subtask)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let result = subtasks
             .iter()
@@ -65,15 +71,13 @@ impl TasksStore {
         evidence: Option<&str>,
     ) -> Result<SubtaskSpec> {
         self.assert_id(task_id)?;
-        if !matches!(status, "pending" | "in_progress" | "completed") {
-            bail!("TASK_SUBTASK_STATUS_INVALID: invalid subtask status; must be pending, in_progress, or completed");
-        }
+        let status = crate::core::tasks::SubtaskStatus::parse(status)?.as_str();
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut task = load(&tx, task_id)?.context("TASK_NOT_FOUND")?;
-        if task.status == "completed" {
-            bail!("TASK_TERMINAL: cannot update subtasks of completed task; reopen or reset the task first (e.g. `task reset <task-id>`)");
+        if matches!(task.status.as_str(), "completed" | "cancelled") {
+            bail!("TASK_TERMINAL: cannot update subtasks of completed or cancelled task; reopen or reset the task first (e.g. `task reset <task-id>`)");
         }
         let updated_at = now();
         let updated = match evidence {
@@ -99,14 +103,7 @@ impl TasksStore {
             "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
         )?;
         let subtasks = stmt
-            .query_map([task_id], |r| {
-                Ok(SubtaskSpec {
-                    subtask_ref: r.get(0)?,
-                    title: r.get(1)?,
-                    status: r.get(2)?,
-                    evidence: r.get(3)?,
-                })
-            })?
+            .query_map([task_id], read_subtask)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let result = subtasks
             .iter()
@@ -126,14 +123,7 @@ impl TasksStore {
             "SELECT subtask_ref, title, status, evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid",
         )?;
         let subtasks = stmt
-            .query_map([task_id], |r| {
-                Ok(SubtaskSpec {
-                    subtask_ref: r.get(0)?,
-                    title: r.get(1)?,
-                    status: r.get(2)?,
-                    evidence: r.get(3)?,
-                })
-            })?
+            .query_map([task_id], read_subtask)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         if subtasks.is_empty() {
             let task = self.inspect(task_id)?;

@@ -308,6 +308,66 @@ pub struct ReviewSummary {
     pub contours: std::collections::BTreeMap<String, String>,
 }
 
+/// Lifecycle states shared by subtasks; worktree parking belongs to tasks only.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtaskStatus {
+    /// Work ready to start; accepts the legacy pending spelling.
+    #[serde(alias = "pending")]
+    Ready,
+    /// Work currently being performed.
+    InProgress,
+    /// Finished work.
+    Completed,
+    /// Abandoned work retained in history.
+    Cancelled,
+    /// Work waiting on a prerequisite.
+    Blocked,
+}
+
+impl SubtaskStatus {
+    /// Parse canonical lifecycle names and the legacy initial-state alias.
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "ready" | "pending" => Ok(Self::Ready),
+            "in_progress" => Ok(Self::InProgress),
+            "completed" => Ok(Self::Completed),
+            "cancelled" => Ok(Self::Cancelled),
+            "blocked" => Ok(Self::Blocked),
+            _ => bail!("TASK_SUBTASK_STATUS_INVALID: invalid subtask status; expected ready, in_progress, completed, cancelled, or blocked; pending aliases ready"),
+        }
+    }
+
+    /// Canonical status written to task responses and storage.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+fn deserialize_subtask_status<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    SubtaskStatus::parse(&value)
+        .map(|status| status.as_str().into())
+        .map_err(serde::de::Error::custom)
+}
+
+fn serialize_subtask_status<S: serde::Serializer>(
+    value: &str,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    SubtaskStatus::parse(value)
+        .map_err(serde::ser::Error::custom)?
+        .serialize(serializer)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 /// Represents an iterative subtask under a parent task contract.
@@ -316,8 +376,12 @@ pub struct SubtaskSpec {
     pub subtask_ref: String,
     /// Description of the subtask goal.
     pub title: String,
-    #[serde(default = "default_subtask_status")]
-    /// Subtask status: pending, in_progress, or completed.
+    #[serde(
+        default = "default_subtask_status",
+        deserialize_with = "deserialize_subtask_status",
+        serialize_with = "serialize_subtask_status"
+    )]
+    /// Subtask status: ready, in_progress, completed, cancelled, or blocked; pending aliases ready.
     pub status: String,
     #[serde(default)]
     /// Optional verification evidence or test command.
@@ -325,7 +389,7 @@ pub struct SubtaskSpec {
 }
 
 fn default_subtask_status() -> String {
-    "pending".into()
+    SubtaskStatus::Ready.as_str().into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
@@ -833,12 +897,7 @@ impl Milestone {
                 if subtask.title.trim().is_empty() {
                     bail!("subtask requires a non-empty title");
                 }
-                if !matches!(
-                    subtask.status.as_str(),
-                    "pending" | "in_progress" | "completed"
-                ) {
-                    bail!("invalid subtask status; must be pending, in_progress, or completed");
-                }
+                SubtaskStatus::parse(&subtask.status)?;
                 if !subtask_ids.insert(subtask.subtask_ref.clone()) {
                     bail!("duplicate subtask_ref: {}", subtask.subtask_ref);
                 }
@@ -1094,4 +1153,38 @@ pub fn infer_project_from_path(path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn subtask_manifest_lifecycle_uses_ready_and_accepts_pending() {
+        let source = "---\nid: m-statuses\n---\n```yaml\ntask_ref: statuses\ntarget: Status lifecycle\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: child\n  title: Child\n```\n";
+        let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+        assert_eq!(milestone.tasks[0].subtasks[0].status, "ready");
+        let mut legacy = milestone.tasks[0].subtasks[0].clone();
+        legacy.status = "pending".into();
+        assert_eq!(serde_json::to_value(&legacy).unwrap()["status"], "ready");
+        for (input, expected) in [
+            ("pending", "ready"),
+            ("ready", "ready"),
+            ("in_progress", "in_progress"),
+            ("completed", "completed"),
+            ("cancelled", "cancelled"),
+            ("blocked", "blocked"),
+        ] {
+            let with_status = source.replace(
+                "  title: Child",
+                &format!("  title: Child\n  status: {input}"),
+            );
+            let parsed = Milestone::parse(&with_status, "forge-mcp").unwrap();
+            assert_eq!(parsed.tasks[0].subtasks[0].status, expected);
+            assert_eq!(
+                serde_json::to_value(&parsed.tasks[0].subtasks[0]).unwrap()["status"],
+                expected
+            );
+        }
+    }
 }

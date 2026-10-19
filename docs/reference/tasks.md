@@ -6,8 +6,8 @@ doc_type: api
 # Repository task operations
 
 Git milestone frontmatter and fenced YAML task blocks own specifications.
-`src/engine/tasks.rs` serves CLI and MCP through the independent SQLite store
-in `src/db/tasks_store.rs`. Code-index rebuilds preserve operational task state.
+`src/engine/tasks/mod.rs` serves CLI and MCP through the independent SQLite store
+in `src/db/tasks_store/mod.rs`. Code-index rebuilds preserve operational task state.
 For the lifecycle, load the `contextunity-forge` skill; for worktree and Git rules,
 follow root [AGENTS.md](../../AGENTS.md#worktrees-and-git-permissions).
 
@@ -114,7 +114,7 @@ Every task contract declares an explicit file perimeter (`scope`) bounding allow
 
 - **Exclusive Scope Locks and Sibling Conflicts**: Declared scope paths are registered with `frozen = 1`. During sync, overlapping task scopes create predecessor-to-successor dependencies in task declaration order. These SQLite edges preserve `TaskSpec.depends_on` and authority digests. `wave_index` is zero without dependencies, otherwise one plus the greatest predecessor wave. An active sibling with exact, ancestor, or descendant overlap blocks a claim with `TASK_SCOPE_CONFLICT`.
 - **Dynamic Extension (`extend_scope`)**: A claimed task extends its perimeter within admitted base roots via `task extend-scope <task_id> <path>...` or MCP `task_manage(action: "extend_scope", ...)`. If an active sibling holds the requested scope, one transaction admits the paths, adds holder dependencies, publishes a `blockers` note, ends the claim, and returns `status: "parked"` with `blocked_by`. The descriptor retains `parked_worker_id` and `parked_worktree`; the same worker resumes in that worktree after the holders complete. Conflicts with other nonterminal owners remain fail-closed.
-- **Completed Task Scope Release**: Once a task reaches `completed`, both `task_claim` and `extend_scope` exclude its rows from scope-conflict checks (`json_extract(t.descriptor, '$.status') != 'completed'`). Forge retains the completed task's `task_scope_paths` history while allowing successor tasks to claim or extend into those paths.
+- **Terminal Task Scope Release**: Completed and cancelled tasks retain their scope history without holding active scope locks. Cancellation leaves dependencies unsatisfied; a dependent task still requires a completed predecessor.
 - **Protected System Scopes and Dirty File Prohibition**: System configuration and workflow profile files (`.forge/acdd/**` and profile definitions) are protected system paths (`TASK_SCOPE_PROTECTED`). Regular tasks cannot claim or extend into these paths via `extend_scope`. Furthermore, during `task_claim`, gate execution, and `task_submit`, the compiled binary inspects the worktree git status: if any file under `.forge/acdd/**` is dirty (modified, unstaged, staged, or untracked) and is not explicitly admitted in `task.spec.scope`, Forge fails closed with `TASK_SCOPE_VIOLATION`. This guarantees that agents cannot mutate workflow profiles, weaken review contours, or bypass test gates on the fly. Legitimate profile updates are performed either directly outside task cycles or within dedicated configuration tasks whose explicit scope admits `.forge/acdd/profile.yaml`.
 - **Documentation Co-Evolution Planning**: Shared documentation (such as `docs/reference/tasks.md`, `README.md`, or architecture documents) frequently evolves across multiple milestone tasks. When multiple tasks in a milestone must update the same documentation or common shared modules, dependencies must be sequenced via `depends_on`. Once the predecessor task completes, the successor task gains lawful access to extend into and evolve the shared documentation. Alternatively, documentation changes can be planned alongside code changes within the owning task's build gate, ensuring documentation and implementation remain synchronized without scope friction.
 - **Task Dependencies and Cross-Milestone Sequencing (`depends_on`)**: Task contracts declare local dependencies (`task_ref`), cross-milestone task dependencies (`milestone_id:task_ref`), or external project dependencies (`project/milestone_id:task_ref`). Dependent tasks remain in `blocked` status until all predecessor tasks are completed, preventing premature claims (`TASK_NOT_READY`).
@@ -133,7 +133,7 @@ and the two detail flags are mutually exclusive within one invocation. See the
 
 | Tool | Arguments and behavior |
 | --- | --- |
-| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
+| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them and retained cancelled tasks. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. `next` additionally requires `worker_id` and `worktree`; other actions reject these fields. Selectors follow the table below. |
@@ -153,7 +153,7 @@ Null stage matches all gates.
 | `delete` | Exactly one of `task_id`, `milestone_ref` | Workspace is allowed only with milestone_ref; omit task_ref/paths. |
 | `extend_scope` | `task_id`, nonempty `paths` | Omit workspace/milestone_ref/task_ref; force=false. |
 | `subtask_add` | `task_id`, `subtask_ref`, `title` | Optional workspace; omit milestone_ref/paths; force=false. |
-| `subtask_update` | `task_id`, `subtask_ref`, `subtask_status` | Optional `evidence`, `workspace`; status must be `pending`, `in_progress`, or `completed`. |
+| `subtask_update` | `task_id`, `subtask_ref`, `subtask_status` | Optional `evidence`, `workspace`; status is `ready`, `in_progress`, `completed`, `cancelled`, or `blocked`; legacy `pending` aliases `ready`. |
 | `subtask_list` | `task_id` | Optional workspace; omit milestone_ref/task_ref/paths; force=false. |
 | `reset` | `task_id` | Returns an open task to ready at its current gate; a completed task restarts at the first gate in its active profile. |
 | `reopen` | `task_id` | Alias for reset. |
@@ -212,6 +212,21 @@ retain an empty `started_at` while they wait in the queue.
 
 ## Subtasks and iterative deepening
 
+Tasks and subtasks share `ready`, `in_progress`, `completed`, `cancelled`, and
+`blocked`. Only tasks support `parked`, retaining worktree affinity during scope
+conflicts. Subtasks record progress; they do not participate in task dispatch or
+satisfy task dependencies.
+
+Task specification `status: cancelled` is admitted through `task sync`. It ends
+an active claim, increments its revision, and retains the task, attempts, gates,
+subtasks, and evidence. Cancelled tasks appear in `--status cancelled` and `all`,
+cannot be claimed or dispatched, and leave dependent tasks blocked. Sync does
+not revive them merely because the manifest returns to `ready`: use reset/reopen
+after restoring the specification, or admit a higher contract revision. Sync
+rejects cancellation of an accepted completed task and rejects completion receipts
+on cancelled specifications. Milestone-level cancellation retains its separate
+pruning behavior; see [milestone lifecycle](#milestone-cli-lifecycle).
+
 Complex domain tasks often contain finer-grained milestones, discovered edge cases,
 or sub-component checklists (e.g. testing specific UI fixtures, verifying individual DOM
 queries, or step-by-step refactoring). Instead of proliferating root-level milestone tasks
@@ -219,13 +234,13 @@ that inflate the queue and require a full configured gate lifecycle,
 agents should deepen the active task using **subtasks**.
 
 - **Schema**: Each subtask contains `subtask_ref` (alphanumeric identity slug), `title` (goal description),
-  `status` (`pending`, `in_progress`, or `completed`), and optional `evidence` (verification command or test notes).
+  `status` (`ready`, `in_progress`, `completed`, `cancelled`, or `blocked`), and optional `evidence` (verification command or test notes). Omitted status defaults to `ready`; legacy `pending` is accepted in manifests, stored descriptors, SQLite rows, CLI and MCP inputs, and returned as `ready`.
 - **Canonical State**: During active execution, SQLite (`task_subtasks` table
   and `Task.spec.subtasks` descriptor) is the canonical operational state. Upon task completion at the profile's terminal delivery gate,
   Forge serializes all subtasks directly into the milestone Markdown fenced YAML block alongside the delivery receipt.
   The milestone document is the durable canonical record that survives SQLite clearing, rebuilds, and milestone handoff.
 - **Post-Delivery Immutability**: Subtasks are strictly operational execution artifacts. Once a task passes its terminal delivery gate
-  (`status: completed`), its subtasks and receipt are frozen. Calling `subtask_add` or `subtask_update` on a completed task
+  (`status: completed`), its subtasks and receipt are frozen. Calling `subtask_add` or `subtask_update` on a completed or cancelled task
   fails closed with `TASK_TERMINAL`.
 - **Digest Independence**: Contract digests exclude `spec.subtasks`. Adding, updating, or completing subtasks
   never triggers `AUTHORITY_GAP` or forces contract re-admission.
@@ -585,7 +600,7 @@ cap at 50, omit payload, and return pagination metadata. `inspect MESSAGE_ID`
 returns the payload for one message.
 
 Reset (or `task reopen`, also available via MCP `task_manage` with `action: "reset"` or `"reopen"`)
-abandons ownership, increments claim revision, and marks the task pending. For in-progress tasks,
+abandons ownership, increments claim revision, and marks the task ready. For in-progress tasks,
 passed predecessor gates are preserved. When executed on a completed task, reset cleanly reopens it:
 it clears terminal receipt data from both SQLite and the milestone Markdown document, resets the
 active gate to the first gate in the active profile, clears `completed_at`, restores `ready` status, and retains existing subtask
@@ -661,7 +676,7 @@ Below is an illustrative payload returned upon claiming a task (`task_claim` or 
         {
           "subtask_ref": "wire-syntax",
           "title": "Parse embedded expressions",
-          "status": "pending",
+          "status": "ready",
           "evidence": null
         }
       ],

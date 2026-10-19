@@ -99,7 +99,7 @@ pub enum SubtaskCommand {
         /// Subtask reference slug.
         subtask_ref: String,
         #[arg(long)]
-        /// Subtask status: pending, in_progress, or completed.
+        /// Subtask status: ready, in_progress, completed, cancelled, or blocked; pending aliases ready.
         status: String,
         #[arg(long)]
         /// Optional verification evidence or test command.
@@ -146,7 +146,7 @@ pub enum TaskCommand {
         /// Optional milestone value.
         milestone: Option<String>,
         #[arg(long, value_enum)]
-        /// Task status: ready (default), in_progress, blocked, parked, completed, or all.
+        /// Task status: ready (default), in_progress, blocked, parked, completed, cancelled, or all.
         status: Option<Status>,
         #[arg(long)]
         /// Filter by any gate identifier in the active workflow profile.
@@ -161,7 +161,7 @@ pub enum TaskCommand {
         /// Show tasks from completed milestones.
         completed: bool,
         #[arg(long, conflicts_with_all = ["milestone_status", "planned", "completed"])]
-        /// Show tasks from all statuses, including cancelled tasks pending sync pruning.
+        /// Show tasks from all milestone statuses, including cancelled milestones pending sync pruning.
         all: bool,
         #[arg(long, conflicts_with = "detail")]
         /// Include subtask titles and verification evidence.

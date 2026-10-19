@@ -1,6 +1,234 @@
 use super::support::*;
 
 #[test]
+fn symmetric_subtask_statuses_normalize_legacy_pending_through_storage() {
+    let root = ScopedWorkspace::new("forge_symmetric_subtask_statuses");
+    root.write("src/lib.rs", "pub fn core() {}\n");
+    let spec = "---\nid: m-statuses\nstatus: active\n---\n```yaml\ntask_ref: statuses\ntarget: Symmetric status lifecycle\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: legacy\n  title: Legacy status\n  status: pending\n```\n";
+    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    assert_eq!(milestone.tasks[0].subtasks[0].status, "ready");
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    store.sync(&milestone, "docs/statuses.md", &root.0).unwrap();
+    assert_eq!(
+        store.subtask_add(&id, "new", "New work").unwrap().status,
+        "ready"
+    );
+    for (input, expected) in [
+        ("ready", "ready"),
+        ("in_progress", "in_progress"),
+        ("completed", "completed"),
+        ("cancelled", "cancelled"),
+        ("blocked", "blocked"),
+        ("pending", "ready"),
+    ] {
+        let updated = store
+            .subtask_update(&id, "legacy", input, Some("retained evidence"))
+            .unwrap();
+        assert_eq!(updated.status, expected, "input {input}");
+        assert_eq!(store.subtask_list(&id).unwrap()[0].status, expected);
+        assert_eq!(
+            store.inspect(&id).unwrap().spec.subtasks[0].status,
+            expected
+        );
+        let stored: String = rusqlite::Connection::open(root.0.join(".forge/tasks.sqlite"))
+            .unwrap()
+            .query_row(
+                "SELECT status FROM task_subtasks WHERE task_id=?1 AND subtask_ref='legacy'",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, expected);
+    }
+    for invalid in ["parked", "unknown", ""] {
+        assert!(store
+            .subtask_update(&id, "legacy", invalid, None)
+            .unwrap_err()
+            .to_string()
+            .contains("TASK_SUBTASK_STATUS_INVALID"));
+        assert!(Milestone::parse(
+            &spec.replace("status: pending", &format!("status: '{invalid}'")),
+            "forge-mcp"
+        )
+        .is_err());
+    }
+    let connection = rusqlite::Connection::open(root.0.join(".forge/tasks.sqlite")).unwrap();
+    connection
+        .execute(
+            "UPDATE task_subtasks SET status='pending' WHERE task_id=?1",
+            [&id],
+        )
+        .unwrap();
+    connection.execute("UPDATE tasks SET descriptor=json_set(descriptor, '$.spec.subtasks[0].status', 'pending') WHERE task_id=?1", [&id]).unwrap();
+    assert_eq!(store.inspect(&id).unwrap().spec.subtasks[0].status, "ready");
+    assert!(store
+        .subtask_list(&id)
+        .unwrap()
+        .iter()
+        .all(|subtask| subtask.status == "ready"));
+    store.sync(&milestone, "docs/statuses.md", &root.0).unwrap();
+    assert!(store
+        .inspect(&id)
+        .unwrap()
+        .spec
+        .subtasks
+        .iter()
+        .all(|subtask| subtask.status == "ready"));
+}
+
+#[test]
+fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
+    let root = ScopedWorkspace::new("forge_cancelled_tasks");
+    root.write("src/lib.rs", "pub fn core() {}\n");
+    root.write("src/consumer.rs", "pub fn consumer() {}\n");
+    let source = "---\nid: m-cancelled-tasks\nstatus: active\n---\n```yaml\ntask_ref: producer\ntarget: Producer\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: child\n  title: Child\n```\n```yaml\ntask_ref: consumer\ntarget: Consumer\nproof_policy: seam-test-first\nscope: [src/consumer.rs]\ndepends_on: [producer]\n```\n";
+    let mut milestone = Milestone::parse(source, "forge-mcp").unwrap();
+    let id = milestone.task_id(&milestone.tasks[0]);
+    let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+    store
+        .sync(&milestone, "docs/cancelled.md", &root.0)
+        .unwrap();
+    let claim = store
+        .claim(&id, "contract", "builder", root.0.to_str().unwrap())
+        .unwrap();
+    store
+        .subtask_update(&id, "child", "blocked", Some("Waiting on input"))
+        .unwrap();
+    milestone.tasks[0].status = Some("cancelled".into());
+    store
+        .sync(&milestone, "docs/cancelled.md", &root.0)
+        .unwrap();
+    let cancelled = store.inspect(&id).unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert!(cancelled.claim_revision > claim.claim_revision);
+    assert!(cancelled.worker_id.is_none());
+    assert!(cancelled.worktree.is_none());
+    assert!(cancelled.receipt.is_none());
+    assert_eq!(cancelled.spec.subtasks[0].status, "blocked");
+    assert_eq!(
+        cancelled.spec.subtasks[0].evidence.as_deref(),
+        Some("Waiting on input")
+    );
+    assert_eq!(store.list(None, "all", None).unwrap().len(), 2);
+    assert_eq!(store.list(None, "cancelled", None).unwrap().len(), 1);
+    assert_eq!(store.list(None, "blocked", None).unwrap().len(), 1);
+    assert!(store
+        .next("worker", root.0.to_str().unwrap(), |_, _| Ok(()))
+        .unwrap()
+        .is_none());
+    assert!(store
+        .claim(&id, "contract", "worker", root.0.to_str().unwrap())
+        .is_err());
+    assert!(store
+        .subtask_update(&id, "child", "ready", None)
+        .unwrap_err()
+        .to_string()
+        .contains("TASK_TERMINAL"));
+    assert!(store
+        .subtask_add(&id, "extra", "Extra")
+        .unwrap_err()
+        .to_string()
+        .contains("TASK_TERMINAL"));
+    let details = store.inspect_details(&id).unwrap();
+    assert_eq!(details["attempts"].as_array().unwrap().len(), 1);
+    assert_eq!(details["attempts"][0]["ended"], true);
+    let revision = cancelled.claim_revision;
+    store
+        .sync(&milestone, "docs/cancelled.md", &root.0)
+        .unwrap();
+    assert_eq!(store.inspect(&id).unwrap().claim_revision, revision);
+    milestone.tasks[0].status = Some("ready".into());
+    store
+        .sync(&milestone, "docs/cancelled.md", &root.0)
+        .unwrap();
+    assert_eq!(store.inspect(&id).unwrap().status, "cancelled");
+    assert_eq!(store.reset(&id).unwrap().status, "ready");
+    store
+        .sync(&milestone, "docs/cancelled.md", &root.0)
+        .unwrap();
+    assert_eq!(store.inspect(&id).unwrap().status, "ready");
+
+    let fresh = ScopedWorkspace::new("forge_cancelled_import");
+    let mut fresh_store = TasksStore::open(&fresh.0.join(".forge/tasks.sqlite")).unwrap();
+    milestone.tasks[0].status = Some("cancelled".into());
+    fresh_store
+        .sync(&milestone, "docs/cancelled.md", &fresh.0)
+        .unwrap();
+    assert_eq!(fresh_store.inspect(&id).unwrap().status, "cancelled");
+    assert!(fresh_store
+        .next("worker", fresh.0.to_str().unwrap(), |_, _| Ok(()))
+        .unwrap()
+        .is_none());
+
+    for admission in ["same-digest", "higher-revision", "fresh-import"] {
+        let completed = ScopedWorkspace::new("forge_completed_cancellation");
+        let mut completed_store =
+            TasksStore::open(&completed.0.join(".forge/tasks.sqlite")).unwrap();
+        milestone.tasks[0].status = Some("completed".into());
+        completed_store
+            .sync(&milestone, "docs/archive/completed.md", &completed.0)
+            .unwrap();
+        milestone.tasks[0].status = Some("cancelled".into());
+        assert!(completed_store
+            .sync(&milestone, "docs/archive/completed.md", &completed.0)
+            .unwrap_err()
+            .to_string()
+            .contains("TASK_TERMINAL"));
+        assert_eq!(completed_store.inspect(&id).unwrap().status, "completed");
+
+        let downstream = Milestone::parse(
+        "---\nid: m-downstream\nstatus: active\n---\n```yaml\ntask_ref: observer\ntarget: Observer\nproof_policy: seam-test-first\nscope: [src/observer.rs]\ndepends_on: [m-cancelled-tasks:producer]\n```\n",
+        "forge-mcp",
+    )
+    .unwrap();
+        let downstream_id = downstream.task_id(&downstream.tasks[0]);
+        completed_store
+            .sync(&downstream, "docs/downstream.md", &completed.0)
+            .unwrap();
+        assert_eq!(completed_store.list(None, "ready", None).unwrap().len(), 2);
+        if admission == "fresh-import" {
+            completed_store
+                .delete(Some(&id), None, true, i64::MAX)
+                .unwrap();
+            // Deleted completed history still satisfies its dependents.
+            assert_eq!(completed_store.list(None, "ready", None).unwrap().len(), 2);
+        } else {
+            completed_store.reset(&id).unwrap();
+        }
+        if admission == "higher-revision" {
+            milestone.tasks[0].contract_revision += 1;
+        }
+        completed_store
+            .sync(&milestone, "docs/archive/completed.md", &completed.0)
+            .unwrap();
+        completed_store
+            .sync(&downstream, "docs/downstream.md", &completed.0)
+            .unwrap();
+        assert!(completed_store
+            .list(None, "ready", None)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            completed_store.list(None, "blocked", None).unwrap().len(),
+            2
+        );
+        assert!(completed_store
+            .claim(
+                &downstream_id,
+                "contract",
+                "worker",
+                completed.0.to_str().unwrap()
+            )
+            .is_err());
+        assert!(completed_store
+            .next("worker", completed.0.to_str().unwrap(), |_, _| Ok(()))
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[test]
 fn task_subtasks_lifecycle_management_and_digest_independence() {
     let spec = "---\nid: m-subtasks\ntitle: Subtasks Test\ndoc_type: contract\nstatus: active\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: core-feature\ntarget: Deliver core feature\nproof_policy: seam-test-first\nscope: [src/]\nsubtasks:\n  - subtask_ref: sub-1\n    title: Initial discovery\n    status: in_progress\n    evidence: Found relevant files\n```\n";
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
@@ -60,7 +288,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
         .subtask_add(task_id, "sub-2", "Implement edge case")
         .unwrap();
     assert_eq!(added.subtask_ref, "sub-2");
-    assert_eq!(added.status, "pending");
+    assert_eq!(added.status, "ready");
 
     // Duplicate subtask ref rejection
     let dup_err = store
@@ -112,7 +340,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     )
     .unwrap();
     assert_eq!(add_res["subtask"]["subtask_ref"], "sub-3");
-    assert_eq!(add_res["subtask"]["status"], "pending");
+    assert_eq!(add_res["subtask"]["status"], "ready");
 
     // Update via engine
     let update_res = tasks::manage(
@@ -250,7 +478,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
         .subtask_add(task_id, "sub-4", "Audit findings subtask")
         .unwrap();
     assert_eq!(sub4.subtask_ref, "sub-4");
-    assert_eq!(sub4.status, "pending");
+    assert_eq!(sub4.status, "ready");
 
     let sub4_updated = store
         .subtask_update(task_id, "sub-4", "completed", Some("Audit verified"))
