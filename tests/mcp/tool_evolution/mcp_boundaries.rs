@@ -465,6 +465,63 @@ fn ast_language_inference_and_actionable_diagnostics() {
 }
 
 #[test]
+fn ast_grep_empty_symbol_prefilter_preserves_local_matches() {
+    use serde_json::json;
+    let w = Workspace::new();
+    for path in ["src/a.py", "src/b.py", "src_other.py"] {
+        w.write(
+            path,
+            "def compute():\n    local_value = 1 + 2\n    return local_value\n",
+        );
+    }
+    w.build();
+    let conn = w.open();
+    let indexed: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM nodes WHERE name='local_value'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(indexed, 0);
+    let mut m = Mcp::new(&w);
+    for (path, expected) in [
+        (None, vec!["src/a.py", "src/b.py", "src_other.py"]),
+        (Some("src"), vec!["src/a.py", "src/b.py"]),
+        (Some("src/a.py"), vec!["src/a.py"]),
+    ] {
+        let result = m.ok(
+            "ast_grep_search",
+            json!({"pattern":"local_value = $EXPR","language":"python","path":path}),
+        );
+        assert_eq!(result["matches"]["total"], expected.len(), "{result}");
+        let items = result["matches"]["items"].as_array().unwrap();
+        let paths: Vec<_> = items
+            .iter()
+            .map(|item| item["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, expected, "{result}");
+        assert!(items.iter().all(|item| item["line"] == 2), "{result}");
+    }
+    let first = m.ok(
+        "ast_grep_search",
+        json!({"pattern":"local_value = $EXPR","language":"python","path":"src","limit":1}),
+    );
+    assert_eq!(first["matches"]["items"][0]["path"], "src/a.py");
+    assert_eq!(first["matches"]["has_more"], true);
+    let second = m.ok(
+        "ast_grep_search",
+        json!({"pattern":"local_value = $EXPR","language":"python","path":"src","limit":1,"offset":first["matches"]["next_offset"],"generation":first["matches"]["generation"]}),
+    );
+    assert_eq!(second["matches"]["items"][0]["path"], "src/b.py");
+    let absent = m.ok(
+        "ast_grep_search",
+        json!({"pattern":"absent_value = $EXPR","language":"python"}),
+    );
+    assert_eq!(absent["matches"]["total"], 0);
+}
+
+#[test]
 fn ast_grep_prefilter_preserves_matches_for_body_only_literals() {
     use serde_json::json;
     let w = Workspace::new();

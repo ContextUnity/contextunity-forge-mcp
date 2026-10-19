@@ -230,19 +230,68 @@ receipt:
 
 ```yaml
 task_ref: ast-search-candidate-fallback
-target: "Fall back to all language candidate files when pattern symbol prefiltering finds no top-level indexed nodes"
+target: Fall back to all language candidate files when pattern symbol prefiltering finds no top-level indexed nodes
 proof_policy: seam-test-first
 contract_revision: 3
 depends_on:
-  - ast-grep-language-inference-and-actionable-diagnostics
+- ast-grep-language-inference-and-actionable-diagnostics
 scope:
-  - src/cli/ast.rs
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
-status: planned
+- src/cli/ast.rs
+- tests/mcp/tool_evolution/mcp_boundaries.rs
+status: completed
 subtasks:
-  - subtask_ref: prefilter-empty-candidate-fallback
-    title: "Fall back to all files for the language when symbol name prefilter returns 0 candidate files"
-    status: pending
+- subtask_ref: prefilter-empty-candidate-fallback
+  title: Fall back to all files for the language when symbol name prefilter returns 0 candidate files
+  status: completed
+  evidence: 'src/cli/ast.rs::test_prefilter_empty_candidate_fallback proves real search_paged local assignment matching with zero indexed name candidates. Sensitivity: cargo test --lib test_prefilter_empty_candidate_fallback exited 101 with fallback bypassed (0 passed, 1 failed); restored code exited 0 (1 passed, 0 failed). MCP coverage verifies all files, directory/file scope, continuation, and absent name. cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp exited 0; 81 passed, 0 failed. Logs: red 206f53e8b3f2a965, green seam 8f421e7a10336def, full checks 25f7d3cdcc546bf9.'
+receipt:
+  contract_revision: 3
+  passed_at: 2026-10-19T02:39:02.422283382+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test mcp
+      exit_code: 0
+      tests_passed: 81
+      tests_failed: 0
+  review:
+    review_proof:
+      contours:
+        administration:
+          applicable: true
+          evidence: Candidate 2727cfc cleanly isolates admitted files against baseline 295b462; candidate snapshot is immutable.
+        claims:
+          applicable: true
+          evidence: INV-AST-PREFILTER-SOUNDNESS verified by in-module seam test src/cli/ast.rs::test_prefilter_empty_candidate_fallback and MCP integration test ast_grep_empty_symbol_prefilter_preserves_local_matches. 81 MCP tests pass, strict Clippy clean.
+        concurrency:
+          applicable: true
+          evidence: Search operations remain stateless read queries; empty-candidate fallback executes within reader transactions without race conditions.
+        paths:
+          applicable: true
+          evidence: 'Candidate touches strictly the admitted scope of 2 files: src/cli/ast.rs and tests/mcp/tool_evolution/mcp_boundaries.rs.'
+        project_isolation:
+          applicable: true
+          evidence: All path bounds and candidate file queries are strictly confined to the active repository root.
+      decision: pass
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SEARCH-PREVIEW-RESILIENCE: Source preview failures for an individual hit (unresolved AST boundary, stale file, or digest mismatch) must never fail code_map_search; matching symbol records, file paths, line numbers, and inspect_selector hints must always be returned.'
+    - 'INV-SYMBOL-WITH-SOURCE: Tree-sitter symbol boundary recovery in symbol_range must invoke profile.symbol_with_source(syntax, text) and fall back to verified indexed line..=end_line bounds for field: and template/relational nodes so code_map_inspect, code_map_explain, and get_code_snippet do not fail with unavailable boundaries.'
+    - 'INV-AST-LANGUAGE-INFERENCE: When the language parameter is omitted in ast_grep_search, the engine must infer it from the file extension of path; if path is missing or lacks a recognized extension, it must return an informative error listing all compiled languages and usage examples.'
+    - 'INV-AST-ACTIONABLE-DIAGNOSTICS: AST pattern search syntax errors must return structured, actionable diagnostics with actionable hints and concrete language-specific pattern examples rather than raw JSON serialization dumps.'
+    - 'INV-BODYLESS-DECLARATION-PATTERNS: AST pattern normalization and completion must support bodyless Python class/function declarations without trailing colons (class Foo, def bar($$$)) and Rust function header patterns without parameter lists (fn foo).'
+    - 'INV-AST-PREFILTER-SOUNDNESS: Pattern symbol candidate prefiltering in cli::ast::search_paged must fall back to all candidate files of the language if the declaration identifier is not found in the indexed top-level nodes table, preventing false negatives for local/nested constructs.'
+    - 'INV-ERGONOMIC-PARAMETER-TOLERANCE: MCP and CLI entrypoints must normalize empty path strings, clamp or clearly guide out-of-range source preview line budgets, and support common parameter and subcommand aliases.'
+    - 'INV-TASK-MUTATION-RESPONSE-BUDGET: State-mutating task lifecycle calls (task_claim, task_manage next/sync) must bound their serialized payload below the 64 KiB MCP response limit and avoid write transactions when opening already-initialized SQLite task stores for read operations.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

@@ -56,6 +56,49 @@ pub fn search(
     Ok(json!({"matches":matches,"limit":limit,"truncated":truncated}))
 }
 
+#[cfg(all(test, feature = "lang-python"))]
+#[test]
+fn test_prefilter_empty_candidate_fallback() {
+    let root = std::env::temp_dir().join(format!(
+        "forge-ast-prefilter-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("local.py"),
+        "def compute():\n    local_value = 1 + 2\n    return local_value\n",
+    )
+    .unwrap();
+    let database = root.join(".forge/code-map.sqlite");
+    crate::db::writer::build(&root, &database, None).unwrap();
+    let conn = crate::db::reader::open(&database, &root).unwrap();
+    let pattern = "local_value = $EXPR";
+    let name = ast::pattern_symbol_name(pattern, "python")
+        .unwrap()
+        .unwrap();
+    assert_eq!(name, "local_value");
+    let indexed: i64 = conn
+        .query_row("SELECT count(*) FROM nodes WHERE name=?1", [&name], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        indexed, 0,
+        "local bindings must exercise an empty prefilter"
+    );
+    let options = QueryOptions::resolve(&ResponsePolicy::default(), None, 0, None, None).unwrap();
+    let result = search_paged(&conn, &root, pattern, "python", None, &options).unwrap();
+    assert_eq!(result["matches"]["total"], 1, "{result}");
+    assert_eq!(result["matches"]["items"][0]["path"], "local.py");
+    assert_eq!(result["matches"]["items"][0]["line"], 2);
+    drop(conn);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// Performs search paged.
 pub fn search_paged(
     conn: &rusqlite::Connection,
@@ -88,19 +131,30 @@ pub fn search_paged(
     let (path_start, path_end) = crate::db::reader::path_bounds(path);
     let declaration = ast::pattern_symbol_name(pattern, language)?;
     let files = if let Some(name) = declaration.as_deref() {
-        crate::db::reader::rows(
+        let candidate_files = crate::db::reader::rows(
             conn,
             "SELECT DISTINCT f.path,f.digest FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE n.name=?1 COLLATE NOCASE AND f.status='indexed' AND f.language=?2 AND (?3='' OR f.path=?3 OR (f.path>=?4 AND f.path<?5)) ORDER BY f.path",
             &[&name, &language, &path, &path_start, &path_end],
             500000,
-        )?
+        )?;
+        if candidate_files.is_empty() {
+            // Local syntax can bind a name without creating an indexed symbol.
+            crate::db::reader::rows(
+                conn,
+                "SELECT path,digest FROM files WHERE status='indexed' AND language=?1 AND (?2='' OR path=?2 OR (path>=?3 AND path<?4)) ORDER BY path",
+                &[&language, &path, &path_start, &path_end],
+                500000,
+            )?
+        } else {
+            candidate_files
+        }
     } else {
         crate::db::reader::rows(
-        conn,
-        "SELECT path,digest FROM files WHERE status='indexed' AND language=?1 AND (?2='' OR path=?2 OR (path>=?3 AND path<?4)) ORDER BY path",
-        &[&language, &path, &path_start, &path_end],
-        500000,
-    )?
+            conn,
+            "SELECT path,digest FROM files WHERE status='indexed' AND language=?1 AND (?2='' OR path=?2 OR (path>=?3 AND path<?4)) ORDER BY path",
+            &[&language, &path, &path_start, &path_end],
+            500000,
+        )?
     };
     let mut items = Vec::new();
     let mut matched = 0;
