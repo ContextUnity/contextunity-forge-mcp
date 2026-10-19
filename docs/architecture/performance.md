@@ -72,3 +72,99 @@ See [ADR 0012: Lean Serialization and Measured Performance](../adr/0012-zero-reg
 - **Bounded cold fact writes**: Cold builds serialize each complete `local_facts` payload in parallel chunks instead of retaining a workspace-wide second map of compressed payloads. The writer holds at most 500 compressed facts per chunk and inserts each row batch in the existing write transaction, bounded by SQLite's live parameter limit; secondary indexes are created after the bulk load. `sqlite_ingestion` reports the active mode, deferred-index behavior, and effective row-batch size. Graph endpoint caching shares one path allocation across nodes in the same file, avoiding per-node path string copies.
 - **Cold-build phase timing**: `encode_facts_ms` totals the per-file serialization and compression time performed while `local_facts` rows are batched. `batch_rows` reports the effective local-facts row cap, not the size of every other table's row batch.
 - **Throughput Recommendation**: Around 400 files/sec end-to-end and 800 files/sec for extraction are useful initial comparison values. The 10-second Commerce cold-build aspiration helps prioritize phase-level work; it is a gate only where a milestone explicitly admits it.
+
+## Cold Indexing Throughput and Memory Optimizations (Milestone 031)
+
+Milestone 031 (`m-cold-indexing-throughput-and-memory-optimization`) addressed cold-build latency, peak memory spikes, and CPU load on large codebases (demonstrated on the Commerce reference repository of 3,990 files and 130,079 resolved edges). The following architectural mechanisms were delivered:
+
+### 1. Staged Producer-Consumer Pipeline and Byte-Budget Backpressure
+- **Pipeline Architecture**: `crate::engine::scanner::stream_for_build` (`src/engine/scanner/mod.rs`) and `crate::engine::pipeline::run_cold_pipeline` (`src/engine/pipeline.rs`) overlap filesystem discovery, Rayon worker extraction, and SQLite `source_inventory` ingestion.
+- **Byte Accounting**: Ingestion queue bounds operate on dynamic estimated byte budgets derived from `ScannerLimits.memory_budget_mb` (`src/core/config.rs`) or the `FORGE_MEMORY_BUDGET_MB` environment variable (`MemoryPermit` in `src/db/writer.rs`). Each file's permit accounts for its scanned file size multiplied by the extraction expansion factor. A single oversized item is admitted only when no other item holds an active permit, preventing memory exhaustion on massive generated or bundled files while guaranteeing progress without deadlocks.
+
+### 2. Lean SymbolCatalog Decomposition and Streaming Storage Payloads
+- **Decoupled Linking State**: Historically, `TypedFacts` retained full AST details (`value_flow`, `bindings`, `rebindings`, `param_types`, and span details) in a workspace-wide map during global cross-file linking. Milestone 031 replaced this with `SymbolCatalog` and `CatalogSymbol` (`src/core/semantic.rs`, `src/engine/linker/compact.rs`, `src/engine/linker.rs`).
+- **One-Way Stripping**: Workers invoke `SymbolCatalog::insert_typed(..., false)`, preserving only essential navigation symbols and reference targets for `link_compact_graph`.
+- **Precomputed Staged Storage**: Heavyweight storage rows are precomputed during extraction and Zstd-compressed into `PreparedCatalogStorage` within `StagedFilePayload` (`src/db/writer.rs`).
+- **Bounded Chunk Hydration**: In `populate_owned` (`src/db/writer.rs`, `src/db/ingest.rs`), `LoadedCatalogFile` structures are loaded and persisted in bounded parallel chunks of up to 500 files (`MAX_MULTI_VALUE_BATCH_ROWS = 500`). Each payload chunk is dropped immediately after SQLite insertion, preventing simultaneous coexistence of raw ASTs and database rows.
+
+### 3. Allocator Arena Trimming
+- **Glibc Arena Reclamation**: Multi-threaded Rayon workloads cause glibc thread arenas to retain fragmented memory long after transient ASTs and serialization buffers are freed.
+- **Explicit Trimming**: `trim_allocator` (`libc::malloc_trim(0)`) is invoked in `src/engine/pipeline.rs` and `src/db/writer.rs` at the boundary between extraction/staging and persistence, and again after bulk row insertions. This directly drops Commerce peak RSS from `~1,503.5 MB` down to **`766–785 MB`**, consistently respecting the `< 800 MB` milestone ceiling (-48% peak memory reduction).
+
+### 4. SQLite Turbo-Ingestion Mode
+- **Isolated Staged PRAGMAs**: `prepare_pipeline_schema` (`src/db/writer.rs`) configures candidate SQLite databases with:
+  ```sql
+  PRAGMA journal_mode = MEMORY;
+  PRAGMA synchronous = OFF;
+  PRAGMA temp_store = MEMORY;
+  PRAGMA cache_size = -<cache_kb>;
+  PRAGMA cache_spill = ON;
+  ```
+  where `cache_kb` is bounded by memory limits (`sqlite_cache_size_kib`).
+- **Deferred Secondary Indexes (`deferred-index-batched`)**: Secondary table indexes (`idx_nodes_path_id`, `idx_nodes_kind`, `idx_nodes_canonical`, `idx_edges_src_hash`, `idx_edges_dst_hash`, etc.) are created only *after* bulk rows have been inserted via multi-value batches.
+- **Safe WAL Restoration**: Before atomic file publication, `populate_owned` restores `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;` and forces a checkpoint via `PRAGMA wal_checkpoint(TRUNCATE);`, ensuring published databases are immediately durable and concurrent-reader safe.
+
+### 5. Hybrid In-Memory Merkle Commitment Sealing
+- **In-Memory Leaf Hashing**: Prior implementations re-scanned entire SQLite tables to compute Merkle leaf commitments across 17 domains. Milestone 031 implemented hybrid in-memory hashing in `seal::file_domain_leaves` and `seal::logical_domain_leaves` (`src/db/writer/seal.rs`, `src/core/commitments.rs`, `src/core/commitments/snapshot.rs`).
+- **13 Logical Domains**: Commitments for `files`, `source_inventory`, `nodes`, `edges`, `edge_occurrences`, `dependencies`, `resolution_coverage`, `coverage_language_counts`, `coverage_owner_language`, `doc_sections`, `shared_owners`, `errors`, and `local_facts` are computed directly from in-memory projections and streaming buffers. This cut `seal_ms` from `~1,012 ms` down to `~75–112 ms`.
+- **4 FTS5 Search Domains via C-API Tokenizer**: `node_search_postings`, `node_search_config`, `doc_search_postings`, and `doc_search_config` are tokenized in a single stream using SQLite's native C-API FTS5 tokenizer and verified against `docsize` tables, maintaining 100% bit-identical `forge-owner-sha256-v2` roots across all 17 domains without table re-scans.
+
+### 6. Cross-Worktree Content-Addressed Binary Extraction Cache
+- **Extraction Cache v3**: `src/db/writer/cache.rs` provides cross-worktree AST and typed-facts reuse for unmodified files.
+- **Cache Key Identity**: Keys are strictly derived from source SHA-256 digest, relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (including bundled framework manifests via `build.rs` and `src/engine/languages/dependency_registry.rs`).
+- **Binary DTO Format**: Custom binary serialization eliminates JSON encoding and Zstd decompression overhead during cache hits.
+- **Empirical Impact**: On warm re-indexing of 3,990 files, user CPU drops by **63%** (`44.49s` $\to$ `16.34s`, CPU load `374%` $\to$ `215%`) and wall-clock time drops to **`8.57s`** at `746 MB` Peak RSS.
+
+---
+
+## Empirically Evaluated and Rejected Optimizations
+
+During Milestone 031, multiple plausible optimization hypotheses were empirically evaluated on the control repository (`commerce-release-update`, 3,990 files, 3.3M AST nodes) using hardware `perf record`, paired repeat benchmarks, and GNU `time -v`. The following approaches were definitively rejected based on measured regressions or invariant violations:
+
+| Candidate Optimization | Evaluated Scope / Symbol | Measured Result | Rejection Rationale |
+| :--- | :--- | :--- | :--- |
+| **Uncompressed In-Memory `PreparedCatalogStorage` (`direct-rows`)** | `StagedFilePayload` in `src/db/writer.rs` | Wall: `9.907s`, Peak RSS: **`869.5 MB`** | Violated strict `< 800 MB` memory ceiling (+85 MB overshoot). Zstd frame compression on staged rows is mandatory. |
+| **Length-Prefixed Binary Packing (`packed-rows`)** | `prepare_catalog_storage` & `LoadedCatalogFile` | Paired user CPU: **`+1.38%`**, CPU load: **`+2.02%`** | Manual `u32` packing and scalar node cloning from `SymbolCatalog` increased allocation and slicing overhead compared to direct JSON serialization. |
+| **Temporary SQLite Staging Table (`catalog_payloads`)** | Intermediate table in staged SQLite candidate | Wall time regressed by **`+6.2%`** | SQLite B-tree write and deserialize overhead exceeded in-memory compressed chunk queuing. |
+| **Concurrent Merkle Leaf Hashing with SQLite Index Creation** | `seal::logical_domain_leaves` overlapped with `CREATE INDEX` | Wall time regressed by **`+3.8%`** | Parallel Rayon CPU hashing and SQLite B-tree sort contended for memory bandwidth and allocator mutexes. |
+| **Parallel Posting Sorting (`par_sort_unstable_by_key`) & Removal of `term_map` in FTS Sealing** | `src/core/commitments.rs` | Deterministic root mismatch (`INV-DETERMINISTIC-MERKLE` failed) | FTS5 C-API emits tokens in document order. Monotonic dictionary sorting `(term, docid, col, pos)` is required for `forge-owner-sha256-v2` bit identity. |
+| **Tree-Sitter `QueryCursor` (S-Expression byte-code engine)** | `benchmarks/tree_cursor_probe.rs`, `tree_sitter::QueryCursor` | **`2.90x slower`** (`5.18s` vs `1.78s` for 3.3M nodes) | General AST queries (`"(_) @node"`) incur heavy query-state machine allocations and capture tracking compared to flat cursor iteration. |
+| **Leaf-Count Pre-check Guard (`named_child_count() == 0`)** | `src/engine/ast/visitor.rs` (`walk`) | **`5.89% slower`** (`1.89s` vs `1.78s`) | Calling `ts_node_named_child_count` before `goto_first_child` adds a redundant C FFI transition per node. |
+| **Lazy `symbol_name` Parent Node Lookup** | `src/engine/ast/mod.rs` | Wall: **`+1.47%`**, User CPU: **`+2.33%`** | Deferring parent lookup via `or_else` did not eliminate AST traversal and disrupted branch prediction in extraction hot loops. |
+| **Filtering Python Initializers (`__init__.py`) or Config Files** | `src/engine/scanner/mod.rs` | Broken re-exports and Merkle root divergence | Commerce contains 202 `__init__.py` files containing package exports and module docstrings; skipping them breaks 130,079 graph edges. |
+
+---
+
+## Model and Agent Invariants (Immutable Guidelines)
+
+Autonomous agents, builders, and language models modifying Forge indexing or storage components must strictly adhere to the following invariants. These rules are tied directly to concrete code symbols and protected by compiler checks and regression seams:
+
+> [!IMPORTANT]
+> Invariant: Symbol Catalog Fact Stripping
+>
+> In `src/engine/pipeline.rs` (`run_cold_pipeline`) and `src/core/semantic.rs` (`SymbolCatalog::insert_typed`), agents must never retain whole-workspace `TypedFacts` during the linking phase. Extraction workers must strip AST details (`value_flow`, `bindings`, `rebindings`, `param_types`) by passing `retain_extended = false` to `insert_typed`. Full facts must only be encoded into `PreparedCatalogStorage` within worker tasks and dropped immediately.
+
+> [!IMPORTANT]
+> Invariant: Bounded Chunk Persistence and Allocator Trimming
+>
+> In `src/db/writer.rs` (`populate_owned`), `StagedFilePayload.storage_rows` must remain compressed with level-1 Zstandard during staging. Ingestion must process files in bounded batches of at most 500 rows (`MAX_MULTI_VALUE_BATCH_ROWS = 500`), removing payloads from memory prior to database insertion. Agents must preserve the explicit calls to `trim_allocator` (`libc::malloc_trim(0)`) after extraction and after persistence to prevent glibc multi-arena fragmentation from exceeding the 800 MB RSS ceiling.
+
+> [!IMPORTANT]
+> Invariant: Tree-Sitter AST Traversal Loop Integrity
+>
+> In `src/engine/ast/visitor.rs` (`walk`), tree traversal must remain a flat iterative loop over `tree_sitter::TreeCursor` (`goto_first_child`, `goto_next_sibling`, `goto_parent`). Agents must not replace `walk()` with `tree_sitter::QueryCursor` or introduce per-node FFI guards like `named_child_count() == 0`. The traversal must yield balanced `(node, entering)` events required by `SinglePassExtractor` and `ScopeAnalysis`.
+
+> [!IMPORTANT]
+> Invariant: SQLite Ingestion PRAGMAs and WAL Restoration Order
+>
+> In `src/db/writer.rs` (`prepare_pipeline_schema` and `populate_owned`), cold-indexing candidate databases must initialize with `journal_mode = MEMORY; synchronous = OFF; temp_store = MEMORY; cache_spill = ON;` and defer secondary index creation until after row ingestion (`sqlite_ingestion.mode = deferred-index-batched`). Before atomic publication, the writer must restore `journal_mode = WAL; synchronous = NORMAL;` and execute `PRAGMA wal_checkpoint(TRUNCATE);`. Changing pragma ordering or omitting WAL restoration causes reader lockouts and database corruption.
+
+> [!IMPORTANT]
+> Invariant: Deterministic 17-Domain Merkle Commitments
+>
+> In `src/db/writer/seal.rs` (`seal::file_domain_leaves`, `seal::logical_domain_leaves`) and `src/core/commitments.rs`, in-memory leaf hashing for the 13 logical domains and C-API tokenizer hashing for the 4 FTS domains must yield 100% bit-identical digests matching SQLite table scans (`forge-owner-sha256-v2`). Tokens must be ordered canonically by `(term, docid, col, pos)` using `term_map`. Any modification must pass `tests/commitment_integrity.rs`.
+
+> [!IMPORTANT]
+> Invariant: Strict Extraction Cache Key Binding
+>
+> In `src/db/writer/cache.rs` (`ExtractionCache`) and `src/engine/languages/dependency_registry.rs`, cache keys must strictly bind source SHA-256 digest, normalized relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (which incorporates bundled framework manifests via `build.rs`). Agents must never omit the ruleset hash or grammar identity from the cache key, as doing so leads to stale, invalid extraction across manifest or grammar upgrades.

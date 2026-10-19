@@ -2,7 +2,7 @@
 id: m-cold-indexing-throughput-and-memory-optimization
 title: Cold indexing throughput optimization, memory budgeting, and in-memory Merkle sealing
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-language-parsers-and-declarative-framework-packs
 owners:
@@ -22,6 +22,15 @@ invariants:
 related_plans:
 - docs/plans/forge-mcp-audit-and-architecture.md
 started_at: 2026-10-18T03:04:05+00:00
+handoff:
+  completed_at: 2026-10-19T11:18:08.892470795+00:00
+  duration: 32h 14m
+  commit: c474c7494868098703eff883e0239a7bcf94b222
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 776
+    tests_failed: 0
 ---
 
 # Cold indexing throughput optimization, memory budgeting, and in-memory Merkle sealing
@@ -67,6 +76,7 @@ subtasks:
   status: completed
   evidence: 'Authorized controlled benchmark on the prepared isolated copy `/tmp/forge031-bench-wiysmu06/commerce` (copied linked workspaces; never the original commerce-release-update worktree), RAYON_NUM_THREADS=8, --repeats 5 --matrix-repeats 0. Clean task-local report: benchmarks/results/031-task1-post-v4.json; baseline binary `/tmp/forge031-bench-wiysmu06/candidate-target/release/contextunity-forge-mcp` (pre-change candidate) vs post binary `/tmp/forge031-bench-wiysmu06/post2-target/release/contextunity-forge-mcp`. Runner exit 0; performance_gate_passed=true. Median wall 13.405s→13.101s (-2.268%), median paired change -2.813%; median peak RSS 1,496,555,520→1,493,004,288 bytes (-0.237%); DB size identical at 197,132,288 bytes. All graph count deltas zero; 39,211 fixture Merkle rows bit-identical. Output roots differ because index_semantics_version fingerprint changed with the source; raw v4 JSON records the metadata. Earlier post-v2 (candidate +3.503%) and post-v3 (+4.856%) reports are preserved unchanged and were not accepted as clean performance proof: v3 had a 32.359s candidate outlier with DB phases inflated, and a task-022 cargo test was observed during the noisy window. After a quiet window, v4 ran with no competing build/test and low CPU pressure. Pre milestone context remains in benchmarks/results/031-task1-pre.json (cf4aa29→pre-change candidate); that report''s performance gate passed, while its semantic parity was affected by the recorded 90-file source drift. No source edits followed the v4 benchmark.'
 receipt:
+  commit: c5de1e219033bfcd3babf4858851fd5998a51572
   contract_revision: 1
   passed_at: 2026-10-18T04:55:43.065329547+00:00
   evidence:
@@ -154,6 +164,7 @@ subtasks:
   status: completed
   evidence: 'Recorded benchmarks/results/031-task2-post.json using the same verified isolated control copy /tmp/forge031-bench-wiysmu06/commerce, baseline post2-target and candidate task2-target release binaries, RAYON_NUM_THREADS=8, five paired runs. Runner completed with exit 0 and performance_gate_passed=true. Median wall: baseline 9.754 s, candidate 9.710 s (−0.451%; median paired change −0.325%). Median peak RSS: baseline 1,498,591,232 B, candidate 1,467,928,576 B (−30,662,656 B, −2.05%). Database size and all graph counts/components matched; fixture Merkle fingerprint matched. Direct comparison of saved baseline/candidate SQLite databases found all 39,211 domain_commitments rows identical; output_root differs only because INDEX_SEMANTICS_VERSION embeds the changed src/db/writer.rs fingerprint. Candidate phase medians ms: encode_facts 76.3, persist_files 1,151.0, persist_graph 1,441.8, indexes 855.5, seal 963.6. Workspace was the verified /tmp copy, not the original control worktree.'
 receipt:
+  commit: 35b2594dd2eae5e760de73735bd22496b947586c
   contract_revision: 2
   passed_at: 2026-10-18T09:43:03.251473022+00:00
   evidence:
@@ -247,6 +258,7 @@ subtasks:
   status: completed
   evidence: 'Recorded post-implementation cross-worktree benchmark benchmarks/results/031-task3-post-cross-worktree-cache.json on Commerce control copies (5 paired repeats): output_roots_match=true (deterministic Merkle commitment a12182113c2fbc74d48551e9ac0c7f457194ffa3d1d90203e0a726ca1f455209), coverage_match=true (3,990 files, 66,482 nodes, 288,620 edges, 74.0638% resolved), 100% cache hits (3990/3990 across all 5 runs), -24.105% wall time reduction (cold median 12.355 s vs cached median 9.377 s), and seal_ms dropped to 112.11 ms.'
 receipt:
+  commit: 44b513023cd4b03448adedbc1dc538b6b2a4729c
   contract_revision: 3
   passed_at: 2026-10-18T17:55:12.760151250+00:00
   evidence:
@@ -319,11 +331,12 @@ scope:
 - src/core/typed_facts.rs
 - src/engine/scanner/mod.rs
 - src/engine/scanner/adapter.rs
-- src/engine/languages/
+- src/engine/languages/dependency_registry.rs
+- src/engine/languages/html.rs
+- src/engine/languages/mod.rs
 - src/db/writer.rs
 - src/db/delta.rs
 - src/db/lint.rs
-- src/db/symbols.rs
 - src/db/reader.rs
 - src/db/ingest.rs
 - src/db/writer/seal.rs
@@ -358,6 +371,7 @@ subtasks:
   status: pending
   evidence: null
 receipt:
+  commit: 1c6383c22fb5fe4cd6194defa343bfaea4f12811
   contract_revision: 5
   passed_at: 2026-10-18T21:18:09.896994949+00:00
   evidence:
@@ -438,6 +452,7 @@ scope:
 - tests/core/storage_batches.rs
 status: completed
 receipt:
+  commit: 32b836cdbab32d3c59e460e83ea5135ccd057412
   contract_revision: 1
   passed_at: 2026-10-19T00:13:50.273228234+00:00
   evidence:
@@ -544,6 +559,7 @@ subtasks:
   status: completed
   evidence: 'Verified on isolated commerce copy (3990 files): Peak RSS reduced from 1503.5 MB to 784.5 MB (< 800 MB budget), median wall time 10.824s vs 11.379s (-4.88%), 130079 resolved edges and all 17 Merkle commitment domains bit-identical. Evaluated and documented direct-rows, packed-rows, lazy-symbol-parent, Tree-sitter QueryCursor, file filtering, and warm extraction cache (16.34s user CPU, 8.57s wall). Strict clippy and 776 tests passed.'
 receipt:
+  commit: c474c7494868098703eff883e0239a7bcf94b222
   contract_revision: 1
   passed_at: 2026-10-19T10:54:29.516345961+00:00
   evidence:
