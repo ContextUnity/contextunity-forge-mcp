@@ -82,6 +82,27 @@ qualified task namespace. See [repository tasks](tasks.md) for identity,
 concurrency, receipts, and administration. Code indexing works without task
 storage configuration.
 
+Subproject identity uses milestone `project` frontmatter, then the longest
+matching `owners` prefix, then path inference, then the workspace default.
+Root `owners` maps repository-relative directory prefixes to project names;
+prefixes match whole path components. Root `aliases` maps the selected name to a
+canonical name once, including the configured default project. Alias lookup is
+not recursive: with `old: current` and `current: next`, selecting `old` yields
+`current`. Discovery, synchronization, task authority, receipts, and
+milestone show/handoff use this same identity. Directories containing only declared
+projects register those projects; a directory with undeclared manifests also
+retains its configured or inferred owner. Empty directories and directories with
+only a README do not create subproject workspaces. When milestone initialization
+emits `project` frontmatter, it writes the pre-alias spelling so later parsing
+applies aliases exactly once.
+
+```yaml
+owners:
+  extensions/base: base
+aliases:
+  legacy-base: base
+```
+
 Code-map output and task storage use separate databases. Index commands reject
 reserved task filenames, the configured `tasks_db` path, and existing task schemas
 with `TASK_DATABASE_COLLISION`. A present invalid task configuration also rejects

@@ -1,4 +1,4 @@
-use crate::core::tasks::Milestone;
+use crate::{core::tasks::Milestone, engine::tasks::TaskSettings};
 use anyhow::{Context, Result};
 use std::{
     fs,
@@ -18,12 +18,7 @@ pub(super) struct Snapshot {
     pub(super) tasks: Vec<serde_yaml::Value>,
 }
 
-pub(super) fn snapshot(
-    root: &Path,
-    path: PathBuf,
-    repository: &str,
-    project: &str,
-) -> Result<Snapshot> {
+pub(super) fn snapshot(root: &Path, path: PathBuf, settings: &TaskSettings) -> Result<Snapshot> {
     let text = fs::read_to_string(&path)?;
     let text = text.replace("\r\n", "\n");
     let status =
@@ -41,17 +36,16 @@ pub(super) fn snapshot(
         .to_string();
     let repository = frontmatter["repository"]
         .as_str()
-        .unwrap_or(repository)
+        .unwrap_or(&settings.task_repository)
         .to_string();
-    let inferred_project = path
-        .strip_prefix(root)
-        .ok()
-        .and_then(crate::core::tasks::infer_project_from_path);
-    let project = frontmatter["project"]
-        .as_str()
-        .map(str::to_owned)
-        .or(inferred_project)
-        .unwrap_or_else(|| project.to_string());
+    let project = settings.resolve_project(
+        path.strip_prefix(root)?,
+        frontmatter["project"].as_str(),
+        settings
+            .task_project
+            .as_deref()
+            .unwrap_or(&settings.task_repository),
+    )?;
     for value in [&id, &repository, &project] {
         crate::core::tasks::valid_identity(value)?;
     }
@@ -98,6 +92,7 @@ pub(super) fn snapshot(
 
 #[cfg(test)]
 mod tests {
+    use crate::engine::{milestones::contract::snapshot, tasks::TaskSettings};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -118,13 +113,52 @@ mod tests {
         )
         .unwrap();
 
-        let snapshot = super::snapshot(&root, path.clone(), "forge-mcp", "forge-mcp").unwrap();
+        let settings: TaskSettings = serde_yaml::from_str("").unwrap();
+        let parsed = snapshot(&root, path.clone(), &settings).unwrap();
 
-        assert_eq!(snapshot.id, "m-contract-seam");
-        assert_eq!(snapshot.repository, "forge-mcp");
-        assert_eq!(snapshot.project, "forge-mcp");
-        assert_eq!(snapshot.tasks.len(), 1);
-        assert_eq!(snapshot.tasks[0]["task_ref"].as_str(), Some("seam"));
+        assert_eq!(parsed.id, "m-contract-seam");
+        assert_eq!(parsed.repository, "forge-mcp");
+        assert_eq!(parsed.project, "forge-mcp");
+        assert_eq!(parsed.tasks.len(), 1);
+        assert_eq!(parsed.tasks[0]["task_ref"].as_str(), Some("seam"));
+
+        fs::write(
+            root.join("forge-mcp.yaml"),
+            "owners:\n  extensions/base: base\n  extensions/base/nested: nested\naliases:\n  legacy: canonical\n",
+        )
+        .unwrap();
+        let settings = TaskSettings::load(&root).unwrap();
+        for (relative, declared, expected) in [
+            ("docs/milestones/001-default.md", "", "forge-mcp"),
+            (
+                "extensions/other/docs/milestones/001-inferred.md",
+                "",
+                "extensions.other",
+            ),
+            ("extensions/base/docs/milestones/001-owned.md", "", "base"),
+            (
+                "extensions/base/nested/docs/milestones/001-nested.md",
+                "",
+                "nested",
+            ),
+            (
+                "extensions/baseball/docs/milestones/001-boundary.md",
+                "",
+                "extensions.baseball",
+            ),
+            (
+                "extensions/base/docs/milestones/002-declared.md",
+                "project: legacy\n",
+                "canonical",
+            ),
+        ] {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, format!("---\nid: m-case\ntitle: Case\n{declared}doc_type: contract\n---\n```yaml\ntask_ref: partial\ntarget: Still readable before admission\n```\n")).unwrap();
+            let parsed = snapshot(&root, path, &settings).unwrap();
+            assert_eq!(parsed.project, expected, "{relative}");
+            assert_eq!(parsed.tasks[0]["task_ref"].as_str(), Some("partial"));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }

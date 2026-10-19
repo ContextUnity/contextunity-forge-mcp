@@ -89,7 +89,7 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     registry.check_worktree(workspace, &worktree)?;
     let mut store = workspace.open(&registry.database)?;
     let task = store.inspect(&p.task_id)?;
-    validate_authority(&task, &worktree, &workspace.repository, &workspace.project)?;
+    validate_authority(&task, &worktree, workspace, &registry)?;
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
     let claimed = store.claim(&p.task_id, &p.stage, &p.worker_id, &p.worktree)?;
     finish_claim(root, workspace, &mut store, claimed, p.bundle)
@@ -508,7 +508,7 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
             let worktree = p.worktree.as_deref().context("worktree required")?;
             let claimed = store.next(worker, worktree, |task, selected| {
                 registry.check_worktree(workspace, selected)?;
-                validate_authority(task, selected, &workspace.repository, &workspace.project)?;
+                validate_authority(task, selected, workspace, &registry)?;
                 registry.check_scope(workspace, &task.spec.scope, Some(selected))
             })?;
             match claimed {
@@ -526,14 +526,9 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
             let mut total = 0usize;
             let mut returned_bytes = 0usize;
             for reference in references {
-                let rel_path = Path::new(&reference);
-                let inferred = crate::core::tasks::infer_project_from_path(rel_path);
-                let target_project = inferred.as_deref().unwrap_or(&workspace.project);
-                let parsed = Milestone::parse_with_identity(
-                    &std::fs::read_to_string(confined_path(&workspace.root, &reference)?)?,
-                    &workspace.repository,
-                    target_project,
-                )?;
+                let full_path = confined_path(&workspace.root, &reference)?;
+                let text = std::fs::read_to_string(full_path)?;
+                let parsed = registry.parse_milestone_manifest(workspace, &reference, &text)?;
                 if parsed.project != workspace.project {
                     if milestone.is_none() {
                         continue;

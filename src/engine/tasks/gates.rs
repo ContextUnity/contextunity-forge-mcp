@@ -4,7 +4,7 @@ use crate::core::tasks::{
         review_rollup_summary, validate_durable_receipt_with_profile, validate_gate_proof, Evidence,
     },
     profile::ProofKind,
-    Milestone, Receipt, ReceiptRollup, SubtaskSpec,
+    Receipt, ReceiptRollup, SubtaskSpec,
 };
 use crate::db::tasks_store::{
     check_stage, clear_blackboard, end_claim, load, now, save, Task, TasksStore,
@@ -1376,7 +1376,14 @@ impl TasksStore {
                 ));
             }
             let text = std::fs::read_to_string(&path)?;
-            let milestone = Milestone::parse_with_identity(&text, &self.repository, &self.project)?;
+            let milestone = super::workspaces::parse_milestone_manifest(
+                &text,
+                Path::new(&task.milestone_ref),
+                &self.repository,
+                &self.default_project,
+                &self.project_owners,
+                &self.project_aliases,
+            )?;
             let spec = milestone
                 .tasks
                 .iter()

@@ -32,6 +32,15 @@ cleanup remain restricted to the configured project, including forced deletion.
 Unknown schemas and populated non-task databases fail before schema mutation.
 Revision counters survive operational deletion.
 
+For subproject milestones, explicit `project` frontmatter wins over the longest
+configured `owners` directory prefix, then path inference, then `task_project`.
+Apply a configured `aliases` mapping once to that selected name. Sync, list,
+claim, submit, delivery receipts, and milestone handoff retain the resulting
+canonical task namespace. See [workspace configuration](configuration.md#task-storage)
+for mappings and examples.
+
+Milestone frontmatter `status: in_progress` is read as `active`.
+
 ```yaml
 tasks_db: .forge/tasks.sqlite
 task_repository: forge-mcp

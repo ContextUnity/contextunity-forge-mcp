@@ -389,13 +389,29 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
     dependencies.dedup();
     let status = if options.active { "active" } else { "planned" };
     let target_dir_rel = target_dir.strip_prefix(root).unwrap_or(&target_dir);
-    let inferred_project = crate::core::tasks::infer_project_from_path(target_dir_rel);
+    let has_config = root.join("forge-mcp.yaml").try_exists()?
+        || match tasks::primary_worktree_root(root) {
+            Some(base) => base.join("forge-mcp.yaml").try_exists()?,
+            None => false,
+        };
+    let settings = if has_config {
+        tasks::TaskSettings::load(root)?
+    } else {
+        serde_yaml::from_str("")?
+    };
+    let default_project = settings
+        .task_project
+        .as_deref()
+        .unwrap_or(&settings.task_repository);
+    // Preserve the selected spelling so reading the generated manifest applies aliases once.
+    let project = settings.project_for_path(target_dir_rel, default_project);
+    settings.resolve_project(target_dir_rel, Some(&project), default_project)?;
     let mut header = format!(
         "---\nid: m-{slug}\ntitle: {}\ndoc_type: contract\nstatus: {status}\n",
         quote(&title)?
     );
-    if let Some(proj) = &inferred_project {
-        header.push_str(&format!("project: {proj}\n"));
+    if project != default_project {
+        header.push_str(&format!("project: {project}\n"));
     }
     if options.active {
         header.push_str(&format!("started_at: {}\n", Utc::now().to_rfc3339()));
@@ -480,7 +496,7 @@ fn is_archived_path(path: &Path) -> bool {
 }
 
 fn snapshots(root: &Path, include_archive: bool, selector: Option<&str>) -> Result<Vec<Snapshot>> {
-    let (repository, project) = tasks::project_identity(root)?;
+    let settings = tasks::TaskSettings::load(root)?;
     let mut files = milestone_paths(root)?;
     if !include_archive {
         files.retain(|path| !is_archived_path(path));
@@ -543,7 +559,7 @@ fn snapshots(root: &Path, include_archive: bool, selector: Option<&str>) -> Resu
     files.sort();
     files
         .into_iter()
-        .map(|path| snapshot(root, path, &repository, &project))
+        .map(|path| snapshot(root, path, &settings))
         .collect()
 }
 

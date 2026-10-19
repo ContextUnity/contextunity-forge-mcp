@@ -200,6 +200,9 @@ pub struct TasksStore {
     pub connection: Connection,
     pub(crate) repository: String,
     pub(crate) project: String,
+    pub(crate) default_project: String,
+    pub(crate) project_owners: std::collections::BTreeMap<String, String>,
+    pub(crate) project_aliases: std::collections::BTreeMap<String, String>,
     /// `{repository}/{project}/` blackboard scope prefix.
     namespace: String,
     /// `{project}/` prefix matched against task ids.
@@ -512,6 +515,9 @@ impl TasksStore {
             connection,
             repository: repository.to_owned(),
             project: project.to_owned(),
+            default_project: project.to_owned(),
+            project_owners: Default::default(),
+            project_aliases: Default::default(),
             namespace: format!("{repository}/{project}/"),
             id_prefix: format!("{project}/"),
             profile: crate::core::tasks::profile::compiled(),
@@ -789,7 +795,10 @@ impl TasksStore {
             bail!("TASK_PROJECT_MISMATCH");
         }
         if milestone.status.as_deref().is_some_and(|status| {
-            !matches!(status, "active" | "planned" | "completed" | "cancelled")
+            !matches!(
+                status,
+                "active" | "in_progress" | "planned" | "completed" | "cancelled"
+            )
         }) {
             bail!("MILESTONE_STATUS_INVALID: expected active, planned, completed, or cancelled");
         }

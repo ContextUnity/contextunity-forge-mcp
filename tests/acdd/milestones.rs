@@ -4526,3 +4526,397 @@ fn task_settings_parses_various_commit_tracking_formats() {
         serde_yaml::from_str("").unwrap();
     assert!(yaml_default.records_task_commits());
 }
+
+#[test]
+fn subproject_milestones_prefers_declared_projects_preventing_duplicate_phantom_workspaces() {
+    let root = ScopedWorkspace::new("forge_subproject_no_phantom_workspaces");
+    root.write("AGENTS.md", "# Rules\n");
+    root.write(
+        "forge-mcp.yaml",
+        "task_repository: test\ntask_project: test\nroots: []\nmilestones:\n  - docs/milestones\n  - extensions/*/docs/milestones\nowners:\n  \"extensions\": ext\n  \"extensions/base\": base\naliases:\n  base: base\n",
+    );
+    root.write(
+        "docs/milestones/001-root.md",
+        "---\nid: M-ROOT\ntitle: Root Milestone\ndoc_type: contract\ninvariants: []\n---\n```yaml\ntask_ref: root-task\ntarget: Root target\nproof_policy: direct-proof\nscope: [src/]\n```\n",
+    );
+    root.write(
+        "extensions/base/docs/milestones/BS-102-document-loaders.md",
+        "---\nid: BS-102\ntitle: Base Milestone\nproject: base\ndoc_type: contract\ninvariants: []\n---\n```yaml\ntask_ref: base-task\ntarget: Base target\nproof_policy: direct-proof\nscope: [extensions/base/]\n```\n",
+    );
+
+    // Verify registry workspaces directly: phantom "extensions.base" must NOT exist
+    let workspace_names = contextunity_forge_mcp::engine::tasks::list_workspaces(&root.0).unwrap();
+    assert!(
+        workspace_names.contains(&"test".to_string()),
+        "expected primary workspace 'test', got: {workspace_names:?}"
+    );
+    assert!(
+        workspace_names.contains(&"base".to_string()),
+        "expected subproject workspace 'base', got: {workspace_names:?}"
+    );
+    assert!(
+        !workspace_names.contains(&"extensions.base".to_string()),
+        "phantom workspace 'extensions.base' must NOT be registered: {workspace_names:?}"
+    );
+    assert!(
+        !workspace_names.contains(&"ext".to_string()),
+        "shorter owner prefix 'ext' must NOT shadow longer prefix 'base': {workspace_names:?}"
+    );
+
+    // Both milestones must resolve cleanly without cross-workspace ambiguity
+    let sync_root = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        contextunity_forge_mcp::engine::tasks::Manage {
+            action: contextunity_forge_mcp::engine::tasks::ManageAction::Sync,
+            milestone_ref: Some("M-ROOT".into()),
+            workspace: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(sync_root["tasks"].as_array().unwrap().len(), 1);
+
+    let sync_subproject = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        contextunity_forge_mcp::engine::tasks::Manage {
+            action: contextunity_forge_mcp::engine::tasks::ManageAction::Sync,
+            milestone_ref: Some("BS-102".into()),
+            workspace: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(sync_subproject["tasks"].as_array().unwrap().len(), 1);
+
+    let list_base = contextunity_forge_mcp::engine::tasks::list(
+        &root.0,
+        contextunity_forge_mcp::engine::tasks::List {
+            repository: Some("base".into()),
+            milestone_ref: Some("BS-102".into()),
+            milestone_status: None,
+            status: Some(contextunity_forge_mcp::engine::tasks::Status::All),
+            stage: None,
+            detail: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(list_base["tasks"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn subproject_milestones_handles_readme_owners_and_non_trivial_aliases() {
+    let root = ScopedWorkspace::new("forge_subproject_readme_owners_aliases");
+    root.write("AGENTS.md", "# Rules\n");
+    root.write(
+        "forge-mcp.yaml",
+        "task_repository: test\ntask_project: test\nroots: []\nmilestones:\n  - docs/milestones\n  - extensions/*/docs/milestones\nowners:\n  \"extensions/base\": base\naliases:\n  legacy: base\n",
+    );
+    root.write(
+        "docs/milestones/001-root.md",
+        "---\nid: M-ROOT\ntitle: Root Milestone\ndoc_type: contract\ninvariants: []\n---\n```yaml\ntask_ref: root-task\ntarget: Root target\nproof_policy: direct-proof\nscope: [src/]\n```\n",
+    );
+    // 1. README.md alongside milestones in extensions/base/docs/milestones: must NOT register phantom workspace
+    root.write(
+        "extensions/base/docs/milestones/README.md",
+        "# Base Milestones\nThis document describes milestones for the base extension.\n",
+    );
+    root.write(
+        "extensions/readme-only/docs/milestones/README.md",
+        "# Future milestones\n",
+    );
+    std::fs::create_dir_all(root.0.join("extensions/empty/docs/milestones")).unwrap();
+    // 2. BS-103: milestone WITHOUT explicit project in frontmatter (relies on owners: {extensions/base: base})
+    root.write(
+        "extensions/base/docs/milestones/BS-103-owners-milestone.md",
+        "---\nid: BS-103\ntitle: Base Milestone via Owners\ndoc_type: contract\ninvariants: []\n---\n```yaml\ntask_ref: owners-task\ntarget: Owners target\nproof_policy: seam-test-first\nscope: [extensions/base/src/]\n```\n",
+    );
+    // 3. BS-104: milestone with project: legacy (relies on aliases: {legacy: base})
+    root.write(
+        "extensions/base/docs/milestones/BS-104-aliased-milestone.md",
+        "---\nid: BS-104\ntitle: Base Milestone via Aliases\nproject: legacy\ndoc_type: contract\ninvariants: []\n---\n```yaml\ntask_ref: alias-task\ntarget: Alias target\nproof_policy: seam-test-first\nscope: [extensions/base/src/]\n```\n",
+    );
+    root.write(
+        "extensions/base/docs/milestones/BS-106-other-project.md",
+        "---\nid: BS-106\ntitle: Other project in the same directory\nproject: other\ndoc_type: contract\n---\n```yaml\ntask_ref: other-task\ntarget: Deliver the declared project\nproof_policy: seam-test-first\nscope: [extensions/base/src/]\n```\n",
+    );
+
+    // Verify registry workspaces directly: phantom "extensions.base" or "legacy" must NOT exist
+    let workspace_names = contextunity_forge_mcp::engine::tasks::list_workspaces(&root.0).unwrap();
+    assert!(
+        workspace_names.contains(&"test".to_string()),
+        "expected primary workspace 'test', got: {workspace_names:?}"
+    );
+    assert!(
+        workspace_names.contains(&"base".to_string()),
+        "expected subproject workspace 'base', got: {workspace_names:?}"
+    );
+    assert!(workspace_names.contains(&"other".to_string()));
+    assert!(
+        !workspace_names.contains(&"extensions.base".to_string()),
+        "phantom workspace 'extensions.base' must NOT be registered: {workspace_names:?}"
+    );
+    assert!(
+        !workspace_names.contains(&"legacy".to_string()),
+        "aliased project 'legacy' must NOT create a separate workspace: {workspace_names:?}"
+    );
+    assert!(
+        !workspace_names.contains(&"extensions.readme-only".to_string())
+            && !workspace_names.contains(&"extensions.empty".to_string()),
+        "directories without milestones must not create workspaces: {workspace_names:?}"
+    );
+
+    // Sync BS-103 (owners without explicit project frontmatter) must succeed without TASK_PROJECT_MISMATCH
+    let sync_owners = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        contextunity_forge_mcp::engine::tasks::Manage {
+            action: contextunity_forge_mcp::engine::tasks::ManageAction::Sync,
+            milestone_ref: Some("BS-103".into()),
+            workspace: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(sync_owners["tasks"].as_array().unwrap().len(), 1);
+
+    // Sync BS-104 (project: legacy aliased to base) must succeed without TASK_PROJECT_MISMATCH
+    let sync_alias = contextunity_forge_mcp::engine::tasks::manage(
+        &root.0,
+        contextunity_forge_mcp::engine::tasks::Manage {
+            action: contextunity_forge_mcp::engine::tasks::ManageAction::Sync,
+            milestone_ref: Some("BS-104".into()),
+            workspace: Some("all".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(sync_alias["tasks"].as_array().unwrap().len(), 1);
+    let sync_other = tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({"action":"sync","milestone_ref":"BS-106","workspace":"all"}))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sync_other["tasks"][0]["task_id"], "other/BS-106:other-task");
+
+    root.write("extensions/base/src/lib.rs", "pub fn extension() {}\n");
+    let cases = [
+        (
+            "BS-103",
+            "owners-task",
+            "BS-103-owners-milestone.md",
+            "base",
+        ),
+        (
+            "BS-104",
+            "alias-task",
+            "BS-104-aliased-milestone.md",
+            "base",
+        ),
+        ("BS-106", "other-task", "BS-106-other-project.md", "other"),
+    ];
+    for (milestone_id, task_ref, file, project) in cases {
+        let listed = tasks::list(
+            &root.0,
+            tasks::List {
+                repository: Some(project.into()),
+                milestone_ref: Some(milestone_id.into()),
+                status: Some(tasks::Status::All),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let task_id = format!("{project}/{milestone_id}:{task_ref}");
+        assert_eq!(listed["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["tasks"][0]["task_id"], task_id);
+        assert_eq!(listed["tasks"][0]["status"], "ready");
+        let store =
+            TasksStore::open_project(&root.0.join(".forge/tasks.sqlite"), "test", project).unwrap();
+        complete_task_through_engine(&root, &store, &task_id);
+        let delivered = store.inspect(&task_id).unwrap();
+        assert_eq!(delivered.status, "completed");
+        assert_eq!(delivered.receipt.unwrap().decision, "pass");
+        let text = std::fs::read_to_string(
+            root.0
+                .join(format!("extensions/base/docs/milestones/{file}")),
+        )
+        .unwrap();
+        let parsed = Milestone::parse(&text, "test").unwrap();
+        assert_eq!(parsed.tasks[0].status.as_deref(), Some("completed"));
+        assert!(parsed.tasks[0].receipt.is_some());
+        let shown = milestone_engine::show(&root.0, milestone_id, false).unwrap();
+        assert_eq!(shown["completion"], "1/1");
+    }
+    for (milestone_id, _, file, _) in cases {
+        let output = milestone_cli(
+            &root,
+            &[
+                "handoff",
+                milestone_id,
+                "--verification-command",
+                "cargo test --test acdd",
+                "--tests-passed",
+                "1",
+                "--tests-failed",
+                "0",
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(root
+            .0
+            .join(format!("extensions/base/docs/milestones/archive/{file}"))
+            .is_file());
+        let shown = milestone_engine::show(&root.0, milestone_id, false).unwrap();
+        assert_eq!(shown["status"], "completed");
+        assert_eq!(shown["completion"], "1/1");
+    }
+    let initialized = milestone_cli(
+        &root,
+        &[
+            "init",
+            "--num",
+            "105",
+            "--slug",
+            "owned-init",
+            "--title",
+            "Owned init",
+            "--dir",
+            "extensions/base/docs/milestones",
+        ],
+    );
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let text = std::fs::read_to_string(
+        root.0
+            .join("extensions/base/docs/milestones/105-owned-init.md"),
+    )
+    .unwrap();
+    assert_eq!(Milestone::parse(&text, "test").unwrap().project, "base");
+
+    let left = ScopedWorkspace::new("forge_milestone_ambiguity_left");
+    let right = ScopedWorkspace::new("forge_milestone_ambiguity_right");
+    for (linked, project) in [(&left, "left"), (&right, "right")] {
+        linked.write(
+            "forge-mcp.yaml",
+            &format!("task_repository: linked\ntask_project: {project}\n"),
+        );
+        linked.write(
+            "docs/milestones/099-shared.md",
+            "---\nid: m-shared\ntitle: Shared reference\ndoc_type: contract\n---\n```yaml\ntask_ref: shared-task\ntarget: Shared target\nproof_policy: direct-proof\nscope: [src/]\n```\n",
+        );
+    }
+    let config = std::fs::read_to_string(root.0.join("forge-mcp.yaml")).unwrap();
+    root.write(
+        "forge-mcp.yaml",
+        &format!(
+            "{config}linked_workspaces:\n  - name: left\n    path: {}\n    tasks: {{enabled: true}}\n  - name: right\n    path: {}\n    tasks: {{enabled: true}}\n",
+            left.0.display(),
+            right.0.display()
+        ),
+    );
+    for workspace in [None, Some("all")] {
+        let error = tasks::list(
+            &root.0,
+            serde_json::from_value(json!({"milestone_ref":"099","repository":workspace})).unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("ambiguous milestone reference"), "{error}");
+        assert!(error.contains("left") && error.contains("right"), "{error}");
+    }
+}
+
+#[test]
+fn default_project_alias_is_applied_once_across_task_lifecycle() {
+    let root = ScopedWorkspace::new("forge_default_project_alias");
+    root.write("AGENTS.md", "# Rules\n");
+    root.write("src/lib.rs", "pub fn primary() {}\n");
+    root.write(
+        "forge-mcp.yaml",
+        "task_repository: test\ntask_project: legacy\nroots: []\nmilestones: [docs/milestones, 'extensions/*/docs/milestones']\nowners:\n  extensions/new: old-owner\naliases:\n  legacy: base\n  old-owner: base\n  base: other\n",
+    );
+    root.write(
+        "docs/milestones/001-default.md",
+        "---\nid: m-default\ntitle: Default alias\ndoc_type: contract\nstatus: in_progress\n---\n```yaml\ntask_ref: first\ntarget: Deliver the default project\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
+    );
+    let synced = tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({"action":"sync","milestone_ref":"001"})).unwrap(),
+    )
+    .unwrap();
+    let task_id = "base/m-default:first";
+    assert_eq!(synced["tasks"][0]["task_id"], task_id);
+    let listed = tasks::list(&root.0, tasks::List::default()).unwrap();
+    assert_eq!(listed["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["tasks"][0]["task_id"], task_id);
+    assert_eq!(tasks::list_workspaces(&root.0).unwrap(), vec!["test"]);
+    let store = tasks::store(&root.0).unwrap();
+    assert_eq!(store.inspect(task_id).unwrap().task_id, task_id);
+    complete_task_through_engine(&root, &store, task_id);
+    assert_eq!(store.inspect(task_id).unwrap().status, "completed");
+    assert_eq!(
+        milestone_engine::show(&root.0, "001", false).unwrap()["completion"],
+        "1/1"
+    );
+    let handed_off = milestone_cli(
+        &root,
+        &[
+            "handoff",
+            "001",
+            "--verification-command",
+            "cargo test --test acdd",
+            "--tests-passed",
+            "1",
+            "--tests-failed",
+            "0",
+        ],
+    );
+    assert!(
+        handed_off.status.success(),
+        "{}",
+        String::from_utf8_lossy(&handed_off.stderr)
+    );
+    std::fs::create_dir_all(root.0.join("extensions/new/docs/milestones")).unwrap();
+    let initialized = milestone_cli(
+        &root,
+        &[
+            "init",
+            "--num",
+            "002",
+            "--slug",
+            "aliased-init",
+            "--title",
+            "Aliased init",
+            "--active",
+            "--dir",
+            "extensions/new/docs/milestones",
+        ],
+    );
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let synced = tasks::manage(
+        &root.0,
+        serde_json::from_value(json!({"action":"sync","milestone_ref":"002"})).unwrap(),
+    )
+    .unwrap();
+    let initialized_id = "base/m-aliased-init:aliased-init";
+    assert_eq!(synced["tasks"][0]["task_id"], initialized_id);
+    let next = tasks::manage(
+        &root.0,
+        serde_json::from_value(
+            json!({"action":"next","worker_id":"contract-author","worktree":root.0}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(next["task_id"], initialized_id);
+}

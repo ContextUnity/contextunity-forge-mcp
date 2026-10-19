@@ -950,7 +950,7 @@ fn parse_lifecycle_status(meta: &serde_yaml::Value) -> Result<Option<&'static st
         .as_str()
         .context("MILESTONE_STATUS_INVALID: status must be a string")?;
     let status = match value {
-        "active" => "active",
+        "active" | "in_progress" => "active",
         "planned" => "planned",
         "completed" => "completed",
         "cancelled" => "cancelled",

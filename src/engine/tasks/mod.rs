@@ -22,6 +22,11 @@ mod lifecycle;
 pub use blackboard::{blackboard, BlackboardAction, BlackboardRequest, BlackboardScope};
 pub use lifecycle::{claim, manage, reopen, reset};
 
+/// Returns the registered workspace names for the repository at `root`.
+pub fn list_workspaces(root: &Path) -> Result<Vec<String>> {
+    Ok(Registry::load(root)?.workspace_names())
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 #[value(rename_all = "snake_case")]
@@ -270,6 +275,12 @@ pub struct TaskSettings {
     pub plans: Vec<String>,
     #[serde(default)]
     linked_workspaces: Vec<workspaces::LinkedConfig>,
+    #[serde(default)]
+    /// Configured path prefix to owner mappings.
+    pub owners: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    /// Configured project aliases.
+    pub aliases: std::collections::BTreeMap<String, String>,
     #[serde(default = "default_record_task_commits")]
     /// Whether to record task commits in milestone Markdown documents.
     pub record_task_commits: bool,
@@ -310,6 +321,22 @@ impl CommitTrackingSetting {
 }
 
 impl TaskSettings {
+    pub(crate) fn project_for_path(&self, path: &Path, default: &str) -> String {
+        workspaces::project_for_path(path, default, &self.owners)
+    }
+
+    pub(crate) fn resolve_project(
+        &self,
+        path: &Path,
+        declared: Option<&str>,
+        default: &str,
+    ) -> Result<String> {
+        let project = declared
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.project_for_path(path, default));
+        workspaces::canonical_project(&project, &self.aliases)
+    }
+
     /// Returns true if task commit SHAs should be written to milestone Markdown receipts.
     pub fn records_task_commits(&self) -> bool {
         if let Some(tracking) = &self.commit_tracking {
@@ -406,15 +433,19 @@ pub fn project_identity(root: &Path) -> Result<(String, String)> {
 /// Performs store.
 pub fn store(root: &Path) -> Result<TasksStore> {
     let settings = TaskSettings::load(root)?;
-    TasksStore::open_project(
-        &settings.path(root)?,
-        &settings.task_repository,
-        settings
-            .task_project
-            .as_deref()
-            .unwrap_or(&settings.task_repository),
-    )
+    let default_project = settings
+        .task_project
+        .as_deref()
+        .unwrap_or(&settings.task_repository);
+    let project = workspaces::canonical_project(default_project, &settings.aliases)?;
+    let mut store =
+        TasksStore::open_project(&settings.path(root)?, &settings.task_repository, &project)?;
+    store.default_project = default_project.to_owned();
+    store.project_owners = settings.owners;
+    store.project_aliases = settings.aliases;
+    Ok(store)
 }
+
 fn resolve_manifest_status(root: &Path, milestone_ref: &str) -> Result<String> {
     let path = confined_path(root, milestone_ref)?;
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -474,8 +505,8 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
                         .as_deref()
                         .map(Path::new)
                         .unwrap_or(&workspace.root),
-                    &workspace.repository,
-                    &workspace.project,
+                    workspace,
+                    &registry,
                 )
                 .is_err()
                     || registry
@@ -544,8 +575,8 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
 fn validate_authority(
     task: &crate::db::tasks_store::Task,
     root: &Path,
-    repository: &str,
-    project: &str,
+    workspace: &workspaces::Workspace,
+    registry: &Registry,
 ) -> Result<()> {
     let path = confined_path(root, &task.milestone_ref)?;
     if !path.is_file() {
@@ -556,7 +587,8 @@ fn validate_authority(
         );
     }
     let text = std::fs::read_to_string(path)?;
-    let milestone = Milestone::parse_with_identity(&text, repository, project)?;
+    let milestone = registry.parse_milestone_manifest(workspace, &task.milestone_ref, &text)?;
+    let project = &workspace.project;
     let stored_parts = task
         .task_id
         .strip_prefix(&format!("{project}/"))
@@ -652,7 +684,7 @@ fn candidate_divergence_diagnostic(
 /// Performs store for task.
 pub fn store_for_task(root: &Path, id: &str) -> Result<TasksStore> {
     let registry = Registry::load(root)?;
-    registry.owner(id)?.open(&registry.database)
+    registry.open(registry.owner(id)?)
 }
 
 /// Performs submit.
@@ -674,7 +706,7 @@ fn lifecycle_error(id: &str, error: anyhow::Error) -> anyhow::Error {
 fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     let registry = Registry::load(root)?;
     let workspace = registry.owner(&p.task_id)?;
-    let mut store = workspace.open(&registry.database)?;
+    let mut store = registry.open(workspace)?;
     let observed_task = store.inspect(&p.task_id)?;
     let profile = store.profile_for_task(&observed_task)?;
     let gate_index = profile.index_of(&p.stage).with_context(|| {
@@ -709,12 +741,7 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     evidence.candidate_baseline_head = None;
     registry.check_worktree(workspace, Path::new(&evidence.worktree))?;
     if task.status != "completed" {
-        validate_authority(
-            &task,
-            Path::new(&evidence.worktree),
-            &workspace.repository,
-            &workspace.project,
-        )?;
+        validate_authority(&task, Path::new(&evidence.worktree), workspace, &registry)?;
         registry.check_scope(
             workspace,
             &task.spec.scope,

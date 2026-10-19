@@ -157,13 +157,9 @@ fn resolved_context_for_milestone(
     let full_path = confined_path(&workspace.root, reference)?;
     let text = std::fs::read_to_string(full_path)
         .with_context(|| format!("unable to read milestone manifest '{reference}'"))?;
-    let inferred = crate::core::tasks::infer_project_from_path(Path::new(reference));
-    let milestone = Milestone::parse_with_identity(
-        &text,
-        &workspace.repository,
-        inferred.as_deref().unwrap_or(&workspace.project),
-    )
-    .with_context(|| format!("invalid milestone manifest '{reference}'"))?;
+    let milestone = registry
+        .parse_milestone_manifest(workspace, reference, &text)
+        .with_context(|| format!("invalid milestone manifest '{reference}'"))?;
     let profile = match milestone.acdd_profile.as_deref() {
         Some(pin) => {
             crate::core::tasks::profile::load_pinned_over(&workspace.root, pin, &workspace.gates)?

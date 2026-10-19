@@ -1,6 +1,6 @@
 use super::TaskSettings;
 use crate::{
-    core::tasks::{confined_path, shorten_task_response_commits, valid_identity},
+    core::tasks::{confined_path, shorten_task_response_commits, valid_identity, Milestone},
     db::tasks_store::TasksStore,
 };
 use anyhow::{bail, Context, Result};
@@ -263,8 +263,9 @@ struct LinkedIdentity {
     task_project: Option<String>,
 }
 
-fn declared_projects(directory: &Path) -> Result<BTreeSet<String>> {
+fn milestone_projects_in_dir(directory: &Path) -> Result<(BTreeSet<String>, bool)> {
     let mut projects = BTreeSet::new();
+    let mut has_undeclared = false;
     for dir in [directory.to_path_buf(), directory.join("archive")] {
         if !dir.is_dir() {
             continue;
@@ -272,7 +273,10 @@ fn declared_projects(directory: &Path) -> Result<BTreeSet<String>> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             if !entry.file_type()?.is_file()
-                || entry.path().extension().is_none_or(|ext| ext != "md")
+                || !entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(crate::engine::milestones::is_milestone_manifest_name)
             {
                 continue;
             }
@@ -285,14 +289,21 @@ fn declared_projects(directory: &Path) -> Result<BTreeSet<String>> {
             else {
                 continue;
             };
-            let meta: serde_yaml::Value = serde_yaml::from_str(header)?;
+            let Ok(meta) = serde_yaml::from_str::<serde_yaml::Value>(header) else {
+                continue;
+            };
+            if meta.get("id").and_then(|id| id.as_str()).is_none() {
+                continue;
+            }
             if let Some(project) = meta["project"].as_str() {
                 valid_identity(project)?;
                 projects.insert(project.to_owned());
+            } else {
+                has_undeclared = true;
             }
         }
     }
-    Ok(projects)
+    Ok((projects, has_undeclared))
 }
 
 pub(super) struct Workspace {
@@ -300,6 +311,7 @@ pub(super) struct Workspace {
     pub root: PathBuf,
     pub repository: String,
     pub project: String,
+    default_project: String,
     pub gates: std::sync::Arc<crate::core::tasks::profile::GateProfile>,
     milestones: Vec<PathBuf>,
     guidance: PathBuf,
@@ -793,39 +805,94 @@ impl Workspace {
     }
 }
 
+pub(super) fn project_for_path(
+    path: &Path,
+    default: &str,
+    owners: &std::collections::BTreeMap<String, String>,
+) -> String {
+    owners
+        .iter()
+        .filter_map(|(prefix, owner)| {
+            let prefix = prefix
+                .strip_suffix("/*")
+                .unwrap_or(prefix)
+                .trim_end_matches('/');
+            (!prefix.is_empty() && path.starts_with(prefix)).then_some((prefix.len(), owner))
+        })
+        .max_by_key(|(length, _)| *length)
+        .map(|(_, owner)| owner.clone())
+        .or_else(|| crate::core::tasks::infer_project_from_path(path))
+        .unwrap_or_else(|| default.to_owned())
+}
+
+pub(super) fn canonical_project(
+    project: &str,
+    aliases: &std::collections::BTreeMap<String, String>,
+) -> Result<String> {
+    let project = aliases.get(project).map(String::as_str).unwrap_or(project);
+    valid_identity(project)?;
+    Ok(project.to_owned())
+}
+
+pub(super) fn parse_milestone_manifest(
+    text: &str,
+    reference: &Path,
+    repository: &str,
+    project: &str,
+    owners: &std::collections::BTreeMap<String, String>,
+    aliases: &std::collections::BTreeMap<String, String>,
+) -> Result<Milestone> {
+    let default = project_for_path(reference, project, owners);
+    let mut milestone = Milestone::parse_with_identity(text, repository, &default)?;
+    milestone.project = canonical_project(&milestone.project, aliases)?;
+    Ok(milestone)
+}
+
 pub(super) struct Registry {
     pub database: PathBuf,
     workspaces: Vec<Workspace>,
+    owners: std::collections::BTreeMap<String, String>,
+    aliases: std::collections::BTreeMap<String, String>,
 }
 impl Registry {
+    pub fn open(&self, workspace: &Workspace) -> Result<TasksStore> {
+        let mut store = workspace.open(&self.database)?;
+        store.default_project = workspace.default_project.clone();
+        store.project_owners = self.owners.clone();
+        store.project_aliases = self.aliases.clone();
+        Ok(store)
+    }
+
+    pub fn workspace_names(&self) -> Vec<String> {
+        self.workspaces.iter().map(|w| w.name.clone()).collect()
+    }
+
     pub fn load(root: &Path) -> Result<Self> {
         let root = root.canonicalize()?;
         let settings = TaskSettings::load(&root)?;
         let database = settings.path(&root)?;
         let guidance = settings.agents_guidance.unwrap_or_else(default_guidance);
         let repository = settings.task_repository;
-        let project = settings.task_project.unwrap_or_else(|| repository.clone());
+        let default_project = settings.task_project.unwrap_or_else(|| repository.clone());
+        let project = canonical_project(&default_project, &settings.aliases)?;
         let primary_milestone_dirs = crate::engine::milestones::configured_milestone_dirs(&root);
         let mut primary_milestones = Vec::new();
         let mut subproject_milestones: std::collections::BTreeMap<String, Vec<PathBuf>> =
             std::collections::BTreeMap::new();
         for dir in primary_milestone_dirs {
+            let (declared, has_undeclared) = milestone_projects_in_dir(&dir)?;
             let rel = dir.strip_prefix(&root).unwrap_or(&dir);
-            let inferred = crate::core::tasks::infer_project_from_path(rel);
-            if let Some(proj) = inferred {
-                subproject_milestones
-                    .entry(proj)
-                    .or_default()
-                    .push(dir.clone());
-            } else {
-                primary_milestones.push(dir.clone());
+            let mut projects = declared;
+            if has_undeclared {
+                projects.insert(project_for_path(rel, &default_project, &settings.owners));
             }
-            for declared in declared_projects(&dir)? {
-                if declared == project {
+            for raw in projects {
+                let owner = canonical_project(&raw, &settings.aliases)?;
+                if owner == project {
                     primary_milestones.push(dir.clone());
                 } else {
                     subproject_milestones
-                        .entry(declared)
+                        .entry(owner)
                         .or_default()
                         .push(dir.clone());
                 }
@@ -842,6 +909,7 @@ impl Registry {
             name: repository.clone(),
             repository: repository.clone(),
             project: project.clone(),
+            default_project: default_project.clone(),
             gates: gates.clone(),
             milestones: primary_milestones,
             guidance: guidance_path.clone(),
@@ -865,6 +933,7 @@ impl Registry {
                     name: sub_name.clone(),
                     repository: repository.clone(),
                     project: sub_name,
+                    default_project: default_project.clone(),
                     gates: gates.clone(),
                     milestones: {
                         let mut dirs = sub_dirs;
@@ -909,7 +978,8 @@ impl Registry {
             let repository = identity
                 .task_repository
                 .unwrap_or_else(|| linked.name.clone());
-            let project = identity.task_project.unwrap_or_else(|| repository.clone());
+            let default_project = identity.task_project.unwrap_or_else(|| repository.clone());
+            let project = canonical_project(&default_project, &settings.aliases)?;
             valid_identity(&repository)?;
             valid_identity(&project)?;
             if !namespaces.insert((repository.clone(), project.clone())) {
@@ -922,6 +992,7 @@ impl Registry {
                 name: linked.name,
                 repository,
                 project,
+                default_project,
                 gates: gates.clone(),
                 milestones: vec![confined_path(&path, &tasks.milestones_dir)?],
                 guidance: confined_path(&path, &tasks.agents_guidance)?,
@@ -931,7 +1002,24 @@ impl Registry {
         Ok(Self {
             database,
             workspaces,
+            owners: settings.owners,
+            aliases: settings.aliases,
         })
+    }
+    pub fn parse_milestone_manifest(
+        &self,
+        workspace: &Workspace,
+        reference: &str,
+        text: &str,
+    ) -> Result<Milestone> {
+        parse_milestone_manifest(
+            text,
+            Path::new(reference),
+            &workspace.repository,
+            &workspace.default_project,
+            &self.owners,
+            &self.aliases,
+        )
     }
     pub fn select(&self, name: Option<&str>) -> Result<&Workspace> {
         match name {
@@ -1070,6 +1158,9 @@ impl Registry {
             }
         }
 
+        let mut locations = BTreeSet::new();
+        found.retain(|(candidate, path)| locations.insert((candidate.root.clone(), path.clone())));
+
         let (resolved_ws, path) = match found.len() {
             0 => {
                 if let Some(name) = workspace.filter(|name| *name != "all") {
@@ -1095,15 +1186,11 @@ impl Registry {
             }
         };
 
-        let inferred = crate::core::tasks::infer_project_from_path(Path::new(&path));
         let full_path = confined_path(&resolved_ws.root, &path)?;
         let text = std::fs::read_to_string(full_path)?;
-        let parsed = crate::core::tasks::Milestone::parse_with_identity(
-            &text,
-            &resolved_ws.repository,
-            inferred.as_deref().unwrap_or(&resolved_ws.project),
-        )
-        .with_context(|| format!("invalid milestone manifest '{path}'"))?;
+        let parsed = self
+            .parse_milestone_manifest(resolved_ws, &path, &text)
+            .with_context(|| format!("invalid milestone manifest '{path}'"))?;
         let owner = self.owner(&format!("{}/{}", parsed.repository, parsed.project))?;
         Ok((owner, path))
     }
