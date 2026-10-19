@@ -82,6 +82,10 @@ qualified task namespace. See [repository tasks](tasks.md) for identity,
 concurrency, receipts, and administration. Code indexing works without task
 storage configuration.
 
+Code-map output guards reject unreadable existing database targets rather than
+replacing them, including custom task database names not configured in this
+workspace. Readable non-SQLite cache files remain rebuildable.
+
 Subproject identity uses milestone `project` frontmatter, then the longest
 matching `owners` prefix, then path inference, then the workspace default.
 Root `owners` maps repository-relative directory prefixes to project names;

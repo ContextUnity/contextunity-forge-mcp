@@ -970,7 +970,16 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
             if meta.len() == 0 {
                 return Ok(());
             }
-            if crate::db::reader::validate_database_header(&output_abs).is_ok() {
+            let header = crate::db::reader::validate_database_header(&output_abs);
+            if let Err(error) = &header {
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() != std::io::ErrorKind::UnexpectedEof)
+                {
+                    bail!("TASK_DATABASE_COLLISION: Cannot read database at '{}' ({error}). Refusing to overwrite potentially active task database.", output.display());
+                }
+            }
+            if header.is_ok() {
                 let conn = Connection::open_with_flags(
                     &output_abs,
                     OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -2706,6 +2715,42 @@ pub fn delta(root: &Path, db: &Path, modified: &[PathBuf]) -> Result<Value> {
 #[cfg(all(test, feature = "lang-rust"))]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_existing_target_is_not_a_rebuildable_cache() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "forge-unreadable-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let target = root.join("custom_store.db");
+        let connection = Connection::open(&target).unwrap();
+        connection
+            .execute_batch("CREATE TABLE tasks(id INTEGER PRIMARY KEY);")
+            .unwrap();
+        drop(connection);
+        let before = fs::read(&target).unwrap();
+        let permissions = fs::metadata(&target).unwrap().permissions();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o0)).unwrap();
+        if fs::File::open(&target).is_ok() {
+            fs::set_permissions(&target, permissions).unwrap();
+            fs::remove_dir_all(root).unwrap();
+            eprintln!("permission-denial fixture requires a user without DAC override");
+            return;
+        }
+        let result = build(&root, &target, None);
+        fs::set_permissions(&target, permissions).unwrap();
+        let after = fs::read(&target).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("TASK_DATABASE_COLLISION"));
+        assert_eq!(after, before);
+    }
 
     #[test]
     fn added_trait_implementor_refreshes_unchanged_caller_candidates() {

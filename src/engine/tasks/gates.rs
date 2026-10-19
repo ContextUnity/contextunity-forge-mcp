@@ -166,6 +166,8 @@ struct BaselineCallerEntry {
     name: String,
     qualname: String,
     caller_paths: BTreeSet<String>,
+    #[serde(default)]
+    target_present: bool,
 }
 
 fn accepted_boundary_callers(
@@ -247,24 +249,28 @@ fn baseline_source(worktree: &Path, baseline: &str, path: &str) -> Result<Option
 fn indexed_caller_paths(
     connection: &rusqlite::Connection,
     symbol: &crate::core::models::Node,
-) -> Result<BTreeSet<String>> {
+) -> Result<Option<BTreeSet<String>>> {
     let mut statement = connection.prepare(
         "SELECT DISTINCT caller_path.path FROM nodes target \
          JOIN path_dictionary target_path ON target_path.path_id=target.path_id \
-         JOIN edges ON edges.dst_hash=target.node_hash \
+         LEFT JOIN edges ON edges.dst_hash=target.node_hash \
            AND edges.kind IN ('calls','imports','possible_calls','implements','overrides') \
-         JOIN nodes caller ON caller.node_hash=edges.src_hash AND caller.is_test=0 \
-         JOIN path_dictionary caller_path ON caller_path.path_id=caller.path_id \
+         LEFT JOIN nodes caller ON caller.node_hash=edges.src_hash AND caller.is_test=0 \
+         LEFT JOIN path_dictionary caller_path ON caller_path.path_id=caller.path_id \
          WHERE target_path.path=?1 AND target.kind=?2 AND target.name=?3 AND target.qualname=?4 \
          ORDER BY caller_path.path",
     )?;
-    let callers = statement
-        .query_map(
-            params![symbol.path, symbol.kind, symbol.name, symbol.qualname],
-            |row| row.get::<_, String>(0),
-        )?
-        .collect::<rusqlite::Result<BTreeSet<_>>>()
-        .map_err(anyhow::Error::from)?;
+    let rows = statement.query_map(
+        params![symbol.path, symbol.kind, symbol.name, symbol.qualname],
+        |row| row.get::<_, Option<String>>(0),
+    )?;
+    let mut callers = None;
+    for row in rows {
+        let paths = callers.get_or_insert_with(BTreeSet::new);
+        if let Some(path) = row? {
+            paths.insert(path);
+        }
+    }
     Ok(callers)
 }
 
@@ -300,7 +306,10 @@ fn capture_baseline_boundary_callers(
                 kind: symbol.kind.clone(),
                 name: symbol.name.clone(),
                 qualname: symbol.qualname.clone(),
-                caller_paths: indexed_caller_paths(connection, &symbol)?,
+                caller_paths: indexed_caller_paths(connection, &symbol)?.with_context(|| {
+                    format!("TASK_SCOPE_INCOMPLETE: baseline caller evidence unavailable for '{}' in '{}'. Do: restore the baseline symbol and refresh the index before accepting the contract.", symbol.name, symbol.path)
+                })?,
+                target_present: true,
             });
         }
     }
@@ -954,7 +963,7 @@ fn validate_public_signature_scope(
         {
             continue;
         }
-        let mut callers = captured_callers
+        let captured = captured_callers
             .into_iter()
             .flat_map(|snapshot| snapshot.entries.iter())
             .find(|entry| {
@@ -962,10 +971,17 @@ fn validate_public_signature_scope(
                     && entry.kind == baseline_node.kind
                     && entry.name == baseline_node.name
                     && entry.qualname == baseline_node.qualname
-            })
+            });
+        let indexed = indexed_caller_paths(connection, &baseline_node)?;
+        let captured_presence =
+            captured.is_some_and(|entry| entry.target_present || !entry.caller_paths.is_empty());
+        if !captured_presence && indexed.is_none() {
+            bail!("TASK_SCOPE_INCOMPLETE: {task_id}. baseline caller evidence unavailable for '{}' in '{}'. Do: restore the baseline symbol and refresh the index before accepting the contract.", baseline_node.name, baseline_node.path);
+        }
+        let mut callers = captured
             .map(|entry| entry.caller_paths.clone())
             .unwrap_or_default();
-        callers.extend(indexed_caller_paths(connection, &baseline_node)?);
+        callers.extend(indexed.into_iter().flatten());
         let external = callers
             .into_iter()
             .filter(|caller| !path_is_in_scope(caller, scope))

@@ -11,6 +11,36 @@ use contextunity_forge_mcp::{
 use serde_json::{json, Value};
 use std::{fs, time::Duration};
 
+#[cfg(unix)]
+#[test]
+fn stdio_active_claim_routing_rejects_special_files() {
+    for kind in ["fifo", "directory", "fifo-alias"] {
+        let workspace = Workspace::new();
+        workspace.write("forge-mcp.yaml", "tasks_db: .forge/state.sqlite\n");
+        let target = workspace.path(".forge/state.sqlite");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        if kind == "directory" {
+            fs::create_dir(&target).unwrap();
+        } else {
+            let fifo = workspace.path(".forge/pipe");
+            assert!(std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success());
+            if kind == "fifo-alias" {
+                std::os::unix::fs::symlink(&fifo, &target).unwrap();
+            } else {
+                fs::rename(fifo, &target).unwrap();
+            }
+        }
+        let mut client = Client::new(&workspace);
+        let (_, result) = client.call("code_map_overview", json!({}));
+        assert!(result.to_string().contains("regular file"), "{result}");
+        client.payload("code_map_overview", json!({"worktree":"."}));
+    }
+}
+
 fn query_cli_with_database(
     workspace: &Workspace,
     database: &std::path::Path,

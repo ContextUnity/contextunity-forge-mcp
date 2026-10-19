@@ -65,6 +65,10 @@ values fail with `WORKTREE_NOT_FOUND`. Each selected tree uses its own index;
 selecting the server root retains a custom `--db` path. Task tools, checkpoints,
 and `forge_guide` retain the server root.
 
+Automatic claim selection rejects a configured task database that is a directory
+or special file before opening SQLite. Explicit worktree selection remains
+available without consulting task claims.
+
 The MCP request does not carry the client's current working directory. Set the
 server's `cwd`/`--root` to bind a session to a worktree, or pass `worktree` per call.
 

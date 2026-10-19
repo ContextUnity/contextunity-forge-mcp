@@ -451,8 +451,16 @@ pub(crate) fn active_claim_worktree(
     repository: &Path,
     database: &Path,
 ) -> Result<Option<std::path::PathBuf>> {
-    if !database.exists() {
-        return Ok(None);
+    let metadata = match std::fs::metadata(database) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() {
+        bail!(
+            "tasks database must be a regular file: '{}'",
+            database.display()
+        );
     }
     let database = database.canonicalize()?;
     let conn = rusqlite::Connection::open_with_flags(

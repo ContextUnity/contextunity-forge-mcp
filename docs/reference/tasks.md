@@ -504,6 +504,16 @@ reindexing: admit each affected caller's update or deletion in the task scope.
 An unadmitted baseline caller still blocks retirement; deleting its working copy
 does not remove it from the scoped candidate snapshot.
 
+Before contract acceptance, a retired baseline symbol must still exist in the
+index so its callers can be established. A refreshed index missing that symbol
+does not prove zero callers: restore the baseline symbol and refresh the index,
+then accept the contract before retirement. Accepted caller evidence remains
+available to build validation after subsequent reindexing.
+Older accepted captures with no callers and no target-presence confirmation
+require the baseline symbol to remain indexed. If it is missing, restore it,
+refresh the index, and accept the contract again before retirement. Previously
+captured nonempty caller sets continue to protect their caller paths.
+
 For paths changed after task delivery, handoff accepts a later reviewed local
 delivery or a reviewed upstream delivery introduced by a two-parent merge. The
 upstream receipt and accepted gate evidence must validate, and its delivery must

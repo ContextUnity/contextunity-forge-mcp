@@ -2,6 +2,140 @@ use crate::common::Workspace;
 use contextunity_forge_mcp::db::tasks_store::TasksStore;
 use contextunity_forge_mcp::db::writer::{build, validate_code_map_target};
 
+#[cfg(unix)]
+#[test]
+fn task_store_initialization_serializes_with_index_publication() {
+    // A separate process exercises the same public opener while publication
+    // holds the generation lock. Its environment is local to that child.
+    if let Some(path) = std::env::var_os("FORGE_TEST_TASK_INITIALIZER") {
+        std::fs::write(std::env::var_os("FORGE_TEST_TASK_READY").unwrap(), "ready").unwrap();
+        let error = TasksStore::open(std::path::Path::new(&path))
+            .err()
+            .expect("published code index must not become a task store");
+        assert!(error.to_string().contains("TASK_DATABASE_COLLISION"));
+        return;
+    }
+    let workspace = Workspace::new();
+    let directory = workspace.root();
+    for alias in [false, true] {
+        let target = directory.join(format!("published-{alias}.sqlite"));
+        let input = if alias {
+            std::fs::write(&target, []).unwrap();
+            let link = directory.join("task-alias.sqlite");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            link
+        } else {
+            target.clone()
+        };
+        let root = directory.join(format!("source-{alias}"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("app.py"), "def published():\n    return 1\n").unwrap();
+        let index = directory.join(format!("generation-{alias}.sqlite"));
+        build(&root, &index, None).unwrap();
+        let expected = std::fs::read(&index).unwrap();
+        let mut lock_path = target.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .unwrap();
+        lock.lock().unwrap();
+        validate_code_map_target(&root, &target).unwrap();
+        let ready = directory.join(format!("ready-{alias}"));
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "database_guard::task_store_initialization_serializes_with_index_publication",
+                "--nocapture",
+            ])
+            .env("FORGE_TEST_TASK_INITIALIZER", &input)
+            .env("FORGE_TEST_TASK_READY", &ready)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        while !ready.exists() && started.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let blocked = child.try_wait().unwrap().is_none();
+        // Match atomic_build's final replacement while holding its real lock.
+        std::fs::rename(&index, &target).unwrap();
+        drop(lock);
+        let output = child.wait_with_output().unwrap();
+        assert!(ready.exists(), "initializer process did not start");
+        assert!(blocked, "task initialization bypassed the publication lock");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(std::fs::read(&target).unwrap(), expected);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_task_database_is_preserved() {
+    use std::os::unix::fs::PermissionsExt;
+    let ws = Workspace::new();
+    let target = ws.root().join("custom_store.db");
+    drop(TasksStore::open(&target).unwrap());
+    let before = std::fs::read(&target).unwrap();
+    let permissions = std::fs::metadata(&target).unwrap().permissions();
+    for command in ["delta", "build", "query", "serve"] {
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o0)).unwrap();
+        if std::fs::File::open(&target).is_ok() {
+            std::fs::set_permissions(&target, permissions).unwrap();
+            eprintln!("permission-denial fixture requires a user without DAC override");
+            return;
+        }
+        let (rejected, diagnostic) = if command == "delta" {
+            let result = contextunity_forge_mcp::db::writer::delta(
+                ws.root(),
+                &target,
+                &[ws.root().join("app.py")],
+            );
+            (result.is_err(), format!("{result:?}"))
+        } else {
+            let arguments = if command == "query" {
+                vec!["--db", target.to_str().unwrap(), "query", "overview"]
+            } else {
+                vec!["--db", target.to_str().unwrap(), command]
+            };
+            let output = crate::common::mcp_client::run_cli(&ws, &arguments);
+            (
+                !output.status.success(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+        std::fs::set_permissions(&target, permissions.clone()).unwrap();
+        assert!(
+            rejected && diagnostic.contains("TASK_DATABASE_COLLISION"),
+            "{command}: {diagnostic}"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), before, "{command}");
+    }
+}
+
+#[test]
+fn code_map_rebuild_recovers_readable_non_sqlite_cache() {
+    let ws = Workspace::new();
+    let target = ws.root().join("cache.db");
+    for contents in [
+        b"broken".as_slice(),
+        b"readable invalid SQLite header bytes".as_slice(),
+    ] {
+        std::fs::write(&target, contents).unwrap();
+        build(ws.root(), &target, None).unwrap();
+        let connection = rusqlite::Connection::open(&target).unwrap();
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}
+
 #[test]
 fn code_map_target_rejects_tasks_database_by_name_and_schema() {
     let ws = Workspace::new();
@@ -59,6 +193,10 @@ fn tasks_store_rejects_code_map_database_by_name_and_schema() {
     assert!(
         err.to_string().contains("TASK_DATABASE_COLLISION"),
         "expected TASK_DATABASE_COLLISION on TasksStore::open(code-map.sqlite), got: {err}"
+    );
+    assert!(
+        !code_map.exists(),
+        "rejected task open must not create its target"
     );
 
     // 2. Rejects existing code map database even if named arbitrarily
