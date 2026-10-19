@@ -463,6 +463,8 @@ impl Server {
 }
 
 const MCP_SESSION_ENV: &str = "CONTEXTUNITY_FORGE_MCP_SESSION";
+#[cfg(unix)]
+const MCP_RELOAD_PARENT_ENV: &str = "CONTEXTUNITY_FORGE_MCP_RELOAD_PARENT";
 
 fn resumed_initialize_params(server: &Server) -> Option<rmcp::model::InitializeRequestParams> {
     let raw = std::env::var(MCP_SESSION_ENV).ok()?;
@@ -488,8 +490,50 @@ fn preserved_session(
     }
 }
 
+#[cfg(unix)]
+fn parent_is_alive(initial_parent_pid: u32) -> bool {
+    initial_parent_pid <= 1 || std::os::unix::process::parent_id() == initial_parent_pid
+}
+
+#[cfg(unix)]
+async fn parent_exited(initial_parent_pid: u32) {
+    while parent_is_alive(initial_parent_pid) {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
 /// Performs serve.
 pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let reload_parent = std::env::var(MCP_RELOAD_PARENT_ENV).ok();
+        std::env::remove_var(MCP_RELOAD_PARENT_ENV);
+        let initial_parent_pid = reload_parent
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or_else(std::os::unix::process::parent_id);
+        tokio::select! {
+            result = serve_session(root, db, initial_parent_pid) => result,
+            _ = parent_exited(initial_parent_pid) => {
+                eprintln!(
+                    "contextunity-forge-mcp: parent process ({initial_parent_pid}) exited; shutting down"
+                );
+                // Tokio's blocking stdin read cannot be cancelled; returning would hang
+                // runtime shutdown while another process still holds the input open.
+                std::process::exit(0)
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        serve_session(root, db).await
+    }
+}
+
+async fn serve_session(
+    root: PathBuf,
+    db: PathBuf,
+    #[cfg(unix)] initial_parent_pid: u32,
+) -> Result<()> {
     let server = Server::new(root, db);
     let service = if let Some(params) = resumed_initialize_params(&server) {
         rmcp::service::serve_directly(server, super::response::stdio(), Some(params))
@@ -524,7 +568,10 @@ pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
                             }
                         }
                         let args: Vec<_> = std::env::args_os().skip(1).collect();
-                        Err(std::process::Command::new(exe).args(args).exec())
+                        Err(std::process::Command::new(exe)
+                            .args(args)
+                            .env(MCP_RELOAD_PARENT_ENV, initial_parent_pid.to_string())
+                            .exec())
                     })();
                     if let Err(error) = result {
                         eprintln!("SIGHUP reload failed: {error}");
@@ -536,4 +583,16 @@ pub async fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
     #[cfg(not(unix))]
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn parent_identity_contract() {
+    let parent = std::os::unix::process::parent_id();
+    let current = parent_is_alive(parent);
+    let detached = [parent_is_alive(0), parent_is_alive(1)];
+    let changed = parent_is_alive(u32::MAX);
+    assert!(current);
+    assert!(detached.into_iter().all(|alive| alive));
+    assert!(!changed);
 }

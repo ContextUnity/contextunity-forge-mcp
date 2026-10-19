@@ -293,29 +293,78 @@ receipt:
 
 ```yaml
 task_ref: mcp-idle-timeout-and-memory-compaction
-target: "Preserve idle MCP connections, terminate servers after parent loss, and retain indexing memory reclamation without duplicate MCP trimming"
+target: Preserve idle MCP connections, terminate servers after parent loss, and retain indexing memory reclamation without duplicate MCP trimming
 proof_policy: seam-test-first
-contract_revision: 4
+contract_revision: 5
 scope:
-  - src/core/sys.rs
-  - src/mcp/server.rs
-  - src/mcp/tools.rs
-  - src/engine/pipeline.rs
-  - tests/common/mcp_client.rs
-  - tests/mcp/freshness/stdio_and_response.rs
-  - docs/reference/mcp-setup.md
-  - docs/architecture/performance.md
-status: ready
+- src/mcp/server.rs
+- tests/common/mcp_client.rs
+- tests/mcp/freshness/stdio_and_response.rs
+- docs/reference/mcp-setup.md
+- docs/architecture/performance.md
+status: completed
 subtasks:
-  - subtask_ref: glibc-malloc-trim-binding
-    title: "Implement trim_memory() wrapping malloc_trim(0) on Unix glibc to return unused heap arenas to the operating system"
-    status: completed
-  - subtask_ref: mcp-parent-lifecycle
-    title: "Remove inactivity shutdown; prove connected server exit after parent loss with transport held open, and preserve SIGHUP session continuity"
-    status: completed
-  - subtask_ref: post-tool-memory-trimming
-    title: "Invoke trim_memory() after tool dispatch responses in responding and after cold build / delta index passes"
-    status: completed
+- subtask_ref: glibc-malloc-trim-binding
+  title: Preserve all ten main allocator trims at existing indexing batch boundaries without adding an unused wrapper
+  status: completed
+  evidence: null
+- subtask_ref: post-tool-memory-trimming
+  title: Exclude redundant per-request and duplicate indexing-end trims; prove main trimming sites are preserved and require final paired performance acceptance
+  status: completed
+  evidence: null
+- subtask_ref: mcp-parent-lifecycle
+  title: Remove inactivity shutdown; prove connected server exit after parent loss with transport held open, and preserve SIGHUP session continuity
+  status: completed
+  evidence: null
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-19T17:39:30.564757828+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib && cargo test --test mcp
+      exit_code: 0
+      tests_passed: 174
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All five admitted files byte-match frozen snapshot 398f724 against base 22e64ad; git diff --check passed. Only additional tracked path is the admitted task-4 contract revision/scope reduction in the milestone manifest; untracked successor plan excluded. No reviewer source edits. H/task4-review-binding-final.json and task4-review-source-sha256.txt, H=/tmp/forge-049-implementation-20261019.
+        claims:
+          applicable: true
+          evidence: 'T4-R1 repaired and independently reverified: original parent identity survives SIGHUP exec; both held-open-input control and replacement/reparent race cases exit in final external reproduction, original red retained. Complete independent strict Clippy exit 0; lib 86/0 and mcp 88/0, zero ignored/filtered, 174 actual passes. Real pending/connected parent-loss, reload continuity and inactivity cases pass. H/task4-review-gates.json, task4-review-parent-reload-final.json and task4-independent-review.md. Full049 performance remains unaccepted.'
+        concurrency:
+          applicable: true
+          evidence: One bounded two-second asynchronous monitor surrounds initialization and connected serve_session, with original PID retained across exec. Private reload value is consumed/removed before session creation and set only on exec Command; failed exec cannot mutate live environment with it. Process exit on parent loss avoids Tokio blocking-stdin shutdown hang. No new DB locks/workers/index walks. All ten allocator trims retained; five containing files byte-identical to task3 base, no per-request or duplicate-end trims.
+        project_isolation:
+          applicable: true
+          evidence: Actual W-rooted MCP generation 24745d04, 313 files/7051 nodes/zero parse errors; direct contract-test edge to production parent helper. Reproduction uses disposable H roots and real binary/process/stdio, sources unchanged. Independent tests use isolated skill and Cargo target. No root routing, admission, shared DB or linked-workspace semantics changed.
+        administration:
+          applicable: true
+          evidence: Reviewer codex-049-reviewer distinct from accepted builder. No public setting, CLI/MCP protocol, schema, privilege, installation or task policy change; non-Unix path remains free of Unix monitor APIs. Forge automatic scoped delivery/receipt only; no manual commit or receipt edit. Original failed review/repro retained and current repair bound to candidate. Tasks5–6, full performance acceptance, checkpoint integration and milestone landing remain outside this disposition.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ADMISSION-DETERMINISM: Dependency manifest collection across cold build, incremental delta, and MCP source admission must yield identical path sets and digests for unchanged workspace state, eliminating false-positive rebuild loops.'
+    - 'INV-DATABASE-SEPARATION: Task tracking databases (tasks.sqlite) and code map indices (code-map.sqlite) are mutually exclusive; attempts to target a task database for code-map output or open a code-map database as task store fail closed with TASK_DATABASE_COLLISION.'
+    - 'INV-WORKSPACE-UNIQUENESS: Subproject milestone resolution honors declared_projects frontmatter and configured owner mappings, preventing duplicate phantom workspaces from conflicting on milestone references.'
+    - 'INV-DAEMON-RESOURCE-BOUND: MCP servers preserve live connections regardless of inactivity, terminate on Unix when their launching parent disappears, and trim free heap pages after batch operations without removing the allocator trims delivered in milestone 031.'
+    - 'INV-GREENFIELD-SEAM-ACTIONABILITY: Greenfield contract validation failure for uncreated scope files outputs deterministic remediation guidance with file paths and stub requirements.'
+    - 'INV-PERFORMANCE-PRESERVATION: Preserve the indexing optimizations delivered on main; paired release measurements on an identical frozen corpus must show no cold-build, delta, or warm MCP latency regression before milestone delivery.'
+    architectural_notes:
+    - 'decisions: Task4 contract refinement before activation: preserve all ten existing main allocator trims; omit recovered extra per-tool trim and duplicate cold/delta end trims. Main already reclaims heap at indexing batch boundaries, satisfying INV-DAEMON-RESOURCE-BOUND without a new unused trim_memory wrapper. Initial full-recovery paired evidence remains blocked (milestone blackboard405): overview median+13.926%, delta+3.277%; supplementary no-trim probe did not establish causality and does not prove regression closed. User requires no performance regressions. Amend only the ready task4 specification/revision via manifest and Forge sync, preserving statuses/receipts. Implementation owner: src/mcp/server.rs parent lifecycle; consumer: CLI serve -> whole session including pending initialization and connected/SIGHUP phases. Use one parent-monitor future outside session future to avoid duplicate select loops. No per-request allocator work or idle timer/configuration. Unit seam proves parent identity; actual stdio launcher-loss test keeps input pipe open in pending-initialization and connected phases; existing SIGHUP and obsolete timeout tests prove continuity. Final full MCP/strict Clippy and paired release acceptance remain mandatory. No public helper API, cache framework, or changes to main trimming sites needed. Proposed reduced scope: server.rs, common/mcp_client.rs, freshness/stdio_and_response.rs, reference/mcp-setup.md, architecture/performance.md. Task3 remains in build; no task4 source edits or claims yet.'
+    - 'decisions: Task-4 finding418 repaired and BUILD ACCEPTED: strict all-target/all-feature Clippy exit0; complete lib86/0 and MCP88/0, zero ignored/filtered,174 actual passes. Both pending-initialization and connected real servers exit on launcher loss while test keeps input open; idle survives obsolete timeout environment; SIGHUP same-PID continuity passes. Unix parent loss explicitly exits process because Tokio stdin''s blocking read prevents ordinary runtime shutdown; no per-request work or idle timeout. Controlled getppid fault on identical binaries/source produces real regression timeout (exit101,0/1); source hashes unchanged; same test without shim passes (exit0,1/0). Raw evidence H/task4-parent-fault.{json,log}, task4-parent-restored-green.log and task4-build-gate-{0,1,2}.log; H=/tmp/forge-049-implementation-20261019. Existing SIGHUP fixture ETXTBSY race repaired only in shared test client''s bounded one-second spawn retry for that exact error. All ten main allocator trims retained at original batch boundaries; no unused wrapper, redundant end trim or MCP per-request trim. Optimization preservation checker passes. Current implementation carried into cumulative future stage4/5/6 copies without touching other future changes. Independent reviewer now owns review/delivery. Full 049 performance acceptance remains OPEN; initial failed paired measurements are retained and not superseded by functional tests.'
+    - 'decisions: T4-R1 closure: original launcher PID survives SIGHUP exec through private reload-only Command.env; serve consumes/removes it before service initialization. The current process and exec-failure path never acquire the variable. Public serve signature, idle survival and all ten batch trims are unchanged. The existing real-process lifecycle seam now covers pending initialization, connected parent loss and Linux connected SIGSTOP/atomic replacement/launcher kill/queued SIGHUP/SIGCONT with held-open stdin and actual exit checks. Reviewer pre-fix evidence is preserved in H/task4-review-parent-reload.{json,py}. Repaired complete gates: strict Clippy exit0, lib86/0, MCP88/0, zero ignored/filtered, H/task4-build-gates.json. No performance conclusion: final paired acceptance remains open. H=/tmp/forge-049-implementation-20261019.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: greenfield-seam-guidance-and-diagnostics

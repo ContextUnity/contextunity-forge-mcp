@@ -88,6 +88,20 @@ Milestone 031 (`m-cold-indexing-throughput-and-memory-optimization`) addressed c
 - **Bounded Chunk Hydration**: In `populate_owned` (`src/db/writer.rs`, `src/db/ingest.rs`), `LoadedCatalogFile` structures are loaded and persisted in bounded parallel chunks of up to 500 files (`MAX_MULTI_VALUE_BATCH_ROWS = 500`). Each payload chunk is dropped immediately after SQLite insertion, preventing simultaneous coexistence of raw ASTs and database rows.
 
 ### 3. Allocator Arena Trimming
+
+The ten direct allocator trims delivered in milestone 031 remain at their
+indexing batch boundaries. MCP dispatch adds no per-request trim or duplicate
+trim after a completed cold build or delta.
+
+`malloc_trim(0)` attempts to release whole free pages; it does not free live
+objects or guarantee a reduction in RSS. It is thread-safe but traverses arenas
+under allocator locks and can issue `madvise`/`sbrk` calls. Reusing released pages
+can require additional kernel work. These costs follow from the
+[glibc implementation](https://github.com/bminor/glibc/blob/master/malloc/malloc.c)
+and the [API contract](https://man7.org/linux/man-pages/man3/malloc_trim.3.html).
+These costs keep trimming at batch boundaries; a lower RSS alone does not prove
+better request latency.
+
 - **Glibc Arena Reclamation**: Multi-threaded Rayon workloads cause glibc thread arenas to retain fragmented memory long after transient ASTs and serialization buffers are freed.
 - **Explicit Trimming**: `trim_allocator` (`libc::malloc_trim(0)`) is invoked in `src/engine/pipeline.rs` and `src/db/writer.rs` at the boundary between extraction/staging and persistence, and again after bulk row insertions. This directly drops Commerce peak RSS from `~1,503.5 MB` down to **`766–785 MB`**, consistently respecting the `< 800 MB` milestone ceiling (-48% peak memory reduction).
 

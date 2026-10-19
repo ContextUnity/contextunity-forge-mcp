@@ -65,6 +65,11 @@ For clients without a `cwd` setting, pass the repository root to Forge:
 
 ## First request and subsequent reads
 
+The server keeps connected clients alive regardless of inactivity. On Unix it
+exits when its launching parent disappears, including while awaiting MCP
+initialization. SIGHUP reload preserves the established session and stdio pipes.
+There is no inactivity shutdown setting.
+
 Reconnect the client and call `code_map_overview`. The first database-backed call creates `<root>/.forge/code-map.sqlite` automatically. The result reports the indexed workspace, generation, counts, and coverage. No `guide init` or manual `build` is required for MCP use.
 
 Before later database reads, Forge checks the adapter and admitted source inventory. Changed files trigger an incremental update or full rebuild as needed. A changed response policy affects output without reindexing. `ast_grep_search` scans admitted source directly, so use `code_map_overview` when you want to initialize or verify the SQLite index.

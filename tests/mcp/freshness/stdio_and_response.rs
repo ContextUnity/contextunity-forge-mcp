@@ -297,3 +297,127 @@ fn stdio_response_only_adapter_transitions_preserve_facts_and_continuations() {
         previous_generation = changed["sections"]["generation"].clone();
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn server_terminates_when_parent_process_exits() {
+    struct ServerCleanup(Option<i32>);
+    impl Drop for ServerCleanup {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                // SAFETY: this is the server launched by this fixture; disarmed after observed exit.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+    let cases = [(false, false), (true, false)]
+        .into_iter()
+        .chain(cfg!(target_os = "linux").then_some((true, true)));
+    for (initialized, reload) in cases {
+        let ws = Workspace::new();
+        let binary = if reload {
+            let binary = ws.path(".forge/server");
+            fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            fs::copy(env!("CARGO_BIN_EXE_contextunity-forge-mcp"), &binary).unwrap();
+            binary
+        } else {
+            PathBuf::from(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        };
+        let pid_file = ws.path("server.pid");
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "\"$1\" --root \"$2\" serve <&0 & echo $! >\"$3\"; wait",
+                "parent-fixture",
+            ])
+            .arg(&binary)
+            .arg(ws.root())
+            .arg(&pid_file);
+        let mut client = if initialized {
+            StdioClient::with_command(&mut command)
+        } else {
+            StdioClient::with_pending_initialization(&mut command)
+        };
+        let server_pid: i32 = fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let mut cleanup = ServerCleanup(Some(server_pid));
+        if initialized {
+            let listed = client.request_value("tools/list", json!({}));
+            assert!(listed["result"]["tools"].is_array(), "{listed}");
+        }
+        if reload {
+            let replacement = ws.path(".forge/server-next");
+            fs::copy(&binary, &replacement).unwrap();
+            fs::rename(&replacement, &binary).unwrap();
+            // Freeze between monitor ticks so launcher loss and reload are pending together.
+            assert_eq!(unsafe { libc::kill(server_pid, libc::SIGSTOP) }, 0);
+            #[cfg(target_os = "linux")]
+            {
+                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                loop {
+                    let stat = fs::read_to_string(format!("/proc/{server_pid}/stat")).unwrap();
+                    if stat
+                        .rsplit_once(") ")
+                        .is_some_and(|(_, tail)| tail.starts_with('T'))
+                    {
+                        break;
+                    }
+                    assert!(std::time::Instant::now() < deadline, "server did not stop");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        // The test owns the pipe writer and keeps it open after the launcher dies.
+        client.terminate_launcher();
+        if reload {
+            assert_eq!(unsafe { libc::kill(server_pid, libc::SIGHUP) }, 0);
+            assert_eq!(unsafe { libc::kill(server_pid, libc::SIGCONT) }, 0);
+        }
+        client.wait_for_transport_close(Duration::from_secs(10));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            // A zombie has exited; kill(pid, 0) alone would misclassify it as running.
+            #[cfg(target_os = "linux")]
+            let exited = fs::read_to_string(format!("/proc/{server_pid}/stat"))
+                .map(|stat| {
+                    stat.rsplit_once(") ")
+                        .is_some_and(|(_, tail)| tail.starts_with('Z'))
+                })
+                .unwrap_or(true);
+            #[cfg(not(target_os = "linux"))]
+            let exited = unsafe { libc::kill(server_pid, 0) } == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            if exited {
+                cleanup.0 = None;
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "server closed stdout but kept running (initialized={initialized}, reload={reload})"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn connected_server_survives_inactivity_with_obsolete_timeout_setting() {
+    let ws = Workspace::new();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+    command
+        .arg("--root")
+        .arg(ws.root())
+        .arg("serve")
+        .env("CONTEXTUNITY_FORGE_MCP_IDLE_TIMEOUT", "1s");
+    let mut client = StdioClient::with_command(&mut command);
+    std::thread::sleep(Duration::from_secs(3));
+    let listed = client.request_value("tools/list", json!({}));
+    assert!(listed["result"]["tools"].is_array(), "{listed}");
+}

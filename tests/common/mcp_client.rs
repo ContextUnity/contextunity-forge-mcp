@@ -57,15 +57,39 @@ impl StdioClient {
 
     /// Starts a caller-selected server binary, preserving real process boundaries.
     pub fn with_binary(workspace: &Workspace, binary: impl AsRef<OsStr>) -> Self {
-        let mut child = Command::new(binary)
-            .arg("--root")
-            .arg(workspace.root())
-            .arg("serve")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("could not start MCP server process");
+        let mut command = Command::new(binary);
+        command.arg("--root").arg(workspace.root()).arg("serve");
+        Self::with_command(&mut command)
+    }
+
+    /// Initializes a real stdio server launched through a process fixture.
+    pub fn with_command(command: &mut Command) -> Self {
+        let mut client = Self::with_pending_initialization(command);
+        client.notify("notifications/initialized", json!({}));
+        client
+    }
+
+    /// Receives initialize response, leaving the initialized notification pending.
+    pub fn with_pending_initialization(command: &mut Command) -> Self {
+        let spawn_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut child = loop {
+            match command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(child) => break child,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        && std::time::Instant::now() < spawn_deadline =>
+                {
+                    // A concurrent spawn may briefly inherit the copied reload binary's writer.
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("could not start MCP server process: {error}"),
+            }
+        };
         let input = child
             .stdin
             .take()
@@ -100,7 +124,6 @@ impl StdioClient {
             }),
         );
         assertions::assert_rpc_succeeded(&response);
-        client.notify("notifications/initialized", json!({}));
         client
     }
 
@@ -153,6 +176,27 @@ impl StdioClient {
     /// Exposes the child handle for process-level assertions such as PID stability.
     pub fn child(&self) -> &Child {
         &self.child
+    }
+
+    /// Ends the launcher while retaining the client's open server transport.
+    pub fn terminate_launcher(&mut self) {
+        self.child.kill().expect("could not kill launcher");
+        self.child.wait().expect("could not reap launcher");
+    }
+
+    /// Observes transport closure without closing the client's input pipe.
+    pub fn wait_for_transport_close(&self, timeout: Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match self
+                .output
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            {
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!("MCP transport remained open"),
+                Ok(_) => {}
+            }
+        }
     }
 
     /// Sends an MCP notification without waiting for a response.
