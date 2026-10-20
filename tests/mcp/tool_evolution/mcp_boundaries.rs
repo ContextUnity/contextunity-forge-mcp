@@ -73,28 +73,40 @@ fn ergonomic_source_budgets_are_clamped_at_mcp_boundary() {
     let source = format!(
         "{}def preview():\n{}",
         "# context\n".repeat(30),
-        "    value = 1\n".repeat(150)
+        "    x=1\n".repeat(510)
     );
+    assert!(source.len() < 8 * 1024);
     w.write("app.py", &source);
     w.build();
     let mut m = Mcp::new(&w);
     for tool in ["code_map_inspect", "code_map_explain", "get_code_snippet"] {
-        let clamped = m.ok(tool, json!({"selector":"app.py:preview","show_source":true,"leading_lines":30,"max_body_lines":150}));
-        let bounded = m.ok(tool, json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":100}));
+        let clamped = m.ok(tool, json!({"selector":"app.py:preview","show_source":true,"leading_lines":30,"max_body_lines":501}));
+        let bounded = m.ok(tool, json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":500}));
         assert_eq!(clamped["source"], bounded["source"], "{tool}");
         assert_eq!(
             clamped["source_preview"], bounded["source_preview"],
             "{tool}"
         );
-        assert_eq!(clamped["source_preview"]["body_lines"], 100);
+        assert_eq!(clamped["source_preview"]["body_lines"], 500);
         assert_eq!(clamped["source_preview"]["leading_lines"], 20);
         assert_eq!(clamped["source_preview"]["has_more"], true);
-        m.err(
+        let clamped_low = m.ok(
             tool,
-            json!({"selector":"app.py:preview","max_body_lines":0}),
-            "max_body_lines",
+            json!({"selector":"app.py:preview","show_source":true,"max_body_lines":0}),
         );
+        assert_eq!(clamped_low["source_preview"]["body_lines"], 1, "{tool}");
     }
+    let first_page = m.ok(
+        "get_code_snippet",
+        json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":501}),
+    );
+    let next_page = m.ok(
+        "get_code_snippet",
+        json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":500,"source_offset":first_page["source_preview"]["next_source_offset"],"generation":first_page["generation"]}),
+    );
+    assert_eq!(next_page["source_preview"]["body_offset"], 500);
+    assert_eq!(next_page["source_preview"]["body_lines"], 11);
+    assert_eq!(next_page["source_preview"]["has_more"], false);
 }
 
 #[test]
@@ -379,11 +391,13 @@ fn mcp_selector_and_source_boundaries() {
         json!({"selector":"src/app.py:last","leading_lines":0}),
     );
     assert_eq!(last["source"], "def last(): pass\n");
-    m.err(
+    let one_line = m.ok(
         "get_code_snippet",
-        json!({"selector":"src/app.py:first","max_body_lines":0}),
-        "max_body_lines",
+        json!({"selector":"src/app.py:first","leading_lines":0,"max_body_lines":0}),
     );
+    assert_eq!(one_line["source"], "def first(): pass\n");
+    assert_eq!(one_line["source_preview"]["body_lines"], 1);
+    assert_eq!(one_line["source_preview"]["has_more"], false);
     m.err(
         "get_code_snippet",
         json!({"selector":"src/app.py:first","leading_lines":-1}),

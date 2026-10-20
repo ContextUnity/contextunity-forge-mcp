@@ -157,32 +157,86 @@ receipt:
 
 ```yaml
 task_ref: source-preview-budget-and-chunking-limits
-target: "Expand default unbroken function preview limits to 200 lines and clamp max_body_lines up to 500 lines"
+target: Expand default unbroken function preview limits to 200 lines and clamp max_body_lines up to 500 lines
 proof_policy: seam-test-first
-contract_revision: 7
+contract_revision: 8
 invariants:
-  - 'INV-ERGONOMIC-PREVIEW-BUDGET: Source previews for symbols up to 200 lines are returned completely in a single response without artificial pagination; preview line budgets are clamped between 1 and 500 lines.'
+- 'INV-ERGONOMIC-PREVIEW-BUDGET: Source previews for symbols up to 200 lines are returned completely in a single response without artificial pagination; preview line budgets are clamped between 1 and 500 lines.'
 scope:
-  - src/core/response.rs
-  - src/db/symbols.rs
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - tests/query_context/diagnostics_and_source.rs
-  - tests/query_context/ranking_and_coverage.rs
-  - tests/mcp/context.rs
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
-  - docs/reference/mcp-tools.md
-status: ready
+- src/core/response.rs
+- src/db/symbols.rs
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- tests/query_context/diagnostics_and_source.rs
+- tests/query_context/ranking_and_coverage.rs
+- tests/mcp/context.rs
+- tests/mcp/tool_evolution/mcp_boundaries.rs
+- docs/reference/mcp-tools.md
+- skills/contextunity-forge/SKILL.md
+status: completed
 subtasks:
-  - subtask_ref: raise-default-source-preview-limit
-    title: "Increase default max_body_lines from 35 to 200 lines in response options and tool schemas"
-    status: pending
-  - subtask_ref: expand-clamped-preview-ceiling
-    title: "Expand allowed max_body_lines range from 1..=100 to 1..=500 lines in QueryOptions validation"
-    status: pending
-  - subtask_ref: preview-budget-seam-tests
-    title: "Verify complete single-page retrieval of 100-200 line functions without pagination tokens"
-    status: pending
+- subtask_ref: raise-default-source-preview-limit
+  title: Increase default max_body_lines from 35 to 200 lines in response options and tool schemas
+  status: completed
+  evidence: 'Revision 8 snapshot 5fa29485bde4d8476836cbc5b1a2f5e1a9144b53: core SourceContextPolicy default=200; MCP schema/tool descriptions, reference and repository skill co-evolve. Independent review: cargo test --test query_context exit 0, 43 passed/0 failed (archive 72a6b4db0f0449d9); cargo test --lib exit 0, 85/0 (af9557d5b7761bb2).'
+- subtask_ref: expand-clamped-preview-ceiling
+  title: Expand allowed max_body_lines range from 1..=100 to 1..=500 lines in QueryOptions validation
+  status: completed
+  evidence: SourceOptions::resolve clamps requested 0/1/200/500/501/usize::MAX to 1..=500; configured policy validates 1..=500, overflow and leading <=20 checks remain. DB with_source accepts bounded 500; MCP all three tools prove high/low clamp. Independent cargo test --lib 85/0; cargo test --test mcp 85/0 (b4aef54f3cf37042), CARGO_TARGET_DIR=milestone/target and actual copied skill override /tmp/forge053-preview-review15-skill-omb9960n/contextunity-forge.
+- subtask_ref: preview-budget-seam-tests
+  title: Verify complete single-page retrieval of 100-200 line functions without pagination tokens
+  status: completed
+  evidence: 'Real indexed SQLite inspect/explain seam proves 116/200 complete defaults, 201=200+1 and explicit 500, CRLF/UTF-8 reconstruction, no neighboring symbol leakage, explicit 35 continuation, generation rejection and byte bounds. Independent complete query_context 43/0, lib 85/0, MCP 85/0; strict Clippy exit 0 archive 58d67f74c047a8dd. MCP snippet proves 500+11 continuation; preexisting inspect/explain metadata-generation gap deferred in blackboard #506 to mcp-markdown-output-and-dead-metadata-compaction, no all-three continuation claim.'
+receipt:
+  contract_revision: 8
+  passed_at: 2026-10-20T00:34:31.604188156+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test query_context
+      exit_code: 0
+      tests_passed: 43
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS: exactly 10 revision-8 admitted implementation/proof/documentation paths plus authorized manifest contract_revision 7->8 and repository-skill scope admission. Every scoped blob equals accepted BUILD14 snapshot 5fa29485bde4d8476836cbc5b1a2f5e1a9144b53; scoped binary diff SHA256 0a55685bd23452eb0aea7b64207515e8333bfbcd4a17bf95140a26ea987ca309. No untracked/staged neighboring files, profile/config/schema/crate/linker/metadata edits. git diff --check exit 0. Documentation and skill prose match shared runtime; links unchanged and MCP skill link checks passed.'
+        claims:
+          applicable: true
+          evidence: 'PASS INV-ERGONOMIC-PREVIEW-BUDGET: src/core/response.rs:35-40 defaults to 200; :84-87 strictly validates configured 1..=500; :167-175 clamps requests 0/1/200/500/501/usize::MAX to 1..=500 and preserves offset overflow rejection. src/db/symbols.rs:676-687 validates 500 ceiling and retains verified-source/digest/generation checks and 8192 escaped-byte bound; unchanged source_preview and 64KiB envelope/search 3-hit/20-line/12KiB caps. CLI cli_source and MCP Inspect/Snippet/Explain share SourceOptions. Real indexed SQLite test diagnostics_and_source.rs:136-335 proves 116/200 default completeness, 201=200+1, explicit 500, UTF8/CRLF reconstruction, neighbor exclusion, explicit35 continuation, exhausted/missing/stale generation. MCP mcp_boundaries.rs:72-110 proves 0/501 clamping all3 tools and snippet500+11 continuation. No old behavioral oracle removed: earlier default35-dependent continuation calls now explicitly request35. Independent sequential commands after last source/test edit, cwd assigned preview worktree, CARGO_TARGET_DIR=/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/053-documentation-test-graph-and-tool-ergonomics/target: cargo clippy --all-targets --all-features -- -D warnings exit0 (archive58d67f74c047a8dd); cargo test --test query_context exit0 43passed/0failed (72a6b4db0f0449d9); cargo test --lib exit0 85/0 (af9557d5b7761bb2); cargo test --test mcp exit0 85/0 (b4aef54f3cf37042). Initial query runner timeout124 at1000ms (ab2c52517f2a1aff) provided no test result; after confirming no remaining process, complete rerun passed. MCP used CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR=/tmp/forge053-preview-review15-skill-omb9960n/contextunity-forge, actual currentbranch copy10files byte-identical; host global installation drift remains separate, no host-sync claim. Existing unchanged src/mcp/metadata.rs:142-164 generation removal is linked-deferred in blackboard506 to mcp-markdown-output-and-dead-metadata-compaction; no all3 MCP continuation claim. Historical authentic RED archives b37dcbdea787fea0/ac622ba6a3744e6e retained; no fabricated RED. Forge graph ff19eb5df8feb06c2b948779db4476f2d862acf6bebe01c634db9a08d5ccb2c0 shows direct test->SourceOptions/inspect_with_options/explain_with_options witnesses.'
+        concurrency:
+          applicable: true
+          evidence: 'PASS: reviewer codex-053-preview-reviewer differs from accepted builder codex-053-preview-builder; active review claim15 is bound to contract8, accepted build14 and HEAD a4991a9513075f286266a092074d8d481ea78289. No task engine, transaction, receipt, lock, database publication or rollback code changed. Cargo commands ran sequentially against explicit shared target with builder finished. Candidate scoped bytes rechecked after all verification and before submission. Existing generation validation remains fail-closed and full MCP freshness/concurrent rebuild/read fence tests passed. Source freeze remains in force through actual Forge delivery.'
+        project_isolation:
+          applicable: true
+          evidence: 'PASS: all CLI task/graph operations use fixed operational binary with explicit --root assigned preview worktree; graph metadata workspace_root matches. Full task/project identifier and worktree bound in proof. No 049 implementation sources moved. verified_source still resolves adapter-authorized file paths, regular files, maximum file bytes and indexed digest; selector/path/symlink/traversal and linked-workspace MCP tests passed. Temporary isolated copied skill resides under /tmp; no external agent installation or linked project changed.'
+        administration:
+          applicable: true
+          evidence: 'PASS: no schema migration, protected profile/config/hash, gate implementation, Git hook, archived receipt or credential changes. Manifest delta is accepted revision8 skill-scope coevolution only; operational subtasks now completed through task subtask update with current independent evidence, not manual receipt/status edits. Accepted contract13 and build14 bound to baseline a4991a9513075f286266a092074d8d481ea78289 and candidate5fa29485bde4d8476836cbc5b1a2f5e1a9144b53. Deliver will use same independent reviewer session and auto_commit through Forge; no manual commit. Deferred metadata owner durably recorded #506 before delivery. Closure/contract-planning learning found no additional independent local rule requiring a source or guidance edit.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-EXACT-SEARCH-PRIORITY: When exact is false (default) and symbol search candidates contain exact name or qualname matches, the engine automatically filters out noisy BM25 candidates and returns only exact matches, eliminating surrounding token pollution for known symbol identifiers.'
+    - 'INV-ERGONOMIC-PREVIEW-BUDGET: Source previews for symbols up to 200 lines are returned completely in a single response without artificial pagination; preview line budgets are clamped between 1 and 500 lines.'
+    - 'INV-NATURAL-DOC-SEARCH: Documentation search automatically filters common English stop-words and weights section title matches 3x over body text via FTS5 BM25, eliminating empty results caused by rigid AND conjunction of natural-language query phrases.'
+    - 'INV-TEST-CHAIN-AND-ROLE-TRANSPARENCY: code_map_tests classifies test entities into explicit roles (test_case, test_helper, test_fixture) and returns verified call paths (call_path) from test cases through helpers to target symbols instead of flat scope_or_transitive markers.'
+    - 'INV-EXPLICIT-EDGE-EVIDENCE: Graph inspection (impact and explain) at depth 1 returns full edge objects specifying edge kind (calls vs possible_calls), direction, and exact source location, strictly distinguishing statically proven calls from heuristic name candidates.'
+    - 'INV-UNRESOLVED-TAXONOMY: Unresolved references are categorized into specific granular reasons (dynamic_callback, unresolved_receiver_type, framework_magic, external_unindexed) with call expression snippets rather than generic other groupings.'
+    - 'INV-SCOPE-COVERAGE-TRANSPARENCY: code_map_overview provides coverage diagnostics broken down by primary workspace and linked_workspaces components rather than only global aggregate counts.'
+    - 'INV-DOC-GRAPH-TRACEABILITY: Markdown relative links and wikilinks are extracted into bidirectional cites_doc/cited_by_doc edges; governing invariants (INV-* rules) from linked doc sections are automatically surfaced on inspect and impact.'
+    - 'INV-ERGONOMIC-PREVIEW-BUDGET: Source previews for symbols up to 200 lines are returned completely in a single response without artificial pagination; preview line budgets are clamped between 1 and 500 lines.'
+    architectural_notes:
+    - 'deferred: {"finding":"Bounded linked continuation-token gap found during MCP boundary verification: code_map_inspect/code_map_explain can return source_preview.next_source_offset while MCP metadata compaction removes the root generation when a nested paging envelope carries the same generation, so continuation is rejected with `source continuation requires generation from the previous preview`.","owner":"src/mcp/metadata.rs (existing generation compaction at lines 142-164); unchanged by this task.","linked_future_owner":"mcp-markdown-output-and-dead-metadata-compaction","scope_boundary":"No MCP metadata fix in source-preview task. Keep 500-line clamp/low-clamp assertions across all three tools; prove 500+11 line continuation through get_code_snippet, whose response retains generation."}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: test-discovery-chains-and-role-classification

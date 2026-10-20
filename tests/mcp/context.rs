@@ -656,7 +656,7 @@ fn adapter_policy_applies_without_changing_fact_identity_and_rejects_invalid_bou
         "max_output_bytes: 65537",
         "max_output_bytes: 1023",
         "source_context: {leading_lines: 21}",
-        "source_context: {max_body_lines: 101}",
+        "source_context: {max_body_lines: 501}",
         "source_context: {max_body_lines: 0}",
         "detail: enormous",
     ] {
@@ -753,13 +753,16 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .contains("def selected"));
     assert!(explanation.get("incoming").is_some());
     assert_eq!(explanation["relations"], json!(["incoming"]));
-    let first = client.payload("get_code_snippet", json!({"selector":"selected"}));
+    let first = client.payload(
+        "get_code_snippet",
+        json!({"selector":"selected","max_body_lines":35}),
+    );
     let text = first["source"].as_str().unwrap();
     assert!(text.contains("Привіт\r\n") || text.contains("Привіт'\r\n"));
     assert!(!text.contains("previous"));
     assert!(!text.contains("following"));
     assert_eq!(first["source_preview"]["body_lines"], 35);
-    let second = client.payload("get_code_snippet", json!({"selector":"selected","source_offset":first["source_preview"]["next_source_offset"],"generation":first["generation"]}));
+    let second = client.payload("get_code_snippet", json!({"selector":"selected","max_body_lines":35,"source_offset":first["source_preview"]["next_source_offset"],"generation":first["generation"]}));
     assert_eq!(second["source_preview"]["body_offset"], 35);
     assert!(!second["source"].as_str().unwrap().contains("def selected"));
     workspace.write(

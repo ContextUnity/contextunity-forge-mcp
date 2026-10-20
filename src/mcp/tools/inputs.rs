@@ -84,7 +84,7 @@ pub struct Inspect {
     pub show_source: Option<bool>,
     /// Optional leading lines value.
     pub leading_lines: Option<usize>,
-    /// Optional max body lines value.
+    /// Optional source body line limit; values clamp to 1..=500, omitted uses the configured default (200 by default).
     pub max_body_lines: Option<usize>,
     /// Body line offset returned as next_source_offset by a previous preview.
     #[serde(default)]
@@ -122,7 +122,7 @@ pub struct Snippet {
     pub show_source: Option<bool>,
     /// Optional leading lines value.
     pub leading_lines: Option<usize>,
-    /// Optional max body lines value.
+    /// Optional source body line limit; values clamp to 1..=500, omitted uses the configured default (200 by default).
     pub max_body_lines: Option<usize>,
     /// Body line offset returned as next_source_offset by a previous preview.
     #[serde(default)]
@@ -185,7 +185,7 @@ pub struct Explain {
     pub show_source: Option<bool>,
     /// Optional leading lines value.
     pub leading_lines: Option<usize>,
-    /// Optional max body lines value.
+    /// Optional source body line limit; values clamp to 1..=500, omitted uses the configured default (200 by default).
     pub max_body_lines: Option<usize>,
     /// Body line offset returned as next_source_offset by a previous preview.
     #[serde(default)]

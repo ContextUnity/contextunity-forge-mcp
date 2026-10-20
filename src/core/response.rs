@@ -27,7 +27,7 @@ pub struct SourceContextPolicy {
     pub enabled_by_default: bool,
     /// The leading lines value.
     pub leading_lines: usize,
-    /// The max body lines value.
+    /// Default source body lines, from 1 through 500.
     pub max_body_lines: usize,
 }
 
@@ -36,7 +36,7 @@ impl Default for SourceContextPolicy {
         Self {
             enabled_by_default: false,
             leading_lines: 5,
-            max_body_lines: 35,
+            max_body_lines: 200,
         }
     }
 }
@@ -82,8 +82,8 @@ impl ResponsePolicy {
             "source leading_lines must be 0..=20"
         );
         anyhow::ensure!(
-            (1..=100).contains(&self.source_context.max_body_lines),
-            "source max_body_lines must be 1..=100"
+            (1..=500).contains(&self.source_context.max_body_lines),
+            "source max_body_lines must be 1..=500"
         );
         Ok(())
     }
@@ -166,11 +166,9 @@ impl SourceOptions {
     ) -> anyhow::Result<Self> {
         let defaults = &policy.source_context;
         let leading_lines = leading_lines.unwrap_or(defaults.leading_lines).min(20);
-        let max_body_lines = max_body_lines.unwrap_or(defaults.max_body_lines).min(100);
-        anyhow::ensure!(
-            (1..=100).contains(&max_body_lines),
-            "source max_body_lines must be 1..=100"
-        );
+        let max_body_lines = max_body_lines
+            .unwrap_or(defaults.max_body_lines)
+            .clamp(1, 500);
         anyhow::ensure!(
             offset.checked_add(max_body_lines).is_some(),
             "source_offset is too large"
@@ -187,14 +185,44 @@ impl SourceOptions {
 #[cfg(test)]
 #[test]
 fn source_preview_line_budgets_are_clamped() {
-    let options = SourceOptions::resolve(
-        &ResponsePolicy::default(),
-        Some(true),
-        Some(30),
-        Some(150),
-        0,
-    )
-    .expect("oversized source budgets are accepted");
-    assert_eq!(options.leading_lines, 20);
-    assert_eq!(options.max_body_lines, 100);
+    let mut failures = Vec::new();
+    let policy = ResponsePolicy::default();
+    for (requested, expected) in [
+        (None, 200),
+        (Some(0), 1),
+        (Some(1), 1),
+        (Some(200), 200),
+        (Some(500), 500),
+        (Some(501), 500),
+        (Some(usize::MAX), 500),
+    ] {
+        match SourceOptions::resolve(&policy, Some(true), Some(30), requested, 0) {
+            Ok(options) => {
+                assert_eq!(options.leading_lines, 20);
+                if options.max_body_lines != expected {
+                    failures.push(format!(
+                        "requested {requested:?}: expected {expected} body lines, got {}",
+                        options.max_body_lines
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!("requested {requested:?}: {error}")),
+        }
+    }
+    for (configured, accepted) in [
+        (0, false),
+        (1, true),
+        (200, true),
+        (500, true),
+        (501, false),
+    ] {
+        let mut policy = policy.clone();
+        policy.source_context.max_body_lines = configured;
+        if policy.validate().is_ok() != accepted {
+            failures.push(format!(
+                "policy body lines {configured}: expected accepted={accepted}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

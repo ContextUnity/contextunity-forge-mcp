@@ -674,7 +674,7 @@ fn with_source(
         return Ok(result);
     }
     anyhow::ensure!(
-        source.leading_lines <= 20 && (1..=100).contains(&source.max_body_lines),
+        source.leading_lines <= 20 && (1..=500).contains(&source.max_body_lines),
         "invalid source preview bounds"
     );
     anyhow::ensure!(

@@ -256,7 +256,7 @@ impl Server {
         )
     }
     #[tool(
-        description = "Bounded source preview for one selector. Defaults are 5 leading lines and 35 body lines. The on-disk file must match the indexed digest. Continue with source_offset and generation."
+        description = "Bounded source preview for one selector. Defaults are 5 leading lines and 200 body lines. Requested body lines clamp to 1–500. The on-disk file must match the indexed digest. Continue with source_offset and generation."
     )]
     fn get_code_snippet(&self, Parameters(p): Parameters<Snippet>) -> CallToolResult {
         self.responding(|adapter, policy| {

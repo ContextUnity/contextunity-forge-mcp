@@ -748,7 +748,7 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     workspace.write("code.py", &code);
     let conn = workspace.build();
     let policy = ResponsePolicy::default();
-    let source = SourceOptions::resolve(&policy, Some(true), Some(0), None, 0).unwrap();
+    let source = SourceOptions::resolve(&policy, Some(true), Some(0), Some(35), 0).unwrap();
     let inspect = symbols::inspect_with_options(
         &conn,
         &workspace.0,
@@ -829,7 +829,8 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     let offset = snippet["source_preview"]["next_source_offset"]
         .as_u64()
         .unwrap() as usize;
-    let next_source = SourceOptions::resolve(&policy, Some(true), Some(0), None, offset).unwrap();
+    let next_source =
+        SourceOptions::resolve(&policy, Some(true), Some(0), Some(35), offset).unwrap();
     assert!(
         symbols::snippet_paged(&conn, &workspace.0, "target", &next_source, &options(30)).is_err()
     );

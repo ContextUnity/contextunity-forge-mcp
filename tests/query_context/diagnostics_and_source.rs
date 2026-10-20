@@ -142,6 +142,15 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
             .collect::<String>()
     );
     workspace.write("code.py", &format!("def previous():\r\n    return 'PREVIOUS_SECRET'\r\n\r\n# selected documentation\r\n{body}"));
+    let cases = [116, 200, 201, 500].map(|lines| {
+        let name = format!("selected_{lines}");
+        let body = format!(
+            "def {name}():\r\n{}    return 'Привіт'\r\n",
+            "    pass\r\n".repeat(lines - 2)
+        );
+        workspace.write(&format!("preview_{lines}.py"), &body);
+        (lines, name, body)
+    });
     let conn = workspace.build();
     let policy = ResponsePolicy::default();
     let disabled = SourceOptions::resolve(&policy, None, None, None, 0).unwrap();
@@ -159,7 +168,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     .unwrap()
     .get("source")
     .is_none());
-    let preview = SourceOptions::resolve(&policy, Some(true), None, None, 0).unwrap();
+    let preview = SourceOptions::resolve(&policy, Some(true), None, Some(35), 0).unwrap();
     let first = symbols::inspect_with_options(
         &conn,
         &workspace.0,
@@ -180,7 +189,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     assert_eq!(first["source_preview"]["next_source_offset"], 35);
     let mut query = options(30);
     query.generation = Some(first["generation"].as_str().unwrap().to_owned());
-    let next = SourceOptions::resolve(&policy, Some(true), None, None, 35).unwrap();
+    let next = SourceOptions::resolve(&policy, Some(true), None, Some(35), 35).unwrap();
     let last = symbols::inspect_with_options(
         &conn,
         &workspace.0,
@@ -206,7 +215,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         ),
         body
     );
-    let finished = SourceOptions::resolve(&policy, Some(true), None, None, 62).unwrap();
+    let finished = SourceOptions::resolve(&policy, Some(true), None, Some(35), 62).unwrap();
     let empty = symbols::explain_with_options(
         &conn,
         &workspace.0,
@@ -234,6 +243,81 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         }
     )
     .is_err());
+    let mut failures = Vec::new();
+    for (lines, name, body) in cases {
+        for requested in [None, Some(500)] {
+            for explain in [false, true] {
+                let mut offset = 0;
+                let mut query = options(30);
+                let mut reconstructed = String::new();
+                loop {
+                    let source =
+                        SourceOptions::resolve(&policy, Some(true), Some(0), requested, offset)
+                            .unwrap();
+                    let result = if explain {
+                        symbols::explain_with_options(
+                            &conn,
+                            &workspace.0,
+                            &name,
+                            &symbols::ExplainOptions {
+                                direction: None,
+                                show_doc: true,
+                                source: &source,
+                                coverage: CoverageOptions::default(),
+                                page: &query,
+                            },
+                        )
+                    } else {
+                        symbols::inspect_with_options(
+                            &conn,
+                            &workspace.0,
+                            &name,
+                            &symbols::InspectOptions {
+                                show_doc: false,
+                                source: &source,
+                                coverage: CoverageOptions::default(),
+                                page: &query,
+                            },
+                        )
+                    }
+                    .unwrap();
+                    let preview = &result["source_preview"];
+                    assert_eq!(preview["total_body_lines"], lines);
+                    assert_eq!(preview["truncated_line"], false);
+                    assert!(serde_json::to_vec(&result["source"]).unwrap().len() <= 8192);
+                    if offset == 0 {
+                        let expected_lines = lines.min(requested.unwrap_or(200));
+                        if preview["body_lines"] != expected_lines {
+                            failures.push(format!("{name}, requested={requested:?}, explain={explain}: expected {expected_lines} body lines, got {}", preview["body_lines"]));
+                        }
+                        let expected_more = lines > expected_lines;
+                        if preview["has_more"] != expected_more {
+                            failures.push(format!("{name}, requested={requested:?}, explain={explain}: expected has_more={expected_more}, got {}", preview["has_more"]));
+                        }
+                        if !expected_more && !preview["next_source_offset"].is_null() {
+                            failures.push(format!(
+                                "{name}: complete preview must not require continuation"
+                            ));
+                        }
+                    }
+                    reconstructed.push_str(result["source"].as_str().unwrap());
+                    if !preview["has_more"].as_bool().unwrap() {
+                        assert!(preview["next_source_offset"].is_null());
+                        break;
+                    }
+                    let next_offset = preview["next_source_offset"].as_u64().unwrap() as usize;
+                    assert!(next_offset > offset && next_offset <= lines);
+                    assert_eq!(
+                        next_offset,
+                        offset + preview["body_lines"].as_u64().unwrap() as usize
+                    );
+                    offset = next_offset;
+                    query.generation = Some(result["generation"].as_str().unwrap().to_owned());
+                }
+                assert_eq!(reconstructed, body, "{name}, explain={explain}");
+            }
+        }
+    }
     workspace.write("code.py", "def selected(): return 99\n");
     assert!(symbols::inspect_with_options(
         &conn,
@@ -247,6 +331,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         }
     )
     .is_err());
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]

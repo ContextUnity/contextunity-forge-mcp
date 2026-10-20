@@ -102,13 +102,14 @@ Compact `code_map_explain` edge rows identify the other endpoint relative to the
 ## Result size and source
 
 Source options on `code_map_inspect`, `code_map_explain`, and `get_code_snippet`
-clamp `leading_lines` above 20 to 20 and `max_body_lines` above 100 to 100.
-Zero body lines, negative values, and overflowing source offsets remain invalid.
-Adapter `response.source_context` defaults retain strict range validation.
+clamp `leading_lines` above 20 to 20 and requested `max_body_lines` to 1–500.
+When omitted, the body limit uses `response.source_context.max_body_lines` (200 by default).
+Negative values and overflowing source offsets remain invalid. Adapter
+`response.source_context.max_body_lines` values are strictly validated from 1 to 500.
 
 Paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 65,536 bytes.
 
-Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `get_code_snippet` supports `leading_lines` from 0 to 20 and `max_body_lines` from 1 to 100. If source changed, refresh the index before relying on the result.
+Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `get_code_snippet` supports `leading_lines` from 0 to 20 and clamps requested `max_body_lines` to 1–500. If source changed, refresh the index before relying on the result.
 
 ## AST pattern capabilities
 

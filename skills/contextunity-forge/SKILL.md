@@ -82,7 +82,7 @@ flowchart TD
 6. **Tests**: `code_map_tests(selector="...", direction="inbound")`
    - Identifies which tests exercise the target code (`inbound`), or what production code a test relies on (`outbound`).
 7. **AST Preview**: `get_code_snippet(selector="...")`
-   - Reads a bounded window (5 leading + 35 body lines) directly from the AST.
+   - Reads a bounded source preview (5 leading + 200 body lines by default; requested body lines clamp to 1..500, within byte caps).
 8. **Verify Source**: Use `ctx_read` for exact source ranges before editing.
 9. **Task Lifecycle**: Claim, execute, and submit tasks via ACDD gates.
 
