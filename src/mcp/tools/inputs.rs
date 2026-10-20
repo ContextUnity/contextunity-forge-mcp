@@ -50,7 +50,7 @@ impl PageInput {
 #[derive(Default, Deserialize, JsonSchema)]
 /// Represents overview input data.
 pub struct OverviewInput {
-    /// Optional aspects to include: 'counts', 'components', 'languages', 'cycles', 'compiled_profiles', 'metadata'. If omitted, all standard aspects are included.
+    /// Optional aspects to include: 'counts', 'components', 'languages', 'coverage_by_workspace', 'cycles', 'compiled_profiles', 'metadata'. If omitted, all standard aspects are included.
     pub aspects: Option<Vec<String>>,
     #[serde(flatten)]
     /// The page value.
@@ -260,8 +260,10 @@ pub struct Tests {
 #[derive(Deserialize, JsonSchema)]
 /// Represents impact data.
 pub struct Impact {
-    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
-    pub selector: String,
+    /// Optional exact symbol ID or name; required when changes is omitted. Provide exactly one of selector or changes.
+    pub selector: Option<String>,
+    /// Git change view: staged, unstaged, or head. Exactly one of selector or changes is required.
+    pub changes: Option<String>,
     /// Restrict selector resolution to a workspace-relative file or directory.
     pub path: Option<String>,
     /// Impact direction: 'inbound' (default) or 'outbound'.

@@ -23,16 +23,16 @@ Selector grammar, SQL shape, proof objects, and examples stay in this page and i
 
 | Tool | Purpose and main input |
 | --- | --- |
-| `code_map_overview` | Workspace, index, language and documentation summary. |
+| `code_map_overview` | Workspace, index, language and documentation summary; request `coverage_by_workspace` for persisted primary and linked workspace coverage counts. |
 | `code_map_search` | Search symbols by `pattern`; by default, if exact name or qualified-name matches exist within the active filters, only those matches are returned. Otherwise, prefixes and natural-language terms use ranked FTS5 BM25 exploratory search. Hits include an indexed `signature` and `inspect_selector` arguments for `code_map_inspect` with `show_source:true`. Previews appear automatically when the total is at most three; set `include_preview:true` for larger result sets. Supports `include_docs`, `group_by_file`, prefix patterns such as `parse*`, and optional file or directory `path` scope. |
 | `code_map_inspect` | Resolve a `selector` and return a compact signature, docstring, receiver-aware container, call counts, and direct caller/callee preview. Set `include_coverage=true` for paged resolution evidence. |
 | `get_code_snippet` | Read indexed source around a `selector` with `leading_lines` and `max_body_lines` bounds. |
-| `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; set `direction` if needed. |
-| `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`; depth defaults to one edge. Each reached node identifies one shortest predecessor edge. |
+| `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; edge rows include both public endpoint IDs and direction relative to the selected node. Full detail also includes stored edge evidence. |
+| `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`, or analyze one Git change view (`staged`, `unstaged`, or `head`); provide exactly one of `selector` and `changes`. Depth defaults to one edge. |
 | `code_map_tests` | Find test relationships for a narrow `selector`; `direction` accepts `inbound` or `outbound`. Inbound results identify verified test cases and shortest exact `calls` paths, with a bounded lexical fallback when no call path exists. Outbound results follow exact `calls` edges. Results classify test cases, helpers, and fixtures; `possible_calls` do not establish coverage. |
 | `code_map_prove_removal` | Estimate what a `selector` removal could affect; structural evidence, not a proof of runtime safety. |
 | `code_map_query` | Route an `operation` to graph queries or paged read-only SQL (`operation="sql"`). |
-| `code_map_analyze` | Read workspace or path diagnostics and paged declared-public production symbols not reached from an indexed test case through exact `calls`; request stored syntax diagnostics with `lint:true` or opt into cycle analysis with `include_cycles`. |
+| `code_map_analyze` | Read workspace or path diagnostics and paged declared-public production symbols not reached from an indexed test case through exact `calls`; exact-file diagnostic rows include a source snippet and a reason when persisted evidence identifies one. Request stored syntax diagnostics with `lint:true` or opt into cycle analysis with `include_cycles`. |
 | `ast_grep_search` | Match a language-specific AST `pattern` in admitted source. Indexed file lists and FTS terms narrow candidate files before Tree-sitter parses their contents. |
 | `search_docs` | Search indexed Markdown by `query` and optional `doc_type`; `include_excerpt=true` adds a bounded match excerpt. |
 | `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`. |
@@ -97,9 +97,15 @@ For Python `from package import child`, a unique indexed child module contribute
 
 `code_map_analyze` groups unresolved references by recorded resolver cause and counts affected files. It also groups parse error records by language and affected files, and pages `untested_public_surface` by the requested path scope. A call through a proven external import has status `external` and contributes to `external_imports` instead of unresolved coverage. Use an exact indexed file as `target` to page individual locations; `detail="full"` includes the underlying resolver evidence. Test coverage is based only on exact `calls` paths from `test_case` roots; ambiguous `possible_calls`, helpers, fixtures, and lexical fallback suggestions do not remove a declared-public symbol from the untested page.
 
+For an exact indexed file, diagnostic locations include the source line as `snippet` when the file still matches its indexed digest. Their `reason` is derived from persisted resolver evidence only when a recognized cause is available; otherwise it is `null`. Full detail retains the existing evidence fields.
+
 Declared-public rules are language-specific: Python includes module-level names without a leading underscore, excluding nested declarations; Rust includes declarations written with unrestricted `pub`, even inside a private module; TypeScript includes local declarations in explicit named or default module exports and public/default-public members of exported classes, excluding private, protected, and `#private` members. The report does not infer whole-project re-export reachability, honor Python `__all__`, or treat type-only declarations as runtime call targets. Profiles without a declared-public rule leave visibility unknown.
 
-Compact `code_map_explain` edge rows identify the other endpoint relative to the selected node; full detail includes both endpoints. `code_map_inspect` reports an empty linked-document set as `{ "total": 0 }`. `code_map_overview` provides the workspace root, schema version, counts, and page generation.
+Compact and full `code_map_explain` edge rows include both public endpoint IDs and direction relative to the selected node; full detail also includes stored edge evidence. `code_map_inspect` reports an empty linked-document set as `{ "total": 0 }`. `code_map_overview` provides the workspace root, schema version, counts, and page generation. Its `coverage_by_workspace` aspect pages counts from persisted primary and linked workspace metadata; linked paths retain their workspace identity after reopening the index.
+
+Depth-one `code_map_impact` results include the exact selected edge on each non-seed node, with both endpoint IDs, kind, path, line, direction, confidence, and occurrence count; full detail includes stored edge evidence. At greater depths, nodes retain their shortest `via` predecessor.
+
+For a Git change view, pass `changes:"staged"`, `changes:"unstaged"`, or `changes:"head"` instead of a symbol selector. The response includes the changed files and paged `changed_symbols`, impacted `nodes`, related `tests`, and `unmapped_changes`. A range maps only when its selected Git postimage matches the indexed file; deleted, binary, rename-only, unindexed, stale, or non-symbol ranges remain explicit unmapped results and make `complete` false. The continuation `generation` binds both the graph and captured change snapshot, so a staged or working-tree change invalidates an older token even when the graph itself is unchanged.
 
 ## Result size and source
 

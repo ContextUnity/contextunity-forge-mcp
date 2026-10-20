@@ -3,7 +3,10 @@ use super::*;
 #[test]
 fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
     let workspace = Workspace::new();
-    workspace.write("graph.py", "def target(): pass\ndef caller(): target()\n");
+    workspace.write(
+        "graph.py",
+        "def target(): pass\ndef caller(): target(); target()\n",
+    );
     let conn = workspace.build();
     let compact = reader::inspect_paged(&conn, "target", false, &options(10)).unwrap();
     assert_eq!(compact["documents"], serde_json::json!({"total": 0}));
@@ -20,7 +23,11 @@ fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
     let edge = &incoming["incoming"]["items"][0];
     assert_eq!(edge["kind"], "calls");
     assert!(edge["src_public_id"].is_string());
-    assert!(edge.get("dst_public_id").is_none());
+    assert_eq!(edge["dst_public_id"], incoming["node"]["id"]);
+    assert_eq!(edge["direction"], "inbound");
+    assert_eq!(edge["path"], "graph.py");
+    assert_eq!(edge["line"], 2);
+    assert_eq!(edge["occurrence_count"], 2);
     assert!(incoming["incoming"]["generation"].is_string());
     let mut full = options(10);
     full.detail = Detail::Full;
@@ -817,6 +824,12 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
         );
     }
     assert_eq!(pages.len(), 4);
+    for edge in &pages {
+        assert!(edge["src_public_id"].is_string(), "{edge}");
+        assert!(edge["dst_public_id"].is_string(), "{edge}");
+        assert_eq!(edge["direction"], "outbound");
+        assert_eq!(edge["path"], "branch.py");
+    }
     let possible = pages
         .iter()
         .filter(|edge| edge["kind"] == "possible_calls")
@@ -824,4 +837,85 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
     assert_eq!(possible.len(), 2);
     assert!(possible.iter().all(|edge| edge["confidence"] == "possible"));
     assert_ne!(possible[0]["dst_public_id"], possible[1]["dst_public_id"]);
+    // The same persisted relationships must explain shallow impact, including
+    // possible dispatch at the callsite rather than the target definition.
+    for detail in [Detail::Compact, Detail::Full] {
+        let mut impact_page = options(1);
+        impact_page.detail = detail;
+        let mut reached = Vec::new();
+        loop {
+            let impact = traversal::traverse_with_options(
+                &conn,
+                "run",
+                &traversal::TraversalOptions {
+                    depth: 1,
+                    inbound: false,
+                    mode: None,
+                    edge_types: None,
+                    page: &impact_page,
+                },
+            )
+            .unwrap();
+            for node in impact["nodes"]["items"].as_array().unwrap() {
+                if node["is_seed"] == true {
+                    assert!(node.get("via").is_none());
+                    assert!(node.get("edge").is_none());
+                    continue;
+                }
+                let edge = &node["edge"];
+                let expected = pages
+                    .iter()
+                    .find(|edge| edge["dst_public_id"] == node["id"])
+                    .unwrap();
+                for field in [
+                    "kind",
+                    "path",
+                    "line",
+                    "confidence",
+                    "src_public_id",
+                    "dst_public_id",
+                ] {
+                    assert_eq!(edge[field], expected[field], "{field}: {node}");
+                }
+                assert_eq!(edge["direction"], "outbound");
+                if edge["kind"] == "possible_calls" {
+                    assert_eq!(edge["line"], 10);
+                    assert_eq!(edge["confidence"], "possible");
+                }
+                if detail == Detail::Full {
+                    assert!(edge["evidence"].is_string());
+                }
+                reached.push(node["id"].as_str().unwrap().to_owned());
+            }
+            if !continue_page(&mut impact_page, &impact["nodes"]) {
+                break;
+            }
+        }
+        assert_eq!(reached.len(), 4);
+        assert_eq!(reached.iter().collect::<BTreeSet<_>>().len(), 4);
+        for edge in &possible {
+            let inbound = traversal::traverse_with_options(
+                &conn,
+                edge["dst_public_id"].as_str().unwrap(),
+                &traversal::TraversalOptions {
+                    depth: 1,
+                    inbound: true,
+                    mode: None,
+                    edge_types: None,
+                    page: &options(10),
+                },
+            )
+            .unwrap();
+            let caller = inbound["nodes"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["id"] == edge["src_public_id"])
+                .unwrap();
+            assert_eq!(caller["edge"]["kind"], "possible_calls");
+            assert_eq!(caller["edge"]["direction"], "inbound");
+            assert_eq!(caller["edge"]["path"], "branch.py");
+            assert_eq!(caller["edge"]["line"], 10);
+        }
+    }
 }

@@ -66,6 +66,7 @@ fn rejected_selector_fields(
         ],
         "code_map_impact" => &[
             "selector",
+            "changes",
             "path",
             "direction",
             "depth",
@@ -210,7 +211,7 @@ impl Server {
         self.responding(|_, _| crate::engine::tasks::blackboard(&self.root, p, "mcp"))
     }
     #[tool(
-        description = "Workspace root, counts, languages, and resolution coverage. Call this first and confirm workspace_root is the active worktree before an absence claim. Automatically targets active claimed task worktree if available, or explicit worktree parameter."
+        description = "Workspace root, counts, languages, and resolution coverage, including paged coverage_by_workspace counts from the indexed primary and linked workspace snapshot. Uses server worktree routing; pass worktree for explicit selection."
     )]
     fn code_map_overview(&self, Parameters(p): Parameters<OverviewInput>) -> CallToolResult {
         self.responding(|adapter, policy| {
@@ -349,15 +350,17 @@ impl Server {
         })
     }
     #[tool(
-        description = "Transitive reachability from one selector. inbound (default) lists dependents; outbound lists dependencies. Start at depth=1. Each node includes one shortest predecessor edge. Depth above 1 fails when the first frontier exceeds 1000 links."
+        description = "Transitive reachability from one selector or a Git change view (staged, unstaged, or head). Provide exactly one of selector or changes. inbound (default) lists dependents; outbound lists dependencies. Each reached depth-one node includes the persisted edge endpoints, kind, path, line, direction, confidence, and occurrence count; full detail adds edge evidence. Change views bind every page to the graph, selected diff, and verified postimages, and report unmapped changes explicitly."
     )]
     fn code_map_impact(&self, Parameters(p): Parameters<Impact>) -> CallToolResult {
         self.responding(|adapter, policy| {
             let page = p.page.resolve(policy)?;
             self.read_with_adapter(adapter, |c| {
-                traversal::traverse_with_path_options(
+                traversal::impact_with_path_options(
                     c,
-                    &p.selector,
+                    &self.root,
+                    p.selector.as_deref(),
+                    p.changes.as_deref(),
                     p.path.as_deref(),
                     &traversal::TraversalOptions {
                         depth: p.depth,
@@ -424,7 +427,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Diagnostics for the workspace or one path, declared-public production symbols not reached by an indexed test case, stored syntax diagnostics, or static cycles. lint=true cannot combine with include_cycles=true."
+        description = "Diagnostics for the workspace or one path, declared-public production symbols not reached by an indexed test case, stored syntax diagnostics, or static cycles. Exact-file resolution and external-import rows include an evidence-based reason when known and a verified source-line snippet; full detail retains resolver evidence. lint=true cannot combine with include_cycles=true."
     )]
     fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
         self.responding(|adapter, policy| {

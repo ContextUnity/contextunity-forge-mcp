@@ -181,14 +181,26 @@ pub enum QueryCommand {
     },
     /// Represents the impact case.
     Impact {
-        /// The selector value.
-        selector: String,
+        /// Optional exact symbol selector; provide this or --changes.
+        selector: Option<String>,
+        #[arg(long)]
+        /// Git change view: staged, unstaged, or head.
+        changes: Option<String>,
         /// Restrict selector resolution to a workspace-relative file or directory.
         #[arg(long)]
         path: Option<String>,
         #[arg(long, default_value_t = 1)]
         /// Maximum impact depth; defaults to one edge.
         depth: u32,
+        #[arg(long, default_value_t = 100)]
+        /// Maximum result page size (1..=100).
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        /// Result page offset.
+        offset: usize,
+        #[arg(long)]
+        /// Continuation generation from the preceding result page.
+        generation: Option<String>,
     },
     /// Represents the explain case.
     Explain {
@@ -457,18 +469,30 @@ impl Cli {
                     )?,
                     QueryCommand::Impact {
                         selector,
+                        changes,
                         path,
                         depth,
-                    } => traversal::traverse_with_path_options(
+                        limit,
+                        offset,
+                        generation,
+                    } => traversal::impact_with_path_options(
                         &conn,
-                        &selector,
+                        &root,
+                        selector.as_deref(),
+                        changes.as_deref(),
                         path.as_deref(),
                         &traversal::TraversalOptions {
                             depth,
                             inbound: true,
                             mode: None,
                             edge_types: None,
-                            page: &cli_page(100)?,
+                            page: &QueryOptions::resolve(
+                                &ResponsePolicy::default(),
+                                Some(limit),
+                                offset,
+                                None,
+                                generation,
+                            )?,
                         },
                     )?,
                     QueryCommand::Explain { selector, path } => symbols::explain_with_path_options(

@@ -1235,7 +1235,16 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                             graph.edges.push(Edge { src: r.source.clone(), dst: method.id.clone(), kind: r.kind.as_str().into(), path: path.clone(), line: r.line, evidence: r.expression.clone(), confidence: "inferred".into() });
                             ("resolved", format!("computed receiver has statically proven member {}", method.qualname).into())
                         }
-                        receivers::Member::External(module, line, Some(provider)) => ("external", format!("finite Python framework member of {provider}: {} via external import {module} at line {line}", r.expression).into()),
+                        receivers::Member::External(module, line, Some(provider)) => {
+                            let diagnostic_marker = if profile
+                                .is_some_and(|profile| profile.id() == "python" && !profile.is_stdlib(module))
+                            {
+                                "; diagnostic_reason=framework_magic"
+                            } else {
+                                ""
+                            };
+                            ("external", format!("finite Python framework member of {provider}: {} via external import {module} at line {line}{diagnostic_marker}", r.expression).into())
+                        }
                         receivers::Member::External(module, _, None) => ("external", format!("call through external import {module}; callable target unverified").into()),
                         _ if literal_builtin => ("resolved", format!("standard library or built-in callee: {}", r.expression).into()),
                         _ => ("unresolved", "computed receiver or dynamic callee; callable identity is unknown".into()),
@@ -2360,7 +2369,14 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                     format!("{origin} built-in: {expression}").into()
                 } else if let Some((module, import_line)) = external_origin {
                     if let Some(provider) = framework_provider {
-                        format!("finite Python framework member {provider}.{tail} via external import {module} at line {import_line}").into()
+                        let diagnostic_marker = if profile
+                            .is_some_and(|profile| profile.id() == "python" && !profile.is_stdlib(module))
+                        {
+                            "; diagnostic_reason=framework_magic"
+                        } else {
+                            ""
+                        };
+                        format!("finite Python framework member {provider}.{tail} via external import {module} at line {import_line}{diagnostic_marker}").into()
                     } else if profile.is_some_and(|profile| {
                         matches!(profile.id(), "javascript" | "typescript")
                             && profile.is_stdlib(module)

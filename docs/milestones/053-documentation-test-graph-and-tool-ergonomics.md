@@ -343,41 +343,101 @@ receipt:
 
 ```yaml
 task_ref: graph-edge-evidence-unresolved-taxonomy-and-scope-transparency
-target: "Provide explicit edge descriptors in impact/explain, Git-diff impact analysis, granular unresolved taxonomy, and workspace coverage breakdown"
+target: Provide explicit edge descriptors in impact/explain, Git-diff impact analysis, granular unresolved taxonomy, and workspace coverage breakdown
 proof_policy: seam-test-first
-contract_revision: 8
+contract_revision: 9
 invariants:
-  - 'INV-EXPLICIT-EDGE-EVIDENCE: Graph inspection (impact and explain) at depth 1 returns full edge objects specifying edge kind (calls vs possible_calls), direction, and exact source location, strictly distinguishing statically proven calls from heuristic name candidates.'
-  - 'INV-DIFF-IMPACT-ANALYSIS: code_map_impact supports a changes parameter (staged, unstaged, head) to map modified Git diff ranges directly to AST symbols, impacted graph neighbors, and affected tests.'
-  - 'INV-UNRESOLVED-TAXONOMY: Unresolved references are categorized into specific granular reasons (dynamic_callback, unresolved_receiver_type, framework_magic, external_unindexed) with call expression snippets rather than generic other groupings.'
-  - 'INV-SCOPE-COVERAGE-TRANSPARENCY: code_map_overview provides coverage diagnostics broken down by primary workspace and linked_workspaces components rather than only global aggregate counts.'
+- 'INV-EXPLICIT-EDGE-EVIDENCE: Graph inspection (impact and explain) at depth 1 returns full edge objects specifying edge kind (calls vs possible_calls), direction, and exact source location, strictly distinguishing statically proven calls from heuristic name candidates.'
+- 'INV-DIFF-IMPACT-ANALYSIS: code_map_impact supports a changes parameter (staged, unstaged, head) to map modified Git diff ranges directly to AST symbols, impacted graph neighbors, and affected tests.'
+- 'INV-UNRESOLVED-TAXONOMY: Unresolved references are categorized into specific granular reasons (dynamic_callback, unresolved_receiver_type, framework_magic, external_unindexed) with call expression snippets rather than generic other groupings.'
+- 'INV-SCOPE-COVERAGE-TRANSPARENCY: code_map_overview provides coverage diagnostics broken down by primary workspace and linked_workspaces components rather than only global aggregate counts.'
 scope:
-  - src/db/reader.rs
-  - src/db/symbols.rs
-  - src/mcp/tools/inputs.rs
-  - src/cli/mod.rs
-  - src/mcp/tools.rs
-  - tests/query_context/symbol_context.rs
-  - tests/query_context/ranking_and_coverage.rs
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
-  - docs/reference/mcp-tools.md
-  - docs/reference/mcp-markdown-contracts.md
-  - docs/reference/cli.md
-  - skills/contextunity-forge/SKILL.md
-status: ready
+- src/db/reader.rs
+- src/db/symbols.rs
+- src/db/traversal.rs
+- src/engine/linker.rs
+- src/engine/linker/resolution.rs
+- src/mcp/tools/inputs.rs
+- src/cli/mod.rs
+- src/mcp/tools.rs
+- tests/query_context/symbol_context.rs
+- tests/query_context/ranking_and_coverage.rs
+- tests/mcp/tool_evolution/mcp_boundaries.rs
+- tests/impact_context.rs
+- docs/reference/mcp-tools.md
+- docs/reference/mcp-markdown-contracts.md
+- docs/reference/cli.md
+- skills/contextunity-forge/SKILL.md
+status: completed
 subtasks:
-  - subtask_ref: explicit-edge-descriptors-in-impact-and-explain
-    title: "Include edge kind, direction, and source location on neighbor nodes at depth 1 in traversal queries"
-    status: pending
-  - subtask_ref: git-diff-impact-traversal
-    title: "Implement changes filter in code_map_impact mapping Git diff line ranges to impacted AST symbols and covering tests"
-    status: pending
-  - subtask_ref: granular-unresolved-reference-taxonomy
-    title: "Categorize unresolved references into dynamic callbacks, unknown receiver types, and framework magic with source snippets"
-    status: pending
-  - subtask_ref: per-workspace-coverage-breakdown
-    title: "Report resolved, ambiguous, and unresolved counts segmented by workspace component in code_map_overview"
-    status: pending
+- subtask_ref: explicit-edge-descriptors-in-impact-and-explain
+  title: Include edge kind, direction, and source location on neighbor nodes at depth 1 in traversal queries
+  status: completed
+  evidence: 'REVIEW12 candidate19240fa contract9: INV-EXPLICIT-EDGE-EVIDENCE: current depth1 edge evidence and both changed traversal directions/public via IDs independently verified; F053-T4-REVERSE-PREDECESSOR confirmed-fixed. query43/0, impact4/0, MCP85/0, exit0. Raw outbound MCP transcript and original fixtures in /tmp/forge053-task4-closure-cgd4t45l'
+- subtask_ref: granular-unresolved-reference-taxonomy
+  title: Categorize unresolved references into dynamic callbacks, unknown receiver types, and framework magic with source snippets
+  status: completed
+  evidence: 'REVIEW12 candidate19240fa contract9: INV-UNRESOLVED-TAXONOMY: full current source read; exactly3 guarded nonstdlib marker producers retained; original known/computed negatives now null, explicit shadowedcallback positive retained. F053-T4-UNPROVEN-DIAGNOSTIC-REASON confirmed-fixed. MCP85/0 + languages262/0 exit0; original-taxonomy.json in /tmp/forge053-task4-closure-cgd4t45l'
+- subtask_ref: per-workspace-coverage-breakdown
+  title: Report resolved, ambiguous, and unresolved counts segmented by workspace component in code_map_overview
+  status: completed
+  evidence: 'REVIEW12 candidate19240fa contract9: INV-SCOPE-COVERAGE-TRANSPARENCY: persisted primary/linked root/prefix/count page and reopen/config-removal/rebuild behavior independently reviewed in full current scope; current MCP85/0, query43/0, languages262/0 exit0. Fresh current repo skill copied via documented override; host untouched. /tmp/forge053-task4-closure-cgd4t45l/closure.json'
+- subtask_ref: git-diff-impact-traversal
+  title: Implement changes filter in code_map_impact mapping Git diff line ranges to impacted AST symbols and covering tests
+  status: completed
+  evidence: 'REVIEW12 candidate19240fa contract9: INV-DIFF-IMPACT-ANALYSIS: all3 Git modes/continuations/postimages/deletion/rename/path negatives, parserprefix counts, public reverse IDs, complete cyclic689 parity/tail16 and explicit10000-state failclosed independently verified. F053-T4-DIFF-HUNK-PREFIX and F053-T4-TRUNCATED-REACHABILITY confirmed-fixed. query43/0 impact4/0 MCP85/0 cli7/0; /tmp/forge053-task4-closure-cgd4t45l/closure.json'
+receipt:
+  contract_revision: 9
+  passed_at: 2026-10-20T12:21:43.884750922+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test query_context
+      exit_code: 0
+      tests_passed: 43
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS: all 14 changed implementation/doc/test blobs match accepted candidate19240fa; all are admitted revision9 owners. Only three repair files differ from rejected d462. Coordinator milestone authority is preserved. Task6/Markdown, crate/linker expansion and metadata are untouched. No source edits by reviewer.'
+        claims:
+          applicable: true
+          evidence: 'PASS: all four revision9 invariants checked against real parser/linker/SQLite/CLI and stdio MCP seams. Depth1 actual edge endpoints/direction/location/count/evidence and deeper public via IDs retained; Git staged/unstaged/head, postimage binding, continuation invalidation, deletion/rename/odd paths and bounded failclosed traversal covered; taxonomy uses exactly three guarded nonstdlib markers and conservative nulls; persisted workspace coverage survives reopen/config removal until rebuild. Four prior IDs independently confirmed fixed, complete three-owner-cluster closure ledger read; no residual finding.'
+        concurrency:
+          applicable: true
+          evidence: 'PASS: immutable graph generation and recaptured Git-mode/diff/hunk/postimage continuation identity prevent mixed snapshots; final postimage/git recapture rejects drift including staged-only changes. SQLite2s and graph10000-state limits remain; visited-path walk prevents cycles consuming the useful reachability budget. Independent live workcap errors explicitly rather than returning partial complete=true. Cargo gates ran sequentially with explicit shared target; builder idle.'
+        project_isolation:
+          applicable: true
+          evidence: 'PASS: explicit-root fixed operational CLI and current runtime CLI used only assigned worktree or isolated /tmp real Git fixtures. Workspace source paths use persisted owner/root/digest and linked workspace partitions. Current overview root/generation matches assigned worktree; coverage persisted-state negatives pass. Fresh byte-identical repo skill copy selected through documented CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR; host installation untouched. All artifacts /tmp, no untracked worktree files.'
+        administration:
+          applicable: true
+          evidence: 'PASS: independent reviewer worker differs from accepted builder; actual REVIEW12 binds contract9, candidate19240fa, baseline9bfe35, full diff8fc4a3ea. Original introduced findings and authentic RED/green/mutation history retained in cumulative ledger; all current required gates independently pass with exact counts/exit0. Canonical Forge subtask evidence updated; no manual status/receipt edits. Same session will deliver with profile auto_commit, no duplicate commit or branch integration.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-EXACT-SEARCH-PRIORITY: When exact is false (default) and symbol search candidates contain exact name or qualname matches, the engine automatically filters out noisy BM25 candidates and returns only exact matches, eliminating surrounding token pollution for known symbol identifiers.'
+    - 'INV-ERGONOMIC-PREVIEW-BUDGET: Source previews for symbols up to 200 lines are returned completely in a single response without artificial pagination; preview line budgets are clamped between 1 and 500 lines.'
+    - 'INV-NATURAL-DOC-SEARCH: Documentation search automatically filters common English stop-words and weights section title matches 3x over body text via FTS5 BM25, eliminating empty results caused by rigid AND conjunction of natural-language query phrases.'
+    - 'INV-TEST-CHAIN-AND-ROLE-TRANSPARENCY: code_map_tests classifies test entities into explicit roles (test_case, test_helper, test_fixture) and returns verified call paths (call_path) from test cases through helpers to target symbols instead of flat scope_or_transitive markers.'
+    - 'INV-EXPLICIT-EDGE-EVIDENCE: Graph inspection (impact and explain) at depth 1 returns full edge objects specifying edge kind (calls vs possible_calls), direction, and exact source location, strictly distinguishing statically proven calls from heuristic name candidates.'
+    - 'INV-UNRESOLVED-TAXONOMY: Unresolved references are categorized into specific granular reasons (dynamic_callback, unresolved_receiver_type, framework_magic, external_unindexed) with call expression snippets rather than generic other groupings.'
+    - 'INV-SCOPE-COVERAGE-TRANSPARENCY: code_map_overview provides coverage diagnostics broken down by primary workspace and linked_workspaces components rather than only global aggregate counts.'
+    - 'INV-DOC-GRAPH-TRACEABILITY: Markdown relative links and wikilinks are extracted into bidirectional cites_doc/cited_by_doc edges; governing invariants (INV-* rules) from linked doc sections are automatically surfaced on inspect and impact.'
+    - 'INV-EXPLICIT-EDGE-EVIDENCE: Graph inspection (impact and explain) at depth 1 returns full edge objects specifying edge kind (calls vs possible_calls), direction, and exact source location, strictly distinguishing statically proven calls from heuristic name candidates.'
+    - 'INV-DIFF-IMPACT-ANALYSIS: code_map_impact supports a changes parameter (staged, unstaged, head) to map modified Git diff ranges directly to AST symbols, impacted graph neighbors, and affected tests.'
+    - 'INV-UNRESOLVED-TAXONOMY: Unresolved references are categorized into specific granular reasons (dynamic_callback, unresolved_receiver_type, framework_magic, external_unindexed) with call expression snippets rather than generic other groupings.'
+    - 'INV-SCOPE-COVERAGE-TRANSPARENCY: code_map_overview provides coverage diagnostics broken down by primary workspace and linked_workspaces components rather than only global aggregate counts.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: documentation-knowledge-graph-and-invariant-traceability

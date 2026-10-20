@@ -65,6 +65,7 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(first["nodes"]["total"], 5);
     assert_eq!(first["nodes"]["items"][0]["id"], "a");
     assert_eq!(first["nodes"]["items"][0]["is_seed"], true);
+    assert!(first["nodes"]["items"][0].get("edge").is_none());
     assert!(first["nodes"]["items"][0].get("via").is_none());
     assert_eq!(first["nodes"]["items"][1]["id"], "b");
     assert_eq!(first["nodes"]["items"][1]["via"]["id"], "a");
@@ -154,6 +155,10 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(inbound["nodes"]["items"][1]["id"], "d");
     assert_eq!(inbound["nodes"]["items"][1]["is_seed"], false);
     assert!(inbound["nodes"]["items"][1].get("via").is_none());
+    assert_eq!(inbound["nodes"]["items"][1]["edge"]["kind"], "calls");
+    assert_eq!(inbound["nodes"]["items"][1]["edge"]["direction"], "inbound");
+    assert_eq!(inbound["nodes"]["items"][1]["edge"]["path"], "fixture.py");
+    assert_eq!(inbound["nodes"]["items"][1]["edge"]["line"], 1);
     let shallow_reverse = traversal::traverse_with_options(
         &conn,
         "b",
@@ -173,6 +178,10 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
         .expect("decorator");
     assert_eq!(decorator["distance"], 1);
     assert!(decorator.get("via").is_none());
+    assert_eq!(decorator["edge"]["kind"], "decorates");
+    assert_eq!(decorator["edge"]["direction"], "inbound");
+    assert_eq!(decorator["edge"]["path"], "fixture.py");
+    assert_eq!(decorator["edge"]["line"], 1);
     conn.execute("INSERT INTO edges(src_hash,dst_hash,kind,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES(?1,?1,'calls',1,1,3,2,1)",[stable_hash64("a")])?;
     let shallow_self = traversal::traverse_with_options(
         &conn,

@@ -477,6 +477,537 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     assert_eq!(explained["node"]["kind"], "function");
     let removal = m.ok("code_map_prove_removal", json!({"selector":"cycle.py:a"}));
     assert_eq!(removal["safe_to_remove"], false);
+
+    // Git ranges enter the same real impact service through both interfaces.
+    // Keep odd UTF-8/control-character paths intact rather than parsing Git's
+    // human-readable quoted headers.
+    use contextunity_forge_mcp::core::git::git_command;
+    let git = |args: &[&str]| {
+        let output = git_command(w.root(), args).unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
+    };
+    w.write(".gitignore", ".forge/\n");
+    w.write("other.py", "def idle(): return 0\n");
+    let odd_path = "paths/space α\tline\nname.py";
+    w.write(odd_path, "def odd(): return 0\n");
+    w.write("renamed.py", "def renamed():\n    first = 0\n    second = 1\n    third = 2\n    return first + second + third\n");
+    w.write(
+        "deleted.py",
+        "def deleted(): return 0\n\ndef neighbor(): return 1\n",
+    );
+    w.write_bytes("binary.dat", &[0, 1, 2]);
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.email", "contract@example.invalid"],
+        vec!["config", "user.name", "Contract fixture"],
+        vec![
+            "add",
+            "--",
+            ".gitignore",
+            "cycle.py",
+            "tests/test_cycle.py",
+            "other.py",
+            odd_path,
+            "renamed.py",
+            "deleted.py",
+            "binary.dat",
+        ],
+        vec!["commit", "--quiet", "-m", "Fixture baseline"],
+    ] {
+        git(&args);
+    }
+    w.build();
+    for mode in ["staged", "unstaged", "head"] {
+        let empty = m.ok("code_map_impact", json!({"changes":mode}));
+        assert_eq!(empty["changes"]["mode"], mode);
+        assert_eq!(empty["complete"], true);
+        for field in ["changed_symbols", "nodes", "tests", "unmapped_changes"] {
+            assert_eq!(empty[field]["total"], 0, "{mode}/{field}: {empty}");
+        }
+    }
+    w.write("cycle.py", "def a(): b(); return 1\ndef b(): a()\n");
+    w.write(odd_path, "def odd(): return 1\n");
+    git(&["add", "--", "cycle.py", odd_path]);
+    w.write("other.py", "def idle(): return 2\n");
+    w.write("untracked.py", "def untracked(): return 5\n");
+    w.build();
+    for (mode, expected) in [
+        ("staged", vec!["cycle.py", odd_path]),
+        ("unstaged", vec!["other.py"]),
+        ("head", vec!["cycle.py", odd_path, "other.py"]),
+    ] {
+        let result = m.ok(
+            "code_map_impact",
+            json!({"changes":mode,"depth":16,"limit":100}),
+        );
+        assert_eq!(result["complete"], true, "{mode}: {result}");
+        assert_eq!(result["unmapped_changes"]["total"], 0);
+        let symbols = result["changed_symbols"]["items"].as_array().unwrap();
+        let actual = symbols
+            .iter()
+            .map(|node| node["path"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, expected.into_iter().collect(), "{mode}: {result}");
+        for node in symbols {
+            let inspected = m.ok("code_map_inspect", json!({"selector":node["id"]}));
+            assert_eq!(inspected["node"]["path"], node["path"]);
+            assert_eq!(inspected["node"]["line"], node["line"]);
+        }
+        if mode != "unstaged" {
+            assert!(result["nodes"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| node["name"] == "b"));
+            let test = result["tests"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["name"] == "test_a")
+                .unwrap();
+            assert_eq!(test["test_role"], "test_case");
+            assert!(test["connection"]["call_path"].as_array().unwrap().len() >= 2);
+        }
+        let cli = w.query(&[
+            "query",
+            "impact",
+            "--changes",
+            mode,
+            "--depth",
+            "16",
+            "--limit",
+            "100",
+        ]);
+        for field in ["changed_symbols", "nodes", "tests"] {
+            assert_eq!(
+                cli[field]["total"], result[field]["total"],
+                "{mode}/{field}"
+            );
+            let cli_ids = cli[field]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|node| node["id"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            let mcp_ids = result[field]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|node| node["id"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(cli_ids, mcp_ids, "{mode}/{field}: CLI/MCP parity");
+        }
+        assert_eq!(cli["complete"], result["complete"]);
+        assert_eq!(cli["changes"], result["changes"]);
+    }
+    let cli_first = run_cli(
+        &w,
+        &[
+            "query",
+            "impact",
+            "--changes",
+            "staged",
+            "--depth",
+            "16",
+            "--limit",
+            "1",
+        ],
+    );
+    assert!(
+        cli_first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_first.stderr)
+    );
+    let cli_first: serde_json::Value = serde_json::from_slice(&cli_first.stdout).unwrap();
+    assert_eq!(cli_first["changed_symbols"]["has_more"], true);
+    let cli_offset = cli_first["changed_symbols"]["next_offset"]
+        .as_u64()
+        .unwrap()
+        .to_string();
+    let cli_generation = cli_first["changed_symbols"]["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let cli_next = run_cli(
+        &w,
+        &[
+            "query",
+            "impact",
+            "--changes",
+            "staged",
+            "--depth",
+            "16",
+            "--limit",
+            "1",
+            "--offset",
+            &cli_offset,
+            "--generation",
+            &cli_generation,
+        ],
+    );
+    assert!(
+        cli_next.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_next.stderr)
+    );
+    let cli_next: serde_json::Value = serde_json::from_slice(&cli_next.stdout).unwrap();
+    assert_ne!(
+        cli_first["changed_symbols"]["items"][0]["id"],
+        cli_next["changed_symbols"]["items"][0]["id"]
+    );
+    for arguments in [
+        json!({}),
+        json!({"selector":"cycle.py:a","changes":"head"}),
+        json!({"changes":"invalid"}),
+        json!({"changes":"head","path":"../outside"}),
+    ] {
+        let (_, rejected) = m.call("code_map_impact", arguments);
+        assert_eq!(rejected["result"]["isError"], true, "{rejected}");
+    }
+    let before_invalid = persisted_state(&w);
+    assert!(!run_cli(&w, &["query", "impact", "--changes", "invalid"])
+        .status
+        .success());
+    assert_eq!(persisted_state(&w), before_invalid);
+
+    // Only the Git index changes here: source bytes and graph generation stay
+    // fixed, so ordinary index-generation validation cannot catch this drift.
+    let first = m.ok("code_map_impact", json!({"changes":"staged","limit":1}));
+    assert_eq!(first["changed_symbols"]["has_more"], true);
+    let token = first["changed_symbols"]["generation"].clone();
+    let next_offset = first["changed_symbols"]["next_offset"].clone();
+    let next = m.ok(
+        "code_map_impact",
+        json!({"changes":"staged","limit":1,"offset":next_offset,"generation":token}),
+    );
+    assert_ne!(
+        first["changed_symbols"]["items"][0]["id"],
+        next["changed_symbols"]["items"][0]["id"]
+    );
+    let graph = m.ok("code_map_overview", json!({}))["generation"].clone();
+    git(&["add", "--", "other.py"]);
+    assert_eq!(m.ok("code_map_overview", json!({}))["generation"], graph);
+    m.err(
+        "code_map_impact",
+        json!({"changes":"staged","limit":1,"offset":next_offset,"generation":token}),
+        "changed",
+    );
+
+    // Staged hunks describe the index postimage, not these newly shifted
+    // working-tree ranges. Indexing the latter cannot make mapping lawful.
+    w.write(
+        "cycle.py",
+        "# shifted\ndef a(): b(); return 1\ndef b(): a()\n",
+    );
+    w.build();
+    let mismatch = m.ok("code_map_impact", json!({"changes":"staged","limit":100}));
+    assert_eq!(mismatch["complete"], false);
+    assert!(mismatch["unmapped_changes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["path"] == "cycle.py" && item["reason"] == "snapshot_mismatch"));
+    assert!(!mismatch["changed_symbols"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["path"] == "cycle.py"));
+
+    git(&["add", "--", "cycle.py"]);
+    git(&["commit", "--quiet", "-m", "Accept mapped changes"]);
+    fs::rename(w.path("renamed.py"), w.path("moved.py")).unwrap();
+    w.write("deleted.py", "def neighbor(): return 1\n");
+    w.write_bytes("binary.dat", &[0, 3, 4]);
+    git(&[
+        "add",
+        "--",
+        "renamed.py",
+        "moved.py",
+        "deleted.py",
+        "binary.dat",
+    ]);
+    w.build();
+    let unmapped = m.ok("code_map_impact", json!({"changes":"staged","limit":100}));
+    assert_eq!(unmapped["complete"], false);
+    for (path, reason) in [
+        ("deleted.py", "deleted_range"),
+        ("binary.dat", "binary"),
+        ("moved.py", "rename_only"),
+    ] {
+        assert!(
+            unmapped["unmapped_changes"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["path"] == path && item["reason"] == reason),
+            "{path}/{reason}: {unmapped}"
+        );
+    }
+    assert!(!unmapped["changed_symbols"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["path"] == "deleted.py" || item["path"] == "moved.py"));
+    w.write("moved.py", "def renamed():\n    first = 3\n    second = 1\n    third = 2\n    return first + second + third\n");
+    git(&["add", "--", "moved.py"]);
+    w.build();
+    let renamed = m.ok("code_map_impact", json!({"changes":"staged","limit":100}));
+    assert!(renamed["changed_symbols"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["path"] == "moved.py" && item["name"] == "renamed"));
+    assert!(renamed["changes"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["path"] == "moved.py" && item["old_path"] == "renamed.py"));
+
+    w.write("decor.py", "def helper(): return 1\ndef deco(fn):\n    helper()\n    return fn\n@deco\ndef target(): pass\n");
+    w.write(
+        "prefix.ts",
+        "export function counter() {\nlet value = 0;\nreturn value;\n}\n",
+    );
+    w.write(
+        "removed.ts",
+        "export function decrement() {\nlet value = 2;\n--value;\nreturn value;\n}\n",
+    );
+    let graph_source = |repeat_count: usize| {
+        let mut source = String::from("def seed(): return 1\n");
+        for index in 0..repeat_count {
+            source.push_str(&format!(
+                "def repeat_{index}(): seed(); repeat_{index}()\n"
+            ));
+        }
+        source.push_str("def tail_0(): seed()\n");
+        for index in 1..=15 {
+            source.push_str(&format!("def tail_{index}(): tail_{}()\n", index - 1));
+        }
+        source
+    };
+    w.write("graph.py", &graph_source(670));
+    w.build();
+    git(&["add", "-A"]);
+    git(&["commit", "--quiet", "-m", "Review boundary fixture baseline"]);
+
+    let mut regression_failures = Vec::new();
+    let parse_payload = |response: &serde_json::Value| -> Option<serde_json::Value> {
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .and_then(|text| serde_json::from_str(text).ok())
+    };
+
+    w.write(
+        "prefix.ts",
+        "export function counter() {\nlet value = 0;\n++value;\nreturn value;\n}\n",
+    );
+    git(&["add", "--", "prefix.ts"]);
+    w.build();
+    let (_, response) = m.call(
+        "code_map_impact",
+        json!({"changes":"staged","path":"prefix.ts"}),
+    );
+    if response["result"]["isError"] == true {
+        regression_failures.push(format!("++ source line was rejected: {response}"));
+    } else if let Some(result) = parse_payload(&response) {
+        let counter_mapped = result["changed_symbols"]["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["name"] == "counter"));
+        if result["complete"] != true || !counter_mapped {
+            regression_failures.push(format!(
+                "++ source addition was not mapped completely: symbols={}, unmapped={}, complete={}",
+                result["changed_symbols"]["total"],
+                result["unmapped_changes"]["items"],
+                result["complete"]
+            ));
+        }
+    } else {
+        regression_failures.push(format!("++ source response was not JSON: {response}"));
+    }
+
+    w.write(
+        "removed.ts",
+        "export function decrement() {\nlet value = 2;\nreturn value;\n}\n",
+    );
+    w.build();
+    let (_, response) = m.call(
+        "code_map_impact",
+        json!({"changes":"unstaged","path":"removed.ts"}),
+    );
+    if response["result"]["isError"] == true {
+        regression_failures.push(format!("-- source deletion was rejected: {response}"));
+    } else if let Some(result) = parse_payload(&response) {
+        let deletion_retained = result["unmapped_changes"]["items"]
+            .as_array()
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["path"] == "removed.ts" && item["reason"] == "deleted_range"
+                })
+            });
+        if result["complete"] != false || !deletion_retained {
+            regression_failures.push(format!(
+                "-- source deletion was not retained as incomplete evidence: unmapped={}, complete={}",
+                result["unmapped_changes"]["items"],
+                result["complete"]
+            ));
+        }
+    } else {
+        regression_failures.push(format!("-- source response was not JSON: {response}"));
+    }
+
+    w.write(
+        "decor.py",
+        "def helper(): return 2\ndef deco(fn):\n    helper()\n    return fn\n@deco\ndef target(): pass\n",
+    );
+    git(&["add", "--", "decor.py"]);
+    w.build();
+    let (_, response) = m.call(
+        "code_map_impact",
+        json!({"changes":"staged","path":"decor.py","depth":2,"limit":100}),
+    );
+    if response["result"]["isError"] == true {
+        regression_failures.push(format!("reverse predecessor response failed: {response}"));
+    } else if let Some(result) = parse_payload(&response) {
+        let target = result["nodes"]["items"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["name"] == "target"));
+        if target.is_none_or(|node| {
+            node["distance"] != 2
+                || node["via"]["id"] != "py:decor.py:2:deco"
+                || node["via"]["kind"] != "decorates"
+        }) {
+            regression_failures.push(format!(
+                "reverse predecessor did not retain public via identity: target={target:?}, result={}",
+                result["nodes"]["items"]
+            ));
+        }
+    } else {
+        regression_failures.push(format!("reverse predecessor response was not JSON: {response}"));
+    }
+
+    let control_w = Workspace::new();
+    control_w.write(".gitignore", ".forge/\n");
+    control_w.write("graph.py", &graph_source(630));
+    let control_git = |args: &[&str]| {
+        let output = git_command(control_w.root(), args).unwrap();
+        assert!(
+            output.status.success(),
+            "control {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.email", "contract@example.invalid"],
+        vec!["config", "user.name", "Contract fixture"],
+        vec!["add", "--", ".gitignore", "graph.py"],
+        vec!["commit", "--quiet", "-m", "Small graph control baseline"],
+    ] {
+        control_git(&args);
+    }
+    control_w.build();
+    let control = graph_source(630).replace("def seed(): return 1", "def seed(): return 2");
+    control_w.write("graph.py", &control);
+    control_git(&["add", "--", "graph.py"]);
+    control_w.build();
+    let mut control_m = Mcp::new(&control_w);
+    let (_, changed_control_response) = control_m.call(
+        "code_map_impact",
+        json!({"changes":"staged","depth":16,"limit":100}),
+    );
+    let (_, selected_control_response) = control_m.call(
+        "code_map_impact",
+        json!({"selector":"graph.py:seed","depth":16,"limit":100}),
+    );
+    match (
+        changed_control_response["result"]["isError"]
+            .as_bool()
+            .unwrap_or(false),
+        selected_control_response["result"]["isError"]
+            .as_bool()
+            .unwrap_or(false),
+        parse_payload(&changed_control_response),
+        parse_payload(&selected_control_response),
+    ) {
+        (false, false, Some(changed), Some(selected)) => {
+            if changed["complete"] != true
+                || changed["nodes"]["total"] != 649
+                || changed["nodes"]["total"] != selected["nodes"]["total"]
+            {
+                regression_failures.push(format!(
+                    "smaller positive graph control changed/selector totals differ: changed={} selected={}",
+                    changed["nodes"]["total"],
+                    selected["nodes"]["total"]
+                ));
+            }
+        }
+        _ => regression_failures.push(format!(
+            "smaller positive graph control failed: changed={changed_control_response} selected={selected_control_response}"
+        )),
+    }
+
+    let changed_graph = graph_source(670).replace("def seed(): return 1", "def seed(): return 2");
+    w.write("graph.py", &changed_graph);
+    git(&["add", "--", "graph.py"]);
+    w.build();
+    let impact_args = json!({"changes":"staged","path":"graph.py","depth":16,"limit":100});
+    let (_, changed_graph_response) = m.call("code_map_impact", impact_args.clone());
+    let (_, selected_graph_response) = m.call(
+        "code_map_impact",
+        json!({"selector":"graph.py:seed","depth":16,"limit":100}),
+    );
+    match (
+        changed_graph_response["result"]["isError"]
+            .as_bool()
+            .unwrap_or(false),
+        selected_graph_response["result"]["isError"]
+            .as_bool()
+            .unwrap_or(false),
+        parse_payload(&changed_graph_response),
+        parse_payload(&selected_graph_response),
+    ) {
+        (false, false, Some(changed), Some(selected)) => {
+            let generation = changed["nodes"]["generation"].clone();
+            let (_, tail_response) = m.call(
+                "code_map_impact",
+                json!({"changes":"staged","path":"graph.py","depth":16,"limit":100,"offset":600,"generation":generation}),
+            );
+            let tail = parse_payload(&tail_response);
+            let tail_15_present = tail.as_ref().is_some_and(|page| {
+                page["nodes"]["items"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| item["name"] == "tail_15"))
+            });
+            if changed["complete"] != true
+                || changed["nodes"]["total"] != 689
+                || changed["nodes"]["total"] != selected["nodes"]["total"]
+                || !tail_15_present
+            {
+                regression_failures.push(format!(
+                    "deep cyclic graph was partial: changed_total={} selected_total={} complete={} tail_15_present={} tail_response={tail_response}",
+                    changed["nodes"]["total"],
+                    selected["nodes"]["total"],
+                    changed["complete"],
+                    tail_15_present
+                ));
+            }
+        }
+        _ => regression_failures.push(format!(
+            "deep graph impact failed before proving its bounded result: changed={changed_graph_response} selected={selected_graph_response}"
+        )),
+    }
+    assert!(
+        regression_failures.is_empty(),
+        "review boundary regressions:\n{}",
+        regression_failures.join("\n")
+    );
+    fs::rename(w.path(".git"), w.path(".saved-git")).unwrap();
+    m.err("code_map_impact", json!({"changes":"head"}), "Git");
 }
 
 #[test]
@@ -1073,5 +1604,271 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
         "forge_guide",
         json!({"topic":"no-such-topic"}),
         "unknown guide topic",
+    );
+
+    // Granular diagnostics retain the persisted resolution status/evidence and
+    // show actual source, including arguments and CRLF/UTF-8.
+    w.write("requirements.txt", "pydantic\nrequests\n");
+    let diagnostics = concat!(
+        "from pydantic import BaseModel\r\n",
+        "from pathlib import Path\r\n",
+        "import requests\r\n",
+        "class Record(BaseModel):\r\n",
+        "    title: str\r\n",
+        "def dynamic(callback):\r\n",
+        "    callback('é argument')\r\n",
+        "def unknown(value):\r\n",
+        "    value.run('é argument')\r\n",
+        "def consume(record: Record):\r\n",
+        "    record.model_dump()\r\n",
+        "    Path('é.txt').exists()\r\n",
+        "    requests.get('https://example.invalid')\r\n",
+        "    missing_target('é argument')\r\n",
+        "    Record.model_validate({'title': 'ok'})\r\n",
+        "class Known: pass\r\n",
+        "def known(value: Known):\r\n",
+        "    value.missing('known method')\r\n",
+        "def computed(make):\r\n",
+        "    make()('computed callback')\r\n",
+        "    make().run('computed receiver')\r\n",
+    );
+    w.write("diagnostics.py", diagnostics);
+    w.build();
+    let mut diagnostic_failures = Vec::new();
+    for detail in ["compact", "full"] {
+        let mut offset = 0;
+        let mut generation = Value::Null;
+        let mut items = Vec::new();
+        let mut external = Vec::new();
+        loop {
+            let result = m.ok("code_map_analyze", json!({"target":"diagnostics.py","detail":detail,"limit":1,"offset":offset,"generation":generation}));
+            items.extend(
+                result["resolution"]["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned(),
+            );
+            if result["resolution"]["has_more"] != true {
+                break;
+            }
+            offset = result["resolution"]["next_offset"].as_u64().unwrap();
+            generation = result["resolution"]["generation"].clone();
+        }
+        offset = 0;
+        generation = Value::Null;
+        loop {
+            let result = m.ok("code_map_analyze", json!({"target":"diagnostics.py","detail":detail,"limit":1,"offset":offset,"generation":generation}));
+            external.extend(
+                result["external_imports"]["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned(),
+            );
+            if result["external_imports"]["has_more"] != true {
+                break;
+            }
+            offset = result["external_imports"]["next_offset"].as_u64().unwrap();
+            generation = result["external_imports"]["generation"].clone();
+        }
+        for (expression, reason, status, line) in [
+            ("callback", "dynamic_callback", "unresolved", 7),
+            ("value.run", "unresolved_receiver_type", "unresolved", 9),
+            ("record.model_dump", "framework_magic", "external", 11),
+            ("requests.get", "external_unindexed", "external", 13),
+            ("Record.model_validate", "framework_magic", "external", 15),
+        ] {
+            let item = items
+                .iter()
+                .chain(&external)
+                .find(|item| item["expression"] == expression && item["line"] == line)
+                .unwrap_or_else(|| {
+                    panic!("{expression}: resolution={items:?}, external={external:?}")
+                });
+            assert_eq!(item["status"], status);
+            if item["reason"] != reason {
+                diagnostic_failures.push(format!(
+                    "{detail}/{expression}: expected {reason}, actual={item}"
+                ));
+            }
+            let expected_snippet = diagnostics
+                .split_inclusive('\n')
+                .nth(line - 1)
+                .unwrap()
+                .trim_end_matches(['\r', '\n']);
+            if item["snippet"]
+                .as_str()
+                .map(|text| text.trim_end_matches(['\r', '\n']))
+                != Some(expected_snippet)
+            {
+                diagnostic_failures.push(format!(
+                    "{detail}/{expression}: expected source {expected_snippet:?}, actual={item}"
+                ));
+            }
+            if status == "unresolved" {
+                assert!(item["cause"].is_string());
+            }
+            if detail == "full" {
+                assert!(item["evidence"].is_string());
+            }
+        }
+        let generic = items
+            .iter()
+            .find(|item| item["expression"] == "missing_target")
+            .unwrap();
+        assert!(
+            generic["reason"].is_null(),
+            "generic absence is not framework evidence: {generic}"
+        );
+        let stdlib = external
+            .iter()
+            .find(|item| item["line"] == 12)
+            .expect("finite pathlib member remains recorded as external");
+        assert_ne!(stdlib["reason"], "framework_magic", "{stdlib}");
+        for (expression, line) in [("value.missing", 18), ("make()", 20), ("make().run", 21)] {
+            let item = items
+                .iter()
+                .chain(&external)
+                .find(|item| item["expression"] == expression && item["line"] == line)
+                .unwrap_or_else(|| {
+                    panic!("{expression}: resolution={items:?}, external={external:?}")
+                });
+            assert_eq!(item["status"], "unresolved", "{detail}/{expression}: {item}");
+            assert!(item["cause"].is_string(), "{detail}/{expression}: {item}");
+            if detail == "full" {
+                assert!(item["evidence"].is_string(), "{detail}/{expression}: {item}");
+            }
+            if !item["reason"].is_null() {
+                diagnostic_failures.push(format!(
+                    "{detail}/{expression}: unproven category must stay null, actual={item}"
+                ));
+            }
+        }
+    }
+    let conn = w.open();
+    let phantom_edges = reader::rows(&conn,
+        "SELECT count(*) AS total FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE p.path='diagnostics.py' AND e.line IN(7,9,11,13,15) AND e.kind IN('calls','possible_calls')", &[], 1).unwrap();
+    assert_eq!(
+        phantom_edges[0]["total"], 0,
+        "diagnostic labels cannot create graph targets"
+    );
+    drop(conn);
+
+    // Scope identity and counts come from this published snapshot, not from
+    // component labels or the current adapter after it has changed.
+    let linked = Workspace::new();
+    linked.write(
+        "src/linked.py",
+        "def linked_entry(value): value.missing()\n",
+    );
+    w.write(
+        "forge-mcp.yaml",
+        &format!(
+            "roots: [.]\nlinked_workspaces:\n  - name: linked\n    path: '{}'\n    roots: [src]\n",
+            linked.root().display()
+        ),
+    );
+    w.build();
+    let full = m.ok("code_map_overview", json!({"limit":100}));
+    let scopes = full["coverage_by_workspace"]["items"]
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!(
+                "missing persisted workspace breakdown; diagnostics: {}",
+                diagnostic_failures.join("\n")
+            )
+        });
+    assert_eq!(full["coverage_by_workspace"]["total"], 2);
+    let conn = w.open();
+    for (name, root, prefix) in [
+        ("primary", w.root(), ""),
+        ("linked", linked.root(), "[linked]/"),
+    ] {
+        let scope = scopes.iter().find(|scope| scope["name"] == name).unwrap();
+        assert_eq!(
+            scope["root"],
+            root.canonicalize().unwrap().to_str().unwrap()
+        );
+        assert_eq!(scope["path_prefix"], prefix);
+        let expected = reader::rows(&conn,
+            "SELECT c.status,count(*) total FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id WHERE (?1='' AND p.path NOT LIKE '[linked]/%') OR (?1<>'' AND substr(p.path,1,length(?1))=?1) GROUP BY c.status",
+            &[&prefix], 10).unwrap();
+        for (status, field) in [
+            ("resolved", "resolved"),
+            ("ambiguous", "ambiguous"),
+            ("unresolved", "unresolved"),
+            ("external", "external_imports"),
+        ] {
+            let count = expected
+                .iter()
+                .find(|row| row["status"] == status)
+                .and_then(|row| row["total"].as_u64())
+                .unwrap_or(0);
+            assert_eq!(scope[field], count, "{name}/{field}: {scope}");
+        }
+    }
+    drop(conn);
+    let first = m.ok(
+        "code_map_overview",
+        json!({"aspects":["coverage_by_workspace"],"limit":1}),
+    );
+    assert_eq!(first["coverage_by_workspace"]["has_more"], true);
+    let next = m.ok("code_map_overview", json!({"aspects":["coverage_by_workspace"],"limit":1,"offset":first["coverage_by_workspace"]["next_offset"],"generation":first["coverage_by_workspace"]["generation"]}));
+    let mut paged = vec![
+        first["coverage_by_workspace"]["items"][0].clone(),
+        next["coverage_by_workspace"]["items"][0].clone(),
+    ];
+    paged.sort_by_key(|scope| scope["name"].as_str().unwrap().to_owned());
+    let mut expected = scopes.clone();
+    expected.sort_by_key(|scope| scope["name"].as_str().unwrap().to_owned());
+    assert_eq!(paged, expected);
+    drop(m);
+    let mut restarted = Mcp::new(&w);
+    assert_eq!(
+        restarted.ok("code_map_overview", json!({"limit":100}))["coverage_by_workspace"],
+        full["coverage_by_workspace"]
+    );
+    drop(restarted);
+    w.write("forge-mcp.yaml", "roots: [.]\n");
+    let reopened = w.open();
+    let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
+        &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
+        Some(100),
+        0,
+        None,
+        None,
+    )
+    .unwrap();
+    let persisted = reader::overview_with_options(
+        &reopened,
+        &reader::OverviewOptions {
+            aspects: None,
+            page: &page,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        persisted["coverage_by_workspace"]["items"],
+        full["coverage_by_workspace"]["items"]
+    );
+    assert_eq!(
+        persisted["coverage_by_workspace"]["total"],
+        full["coverage_by_workspace"]["total"]
+    );
+    drop(reopened);
+    w.build();
+    let mut rebuilt = Mcp::new(&w);
+    let changed = rebuilt.ok("code_map_overview", json!({"limit":100}));
+    assert_eq!(changed["coverage_by_workspace"]["total"], 1);
+    assert_eq!(
+        changed["coverage_by_workspace"]["items"][0]["name"],
+        "primary"
+    );
+    assert_ne!(changed["generation"], full["generation"]);
+    assert!(
+        diagnostic_failures.is_empty(),
+        "{}",
+        diagnostic_failures.join("\n")
     );
 }

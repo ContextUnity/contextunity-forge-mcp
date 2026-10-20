@@ -702,6 +702,11 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
         );
     }
 
+    if has_aspect("coverage_by_workspace") {
+        let scopes = workspace_coverage(conn, options, &generation)?;
+        result.insert("coverage_by_workspace".into(), scopes);
+    }
+
     if has_aspect("compiled_profiles") {
         let compiled_profiles: std::collections::BTreeSet<_> = crate::engine::languages::profiles()
             .map(|p| p.id())
@@ -730,6 +735,77 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     result.insert("generation".into(), serde_json::Value::String(generation));
 
     Ok(serde_json::Value::Object(result))
+}
+
+fn workspace_coverage(
+    conn: &Connection,
+    options: &QueryOptions,
+    generation: &str,
+) -> Result<Value> {
+    let root: String = conn.query_row(
+        "SELECT value FROM metadata WHERE key='workspace_root'",
+        [],
+        |row| row.get(0),
+    )?;
+    let linked_json: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='adapter_linked_workspaces'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or_else(|| "[]".into());
+    let linked: Value = serde_json::from_str(&linked_json)?;
+    let mut scopes = vec![json!({"name":"primary","root":root,"path_prefix":""})];
+    if let Some(workspaces) = linked.as_array() {
+        for workspace in workspaces {
+            let (Some(name), Some(path)) = (
+                workspace.get("name").and_then(Value::as_str),
+                workspace.get("path").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            scopes.push(json!({
+                "name": name,
+                "root": path,
+                "path_prefix": format!("[{name}]/")
+            }));
+        }
+    }
+    scopes.sort_by(|left, right| {
+        left["name"]
+            .as_str()
+            .cmp(&right["name"].as_str())
+    });
+    let total = scopes.len();
+    let linked_json = serde_json::to_string(&linked)?;
+    let mut items = Vec::with_capacity(options.limit.min(total.saturating_sub(options.offset)));
+    for scope in scopes.into_iter().skip(options.offset).take(options.limit) {
+        let prefix = scope["path_prefix"].as_str().unwrap_or_default();
+        let counts = if prefix.is_empty() {
+            rows(
+                conn,
+                "SELECT coalesce(sum(CASE WHEN c.status='resolved' THEN c.records ELSE 0 END),0) resolved,coalesce(sum(CASE WHEN c.status='ambiguous' THEN c.records ELSE 0 END),0) ambiguous,coalesce(sum(CASE WHEN c.status='unresolved' THEN c.records ELSE 0 END),0) unresolved,coalesce(sum(CASE WHEN c.status='external' THEN c.records ELSE 0 END),0) external_imports FROM coverage_language_counts c JOIN path_dictionary p ON p.path_id=c.path_id WHERE NOT EXISTS(SELECT 1 FROM json_each(?1) linked WHERE substr(p.path,1,length('['||json_extract(linked.value,'$.name')||']/'))='['||json_extract(linked.value,'$.name')||']/')",
+                &[&linked_json],
+                1,
+            )?
+            .remove(0)
+        } else {
+            rows(
+                conn,
+                "SELECT coalesce(sum(CASE WHEN c.status='resolved' THEN c.records ELSE 0 END),0) resolved,coalesce(sum(CASE WHEN c.status='ambiguous' THEN c.records ELSE 0 END),0) ambiguous,coalesce(sum(CASE WHEN c.status='unresolved' THEN c.records ELSE 0 END),0) unresolved,coalesce(sum(CASE WHEN c.status='external' THEN c.records ELSE 0 END),0) external_imports FROM coverage_language_counts c JOIN path_dictionary p ON p.path_id=c.path_id WHERE substr(p.path,1,length(?1))=?1",
+                &[&prefix],
+                1,
+            )?
+            .remove(0)
+        };
+        let mut item = scope.as_object().cloned().unwrap_or_default();
+        for field in ["resolved", "ambiguous", "unresolved", "external_imports"] {
+            item.insert(field.into(), counts[field].clone());
+        }
+        items.push(Value::Object(item));
+    }
+    Ok(paging::value(items, total, options, generation))
 }
 
 /// Inspects a selected declaration with bounded graph and documentation pages.
@@ -810,9 +886,7 @@ pub(crate) fn explain_with_path_options(
     match dir {
         "both" | "incoming" => {
             let mut incoming = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.dst_hash=?1 ORDER BY e.kind,e.src_hash,e.path_id,e.line", paging::edges("e", options.detail)), &[&node_hash], options)?;
-            if options.detail == Detail::Compact {
-                omit_selected_endpoint(&mut incoming, "dst_public_id");
-            }
+            annotate_edge_direction(&mut incoming, "inbound");
             result["incoming"] = incoming;
         }
         "outgoing" => {
@@ -828,9 +902,7 @@ pub(crate) fn explain_with_path_options(
     match dir {
         "both" | "outgoing" => {
             let mut outgoing = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.src_hash=?1 ORDER BY e.kind,e.dst_hash,e.path_id,e.line", paging::edges("e", options.detail)), &[&node_hash], options)?;
-            if options.detail == Detail::Compact {
-                omit_selected_endpoint(&mut outgoing, "src_public_id");
-            }
+            annotate_edge_direction(&mut outgoing, "outbound");
             result["outgoing"] = outgoing;
         }
         "incoming" => {
@@ -870,11 +942,11 @@ pub(crate) fn explain_with_path_options(
     Ok(result)
 }
 
-fn omit_selected_endpoint(page: &mut Value, field: &str) {
+fn annotate_edge_direction(page: &mut Value, direction: &str) {
     if let Some(items) = page["items"].as_array_mut() {
         for item in items {
             if let Some(edge) = item.as_object_mut() {
-                edge.remove(field);
+                edge.insert("direction".into(), json!(direction));
             }
         }
     }
@@ -1145,20 +1217,34 @@ pub fn analyze_paged(
             &[&path],
             options,
         )?;
-        let resolution_columns = if options.detail == Detail::Full {
+        let resolution_sql = if options.detail == Detail::Full {
             format!(
-                "{},{} cause",
+                "SELECT {},{} cause,e.evidence AS __evidence FROM resolution_coverage c JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE c.status IN('unresolved','ambiguous') AND c.path_id=(SELECT path_id FROM path_dictionary WHERE path=?1) ORDER BY c.line,c.expression_id,c.status,c.evidence_id",
                 paging::coverage("c", Detail::Full),
                 resolution_cause_sql()
             )
         } else {
             format!(
-                "c.line,(SELECT expression FROM coverage_expressions WHERE expression_id=c.expression_id) AS expression,c.status,{} cause",
+                "SELECT c.line,(SELECT expression FROM coverage_expressions WHERE expression_id=c.expression_id) AS expression,c.status,{} cause,e.evidence AS __evidence FROM resolution_coverage c JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE c.status IN('unresolved','ambiguous') AND c.path_id=(SELECT path_id FROM path_dictionary WHERE path=?1) ORDER BY c.line,c.expression_id,c.status,c.evidence_id",
                 resolution_cause_sql()
             )
         };
-        result["resolution"] = paging::query(conn, &format!("SELECT {resolution_columns} FROM resolution_coverage c JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE c.status IN('unresolved','ambiguous') AND c.path_id=(SELECT path_id FROM path_dictionary WHERE path=?1) ORDER BY c.line,c.expression_id,c.status,c.evidence_id"), &[&path], options)?;
-        result["external_imports"] = paging::query(conn, &format!("SELECT {} FROM resolution_coverage c WHERE c.status='external' AND c.path_id=(SELECT path_id FROM path_dictionary WHERE path=?1) ORDER BY c.line,c.expression_id,c.evidence_id", paging::coverage("c", options.detail)), &[&path], options)?;
+        let mut resolution = paging::query(conn, &resolution_sql, &[&path], options)?;
+        let external_sql = format!(
+            "SELECT {},e.evidence AS __evidence FROM resolution_coverage c JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE c.status='external' AND c.path_id=(SELECT path_id FROM path_dictionary WHERE path=?1) ORDER BY c.line,c.expression_id,c.evidence_id",
+            paging::coverage("c", options.detail)
+        );
+        let mut external_imports = paging::query(conn, &external_sql, &[&path], options)?;
+        let workspace_root: String = conn.query_row(
+            "SELECT value FROM metadata WHERE key='workspace_root'",
+            [],
+            |row| row.get(0),
+        )?;
+        let source = super::symbols::verified_source(conn, Path::new(&workspace_root), path)?;
+        annotate_diagnostic_page(&mut resolution, &source);
+        annotate_diagnostic_page(&mut external_imports, &source);
+        result["resolution"] = resolution;
+        result["external_imports"] = external_imports;
     } else {
         result["top_files"] = json!(rows(conn, &format!("SELECT path,sum(parse_errors) parse_errors,sum(unresolved) unresolved FROM (SELECT path,count(*) parse_errors,0 unresolved FROM errors WHERE {scope} GROUP BY path UNION ALL SELECT p.path,0 parse_errors,count(*) unresolved FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id WHERE c.status IN('unresolved','ambiguous') AND {coverage_scope} GROUP BY p.path) GROUP BY path ORDER BY sum(parse_errors)+sum(unresolved) DESC,path LIMIT 5"), params, 5)?);
         result["resolution_statuses"] = json!(rows(conn, &format!("SELECT c.status,count(*) total FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id WHERE {coverage_scope} GROUP BY c.status ORDER BY c.status LIMIT 20"), params, 20)?);
@@ -1181,6 +1267,86 @@ pub fn analyze_paged(
 
 fn resolution_cause_sql() -> &'static str {
     "CASE WHEN c.status='ambiguous' THEN 'ambiguous_candidates' WHEN e.evidence='computed receiver or dynamic callee; callable identity is unknown' THEN 'dynamic_callee' WHEN e.evidence='callee is shadowed by a parameter or local binding of unknown callable identity' THEN 'shadowed_binding' WHEN e.evidence LIKE 'call through external import %' THEN 'external_import_call' WHEN e.evidence LIKE 'import %: 1 modules, 0 alias targets' THEN 'alias_target_missing' WHEN e.evidence LIKE 'no indexed provider for absolute import %' THEN 'missing_indexed_import' WHEN e.evidence LIKE 'import %: 0 modules, %' THEN 'missing_indexed_import' WHEN e.evidence LIKE '0 lexically justified candidates;%' THEN 'no_lexical_candidate' ELSE 'other' END"
+}
+
+fn annotate_diagnostic_page(page: &mut Value, source: &str) {
+    let Some(items) = page["items"].as_array_mut() else {
+        return;
+    };
+    for item in items {
+        let evidence = item
+            .get("__evidence")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let reason = diagnostic_reason(
+            item.get("status").and_then(Value::as_str),
+            item.get("cause").and_then(Value::as_str),
+            item.get("expression").and_then(Value::as_str),
+            &evidence,
+        );
+        let snippet = item
+            .get("line")
+            .and_then(Value::as_u64)
+            .filter(|line| *line > 0)
+            .and_then(|line| source.split_inclusive('\n').nth(line.saturating_sub(1) as usize))
+            .map(|line| line.trim_end_matches(['\r', '\n']))
+            .map(bounded_diagnostic_snippet);
+        if let Some(object) = item.as_object_mut() {
+            object.remove("__evidence");
+            object.insert(
+                "reason".into(),
+                reason.map_or(Value::Null, |reason| json!(reason)),
+            );
+            object.insert(
+                "snippet".into(),
+                snippet.map_or(Value::Null, |snippet| json!(snippet)),
+            );
+        }
+    }
+}
+
+fn bounded_diagnostic_snippet(line: &str) -> String {
+    if line.len() <= 512 {
+        return line.to_owned();
+    }
+    let mut end = 512;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    line[..end].to_owned()
+}
+
+fn diagnostic_reason(
+    status: Option<&str>,
+    cause: Option<&str>,
+    expression: Option<&str>,
+    evidence: &str,
+) -> Option<&'static str> {
+    if status == Some("ambiguous") {
+        return Some("ambiguous_candidates");
+    }
+    if evidence.contains("diagnostic_reason=framework_magic") {
+        return Some("framework_magic");
+    }
+    if evidence
+        .contains("callee is shadowed by a parameter or local binding of unknown callable identity")
+    {
+        return Some(if expression.is_some_and(|expression| expression.contains('.')) {
+            "unresolved_receiver_type"
+        } else {
+            "dynamic_callback"
+        });
+    }
+    if evidence.starts_with("call through external import ")
+        || cause == Some("external_import_call")
+    {
+        return Some("external_unindexed");
+    }
+    match cause {
+        Some("shadowed_binding") => Some("shadowed_binding"),
+        _ => None,
+    }
 }
 
 #[allow(dead_code)]

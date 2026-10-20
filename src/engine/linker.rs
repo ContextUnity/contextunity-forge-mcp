@@ -602,9 +602,16 @@ fn emit_inferred(
         semantic_context::Member::Local(node) => ("resolved", format!("statically inferred value receiver: {}", node.qualname).into()),
         semantic_context::Member::External(module, line, Some(provider)) => {
             let member = reference.expression.rsplit('.').next().unwrap_or_default();
+            let diagnostic_marker = if languages::for_path(Path::new(path))
+                .is_some_and(|profile| profile.id() == "python" && !profile.is_stdlib(module))
+            {
+                "; diagnostic_reason=framework_magic"
+            } else {
+                ""
+            };
             (
                 "external",
-                format!("finite Python framework member from {provider} via external import {module} at line {line}; resolved member {provider}.{member}; receiver origin statically inferred").into(),
+                format!("finite Python framework member from {provider} via external import {module} at line {line}; resolved member {provider}.{member}; receiver origin statically inferred{diagnostic_marker}").into(),
             )
         }
         semantic_context::Member::External(module, line, None) => ("external", format!("call through external import {module} at line {line}; receiver origin statically inferred").into()),

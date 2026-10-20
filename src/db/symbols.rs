@@ -6,7 +6,7 @@ use crate::core::{
     response::{CoverageOptions, Detail, QueryOptions, SourceOptions},
 };
 use anyhow::{bail, Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{collections::HashMap, fs::File, io::Read, path::Path};
 
@@ -168,12 +168,36 @@ pub(crate) fn search_results_with_navigation(
     Ok(result)
 }
 
-fn verified_source(conn: &Connection, root: &Path, path: &str) -> Result<String> {
+pub(crate) fn verified_source(conn: &Connection, root: &Path, path: &str) -> Result<String> {
     let digest: String = conn.query_row("SELECT digest FROM files WHERE path=?1", [path], |r| {
         r.get(0)
     })?;
-    let adapter = config::load_adapter(root, None)?;
-    let resolved = config::resolve_file_path(root, &adapter, path)?;
+    let linked_json: Option<String> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='adapter_linked_workspaces'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let linked: Value = linked_json
+        .map(|json| serde_json::from_str(&json))
+        .transpose()?
+        .unwrap_or_else(|| json!([]));
+    let linked_root = linked.as_array().and_then(|workspaces| {
+        workspaces.iter().find_map(|workspace| {
+            let name = workspace.get("name")?.as_str()?;
+            let prefix = format!("[{name}]/");
+            let relative = path.strip_prefix(&prefix)?;
+            let root = workspace.get("path")?.as_str()?;
+            Some((std::path::PathBuf::from(root), relative))
+        })
+    });
+    let (source_root, source_path) = match linked_root {
+        Some((linked_root, relative)) => (linked_root, relative.to_owned()),
+        None => (root.to_path_buf(), path.to_owned()),
+    };
+    let adapter = config::load_adapter(&source_root, None)?;
+    let resolved = config::resolve_file_path(&source_root, &adapter, &source_path)?;
     let file = File::open(resolved).context("source file unavailable; rebuild index")?;
     if !file.metadata()?.is_file() {
         bail!("source must be a regular file");
@@ -412,9 +436,7 @@ fn explain_without_coverage(
                 &[&node_hash],
                 options,
             )?;
-            if options.detail == Detail::Compact {
-                omit_compact_endpoint(&mut incoming, "dst_public_id");
-            }
+            annotate_edge_direction(&mut incoming, "inbound");
             result["incoming"] = incoming;
         }
         "outgoing" => {
@@ -438,9 +460,7 @@ fn explain_without_coverage(
                 &[&node_hash],
                 options,
             )?;
-            if options.detail == Detail::Compact {
-                omit_compact_endpoint(&mut outgoing, "src_public_id");
-            }
+            annotate_edge_direction(&mut outgoing, "outbound");
             result["outgoing"] = outgoing;
         }
         "incoming" => {
@@ -475,11 +495,11 @@ fn explain_without_coverage(
     Ok(result)
 }
 
-fn omit_compact_endpoint(page: &mut Value, field: &str) {
+fn annotate_edge_direction(page: &mut Value, direction: &str) {
     if let Some(items) = page["items"].as_array_mut() {
         for item in items {
             if let Some(edge) = item.as_object_mut() {
-                edge.remove(field);
+                edge.insert("direction".into(), json!(direction));
             }
         }
     }

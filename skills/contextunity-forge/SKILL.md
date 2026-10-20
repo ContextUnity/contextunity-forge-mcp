@@ -49,6 +49,7 @@ The repository `AGENTS.md` names the verification command and the Git permission
 - **Continuation**: When `next_offset` > 0, supply `offset=next_offset` AND `generation="<token>"` from the previous page to continue.
 - **Detail Mode**: Use `detail="compact"` on broad queries to avoid payload overflow. Use `detail="full"` only when inspecting single entities.
 - **Budget Recovery**: If a query times out or exceeds budget, narrow `selector`/`path` or reduce `depth` (e.g., `depth=1`).
+- **Impact Change Views**: `code_map_impact` takes exactly one symbol `selector` or Git `changes` mode (`staged`, `unstaged`, or `head`); its continuation generation binds the graph and captured change snapshot. Review `unmapped_changes` and `complete` before treating the result as exhaustive.
 
 ---
 
@@ -244,7 +245,7 @@ For structural language support, supply the six `SyntaxGrammarSpec` categories a
 
 ### Discovery & Search
 Code discovery and inspection tools accept `worktree`: an absolute or server-relative path, exact directory name, or unique hyphen-delimited name suffix. Without it, retain the server's linked worktree; otherwise use one unique active claimed worktree when workspace configuration is loaded or `forge-mcp.yaml` exists (an empty `{}` file suffices). Without configuration or an active claim, retain the primary root. Multiple active directories or matching names return `WORKTREE_AMBIGUOUS`; pass an explicit path/name. Use `worktree: "."` for the server root. MCP requests do not transmit the client's current directory.
-- `code_map_overview(aspects?, worktree?, limit?, offset?, detail?, generation?)`: Workspace component inventory, module hierarchy, indexing metrics, coverage diagnostics, and paged `analysis_gaps`.
+- `code_map_overview(aspects?, worktree?, limit?, offset?, detail?, generation?)`: Workspace component inventory, module hierarchy, indexing metrics, coverage diagnostics, paged `analysis_gaps`, and persisted `coverage_by_workspace` counts.
 - `code_map_search(pattern, kind?, path?, exact?, include_docs?, include_preview?, group_by_file?, worktree?, detail?, limit?, offset?, generation?)`: Full-text and prefix symbol search; `query` is accepted as an alias for `pattern`. Use `exact=true` for an indexed name or qualified name, or `pattern="*"` with a `path` or `kind` scope to list symbols. An empty `path` leaves results unfiltered. Results include signatures and `inspect_selector`; source previews appear automatically for at most three total hits, or on request via `include_preview=true` for larger result sets, capped at three previews.
 - `ast_grep_search(pattern, language?, path?, worktree?, detail?, limit?, offset?, generation?)`: Tree-sitter AST syntax matching with `$NAME` and `$$$ARGS` captures. Omit `language` only when `path` has a recognized file extension; otherwise use a compiled profile ID from `code_map_overview`.
 - `search_docs(query, doc_type?, component?, worktree?, limit?)`: Full-text search across documentation, guides, and ADRs.
@@ -254,15 +255,15 @@ Code discovery and inspection tools accept `worktree`: an absolute or server-rel
 - `code_map_inspect(selector, worktree?, include_coverage?, show_doc?, show_source?, leading_lines?, max_body_lines?)`: Symbol summary, receiver metadata, exact callers/callees, paged `analysis_gaps` (e.g. `trait_object_dispatch`, `macro_expansion_not_analyzed`), and candidate dispatch targets (`possible_calls`).
 - `get_code_snippet(selector, worktree?, leading_lines?, max_body_lines?, source_offset?, generation?)`: Bounded, digest-verified AST source preview.
   Preview line budgets for inspect and snippet requests are clamped to supported bounds. Continue a truncated preview with the returned `next_source_offset` as `source_offset` and the same `generation`.
-- `code_map_explain(selector, direction?, worktree?, include_coverage?, show_doc?, show_source?)`: Direct relationships, candidate dispatch edges, symbol ownership, and architectural invariants.
-- `code_map_impact(selector, direction?, depth?, worktree?, detail?, limit?, offset?, generation?)`: Inbound blast radius (`direction="inbound"`, default, traversing both exact `calls` and candidate `possible_calls`) or outbound dependencies.
+- `code_map_explain(selector, direction?, worktree?, include_coverage?, show_doc?, show_source?)`: Direct relationships with both public endpoint IDs and query-relative direction, candidate dispatch edges, symbol ownership, and architectural invariants; full detail includes stored edge evidence.
+- `code_map_impact(selector?, changes?, direction?, depth?, worktree?, detail?, limit?, offset?, generation?)`: Inbound blast radius (`direction="inbound"`, default, traversing both exact `calls` and candidate `possible_calls`), outbound dependencies, or a staged/unstaged/HEAD Git change view. Depth-one non-seed nodes carry their selected edge endpoints, direction, location, and confidence. A change range maps only when its selected postimage matches the indexed file; inspect `unmapped_changes` and `complete`.
 - `code_map_tests(selector, direction?, worktree?, detail?, limit?, offset?, generation?)`: Find verified test cases connected by exact call paths, or production dependencies reached from a test. Test roles distinguish cases, helpers, and fixtures; a bounded inbound lexical fallback can suggest cases when no graph path exists.
 
 ### Verification & Safety
 - `code_map_prove_removal(selector)`: Proves whether a symbol can be safely removed based on static references; treats candidate callers (`possible_calls`) as potential incoming dependencies that block safe removal.
 - `code_map_analyze(target, lint?, include_cycles?)`:
   - `target=""`: Workspace-wide diagnostics and syntax errors.
-  - `target="path/to/file.py"`: File-scoped diagnostics.
+  - `target="path/to/file.py"`: File-scoped diagnostics with digest-verified source snippets and evidence-backed reasons when known.
   - `untested_public_surface`: Paged declared-public production symbols in the selected path scope that no indexed test case reaches through exact calls.
   - `lint=true`: Returns stored AST parse and syntax errors.
   - `include_cycles=true`: Detects dependency cycles.
