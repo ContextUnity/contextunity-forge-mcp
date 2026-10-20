@@ -1,0 +1,4 @@
+interface:
+  display_name: "Close Review Findings"
+  short_description: "Close review findings with invariant evidence"
+  default_prompt: "Use $close-review-findings to classify, remediate, and evidence-close this review ledger."

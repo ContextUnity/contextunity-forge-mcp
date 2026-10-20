@@ -981,6 +981,239 @@ receipt:
         project_isolation: accepted
 ```
 
+### task: whole-branch-review-closure-and-documentation-instructions
+
+```yaml
+task_ref: whole-branch-review-closure-and-documentation-instructions
+target: Close whole-branch findings 049-WR-1 through 049-WR-4, commit the authorized companion skill sync, and require a documentation agent through pre-handoff instructions
+proof_policy: seam-test-first
+contract_revision: 1
+depends_on:
+- cargo-root-crate-import-resolution-and-seam-connectivity
+scope:
+- src/engine/tasks/workspaces.rs
+- tests/acdd/milestones.rs
+- AGENTS.md
+- docs/reference/configuration.md
+- docs/reference/languages.md
+- docs/reference/mcp-tools.md
+- docs/reference/tasks.md
+- skills/README.md
+- skills/contextunity-forge/SKILL.md
+- skills/agent-instructions/
+- skills/close-review-findings/
+- skills/lean-ctx/
+- skills/test-contract-seam/
+- skills/test-suite-refactor/
+invariants:
+- 'INV-MANIFEST-FAIL-CLOSED: Configured custom milestone directories retain malformed numbered candidates for authoritative sync rejection; missing frontmatter, invalid YAML, and missing string IDs never become a successful empty bulk sync. Preserve valid declared-project deduplication and README/empty-directory exclusions.'
+- 'INV-DOCUMENTATION-TRUTH: Manifest admission and implicit worktree routing documentation describe the existing runtime boundaries; provide a concrete external review-authority prerequisite installation route without adding a sixth bundled companion.'
+- 'INV-PREHANDOFF-DOCUMENTATION-INSTRUCTIONS: Before handoff, the coordinator launches a documentation agent using agent-instructions against the final milestone diff; the agent updates admitted documentation, instructions, skill examples and invariant descriptions, records its scan and remaining decision conflicts on the milestone blackboard, and returns edits for independent review before final verification. Enforce this through instructions only.'
+- 'INV-BOUNDED-REVIEW-CLOSURE: Preserve all accepted task receipts, lifecycle gates, configuration-presence routing guards, cold/delta/MCP hot paths, allocator trims, and the exact five authorized companion trees. No automatic agent launcher, milestone gates, runtime documentation receipt requirement, or optional ADR redesign.'
+subtasks:
+- subtask_ref: malformed-custom-directory-sync
+  title: Retain malformed numbered candidates for authoritative parsing and prove bulk/direct rejection plus valid and README controls through real lifecycle and CLI
+  status: ready
+  evidence: null
+- subtask_ref: reference-and-skill-prerequisite-reconciliation
+  title: Close WR2-WR4 with an external prerequisite route and accurate manifest and worktree selection boundaries
+  status: ready
+  evidence: null
+- subtask_ref: documentation-agent-instructions-and-companion-sync
+  title: Add the instruction-level pre-handoff documentation scan and include the five authorized companion skill updates and active support resources
+  status: ready
+  evidence: null
+status: completed
+receipt:
+  contract_revision: 1
+  passed_at: 2026-10-20T01:42:57.171357649+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 811
+      tests_failed: 0
+      log: H/wr-closure-final-{clippy,all-targets}.log and H/wr1-nested-{red,green}.log; H=/tmp/forge-049-implementation-20261019. CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR=H/closure-global-skill isolates package validation; actual installed global skill not synchronized in this task.
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS. Frozen build aa6781dcf536d2611560207ae4fde343f1f43cc0/tree3b7b91a56308c9f95450fe6c40aac8ce06de9f6f: all25 scoped snapshot files match live bytes and executable modes after independent tests. Stored contract1 scope includes lifecycle.rs and tasks/mod.rs via admitted extend_scope. Manifest diff only appends the two authorized task contracts; protected header and all11 accepted task blocks are byte-identical to HEAD8971a164. Exact-five companion14-file binding8c68052a8b6e3851df5643a5a365f3041cd3fb192e700615b8928b007ac17590 preserved. No uncontracted source or optional ADR implementation.'
+        claims:
+          applicable: true
+          evidence: 'PASS. #503 WR1 and supplemental#512 close through one shared recursive numbered_manifests owner used by classification and bulk enumeration; missing/invalid headers remain undeclared until authoritative parser rejects with file path. Actual engine+CLI regression covers direct/archive/nested x4 invalid headers with valid controls and unchanged persisted details. Initial and nested red101 -> green0 retained. Independent cargo test --test acdd:116pass0fail0ignored0filtered, exit0; H/wr-closure-independent-acdd.json/log SHA cf23348212817884c725635ce96f988183e5e1fe1bde06aa80f5878906059d79. Accepted builder strictClippy0 + all-targets811pass0fail1existingignored. WR2 external prerequisite route matches observed origin/main path; WR3 canonical configuration/languages discovery boundary and WR4 config-presence routing match live enforcement/tests. AGENTS owns instruction-only documentation agent, packaged Forge skill routes to it; independent edit review precedes final verification.'
+        concurrency:
+          applicable: true
+          evidence: PASS. Shared traversal preserves file-type/no-symlink iteration and sorted candidate enumeration; no eager full milestone parsing, cache, SQL, schema, transaction, locking or claim-routing change. Invalid file parsing precedes that file's task mutation, with persisted-details preservation exercised in actual engine/CLI tests. No new runtime agent launcher, milestone gate or documentation-receipt enforcement. Cold/delta/warm-MCP paths and all allocator trims untouched; existing user performance acceptance449 unchanged, no benchmark or measured-zero-regression claim.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Explicit-root Forge discovery confirmed W, source inspection and real isolated Git/SQLite/CLI tests cover Registry -> candidate retention -> authoritative sync. Graph coverage gaps for qualified/manage reexports were not treated as absence proof; actual red/green regression validates the production route. Shared walker skips symlink entries and numbered-file filter preserves README/empty exclusions and existing declared-project/physical-file dedup tests. Independent tests ran serially with CARGO_TARGET_DIR=H/cargo-target and CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR=H/closure-global-skill. This proves the packaged skill fixture; actual installed global Forge skill was not synchronized.
+        administration:
+          applicable: true
+          evidence: PASS. Stable independent worker codex-049-whole-branch-reviewer differs from builder codex-049-builder; reviewclaim4/contract1. All25 snapshot bytes+modes bound; source/docs/receipts not edited by reviewer. ADR0014 fail-closed authority restored, ADR0009/0010 unchanged, optional prior ADR proposals deferred; only future admitted handoff task authorizes ADR0015 replacement and has no implementation here. Exactfive companions retained with all active support files, no sixth bundled skill; prerequisite install path confirmed in shared repo origin/main (review-authority blob b115858a5837739444ae42fb4e93fe4942a5a6d4). Global installation, remote publication, handoff and next task implementation not performed. Forge automatic delivery/receipt/commit only.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ADMISSION-DETERMINISM: Dependency manifest collection across cold build, incremental delta, and MCP source admission must yield identical path sets and digests for unchanged workspace state, eliminating false-positive rebuild loops.'
+    - 'INV-DATABASE-SEPARATION: Task tracking databases (tasks.sqlite) and code map indices (code-map.sqlite) are mutually exclusive; attempts to target a task database for code-map output or open a code-map database as task store fail closed with TASK_DATABASE_COLLISION.'
+    - 'INV-WORKSPACE-UNIQUENESS: Subproject milestone resolution honors declared_projects frontmatter and configured owner mappings, preventing duplicate phantom workspaces from conflicting on milestone references.'
+    - 'INV-DAEMON-RESOURCE-BOUND: MCP servers preserve live connections regardless of inactivity, terminate on Unix when their launching parent disappears, and trim free heap pages after batch operations without removing the allocator trims delivered in milestone 031.'
+    - 'INV-GREENFIELD-SEAM-ACTIONABILITY: Greenfield contract validation failure for uncreated scope files outputs deterministic remediation guidance with file paths and stub requirements.'
+    - 'INV-PERFORMANCE-PRESERVATION: Preserve the indexing optimizations delivered on main; paired release measurements on an identical frozen corpus must show no cold-build, delta, or warm MCP latency regression before milestone delivery.'
+    - 'INV-MANIFEST-FAIL-CLOSED: Configured custom milestone directories retain malformed numbered candidates for authoritative sync rejection; missing frontmatter, invalid YAML, and missing string IDs never become a successful empty bulk sync. Preserve valid declared-project deduplication and README/empty-directory exclusions.'
+    - 'INV-DOCUMENTATION-TRUTH: Manifest admission and implicit worktree routing documentation describe the existing runtime boundaries; provide a concrete external review-authority prerequisite installation route without adding a sixth bundled companion.'
+    - 'INV-PREHANDOFF-DOCUMENTATION-INSTRUCTIONS: Before handoff, the coordinator launches a documentation agent using agent-instructions against the final milestone diff; the agent updates admitted documentation, instructions, skill examples and invariant descriptions, records its scan and remaining decision conflicts on the milestone blackboard, and returns edits for independent review before final verification. Enforce this through instructions only.'
+    - 'INV-BOUNDED-REVIEW-CLOSURE: Preserve all accepted task receipts, lifecycle gates, configuration-presence routing guards, cold/delta/MCP hot paths, allocator trims, and the exact five authorized companion trees. No automatic agent launcher, milestone gates, runtime documentation receipt requirement, or optional ADR redesign.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```
+
+Review authority is milestone blackboard 503 and the user's explicit request to
+repair the findings, commit current changes, and add the documentation agent at
+instruction level. WR1 is a pre-existing missed regression in workspace directory
+classification: bulk/direct sync -> Registry::load -> numbered header discovery
+-> retained directory -> authoritative manifest parser -> rejection before that
+file's task mutation. Retain malformed candidates as undeclared during discovery;
+do not turn unrelated registry reads into eager full manifest validation. Real
+bulk/direct regressions must cover missing frontmatter, malformed YAML, missing or
+non-string ID, custom and archived paths, valid declared projects, and README-only
+directories. Reverting the candidate-retention change must fail those negatives.
+WR2 is a prerequisite distribution defect introduced by the companion sync;
+WR3/WR4 are missed documentation reconciliation with already enforced runtime.
+They need direct source/reference validation, not wording-only tests. The
+documentation-agent scan supplements each task's existing documentation duty;
+architecture decision changes still require owner approval and source defects
+return to their owning task. Store closure evidence on the milestone blackboard.
+
+### task: content-bound-handoff-and-rebase-independent-evidence
+
+```yaml
+task_ref: content-bound-handoff-and-rebase-independent-evidence
+target: Accept milestone handoff from immutable task proofs and content-bound final integration evidence, without requiring preserved task commit identities or first-parent history
+proof_policy: seam-test-first
+contract_revision: 2
+depends_on:
+- whole-branch-review-closure-and-documentation-instructions
+- manifest-discovery-symmetry-and-admission-loop-elimination
+- database-collision-and-overwrite-guard
+- subproject-workspace-deduplication
+- mcp-idle-timeout-and-memory-compaction
+- greenfield-seam-guidance-and-diagnostics
+- mcp-worktree-context-and-task-claim-resolution
+- upstream-aware-handoff-provenance-and-safe-diagnostics
+- build-gate-deletion-scope-and-file-retirement
+- audit-invariant-remediation
+- unified-task-and-subtask-status-lifecycle
+- cargo-root-crate-import-resolution-and-seam-connectivity
+scope:
+- src/engine/milestones/handoff.rs
+- src/engine/milestones/mod.rs
+- src/engine/tasks/git_snapshot.rs
+- src/core/tasks/mod.rs
+- src/core/git.rs
+- src/db/tasks_store/mod.rs
+- src/cli/milestone.rs
+- tests/acdd/milestones.rs
+- tests/acdd/tasks.rs
+- AGENTS.md
+- TESTS.md
+- docs/adr/0015-acdd-lifecycle-snapshots-and-proactive-defect-resolution.md
+- docs/reference/tasks.md
+- docs/reference/cli.md
+- docs/reference/configuration.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/agents.md.example
+invariants:
+- 'INV-HANDOFF-IMMUTABLE-PROOF: Accepted task contract revisions, candidate content, gate proofs, reviewer identities, and decisions remain immutable; updating a branch commit pointer never changes or recreates accepted evidence.'
+- 'INV-HANDOFF-CONTENT-IDENTITY: Rebase, cherry-pick, merge, amend, and squash do not invalidate evidence solely because commit IDs, parents, timestamps, or task-to-commit cardinality change. Handoff requires neither the original task baseline on first-parent history nor one landed commit per task.'
+- 'INV-HANDOFF-FINAL-INTEGRATION: Handoff requires a passing independent integration review and repository verification bound to the same final implementation content, selected target-base content, milestone identity, and admitted task authority. New content, changed authority, missing proof, foreign proof, or a failed review or verification rejects before archive or store mutation.'
+- 'INV-HANDOFF-OPTIONAL-COMMIT-POINTER: Task branch commit SHAs are diagnostic navigation metadata. Resolve and refresh uniquely identifiable pointers automatically; absent, obsolete, unavailable, or many-to-one branch pointers do not invalidate otherwise valid content evidence. Respect record_task_commits and commit_tracking without weakening proof checks.'
+- 'INV-HANDOFF-DURABLE-CONTENT: Content objects needed to verify accepted task and final integration evidence remain reachable independently of rewritten branch history and Git reflog expiry; snapshot cleanup must not discard the only durable proof.'
+- 'INV-HANDOFF-BOUNDED-CHANGE: Keep task gate order, task candidate immutability, review independence, delivery hooks and rollback, database isolation, indexing optimizations, and all allocator trims. Add no milestone gate state machine, agent launcher, test runner, per-request I/O, or indexing work.'
+subtasks:
+- subtask_ref: immutable-content-and-optional-commit-pointers
+  title: Separate accepted task content evidence from mutable branch pointers and preserve required evidence objects across rebases and handoff
+- subtask_ref: final-integration-evidence-and-handoff-validation
+  title: Validate a minimal externally supplied final integration review and verification record against current content and task authority instead of reconstructing each task landing
+- subtask_ref: real-git-rewrite-and-negative-proof
+  title: Prove rebase and squash acceptance and stale or forged evidence rejection through the real CLI, Git repository, task store, and archive
+- subtask_ref: adr-instructions-and-reference-alignment
+  title: Align ADR-0015, Git instructions, CLI and task references, verification instructions, and the packaged Forge skill with the accepted handoff model
+```
+
+#### Implementation boundary and acceptance
+
+The production path is CLI handoff input -> milestone handoff owner -> accepted
+task evidence and final content checks -> existing task-store/archive publication.
+The coordinator supplies the independent review and runs repository verification;
+Forge validates their structured record and does not launch agents or run tests.
+Use a small typed record supplied through a CLI evidence-file option, with its
+accepted contents retained in the archived handoff receipt. Do not add a generic
+workflow engine or a milestone claim/review/deliver lifecycle.
+
+Bind final evidence to repository/project/milestone identity, the current task
+contract and accepted-proof digests, an explicit target-base content identity,
+and a deterministic final implementation content identity. Include reviewer and
+builder identities, review decision and scope/contract findings, and the exact
+verification command, exit status, and test counts. Require the reviewer to be
+independent from the milestone's builders. Use repository-relative paths, file
+contents and modes, additions, and deletions for content identity. Exclude only
+generated receipt/status/handoff metadata through an explicit canonical
+projection; retain manifest contracts, invariants, configuration, instructions,
+tests, and documentation in the binding. Reject dirty implementation files and
+untracked deliverables rather than silently verifying a different tree. Resolve
+Git selectors at intake; mutable ref names and commit messages are not proof.
+
+Final review accepts the combined delta against the selected target base,
+including clean upstream integration and reviewed conflict resolutions. It must
+account for admitted task outcomes and flag unadmitted changes. A conflict
+resolution changes the content identity and needs a fresh final review and
+verification; it does not reopen every completed task. Replace history-based
+landing and later-scope reconstruction rather than adding a permissive bypass.
+Preserve the earlier upstream task's accepted receipts as historical evidence;
+this task changes the current acceptance mechanism under user authorization.
+
+Keep accepted candidate snapshots/proofs distinct from optional branch pointers.
+Automatically refresh pointers where a unique content-equivalent mapping exists;
+otherwise omit unresolved navigation metadata without changing accepted proof.
+Allow multiple tasks to share a squashed commit. Keep auto_commit behavior and
+the normal per-task commit convention; remove any handoff requirement to repack
+or preserve one commit per task. Keep historical archived receipts readable
+without rewriting them, and preserve the existing archive/store rollback path.
+This task's delivery must leave this active milestone usable with the new
+handoff procedure without manual edits to its eleven accepted task receipts.
+
+Use production CLI handoff cases in tests/acdd/milestones.rs, with real Git and
+SQLite fixtures. Cover unchanged-content rewritten SHAs, rebase onto a changed
+main touching the same file, cherry-pick, merge, multi-task squash, optional
+commit-recording modes, and missing old branch objects while protected content
+evidence remains available. Cover reviewed conflict resolutions and ensure a
+post-review byte, mode, deletion, configuration, documentation, contract, or
+target-base change rejects. Missing/corrupt/foreign proofs, a builder submitting
+the integration review, failed verification, incomplete tasks, and out-of-scope
+changes must reject without publishing an archive or mutating task proofs.
+Restoring the old first-parent check must fail a positive rewrite case; disabling
+content binding must fail a stale-evidence negative case. Verify proof retention
+with reflogs expired and unreachable objects pruned in a disposable fixture.
+
+Run strict Clippy and the complete affected lib/ACDD targets as required by
+TESTS.md; run its full completion command before actual milestone handoff.
+Limit production changes to the handoff/CLI/evidence path; add no work to cold
+build, delta, or warm MCP requests and make no new benchmark acceptance claim.
+Update documentation for this behavior in the same task. Follow the repository's
+instruction-level documentation-agent scan before actual handoff. Runtime
+documentation-agent launching, documentation-specific handoff enforcement, automatic
+test execution/count collection, and benchmark tooling remain out of scope.
+
 ## Delivered task commits
 
 | Task | Delivery commit |

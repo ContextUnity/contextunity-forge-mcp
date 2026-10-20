@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Instructions"
+  short_description: "Write concise AGENTS and agent workflows"
+  default_prompt: "Create or revise agent instructions for this repository."

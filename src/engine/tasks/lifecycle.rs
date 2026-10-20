@@ -528,7 +528,9 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
             for reference in references {
                 let full_path = confined_path(&workspace.root, &reference)?;
                 let text = std::fs::read_to_string(full_path)?;
-                let parsed = registry.parse_milestone_manifest(workspace, &reference, &text)?;
+                let parsed = registry
+                    .parse_milestone_manifest(workspace, &reference, &text)
+                    .with_context(|| format!("invalid milestone manifest '{reference}'"))?;
                 if parsed.project != workspace.project {
                     if milestone.is_none() {
                         continue;

@@ -1,5 +1,6 @@
 use super::support::*;
 use contextunity_forge_mcp::engine::milestones as milestone_engine;
+use contextunity_forge_mcp::engine::tasks::list_workspaces;
 
 #[test]
 fn cli_migration_reconciles_manifests_and_creation_selects_one_task() {
@@ -4682,6 +4683,82 @@ fn task_settings_parses_various_commit_tracking_formats() {
     let yaml_default: contextunity_forge_mcp::engine::tasks::TaskSettings =
         serde_yaml::from_str("").unwrap();
     assert!(yaml_default.records_task_commits());
+}
+
+#[test]
+fn bulk_sync_rejects_invalid_numbered_manifests_in_custom_directories() {
+    for directory in ["contracts", "contracts/archive", "contracts/nested"] {
+        for header in [
+            "no frontmatter\n",
+            "---\nid: [broken\n---\n",
+            "---\ntitle: Missing identity\n---\n",
+            "---\nid: 17\n---\n",
+        ] {
+            let root = ScopedWorkspace::new("forge_custom_manifest_validation");
+            root.write(
+                "forge-mcp.yaml",
+                "roots: [src]\nmilestones: [contracts]\ntask_repository: fixture\ntask_project: fixture\n",
+            );
+            root.write("src/lib.rs", "pub fn fixture() {}\n");
+            root.write("contracts/README.md", "# Contracts\n");
+            let path = format!("{directory}/001-fixture.md");
+            let body = "\n### task: one\n```yaml\ntask_ref: one\ntarget: Fixture\nproof_policy: direct-proof\nscope: [src/lib.rs]\n```\n";
+            root.write(
+                &path,
+                &format!("---\nid: m-fixture\nstatus: active\n---\n{body}"),
+            );
+            let invoke = |reference: Option<&str>| {
+                let mut command =
+                    std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+                command.args(["--root", root.0.to_str().unwrap(), "task", "sync"]);
+                if let Some(reference) = reference {
+                    command.arg(reference);
+                } else {
+                    command.args(["--workspace", "fixture"]);
+                }
+                command.output().unwrap()
+            };
+            let valid = invoke(None);
+            assert!(valid.status.success(), "{valid:?}");
+            let valid: Value = serde_json::from_slice(&valid.stdout).unwrap();
+            assert_eq!(valid["total"], 1);
+            let workspaces = list_workspaces(&root.0).unwrap();
+            assert_eq!(workspaces, vec!["fixture"]);
+            let database = root.0.join(".forge/tasks.sqlite");
+            let before = TasksStore::open_project(&database, "fixture", "fixture")
+                .unwrap()
+                .inspect_details("fixture/m-fixture:one")
+                .unwrap();
+
+            root.write(&path, &format!("{header}{body}"));
+            let request = tasks::Manage {
+                action: tasks::ManageAction::Sync,
+                workspace: Some("fixture".into()),
+                ..Default::default()
+            };
+            let bulk_result = contextunity_forge_mcp::engine::tasks::manage(&root.0, request);
+            assert!(
+                bulk_result.is_err(),
+                "bulk engine sync accepted {directory}: {header:?}"
+            );
+            for reference in [None, Some(path.as_str())] {
+                let output = invoke(reference);
+                assert!(
+                    !output.status.success(),
+                    "sync {reference:?} accepted {header:?}: {output:?}"
+                );
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains(&path),
+                    "diagnostic omits {path}: {output:?}"
+                );
+            }
+            let after = TasksStore::open_project(&database, "fixture", "fixture")
+                .unwrap()
+                .inspect_details("fixture/m-fixture:one")
+                .unwrap();
+            assert_eq!(before, after, "invalid input changed persisted task state");
+        }
+    }
 }
 
 #[test]

@@ -22,6 +22,22 @@ Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that prov
 
 The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. Use its `workflow_guidance.scoped_commands` entry for an affected test target and submit the task-bound `expected_evidence_template` with completed proof fields.
 
+## Documentation scan before handoff
+
+Before milestone handoff, launch a documentation agent in the milestone worktree.
+Give it the manifest, the final diff against the selected target base, the
+accepted task evidence, and an explicit admitted documentation write scope.
+Require it to load `agent-instructions`, read `docs/AGENTS.md` and affected owner
+instructions, and reconcile behavior, CLI/MCP, configuration, workflows,
+architecture, invariant descriptions, skills, and examples with live code/tests.
+Update affected pages; explain when no update is needed. Preserve task-level
+documentation co-evolution. Route source defects to their task owner and
+architecture decision changes to owner approval. Post the scanned content binding,
+updates, checks, and unresolved findings on the milestone blackboard. Submit the
+documentation edits for independent review, then run the final checks in
+`TESTS.md`. Repeat the affected scan if implementation changes afterward. The
+coordinator launches the agent; this step adds no Forge gate or runtime launcher.
+
 ## Worktrees and Git permissions
 
 Worktrees live at `.worktrees/<milestone-prefix>-<slug>` for milestones and `.worktrees/<milestone-prefix>-<task-slug>` for concurrent tasks.

@@ -148,6 +148,12 @@ The active delivery profile controls whether Forge automatically commits the can
 - With `auto_commit: true`, Forge automatically creates the delivery commit and records the receipt in SQLite; do not create duplicate task commits.
 - With `auto_commit: false`, Forge records the delivery receipt in SQLite without creating a commit; create the scoped task commit under repository-owned Git permissions.
 
+Before milestone handoff, follow the repository's documentation-scan instructions.
+The coordinator launches a documentation agent using `agent-instructions` against
+the final milestone diff and admitted documentation scope. Record its result on
+the milestone blackboard and review its edits before final verification; Forge
+does not launch the agent or add a milestone gate.
+
 Run the repository verification command before milestone handoff:
 
 ```bash
@@ -228,7 +234,7 @@ For structural language support, supply the six `SyntaxGrammarSpec` categories a
 `task_list` accepts `parked` to select tasks waiting for a scope owner while retaining worker/worktree affinity. `task next --worker WORKER --worktree PATH [--workspace WS]` exposes the same atomic dispatch as `task_manage(action: "next", worker_id, worktree, workspace?)`; it prioritizes independent delivery, independent review, the requesting worker's unblocked parked work, then ordinary ready work by wave and task ID. It returns claim context or `status: "idle"` when no work is eligible.
 
 ### Discovery & Search
-Code discovery and inspection tools accept `worktree`: an absolute or server-relative path, exact directory name, or unique hyphen-delimited name suffix. Without it, retain the server's linked worktree; otherwise use one unique active claimed worktree or the primary root when none exists. Multiple active directories or matching names return `WORKTREE_AMBIGUOUS`; pass an explicit path/name. Use `worktree: "."` for the server root. MCP requests do not transmit the client's current directory.
+Code discovery and inspection tools accept `worktree`: an absolute or server-relative path, exact directory name, or unique hyphen-delimited name suffix. Without it, retain the server's linked worktree; otherwise use one unique active claimed worktree when workspace configuration is loaded or `forge-mcp.yaml` exists (an empty `{}` file suffices). Without configuration or an active claim, retain the primary root. Multiple active directories or matching names return `WORKTREE_AMBIGUOUS`; pass an explicit path/name. Use `worktree: "."` for the server root. MCP requests do not transmit the client's current directory.
 - `code_map_overview(aspects?, worktree?, limit?, offset?, detail?, generation?)`: Workspace component inventory, module hierarchy, indexing metrics, coverage diagnostics, and paged `analysis_gaps`.
 - `code_map_search(pattern, kind?, path?, exact?, include_docs?, include_preview?, group_by_file?, worktree?, detail?, limit?, offset?, generation?)`: Full-text and prefix symbol search; `query` is accepted as an alias for `pattern`. Use `exact=true` for an indexed name or qualified name, or `pattern="*"` with a `path` or `kind` scope to list symbols. An empty `path` leaves results unfiltered. Results include signatures and `inspect_selector`; source previews appear automatically for at most three total hits, or on request via `include_preview=true` for larger result sets, capped at three previews.
 - `ast_grep_search(pattern, language?, path?, worktree?, detail?, limit?, offset?, generation?)`: Tree-sitter AST syntax matching with `$NAME` and `$$$ARGS` captures. Omit `language` only when `path` has a recognized file extension; otherwise use a compiled profile ID from `code_map_overview`.

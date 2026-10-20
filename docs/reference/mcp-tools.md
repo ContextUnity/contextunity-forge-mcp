@@ -58,7 +58,10 @@ then exact names, then suffixes. Multiple matches return `WORKTREE_AMBIGUOUS`.
 
 With no argument, a server rooted in a linked Git worktree retains that root.
 A server in the primary tree selects the one physical directory used by active
-task claims; duplicate claims for that directory count once. Multiple active
+task claims when workspace configuration is loaded or `forge-mcp.yaml` exists;
+an empty `{}` configuration enables this lookup with default task settings.
+Without configuration, the server retains its root and does not consult claims.
+Duplicate claims for that directory count once. Multiple active
 directories require explicit selection; no active directory uses the server root.
 Use `worktree: "."` to explicitly select the server root. Missing or empty explicit
 values fail with `WORKTREE_NOT_FOUND`. Each selected tree uses its own index;

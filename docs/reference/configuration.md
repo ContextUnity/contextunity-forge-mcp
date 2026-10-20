@@ -37,6 +37,15 @@ The default basename exclusions cover `.git`, `.forge`, `target`, `node_modules`
 
 The index records linked paths under their configured workspace names. Changing source scope or linked-workspace settings causes the MCP server to rebuild or update its owned index on the next database read. CLI readers automatically build a missing or schema-incompatible index, but do not refresh existing indexed files after source changes; run `build` or `delta` to update CLI results.
 
+Dependency manifest discovery combines scanner-admitted files with supported
+manifest files directly in the primary and enabled linked workspace roots.
+These direct-root files participate even when the source roots are narrower.
+Nested manifests outside admitted roots do not participate: with `roots: [src]`,
+a root `requirements.txt` is included, while `unindexed/requirements.txt` is
+excluded. Discovery preserves ignore and symlink guards and the 4 MiB manifest
+read limit. Cold build, delta, and MCP freshness use the same selected paths;
+MCP checks changes after its normal freshness TTL.
+
 ## Cold-build memory budget
 
 Set a transient source-extraction budget in MiB under `limits`:

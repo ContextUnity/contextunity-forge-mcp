@@ -1,0 +1,4 @@
+interface:
+  display_name: "Contract-Seam Testing"
+  short_description: "Author late tests across product seams"
+  default_prompt: "Map settled contract claims to independent contract-seam tests and sensitivity evidence."

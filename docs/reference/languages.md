@@ -69,7 +69,13 @@ Python indexes module-level PEP 695 aliases, `TypeAlias` and `TypeAliasType` ann
 
 Forge collects declared dependencies from workspace manifests before linking: Python `pyproject.toml`, `requirements*.txt`, `setup.cfg`, and `Pipfile`; JavaScript/TypeScript `package.json`; Rust `Cargo.toml`; Go `go.mod`; and Java/Kotlin `pom.xml`, `build.gradle`, and `build.gradle.kts`. Linked workspaces use the admitted adapter configuration. Standard-library imports and declared dependencies have distinct evidence. An absolute import with no indexed provider is classified as external even when no manifest declares it; relative imports and missing symbols in indexed modules retain their local resolution evidence.
 
-The committed manifest digest covers manifests outside source roots as well as linked workspaces. A changed manifest triggers a full rebuild during delta admission or the next MCP inventory check, after the normal freshness TTL. Discovery excludes ignored directories and symlinks and reads manifests up to 4 MiB.
+The committed manifest digest covers scanner-admitted manifests and supported
+files directly in primary and linked workspace roots, including those root files
+outside source roots. Nested manifests outside admitted roots are excluded.
+See [manifest discovery boundaries](configuration.md#indexing-scope). A changed
+admitted manifest triggers a full rebuild during delta admission or the next MCP
+inventory check, after the normal freshness TTL. Discovery excludes ignored
+directories and symlinks and reads manifests up to 4 MiB.
 
 JavaScript and TypeScript recognize CommonJS `require` bindings, including destructuring, as import aliases. A locally bound `require` is treated as an ordinary callable.
 

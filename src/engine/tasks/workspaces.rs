@@ -263,44 +263,64 @@ struct LinkedIdentity {
     task_project: Option<String>,
 }
 
-fn milestone_projects_in_dir(directory: &Path) -> Result<(BTreeSet<String>, bool)> {
-    let mut projects = BTreeSet::new();
-    let mut has_undeclared = false;
-    for dir in [directory.to_path_buf(), directory.join("archive")] {
-        if !dir.is_dir() {
+fn numbered_manifests(directories: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut directories = directories.to_vec();
+    let mut manifests = Vec::new();
+    while let Some(directory) = directories.pop() {
+        if !directory.exists() {
             continue;
         }
-        for entry in std::fs::read_dir(dir)? {
+        for entry in std::fs::read_dir(directory)? {
             let entry = entry?;
-            if !entry.file_type()?.is_file()
-                || !entry
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                directories.push(entry.path());
+            } else if kind.is_file()
+                && entry
                     .file_name()
                     .to_str()
                     .is_some_and(crate::engine::milestones::is_milestone_manifest_name)
             {
-                continue;
+                manifests.push(entry.path());
             }
-            let text = std::fs::read_to_string(entry.path())?;
-            let text = text.replace("\r\n", "\n");
-            let Some(header) = text
-                .strip_prefix("---\n")
-                .and_then(|body| body.split_once("\n---\n"))
-                .map(|(header, _)| header)
-            else {
-                continue;
-            };
-            let Ok(meta) = serde_yaml::from_str::<serde_yaml::Value>(header) else {
-                continue;
-            };
-            if meta.get("id").and_then(|id| id.as_str()).is_none() {
-                continue;
-            }
-            if let Some(project) = meta["project"].as_str() {
-                valid_identity(project)?;
-                projects.insert(project.to_owned());
-            } else {
-                has_undeclared = true;
-            }
+        }
+    }
+    manifests.sort();
+    Ok(manifests)
+}
+
+fn milestone_projects_in_dir(directory: &Path) -> Result<(BTreeSet<String>, bool)> {
+    let mut projects = BTreeSet::new();
+    let mut has_undeclared = false;
+    if !directory.is_dir() {
+        return Ok((projects, has_undeclared));
+    }
+    for path in numbered_manifests(&[directory.to_path_buf()])? {
+        let text = std::fs::read_to_string(path)?;
+        let text = text.replace("\r\n", "\n");
+        let Some(header) = text
+            .strip_prefix("---\n")
+            .and_then(|body| body.split_once("\n---\n"))
+            .map(|(header, _)| header)
+        else {
+            has_undeclared = true;
+            continue;
+        };
+        let Ok(meta) = serde_yaml::from_str::<serde_yaml::Value>(header) else {
+            has_undeclared = true;
+            continue;
+        };
+        if meta.get("id").and_then(|id| id.as_str()).is_none() {
+            // Keep invalid numbered candidates visible to the authoritative
+            // sync parser even when this directory has no valid manifest.
+            has_undeclared = true;
+            continue;
+        }
+        if let Some(project) = meta["project"].as_str() {
+            valid_identity(project)?;
+            projects.insert(project.to_owned());
+        } else {
+            has_undeclared = true;
         }
     }
     Ok((projects, has_undeclared))
@@ -630,35 +650,15 @@ impl Workspace {
         Ok(value)
     }
     pub fn manifests(&self) -> Result<Vec<String>> {
-        let mut directories = self.milestones.clone();
-        let mut manifests = Vec::new();
-        while let Some(directory) = directories.pop() {
-            if !directory.exists() {
-                continue;
-            }
-            for entry in std::fs::read_dir(directory)? {
-                let entry = entry?;
-                let kind = entry.file_type()?;
-                if kind.is_dir() {
-                    directories.push(entry.path());
-                } else if kind.is_file()
-                    && entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(crate::engine::milestones::is_milestone_manifest_name)
-                {
-                    manifests.push(
-                        entry
-                            .path()
-                            .strip_prefix(&self.root)?
-                            .to_string_lossy()
-                            .into_owned(),
-                    );
-                }
-            }
-        }
-        manifests.sort();
-        Ok(manifests)
+        numbered_manifests(&self.milestones)?
+            .into_iter()
+            .map(|path| {
+                Ok(path
+                    .strip_prefix(&self.root)?
+                    .to_string_lossy()
+                    .into_owned())
+            })
+            .collect()
     }
     pub fn resolve_manifest(&self, reference: &str) -> Result<Option<String>> {
         let reference = reference.trim();

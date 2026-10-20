@@ -23,7 +23,9 @@ Absolute paths open directly.
 
 Code tools use the [worktree selection rules](mcp-tools.md#worktree-selection):
 explicit path/name, the server's linked worktree, one unique active claim, then
-the primary root. Ambiguous active claims require an explicit selection.
+the primary root. Implicit claim selection requires loaded workspace configuration
+or an existing `forge-mcp.yaml` (an empty `{}` file is sufficient); without it,
+the primary server retains its root. Ambiguous active claims require an explicit selection.
 Connections use WAL, a 5000 ms busy timeout, NORMAL
 synchronization, foreign keys, and a 256 MiB mmap ceiling. Transactional changes
 increment the `meta` generation; requests retain no cached task connection.

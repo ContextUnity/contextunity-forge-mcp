@@ -13,11 +13,27 @@ This directory contains the primary and recommended companion skills for AI codi
 | [`test-suite-refactor`](test-suite-refactor/SKILL.md) | Governs splitting monolithic test suites, improving typing, and eliminating duplicate or brittle tests without coverage regression. | Refactoring & Hardening |
 | [`agent-instructions`](agent-instructions/SKILL.md) | Standards for authoring and revising `AGENTS.md`, `SKILL.md`, and project documentation following affirmative, imperative guidelines. | Governance & Docs |
 | [`close-review-findings`](close-review-findings/SKILL.md) | Methodical framework for analyzing review feedback, attributing origins, proving root causes, and executing verified invariant repairs. | `review` & Defect Remediation |
+| `review-authority` (external prerequisite; see setup below) | Governs which findings may change scope, contracts, or implementation. Required by `close-review-findings`. | Review and repair authority |
 | [`lean-ctx`](lean-ctx/SKILL.md) | Tools for token-efficient source inspection, compressed shell output, and directory navigation to minimize LLM context window consumption. | Code Reading & Execution |
 
 ---
 
 ## Installation & Setup
+
+`close-review-findings` requires the external `review-authority` skill. Install
+it from the [shared agent skills repository](https://github.com/alpiua/dot-agents)
+before using the bundle:
+
+```bash
+git clone --depth 1 https://github.com/alpiua/dot-agents.git /tmp/forge-shared-agent-skills
+mkdir -p ~/.agents/skills
+cp -r /tmp/forge-shared-agent-skills/skills/review-authority ~/.agents/skills/
+```
+
+`review-authority` governs finding admission and repair authority and is an
+external prerequisite, rather than a bundled companion. Verify that
+`~/.agents/skills/review-authority/SKILL.md` is present before invoking
+`close-review-findings`.
 
 To make these skills globally available to your agent (e.g., in Claude Desktop, Cursor, or CLI agents):
 

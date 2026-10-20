@@ -121,6 +121,7 @@ or fixture rather than preserving its history.
 | "Regression for review/finding/legacy" with no unique dimension | `REMOVE` after the seam test exists |
 | Wall-clock `sleep`/`join` used to simulate timeout, hang, or slow peer | `REWRITE`: `wait_for`/deadline + **cancel pending tasks**; never `sleep` longer than the asserted deadline |
 
+
 Do not leave pending `sleep` tasks after `asyncio.wait(..., timeout=...)`.
 Cancel them in the test or production path. A 10s/60s sleep that only exists
 to trip a 10ms deadline is junk and blocks the suite. Subprocess/thread
@@ -163,18 +164,29 @@ line-count cap.
 4. Do not introduce `Any`, `cast`, `type: ignore`, `pyright: ignore`, or rule
    suppressions to make a test type-check.
 5. BasedPyright 0/0 is not a pass if the test still reaches production
-   privates by relocating the same write/call.
+   privates by relocating the same write/call. Forbidden pyright workarounds:
+   subclass/`__init__` whose only job is `self._foo = …`; `exec`/`eval` of
+   `_Name` calls; `getattr`/`setattr`/`importlib` of `_` symbols to dodge
+   `reportPrivateUsage`. REWRITE through the public constructor, parser, or
+   RPC. Direct private access stays only as `KEEP defensive` with a named
+   threat the public seam cannot see.
 6. Restore the required static baseline for every file newly touched by the
-   refactor.
+   refactor. Pre-existing diagnostics are not permission to add a file to a
+   changed set without remediating its applicable errors.
 
 ## 6. Strengthen Rather Than Mirror Implementation
 
 Each retained or rewritten scenario should identify:
+
 - observable output, rejection, persisted effect, cleanup, or non-mutation;
 - the production caller or composition root reached;
 - one plausible mutation the test must reject;
 - material accepted, rejected, malformed, boundary, persistence/restart, and
   alternate-caller dimensions.
+
+Classify private implementation-shaped tests as supplemental at most. Rewrite
+them when a public or composition seam can prove the same contract, then delete
+the private test.
 
 ## 7. Select Sufficient Evidence
 
@@ -182,13 +194,66 @@ For each behavioral seam, record whether these levels are required, covered,
 or not applicable: static contract, component, in-process transport, live
 persistence/process, and cross-service.
 
+Escalate beyond component tests when behavior depends on serialization,
+interceptor or auth wiring, transactions, shared storage, filesystem effects,
+queues, processes, restart, or producer-consumer propagation. Put fakes behind
+the real claimed boundary. A metadata-only or in-memory test is not integration
+proof merely because it lives in an integration directory.
+
 ## 8. Production Edit Boundary
 
 Default write set: tests, test support, and fixtures owned by the current
 cluster. Do not edit production, migrations, generated API dumps, lockfiles,
 or CLI/MCP runtime as formatting or convenience.
 
+A production repair is allowed only when all of these hold:
+
+- the defect was found by the refactor;
+- the fix is bounded to the same canonical owner;
+- it does not change public API, schema, config, migration, or a cross-owner
+  security contract;
+- `close-review-findings` is loaded;
+- the user explicitly approved the production path set.
+
+Otherwise return the defect to delivery and keep the failing test.
+
 ## 9. Verification And Review
 
-Run the narrowest focused test command after each bounded cluster, followed by
-lint, type, and full suite checks.
+When `ctx_shell` is available, run full owner suites, required integration
+lanes, and the final completion gate with
+`ctx_shell(timeout_ms=3600000, run_in_background=true)`. Poll
+`ctx_shell(background_action="status", job_id=...)` until the job completes
+and record its final exit code. A detached call or compressed output is not
+proof that tests finished. For a lane expected to exceed the one-hour job
+limit, use a durable runner with a retained log and exit status. Follow the
+repository's test commands and any stricter timeout requirements.
+
+Run the narrowest focused test command after each bounded cluster, then:
+
+1. collect-only unique-test count vs the frozen baseline: after ≤ before,
+   except `added` rows that name new unique dimensions;
+2. static checking with zero errors and warnings on every touched test/support
+   file;
+3. formatter/linter and whitespace checks;
+4. domain cohesion and architectural decomposition check for all changed tests;
+5. split parity for retained tests only: imports, collection, markers, coverage;
+6. every required integration level, with skipped required evidence failing the
+   cluster;
+7. after the final test/support edit, run the repository's designated full
+   completion gate on the settled diff; focused, owner, integration, lint, and
+   typing receipts do not substitute for it;
+8. independent review for lost coverage, import collisions, state leakage,
+   fixture scope drift, bypassed seams, insufficient integration, weakened
+   fail-closed assertions, leftover duplicates, and unauthorized production
+   edits.
+
+Do not claim a refactor complete while a touched file retains applicable static
+errors, a coverage classification remains `UNCERTAIN`, a replacement map is
+incomplete, or unique test count rose without justified `added` rows.
+
+## Output
+
+Report the bounded cluster, production seam, classifications, harness rewrites, replacement map,
+before/after unique test counts, `added` rows, evidence levels, helper reuse,
+focused and integration validation, static diagnostics, domain layout result, review
+result, retained defensive tests, and every production path touched.
