@@ -2,7 +2,7 @@
 id: m-documentation-test-graph-and-tool-ergonomics
 title: Documentation knowledge graph, test discovery chains, and tool query ergonomics
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-agent-search-resilience-and-ast-grep-ergonomics
 owners:
@@ -29,6 +29,42 @@ invariants:
 related_plans:
 - docs/plans/forge-mcp-audit-and-architecture.md
 started_at: 2026-10-19T20:52:21+00:00
+handoff:
+  completed_at: 2026-10-20T21:39:10.237437243+00:00
+  duration: 24h 46m
+  commit: cbbddfeb7c64a336db0c249dfa388b8115049ce1
+  target_base: 2c06defd57c80503ad18bd73137a4f3ef084f9b0
+  integration_evidence:
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: m-documentation-test-graph-and-tool-ergonomics
+      authority_digest: 212c10043c09da68c38b70dad65441314bffc05d2ee1612415f60428778c1c93
+      implementation_digest: 51016989c0b203a6470e7896acf44c829b2be99554e40ef3295b1b69c3ee756d
+      target_base_digest: c9d3ba212bbb8dcb8158a6b919f1aa1cdde584cffa1d914621cd88213d883449
+      builders:
+      - codex-053-handoff-builder
+      - codex-053-preview-builder
+      - codex-053-search-builder
+      - codex-053-test-discovery-builder
+    target_base: 2c06defd57c80503ad18bd73137a4f3ef084f9b0
+    review:
+      worker_id: codex-053-final-reviewer
+      decision: pass
+      summary: 'Independent combined integration review of final cbbddfeb7c64a336db0c249dfa388b8115049ce1 against main2c06defd57c80503ad18bd73137a4f3ef084f9b0: all61 changed paths are admitted by six completed tasks. Exact search/ranking, preview bounds, verified test-role/call-path discovery, Git/edge/coverage evidence, unique verified documentation and candidate navigation/governance, and cancelled-history handoff remain contract-aligned. Fresh current-CLI context validates all immutable accepted proofs and matching cancelled Task6 without completion credit; main049 crate fixes and other packaged skills are preserved. Final repack tree and canonical bindings are identical to original automatic delivery; all tested source/test/docs/config inputs remain unchanged apart from renderer-owned milestone metadata. Independent full compound811/0 and strictClippy0 therefore apply to this exact binding. No unresolved scope or contract findings; packaging/docs scan and benchmark source-only provenance boundaries retained.'
+      scope_findings: []
+      contract_findings: []
+    verification:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 811
+      tests_failed: 0
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 811
+    tests_failed: 0
 ---
 
 # Documentation knowledge graph, test discovery chains, and tool query ergonomics
@@ -508,6 +544,7 @@ subtasks:
   evidence: 'Independent REVIEW29 contract13 candidate9df31b2635d7c3c32623b9ca283290f080a43051: exact final commitment_integrity+strictClippy+all-targets exit0,811passed0failed1ignored (standalone16 not double-counted). Complete affected incremental31/MCP91/linker102/query43/ACDD116 pass. This retained slice reassessed against current source, public seams and accepted docs semantics; no open defect. Full closure /tmp/forge053-doc-review29-findings.json; log/counts/env /tmp/forge053-doc-review29-verification.json; all24 blobs match. Existing context-safe-documentary-resolution-and-candidate-discovery oracles retained; candidate discovery never verifies governance/coverage.'
 status: completed
 receipt:
+  commit: 7d22366844133a28363d0b3b24d1c5c481cc14a6
   contract_revision: 13
   passed_at: 2026-10-20T20:36:31.590513520+00:00
   evidence:
@@ -675,6 +712,7 @@ subtasks:
   evidence: 'Independent REVIEW7: all six current cases verified against exact resolver/extractor/indexing/response source and finalscan. Terminal completed/cancelled wording aligned in root/CLI/tasks/template; actual docsAGENTS same-line explicit source unique INV-DOC-FIRST-MATCH-TIER surfaces direct with0omitted. Historical accepted receipt unchanged. Fullfinal811/0/1ignored+Clippy0. /tmp/forge053-close-review7-findings.json; /tmp/forge053-close-final-governing-inspect.json.'
 status: completed
 receipt:
+  commit: cbbddfeb7c64a336db0c249dfa388b8115049ce1
   contract_revision: 2
   passed_at: 2026-10-20T21:35:08.747854331+00:00
   evidence:
@@ -732,13 +770,13 @@ receipt:
 ## Resolved documentation audit follow-up
 
 The six documentation proposals retained from blackboard 581 are addressed in
-the closure task. [The overview](../README.md) qualifies symbol linkage;
-[authoring guidance](../AGENTS.md) distinguishes first-class same-line INV claims
-from alert classification. The overview, [milestone navigation](README.md), and
-[ADR0014](../adr/0014-milestone-task-subtask-hierarchy-and-visibility.md) align
+the closure task. [The overview](../../README.md) qualifies symbol linkage;
+[authoring guidance](../../AGENTS.md) distinguishes first-class same-line INV claims
+from alert classification. The overview, [milestone navigation](../README.md), and
+[ADR0014](../../adr/0014-milestone-task-subtask-hierarchy-and-visibility.md) align
 universal Markdown indexing with separate planning authority. [Indexing
-architecture](../architecture/indexing.md) provides verified extractor, linker,
-and test navigation; [configuration](../reference/configuration.md) distinguishes
+architecture](../../architecture/indexing.md) provides verified extractor, linker,
+and test navigation; [configuration](../../reference/configuration.md) distinguishes
 the 200-line default and 1..500 range from this repository's explicit 35-line
 adapter setting.
 
@@ -748,3 +786,20 @@ unanchored whole-page navigation, and `skills/README.md` is outside documentatio
 admission. No missing physical target or broken anchor was found. The six typed
 deferrals are therefore removed; the immutable Task5 receipt retains its
 historical audit disposition. The documentation owner's final diff check passes.
+
+## Task delivery commits
+
+Each completed task has one integrated commit. These navigation pointers record
+the repacked history; accepted task proofs remain unchanged.
+
+| Task | Commit |
+| --- | --- |
+| search-precision-and-natural-docs-retrieval | `1f826b5f3372581098bd1e226cc09011c3737f3c` |
+| source-preview-budget-and-chunking-limits | `1de1ca0d81877b4d80be027fdfe0a1fab8f52d27` |
+| test-discovery-chains-and-role-classification | `cb643376c9abf198b89660cfd1e3e6735b0a44e9` |
+| graph-edge-evidence-unresolved-taxonomy-and-scope-transparency | `7c92226ac734a6534a7cbd50dee92aa447f8097e` |
+| documentation-knowledge-graph-and-invariant-traceability | `7d22366844133a28363d0b3b24d1c5c481cc14a6` |
+| cancelled-task-handoff-and-finalization | `cbbddfeb7c64a336db0c249dfa388b8115049ce1` |
+
+The retained cancelled Markdown-first task belongs to milestone 054 and receives
+no delivery commit or completion credit in 053.
