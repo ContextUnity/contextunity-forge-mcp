@@ -923,7 +923,7 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
             "forge-mcp.yaml",
             "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
         );
-        root.write("docs/adr/001-routing.md", "---\ntitle: Routing invariants\nstatus: accepted\n---\n# Routing invariants\n- INV-ROUTING: Routing remains observable through the public seam.\n- Decision: Admit every caller before changing the public signature.\n");
+        root.write("docs/adr/001-routing.md", "---\ntitle: Routing invariants\ndoc_type: adr\nstatus: accepted\n---\n# Routing invariants\n- INV-ROUTING: [`src.routing.route_task`](../../src/routing.rs#L1) remains observable through the public seam.\n- Decision: Admit every caller before changing the public signature.\n");
         let caller_scope = if admit_caller {
             ", src/caller.rs, src/possible.rs, src/implements.rs, src/overrides.rs"
         } else {

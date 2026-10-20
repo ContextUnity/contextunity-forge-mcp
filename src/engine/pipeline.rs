@@ -333,23 +333,65 @@ fn extract_typed_source_with_digest(
         .into());
     }
     let mut typed = if file.is_doc {
-        let sections = docs::extract(&file.path, source, file.mtime_ns as f64 / 1e9)?;
-        let nodes = sections
+        let parsed = docs::extract_with_details(&file.path, source, file.mtime_ns as f64 / 1e9)?;
+        let sections = parsed
             .iter()
-            .map(|d| Node {
-                id: d.doc_id.clone(),
+            .map(|(doc, _)| doc.clone())
+            .collect::<Vec<_>>();
+        let mut nodes = Vec::new();
+        for (doc, metadata) in &parsed {
+            let line = metadata["line"].as_u64().unwrap_or(1) as usize;
+            let end_line = metadata["end_line"].as_u64().unwrap_or(line as u64) as usize;
+            let mut details = json!({
+                "doc_type":doc.doc_type,
+                "is_invariant":doc.is_invariant,
+                "status":metadata["status"],
+                "citations":metadata["citations"],
+                "symbol_claims":metadata["symbol_claims"],
+                "declared_invariants":metadata["declared_invariants"],
+            });
+            if metadata["status"].is_null() {
+                details.as_object_mut().unwrap().remove("status");
+            }
+            nodes.push(Node {
+                id: doc.doc_id.clone(),
                 kind: "document".into(),
-                name: d.section_title.clone(),
-                qualname: d.doc_id.clone(),
-                path: d.path.clone(),
-                line: 1,
-                end_line: source.lines().count().max(1),
+                name: doc.section_title.clone(),
+                qualname: doc.doc_id.clone(),
+                path: doc.path.clone(),
+                line,
+                end_line,
                 is_test: false,
                 language: "markdown".into(),
                 generated: false,
-                details: json!({"doc_type":d.doc_type,"is_invariant":d.is_invariant}),
-            })
-            .collect();
+                details,
+            });
+            if let Some(invariants) = metadata["declared_invariants"].as_array() {
+                for invariant in invariants {
+                    let Some(name) = invariant["id"].as_str() else {
+                        continue;
+                    };
+                    let invariant_line = invariant["line"].as_u64().unwrap_or(line as u64) as usize;
+                    nodes.push(Node {
+                        id: format!("invariant:{}:{invariant_line}:{name}", doc.path),
+                        kind: "invariant".into(),
+                        name: name.to_owned(),
+                        qualname: format!("{}::{name}", doc.doc_id),
+                        path: doc.path.clone(),
+                        line: invariant_line,
+                        end_line: invariant_line,
+                        is_test: false,
+                        language: "markdown".into(),
+                        generated: false,
+                        details: json!({
+                            "document_id":doc.doc_id,
+                            "rule":invariant["rule"],
+                            "status":metadata["status"],
+                        }),
+                    });
+                }
+            }
+        }
         TypedFacts::from_public(Facts {
             docs: sections,
             nodes,

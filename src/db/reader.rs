@@ -7,6 +7,7 @@ use serde_json::{json, Map, Value};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     ops::Deref,
@@ -1086,6 +1087,231 @@ const DOC_SEARCH_ENGLISH_STOP_WORDS: &[&str] = &[
     "why", "will", "with", "would", "you", "your",
 ];
 
+const DOCUMENT_REFERENCE_CANDIDATES_SQL: &str = r#"
+WITH source_claims AS MATERIALIZED (
+    SELECT
+        CAST(claim.key AS INTEGER) AS claim_index,
+        json_extract(claim.value,'$.doc_id') AS source_doc_id,
+        json_extract(claim.value,'$.source_path') AS source_path,
+        json_extract(claim.value,'$.name') AS claim_name,
+        json_extract(claim.value,'$.normalized_name') AS normalized_name,
+        CAST(json_extract(claim.value,'$.line') AS INTEGER) AS source_line,
+        CAST(json_extract(claim.value,'$.explicit_path') AS INTEGER) AS explicit_path,
+        json_extract(claim.value,'$.target_path') AS claim_target_path,
+        CAST(json_extract(claim.value,'$.suffix_indexed') AS INTEGER) AS suffix_indexed
+    FROM json_each(?1) claim
+),
+fts_targets AS MATERIALIZED (
+    SELECT n.node_id,n.id,n.name,n.qualname,n.kind,p.path,n.line
+    FROM node_search
+    JOIN nodes n ON n.node_hash=node_search.rowid
+    JOIN path_dictionary p ON p.path_id=n.path_id
+    WHERE node_search MATCH ?2
+      AND n.kind NOT IN('document','invariant','component')
+      AND (
+        ((?3='' AND NOT (
+            substr(p.path,1,1)='['
+            AND instr(p.path,'/')>1
+            AND substr(p.path,instr(p.path,'/')-1,1)=']'
+        )) OR (?3!='' AND substr(p.path,1,length(?3))=?3
+            AND substr(p.path,length(?3)+1,1)='/'))
+        OR EXISTS (
+            SELECT 1 FROM source_claims explicit_claim
+            WHERE explicit_claim.explicit_path=1
+              AND explicit_claim.claim_target_path IS NOT NULL
+              AND explicit_claim.claim_target_path=p.path
+        )
+      )
+),
+candidate_rows AS (
+    SELECT c.claim_index,c.source_doc_id,c.source_path,c.claim_name,c.source_line,
+           c.explicit_path,c.claim_target_path,n.node_id AS target_node_id,n.id AS target_id,
+           n.name AS target_name,n.qualname AS target_qualname,n.kind AS target_kind,
+           p.path AS target_path,n.line AS target_line,0 AS priority
+    FROM source_claims c
+    JOIN nodes n INDEXED BY idx_nodes_qualname ON n.qualname=c.normalized_name
+    JOIN path_dictionary p ON p.path_id=n.path_id
+    UNION ALL
+    SELECT c.claim_index,c.source_doc_id,c.source_path,c.claim_name,c.source_line,
+           c.explicit_path,c.claim_target_path,n.node_id,n.id,n.name,n.qualname,n.kind,
+           p.path,n.line,1
+    FROM source_claims c
+    JOIN nodes n INDEXED BY idx_nodes_name ON n.name=c.claim_name
+    JOIN path_dictionary p ON p.path_id=n.path_id
+    UNION ALL
+    SELECT c.claim_index,c.source_doc_id,c.source_path,c.claim_name,c.source_line,
+           c.explicit_path,c.claim_target_path,n.node_id,n.id,n.name,n.qualname,n.kind,
+           n.path,n.line,2
+    FROM source_claims c
+    JOIN fts_targets n
+      ON c.suffix_indexed=1
+     AND length(c.normalized_name)>0
+     AND length(n.qualname)>length(c.normalized_name)
+     AND substr(n.qualname,-length(c.normalized_name))=c.normalized_name
+     AND substr(n.qualname,length(n.qualname)-length(c.normalized_name),1)='.'
+    UNION ALL
+    /*TOKENLESS_SUFFIX_FALLBACK*/
+),
+eligible_candidates AS (
+    SELECT *
+    FROM candidate_rows
+    WHERE target_kind NOT IN('document','invariant','component')
+      AND (
+        (explicit_path=1 AND claim_target_path IS NOT NULL AND target_path=claim_target_path)
+        OR
+        (explicit_path=0 AND (
+            (?3='' AND NOT (
+                substr(target_path,1,1)='['
+                AND instr(target_path,'/')>1
+                AND substr(target_path,instr(target_path,'/')-1,1)=']'
+            ))
+            OR
+            (?3!='' AND substr(target_path,1,length(?3))=?3
+                AND substr(target_path,length(?3)+1,1)='/')
+        ))
+      )
+),
+ranked_candidates AS (
+    SELECT *,MIN(priority) OVER(
+        PARTITION BY claim_index,source_doc_id,source_path,explicit_path,claim_target_path
+    ) AS selected_priority
+    FROM eligible_candidates
+),
+winning_candidates AS (
+    SELECT * FROM ranked_candidates WHERE priority=selected_priority
+),
+ambiguous_claims AS (
+    SELECT claim_index,source_doc_id,source_path,explicit_path,claim_target_path
+    FROM winning_candidates
+    GROUP BY claim_index,source_doc_id,source_path,explicit_path,claim_target_path
+    HAVING COUNT(DISTINCT target_node_id)>1
+)
+SELECT DISTINCT
+    winner.source_doc_id,winner.source_path,winner.claim_name,winner.source_line,
+    winner.target_id,winner.target_name,winner.target_qualname,winner.target_kind,
+    winner.target_path,winner.target_line
+FROM winning_candidates winner
+JOIN ambiguous_claims ambiguous
+  ON ambiguous.claim_index=winner.claim_index
+ AND ambiguous.source_doc_id=winner.source_doc_id
+ AND ambiguous.source_path=winner.source_path
+ AND ambiguous.explicit_path=winner.explicit_path
+ AND ambiguous.claim_target_path IS winner.claim_target_path
+ORDER BY winner.source_path,winner.source_line,winner.source_doc_id,winner.claim_name,
+         winner.target_path,winner.target_line,winner.target_id
+"#;
+
+fn document_reference_candidate_page(
+    conn: &Connection,
+    selected_sections: &[Value],
+    source_workspace: &str,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let mut claims = Vec::new();
+    let mut fts_terms = BTreeSet::new();
+    let mut has_tokenless_claim = false;
+    for section in selected_sections {
+        let (Some(doc_id), Some(source_path)) =
+            (section["doc_id"].as_str(), section["path"].as_str())
+        else {
+            continue;
+        };
+        let detailed_claims = section["details"]["symbol_claims"]
+            .as_array()
+            .filter(|claims| !claims.is_empty());
+        let source_line = section["node_line"].as_u64().unwrap_or(1);
+        let mut append_claim =
+            |name: &str, line: u64, explicit_path: bool, target_path: Option<&str>| {
+                let normalized_name = name.replace("::", ".");
+                let suffix_indexed = normalized_name.chars().any(char::is_alphanumeric);
+                if suffix_indexed {
+                    fts_terms.insert(normalized_name.clone());
+                } else {
+                    has_tokenless_claim = true;
+                }
+                claims.push(json!({
+                    "doc_id":doc_id,
+                    "source_path":source_path,
+                    "name":name,
+                    "normalized_name":normalized_name,
+                    "line":line,
+                    "explicit_path":explicit_path,
+                    "target_path":target_path,
+                    "suffix_indexed":suffix_indexed,
+                }));
+            };
+        if let Some(detailed_claims) = detailed_claims {
+            for claim in detailed_claims {
+                if let Some(name) = claim["name"].as_str() {
+                    append_claim(
+                        name,
+                        claim["line"].as_u64().unwrap_or(source_line),
+                        claim["explicit_path"].as_bool().unwrap_or(false),
+                        claim["target_path"].as_str(),
+                    );
+                }
+            }
+        } else if let Some(fallback_claims) = section["referenced_symbols"].as_array() {
+            for name in fallback_claims.iter().filter_map(Value::as_str) {
+                append_claim(name, source_line, false, None);
+            }
+        }
+    }
+
+    if claims.is_empty() {
+        let generation = paging::generation(conn, options)?;
+        return Ok(paging::value(Vec::new(), 0, options, &generation));
+    }
+    let claims_json = serde_json::to_string(&claims)?;
+    let fts_query = if fts_terms.is_empty() {
+        "\"__forge_document_reference_suffix_no_tokens__\"".to_owned()
+    } else {
+        fts_terms
+            .iter()
+            .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    };
+    let tokenless_fallback = if has_tokenless_claim {
+        "SELECT c.claim_index,c.source_doc_id,c.source_path,c.claim_name,c.source_line,\n           c.explicit_path,c.claim_target_path,n.node_id,n.id,n.name,n.qualname,n.kind,\n           p.path,n.line,2\n    FROM source_claims c\n    JOIN nodes n INDEXED BY idx_nodes_qualname\n      ON c.suffix_indexed=0\n     AND length(c.normalized_name)>0\n     AND length(n.qualname)>length(c.normalized_name)\n     AND substr(n.qualname,-length(c.normalized_name))=c.normalized_name\n     AND substr(n.qualname,length(n.qualname)-length(c.normalized_name),1)='.'\n    JOIN path_dictionary p ON p.path_id=n.path_id"
+    } else {
+        "SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,2 WHERE 0"
+    };
+    let sql = DOCUMENT_REFERENCE_CANDIDATES_SQL
+        .replace("/*TOKENLESS_SUFFIX_FALLBACK*/", tokenless_fallback);
+    let mut page = paging::query(
+        conn,
+        &sql,
+        &[&claims_json, &fts_query, &source_workspace],
+        options,
+    )?;
+    let items = page["items"].as_array().cloned().unwrap_or_default();
+    page["items"] = Value::Array(
+        items
+            .into_iter()
+            .map(|item| {
+                json!({
+                    "source":{
+                        "doc_id":item["source_doc_id"],
+                        "path":item["source_path"],
+                        "name":item["claim_name"],
+                        "line":item["source_line"],
+                    },
+                    "target":{
+                        "id":item["target_id"],
+                        "name":item["target_name"],
+                        "qualname":item["target_qualname"],
+                        "kind":item["target_kind"],
+                        "path":item["target_path"],
+                        "line":item["target_line"],
+                    },
+                })
+            })
+            .collect(),
+    );
+    Ok(page)
+}
+
 /// Returns the doc paged.
 pub fn get_doc_paged(
     conn: &Connection,
@@ -1094,11 +1320,188 @@ pub fn get_doc_paged(
     options: &QueryOptions,
 ) -> Result<Value> {
     let section = section.unwrap_or("");
-    let sections = paging::query(conn, &format!("SELECT {} FROM doc_sections d WHERE (d.doc_id=?1 OR d.path=?1) AND (?2='' OR d.section_title=?2) ORDER BY d.path,d.rowid", paging::docs("d", options.detail)), &[&path,&section], options)?;
+    let status_projection = if options.detail == Detail::Full {
+        ",json_extract(n.details,'$.status') AS status"
+    } else {
+        ""
+    };
+    let sections = paging::query(conn, &format!("SELECT {},n.line,n.end_line{status_projection} FROM doc_sections d LEFT JOIN nodes n ON n.id=d.doc_id WHERE (d.doc_id=?1 OR d.path=?1) AND (?2='' OR d.section_title=?2) ORDER BY d.path,d.rowid", paging::docs("d", options.detail)), &[&path,&section], options)?;
     if sections["total"] == 0 {
         bail!("document or section not found");
     }
-    Ok(json!({"sections":sections}))
+    const MAX_RELATION_SCOPE_SECTIONS: usize = 1000;
+    let relation_scope_limit = (MAX_RELATION_SCOPE_SECTIONS + 1) as i64;
+    let relation_scope_sql = if options.detail == Detail::Full {
+        "SELECT d.doc_id,d.path,n.details,n.line AS node_line,d.referenced_symbols FROM doc_sections d JOIN nodes n ON n.id=d.doc_id WHERE (d.doc_id=?1 OR d.path=?1) AND (?2='' OR d.section_title=?2) ORDER BY d.path,d.rowid LIMIT ?3"
+    } else {
+        "SELECT d.doc_id,d.path FROM doc_sections d WHERE (d.doc_id=?1 OR d.path=?1) AND (?2='' OR d.section_title=?2) ORDER BY d.path,d.rowid LIMIT ?3"
+    };
+    let selected_sections = rows(
+        conn,
+        relation_scope_sql,
+        &[&path, &section, &relation_scope_limit],
+        MAX_RELATION_SCOPE_SECTIONS + 1,
+    )?;
+    if selected_sections.len() > MAX_RELATION_SCOPE_SECTIONS {
+        bail!("document relation scope exceeds 1000 sections; narrow the section selector");
+    }
+    let hashes = selected_sections
+        .iter()
+        .filter_map(|item| item["doc_id"].as_str())
+        .map(crate::core::models::stable_hash64)
+        .collect::<Vec<_>>();
+    let source_workspace = selected_sections
+        .first()
+        .and_then(|item| item["path"].as_str())
+        .map(|path| crate::core::config::workspace_path(path).0.to_owned())
+        .unwrap_or_default();
+    let encoded_hashes = serde_json::to_string(&hashes)?;
+    let cites_doc = paging::query(
+        conn,
+        "SELECT d.doc_id,d.path,d.section_title,d.doc_type,e.line FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN doc_sections d ON d.doc_id=n.id WHERE e.kind='cites_doc' AND e.src_hash IN(SELECT CAST(value AS INTEGER) FROM json_each(?1)) ORDER BY d.path,d.doc_id,e.line",
+        &[&encoded_hashes],
+        options,
+    )?;
+    let cited_by_doc = paging::query(
+        conn,
+        "SELECT d.doc_id,d.path,d.section_title,d.doc_type,e.line FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN doc_sections d ON d.doc_id=n.id WHERE e.kind='cited_by_doc' AND e.src_hash IN(SELECT CAST(value AS INTEGER) FROM json_each(?1)) ORDER BY d.path,d.doc_id,e.line",
+        &[&encoded_hashes],
+        options,
+    )?;
+    let referenced_symbols = paging::query(
+        conn,
+        "SELECT n.id,n.name,n.kind,n.path_id,(SELECT path FROM path_dictionary p WHERE p.path_id=n.path_id) AS path,n.line FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE e.kind='documents' AND e.src_hash IN(SELECT CAST(value AS INTEGER) FROM json_each(?1)) ORDER BY path,n.line,n.id",
+        &[&encoded_hashes],
+        options,
+    )?;
+    let referenced_symbol_candidates = if options.detail == Detail::Full {
+        document_reference_candidate_page(conn, &selected_sections, &source_workspace, options)?
+    } else {
+        json!({
+            "omitted":true,
+            "hint":"Request detail=full for documentary reference candidates",
+        })
+    };
+    Ok(
+        json!({"sections":sections,"cites_doc":cites_doc,"cited_by_doc":cited_by_doc,"referenced_symbols":referenced_symbols,"referenced_symbol_candidates":referenced_symbol_candidates}),
+    )
+}
+
+pub(crate) fn governing_invariants(conn: &Connection, node_id: &str) -> Result<Value> {
+    const DIRECT_LIMIT: usize = 5;
+    const TRANSITIVE_LIMIT: usize = 5;
+    let node_hash = crate::core::models::stable_hash64(node_id);
+    let direct_total = paging::count(
+        conn,
+        "SELECT count(*) FROM edges e WHERE e.kind='governs' AND e.dst_hash=?1",
+        &[&node_hash],
+    )?;
+    let direct_rows = rows(
+        conn,
+        "SELECT n.name AS id,json_extract(n.details,'$.rule') AS rule,p.path,n.line FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.kind='governs' AND e.dst_hash=?1 ORDER BY n.name,p.path,n.line LIMIT ?2",
+        &[&node_hash, &(DIRECT_LIMIT as i64)],
+        DIRECT_LIMIT,
+    )?;
+    let direct = direct_rows
+        .iter()
+        .map(|item| {
+            json!({
+                "id":item["id"],
+                "rule":item["rule"],
+                "source":{"path":item["path"],"line":item["line"]},
+            })
+        })
+        .collect::<Vec<_>>();
+    let transitive_total = paging::count(
+        conn,
+        "WITH neighbors(hash) AS (SELECT e.src_hash FROM edges e WHERE e.dst_hash=?1 AND e.kind IN('calls','possible_calls') UNION SELECT e.dst_hash FROM edges e WHERE e.src_hash=?1 AND e.kind IN('calls','possible_calls')) SELECT count(DISTINCT n.node_hash) FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN neighbors g ON g.hash=e.dst_hash WHERE e.kind='governs'",
+        &[&node_hash],
+    )?;
+    let transitive = rows(
+        conn,
+        "WITH neighbors(hash) AS (SELECT e.src_hash FROM edges e WHERE e.dst_hash=?1 AND e.kind IN('calls','possible_calls') UNION SELECT e.dst_hash FROM edges e WHERE e.src_hash=?1 AND e.kind IN('calls','possible_calls')) SELECT DISTINCT n.name AS id,json_extract(n.details,'$.rule') AS rule,p.path,n.line FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id JOIN neighbors g ON g.hash=e.dst_hash WHERE e.kind='governs' ORDER BY n.name,p.path,n.line LIMIT ?2",
+        &[&node_hash, &(TRANSITIVE_LIMIT as i64)],
+        TRANSITIVE_LIMIT,
+    )?;
+    let omitted_direct = direct_total.saturating_sub(direct.len());
+    let omitted_transitive = transitive_total.saturating_sub(transitive.len());
+    let omitted_sources = transitive
+        .iter()
+        .map(|item| json!({"id":item["id"],"source":{"path":item["path"],"line":item["line"]}}))
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "direct":direct,
+        "omitted_direct":omitted_direct,
+        "transitive_ids":transitive.iter().map(|item| item["id"].clone()).collect::<Vec<_>>(),
+        "omitted_transitive":omitted_transitive,
+        "omitted_sources":omitted_sources,
+    }))
+}
+
+/// Returns bounded governing rules for every indexed symbol in a task scope.
+pub(crate) fn governing_invariants_for_scope(conn: &Connection, scope: &[String]) -> Result<Value> {
+    const DIRECT_LIMIT: usize = 5;
+    const TRANSITIVE_LIMIT: usize = 5;
+    if scope.is_empty() {
+        return Ok(json!({
+            "direct": [],
+            "omitted_direct": 0,
+            "transitive_ids": [],
+            "omitted_transitive": 0,
+            "omitted_sources": [],
+        }));
+    }
+    let scope_json = serde_json::to_string(scope)?;
+    let scope_nodes = "WITH scope_nodes(hash) AS (SELECT DISTINCT n.node_hash FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE EXISTS(SELECT 1 FROM json_each(?1) s WHERE p.path=trim(s.value,'/') OR substr(p.path,1,length(trim(s.value,'/'))+1)=trim(s.value,'/')||'/'))";
+    let direct_total = paging::count(
+        conn,
+        &format!("{scope_nodes}, direct AS (SELECT DISTINCT e.src_hash FROM edges e JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind='governs') SELECT count(*) FROM direct"),
+        &[&scope_json],
+    )?;
+    let direct_rows = rows(
+        conn,
+        &format!("{scope_nodes} SELECT DISTINCT n.name AS id,json_extract(n.details,'$.rule') AS rule,p.path,n.line FROM edges e JOIN scope_nodes s ON s.hash=e.dst_hash JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.kind='governs' ORDER BY n.name,p.path,n.line LIMIT ?2"),
+        &[&scope_json, &(DIRECT_LIMIT as i64)],
+        DIRECT_LIMIT,
+    )?;
+    let direct = direct_rows
+        .iter()
+        .map(|item| {
+            json!({
+                "id":item["id"],
+                "rule":item["rule"],
+                "source":{"path":item["path"],"line":item["line"]},
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let neighbors = "neighbors(hash) AS (SELECT e.src_hash FROM edges e JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind IN('calls','possible_calls') UNION SELECT e.dst_hash FROM edges e JOIN scope_nodes s ON s.hash=e.src_hash WHERE e.kind IN('calls','possible_calls'))";
+    let transitive_total = paging::count(
+        conn,
+        &format!("{scope_nodes}, {neighbors}, direct AS (SELECT DISTINCT e.src_hash FROM edges e JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind='governs'), transitive AS (SELECT DISTINCT e.src_hash FROM edges e JOIN neighbors n ON n.hash=e.dst_hash WHERE e.kind='governs' AND NOT EXISTS(SELECT 1 FROM direct d WHERE d.src_hash=e.src_hash)) SELECT count(*) FROM transitive"),
+        &[&scope_json],
+    )?;
+    let transitive_rows = rows(
+        conn,
+        &format!("{scope_nodes}, {neighbors}, direct AS (SELECT DISTINCT e.src_hash FROM edges e JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind='governs') SELECT DISTINCT n.name AS id,json_extract(n.details,'$.rule') AS rule,p.path,n.line FROM edges e JOIN neighbors g ON g.hash=e.dst_hash JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.kind='governs' AND NOT EXISTS(SELECT 1 FROM direct d WHERE d.src_hash=e.src_hash) ORDER BY n.name,p.path,n.line LIMIT ?2"),
+        &[&scope_json, &(TRANSITIVE_LIMIT as i64)],
+        TRANSITIVE_LIMIT,
+    )?;
+    let transitive_ids = transitive_rows
+        .iter()
+        .map(|item| item["id"].clone())
+        .collect::<Vec<_>>();
+    let omitted_sources = transitive_rows
+        .iter()
+        .map(|item| json!({"id":item["id"],"source":{"path":item["path"],"line":item["line"]}}))
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "direct":direct,
+        "omitted_direct":direct_total.saturating_sub(direct.len()),
+        "transitive_ids":transitive_ids,
+        "omitted_transitive":transitive_total.saturating_sub(transitive_rows.len()),
+        "omitted_sources":omitted_sources,
+    }))
 }
 
 /// Runs a bounded read-only analysis query with generation-aware pagination.
@@ -1255,6 +1658,9 @@ pub fn analyze_paged(
             "Call code_map_analyze with an exact path from top_files to page its diagnostics."
         );
     }
+    if exact_file && (path.ends_with(".md") || path.ends_with(".mdx")) {
+        result["doc_diagnostics"] = document_diagnostics(conn, path, options, &generation)?;
+    }
     let compute_cycles = include_cycles.unwrap_or(false);
     result["cycles"] = if compute_cycles {
         super::cycles::summary(conn, if path.is_empty() { None } else { Some(path) })?
@@ -1263,6 +1669,152 @@ pub fn analyze_paged(
     };
     result["generation"] = json!(generation);
     Ok(result)
+}
+
+fn document_diagnostics(
+    conn: &Connection,
+    path: &str,
+    options: &QueryOptions,
+    generation: &str,
+) -> Result<Value> {
+    const MAX_DOCUMENT_SECTIONS: usize = 1000;
+    const MAX_DOCUMENT_DIAGNOSTICS: usize = 2000;
+    let section_limit = MAX_DOCUMENT_SECTIONS as i64;
+    let mut diagnostics = rows(
+        conn,
+        "SELECT 'broken_doc_link' AS kind,p.path,CAST(json_extract(c.value,'$.line') AS INTEGER) AS line,json_extract(c.value,'$.target') AS target FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id JOIN json_each(n.details,'$.citations') c WHERE n.kind='document' AND p.path=?1 AND NOT EXISTS(SELECT 1 FROM edges e JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE e.kind='cites_doc' AND e.src_hash=n.node_hash AND e.line=CAST(json_extract(c.value,'$.line') AS INTEGER) AND v.evidence=json_extract(c.value,'$.target')) ORDER BY line,target LIMIT ?2",
+        &[&path, &section_limit],
+        MAX_DOCUMENT_SECTIONS,
+    )?;
+    diagnostics.retain(|item| item["target"].as_str().is_some_and(is_document_link_target));
+    let document_rows = rows(
+        conn,
+        "SELECT n.path_id,n.id,n.details FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='document' AND p.path=?1 ORDER BY n.line,n.id LIMIT ?2",
+        &[&path, &section_limit],
+        MAX_DOCUMENT_SECTIONS,
+    )?;
+    let workspace_root: String = conn.query_row(
+        "SELECT value FROM metadata WHERE key='workspace_root'",
+        [],
+        |row| row.get(0),
+    )?;
+    for document in &document_rows {
+        let Some(claims) = document["details"]["symbol_claims"].as_array() else {
+            continue;
+        };
+        for claim in claims {
+            if claim["label_count"]
+                .as_u64()
+                .is_some_and(|count| count != 1)
+            {
+                continue;
+            }
+            let (Some(name), Some(target_path), Some(start), Some(end), Some(source_line)) = (
+                claim["name"].as_str(),
+                claim["target_path"].as_str(),
+                claim["start_line"].as_u64(),
+                claim["end_line"].as_u64(),
+                claim["line"].as_u64(),
+            ) else {
+                continue;
+            };
+            if target_path.split('/').any(|component| component == "..") {
+                continue;
+            }
+            let normalized_name = name.replace("::", ".");
+            let matching = rows(
+                conn,
+                "WITH candidates AS (SELECT n.id,n.name,n.kind,n.line,n.end_line,p.path,CASE WHEN n.qualname=?3 THEN 0 WHEN n.name=?2 THEN 1 ELSE 2 END AS priority FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind NOT IN('document','invariant','module','file') AND (n.qualname=?3 OR n.name=?2 OR (substr(n.qualname,-length(?3))=?3 AND substr(n.qualname,-length(?3)-1,1)='.'))), best AS (SELECT MIN(priority) AS priority FROM candidates) SELECT id,name,kind,line,end_line,path FROM candidates WHERE priority=(SELECT priority FROM best) ORDER BY line,id LIMIT 2",
+                &[&target_path, &name, &normalized_name],
+                2,
+            )?;
+            if matching.len() > 1 {
+                continue;
+            }
+            if matching.is_empty() {
+                let prefix = format!("{name}%");
+                let suggestion = rows(
+                    conn,
+                    "SELECT n.name,n.line,p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind NOT IN('document','invariant','module','file') AND n.name LIKE ?2 ORDER BY n.name,n.line LIMIT 1",
+                    &[&target_path, &prefix],
+                    1,
+                )?;
+                let mut diagnostic = json!({
+                    "kind":"dead_doc_symbol",
+                    "path":path,
+                    "line":source_line,
+                    "claim":{"name":name,"target_path":target_path,"start_line":start,"end_line":end},
+                });
+                if let Some(candidate) = suggestion.first() {
+                    diagnostic["suggested_symbol"] = json!({
+                        "name":candidate["name"],
+                        "path":candidate["path"],
+                        "line":candidate["line"],
+                    });
+                }
+                diagnostics.push(diagnostic);
+                continue;
+            }
+            let target = &matching[0];
+            let source = match super::symbols::verified_source(
+                conn,
+                Path::new(&workspace_root),
+                target_path,
+            ) {
+                Ok(source) => source,
+                Err(_) => continue,
+            };
+            let source_lines = source.lines().count().max(1) as u64;
+            if start == 0 || end < start || end > source_lines {
+                continue;
+            }
+            let target_start = target["line"].as_u64().unwrap_or(0);
+            let target_end = target["end_line"].as_u64().unwrap_or(target_start);
+            if end < target_start || start > target_end {
+                diagnostics.push(json!({
+                    "kind":"stale_doc_sections",
+                    "reason":"documented_symbol_range_mismatch",
+                    "path":path,
+                    "line":source_line,
+                    "claim":{"name":name,"target_path":target_path,"start_line":start,"end_line":end},
+                    "target":{"id":target["id"],"path":target_path,"line":target_start,"end_line":target_end},
+                    "generation":generation,
+                }));
+            }
+        }
+    }
+    diagnostics.sort_by(|left, right| {
+        left["line"]
+            .as_u64()
+            .cmp(&right["line"].as_u64())
+            .then_with(|| left["kind"].as_str().cmp(&right["kind"].as_str()))
+            .then_with(|| left.to_string().cmp(&right.to_string()))
+    });
+    diagnostics.truncate(MAX_DOCUMENT_DIAGNOSTICS);
+    let total = diagnostics.len();
+    let items = diagnostics
+        .into_iter()
+        .skip(options.offset)
+        .take(options.limit)
+        .collect();
+    Ok(paging::value(items, total, options, generation))
+}
+
+fn is_document_link_target(target: &str) -> bool {
+    if target.starts_with('#') {
+        return true;
+    }
+    if target.contains("://") || target.starts_with("mailto:") {
+        return false;
+    }
+    let linked_path = target.split('#').next().unwrap_or_default();
+    match Path::new(linked_path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some(extension) => matches!(extension.to_ascii_lowercase().as_str(), "md" | "mdx"),
+        None => true,
+    }
 }
 
 fn resolution_cause_sql() -> &'static str {

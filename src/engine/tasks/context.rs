@@ -1,7 +1,10 @@
 use crate::engine::tasks::workspaces::Workspace;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 /// Truncate string by Unicode scalar count without slicing invalid byte boundaries.
 fn truncate_chars(s: &str, max_chars: usize) -> String {
@@ -13,139 +16,103 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// Extract alphanumeric tokens of length >= 3 from paths, ignoring common folder/file extensions.
-fn extract_scope_tokens(scope: &[String]) -> BTreeSet<String> {
-    let mut tokens = BTreeSet::new();
-    let ignored = [
-        "src", "rs", "py", "ts", "js", "go", "java", "mod", "lib", "main", "core", "test", "tests",
-    ];
-    for path in scope {
-        for segment in path.split(['/', '\\', '.', '_', '-']) {
-            let lower = segment.to_ascii_lowercase();
-            if lower.len() >= 3 && !ignored.contains(&lower.as_str()) {
-                tokens.insert(lower);
-            }
-        }
-    }
-    tokens
+fn empty_governing_invariants() -> Value {
+    json!({
+        "direct": [],
+        "omitted_direct": 0,
+        "transitive_ids": [],
+        "omitted_transitive": 0,
+        "omitted_sources": [],
+    })
 }
 
-/// Scan docs/adr/ and docs/architecture/ for architectural documents governing the task scope.
-fn scan_adrs(workspace_root: &Path, root: &Path, tokens: &BTreeSet<String>) -> Vec<Value> {
-    let mut results = Vec::new();
-    let mut seen_paths = BTreeSet::new();
+fn open_code_map(workspace_root: &Path, root: &Path) -> Option<rusqlite::Connection> {
+    let db_path = [
+        workspace_root.join(".forge/code-map.sqlite"),
+        root.join(".forge/code-map.sqlite"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())?;
+    rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+}
 
-    let candidate_dirs = [
-        (workspace_root.join("docs/adr"), workspace_root),
-        (workspace_root.join("docs/architecture"), workspace_root),
-        (root.join("docs/adr"), root),
-        (root.join("docs/architecture"), root),
-    ];
-
-    for (dir, base) in candidate_dirs {
-        if !dir.is_dir() {
+fn query_indexed_adrs(conn: &rusqlite::Connection, scope: &[String]) -> Vec<Value> {
+    if scope.is_empty() {
+        return Vec::new();
+    }
+    let scope = match serde_json::to_string(scope) {
+        Ok(scope) => scope,
+        Err(_) => return Vec::new(),
+    };
+    let sql = "WITH scope_nodes(hash) AS (SELECT DISTINCT target.node_hash FROM nodes target JOIN path_dictionary tp ON tp.path_id=target.path_id WHERE EXISTS(SELECT 1 FROM json_each(?1) s WHERE tp.path=trim(s.value,'/') OR substr(tp.path,1,length(trim(s.value,'/'))+1)=trim(s.value,'/')||'/')), governed_paths(path) AS (SELECT DISTINCT d.path FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=n.path_id JOIN doc_sections d ON d.doc_id=json_extract(n.details,'$.document_id') JOIN scope_nodes s ON s.hash=e.dst_hash WHERE e.kind='governs' AND (p.path LIKE 'docs/adr/%' OR p.path LIKE 'docs/architecture/%')) SELECT d.path,d.section_title,d.content,n.details FROM governed_paths g JOIN doc_sections d ON d.path=g.path JOIN nodes n ON n.id=d.doc_id ORDER BY d.path,d.rowid LIMIT 200";
+    let mut statement = match conn.prepare(sql) {
+        Ok(statement) => statement,
+        Err(_) => return Vec::new(),
+    };
+    let rows = match statement.query_map([scope], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return Vec::new(),
+    };
+    let mut documents = BTreeMap::<String, Value>::new();
+    let mut navigation_counts = BTreeMap::<String, usize>::new();
+    for row in rows.flatten() {
+        let (path, title, content, details) = row;
+        let navigation_count = navigation_counts.entry(path.clone()).or_default();
+        let details = serde_json::from_str::<Value>(&details).unwrap_or(Value::Null);
+        let document = documents.entry(path.clone()).or_insert_with(|| {
+            json!({
+                "path":path,
+                "title":title,
+                "status":details.get("status").cloned().unwrap_or(Value::Null),
+                "relevance":"direct",
+                "invariants_summary":[],
+            })
+        });
+        let Some(summary) = document["invariants_summary"].as_array_mut() else {
             continue;
-        }
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("md") {
-                continue;
-            }
-            if path.file_name().and_then(|s| s.to_str()) == Some("README.md") {
-                continue;
-            }
-            let rel_path = path
-                .strip_prefix(base)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            if seen_paths.contains(&rel_path) {
-                continue;
-            }
-            seen_paths.insert(rel_path.clone());
-
-            let text = fs::read_to_string(&path).unwrap_or_default();
-            let text = text.replace("\r\n", "\n");
-            let mut title = String::new();
-            let mut status = "accepted".to_string();
-
-            // Extract frontmatter or heading
-            if let Some(stripped) = text.strip_prefix("---\n") {
-                if let Some((frontmatter, _)) = stripped.split_once("\n---\n") {
-                    for line in frontmatter.lines() {
-                        if let Some(t) = line.strip_prefix("title:") {
-                            title = t.trim().trim_matches('"').trim_matches('\'').to_string();
-                        } else if let Some(s) = line.strip_prefix("status:") {
-                            status = s.trim().trim_matches('"').trim_matches('\'').to_string();
-                        }
-                    }
+        for line in content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            let decision = line
+                .trim_start_matches(['-', '*'])
+                .trim_start()
+                .starts_with("Decision:");
+            let decision_section = title.trim().eq_ignore_ascii_case("decision");
+            let navigation_rule = line.contains("INV-") || line.contains("Invariant:");
+            let keep = decision || decision_section || (navigation_rule && *navigation_count < 5);
+            if keep && !summary.iter().any(|item| item.as_str() == Some(line)) {
+                summary.push(json!(line));
+                if !decision && !decision_section && navigation_rule {
+                    *navigation_count += 1;
                 }
             }
-            if title.is_empty() {
-                for line in text.lines() {
-                    if let Some(h) = line.strip_prefix("# ") {
-                        title = h.trim().to_string();
-                        break;
-                    }
-                }
-            }
-            if title.is_empty() {
-                title = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-            }
-
-            let text_lower = format!(
-                "{} {}",
-                rel_path.to_ascii_lowercase(),
-                text.to_ascii_lowercase()
-            );
-            let matches_token = tokens.iter().any(|tok| text_lower.contains(tok));
-
-            if !matches_token {
-                continue;
-            }
-
-            let invariants_summary = text
-                .lines()
-                .map(str::trim)
-                .filter(|line| {
-                    line.contains("Invariant:")
-                        || line.contains("INV-")
-                        || line
-                            .trim_start_matches(['-', '*'])
-                            .trim_start()
-                            .starts_with("Decision:")
-                })
-                .take(5)
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-
-            results.push(json!({
-                "path": rel_path,
-                "title": title,
-                "status": status,
-                "relevance": "direct",
-                "invariants_summary": invariants_summary,
-            }));
         }
     }
+    documents.into_values().take(10).collect()
+}
 
-    results.sort_by(|a, b| {
-        let a_rel = a["relevance"].as_str() == Some("direct");
-        let b_rel = b["relevance"].as_str() == Some("direct");
-        b_rel
-            .cmp(&a_rel)
-            .then_with(|| a["path"].as_str().cmp(&b["path"].as_str()))
-    });
-    results.truncate(10);
-    results
+fn query_indexed_context(
+    workspace_root: &Path,
+    root: &Path,
+    scope: &[String],
+) -> (Vec<Value>, Value) {
+    let Some(conn) = open_code_map(workspace_root, root) else {
+        return (Vec::new(), empty_governing_invariants());
+    };
+    let adrs = query_indexed_adrs(&conn, scope);
+    let governing = crate::db::reader::governing_invariants_for_scope(&conn, scope)
+        .unwrap_or_else(|_| empty_governing_invariants());
+    (adrs, governing)
 }
 
 /// Query SQLite code map index for high-value symbols within the task scope.
@@ -538,10 +505,8 @@ pub(super) fn context_bundle(
         })
         .unwrap_or_default();
 
-    let tokens = extract_scope_tokens(&scope);
-
-    // 1. Scope-to-ADR mapping
-    let adrs = scan_adrs(&workspace.root, root, &tokens);
+    // 1. Scope-linked document context is grounded in current indexed graph edges.
+    let (adrs, governing_invariants) = query_indexed_context(&workspace.root, root, &scope);
 
     // 2. Scope symbols skeleton from code map
     let scope_symbols = query_scope_symbols(&workspace.root, root, &scope);
@@ -812,6 +777,7 @@ pub(super) fn context_bundle(
         )
     ) {
         bundle_map.insert("adrs".into(), json!(adrs));
+        bundle_map.insert("governing_invariants".into(), governing_invariants);
     }
     if matches!(
         proof_kind,

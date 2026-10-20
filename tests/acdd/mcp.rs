@@ -1089,7 +1089,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     fs::create_dir_all(workspace.0.join("docs/milestones")).unwrap();
 
     workspace.write("AGENTS.md", "# Test guidance\n");
-    let routing_adr = "---\ntitle: Task Routing Invariants\nstatus: accepted\n---\n# Task Routing Invariants\nContext and rules for routing.";
+    let routing_adr = "---\ntitle: Task Routing Invariants\ndoc_type: adr\nstatus: accepted\n---\n# Task Routing Invariants\n- INV-ADR: Preserve [`route_task`](../../src/routing.rs#L2).\n- Decision: Admit every caller before changing the public signature.";
     workspace.write(
         "docs/adr/001-task-routing.md",
         &routing_adr.replace('\n', "\r\n"),
@@ -1098,10 +1098,23 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         "docs/adr/002-unrelated.md",
         "---\ntitle: Storage Layout\nstatus: accepted\n---\n# Storage Layout\nSQLite pages and retention.",
     );
+    let mut rules = String::from("# Routing contract\n");
+    for index in 0..6 {
+        rules.push_str(&format!("- INV-C{index:02}: Preserve routing rule {index} through [`route_task`](../../src/routing.rs#L2).\n"));
+    }
+    workspace.write("docs/contracts/routing.md", &rules);
     workspace.write(
         "src/routing.rs",
         "pub struct Router;\npub fn route_task() {}\n",
     );
+    workspace.write("src/unique.rs", "pub fn unique() {}\n");
+    let mut decision_rules = String::from("---\ntitle: Decision after rules\ndoc_type: adr\nstatus: accepted\n---\n# Decision after rules\n");
+    for index in 0..6 {
+        decision_rules.push_str(&format!("- INV-DEC{index:02}: Preserve decision rule {index} through [`unique`](../../src/unique.rs#L1).\n"));
+    }
+    decision_rules.push_str("Decision: Keep the complete decision after every bounded navigation rule.\n");
+    workspace.write("docs/adr/003-decision-after-rules.md", &decision_rules);
+    workspace.write("docs/adr/004-headed-decision.md", "---\ntitle: Headed Decision\ndoc_type: adr\nstatus: accepted\n---\n# Governance\n- INV-HEADED: Preserve the decision through [`unique`](../../src/unique.rs#L1).\n## Decision\nRetain the complete decision from its own section.\n");
     workspace.write("src/minimal_routing.rs", "pub fn minimal_route_task() {}\n");
     workspace.write("tests/test_routing.rs", "#[test]\nfn test_routing() {}\n");
     workspace.write("src/cli_routing.rs", "pub fn route_cli_task() {}\n");
@@ -1111,6 +1124,8 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     );
 
     let manifest = "---\nid: m-context\ntitle: Context Milestone\ndoc_type: contract\ninvariants: [routing-invariant]\n---\n```yaml\ntask_ref: routing-task\ntarget: Deliver unified routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n  - tests/test_routing.rs\n```\n```yaml\ntask_ref: cli-routing-task\ntarget: Deliver CLI unified routing\nproof_policy: seam-test-first\nscope:\n  - src/cli_routing.rs\n  - tests/test_cli_routing.rs\n```\n```yaml\ntask_ref: minimal-routing-task\ntarget: Deliver minimal routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n```\n";
+    let manifest = format!("{manifest}```yaml\ntask_ref: decision-context-task\ntarget: Preserve governing ADR decisions\nproof_policy: seam-test-first\nscope:\n  - src/unique.rs\n```\n");
+    let manifest = manifest.replace("invariants: [routing-invariant]", "invariants: [routing-invariant, authority-2, authority-3, authority-4, authority-5, authority-6, authority-7]");
     workspace.write(
         "docs/milestones/010-context.md",
         &manifest.replace(
@@ -1137,6 +1152,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     let task_id = sync_res["tasks"][0]["task_id"].as_str().unwrap();
     let cli_task_id = sync_res["tasks"][1]["task_id"].as_str().unwrap();
     let minimal_task_id = sync_res["tasks"][2]["task_id"].as_str().unwrap();
+    let decision_task_id = sync_res["tasks"][3]["task_id"].as_str().unwrap();
 
     // Post blackboard message
     client.payload(
@@ -1179,7 +1195,15 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     );
     assert_eq!(
         bundle["contract"]["invariants"],
-        json!(["routing-invariant"])
+        json!([
+            "routing-invariant",
+            "authority-2",
+            "authority-3",
+            "authority-4",
+            "authority-5",
+            "authority-6",
+            "authority-7"
+        ])
     );
 
     // Check guidance in bundle
@@ -1209,6 +1233,32 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         1,
         "unrelated ADRs must not appear as governing context"
     );
+    assert!(adr["invariants_summary"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line
+            .as_str()
+            .unwrap()
+            .contains("Decision: Admit every caller")));
+    let governing = &bundle["governing_invariants"];
+    let direct = governing["direct"]
+        .as_array()
+        .expect("verified governing rules in task context");
+    assert_eq!(direct.len(), 5);
+    assert_eq!(
+        direct
+            .iter()
+            .map(|rule| rule["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["INV-ADR", "INV-C00", "INV-C01", "INV-C02", "INV-C03"]
+    );
+    assert_eq!(governing["omitted_direct"], 2);
+    assert!(direct
+        .iter()
+        .any(|rule| rule["source"]["path"] == "docs/contracts/routing.md"));
+    assert_eq!(governing["transitive_ids"], json!([]));
+    assert_eq!(governing["omitted_transitive"], 0);
 
     let symbols = bundle["scope_symbols"].as_array().unwrap();
     assert!(symbols.iter().any(|symbol| symbol["name"] == "route_task"));
@@ -1246,6 +1296,15 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         }),
     );
     assert!(claim_res["context_bundle"].is_object());
+    assert_eq!(
+        claim_res["context_bundle"]["governing_invariants"],
+        *governing
+    );
+    assert_eq!(
+        claim_res["context_bundle"]["contract"]["invariants"],
+        bundle["contract"]["invariants"]
+    );
+    assert!(claim_res["workflow_guidance"]["expected_evidence_template"].is_object());
     assert_eq!(
         claim_res["context_bundle"]["contract"]["worker_id"],
         "author-1"
@@ -1320,6 +1379,14 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     );
     let cli_json: Value = serde_json::from_slice(&cli_context.stdout).unwrap();
     assert!(cli_json["context_bundle"].is_object());
+    assert_eq!(
+        cli_json["context_bundle"]["governing_invariants"],
+        *governing
+    );
+    assert_eq!(
+        cli_json["context_bundle"]["contract"]["invariants"],
+        bundle["contract"]["invariants"]
+    );
     assert_eq!(cli_json["context_bundle"]["contract"]["task_id"], task_id);
     assert_eq!(
         cli_json["context_bundle"]["contract"]["depends_on"],
@@ -1397,6 +1464,85 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         .unwrap();
     assert_eq!(sibling_msg["scope"], "sibling");
     assert_eq!(sibling_msg["task_id"], cli_task_id);
+
+    let decision_context = client.payload(
+        "task_manage",
+        json!({"action": "context", "task_id": decision_task_id}),
+    );
+    let decision_adrs = decision_context["context_bundle"]["adrs"]
+        .as_array()
+        .unwrap();
+    let mut decision_regressions = Vec::new();
+    for (path, marker) in [
+        (
+            "docs/adr/003-decision-after-rules.md",
+            "complete decision after every bounded navigation rule",
+        ),
+        (
+            "docs/adr/004-headed-decision.md",
+            "complete decision from its own section",
+        ),
+    ] {
+        match decision_adrs.iter().find(|adr| adr["path"] == path) {
+            Some(adr)
+                if adr["invariants_summary"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|line| line.as_str().unwrap().contains(marker)) => {}
+            Some(adr) => decision_regressions.push(format!(
+                "required Decision evidence was omitted for {path}: {adr}"
+            )),
+            None => decision_regressions.push(format!(
+                "governing ADR {path} was omitted from task context: {decision_adrs:?}"
+            )),
+        }
+    }
+    let cli_decision = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "context",
+            decision_task_id,
+        ])
+        .output()
+        .unwrap();
+    if cli_decision.status.success() {
+        let cli_decision: Value = serde_json::from_slice(&cli_decision.stdout).unwrap();
+        for path in [
+            "docs/adr/003-decision-after-rules.md",
+            "docs/adr/004-headed-decision.md",
+        ] {
+            if !cli_decision["context_bundle"]["adrs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|adr| {
+                    adr["path"] == path
+                        && adr["invariants_summary"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|line| line.as_str().unwrap().contains("Decision"))
+                })
+            {
+                decision_regressions.push(format!(
+                    "CLI task context omitted required Decision evidence for {path}: {}",
+                    cli_decision["context_bundle"]["adrs"]
+                ));
+            }
+        }
+    } else {
+        decision_regressions.push(format!(
+            "CLI decision context failed: {}",
+            String::from_utf8_lossy(&cli_decision.stderr)
+        ));
+    }
+    assert!(
+        decision_regressions.is_empty(),
+        "Task5 Decision retention regressions: {decision_regressions:#?}"
+    );
 }
 
 #[test]

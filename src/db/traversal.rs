@@ -1032,7 +1032,41 @@ pub(crate) fn impact_with_path_options(
         selector.filter(|value| !value.trim().is_empty()),
         changes.filter(|value| !value.trim().is_empty()),
     ) {
-        (Some(selector), None) => traverse_with_path_options(conn, selector, path, request),
+        (Some(selector), None) => {
+            let mut result = traverse_with_path_options(conn, selector, path, request)?;
+            let selected_id = result["selector"]["id"]
+                .as_str()
+                .or_else(|| result["selector"]["node"]["id"].as_str())
+                .unwrap_or(selector)
+                .to_owned();
+            let selected_path = result["selector"]["path"]
+                .as_str()
+                .or_else(|| result["selector"]["node"]["path"].as_str())
+                .unwrap_or(selector)
+                .to_owned();
+            result["governing_invariants"] = reader::governing_invariants(conn, &selected_id)?;
+            let path_is_indexed: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM path_dictionary WHERE path=?1)",
+                [&selected_path],
+                |row| row.get(0),
+            )?;
+            result["affected_docs"] = if path_is_indexed {
+                paging::query(
+                    conn,
+                    "SELECT d.doc_id,d.path,d.section_title,d.doc_type,e.line FROM edges e JOIN nodes symbol ON symbol.node_hash=e.src_hash JOIN path_dictionary sp ON sp.path_id=symbol.path_id JOIN nodes dn ON dn.node_hash=e.dst_hash JOIN doc_sections d ON d.doc_id=dn.id WHERE e.kind='references_doc' AND sp.path=?1 UNION SELECT d.doc_id,d.path,d.section_title,d.doc_type,CAST(json_extract(c.value,'$.line') AS INTEGER) FROM nodes dn JOIN doc_sections d ON d.doc_id=dn.id JOIN json_each(dn.details,'$.symbol_claims') c WHERE json_extract(c.value,'$.target_path')=?1 ORDER BY 2,1,5",
+                    &[&selected_path],
+                    request.page,
+                )?
+            } else {
+                paging::query(
+                    conn,
+                    "SELECT DISTINCT d.doc_id,d.path,d.section_title,d.doc_type,e.line FROM edges e JOIN nodes dn ON dn.node_hash=e.dst_hash JOIN doc_sections d ON d.doc_id=dn.id WHERE e.kind='references_doc' AND e.src_hash=?1 ORDER BY d.path,d.doc_id,e.line",
+                    &[&stable_hash64(&selected_id)],
+                    request.page,
+                )?
+            };
+            Ok(result)
+        }
         (None, Some(mode)) => changed_impact_with_path_options(conn, root, mode, path, request),
         (Some(_), Some(_)) => bail!("provide exactly one of selector or changes"),
         (None, None) if empty_selector => traverse_with_path_options(

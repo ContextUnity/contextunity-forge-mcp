@@ -701,6 +701,8 @@ Per [ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md), the bun
 8. **`latest_snapshot` and `milestone_ref`** (delivery proof gates and completed tasks), and **`receipt`** (completed tasks): The nearest accepted candidate snapshot, inspect command, milestone file path, and durable completion receipt.
 10. **`blackboard` and `blackboard_info`** (All stages): Up to 15 recent untagged messages and messages targeted to the active gate from the task, parent milestone, and sibling tasks. Each message includes origin metadata (`scope: "milestone" | "task" | "subtask" | "sibling"`), `task_id`, `subtask_ref`, and optional `gate`. `blackboard_info` summarizes the active gate, message ids, total count, targeted count, and topic counts. Gate-targeted messages also appear in `workflow_guidance.blackboard_messages`.
 
+9. **`governing_invariants`** (contract, command, and review proof gates): Indexed documentation rules with at most five direct entries and five IDs found through one-hop callers or callees, omitted counts, and source references. This graph projection supplements `contract.invariants`; it never caps or replaces task authority, profile guidance, decisions, commands, snapshots, or proof receipts. The compatibility `adrs` field includes indexed ADR context only when a verified document or governing edge ties it to the task scope; matching a path token or prose word alone does not establish governance. Indexed `Decision:` lines remain available as source context without becoming accepted task authority.
+
 ### Response Bounding and Anti-Bloat Invariants
 
 To guarantee responses remain well below the 64 KiB ceiling of [ADR 0011](../adr/0011-bounded-mcp-response-budgets.md):

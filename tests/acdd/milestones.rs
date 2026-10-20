@@ -2676,7 +2676,8 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
         "roots: [src, extensions]\ndocs: [docs]\nmilestones:\n  - docs/milestones\n  - extensions/*/docs/milestones\nplans:\n  - docs/plans\n  - extensions/*/docs/plans\ntasks_db: .forge/tasks.sqlite\n",
     );
 
-    // 1. Verify scanner automatically excludes plans and milestones from code/doc index
+    // Documentation navigation includes contracts and proposals; lifecycle
+    // discovery still uses its configured directories and separate authority.
     let scan = contextunity_forge_mcp::engine::scanner::scan(&root.0, None).unwrap();
     let scanned_paths: Vec<_> = scan.entries.iter().map(|e| e.path.as_str()).collect();
 
@@ -2689,15 +2690,15 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
     assert!(scanned_paths.contains(&"extensions/commerce/docs/milestones/README.md"));
     assert!(scanned_paths.contains(&"extensions/commerce/docs/plans/README.md"));
 
-    assert!(!scanned_paths.contains(&"docs/plans/platform_plan.md"));
-    assert!(!scanned_paths.contains(&"docs/milestones/010-platform.md"));
-    assert!(!scanned_paths.contains(&"docs/plans/archive/README.md"));
-    assert!(!scanned_paths.contains(&"docs/milestones/archive/README.md"));
-    assert!(!scanned_paths.contains(&"extensions/commerce/docs/plans/commerce_plan.md"));
-    assert!(!scanned_paths.contains(&"extensions/commerce/docs/milestones/010-commerce.md"));
+    assert!(scanned_paths.contains(&"docs/plans/platform_plan.md"));
+    assert!(scanned_paths.contains(&"docs/milestones/010-platform.md"));
+    assert!(scanned_paths.contains(&"docs/plans/archive/README.md"));
+    assert!(scanned_paths.contains(&"docs/milestones/archive/README.md"));
+    assert!(scanned_paths.contains(&"extensions/commerce/docs/plans/commerce_plan.md"));
+    assert!(scanned_paths.contains(&"extensions/commerce/docs/milestones/010-commerce.md"));
 
     // Overview README files reach doc_search through the public cold-build and reader path,
-    // while individual contracts and nested archive content remain isolated.
+    // together with contract/proposal navigation, without changing task authority.
     let db_path = root.0.join("code_map.sqlite");
     writer::build(&root.0, &db_path, None).expect("cold build failed");
     let conn =
@@ -2735,12 +2736,34 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
         .contains(&"extensions/commerce/docs/milestones/README.md".to_owned()));
     assert!(search_doc_paths("commerceplanoverviewtoken")
         .contains(&"extensions/commerce/docs/plans/README.md".to_owned()));
-    assert!(search_doc_paths("rootmilestonecontractisolationtoken").is_empty());
-    assert!(search_doc_paths("rootplancontractisolationtoken").is_empty());
-    assert!(search_doc_paths("commercemilestonecontractisolationtoken").is_empty());
-    assert!(search_doc_paths("commerceplancontractisolationtoken").is_empty());
-    assert!(search_doc_paths("archivemilestoneoverviewtoken").is_empty());
-    assert!(search_doc_paths("archiveplanoverviewtoken").is_empty());
+    for (query, path) in [
+        (
+            "rootmilestonecontractisolationtoken",
+            "docs/milestones/010-platform.md",
+        ),
+        (
+            "rootplancontractisolationtoken",
+            "docs/plans/platform_plan.md",
+        ),
+        (
+            "commercemilestonecontractisolationtoken",
+            "extensions/commerce/docs/milestones/010-commerce.md",
+        ),
+        (
+            "commerceplancontractisolationtoken",
+            "extensions/commerce/docs/plans/commerce_plan.md",
+        ),
+        (
+            "archivemilestoneoverviewtoken",
+            "docs/milestones/archive/README.md",
+        ),
+        ("archiveplanoverviewtoken", "docs/plans/archive/README.md"),
+    ] {
+        assert!(
+            search_doc_paths(query).contains(&path.to_owned()),
+            "{query}/{path}"
+        );
+    }
 
     // 2. Verify milestones::list discovers milestones across all configured milestone directories
     let listed = contextunity_forge_mcp::engine::milestones::list(&root.0, false, None).unwrap();

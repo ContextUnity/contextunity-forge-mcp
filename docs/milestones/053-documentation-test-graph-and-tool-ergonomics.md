@@ -444,55 +444,139 @@ receipt:
 
 ```yaml
 task_ref: documentation-knowledge-graph-and-invariant-traceability
-target: "Extract documentation citation graph, surface affected docs on impact and documented_in on inspect, index governing invariants from all docs as first-class graph entities, and diagnose doc drift with suggested symbol remediation"
+target: Extract documentation citation graph, surface affected docs on impact and documented_in on inspect, index governing invariants from all docs as first-class graph entities, and diagnose doc drift with suggested symbol remediation
 proof_policy: seam-test-first
-contract_revision: 9
+contract_revision: 13
 invariants:
-  - 'INV-DOC-GRAPH-TRACEABILITY: Markdown relative links and wikilinks are extracted into bidirectional cites_doc/cited_by_doc edges; governing invariants (INV-* rules) from linked doc sections are automatically surfaced on inspect and impact.'
-  - 'INV-UNIVERSAL-INVARIANT-INDEX: INV-* invariants across all docs/**/*.md and AGENTS.md are indexed as first-class graph nodes with bidirectional governs/governed_by edges to referenced symbols, replacing single-directory ADR token scraping.'
-  - 'INV-IMPACT-AWARE-INVARIANTS: code_map_inspect and code_map_impact surface direct and 1-hop transitive governing invariants for inspected and impacted code symbols.'
-  - 'INV-AFFECTED-DOCS-IMPACT: Symbol modification or deletion in code_map_impact surfaces affected_docs pointing to citing Markdown documentation sections and ADRs.'
-  - 'INV-BIDIRECTIONAL-DOC-CODE-NAVIGATION: code_map_inspect surfaces documented_in sections for code symbols, and get_doc surfaces referenced_symbols with live symbol verification.'
-  - 'INV-DOC-DRIFT-REMEDIATION-SUGGESTIONS: dead_doc_symbol diagnostics in code_map_analyze provide suggested_symbol candidates based on symbol similarity and module proximity.'
-  - 'INV-COMPACT-INVARIANT-PAYLOAD: Governing invariants in tool responses and task context are bounded to compact ID, single-line rule, and source reference; transitive invariants are summarized by ID with a strict cap of 3-5 direct invariants to prevent context-window bloat.'
+- 'INV-DOC-GRAPH-TRACEABILITY: Markdown relative links and wikilinks are extracted into bidirectional cites_doc/cited_by_doc edges; governing invariants (INV-* rules) from linked doc sections are automatically surfaced on inspect and impact.'
+- 'INV-UNIVERSAL-INVARIANT-INDEX: INV-* invariants across all docs/**/*.md and AGENTS.md are indexed as first-class graph nodes with bidirectional governs/governed_by edges to referenced symbols, replacing single-directory ADR token scraping.'
+- 'INV-IMPACT-AWARE-INVARIANTS: code_map_inspect and code_map_impact surface direct and 1-hop transitive governing invariants for inspected and impacted code symbols.'
+- 'INV-AFFECTED-DOCS-IMPACT: Symbol modification or deletion in code_map_impact surfaces affected_docs pointing to citing Markdown documentation sections and ADRs.'
+- 'INV-BIDIRECTIONAL-DOC-CODE-NAVIGATION: code_map_inspect surfaces documented_in sections for code symbols, and get_doc surfaces referenced_symbols with live symbol verification.'
+- 'INV-DOC-DRIFT-REMEDIATION-SUGGESTIONS: dead_doc_symbol diagnostics in code_map_analyze provide suggested_symbol candidates based on symbol similarity and module proximity.'
+- 'INV-COMPACT-INVARIANT-PAYLOAD: Governing invariants in tool responses and task context are bounded to compact ID, single-line rule, and source reference; transitive invariants are summarized by ID with a strict cap of 3-5 direct invariants to prevent context-window bloat.'
+- 'INV-CONTEXT-SAFE-DOC-REFERENCES: Documentary claims resolve only inside the source document workspace unless an explicit normalized target path confines the claim to another file. Within that eligible context, preserve qualified-name, declared-name, then segment-suffix priority and distinct-ID ambiguity. Document, invariant, and component nodes do not verify code claims. Only one eligible target creates verified documentary edges; full-detail get_doc exposes ambiguous selected-tier targets separately as paged referenced_symbol_candidates with source-claim and target identities. Compact detail omits candidate discovery without reading heavy columns; CLI docs get defaults to full detail, matching MCP get_doc. Candidates never establish verified references or governance; invalid explicit paths never fall back globally. Cold and delta indexing and CLI/MCP readers preserve these semantics.'
 scope:
-  - src/engine/docs.rs
-  - src/engine/scanner/mod.rs
-  - src/engine/pipeline.rs
-  - src/engine/tasks/context.rs
-  - src/engine/linker/resolution.rs
-  - src/db/reader.rs
-  - src/mcp/tools.rs
-  - tests/mcp/context.rs
-  - src/db/symbols.rs
-  - tests/mcp/freshness/stdio_and_response.rs
-  - tests/incremental/doc_parity.rs
-  - tests/acdd/mcp.rs
-  - docs/reference/mcp-tools.md
-  - docs/reference/mcp-markdown-contracts.md
-  - docs/reference/tasks.md
-  - skills/contextunity-forge/SKILL.md
-status: ready
+- src/engine/docs.rs
+- src/engine/scanner/mod.rs
+- src/engine/pipeline.rs
+- src/engine/tasks/context.rs
+- src/engine/linker/resolution.rs
+- src/cli/mod.rs
+- src/db/reader.rs
+- src/db/traversal.rs
+- src/mcp/tools.rs
+- tests/mcp/context.rs
+- src/db/symbols.rs
+- tests/mcp/freshness/stdio_and_response.rs
+- tests/incremental/doc_parity.rs
+- tests/linker/optimizations.rs
+- tests/acdd/mcp.rs
+- tests/acdd/milestones.rs
+- tests/acdd/tasks.rs
+- src/core/config.rs
+- docs/adr/0007-fail-closed-selector-disambiguation.md
+- docs/AGENTS.md
+- docs/reference/mcp-tools.md
+- docs/reference/tasks.md
+- docs/reference/configuration.md
+- skills/contextunity-forge/SKILL.md
 subtasks:
-  - subtask_ref: markdown-citation-graph-extraction
-    title: "Extract Markdown relative links and wikilinks into cites_doc and cited_by_doc bidirectional edges"
-    status: pending
-  - subtask_ref: universal-invariants-indexing-and-traversal
-    title: "Index INV-* invariants across all docs and AGENTS.md with governs/governed_by edges to symbols"
-    status: pending
-  - subtask_ref: affected-docs-and-bidirectional-navigation
-    title: "Surface affected_docs in impact, documented_in in inspect, and referenced_symbols in get_doc"
-    status: pending
-  - subtask_ref: governing-invariants-injection
-    title: "Surface direct and 1-hop transitive INV-* invariants on code_map_inspect and code_map_impact"
-    status: pending
-  - subtask_ref: doc-drift-diagnostics-and-suggestions
-    title: "Report dead_doc_symbol, broken_doc_link, and stale_doc_sections in code_map_analyze with suggested_symbol candidates"
-    status: pending
+- subtask_ref: markdown-citation-graph-extraction
+  title: Extract Markdown relative links and wikilinks into cites_doc and cited_by_doc bidirectional edges
+  status: completed
+  evidence: 'Independent REVIEW29 contract13 candidate9df31b2635d7c3c32623b9ca283290f080a43051: exact final commitment_integrity+strictClippy+all-targets exit0,811passed0failed1ignored (standalone16 not double-counted). Complete affected incremental31/MCP91/linker102/query43/ACDD116 pass. This retained slice reassessed against current source, public seams and accepted docs semantics; no open defect. Full closure /tmp/forge053-doc-review29-findings.json; log/counts/env /tmp/forge053-doc-review29-verification.json; all24 blobs match. Existing markdown-citation-graph-extraction oracles retained; candidate discovery never verifies governance/coverage.'
+- subtask_ref: governing-invariants-injection
+  title: Surface direct and 1-hop transitive INV-* invariants on code_map_inspect and code_map_impact
+  status: completed
+  evidence: 'Independent REVIEW29 contract13 candidate9df31b2635d7c3c32623b9ca283290f080a43051: exact final commitment_integrity+strictClippy+all-targets exit0,811passed0failed1ignored (standalone16 not double-counted). Complete affected incremental31/MCP91/linker102/query43/ACDD116 pass. This retained slice reassessed against current source, public seams and accepted docs semantics; no open defect. Full closure /tmp/forge053-doc-review29-findings.json; log/counts/env /tmp/forge053-doc-review29-verification.json; all24 blobs match. Existing governing-invariants-injection oracles retained; candidate discovery never verifies governance/coverage.'
+- subtask_ref: affected-docs-and-bidirectional-navigation
+  title: Surface affected_docs in impact, documented_in in inspect, and referenced_symbols in get_doc
+  status: completed
+  evidence: 'Independent REVIEW29 contract13 candidate9df31b2635d7c3c32623b9ca283290f080a43051: exact final commitment_integrity+strictClippy+all-targets exit0,811passed0failed1ignored (standalone16 not double-counted). Complete affected incremental31/MCP91/linker102/query43/ACDD116 pass. This retained slice reassessed against current source, public seams and accepted docs semantics; no open defect. Full closure /tmp/forge053-doc-review29-findings.json; log/counts/env /tmp/forge053-doc-review29-verification.json; all24 blobs match. Existing affected-docs-and-bidirectional-navigation oracles retained; candidate discovery never verifies governance/coverage.'
+- subtask_ref: doc-drift-diagnostics-and-suggestions
+  title: Report dead_doc_symbol, broken_doc_link, and stale_doc_sections in code_map_analyze with suggested_symbol candidates
+  status: completed
+  evidence: 'Independent REVIEW29 contract13 candidate9df31b2635d7c3c32623b9ca283290f080a43051: exact final commitment_integrity+strictClippy+all-targets exit0,811passed0failed1ignored (standalone16 not double-counted). Complete affected incremental31/MCP91/linker102/query43/ACDD116 pass. This retained slice reassessed against current source, public seams and accepted docs semantics; no open defect. Full closure /tmp/forge053-doc-review29-findings.json; log/counts/env /tmp/forge053-doc-review29-verification.json; all24 blobs match. Existing doc-drift-diagnostics-and-suggestions oracles retained; candidate discovery never verifies governance/coverage.'
+- subtask_ref: universal-invariants-indexing-and-traversal
+  title: Index INV-* invariants across all docs and AGENTS.md with governs/governed_by edges to symbols
+  status: completed
+  evidence: 'Independent REVIEW29 contract13 candidate9df31b2635d7c3c32623b9ca283290f080a43051: exact final commitment_integrity+strictClippy+all-targets exit0,811passed0failed1ignored (standalone16 not double-counted). Complete affected incremental31/MCP91/linker102/query43/ACDD116 pass. This retained slice reassessed against current source, public seams and accepted docs semantics; no open defect. Full closure /tmp/forge053-doc-review29-findings.json; log/counts/env /tmp/forge053-doc-review29-verification.json; all24 blobs match. Existing universal-invariants-indexing-and-traversal oracles retained; candidate discovery never verifies governance/coverage.'
+- subtask_ref: context-safe-documentary-resolution-and-candidate-discovery
+  title: Reject cross-workspace short-name hijacking and expose ambiguous documentary candidates without verified or governing edges; prove cold/delta and public-query parity
+  status: completed
+  evidence: 'Independent REVIEW29 contract13 candidate9df31b2635d7c3c32623b9ca283290f080a43051: exact final commitment_integrity+strictClippy+all-targets exit0,811passed0failed1ignored (standalone16 not double-counted). Complete affected incremental31/MCP91/linker102/query43/ACDD116 pass. This retained slice reassessed against current source, public seams and accepted docs semantics; no open defect. Full closure /tmp/forge053-doc-review29-findings.json; log/counts/env /tmp/forge053-doc-review29-verification.json; all24 blobs match. Existing context-safe-documentary-resolution-and-candidate-discovery oracles retained; candidate discovery never verifies governance/coverage.'
+status: completed
+receipt:
+  contract_revision: 13
+  passed_at: 2026-10-20T20:36:31.590513520+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test incremental
+      exit_code: 0
+      tests_passed: 31
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS: all24 admitted current files equal accepted BUILD28 snapshot9df31b2635d7c3c32623b9ca283290f080a43051 before/after final verification; /tmp/forge053-doc-review29-source-binding.json. Complete repair diff reviewed under contract13. Since REVIEW24 runtime/tests remain byte-identical; only mcp-tools clarification and admitted docs/AGENTS + ADR0007 prose changed. Held benchmark runner/helper and untracked054 drafts are explicitly excluded from task delivery and hash-bound in verification.json. No schema/DocSection/DTO/cache codec/profile/credential/crate/unrelated linker changes; no reviewer candidate edits.'
+        claims:
+          applicable: true
+          evidence: 'PASS: contract13 original Task5 graph/provenance/Decision/paging/range obligations retained, with eligibility before exact qualname→declared name→suffix in both documentary consumers. Only singleton distinct IDs verify reciprocal documentary/governing edges; ambiguous winning tiers are full-only, occurrence-selected before public dedup and bounded generation-aware paging. Invalid explicit paths do not fall back; compact retains no-heavy-column guard. CLI DocsGet alone defaults full. Current public MCP91/incremental31/linker102/query43/ACDD116 pass within independent full811; actual writer/reader/stdio/CLI seams and source-only cold/delta transitions retained. Authentic pre-fix REDs are sensitivity evidence, not invented mutations. Final user-approved docs/ADR explanation matches runtime; README obsolete component oracle corrected with retained real reciprocal positive and full root/edge parity. Detailed /tmp/forge053-doc-review29-findings.json and earlier source audit /tmp/forge053-doc-review24-interim.md.'
+        concurrency:
+          applicable: true
+          evidence: 'PASS: added candidate SQL is read-only, does not add shared mutable cache, schema writer, lock order or task mutation. Existing MCP admission transaction/shared filesystem lock and generation fencing remain unchanged; count/page use the same existing paging budget and continuation validation. Per-occurrence tier/cardinality precedes final dedup, avoiding same-line explicit-claim cross-talk. Complete independent ACDD116/MCP91/core44+1ignored/commitment16 and all-targets811 pass on frozen candidate. No claim that sequential fixtures alone prove new concurrency behavior; no new concurrency protocol is introduced.'
+        project_isolation:
+          applicable: true
+          evidence: 'PASS: source workspace resolved by canonical core::config::workspace_path; exact normalized explicit target confines the cross-workspace lane, unsafe/missing targets never fall back globally. Actual configured linked-workspace fixtures cover primary/linked decoys, foreign-only absence, explicit target and ambiguity. Lifecycle binds assigned milestone WT plus explicit authoritative primary tasks DB through fixed049 CLI; runtime reports attributed to candidate binary, never external lifecycle tool. Supported copied-skill override matches current repo SKILL.md; no host installation or main edits. Source binding and proof files stay /tmp. Full linked_workspaces3/cli_roots7 and other affected targets pass.'
+        administration:
+          applicable: true
+          evidence: 'PASS: REVIEW29 contract13 worker codex-053-doc-graph-reviewer differs from accepted BUILD28 builder. User-approved docs admission followed canonical REVIEW24 reject→contract13→BUILD28; no manual status/receipt edits or invented source defect. Independent exact compound commitment_integrity && strictClippy && all-targets exit0,811passed/0failed/1ignored; standalone16 not double-counted. Source freeze rechecked after gates. All6 current subtasks reassessed with canonical evidence. No profile/schema/migration changes. Same reviewer will claim deliver and use returned auto_commit proof; no duplicate/manual commit or branch integration. Deferred audit proposals remain bounded outside current repair.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-EXACT-SEARCH-PRIORITY: When exact is false (default) and symbol search candidates contain exact name or qualname matches, the engine automatically filters out noisy BM25 candidates and returns only exact matches, eliminating surrounding token pollution for known symbol identifiers.'
+    - 'INV-ERGONOMIC-PREVIEW-BUDGET: Source previews for symbols up to 200 lines are returned completely in a single response without artificial pagination; preview line budgets are clamped between 1 and 500 lines.'
+    - 'INV-NATURAL-DOC-SEARCH: Documentation search automatically filters common English stop-words and weights section title matches 3x over body text via FTS5 BM25, eliminating empty results caused by rigid AND conjunction of natural-language query phrases.'
+    - 'INV-TEST-CHAIN-AND-ROLE-TRANSPARENCY: code_map_tests classifies test entities into explicit roles (test_case, test_helper, test_fixture) and returns verified call paths (call_path) from test cases through helpers to target symbols instead of flat scope_or_transitive markers.'
+    - 'INV-EXPLICIT-EDGE-EVIDENCE: Graph inspection (impact and explain) at depth 1 returns full edge objects specifying edge kind (calls vs possible_calls), direction, and exact source location, strictly distinguishing statically proven calls from heuristic name candidates.'
+    - 'INV-UNRESOLVED-TAXONOMY: Unresolved references are categorized into specific granular reasons (dynamic_callback, unresolved_receiver_type, framework_magic, external_unindexed) with call expression snippets rather than generic other groupings.'
+    - 'INV-SCOPE-COVERAGE-TRANSPARENCY: code_map_overview provides coverage diagnostics broken down by primary workspace and linked_workspaces components rather than only global aggregate counts.'
+    - 'INV-DOC-GRAPH-TRACEABILITY: Markdown relative links and wikilinks are extracted into bidirectional cites_doc/cited_by_doc edges; governing invariants (INV-* rules) from linked doc sections are automatically surfaced on inspect and impact.'
+    - 'INV-DOC-GRAPH-TRACEABILITY: Markdown relative links and wikilinks are extracted into bidirectional cites_doc/cited_by_doc edges; governing invariants (INV-* rules) from linked doc sections are automatically surfaced on inspect and impact.'
+    - 'INV-UNIVERSAL-INVARIANT-INDEX: INV-* invariants across all docs/**/*.md and AGENTS.md are indexed as first-class graph nodes with bidirectional governs/governed_by edges to referenced symbols, replacing single-directory ADR token scraping.'
+    - 'INV-IMPACT-AWARE-INVARIANTS: code_map_inspect and code_map_impact surface direct and 1-hop transitive governing invariants for inspected and impacted code symbols.'
+    - 'INV-AFFECTED-DOCS-IMPACT: Symbol modification or deletion in code_map_impact surfaces affected_docs pointing to citing Markdown documentation sections and ADRs.'
+    - 'INV-BIDIRECTIONAL-DOC-CODE-NAVIGATION: code_map_inspect surfaces documented_in sections for code symbols, and get_doc surfaces referenced_symbols with live symbol verification.'
+    - 'INV-DOC-DRIFT-REMEDIATION-SUGGESTIONS: dead_doc_symbol diagnostics in code_map_analyze provide suggested_symbol candidates based on symbol similarity and module proximity.'
+    - 'INV-COMPACT-INVARIANT-PAYLOAD: Governing invariants in tool responses and task context are bounded to compact ID, single-line rule, and source reference; transitive invariants are summarized by ID with a strict cap of 3-5 direct invariants to prevent context-window bloat.'
+    - 'INV-CONTEXT-SAFE-DOC-REFERENCES: Documentary claims resolve only inside the source document workspace unless an explicit normalized target path confines the claim to another file. Within that eligible context, preserve qualified-name, declared-name, then segment-suffix priority and distinct-ID ambiguity. Document, invariant, and component nodes do not verify code claims. Only one eligible target creates verified documentary edges; full-detail get_doc exposes ambiguous selected-tier targets separately as paged referenced_symbol_candidates with source-claim and target identities. Compact detail omits candidate discovery without reading heavy columns; CLI docs get defaults to full detail, matching MCP get_doc. Candidates never establish verified references or governance; invalid explicit paths never fall back globally. Cold and delta indexing and CLI/MCP readers preserve these semantics.'
+    architectural_notes:
+    - 'decisions: Per direct user instruction, publish intermediate technical reports to task blackboard using canonical topics: notes for proof/status, findings for verified defects, blockers for actual stalls, decisions/deferred for retained dispositions. Use concise summaries plus exact evidence paths and inspect IDs for full payload; supply those IDs explicitly to the next agent/gate. Conversation and host agent messages remain notification transport. This is current task operating direction, not an unadmitted source/profile change.'
+    - 'deferred: User-requested read-only audits completed: documentation report /tmp/forge053-documentation-audit-20261020/report.md (six bounded findings), blackboard instruction report /tmp/forge053-blackboard-audit-20261020/report.md (messages571/574). Proposed guide/invariant examples, stale admission prose/ADR0014, citation triage, code/test links, preview defaults, and reporting triggers are recommendations; no repository/profile edits were authorized by those analysis requests. Handle each through its owning admitted task and accepted ADR authority. Current Task5 repair updates its canonical MCP reference and Forge skill. /tmp artifacts are session evidence, not a durable archive promise.'
+    - 'decisions: User explicitly approved candidate semantics and requested docs/ADR clarification: discovery candidates do not create verified documentary/governance edges or count as verified coverage. Reviewer returning24 to build before edits. Fresh benchmark both code_coverage_preserved=true; Commerce paired median -6.195%, Forge +0.444%. Real MCP123 candidates/13pages and40331 unchanged inputs PASS. Post-benchmark full gate running; no delivery approval yet.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 
 ### task: mcp-markdown-output-and-dead-metadata-compaction
+
+This scope belongs to milestone 054, `m-markdown-first-dual-surface-and-agent-ergonomics`.
+Its core formatter and metadata task owns metadata compaction; its discovery,
+traversal, task-lifecycle, coordination/documentation, and CLI parity tasks own
+the corresponding response formatters and seam tests. This retained task is
+cancelled in 053 to preserve its execution history. It contributes no delivery
+claim or implementation requirement to 053.
 
 ```yaml
 task_ref: mcp-markdown-output-and-dead-metadata-compaction
@@ -512,7 +596,7 @@ scope:
   - src/core/response.rs
   - tests/mcp/context.rs
   - docs/reference/mcp-tools.md
-status: ready
+status: cancelled
 subtasks:
   - subtask_ref: inspect-markdown-formatter-and-relation-contracts
     title: "Implement structured Markdown formatter for code_map_inspect per docs/reference/mcp-markdown-contracts.md#21-code_map_inspect"

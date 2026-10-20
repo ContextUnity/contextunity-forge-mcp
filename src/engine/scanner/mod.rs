@@ -451,6 +451,16 @@ fn walk_candidate_paths(
         .chain(adapter.adapter_path.iter().cloned())
         .collect();
 
+    collect_documentation_paths(
+        root,
+        "",
+        &adapter.ignored_names,
+        adapter.limits.max_files,
+        &mut candidate_count,
+        &mut seen_rel_paths,
+        &mut visit,
+    )?;
+
     for source_root in &adapter.roots {
         if !source_root.exists() {
             continue;
@@ -486,7 +496,9 @@ fn walk_candidate_paths(
                 .unwrap_or_default();
             let is_manifest =
                 super::languages::dependency_registry::is_dependency_manifest_filename(filename);
-            let is_source = language(&full).is_some();
+            let file_language = language(&full);
+            let is_source = file_language.is_some();
+            let is_doc = file_language.is_some_and(|(_, is_doc)| is_doc);
             if !is_manifest && !is_source {
                 continue;
             }
@@ -496,6 +508,7 @@ fn walk_candidate_paths(
             let relative = relative.to_string_lossy().replace('\\', "/");
             if is_milestone_or_plan_path(&relative, &adapter.milestones, &adapter.plans)
                 && !is_milestone_or_plan_readme(&relative, &adapter.milestones, &adapter.plans)
+                && !is_doc
             {
                 continue;
             }
@@ -550,7 +563,9 @@ fn walk_candidate_paths(
                     super::languages::dependency_registry::is_dependency_manifest_filename(
                         filename,
                     );
-                let is_source = language(&full).is_some();
+                let file_language = language(&full);
+                let is_source = file_language.is_some();
+                let is_doc = file_language.is_some_and(|(_, is_doc)| is_doc);
                 if !is_manifest && !is_source {
                     continue;
                 }
@@ -560,6 +575,7 @@ fn walk_candidate_paths(
                 let relative = relative.to_string_lossy().replace('\\', "/");
                 if is_milestone_or_plan_path(&relative, &adapter.milestones, &adapter.plans)
                     && !is_milestone_or_plan_readme(&relative, &adapter.milestones, &adapter.plans)
+                    && !is_doc
                 {
                     continue;
                 }
@@ -584,6 +600,15 @@ fn walk_candidate_paths(
             &workspace.ignored_names,
             &mut dependency_manifests,
         )?;
+        collect_documentation_paths(
+            &workspace.path,
+            &format!("[{}]/", workspace.name),
+            &workspace.ignored_names,
+            adapter.limits.max_files,
+            &mut candidate_count,
+            &mut seen_rel_paths,
+            &mut visit,
+        )?;
     }
     collect_source_root_manifests(
         root,
@@ -592,6 +617,71 @@ fn walk_candidate_paths(
         &mut dependency_manifests,
     )?;
     Ok(dependency_manifests.into_iter().collect())
+}
+
+fn collect_documentation_paths(
+    workspace_root: &Path,
+    prefix: &str,
+    ignored_names: &BTreeSet<String>,
+    max_files: usize,
+    candidate_count: &mut usize,
+    seen_rel_paths: &mut BTreeSet<String>,
+    visit: &mut impl FnMut(PathBuf, String) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let agents = workspace_root.join("AGENTS.md");
+    if agents.is_file() && !agents.is_symlink() {
+        visit_candidate(
+            candidate_count,
+            seen_rel_paths,
+            agents,
+            format!("{prefix}AGENTS.md"),
+            max_files,
+            visit,
+        )?;
+    }
+
+    let docs_root = workspace_root.join("docs");
+    if !docs_root.is_dir() {
+        return Ok(());
+    }
+    let mut builder = WalkBuilder::new(&docs_root);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .same_file_system(true)
+        .git_ignore(true);
+    let ignored = ignored_names.clone();
+    builder.filter_entry(move |item| {
+        !item.path_is_symlink()
+            && !ignored.contains(&item.file_name().to_string_lossy().to_string())
+    });
+    for result in builder.build() {
+        let item = result.map_err(|walk_error| error(walk_error.to_string()))?;
+        if item.path_is_symlink()
+            || !item.file_type().is_some_and(|kind| kind.is_file())
+            || !item
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| matches!(extension, "md" | "mdx"))
+        {
+            continue;
+        }
+        let full = item.into_path();
+        let Ok(relative) = full.strip_prefix(workspace_root) else {
+            continue;
+        };
+        let relative = format!("{prefix}{}", relative.to_string_lossy().replace('\\', "/"));
+        visit_candidate(
+            candidate_count,
+            seen_rel_paths,
+            full,
+            relative,
+            max_files,
+            visit,
+        )?;
+    }
+    Ok(())
 }
 
 fn visit_candidate(

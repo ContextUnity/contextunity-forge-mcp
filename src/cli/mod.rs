@@ -11,7 +11,7 @@ pub mod reload;
 /// Implements task support.
 pub mod task;
 use crate::{
-    core::response::{CoverageOptions, QueryOptions, ResponsePolicy, SourceOptions},
+    core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols, traversal, writer},
 };
 use anyhow::{bail, Result};
@@ -560,12 +560,11 @@ impl Cli {
                     DocsCommand::Get {
                         path_or_id,
                         section,
-                    } => reader::get_doc_paged(
-                        &conn,
-                        &path_or_id,
-                        section.as_deref(),
-                        &cli_page(100)?,
-                    )?,
+                    } => {
+                        let mut options = cli_page(100)?;
+                        options.detail = Detail::Full;
+                        reader::get_doc_paged(&conn, &path_or_id, section.as_deref(), &options)?
+                    }
                 }
             }
         };

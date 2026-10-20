@@ -31,7 +31,7 @@ linked_workspaces:
       - docs
 ```
 
-`roots` and `docs` are literal, relative directories or paths inside the workspace. `milestones` and `plans` default to `docs/milestones` and `docs/plans` when omitted. Their `*` segments match one directory component (for example, `extensions/*/docs/milestones`). Files below these directories are excluded from the code and documentation search index. Milestone commands read contracts from the configured milestone directories. `ignore` matches file or directory basenames. The scanner admits compiled source extensions and Markdown/MDX within these roots; scan roots do not define import or package roots. Unavailable linked workspaces are skipped. A linked entry with `enabled: false` is excluded; omission of `enabled` means true.
+`roots` and `docs` are literal, relative directories or paths inside the workspace. `milestones` and `plans` default to `docs/milestones` and `docs/plans` when omitted. Their `*` segments match one directory component (for example, `extensions/*/docs/milestones`). Markdown and MDX in admitted documentation locations, including milestone and plan documents, remain searchable and available for graph navigation; this does not change which configured directories task discovery reads. Non-document files in those directories stay outside the source index. `ignore` matches file or directory basenames. The scanner admits compiled source extensions and Markdown/MDX within these roots; scan roots do not define import or package roots. Unavailable linked workspaces are skipped. A linked entry with `enabled: false` is excluded; omission of `enabled` means true.
 
 The default basename exclusions cover `.git`, `.forge`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.gradle`. The scanner also honors `.gitignore` and skips symbolic links. Add project-specific generated directories with `ignore`; authored source under an excluded basename can be scoped explicitly with a different directory name.
 
@@ -76,6 +76,8 @@ linked_workspaces:
     docs: [docs]
     ignore: [vendor, vendors, dist, build]
 ```
+
+`code_map_overview` with `coverage_by_workspace` reports counts from the persisted primary and linked-workspace identities. Reopening the index retains those logical names and separates linked coverage from the primary workspace.
 
 Ignore names are literal basenames, not glob patterns. Add a directory such as `static` only when the library builds all of its contents from sources retained elsewhere. Keep authored host assets and source-level type contracts. Excluded bundles neither enter the index nor trigger source refresh when rebuilt.
 

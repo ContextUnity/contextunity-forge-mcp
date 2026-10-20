@@ -20,6 +20,47 @@ fn reference_scope<'a>(owner: &'a Node, path: &str) -> &'a str {
     }
 }
 
+fn document_symbol_candidates<'a>(
+    normalized_qualname: &str,
+    declared_name: &str,
+    source_path: &str,
+    target_path: Option<&str>,
+    by_qual: &HashMap<&'a str, Vec<&'a Node>>,
+    by_name: &HashMap<&'a str, Vec<&'a Node>>,
+    by_suffix: &HashMap<&'a str, Vec<&'a Node>>,
+) -> Vec<&'a Node> {
+    for tier in [
+        by_qual.get(normalized_qualname),
+        by_name.get(declared_name),
+        by_suffix.get(normalized_qualname),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let mut candidates = tier
+            .iter()
+            .copied()
+            .filter(|node| {
+                !matches!(node.kind.as_str(), "document" | "invariant" | "component")
+                    && target_path.map_or_else(
+                        || {
+                            crate::core::config::workspace_path(&node.path).0
+                                == crate::core::config::workspace_path(source_path).0
+                        },
+                        |path| node.path == path,
+                    )
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            continue;
+        }
+        candidates.sort_by(|left, right| left.id.cmp(&right.id));
+        candidates.dedup_by(|left, right| left.id == right.id);
+        return candidates;
+    }
+    Vec::new()
+}
+
 pub(super) struct ResolutionInput<'a, F> {
     pub(super) all: &'a BTreeMap<String, F>,
     pub(super) public_all: Option<&'a BTreeMap<String, Facts>>,
@@ -79,14 +120,6 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
 
     let lookup =
         |name: &str| -> &[&Node] { by_qual.get(name).map(Vec::as_slice).unwrap_or_default() };
-    let discovery_lookup = |name: &str| -> &[&Node] {
-        by_qual
-            .get(name)
-            .or_else(|| by_suffix.get(name))
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-    };
-
     #[cfg(feature = "lang-html")]
     let html_templates = html_templates::Registry::build(all, flows, dependency_registry);
     #[cfg(feature = "lang-html")]
@@ -2481,13 +2514,89 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                 }
             }
             for doc in &facts.docs {
-                for symbol in &doc.referenced_symbols {
-                    let normalized = symbol.replace("::", ".");
-                    let mut candidates = discovery_lookup(&normalized);
-                    if candidates.is_empty() {
-                        candidates = by_name.get(normalized.as_str()).map(Vec::as_slice).unwrap_or_default();
+                let document_node = facts.nodes.iter().find(|node| node.id == doc.doc_id);
+                let document_details = document_node.map(|node| &node.details);
+                if let Some(citations) = document_details
+                    .and_then(|details| details.get("citations"))
+                    .and_then(serde_json::Value::as_array)
+                {
+                    for citation in citations {
+                        let Some(target) = citation["target"].as_str() else {
+                            continue;
+                        };
+                        let line = citation["line"].as_u64().unwrap_or(document_node.map_or(1, |node| node.line as u64)) as usize;
+                        let Some((target_path, anchor)) = resolve_document_target(path, target) else {
+                            continue;
+                        };
+                        let Some(target_facts) = all.get(&target_path).map(|facts| facts.as_ref()) else {
+                            continue;
+                        };
+                        let matching_sections = target_facts
+                            .docs
+                            .iter()
+                            .filter(|section| anchor.is_empty() || markdown_slug(&section.section_title) == anchor)
+                            .collect::<Vec<_>>();
+                        if let [target_doc] = matching_sections.as_slice() {
+                            for (src, dst, kind) in [
+                                (&doc.doc_id, &target_doc.doc_id, "cites_doc"),
+                                (&target_doc.doc_id, &doc.doc_id, "cited_by_doc"),
+                            ] {
+                                graph.edges.push(Edge {
+                                    src: src.clone(),
+                                    dst: dst.clone(),
+                                    kind: kind.into(),
+                                    path: path.clone(),
+                                    line,
+                                    evidence: target.to_owned(),
+                                    confidence: "exact".into(),
+                                });
+                            }
+                        }
                     }
-                    for node in candidates {
+                }
+                let claims = document_details
+                    .and_then(|details| details.get("symbol_claims"))
+                    .and_then(serde_json::Value::as_array);
+                let mut references = Vec::new();
+                if let Some(claims) = claims.filter(|claims| !claims.is_empty()) {
+                    references.extend(claims.iter().filter_map(|claim| {
+                        Some((
+                            claim["name"].as_str()?.to_owned(),
+                            claim["line"].as_u64().unwrap_or(document_node.map_or(1, |node| node.line as u64)) as usize,
+                            claim["explicit_path"].as_bool().unwrap_or(false),
+                            claim["target_path"].as_str().map(str::to_owned),
+                        ))
+                    }));
+                } else {
+                    references.extend(doc.referenced_symbols.iter().map(|symbol| {
+                        (
+                            symbol.clone(),
+                            document_node.map_or(1, |node| node.line),
+                            false,
+                            None,
+                        )
+                    }));
+                }
+                for (symbol, occurrence_line, explicit_path, target_path) in references {
+                    let normalized = symbol.replace("::", ".");
+                    let path_filter = if explicit_path {
+                        target_path.as_deref()
+                    } else {
+                        None
+                    };
+                    if explicit_path && path_filter.is_none() {
+                        continue;
+                    }
+                    let candidates = document_symbol_candidates(
+                        &normalized,
+                        &symbol,
+                        path,
+                        path_filter,
+                        by_qual,
+                        by_name,
+                        by_suffix,
+                    );
+                    if let [node] = candidates.as_slice() {
                         for (src, dst, kind) in [
                             (&doc.doc_id, &node.id, "documents"),
                             (&node.id, &doc.doc_id, "references_doc"),
@@ -2497,10 +2606,62 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
                                 dst: dst.clone(),
                                 kind: kind.into(),
                                 path: path.clone(),
-                                line: 1,
+                                line: occurrence_line,
                                 evidence: symbol.clone(),
                                 confidence: "exact".into(),
                             });
+                        }
+                    }
+                }
+                if let Some(claims) = document_details
+                    .and_then(|details| details.get("symbol_claims"))
+                    .and_then(serde_json::Value::as_array)
+                {
+                    for claim in claims {
+                        let (Some(name), Some(target_path)) = (
+                            claim["name"].as_str(),
+                            claim["target_path"].as_str(),
+                        ) else {
+                            continue;
+                        };
+                        if target_path.split('/').any(|component| component == "..") {
+                            continue;
+                        }
+                        let target_path = target_path.to_owned();
+                        let normalized = name.replace("::", ".");
+                        let candidates = document_symbol_candidates(
+                            &normalized,
+                            name,
+                            path,
+                            Some(&target_path),
+                            by_qual,
+                            by_name,
+                            by_suffix,
+                        );
+                        let [target_node] = candidates.as_slice() else {
+                            continue;
+                        };
+                        let claim_line = claim["line"].as_u64().unwrap_or(1) as usize;
+                        let invariant_nodes = facts
+                            .nodes
+                            .iter()
+                            .filter(|node| node.kind == "invariant" && node.line == claim_line)
+                            .collect::<Vec<_>>();
+                        for invariant in invariant_nodes {
+                            for (src, dst, kind) in [
+                                (&invariant.id, &target_node.id, "governs"),
+                                (&target_node.id, &invariant.id, "governed_by"),
+                            ] {
+                                graph.edges.push(Edge {
+                                    src: src.clone(),
+                                    dst: dst.clone(),
+                                    kind: kind.into(),
+                                    path: path.clone(),
+                                    line: claim_line,
+                                    evidence: name.to_owned(),
+                                    confidence: "exact".into(),
+                                });
+                            }
                         }
                     }
                 }
@@ -2513,4 +2674,67 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
         .map(|graph| GraphPart::new(graph, occurrences.is_some()))
         .collect();
     parts
+}
+
+fn resolve_document_target(source_path: &str, target: &str) -> Option<(String, String)> {
+    if target.starts_with('/') || target.contains("\\") || target.contains('?') {
+        return None;
+    }
+    let (target_path, anchor) = target.split_once('#').unwrap_or((target, ""));
+    let (workspace_prefix, source_relative) = if source_path.starts_with('[') {
+        let close = source_path.find("]/")? + 2;
+        (&source_path[..close], &source_path[close..])
+    } else {
+        ("", source_path)
+    };
+    if target_path.is_empty() {
+        return Some((
+            format!("{workspace_prefix}{source_relative}"),
+            markdown_slug(anchor),
+        ));
+    }
+    let mut components = std::path::Path::new(source_relative)
+        .parent()?
+        .components()
+        .filter_map(|component| component.as_os_str().to_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    for component in target_path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop()?;
+            }
+            value if value.contains(':') => return None,
+            value => components.push(value.to_owned()),
+        }
+    }
+    if components.is_empty() {
+        return None;
+    }
+    let mut normalized = components.join("/");
+    if std::path::Path::new(&normalized).extension().is_none() {
+        normalized.push_str(".md");
+    }
+    Some((
+        format!("{workspace_prefix}{normalized}"),
+        markdown_slug(anchor),
+    ))
+}
+
+fn markdown_slug(anchor: &str) -> String {
+    anchor
+        .trim_start_matches('#')
+        .chars()
+        .filter_map(|character| {
+            if character.is_alphanumeric() {
+                Some(character.to_ascii_lowercase())
+            } else if character.is_whitespace() || character == '-' {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_owned()
 }

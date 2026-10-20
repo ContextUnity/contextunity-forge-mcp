@@ -309,11 +309,22 @@ pub(crate) fn inspect_paged_response(
     options: &QueryOptions,
     coverage: CoverageOptions,
 ) -> Result<Value> {
-    let result = if coverage.include_coverage {
+    let mut result = if coverage.include_coverage {
         reader::inspect_paged_with_path(conn, selector, path, show_doc, options)?
     } else {
         inspect_without_coverage(conn, selector, path, show_doc, options)?
     };
+    let id = result["node"]["id"]
+        .as_str()
+        .context("invalid selected node id")?
+        .to_owned();
+    result["documented_in"] = paging::query(
+        conn,
+        "SELECT d.doc_id,d.path,d.section_title,d.doc_type,e.line FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN doc_sections d ON d.doc_id=n.id WHERE e.kind='references_doc' AND e.src_hash=?1 ORDER BY d.path,d.doc_id,e.line",
+        &[&stable_hash64(&id)],
+        options,
+    )?;
+    result["governing_invariants"] = reader::governing_invariants(conn, &id)?;
     let result = with_analysis_gaps(conn, result, options)?;
     summarize_symbol(conn, result, coverage.include_coverage, options.detail)
 }

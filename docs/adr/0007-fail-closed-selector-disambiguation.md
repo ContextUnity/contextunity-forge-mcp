@@ -24,6 +24,9 @@ AI agents and developers supply symbol selectors in varied formats (bare functio
 2. **Fail-Closed Ambiguity Defense**:
    - When a bare or partially qualified selector matches multiple distinct symbols, the resolver halts immediately and raises `AMBIGUOUS_SELECTOR`.
    - The error response enumerates matching candidate IDs and file paths, requiring the caller to supply a narrowed selector.
+3. **Documentation Reference Candidates**:
+   - Documentation code claims use the same fail-closed principle. An unscoped claim in a document indexed from the `[library]` workspace is confined to that workspace. The current eligibility rules, priority tiers, and example are specified in [Documentation queries](../reference/mcp-tools.md#documentation-queries).
+   - Multiple candidates in the winning tier may be shown for navigation, but they do not create verified documentation or governance edges and do not establish verified coverage. A union of candidate targets is not verified coverage.
 
 ## Consequences
 - Operations like `code_map_impact` and `code_map_prove_removal` execute exclusively against verified single targets.

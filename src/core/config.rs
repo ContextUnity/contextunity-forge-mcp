@@ -247,9 +247,9 @@ pub struct Adapter {
     pub owners: BTreeMap<String, String>,
     /// The aliases value.
     pub aliases: BTreeMap<String, String>,
-    /// Milestone directories to scan for milestones and exclude from doc/code index.
+    /// Milestone directories for task discovery; Markdown documents remain indexed.
     pub milestones: Vec<String>,
-    /// Plan directories to exclude from doc/code index.
+    /// Plan directories for task discovery; Markdown documents remain indexed.
     pub plans: Vec<String>,
     /// Whether debug applies.
     pub debug: bool,

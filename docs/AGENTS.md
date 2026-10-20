@@ -53,10 +53,20 @@ to code symbols in the SQLite code map. Follow these structural standards:
 3. **Symbol linkage**:
    Enclose code symbols in backticks matching `[a-zA-Z_][a-zA-Z0-9_.:]*`:
    - Examples: `LanguageProfile`, `source_inventory`, `crate::engine::scanner`, `SessionCheckpoint.save`.
-   - Forge automatically extracts backticked symbols and creates bidirectional
-     graph edges between documentation sections and code entities.
-   - Code inspections (`code_map_inspect`, `code_map_explain`) return linked
-     documentation sections alongside signature and relationship evidence.
+   - Forge resolves each claim against eligible declarations. An explicit
+     normalized file target confines eligibility to that file; an unscoped claim
+     is limited to the source document's workspace. Document, invariant, and
+     component nodes do not verify code claims.
+   - Only a unique declaration in the first non-empty match tier creates a
+     verified documentation reference. Ambiguous candidates may be shown for
+     navigation, but they do not create verified documentation or governance
+     edges and do not count as verified coverage. Do not describe candidate
+     matches as verified references.
+   - See [Documentation queries](reference/mcp-tools.md#documentation-queries)
+     for the current eligibility, priority-tier, and candidate-response contract.
+   - Code inspections (`code_map_inspect`, `code_map_explain`) return verified
+     linked documentation sections alongside signature and relationship
+     evidence.
 
 4. **Architectural invariants**:
    Declare architectural invariants within GitHub alert callouts containing `Invariant:`:

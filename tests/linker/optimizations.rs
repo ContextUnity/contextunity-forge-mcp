@@ -269,26 +269,42 @@ fn imported_class_keeps_unknown_receivers_unknown_with_or_without_docs() {
 }
 
 #[test]
-fn documentary_suffix_discovery_keeps_all_candidates_and_exact_precedence() {
+fn documentary_links_require_unique_candidates_and_keep_exact_precedence() {
     let mut facts = fixture();
+    assert_eq!(
+        facts
+            .values()
+            .flat_map(|f| &f.nodes)
+            .filter(|n| n.name == "method")
+            .count(),
+        2
+    );
     let graph = linker::link_owners(&facts, Some(&BTreeSet::from(["docs/api.md".to_owned()])));
-    let mut targets: Vec<_> = graph
+    assert!(!graph
+        .edges
+        .iter()
+        .any(|e| matches!(e.kind.as_str(), "documents" | "references_doc")));
+    facts.get_mut("docs/api.md").unwrap().docs =
+        docs::extract("docs/api.md", "# API\n`a.Foo.method`\n", 0.).unwrap();
+    let graph = linker::link(&facts);
+    let targets: Vec<_> = graph
         .edges
         .iter()
         .filter(|e| e.kind == "documents")
         .map(|e| &e.dst)
         .collect();
-    targets.sort();
-    let mut expected: Vec<_> = facts
-        .values()
-        .flat_map(|f| &f.nodes)
-        .filter(|n| n.name == "method")
-        .map(|n| &n.id)
-        .collect();
-    expected.sort();
-    assert_eq!(targets, expected);
+    assert_eq!(
+        targets,
+        [&facts["a.py"]
+            .nodes
+            .iter()
+            .find(|n| n.name == "method")
+            .unwrap()
+            .id]
+    );
+    facts.remove("b.py");
     facts.get_mut("docs/api.md").unwrap().docs =
-        docs::extract("docs/api.md", "# API\n`a.Foo.method`\n", 0.).unwrap();
+        docs::extract("docs/api.md", "# API\n`Foo.method`\n", 0.).unwrap();
     let graph = linker::link(&facts);
     let targets: Vec<_> = graph
         .edges
