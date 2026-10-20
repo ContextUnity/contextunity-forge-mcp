@@ -1347,12 +1347,19 @@ impl TasksStore {
                 .get(&task.task_id)
                 .context("TASK_RECEIPT_INVALID: handoff receipt is missing for a completed task")?;
             if receipt.decision != "pass"
-                || receipt.commit.as_ref().is_none_or(|commit| {
+                || receipt.commit.as_ref().is_some_and(|commit| {
                     !matches!(commit.len(), 40 | 64)
                         || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
                 })
             {
-                bail!("TASK_RECEIPT_INVALID: handoff receipt must contain a landed Git SHA");
+                bail!("TASK_RECEIPT_INVALID: malformed handoff navigation pointer");
+            }
+            if task
+                .receipt
+                .as_ref()
+                .is_none_or(|original| !original.matches_proofs(receipt))
+            {
+                bail!("TASK_RECEIPT_INVALID: accepted task proofs changed during handoff");
             }
             task.receipt = Some(receipt.clone());
             task.spec.receipt = Some(receipt.clone());

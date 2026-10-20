@@ -9,7 +9,7 @@ date: 2026-10-07
 
 ## Status
 
-Accepted.
+Accepted. Handoff content-evidence amendment admitted in milestone 049 on 2026-10-20.
 
 ## Context
 
@@ -31,7 +31,10 @@ Task lifecycle governance in ACDD required architectural decoupling between gate
 4. **Task Delivery vs Milestone Handoff**:
    - `deliver` validates accepted build and review proofs, records `status: completed` with a typed receipt (retaining the build candidate snapshot SHA) in the milestone document, and clears temporary blackboard state.
    - Immediately after delivery, one clean atomic Git commit is created on the branch containing strictly the scoped files, tests, and milestone document (without `git add -A` and without `--amend`).
-   - After all tasks are delivered and committed, run final verification and record task commit SHAs in the milestone. `milestone handoff` records supplied verification, archives the milestone, and prunes snapshot refs. Commit the archive as the handoff commit; its own SHA remains unrecorded.
+   - After all tasks are delivered, commit the final implementation, run the instruction-level documentation scan, and obtain independent integration review and repository verification against that same content and an explicit target base. `milestone handoff-context` supplies the canonical content and accepted-authority binding; `milestone handoff --evidence-file` validates the external record and archives it with the milestone. The reviewer differs from every accepted task builder. Forge launches no agents and runs no verification commands.
+   - Accepted task contracts, gate proofs, candidate snapshots, reviewer decisions, and identities remain immutable. Branch commit SHAs are optional navigation metadata. Rebase, cherry-pick, merge, amend, and multi-task squash do not invalidate acceptance solely because SHA, ancestry, or task-to-commit cardinality changes. Handoff does not reconstruct first-parent task landings or require one commit per task. Refresh uniquely resolvable pointers; omit unresolved pointers and honor commit-recording settings.
+   - Final evidence binds repository/project/milestone identity, current contracts and accepted proofs, final implementation paths/content/modes, and selected target-base content. Only generated receipt/status/handoff metadata is projected out. Changed implementation, base, or authority needs fresh final review and verification; accepted tasks remain closed. Final review accounts for combined changes, upstream integration and conflict resolutions within admitted authority.
+   - Retain all accepted proof objects under content-addressed `refs/forge/evidence/` independently of branch history and reflog expiry. Pin available historical task proofs when preparing handoff context; transient task snapshot refs may then be pruned after archive publication. Missing immutable proof objects fail closed. Commit the archive afterward; its own SHA remains unrecorded.
 5. **Conflict-Aware Scope Extension & Out-of-Scope Defect Handling**:
    - **Sibling task scope**: If an adjacent defect falls within the admitted scope of another task in the milestone (hierarchical check covering exact match, subdirectory enclosure, or ancestor enclosure across both frozen and unfrozen paths), `extend-scope` rejects the collision with `TASK_SCOPE_CONFLICT`, requiring `task reopen <owner_id>`.
    - **Unowned defect paths**: Admit paths through `extend_scope` before editing, following the [scope contract](../reference/tasks.md#five-flat-mcp-tools). The reviewer verifies the `paths` contour. Record deferred findings in milestone `deferred_defects` or a linked successor contract before delivery clears temporary blackboard messages.
@@ -40,7 +43,7 @@ Task lifecycle governance in ACDD required architectural decoupling between gate
 
 ## Consequences
 
-- Feature branch history remains clean and linear, eliminating intermediate WIP commits before review.
+- Task delivery remains an atomic scoped commit under the configured profile; later branch integration may rewrite or combine commits without rewriting accepted evidence.
 - Snapshot commit SHAs are fully deterministic and immune to sibling task branch commits.
-- Snapshot refs remain pinned and protected until final milestone handoff.
+- Accepted proof objects remain reachable after handoff and branch-history rewrites. External final review replaces commit-history archaeology, while task gate immutability and delivery rollback stay unchanged.
 - Sibling task scopes are protected from hijacking, while unowned adjacent defects are either legitimately repaired under reviewer governance or recorded as deferred findings.

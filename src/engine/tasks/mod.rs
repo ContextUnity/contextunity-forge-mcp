@@ -930,6 +930,10 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                             String::from_utf8_lossy(&obj_exists.stderr)
                         );
                     }
+                    crate::core::git::retain_proof_commit(worktree, commit_sha)?;
+                    if let Some(baseline) = snapshot_baseline.as_deref() {
+                        crate::core::git::retain_proof_commit(worktree, baseline)?;
+                    }
                     let clean_ref_path = if let Some((prefix, task_ref)) = snapshot_task_id.split_once(':') {
                         let clean_prefix = prefix.replace(['\\', ' ', ':'], "_");
                         let clean_task_ref = task_ref.replace(['\\', ' ', ':'], "_");
@@ -966,6 +970,7 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                     &receipt_path,
                 )?;
                 delivery_rollback = rollback;
+                crate::core::git::retain_proof_commit(Path::new(&snapshot_worktree), &landed)?;
                 return Ok(Some(landed));
             }
             Ok(None)

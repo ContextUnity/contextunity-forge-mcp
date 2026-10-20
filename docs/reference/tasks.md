@@ -395,8 +395,11 @@ The milestone document is the durable context after task delivery. When `auto_co
 Forge has already committed the deliverable; when `auto_commit: false`, commit the task's scoped source,
 tests, and generated receipt in its claimed task worktree under standing permissions.
 Merge the delivered task branch into the milestone branch and delete the
-temporary task branch. When `milestone handoff` is executed, Forge verifies all milestone tasks are completed, resolves each task's landed commit in the milestone branch (the commit that landed the task's work into the milestone branch, whether via fast-forward or merge commit), rewrites `receipt.commit` in each task block and SQLite to this landed SHA, records `handoff.commit` (HEAD at handoff) in frontmatter, and archives the document. The subsequent milestone archive commit occurs after handoff and is excluded from `receipt.commit`, avoiding any hash cycle. Prior to final milestone handoff, completed tasks can
-be reopened if necessary using `contextunity-forge-mcp task reopen <task-id>`.
+temporary task branch. Final handoff validates immutable task proofs and the
+[integration evidence](#milestone-cli-lifecycle), refreshes optional navigation
+pointers, and archives the document. Commit the archive afterward. Completed tasks
+can be reopened for actual task repairs with `contextunity-forge-mcp task reopen
+<task-id>`; branch history rewrites alone do not require reopening them.
 
 Zero runtime backward compatibility applies strictly to SQLite runtime storage and active milestone manifests. Historical receipts archived in `docs/milestones/archive/` are read as-is and exempt from active profile receipt schema validation. Filtering by `--stage <id>` matches directly against the persistent `task.stage` string ID in SQLite; CLI argument validation checks that the stage ID is defined in the active profile of the workspace or open tasks. If a task references a stage missing from the active profile's `gates`, Forge fails closed with `TASK_STAGE_UNKNOWN`, naming mismatched gates and suggesting either migrating task records or pinning the intended profile via `acdd_profile: <path>:<sha256_prefix>`.
 
@@ -500,7 +503,8 @@ contracts:
 contextunity-forge-mcp milestone init --plan docs/plans/proposal.md [--dir docs/milestones] [--num 011] [--slug short-name] [--title "Title"] [--active]
 contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|cancelled|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
-contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --verification-command "<verified TESTS.md milestone gate>" --tests-passed <count> --tests-failed 0
+contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
+contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
 ```
 
 `milestone init` chooses the highest current or archived milestone number in its
@@ -516,16 +520,65 @@ or cancelled status filters include archived contracts.
 `milestone show` returns frontmatter, expected outcomes, and task metadata;
 `--full` includes the complete task descriptions.
 
-`milestone handoff` validates completion of every task belonging to the selected
-milestone in SQLite. For each completed task, handoff resolves its landed commit in the milestone branch (the commit by which that task landed in the branch, whether via fast-forward, merge commit, or squashed introducing commit) and rewrites `receipt.commit` in SQLite (and in Markdown task blocks unless `record_task_commits: false`) to this landed SHA. The command records
-the supplied implementation commit (default: current HEAD) in a YAML `handoff` block
-with `completed_at`, `duration` as `Xh Ym`, and `verification` containing
-`command`, `status: passed`, `tests_passed`, and `tests_failed`. Duration starts
-at frontmatter `started_at`, or the earliest SQLite claim timestamp for an
-older active document. The command sets frontmatter `status: completed`, moves
-the document to the selected directory's `archive/`, and updates the stored
-`milestone_ref` of its tasks. The subsequent milestone archive commit occurs after handoff and is excluded from `receipt.commit`, avoiding any hash cycle. When creating the handoff commit, stage both the newly archived document in `archive/` and the removal of the pre-archive working document in `docs/milestones/`; ensure any untracked or stale pre-archive working copies remaining in the repository or main worktree are unlinked so that landing into `main` encounters no duplicate or untracked files. Follow root [AGENTS.md](../../AGENTS.md#worktrees-and-git-permissions) and [TESTS.md](../../TESTS.md#milestone-handoff-gate) for the final
-verification gate, handoff, and archiving.
+Commit the final implementation and follow the instruction-level documentation
+scan in root [AGENTS.md](../../AGENTS.md#documentation-scan-before-handoff).
+Run `milestone handoff-context <id> --target-base main` in the milestone worktree.
+The command validates completed tasks and their accepted proofs, retains required
+Git proof objects, and returns `binding`, resolved `target_base`, and diagnostic
+`commit`. Obtain an independent review of the combined delta against this base
+and run the repository verification from [TESTS.md](../../TESTS.md). The reviewer
+must differ from every worker listed in `binding.builders`.
+
+Supply a JSON `IntegrationEvidence` record through `--evidence-file`:
+
+| Field | Required value |
+| --- | --- |
+| `binding` | Copy the complete generated binding unchanged: version, repository, project, milestone, authority/content/base digests, and builders. |
+| `target_base` | The context's resolved target-base commit. Selectors are resolved again and their content is checked. |
+| `review.worker_id` | Independent integration reviewer identity. |
+| `review.decision`, `review.summary` | `pass` and a nonempty account of the combined review. |
+| `review.scope_findings`, `review.contract_findings` | Empty arrays after resolving unadmitted changes and contract/invariant findings. |
+| `verification.command`, `verification.exit_code` | Exact completed repository verification command and `0`. |
+| `verification.tests_passed`, `verification.tests_failed` | Recorded counts and `0` failures. |
+
+Keep the evidence file outside tracked implementation content, for example under
+`/tmp/`. Forge reads the record; the coordinator runs verification and launches
+review/documentation agents according to repository instructions.
+
+> [!IMPORTANT]
+> Invariant: Final evidence binds current task contracts and accepted gate proofs,
+> the selected target-base content, and every tracked implementation path, mode,
+> addition, deletion and file content. The versioned projection removes only
+> renderer-owned milestone frontmatter `status`, `started_at`, `handoff`, task
+> `status`/`receipt`, and generated subtask `status`/`evidence`; contract and prose
+> bytes remain bound. Unfamiliar YAML spellings stay bound. Dirty files, untracked
+> deliverables, foreign/stale evidence, failed verification, non-independent review,
+> incomplete tasks, and paths outside admitted task scopes reject before publication.
+
+Rebase, cherry-pick, merge, amend, and multi-task squash may change branch SHAs
+without invalidating unchanged content evidence. Upstream integration and conflict
+resolutions are assessed in the final combined review. Changed implementation,
+target-base content, configuration, documentation, or authority needs fresh final
+review and verification; it does not reopen every completed task. Accepted task
+proofs and decisions remain unchanged. Original baselines need not occur on the
+current first-parent history.
+
+Task `receipt.commit` is navigation metadata: handoff retains known accepted
+ancestor pointers or refreshes a unique scope-equivalent rewritten landing;
+unresolved pointers are omitted. `record_task_commits: false` and `commit_tracking:
+off|milestone_only` omit individual navigation pointers in both SQLite and Markdown.
+Accepted proof objects remain reachable under `refs/forge/evidence/` after branch
+rewrites, reflog expiry and handoff; preparing context pins available historical
+proofs. Restore missing immutable proof objects rather than recreating accepted
+gate evidence.
+
+Handoff archives the supplied integration record and verification result in
+frontmatter, records the selected final implementation commit (default `HEAD`),
+sets `status: completed`, and updates SQLite task references to `archive/` with
+the existing rollback checks. Duration starts at `started_at` or the earliest
+claim timestamp. Commit the archive afterward, staging its addition and the
+working manifest's removal; this later commit SHA is not part of its own receipt.
+Historical archived receipts remain readable without rewriting them.
 
 Build validation treats a missing Git-enumerated scoped source file as deleted,
 including an unstaged deletion. Other read failures still reject the submission.
@@ -544,16 +597,6 @@ require the baseline symbol to remain indexed. If it is missing, restore it,
 refresh the index, and accept the contract again before retirement. Previously
 captured nonempty caller sets continue to protect their caller paths.
 
-For paths changed after task delivery, handoff accepts a later reviewed local
-delivery or a reviewed upstream delivery introduced by a two-parent merge. The
-upstream receipt and accepted gate evidence must validate, and its delivery must
-be reachable from the incoming parent and newly introduced by the merge. The
-local input must match a landed reviewed delivery or an already verified merge.
-Handoff reconstructs the file from a unique merge base; clean content merges
-retain the committed file mode. Unreviewed edits, unreachable receipts, manual
-conflict resolutions, and unsupported merge shapes require a reviewed delivery.
-On failure, reconcile the branch while preserving integrated changes; inspect
-the differing paths and review the resolution before retrying handoff.
 
 ### Deferred and out-of-scope defects
 

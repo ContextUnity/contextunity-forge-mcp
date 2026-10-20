@@ -125,12 +125,12 @@ Milestone commands are CLI-only. Creating and archiving a milestone is a decisio
 contextunity-forge-mcp milestone init --num 045 --slug auth
 contextunity-forge-mcp milestone list --status active
 contextunity-forge-mcp milestone show 045 --full
-contextunity-forge-mcp milestone handoff 045 \
-  --verification-command "<project test command>" \
-  --tests-passed <N> --tests-failed 0
+contextunity-forge-mcp milestone handoff-context 045 --target-base main > /tmp/045-context.json
+# Obtain independent review and run project verification for this exact context.
+contextunity-forge-mcp milestone handoff 045 --evidence-file /tmp/045-evidence.json
 ```
 
-`handoff` checks that each task's proofs and scopes match the queue, records the verification counts you pass in, and archives the milestone. You run the tests before that and pass the counts in.
+`handoff` validates immutable task proofs and the [content-bound integration evidence](docs/reference/tasks.md#milestone-cli-lifecycle), then archives the milestone. Supply independent review and verification for the final content and selected target base. Rewriting branch commit SHAs does not invalidate unchanged content evidence; Forge records results without launching agents or running tests.
 
 ### Tasks
 
@@ -208,7 +208,7 @@ MCP is the surface agents use. The CLI is the same operations for a terminal, pl
 | Documentation | `search_docs`, `get_doc` | `docs search`, `docs get` |
 | Task queue | `task_list`, `task_claim`, `task_submit`, `task_manage`, `task_blackboard` | `task …` |
 | Session notes and help | `session_checkpoint`, `forge_guide` | `guide init`, `guide validate` |
-| Open or archive a milestone | CLI only | `milestone init`, `list`, `show`, `handoff` |
+| Open or archive a milestone | CLI only | `milestone init`, `list`, `show`, `handoff-context`, `handoff` |
 
 `forge_guide` with a topic (`acdd`, `query`, `adapter`, `docs`, `ast`) returns the short built-in guide for that area. Field-level contracts are in the [MCP tools](docs/reference/mcp-tools.md) reference and the [CLI reference](docs/reference/cli.md).
 

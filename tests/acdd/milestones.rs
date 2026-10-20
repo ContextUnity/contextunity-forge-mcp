@@ -1,4 +1,5 @@
 use super::support::*;
+use contextunity_forge_mcp::db::tasks_store::TasksStore;
 use contextunity_forge_mcp::engine::milestones as milestone_engine;
 use contextunity_forge_mcp::engine::tasks::list_workspaces;
 
@@ -73,10 +74,19 @@ fn milestone_cli(root: &ScopedWorkspace, args: &[&str]) -> std::process::Output 
 }
 
 fn complete_task_through_engine(root: &ScopedWorkspace, store: &TasksStore, task_id: &str) {
+    complete_task_with_builder(root, store, task_id, "builder");
+}
+
+fn complete_task_with_builder(
+    root: &ScopedWorkspace,
+    store: &TasksStore,
+    task_id: &str,
+    builder: &str,
+) {
     for (index, stage) in GATES.iter().enumerate() {
         let worker_id = match index {
             0 => "contract-author",
-            1 => "builder",
+            1 => builder,
             2 => "independent-reviewer",
             _ => "delivery-reviewer",
         };
@@ -114,19 +124,21 @@ fn complete_task_through_engine(root: &ScopedWorkspace, store: &TasksStore, task
 }
 
 #[test]
-fn handoff_recognizes_reviewed_upstream_merge_provenance() {
+fn handoff_preserves_proofs_across_reviewed_history_rewrites() {
     for scenario in [
-        "upstream-only",
-        "combined",
-        "archived-upstream",
-        "corrupt-review",
-        "unreviewed",
-        "dirty-upstream",
-        "unreachable",
-        "post-merge",
+        "orphan",
+        "amend",
+        "cherry-pick",
+        "merge",
+        "rebase",
+        "squash",
         "conflict",
+        "gc",
+        "off",
+        "milestone-only",
+        "legacy-off",
     ] {
-        let root = ScopedWorkspace::new("forge_upstream_handoff");
+        let root = ScopedWorkspace::new("forge_content_handoff");
         let git = |args: &[&str]| {
             let output = std::process::Command::new("git")
                 .args(args)
@@ -140,132 +152,236 @@ fn handoff_recognizes_reviewed_upstream_merge_provenance() {
             );
             String::from_utf8(output.stdout).unwrap().trim().to_owned()
         };
+        let recording = !matches!(scenario, "off" | "milestone-only" | "legacy-off");
+        let setting = match scenario {
+            "off" => "commit_tracking: off\n",
+            "milestone-only" => "commit_tracking: milestone_only\n",
+            "legacy-off" => "record_task_commits: false\n",
+            _ => "",
+        };
+        root.write(".gitignore", ".forge/\n");
         root.write(
             "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+            &format!("roots: [src]\ntasks_db: .forge/tasks.sqlite\n{setting}"),
         );
-        let source = |id: &str| {
-            format!("---\nid: m-{id}\ntitle: {id}\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# {id}\n```yaml\ntask_ref: change\ntarget: Review source changes\nproof_policy: seam-test-first\nscope: [src/shared.rs, src/local.rs]\n```\n")
-        };
-        let local_ref = "docs/milestones/010-local.md";
-        let upstream_ref = "docs/milestones/011-upstream.md";
-        let local = source("local");
-        let upstream = source("upstream");
-        root.write(local_ref, &local);
-        root.write(upstream_ref, &upstream);
-        let base = (0..24)
+        let source = "---\nid: m-history\ntitle: Content reviewed handoff\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Combined implementation\n```yaml\ntask_ref: first\ntarget: Update first function\nproof_policy: seam-test-first\nscope: [src/shared.rs]\n```\n```yaml\ntask_ref: second\ntarget: Update second function\nproof_policy: seam-test-first\nscope: [src/shared.rs]\ndepends_on: [first]\n```\n";
+        let active = "docs/milestones/010-history.md";
+        let archived = "docs/milestones/archive/010-history.md";
+        root.write(active, source);
+        let initial = (0..24)
             .map(|i| format!("pub fn f{i}() -> u8 {{ 0 }}\n"))
             .collect::<String>();
-        root.write("src/shared.rs", &base);
-        root.write("src/local.rs", "pub fn local() -> u8 { 0 }\n");
-        git(&["add", "forge-mcp.yaml", "docs", "src"]);
-        git(&["commit", "-m", "admit milestones"]);
-        let baseline = git_head(&root.0);
+        root.write("src/shared.rs", &initial);
+        git(&["add", ".gitignore", "forge-mcp.yaml", "docs", "src"]);
+        git(&["commit", "-m", "admit history fixture"]);
+        let base = git_head(&root.0);
+        let branch = git(&["branch", "--show-current"]);
+        let milestone = Milestone::parse(source, "forge-mcp").unwrap();
         let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
-        let local_spec = Milestone::parse(&local, "forge-mcp").unwrap();
-        let upstream_spec = Milestone::parse(&upstream, "forge-mcp").unwrap();
-        store.sync(&local_spec, local_ref, &root.0).unwrap();
-        store.sync(&upstream_spec, upstream_ref, &root.0).unwrap();
-        git(&["checkout", "-b", "local"]);
-        root.write("src/local.rs", "pub fn local() -> u8 { 1 }\n");
-        if matches!(scenario, "combined" | "conflict") {
-            root.write("src/shared.rs", &base.replacen("{ 0 }", "{ 1 }", 1));
-        }
-        complete_task_through_engine(&root, &store, &local_spec.task_id(&local_spec.tasks[0]));
-        git(&["checkout", "-b", "upstream", &baseline]);
-        let upstream_text = if scenario == "conflict" {
-            base.replacen("{ 0 }", "{ 2 }", 1)
-        } else {
-            base.replace("f23() -> u8 { 0 }", "f23() -> u8 { 2 }")
-        };
-        root.write("src/shared.rs", &upstream_text);
-        if scenario == "unreviewed" {
-            git(&["add", "src/shared.rs"]);
-            git(&["commit", "-m", "unreviewed change"]);
-        } else {
-            complete_task_through_engine(
+        store.sync(&milestone, active, &root.0).unwrap();
+        let mut deliveries = Vec::new();
+        let mut reviewed = initial.clone();
+        for (index, spec) in milestone.tasks.iter().enumerate() {
+            reviewed = reviewed.replace(
+                &format!("f{index}() -> u8 {{ 0 }}"),
+                &format!("f{index}() -> u8 {{ {} }}", index + 1),
+            );
+            root.write("src/shared.rs", &reviewed);
+            complete_task_with_builder(
                 &root,
                 &store,
-                &upstream_spec.task_id(&upstream_spec.tasks[0]),
-            );
-        }
-        if scenario == "dirty-upstream" {
-            root.write("src/shared.rs", &format!("{upstream_text}// unreviewed\n"));
-            git(&["add", "src/shared.rs"]);
-            git(&["commit", "-m", "extra unreviewed change"]);
-        }
-        if scenario == "archived-upstream" {
-            milestone_engine::handoff(&root.0, "m-upstream", None, "cargo test", 1, 0).unwrap();
-            git(&["add", "docs"]);
-            git(&["commit", "-m", "archive upstream milestone"]);
-        }
-        if scenario == "corrupt-review" {
-            assert_eq!(store.connection.execute(
-                "UPDATE task_gates SET evidence=json_set(evidence, '$.worker_id', 'builder') WHERE task_id=?1 AND gate='review' AND state='passed'",
-                [upstream_spec.task_id(&upstream_spec.tasks[0])],
-            ).unwrap(), 1);
-        }
-        if scenario == "unreachable" {
-            git(&["checkout", "-b", "unrelated", &baseline]);
-            root.write("src/shared.rs", &upstream_text);
-            git(&["add", "src/shared.rs"]);
-            git(&["commit", "-m", "identical but unrelated change"]);
-        }
-        git(&["checkout", "local"]);
-        let branch = if scenario == "unreachable" {
-            "unrelated"
-        } else {
-            "upstream"
-        };
-        if scenario == "conflict" {
-            let output = std::process::Command::new("git")
-                .args(["merge", "--no-ff", branch, "-m", "merge upstream"])
-                .current_dir(&root.0)
-                .output()
-                .unwrap();
-            assert!(!output.status.success());
-            root.write("src/shared.rs", &base.replacen("{ 0 }", "{ 9 }", 1));
-            git(&["add", "src/shared.rs"]);
-            git(&["commit", "-m", "manual conflict resolution"]);
-        } else {
-            git(&["merge", "--no-ff", branch, "-m", "merge upstream"]);
-        }
-        if scenario == "post-merge" {
-            root.write("src/shared.rs", &format!("{upstream_text}// post merge\n"));
-            git(&["add", "src/shared.rs"]);
-            git(&["commit", "-m", "unreviewed final edit"]);
-        }
-        let before = std::fs::read(root.0.join(local_ref)).unwrap();
-        let before_store = serde_json::to_value(store.list(None, "all", None).unwrap()).unwrap();
-        let before_status = git(&["status", "--porcelain"]);
-        let result = milestone_engine::handoff(&root.0, "m-local", None, "cargo test", 1, 0);
-        if matches!(scenario, "upstream-only" | "combined" | "archived-upstream") {
-            assert!(result.is_ok(), "{scenario}: {result:?}");
-            assert!(root.0.join("docs/milestones/archive/010-local.md").exists());
-            let final_text = std::fs::read_to_string(root.0.join("src/shared.rs")).unwrap();
-            assert!(final_text.contains("f23() -> u8 { 2 }"));
-            if scenario == "combined" {
-                assert!(final_text.contains("f0() -> u8 { 1 }"));
-            }
-        } else {
-            let error = result.unwrap_err().to_string();
-            assert!(
-                error.contains(if scenario == "corrupt-review" {
-                    "TASK_RECEIPT_INVALID"
+                &milestone.task_id(spec),
+                if index == 0 {
+                    "builder-first"
                 } else {
-                    "TASK_LANDED_COMMIT_NOT_FOUND"
-                }),
-                "{scenario}: {error}"
+                    "builder-second"
+                },
             );
-            assert!(!error.contains("git checkout"), "{error}");
-            assert_eq!(std::fs::read(root.0.join(local_ref)).unwrap(), before);
-            assert_eq!(
-                serde_json::to_value(store.list(None, "all", None).unwrap()).unwrap(),
-                before_store
-            );
-            assert_eq!(git(&["status", "--porcelain"]), before_status);
-            assert!(!root.0.join("docs/milestones/archive/010-local.md").exists());
+            deliveries.push(git_head(&root.0));
         }
+        let before: Vec<_> = milestone
+            .tasks
+            .iter()
+            .map(|spec| store.inspect_details(&milestone.task_id(spec)).unwrap())
+            .collect();
+        let mut evidence =
+            fixture_integration_evidence(&root.0, "m-history", "cargo test --test acdd", 1, 0);
+        let context = milestone_cli(
+            &root,
+            &["handoff-context", "m-history", "--target-base", &base],
+        );
+        assert!(
+            context.status.success(),
+            "{scenario}: {}",
+            String::from_utf8_lossy(&context.stderr)
+        );
+        let context: Value = serde_json::from_slice(&context.stdout).unwrap();
+        assert_eq!(
+            serde_json::to_value(&evidence.binding).unwrap(),
+            context["binding"]
+        );
+        assert_eq!(
+            evidence.binding.builders,
+            vec!["builder-first", "builder-second"]
+        );
+        match scenario {
+            "orphan" => {
+                git(&["checkout", "--orphan", "rewritten"]);
+                git(&["commit", "-m", "same content without original ancestry"]);
+            }
+            "amend" => {
+                git(&["commit", "--amend", "-m", "amended navigation identity"]);
+            }
+            "cherry-pick" => {
+                git(&["checkout", "-b", "picked", &base]);
+                git(&["cherry-pick", "--no-commit", &deliveries[0], &deliveries[1]]);
+                git(&["commit", "-m", "picked reviewed content"]);
+            }
+            "squash" => {
+                git(&["reset", "--soft", &base]);
+                git(&["commit", "-m", "two tasks in one commit"]);
+            }
+            "merge" | "rebase" | "conflict" => {
+                git(&["checkout", "-b", "upstream", &base]);
+                let upstream = if scenario == "conflict" {
+                    initial.replacen("{ 0 }", "{ 3 }", 1)
+                } else {
+                    initial.replace("f23() -> u8 { 0 }", "f23() -> u8 { 3 }")
+                };
+                root.write("src/shared.rs", &upstream);
+                git(&["commit", "-am", "upstream optimization in the same file"]);
+                let target = git_head(&root.0);
+                git(&["checkout", &branch]);
+                if scenario == "rebase" {
+                    git(&["rebase", "upstream"]);
+                } else if scenario == "conflict" {
+                    let output = std::process::Command::new("git")
+                        .args(["merge", "--no-ff", "upstream", "-m", "integrate upstream"])
+                        .current_dir(&root.0)
+                        .output()
+                        .unwrap();
+                    assert!(!output.status.success());
+                    root.write(
+                        "src/shared.rs",
+                        &reviewed.replace("f0() -> u8 { 1 }", "f0() -> u8 { 4 }"),
+                    );
+                    git(&["add", "src/shared.rs"]);
+                    git(&["commit", "--no-edit"]);
+                } else {
+                    git(&["merge", "--no-ff", "upstream", "-m", "integrate upstream"]);
+                }
+                let file = root.0.join(".forge/integration-evidence.json");
+                std::fs::write(&file, serde_json::to_vec(&evidence).unwrap()).unwrap();
+                let stale = milestone_cli(
+                    &root,
+                    &[
+                        "handoff",
+                        "m-history",
+                        "--evidence-file",
+                        file.to_str().unwrap(),
+                    ],
+                );
+                assert!(!stale.status.success());
+                assert!(
+                    String::from_utf8_lossy(&stale.stderr).contains("HANDOFF_EVIDENCE_STALE"),
+                    "{stale:?}"
+                );
+                assert!(root.0.join(active).exists());
+                assert!(!root.0.join(archived).exists());
+                let fresh = milestone_cli(
+                    &root,
+                    &["handoff-context", "m-history", "--target-base", &target],
+                );
+                assert!(fresh.status.success(), "{fresh:?}");
+                let fresh: Value = serde_json::from_slice(&fresh.stdout).unwrap();
+                evidence.binding = serde_json::from_value(fresh["binding"].clone()).unwrap();
+                evidence.target_base = fresh["target_base"].as_str().unwrap().to_owned();
+            }
+            "gc" => {
+                let tree = git(&["rev-parse", "HEAD^{tree}"]);
+                let obsolete = git(&["commit-tree", &tree, "-m", "temporary navigation object"]);
+                let document = std::fs::read_to_string(root.0.join(active)).unwrap();
+                let mut receipt = store
+                    .inspect(&milestone.task_id(&milestone.tasks[0]))
+                    .unwrap()
+                    .receipt
+                    .unwrap();
+                receipt.commit = Some(obsolete.clone());
+                root.write(
+                    active,
+                    &milestone_engine::render_task_receipt(&document, "first", &receipt, &[])
+                        .unwrap(),
+                );
+                git(&["add", active]);
+                git(&["commit", "-m", "navigation pointer update"]);
+                git(&["reflog", "expire", "--expire=now", "--all"]);
+                git(&["gc", "--prune=now"]);
+                let missing = std::process::Command::new("git")
+                    .args(["cat-file", "-e", &format!("{obsolete}^{{commit}}")])
+                    .current_dir(&root.0)
+                    .output()
+                    .unwrap();
+                assert!(
+                    !missing.status.success(),
+                    "unreferenced navigation object survived pruning"
+                );
+            }
+            _ => {}
+        }
+        let file = root.0.join(".forge/integration-evidence.json");
+        std::fs::write(&file, serde_json::to_vec(&evidence).unwrap()).unwrap();
+        let output = milestone_cli(
+            &root,
+            &[
+                "handoff",
+                "m-history",
+                "--evidence-file",
+                file.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{scenario}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            output["handoff"]["integration_evidence"],
+            serde_json::to_value(&evidence).unwrap()
+        );
+        for (index, spec) in milestone.tasks.iter().enumerate() {
+            let id = milestone.task_id(spec);
+            let after = store.inspect_details(&id).unwrap();
+            assert_eq!(
+                before[index]["gates"], after["gates"],
+                "{scenario}: accepted gates changed"
+            );
+            assert_eq!(
+                before[index]["attempts"], after["attempts"],
+                "{scenario}: accepted claims changed"
+            );
+            let accepted: contextunity_forge_mcp::core::tasks::Receipt =
+                serde_json::from_value(before[index]["receipt"].clone()).unwrap();
+            let final_task = store.inspect(&id).unwrap();
+            assert!(accepted.matches_proofs(final_task.receipt.as_ref().unwrap()));
+            if !recording {
+                assert!(final_task.receipt.unwrap().commit.is_none());
+            }
+        }
+        assert!(!root.0.join(active).exists());
+        assert!(root.0.join(archived).exists());
+        let refs = git(&[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/forge/evidence/",
+        ]);
+        assert!(!refs.is_empty());
+        assert!(git(&[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/forge/snapshots/"
+        ])
+        .is_empty());
     }
 }
 
@@ -377,6 +493,19 @@ fn handoff_validates_reviewed_shared_scope_and_repacked_landings_atomically() {
         root.write("src/second.rs", "pub fn second() -> u8 { 2 }\n");
         complete_task_through_engine(&root, &store, &second_id);
         let second_landed = git_head(&root.0);
+        let mut integration = fixture_integration_evidence(
+            &root.0,
+            "m-shared-landings",
+            "cargo test --test acdd",
+            1,
+            0,
+        );
+        if matches!(scenario, Scenario::NonEquivalentRepack) {
+            integration
+                .review
+                .contract_findings
+                .push("Earlier task outcome changed without an admitted replacement".into());
+        }
         if matches!(
             scenario,
             Scenario::UnreviewedShared | Scenario::RetargetedDeliveryUnreviewedShared
@@ -475,22 +604,32 @@ fn handoff_validates_reviewed_shared_scope_and_repacked_landings_atomically() {
                 rusqlite::params![unreviewed_commit, second_id],
             ).unwrap(), 1);
         }
+        if matches!(
+            scenario,
+            Scenario::MalformedReceipt
+                | Scenario::MissingReceiptCommit
+                | Scenario::UnrelatedReceiptCommit
+                | Scenario::ObsoleteReceiptCommit
+        ) {
+            git(&["add", active_ref]);
+            git(&["commit", "-m", "navigation input for handoff"]);
+        }
         let head = git_head(&root.0);
         let before_doc = std::fs::read(root.0.join(active_ref)).unwrap();
         let before_tasks = serde_json::to_value(store.list(None, "all", None).unwrap()).unwrap();
         drop(store);
-        let result = milestone_engine::handoff(
-            &root.0,
-            "m-shared-landings",
-            Some(&head),
-            "cargo test --test acdd",
-            1,
-            0,
-        );
+        let result =
+            milestone_engine::handoff(&root.0, "m-shared-landings", Some(&head), &integration);
         let reopened = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
         let accepted = matches!(
             scenario,
-            Scenario::Shared | Scenario::RepackedShared | Scenario::RepackedWithoutMarkdownCommits
+            Scenario::Shared
+                | Scenario::MalformedReceipt
+                | Scenario::RepackedShared
+                | Scenario::RepackedWithoutMarkdownCommits
+                | Scenario::MissingReceiptCommit
+                | Scenario::UnrelatedReceiptCommit
+                | Scenario::ObsoleteReceiptCommit
         );
         if accepted {
             if let Err(error) = result {
@@ -517,7 +656,7 @@ fn handoff_validates_reviewed_shared_scope_and_repacked_landings_atomically() {
                 assert_eq!(task.milestone_ref, archive_ref, "{scenario:?}");
                 assert_eq!(
                     task.receipt.unwrap().commit.as_deref(),
-                    Some(landed.as_str()),
+                    record_commits.then_some(landed.as_str()),
                     "{scenario:?}: SQLite must record each task's own landed commit"
                 );
                 assert_eq!(
@@ -1029,6 +1168,7 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     );
     let source = "---\nid: m-close\ntitle: Close work\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Close work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish work\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     root.write("docs/milestones/010-close.md", source);
+    commit_handoff_fixture_inputs(&root, &["forge-mcp.yaml", "docs/milestones/010-close.md"]);
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     store
         .sync(
@@ -1043,12 +1183,8 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         "m-close",
         "--commit",
         commit.as_str(),
-        "--verification-command",
-        "cargo test --all-targets",
-        "--tests-passed",
-        "7",
-        "--tests-failed",
-        "0",
+        "--evidence-file",
+        &fixture_evidence_file(&root.0, "m-close", "cargo test --all-targets", 7, 0),
     ];
     let rejected = milestone_cli(&root, &args);
     assert!(!rejected.status.success());
@@ -1064,12 +1200,8 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         "m-close",
         "--commit",
         handoff_commit.as_str(),
-        "--verification-command",
-        "cargo test --all-targets",
-        "--tests-passed",
-        "7",
-        "--tests-failed",
-        "0",
+        "--evidence-file",
+        &fixture_evidence_file(&root.0, "m-close", "cargo test --all-targets", 7, 0),
     ];
     let completed = milestone_cli(&root, &completed_args);
     assert!(
@@ -1123,6 +1255,10 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     fallback.write("src/lib.rs", "pub fn fallback() {}\n");
     let source = "---\nid: m-fallback\ntitle: Fallback work\ndoc_type: contract\nstatus: active\n---\n# Fallback work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish fallback\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     fallback.write("docs/milestones/020-fallback.md", source);
+    commit_handoff_fixture_inputs(
+        &fallback,
+        &["forge-mcp.yaml", "docs/milestones/020-fallback.md"],
+    );
     let milestone = Milestone::parse(source, "forge-mcp").unwrap();
     let mut fallback_store = TasksStore::open(&fallback.0.join(".forge/tasks.sqlite")).unwrap();
     fallback_store
@@ -1143,12 +1279,8 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
             "m-fallback",
             "--commit",
             fallback_commit.as_str(),
-            "--verification-command",
-            "cargo test",
-            "--tests-passed",
-            "1",
-            "--tests-failed",
-            "0",
+            "--evidence-file",
+            &fixture_evidence_file(&fallback.0, "m-fallback", "cargo test", 1, 0),
         ],
     );
     assert!(
@@ -1194,6 +1326,14 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
     );
     let source = "---\nid: m-manual\ntitle: Manual delivery\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Manual delivery\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish manually delivered work\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     root.write("docs/milestones/010-manual.md", source);
+    commit_handoff_fixture_inputs(
+        &root,
+        &[
+            "forge-mcp.yaml",
+            "custom/manual.yaml",
+            "docs/milestones/010-manual.md",
+        ],
+    );
     let milestone = Milestone::parse(source, "forge-mcp").unwrap();
     let task_id = milestone.task_id(&milestone.tasks[0]);
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
@@ -1238,7 +1378,7 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
     );
 
     let staged = std::process::Command::new("git")
-        .args(["add", "--", "src/lib.rs"])
+        .args(["add", "--", "src/lib.rs", "docs/milestones/010-manual.md"])
         .current_dir(&root.0)
         .output()
         .unwrap();
@@ -1273,12 +1413,8 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
             "m-manual",
             "--commit",
             landed_commit.as_str(),
-            "--verification-command",
-            "cargo test --test acdd",
-            "--tests-passed",
-            "1",
-            "--tests-failed",
-            "0",
+            "--evidence-file",
+            &fixture_evidence_file(&root.0, "m-manual", "cargo test --test acdd", 1, 0),
         ],
     );
     assert!(
@@ -2494,6 +2630,11 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
 #[test]
 fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
     let root = ScopedWorkspace::new("forge_multi_milestones_and_plans");
+    std::fs::write(
+        root.0.join(".git/info/exclude"),
+        ".forge/\ncode_map.sqlite*\n",
+    )
+    .unwrap();
     root.write("src/lib.rs", "pub fn platform() {}\n");
     root.write(
         "docs/architecture.md",
@@ -2645,6 +2786,7 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
     )
     .unwrap();
     assert!(init_v2_content.contains("project: extensions.commerce"));
+    commit_handoff_fixture_inputs(&root, &["forge-mcp.yaml", "src", "docs", "extensions"]);
 
     // 5. Verify task sync on extension milestone creates task in subproject namespace
     let synced = contextunity_forge_mcp::engine::tasks::manage(
@@ -2684,7 +2826,7 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
     drop(store);
 
     let commit = git_head(&root.0);
-    let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
+    let handoff_res = handoff_with_fixture_evidence(
         &root.0,
         "m-commerce",
         Some(&commit),
@@ -3799,88 +3941,13 @@ scope:
         .output()
         .unwrap();
 
-    let handoff_commit = git_head(&root.0);
-
-    // 7b. Test handoff fails if markdown has non-existent commit
-    let mut missing_receipt = updated_receipt.clone();
-    missing_receipt.commit = Some("0123456789abcdef0123456789abcdef01234567".into());
-    let missing_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
-        &updated_doc,
-        "first",
-        &missing_receipt,
-        &[],
-    )
-    .unwrap();
-    root.write("docs/milestones/010-repack.md", &missing_doc);
-    let missing_err = contextunity_forge_mcp::engine::milestones::handoff(
-        &root.0,
-        "m-repack",
-        Some(&handoff_commit),
-        "cargo test",
-        1,
-        0,
-    )
-    .unwrap_err();
-    assert!(
-        missing_err
-            .to_string()
-            .contains("is not available in workspace Git repository"),
-        "expected missing commit error, got: {missing_err}"
-    );
-
-    // 7c. Test handoff fails if markdown has commit outside task scope
-    let mut foreign_md_receipt = updated_receipt.clone();
-    foreign_md_receipt.commit = Some(foreign_sha);
-    let foreign_md_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
-        &updated_doc,
-        "first",
-        &foreign_md_receipt,
-        &[],
-    )
-    .unwrap();
-    root.write("docs/milestones/010-repack.md", &foreign_md_doc);
-    let foreign_err = contextunity_forge_mcp::engine::milestones::handoff(
-        &root.0,
-        "m-repack",
-        Some(&handoff_commit),
-        "cargo test",
-        1,
-        0,
-    )
-    .unwrap_err();
-    assert!(
-        foreign_err
-            .to_string()
-            .contains("changes files outside task scope"),
-        "expected outside scope error, got: {foreign_err}"
-    );
-
-    // 7d. Test handoff fails if markdown has commit that touches only milestone doc (does not touch task scope)
+    // Migration still validates explicit pointer updates; handoff treats them as navigation.
     let mut doc_only_receipt = updated_receipt.clone();
     doc_only_receipt.commit = Some(doc_only_sha);
-    let doc_only_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
-        &updated_doc,
-        "first",
-        &doc_only_receipt,
-        &[],
-    )
-    .unwrap();
+    let doc_only_doc =
+        milestone_engine::render_task_receipt(&updated_doc, "first", &doc_only_receipt, &[])
+            .unwrap();
     root.write("docs/milestones/010-repack.md", &doc_only_doc);
-    let doc_only_err = contextunity_forge_mcp::engine::milestones::handoff(
-        &root.0,
-        "m-repack",
-        Some(&handoff_commit),
-        "cargo test",
-        1,
-        0,
-    )
-    .unwrap_err();
-    assert!(
-        doc_only_err
-            .to_string()
-            .contains("does not touch task scope"),
-        "expected does not touch task scope error, got: {doc_only_err}"
-    );
 
     // 7e. Test migrate verify rejects when markdown has foreign commit or commit not touching scope
     let verify_foreign = contextunity_forge_mcp::cli::migrate::run(
@@ -3892,88 +3959,6 @@ scope:
     assert!(
         verify_foreign.is_err(),
         "migrate verify must reject markdown receipt specifying commit that does not touch scope"
-    );
-
-    // 7f. Test handoff fails if markdown has obsolete ancestor commit
-    let mut ancestor_md_receipt = updated_receipt.clone();
-    ancestor_md_receipt.commit = Some(c1_sha);
-    let ancestor_md_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
-        &updated_doc,
-        "first",
-        &ancestor_md_receipt,
-        &[],
-    )
-    .unwrap();
-    root.write("docs/milestones/010-repack.md", &ancestor_md_doc);
-    let ancestor_err = contextunity_forge_mcp::engine::milestones::handoff(
-        &root.0,
-        "m-repack",
-        Some(&handoff_commit),
-        "cargo test",
-        1,
-        0,
-    )
-    .unwrap_err();
-    assert!(
-        ancestor_err.to_string().contains("TASK_COMMIT_OBSOLETE")
-            || ancestor_err
-                .to_string()
-                .contains("does not advance beyond baseline"),
-        "expected obsolete ancestry error in handoff, got: {ancestor_err}"
-    );
-
-    // 7g. Test handoff fails if markdown has commit modifying protected profile
-    let mut protected_md_receipt = updated_receipt.clone();
-    protected_md_receipt.commit = Some(protected_sha);
-    let protected_md_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
-        &updated_doc,
-        "first",
-        &protected_md_receipt,
-        &[],
-    )
-    .unwrap();
-    root.write("docs/milestones/010-repack.md", &protected_md_doc);
-    let protected_err = contextunity_forge_mcp::engine::milestones::handoff(
-        &root.0,
-        "m-repack",
-        Some(&handoff_commit),
-        "cargo test",
-        1,
-        0,
-    )
-    .unwrap_err();
-    assert!(
-        protected_err
-            .to_string()
-            .contains("changes files outside task scope"),
-        "expected outside scope error for protected profile in handoff, got: {protected_err}"
-    );
-
-    // 7h. Test handoff fails if markdown has divergent commit with different code in scope
-    let mut divergent_md_receipt = updated_receipt.clone();
-    divergent_md_receipt.commit = Some(divergent_sha);
-    let divergent_md_doc = contextunity_forge_mcp::engine::milestones::render_task_receipt(
-        &updated_doc,
-        "first",
-        &divergent_md_receipt,
-        &[],
-    )
-    .unwrap();
-    root.write("docs/milestones/010-repack.md", &divergent_md_doc);
-    let divergent_err = contextunity_forge_mcp::engine::milestones::handoff(
-        &root.0,
-        "m-repack",
-        Some(&handoff_commit),
-        "cargo test",
-        1,
-        0,
-    )
-    .unwrap_err();
-    assert!(
-        divergent_err
-            .to_string()
-            .contains("TASK_COMMIT_TREE_MISMATCH"),
-        "expected TASK_COMMIT_TREE_MISMATCH error in handoff, got: {divergent_err}"
     );
 
     // Restore valid markdown doc with repacked SHA before handoff
@@ -3991,8 +3976,15 @@ scope:
         "migrate verify must succeed for valid repacked SHA"
     );
 
+    // Remove the deliberately foreign migration fixtures from the final integration.
+    for path in ["tests/unrelated.rs", ".forge/acdd/profile.yaml"] {
+        std::fs::remove_file(root.0.join(path)).unwrap();
+    }
+    commit_handoff_fixture_inputs(&root, &["tests/unrelated.rs", ".forge/acdd/profile.yaml"]);
+    let handoff_commit = git_head(&root.0);
+
     // 8. Run milestone handoff
-    let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
+    let handoff_res = handoff_with_fixture_evidence(
         &root.0,
         "m-repack",
         Some(&handoff_commit),
@@ -4007,13 +3999,13 @@ scope:
     assert!(archived_path.exists());
     let archived_doc = std::fs::read_to_string(&archived_path).unwrap();
     let archived_milestone = Milestone::parse(&archived_doc, "forge-mcp").unwrap();
-    assert_eq!(
+    assert!(
         archived_milestone.tasks[0]
             .receipt
             .as_ref()
-            .and_then(|r| r.commit.as_deref()),
-        Some(repacked_sha.as_str()),
-        "archived receipt must preserve the repacked task commit"
+            .unwrap()
+            .matches_proofs(&updated_receipt),
+        "handoff preserves the accepted proofs independently of optional navigation SHAs"
     );
 }
 
@@ -4174,7 +4166,7 @@ scope:
     let handoff_commit = git_head(&root.0);
 
     // 4. Run milestone handoff: it should pick the commit from the milestone doc!
-    let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
+    let handoff_res = handoff_with_fixture_evidence(
         &root.0,
         "m-direct-repack",
         Some(&handoff_commit),
@@ -4300,7 +4292,7 @@ scope:
     let handoff_commit = git_head(&root.0);
 
     // 3. Run milestone handoff
-    let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
+    let handoff_res = handoff_with_fixture_evidence(
         &root.0,
         "m-commitless",
         Some(&handoff_commit),
@@ -4326,7 +4318,7 @@ scope:
         "archived receipt must be commitless in Markdown when record_task_commits is false"
     );
 
-    // 5. Verify SQLite retained the landed commit
+    // 5. Verify SQLite also omits optional navigation when tracking is disabled
     let store2 = TasksStore::open_project(
         &root.0.join(".forge/tasks.sqlite"),
         "forge-mcp",
@@ -4335,8 +4327,8 @@ scope:
     .unwrap();
     let inspected = store2.inspect(&task.task_id).unwrap();
     assert!(
-        inspected.receipt.unwrap().commit.is_some(),
-        "SQLite receipt must retain the commit locally for tracking"
+        inspected.receipt.unwrap().commit.is_none(),
+        "SQLite receipt must omit navigation when tracking is disabled"
     );
 
     // 6. Verify sync on the archived commitless document succeeds without error
@@ -4354,7 +4346,7 @@ scope:
         sync_res.err()
     );
 
-    // 7. Verify SQLite still retained its commit after sync
+    // 7. Verify sync preserves the commitless SQLite receipt
     let store3 = TasksStore::open_project(
         &root.0.join(".forge/tasks.sqlite"),
         "forge-mcp",
@@ -4363,8 +4355,8 @@ scope:
     .unwrap();
     let inspected3 = store3.inspect(&task.task_id).unwrap();
     assert!(
-        inspected3.receipt.unwrap().commit.is_some(),
-        "SQLite receipt must keep its commit even after commitless markdown sync"
+        inspected3.receipt.unwrap().commit.is_none(),
+        "SQLite receipt must remain commitless after archived Markdown sync"
     );
     drop(store3);
 
@@ -4384,7 +4376,7 @@ scope:
 }
 
 #[test]
-fn squashed_or_rebased_milestone_commit_passes_handoff_via_scoped_tree_match() {
+fn handoff_accepts_content_equivalent_history_rewrite() {
     let root = ScopedWorkspace::new("forge_squashed_handoff");
     root.write(
         "forge-mcp.yaml",
@@ -4406,6 +4398,7 @@ target: Complete work task
 proof_policy: seam-test-first
 scope:
   - src/lib.rs
+  - docs/notes.md
 ```
 "#;
     root.write("docs/milestones/010-squash.md", milestone_content);
@@ -4463,10 +4456,10 @@ scope:
     complete_task_through_engine(&root, &store, &task.task_id);
     drop(store);
 
-    // 3. Simulate a squash commit via reset/recommit (so delivery is not an ancestor)
+    // Rewriting the full history preserves content, not the original baseline.
     let delivery_sha = git_head(&root.0);
     std::process::Command::new("git")
-        .args(["reset", "--soft", "HEAD~1"])
+        .args(["checkout", "--orphan", "rewritten-history"])
         .current_dir(&root.0)
         .output()
         .unwrap();
@@ -4515,15 +4508,9 @@ scope:
     assert_ne!(squashed_sha, tip_sha);
 
     // 5. Handoff at tip succeeds and correctly resolves squashed_sha (introducing commit), NOT tip_sha!
-    let handoff_res = contextunity_forge_mcp::engine::milestones::handoff(
-        &root.0,
-        "m-squash",
-        Some(&tip_sha),
-        "cargo test",
-        1,
-        0,
-    )
-    .unwrap();
+    let handoff_res =
+        handoff_with_fixture_evidence(&root.0, "m-squash", Some(&tip_sha), "cargo test", 1, 0)
+            .unwrap();
     assert_eq!(handoff_res["id"], "m-squash");
 
     let store2 = TasksStore::open_project(
@@ -4538,132 +4525,6 @@ scope:
         Some(squashed_sha.as_str()),
         "handoff must record the squashed commit that introduced the scoped changes, not the tip commit on top"
     );
-}
-
-#[test]
-fn handoff_rejects_commit_when_task_scope_differs_with_actionable_diagnostic() {
-    let root = ScopedWorkspace::new("forge_scoped_diff_rejection");
-    root.write(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/AGENTS.md\n",
-    );
-    root.write("docs/AGENTS.md", "# Agent Guidance\n");
-    root.write("src/lib.rs", "pub fn work() -> bool { true }\n");
-
-    let milestone_content = r#"---
-id: m-differ
-title: Differ test
-doc_type: contract
----
-# Differ test
-
-```yaml
-task_ref: work
-target: Complete work task
-proof_policy: seam-test-first
-scope:
-  - src/lib.rs
-```
-"#;
-    root.write("docs/milestones/010-differ.md", milestone_content);
-
-    // Initial commit
-    std::process::Command::new("git")
-        .args([
-            "-c",
-            "user.name=ACDD test",
-            "-c",
-            "user.email=acdd-test@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "add",
-            ".",
-        ])
-        .current_dir(&root.0)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args([
-            "-c",
-            "user.name=ACDD test",
-            "-c",
-            "user.email=acdd-test@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-m",
-            "Initial milestone contract",
-        ])
-        .current_dir(&root.0)
-        .output()
-        .unwrap();
-
-    contextunity_forge_mcp::engine::tasks::manage(
-        &root.0,
-        serde_json::from_value(json!({
-            "action": "sync",
-            "milestone_ref": "docs/milestones/010-differ.md"
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let store = TasksStore::open_project(
-        &root.0.join(".forge/tasks.sqlite"),
-        "forge-mcp",
-        "forge-mcp",
-    )
-    .unwrap();
-    let task = store.list(None, "all", None).unwrap().pop().unwrap();
-    complete_task_through_engine(&root, &store, &task.task_id);
-    drop(store);
-
-    // Modify scoped file after delivery
-    root.write(
-        "src/lib.rs",
-        "pub fn work() -> bool { false /* diverged */ }\n",
-    );
-    std::process::Command::new("git")
-        .args(["add", "src/lib.rs"])
-        .current_dir(&root.0)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args([
-            "-c",
-            "user.name=ACDD test",
-            "-c",
-            "user.email=acdd-test@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-m",
-            "Accidental scoped divergence",
-        ])
-        .current_dir(&root.0)
-        .output()
-        .unwrap();
-
-    let divergent_head = git_head(&root.0);
-    let err = contextunity_forge_mcp::engine::milestones::handoff(
-        &root.0,
-        "m-differ",
-        Some(&divergent_head),
-        "cargo test",
-        1,
-        0,
-    )
-    .unwrap_err();
-
-    let msg = err.to_string();
-    assert!(msg.contains("TASK_LANDED_COMMIT_NOT_FOUND"), "{msg}");
-    assert!(
-        msg.contains("Differing paths in task scope:\n  - src/lib.rs"),
-        "{msg}"
-    );
-    assert!(!msg.contains("git checkout"), "{msg}");
-    assert!(msg.contains("reconcile"), "{msg}");
-    assert!(msg.contains("src/lib.rs"), "{msg}");
 }
 
 #[test]
@@ -4933,6 +4794,10 @@ fn subproject_milestones_handles_readme_owners_and_non_trivial_aliases() {
     assert_eq!(sync_other["tasks"][0]["task_id"], "other/BS-106:other-task");
 
     root.write("extensions/base/src/lib.rs", "pub fn extension() {}\n");
+    commit_handoff_fixture_inputs(
+        &root,
+        &["AGENTS.md", "forge-mcp.yaml", "docs", "extensions"],
+    );
     let cases = [
         (
             "BS-103",
@@ -4979,19 +4844,13 @@ fn subproject_milestones_handles_readme_owners_and_non_trivial_aliases() {
         assert!(parsed.tasks[0].receipt.is_some());
         let shown = milestone_engine::show(&root.0, milestone_id, false).unwrap();
         assert_eq!(shown["completion"], "1/1");
-    }
-    for (milestone_id, _, file, _) in cases {
         let output = milestone_cli(
             &root,
             &[
                 "handoff",
                 milestone_id,
-                "--verification-command",
-                "cargo test --test acdd",
-                "--tests-passed",
-                "1",
-                "--tests-failed",
-                "0",
+                "--evidence-file",
+                &fixture_evidence_file(&root.0, milestone_id, "cargo test --test acdd", 1, 0),
             ],
         );
         assert!(
@@ -5006,6 +4865,7 @@ fn subproject_milestones_handles_readme_owners_and_non_trivial_aliases() {
         let shown = milestone_engine::show(&root.0, milestone_id, false).unwrap();
         assert_eq!(shown["status"], "completed");
         assert_eq!(shown["completion"], "1/1");
+        commit_handoff_fixture_inputs(&root, &["extensions/base/docs/milestones"]);
     }
     let initialized = milestone_cli(
         &root,
@@ -5079,6 +4939,7 @@ fn default_project_alias_is_applied_once_across_task_lifecycle() {
         "docs/milestones/001-default.md",
         "---\nid: m-default\ntitle: Default alias\ndoc_type: contract\nstatus: in_progress\n---\n```yaml\ntask_ref: first\ntarget: Deliver the default project\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
     );
+    commit_handoff_fixture_inputs(&root, &["AGENTS.md", "forge-mcp.yaml", "docs", "src"]);
     let synced = tasks::manage(
         &root.0,
         serde_json::from_value(json!({"action":"sync","milestone_ref":"001"})).unwrap(),
@@ -5103,12 +4964,8 @@ fn default_project_alias_is_applied_once_across_task_lifecycle() {
         &[
             "handoff",
             "001",
-            "--verification-command",
-            "cargo test --test acdd",
-            "--tests-passed",
-            "1",
-            "--tests-failed",
-            "0",
+            "--evidence-file",
+            &fixture_evidence_file(&root.0, "001", "cargo test --test acdd", 1, 0),
         ],
     );
     assert!(
@@ -5153,4 +5010,263 @@ fn default_project_alias_is_applied_once_across_task_lifecycle() {
     )
     .unwrap();
     assert_eq!(next["task_id"], initialized_id);
+}
+
+#[test]
+fn handoff_rejects_stale_or_untrusted_integration_evidence_atomically() {
+    for scenario in [
+        "bytes",
+        "mode",
+        "deletion",
+        "addition",
+        "documentation",
+        "configuration",
+        "authority",
+        "target-base",
+        "foreign",
+        "authority-binding",
+        "receipt-context",
+        "builder-first",
+        "builder-second",
+        "review-reject",
+        "scope-finding",
+        "contract-finding",
+        "verification-exit",
+        "verification-tests",
+        "empty-command",
+        "missing-record",
+        "malformed-record",
+        "dirty",
+        "untracked",
+    ] {
+        if scenario == "mode" && !cfg!(unix) {
+            continue;
+        }
+        let root = ScopedWorkspace::new("forge_final_evidence");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root.0)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{scenario}: {args:?}: {output:?}");
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        root.write(".gitignore", ".forge/\n");
+        root.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ntasks_db: .forge/tasks.sqlite\n",
+        );
+        root.write("src/lib.rs", "pub fn work() -> u8 { 0 }\n");
+        root.write("src/obsolete.rs", "pub fn retained() {}\n");
+        root.write("docs/guide.md", "# Runtime guide\n");
+        root.write("scripts/tool.sh", "#!/bin/sh\nexit 0\n");
+        let active = "docs/milestones/010-final.md";
+        let archived = "docs/milestones/archive/010-final.md";
+        let source = "---\nid: m-final\ntitle: Final integration evidence\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Final content\n```yaml\ntask_ref: first\ntarget: First admitted outcome\nproof_policy: seam-test-first\nscope: [src/, docs/guide.md, scripts/tool.sh, forge-mcp.yaml]\n```\n```yaml\ntask_ref: second\ntarget: Combined admitted outcome\nproof_policy: seam-test-first\nscope: [src/, docs/guide.md, scripts/tool.sh, forge-mcp.yaml]\ndepends_on: [first]\n```\n";
+        root.write(active, source);
+        git(&[
+            "add",
+            ".gitignore",
+            "forge-mcp.yaml",
+            "src",
+            "docs",
+            "scripts",
+        ]);
+        git(&["commit", "-m", "admit final-evidence fixture"]);
+        let base = git_head(&root.0);
+        let branch = git(&["branch", "--show-current"]);
+        let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+        let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+        store.sync(&milestone, active, &root.0).unwrap();
+        for (index, spec) in milestone.tasks.iter().enumerate() {
+            root.write(
+                "src/lib.rs",
+                &format!("pub fn work() -> u8 {{ {} }}\n", index + 1),
+            );
+            complete_task_with_builder(
+                &root,
+                &store,
+                &milestone.task_id(spec),
+                if index == 0 {
+                    "builder-first"
+                } else {
+                    "builder-second"
+                },
+            );
+        }
+        let mut evidence =
+            fixture_integration_evidence(&root.0, "m-final", "cargo test --test acdd", 2, 0);
+        match scenario {
+            "bytes" | "dirty" => root.write("src/lib.rs", "pub fn work() -> u8 { 99 }\n"),
+            "mode" => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(
+                        root.0.join("scripts/tool.sh"),
+                        std::fs::Permissions::from_mode(0o755),
+                    )
+                    .unwrap();
+                }
+            }
+            "deletion" => std::fs::remove_file(root.0.join("src/obsolete.rs")).unwrap(),
+            "addition" => root.write("src/new.rs", "pub fn unreviewed() {}\n"),
+            "documentation" => root.write("docs/guide.md", "# Changed runtime contract\n"),
+            "configuration" => root.write(
+                "forge-mcp.yaml",
+                "roots: [src, docs]\ntasks_db: .forge/tasks.sqlite\n",
+            ),
+            "authority" => {
+                let doc = std::fs::read_to_string(root.0.join(active)).unwrap();
+                root.write(
+                    active,
+                    &doc.replace("First admitted outcome", "Different admitted outcome"),
+                );
+            }
+            "target-base" => {
+                git(&["checkout", "-b", "different-base", &base]);
+                root.write("src/obsolete.rs", "pub fn upstream() {}\n");
+                git(&["commit", "-am", "changed selected base"]);
+                evidence.target_base = git_head(&root.0);
+                git(&["checkout", &branch]);
+            }
+            "foreign" => evidence.binding.repository = "foreign-repository".into(),
+            "authority-binding" => evidence.binding.authority_digest = "f".repeat(64),
+            "receipt-context" => {
+                let mut task = store
+                    .inspect(&milestone.task_id(&milestone.tasks[0]))
+                    .unwrap();
+                let receipt = task.receipt.as_mut().unwrap();
+                receipt.passed_at = "2026-10-02T10:00:00Z".into();
+                let doc = std::fs::read_to_string(root.0.join(active)).unwrap();
+                root.write(
+                    active,
+                    &milestone_engine::render_task_receipt(
+                        &doc,
+                        "first",
+                        receipt,
+                        &task.spec.subtasks,
+                    )
+                    .unwrap(),
+                );
+                task.spec.receipt = task.receipt.clone();
+                store
+                    .connection
+                    .execute(
+                        "UPDATE tasks SET descriptor=?1 WHERE task_id=?2",
+                        rusqlite::params![serde_json::to_string(&task).unwrap(), task.task_id],
+                    )
+                    .unwrap();
+            }
+            "builder-first" | "builder-second" => evidence.review.worker_id = scenario.into(),
+            "review-reject" => evidence.review.decision = "reject".into(),
+            "scope-finding" => evidence
+                .review
+                .scope_findings
+                .push("Unadmitted implementation".into()),
+            "contract-finding" => evidence
+                .review
+                .contract_findings
+                .push("Required outcome missing".into()),
+            "verification-exit" => evidence.verification.exit_code = 1,
+            "verification-tests" => evidence.verification.tests_failed = 1,
+            "empty-command" => evidence.verification.command.clear(),
+            "untracked" => root.write("untracked-deliverable.rs", "pub fn pending() {}\n"),
+            _ => {}
+        }
+        if matches!(
+            scenario,
+            "bytes"
+                | "mode"
+                | "deletion"
+                | "addition"
+                | "documentation"
+                | "configuration"
+                | "authority"
+                | "receipt-context"
+        ) {
+            git(&["add", "src", "docs", "scripts", "forge-mcp.yaml"]);
+            git(&["commit", "-m", "post-review change"]);
+        }
+        let file = root.0.join(".forge/integration-evidence.json");
+        if scenario != "missing-record" {
+            std::fs::write(
+                &file,
+                if scenario == "malformed-record" {
+                    b"{\"binding\":false}".to_vec()
+                } else {
+                    serde_json::to_vec(&evidence).unwrap()
+                },
+            )
+            .unwrap();
+        }
+        let before_doc = std::fs::read(root.0.join(active)).unwrap();
+        let before: Vec<_> = milestone
+            .tasks
+            .iter()
+            .map(|spec| store.inspect_details(&milestone.task_id(spec)).unwrap())
+            .collect();
+        let before_source = std::fs::read(root.0.join("src/lib.rs")).unwrap();
+        let output = milestone_cli(
+            &root,
+            &[
+                "handoff",
+                "m-final",
+                "--evidence-file",
+                file.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            !output.status.success(),
+            "{scenario}: stale or untrusted evidence was accepted"
+        );
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        if matches!(
+            scenario,
+            "bytes"
+                | "mode"
+                | "deletion"
+                | "addition"
+                | "documentation"
+                | "configuration"
+                | "target-base"
+                | "foreign"
+                | "authority-binding"
+                | "receipt-context"
+        ) {
+            assert!(
+                diagnostic.contains("HANDOFF_EVIDENCE_STALE"),
+                "{scenario}: {diagnostic}"
+            );
+        }
+        if matches!(scenario, "builder-first" | "builder-second") {
+            assert!(
+                diagnostic.contains("HANDOFF_REVIEW_NOT_INDEPENDENT"),
+                "{scenario}: {diagnostic}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(root.0.join(active)).unwrap(),
+            before_doc,
+            "{scenario}"
+        );
+        assert_eq!(
+            std::fs::read(root.0.join("src/lib.rs")).unwrap(),
+            before_source,
+            "{scenario}"
+        );
+        assert!(!root.0.join(archived).exists(), "{scenario}");
+        if scenario == "bytes" {
+            assert!(diagnostic.contains("obtain fresh integration review"));
+            assert!(!diagnostic.contains("git checkout"));
+        }
+        for (index, spec) in milestone.tasks.iter().enumerate() {
+            assert_eq!(
+                store.inspect_details(&milestone.task_id(spec)).unwrap(),
+                before[index],
+                "{scenario}: task proof mutated"
+            );
+        }
+    }
 }

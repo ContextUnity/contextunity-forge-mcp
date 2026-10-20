@@ -1100,7 +1100,7 @@ return to their owning task. Store closure evidence on the milestone blackboard.
 task_ref: content-bound-handoff-and-rebase-independent-evidence
 target: Accept milestone handoff from immutable task proofs and content-bound final integration evidence, without requiring preserved task commit identities or first-parent history
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 3
 depends_on:
 - whole-branch-review-closure-and-documentation-instructions
 - manifest-discovery-symmetry-and-admission-loop-elimination
@@ -1116,14 +1116,18 @@ depends_on:
 - cargo-root-crate-import-resolution-and-seam-connectivity
 scope:
 - src/engine/milestones/handoff.rs
+- src/engine/milestones/integration.rs
 - src/engine/milestones/mod.rs
 - src/engine/tasks/git_snapshot.rs
+- src/engine/tasks/mod.rs
 - src/core/tasks/mod.rs
 - src/core/git.rs
 - src/db/tasks_store/mod.rs
 - src/cli/milestone.rs
 - tests/acdd/milestones.rs
 - tests/acdd/tasks.rs
+- tests/acdd/support.rs
+- README.md
 - AGENTS.md
 - TESTS.md
 - docs/adr/0015-acdd-lifecycle-snapshots-and-proactive-defect-resolution.md
@@ -1142,12 +1146,74 @@ invariants:
 subtasks:
 - subtask_ref: immutable-content-and-optional-commit-pointers
   title: Separate accepted task content evidence from mutable branch pointers and preserve required evidence objects across rebases and handoff
+  status: completed
+  evidence: 'Verified candidate20e0b65: core/git.rs retain_proof_commit, engine/tasks/mod.rs proof pinning, milestones/handoff.rs accepted provenance and optional pointer mapping. Real CLI rewrite/GC/recording-mode matrix passed in complete cargo test --test acdd116/0; cargo test --lib91/0. Accepted receipt proofs remain immutable, pointers independent.'
 - subtask_ref: final-integration-evidence-and-handoff-validation
   title: Validate a minimal externally supplied final integration review and verification record against current content and task authority instead of reconstructing each task landing
+  status: completed
+  evidence: 'Verified candidate20e0b65: typed IntegrationEvidence and HandoffBinding in integration.rs; handoff.rs binding validates final/base content, canonical authority and validated commitless receipts before publication. Real CLI stale/foreign/receipt-context/reviewer/verification/dirty/untracked negatives passed; content/receipt mutation failures retained in blackboard519. Complete ACDD116/0, lib91/0.'
 - subtask_ref: real-git-rewrite-and-negative-proof
   title: Prove rebase and squash acceptance and stale or forged evidence rejection through the real CLI, Git repository, task store, and archive
+  status: completed
+  evidence: Verified candidate20e0b65 through complete independent cargo test --test acdd116/0 and cargo test --lib91/0, no filters/ignored. handoff_preserves_proofs_across_reviewed_history_rewrites drives real Git/CLI/SQLite including rebase, cherry-pick, merge, amend, squash, conflict resolution, reflog expiry/GC and pointer recording modes; negatives preserve manifest/task state. Logs H/handoff-independent-{acdd,lib}.log.
 - subtask_ref: adr-instructions-and-reference-alignment
   title: Align ADR-0015, Git instructions, CLI and task references, verification instructions, and the packaged Forge skill with the accepted handoff model
+  status: completed
+  evidence: Independent source/doc review of candidate20e0b65 confirms authorized ADR0015 amendment, AGENTS instruction-only documentation scan, TESTS verification record, CLI/task/config references and packaged Forge skill/example alignment. Documentation scan520 binds final diff; no new runtime agent/gate/test runner or indexing/MCP hot-path work. All changed paths admitted in contract3 and extension.
+status: completed
+receipt:
+  contract_revision: 3
+  passed_at: 2026-10-20T02:47:16.688251015+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 810
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS: all changed/staged/untracked feature paths match contract3 and admitted subtasks.rs extension; milestone task metadata changes are authorized. All22 scoped snapshot blobs+modes match candidate20e0b65; HEAD3fa unchanged and tracked diff SHAa81086676e382677bfa8e6d44e4a2d61543f207fea764c9d4dae168d320f4183 matches documentation scan520. No protected profile/config or external installation edits.'
+        claims:
+          applicable: true
+          evidence: 'PASS: CLI typed evidence reaches handoff current identity/content/base/authority checks, accepted claim/gate provenance and commitless receipt binding, optional pointer mapping and durable proof refs. Full independent cargo test --test acdd exit0 116passed0failed0ignored0filtered and cargo test --lib exit0 91passed0failed0ignored0filtered, serial. Real CLI rewrite+GC cases and stale/foreign/reviewer/verification/dirty negatives pass; content/receipt mutants fail as blackboard519 records. Canonical project alias regressions repaired without weakening positives. ADR0015 amendment and canonical docs align; no speculative expansion.'
+        concurrency:
+          applicable: true
+          evidence: 'PASS: reviewed current immediate transaction/revision/claim fencing, candidate/baseline comparisons, prepublication clean-tree recheck, current receipt proof guard in store.handoff_milestone, and existing archive/store rollback. New proof-ref failures flow through existing delivery rollback. Complete ACDD target passes including lifecycle/delivery rollback cases; no lock ordering or schema changes introduced.'
+        project_isolation:
+          applicable: true
+          evidence: 'PASS: explicit root CLI and fresh graph overview bind this milestone worktree (generation23dbf9961957a0ed392c5d604bbf7c101a64e267d52b4c63d804816f353abf4c;314files;0parseerrors). Canonical Snapshot.project is retained; namespaces and existing scope/path guards remain enforced. Existing explicit/default aliases and configured-owner lifecycle positives pass in full ACDD. Tests use isolated global skill fixture H/closure-global-skill; no installed-global sync.'
+        administration:
+          applicable: true
+          evidence: 'PASS: contract3 preserves profile/gate order, reviewer independence, task auto_commit/hooks/rollback and historic receipts; no migration, milestone gate, agent launcher, verification runner or indexing/MCP hot-path work added. Documentation-agent instruction scan520 matches unchanged frozen content. Four completed subtask outcomes were evidence-recorded through Forge SQLite-only subtask_update after proof; no frozen file edit, tracked diff and22 blobs+modes unchanged. New proof refs preserve accepted objects independently of branch history; no benchmark or measured performance claim.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ADMISSION-DETERMINISM: Dependency manifest collection across cold build, incremental delta, and MCP source admission must yield identical path sets and digests for unchanged workspace state, eliminating false-positive rebuild loops.'
+    - 'INV-DATABASE-SEPARATION: Task tracking databases (tasks.sqlite) and code map indices (code-map.sqlite) are mutually exclusive; attempts to target a task database for code-map output or open a code-map database as task store fail closed with TASK_DATABASE_COLLISION.'
+    - 'INV-WORKSPACE-UNIQUENESS: Subproject milestone resolution honors declared_projects frontmatter and configured owner mappings, preventing duplicate phantom workspaces from conflicting on milestone references.'
+    - 'INV-DAEMON-RESOURCE-BOUND: MCP servers preserve live connections regardless of inactivity, terminate on Unix when their launching parent disappears, and trim free heap pages after batch operations without removing the allocator trims delivered in milestone 031.'
+    - 'INV-GREENFIELD-SEAM-ACTIONABILITY: Greenfield contract validation failure for uncreated scope files outputs deterministic remediation guidance with file paths and stub requirements.'
+    - 'INV-PERFORMANCE-PRESERVATION: Preserve the indexing optimizations delivered on main; paired release measurements on an identical frozen corpus must show no cold-build, delta, or warm MCP latency regression before milestone delivery.'
+    - 'INV-HANDOFF-IMMUTABLE-PROOF: Accepted task contract revisions, candidate content, gate proofs, reviewer identities, and decisions remain immutable; updating a branch commit pointer never changes or recreates accepted evidence.'
+    - 'INV-HANDOFF-CONTENT-IDENTITY: Rebase, cherry-pick, merge, amend, and squash do not invalidate evidence solely because commit IDs, parents, timestamps, or task-to-commit cardinality change. Handoff requires neither the original task baseline on first-parent history nor one landed commit per task.'
+    - 'INV-HANDOFF-FINAL-INTEGRATION: Handoff requires a passing independent integration review and repository verification bound to the same final implementation content, selected target-base content, milestone identity, and admitted task authority. New content, changed authority, missing proof, foreign proof, or a failed review or verification rejects before archive or store mutation.'
+    - 'INV-HANDOFF-OPTIONAL-COMMIT-POINTER: Task branch commit SHAs are diagnostic navigation metadata. Resolve and refresh uniquely identifiable pointers automatically; absent, obsolete, unavailable, or many-to-one branch pointers do not invalidate otherwise valid content evidence. Respect record_task_commits and commit_tracking without weakening proof checks.'
+    - 'INV-HANDOFF-DURABLE-CONTENT: Content objects needed to verify accepted task and final integration evidence remain reachable independently of rewritten branch history and Git reflog expiry; snapshot cleanup must not discard the only durable proof.'
+    - 'INV-HANDOFF-BOUNDED-CHANGE: Keep task gate order, task candidate immutability, review independence, delivery hooks and rollback, database isolation, indexing optimizations, and all allocator trims. Add no milestone gate state machine, agent launcher, test runner, per-request I/O, or indexing work.'
+    architectural_notes:
+    - 'decisions: {"review": "independent task review PASS", "candidate": "20e0b65c158ef0ba650bab5ec75b27222b158cef", "baseline": "3fa51ce9ffc41f795a4952e21891513f5696ae96", "contract_revision": 3, "review_claim_revision": 8, "gates": "cargo test --test acdd116/0; cargo test --lib91/0; both exit0 no ignored/filters, serial", "binding": "22candidate blobs+modes match; tracked diffSHAa81086676e382677bfa8e6d44e4a2d61543f207fea764c9d4dae168d320f4183", "findings": "No unresolved findings; canonical project/fixture alias/commitless receipt binding repaired; content+receipt mutants fail (#519).", "subtasks": "All4 evidence-completed through operational Forge updates after independent proof; no file edits; frozen22 blobs+modes/diff unchanged.", "coverage": "All5 review contours; ADR0015 authorized amendment; CLI/task/config/TESTS/AGENTS/packaged skill aligned, docs scan520; no extra schema/gate/agent/test runner/indexing/warm request work.", "artifact": "/tmp/forge-049-implementation-20261019/handoff-independent-review-result.json"}'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Implementation boundary and acceptance

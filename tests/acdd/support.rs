@@ -12,6 +12,148 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const GATES: [&str; 4] = ["contract", "build", "review", "deliver"];
 
+pub(crate) fn fixture_integration_evidence(
+    root: &Path,
+    selector: &str,
+    command: &str,
+    passed: u64,
+    failed: u64,
+) -> contextunity_forge_mcp::engine::milestones::IntegrationEvidence {
+    use contextunity_forge_mcp::engine::{milestones, tasks::TaskSettings};
+    let exclude = root.join(
+        contextunity_forge_mcp::core::git::git_stdout(
+            root,
+            &["rev-parse", "--git-path", "info/exclude"],
+            "fixture Git directory",
+        )
+        .unwrap(),
+    );
+    let mut ignored = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if !ignored.lines().any(|line| line == ".forge/") {
+        ignored.push_str("\n.forge/\n");
+    }
+    std::fs::write(exclude, ignored).unwrap();
+    let settings: TaskSettings = serde_yaml::from_str(
+        &std::fs::read_to_string(root.join("forge-mcp.yaml")).unwrap_or_default(),
+    )
+    .unwrap();
+    let view = milestones::show(root, selector, false).unwrap();
+    let repository = view["frontmatter"]["repository"]
+        .as_str()
+        .unwrap_or(&settings.task_repository);
+    let listed = tasks::list(
+        root,
+        tasks::List {
+            repository: Some("all".into()),
+            milestone_ref: Some(selector.into()),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .ok();
+    let canonical_project = listed
+        .as_ref()
+        .and_then(|listed| listed["tasks"][0]["task_id"].as_str())
+        .and_then(|id| id.split_once('/').map(|(project, _)| project));
+    let declared_project = view["frontmatter"]["project"]
+        .as_str()
+        .or(settings.task_project.as_deref())
+        .unwrap_or(repository);
+    let project = canonical_project.unwrap_or_else(|| {
+        settings
+            .aliases
+            .get(declared_project)
+            .map(String::as_str)
+            .unwrap_or(declared_project)
+    });
+    let store = TasksStore::open_project(&tasks::database_path(root).unwrap(), repository, project)
+        .unwrap();
+    let prefix = format!("{project}/{}:", view["id"].as_str().unwrap());
+    let mut candidates = store.list(None, "all", None).unwrap();
+    candidates.retain(|task| task.task_id.starts_with(&prefix));
+    candidates.sort_by_key(|task| (task.wave_index, task.task_id.clone()));
+    let target = candidates
+        .first()
+        .and_then(|task| {
+            let details = store.inspect_details(&task.task_id).unwrap();
+            details["gates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|gate| {
+                    if gate["stage"] != "build" {
+                        return None;
+                    }
+                    let evidence: Value = serde_json::from_str(gate["evidence"].as_str()?).ok()?;
+                    evidence["candidate_baseline_head"]
+                        .as_str()
+                        .map(str::to_owned)
+                })
+        })
+        .unwrap_or_else(|| git_head(root));
+    // Malformed/incomplete fixtures still reach the actual handoff rejection path.
+    let binding = milestones::handoff_context(root, selector, &target).map(|context| context["binding"].clone()).unwrap_or_else(|_| json!({
+        "version":1,"repository":repository,"project":project,"milestone":view["id"],"authority_digest":"unavailable","implementation_digest":"unavailable","target_base_digest":"unavailable","builders":["builder"]
+    }));
+    serde_json::from_value(json!({
+        "binding":binding,"target_base":target,
+        "review":{"worker_id":"integration-reviewer","decision":"pass","summary":"Fixture independently reviews the combined delta against admitted tasks","scope_findings":[],"contract_findings":[]},
+        "verification":{"command":command,"exit_code":if failed == 0 {0} else {1},"tests_passed":passed,"tests_failed":failed}
+    })).unwrap()
+}
+
+pub(crate) fn handoff_with_fixture_evidence(
+    root: &Path,
+    selector: &str,
+    commit: Option<&str>,
+    command: &str,
+    passed: u64,
+    failed: u64,
+) -> anyhow::Result<Value> {
+    contextunity_forge_mcp::engine::milestones::handoff(
+        root,
+        selector,
+        commit,
+        &fixture_integration_evidence(root, selector, command, passed, failed),
+    )
+}
+
+pub(crate) fn fixture_evidence_file(
+    root: &Path,
+    selector: &str,
+    command: &str,
+    passed: u64,
+    failed: u64,
+) -> String {
+    let path = root.join(".forge/integration-evidence.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&fixture_integration_evidence(
+            root, selector, command, passed, failed,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+pub(crate) fn commit_handoff_fixture_inputs(root: &ScopedWorkspace, paths: &[&str]) {
+    let added = std::process::Command::new("git")
+        .args(["add", "--"])
+        .args(paths)
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(added.status.success(), "{added:?}");
+    let committed = std::process::Command::new("git")
+        .args(["commit", "-m", "admit handoff fixture inputs"])
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(committed.status.success(), "{committed:?}");
+}
+
 /// Compatibility wrapper for task fixtures; the shared Workspace owns setup and cleanup.
 pub(crate) struct ScopedWorkspace(pub(crate) PathBuf, Workspace);
 

@@ -749,6 +749,7 @@ fn completed_tasks_sync_and_inspect_without_panic() {
     );
     let spec = "---\nid: m-completed\ntitle: Completed Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: t1\ntarget: Deliver t1\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     root.write("docs/milestones/010-completed.md", spec);
+    commit_handoff_fixture_inputs(&root, &["forge-mcp.yaml", "docs", "src"]);
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     store
@@ -795,7 +796,7 @@ fn completed_tasks_sync_and_inspect_without_panic() {
     // 2. Handoff reconciles the delivered commit into the archived receipt before syncing it.
     let delivery_commit = git_head(&root.0);
     drop(store);
-    let handoff = contextunity_forge_mcp::engine::milestones::handoff(
+    let handoff = handoff_with_fixture_evidence(
         &root.0,
         "m-completed",
         Some(&delivery_commit),

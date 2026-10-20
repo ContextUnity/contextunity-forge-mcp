@@ -34,15 +34,17 @@ pub enum MilestoneCommand {
         /// The full Git commit SHA; defaults to HEAD.
         #[arg(long)]
         commit: Option<String>,
-        /// The command that verified milestone delivery.
+        /// JSON file containing content-bound independent review and verification.
         #[arg(long)]
-        verification_command: String,
-        /// Number of passing tests reported by verification.
+        evidence_file: PathBuf,
+    },
+    /// Prepares content identities for external integration review and verification.
+    HandoffContext {
+        /// The milestone ID or numeric prefix.
+        id: String,
+        /// Explicit integration target base (for example main).
         #[arg(long)]
-        tests_passed: u64,
-        /// Number of failing tests reported by verification.
-        #[arg(long)]
-        tests_failed: u64,
+        target_base: String,
     },
     /// Creates a numbered milestone contract.
     Init {
@@ -83,17 +85,15 @@ pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
         MilestoneCommand::Handoff {
             id,
             commit,
-            verification_command,
-            tests_passed,
-            tests_failed,
-        } => milestones::handoff(
-            root,
-            &id,
-            commit.as_deref(),
-            &verification_command,
-            tests_passed,
-            tests_failed,
-        ),
+            evidence_file,
+        } => {
+            let evidence: milestones::IntegrationEvidence =
+                serde_json::from_slice(&std::fs::read(evidence_file)?)?;
+            milestones::handoff(root, &id, commit.as_deref(), &evidence)
+        }
+        MilestoneCommand::HandoffContext { id, target_base } => {
+            milestones::handoff_context(root, &id, &target_base)
+        }
         MilestoneCommand::Init {
             num,
             slug,

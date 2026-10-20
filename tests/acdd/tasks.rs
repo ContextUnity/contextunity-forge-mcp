@@ -4595,7 +4595,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     )
     .unwrap();
 
-    // Initialize git repository
+    // Initialize git repository without tracking runtime state.
     std::process::Command::new("git")
         .args(["init"])
         .current_dir(&root.0)
@@ -4612,7 +4612,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .status()
         .unwrap();
     std::process::Command::new("git")
-        .args(["add", "-A"])
+        .args(["add", "src", "docs", "forge-mcp.yaml"])
         .current_dir(&root.0)
         .status()
         .unwrap();
@@ -5500,15 +5500,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     );
 
     // Now handoff milestone
-    contextunity_forge_mcp::engine::milestones::handoff(
-        &root.0,
-        "m-test",
-        None,
-        "cargo test",
-        2,
-        0,
-    )
-    .unwrap();
+    handoff_with_fixture_evidence(&root.0, "m-test", None, "cargo test", 2, 0).unwrap();
 
     let archive_path = root.0.join("docs/milestones/archive/010-test.md");
     let archived_text = std::fs::read_to_string(&archive_path).unwrap();
@@ -5519,15 +5511,15 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
             .as_ref()
             .and_then(|receipt| receipt.commit.as_deref()),
         Some(delivery_commit.as_str()),
-        "fast-forwarded first task keeps its own landed SHA"
+        "first task keeps its reachable accepted delivery pointer"
     );
     assert_eq!(
         archived.tasks[1]
             .receipt
             .as_ref()
             .and_then(|receipt| receipt.commit.as_deref()),
-        Some(merge_commit.as_str()),
-        "merged second task records the merge commit that first landed it"
+        Some(second_delivery_commit.as_str()),
+        "second task keeps its reachable accepted delivery pointer across merge"
     );
     assert_ne!(delivery_commit, merge_commit);
     assert_eq!(
@@ -5550,7 +5542,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
             .unwrap()
             .commit
             .as_deref(),
-        Some(merge_commit.as_str())
+        Some(second_delivery_commit.as_str())
     );
 
     // Verify snapshot refs were pruned after milestone handoff!

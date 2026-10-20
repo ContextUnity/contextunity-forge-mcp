@@ -14,8 +14,12 @@ use std::{
 
 mod contract;
 mod handoff;
+mod integration;
 use contract::{snapshot, Snapshot};
-pub use handoff::handoff;
+pub use handoff::{handoff, handoff_context};
+pub use integration::{
+    HandoffBinding, IntegrationEvidence, IntegrationReview, IntegrationVerification,
+};
 
 /// Inputs for creating a milestone document.
 pub struct Init {

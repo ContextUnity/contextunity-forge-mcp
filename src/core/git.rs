@@ -36,6 +36,22 @@ pub fn git_commit_exists(worktree: &Path, commit: &str) -> Result<bool> {
     Ok(git_status(worktree, &["cat-file", "-e", &object])?.success())
 }
 
+/// Keep an immutable proof object reachable independently of branch history.
+pub fn retain_proof_commit(worktree: &Path, commit: &str) -> Result<()> {
+    if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("TASK_PROOF_INVALID: expected a resolved proof object ID");
+    }
+    let reference = format!("refs/forge/evidence/{commit}");
+    let output = git_command(worktree, &["update-ref", &reference, commit])?;
+    if !output.status.success() {
+        bail!(
+            "TASK_PROOF_RETENTION_FAILED: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// Return the list of files modified, added, or deleted by a commit.
 pub fn git_commit_changed_files(worktree: &Path, commit: &str) -> Result<Vec<String>> {
     let parents_raw = git_stdout(

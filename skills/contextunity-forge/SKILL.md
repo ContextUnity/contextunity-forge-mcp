@@ -34,7 +34,7 @@ The repository `AGENTS.md` names the verification command and the Git permission
 - **MCP & CLI Dual-Surface**: Use registered Forge MCP tools or the CLI (`contextunity-forge-mcp`) on the surface providing the required operation.
 - **Server Identity**: The MCP server is typically registered as `contextunity-forge` or `contextunity-forge-mcp`; use the active registry and tool schemas.
 - **Repository Setup**: Repositories declare tool routing using the canonical template in [references/agents.md.example](references/agents.md.example).
-- **CLI-Only Operations**: Milestone lifecycle commands (`milestone init/list/show/handoff`) are intentionally CLI-only.
+- **CLI-Only Operations**: Milestone lifecycle commands (`milestone init/list/show/handoff-context/handoff`) are intentionally CLI-only.
 - **Task Dispatch**: `task next --worker WORKER --worktree PATH [--workspace WS]` and `task_manage(action: "next", worker_id, worktree, workspace?)` atomically claim the next eligible task. Both return claim context or `status: "idle"`; a parked task resumes in its retained worktree.
 - **CLI Task Aliases**: `task show TASK_ID` aliases `task inspect TASK_ID`. Inspect and submit accept `--task TASK_ID` instead of the positional ID; sync accepts `--file PATH` instead of the positional milestone reference. Use `task list --detail compact|full`; `--full` remains supported and cannot combine with `--detail`.
 - **AST Surfaces**: Use MCP `ast_grep_search(pattern, path="file.rs")` to infer the language from a recognized file extension, or supply `language` explicitly. CLI uses `contextunity-forge-mcp ast grep --lang rust --path file.rs 'PATTERN'`; `--lang` is required on the CLI.
@@ -154,15 +154,24 @@ the final milestone diff and admitted documentation scope. Record its result on
 the milestone blackboard and review its edits before final verification; Forge
 does not launch the agent or add a milestone gate.
 
-Run the repository verification command before milestone handoff:
+Commit the final implementation, prepare its binding, obtain independent integration
+review, and run repository verification against the same content and target base:
 
-```bash
-contextunity-forge-mcp milestone handoff <id> \
-  --verification-command "<project-verification-command>" \
-  --tests-passed <N> --tests-failed 0
+```sh
+contextunity-forge-mcp milestone handoff-context <id> --target-base main > /tmp/handoff-context.json
+# The coordinator supplies completed external review and verification evidence.
+contextunity-forge-mcp milestone handoff <id> --evidence-file /tmp/handoff-evidence.json
 ```
 
-`milestone handoff` is CLI-only. It resolves each task's landed commit from the milestone document or first-parent branch, verifies proofs and scopes against task records, records verified results, and archives the milestone; it does not run tests. When creating the handoff commit, stage the archived manifest in `archive/` and the removal of the pre-archive working manifest, ensuring any untracked pre-archive working files are unlinked. On landing into `main`, fast-forward the milestone branch, and remove the milestone worktree and branch.
+Use the repository task reference for the typed record fields and canonical
+projection. The integration reviewer differs from all accepted task builders.
+Preserve accepted task proofs; rebase, cherry-pick, merge and multi-task squash
+may change optional navigation SHAs without reopening completed tasks. Changed
+content or authority needs fresh final review and verification. Forge retains
+required proof objects independently of branch history, validates the supplied
+record and archives it; it launches no agents and runs no tests. Commit the
+archived manifest and the working manifest removal afterward. Follow repository
+Git permissions for landing and cleanup.
 
 
 ## Workspace Adapters (`forge-mcp.yaml`) & Default Behavior

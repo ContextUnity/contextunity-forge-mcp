@@ -1,77 +1,25 @@
-use super::{render_task_receipt, snapshots};
-use crate::db::tasks_store::TasksStore;
+use super::{
+    contract::Snapshot,
+    integration::{self, HandoffBinding, IntegrationEvidence},
+    render_task_receipt, snapshots,
+};
+use crate::db::tasks_store::{Task, TasksStore};
 use crate::engine::tasks;
 use anyhow::{bail, Context, Result};
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
 };
 
-fn git_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
-    crate::core::git::git_ancestor(root, ancestor, descendant)
-}
-
-fn git_changed(root: &Path, before: &str, after: &str, scope: &[String]) -> Result<bool> {
-    crate::core::git::git_scoped_tree_changed(root, before, after, scope)
-}
-
 fn full_git_sha(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
-
 fn canonical_git_path(path: &str) -> String {
     path.replace('\\', "/").trim_start_matches("./").to_owned()
-}
-
-fn git_tree_id(root: &Path, commit: &str) -> Result<String> {
-    let tree = format!("{commit}^{{tree}}");
-    crate::core::git::git_stdout(root, &["rev-parse", &tree], "TASK_COMMIT_INVALID")
-}
-
-fn validate_delivery_pointer(
-    root: &Path,
-    pointer: &str,
-    accepted_delivery: &str,
-    candidate_baseline: &str,
-    scope: &[String],
-    milestone_ref: &str,
-) -> Result<()> {
-    if !full_git_sha(pointer) {
-        bail!("TASK_RECEIPT_INVALID: task receipt contains invalid Git commit '{pointer}'");
-    }
-    if !crate::core::git::git_commit_exists(root, pointer)? {
-        bail!("TASK_COMMIT_NOT_FOUND: commit '{pointer}' is not available in workspace Git repository");
-    }
-    if pointer == accepted_delivery {
-        return Ok(());
-    }
-    if pointer == candidate_baseline {
-        bail!("TASK_COMMIT_OBSOLETE: commit '{pointer}' does not advance beyond candidate baseline '{candidate_baseline}'");
-    }
-    if !git_ancestor(root, candidate_baseline, pointer)? {
-        bail!("TASK_COMMIT_UNRELATED: commit '{pointer}' does not descend from candidate baseline '{candidate_baseline}'");
-    }
-
-    if !git_changed(root, accepted_delivery, pointer, scope)?
-        && git_tree_id(root, accepted_delivery)? == git_tree_id(root, pointer)?
-    {
-        // A content-identical repack is valid even for receipt-only deliveries
-        // that make no change inside the task's declared scope.
-        return Ok(());
-    }
-
-    crate::core::tasks::validate_commit_for_task(
-        root,
-        pointer,
-        scope,
-        Some(milestone_ref),
-        Some(accepted_delivery),
-        Some(candidate_baseline),
-    )
 }
 
 fn accepted_gate_evidence(
@@ -213,7 +161,7 @@ fn validate_task_provenance(
     root: &Path,
     store: &TasksStore,
     task: TaskProvenance<'_>,
-) -> Result<(String, String)> {
+) -> Result<BTreeMap<String, crate::core::tasks::gates::Evidence>> {
     let evidence = accepted_gate_evidence(
         root,
         store,
@@ -324,232 +272,10 @@ fn validate_task_provenance(
             unreviewed.join(", ")
         );
     }
-    Ok((delivery_commit.to_owned(), baseline.to_owned()))
+    Ok(evidence)
 }
 
-struct LandedTask {
-    task_ref: String,
-    delivery: String,
-    landing_index: usize,
-    scope: Vec<String>,
-}
-
-fn task_landed_commit(
-    root: &Path,
-    commits: &[String],
-    delivery: &str,
-    candidate_baseline_head: &str,
-    scope: &[String],
-    task_ref: &str,
-) -> Result<(String, usize)> {
-    let baseline_index = commits
-        .iter()
-        .position(|commit| commit == candidate_baseline_head)
-        .with_context(|| {
-            format!("TASK_LANDED_COMMIT_NOT_FOUND: task '{task_ref}' candidate baseline is not on the milestone first-parent history")
-        })?;
-    let delivery_tree = git_tree_id(root, delivery)?;
-    for index in baseline_index + 1..commits.len() {
-        let commit = &commits[index];
-        if git_changed(root, delivery, commit, scope)? {
-            continue;
-        }
-        let previous = &commits[index - 1];
-        if git_changed(root, previous, commit, scope)? {
-            return Ok((commit.clone(), index));
-        }
-
-        // Receipt-only deliveries can have an unchanged scoped tree. Accept the
-        // first first-parent merge that introduces the accepted delivery object,
-        // or its exact-tree repack, after the recorded baseline.
-        let contains_delivery = git_ancestor(root, delivery, commit)?;
-        let previous_contains_delivery = git_ancestor(root, delivery, previous)?;
-        if (contains_delivery && !previous_contains_delivery)
-            || git_tree_id(root, commit)? == delivery_tree
-        {
-            return Ok((commit.clone(), index));
-        }
-    }
-
-    let differing = crate::core::git::git_scoped_differing_files(
-        root,
-        delivery,
-        commits
-            .last()
-            .context("milestone first-parent history is empty")?,
-        scope,
-    )?;
-    let detail = if differing.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\nDiffering paths in task scope:\n  - {}",
-            differing.join("\n  - ")
-        )
-    };
-    bail!(
-        "TASK_LANDED_COMMIT_NOT_FOUND: task '{task_ref}'. No first-parent commit after baseline '{candidate_baseline_head}' lands the accepted delivery tree '{delivery}'.{detail}\n\
-         Do: reconcile the branch with the reviewed task delivery after the accepted baseline; preserve integrated upstream changes and review any conflict resolution."
-    )
-}
-
-fn validate_later_scope_changes(
-    root: &Path,
-    handoff: &str,
-    tasks: &[LandedTask],
-    store: &TasksStore,
-    upstream: &[&crate::db::tasks_store::Task],
-    history: &[Vec<String>],
-) -> Result<()> {
-    let mut validated_upstream = BTreeMap::new();
-    for earlier in tasks {
-        let differing = crate::core::git::git_scoped_differing_files(
-            root,
-            &earlier.delivery,
-            handoff,
-            &earlier.scope,
-        )?;
-        for path in differing {
-            let mut explained = false;
-            for later in tasks.iter().filter(|later| {
-                later.landing_index > earlier.landing_index
-                    && later
-                        .scope
-                        .iter()
-                        .any(|scope| crate::core::tasks::path_matches_scope_entry(&path, scope))
-            }) {
-                if !git_changed(root, &later.delivery, handoff, std::slice::from_ref(&path))? {
-                    explained = true;
-                    break;
-                }
-            }
-            if !explained {
-                let mut trusted_merges: Vec<String> = Vec::new();
-                for (index, parents) in history.iter().enumerate().skip(earlier.landing_index + 1) {
-                    if parents.len() != 3 {
-                        continue;
-                    }
-                    let (merge, ours, theirs) = (&parents[0], &parents[1], &parents[2]);
-                    let scope = std::slice::from_ref(&path);
-                    let mut trusted_local = false;
-                    for local in tasks.iter().filter(|task| {
-                        task.landing_index < index
-                            && task.scope.iter().any(|entry| {
-                                crate::core::tasks::path_matches_scope_entry(&path, entry)
-                            })
-                    }) {
-                        if !git_changed(root, &local.delivery, ours, scope)? {
-                            trusted_local = true;
-                            break;
-                        }
-                    }
-                    for previous in &trusted_merges {
-                        if !git_changed(root, previous, ours, scope)? {
-                            trusted_local = true;
-                            break;
-                        }
-                    }
-                    if !trusted_local {
-                        continue;
-                    }
-                    for task in upstream.iter().filter(|task| {
-                        task.spec
-                            .scope
-                            .iter()
-                            .any(|entry| crate::core::tasks::path_matches_scope_entry(&path, entry))
-                    }) {
-                        let Some(receipt) = task.receipt.as_ref() else {
-                            continue;
-                        };
-                        let Some(pointer) = receipt.commit.as_deref() else {
-                            continue;
-                        };
-                        if !git_ancestor(root, pointer, theirs)?
-                            || git_ancestor(root, pointer, ours)?
-                            || git_changed(root, pointer, theirs, scope)?
-                        {
-                            continue;
-                        }
-                        let accepted = if let Some(accepted) = validated_upstream.get(&task.task_id)
-                        {
-                            accepted
-                        } else {
-                            let profile = store.profile_for_task(task)?;
-                            crate::core::tasks::gates::validate_durable_receipt_with_profile(
-                                receipt,
-                                task.contract_revision,
-                                &profile,
-                            )?;
-                            let (accepted, baseline) = validate_task_provenance(
-                                root,
-                                store,
-                                TaskProvenance {
-                                    task_id: &task.task_id,
-                                    contract_revision: task.contract_revision,
-                                    proof_policy: &task.spec.proof_policy,
-                                    profile: &profile,
-                                    receipt,
-                                    milestone_path: &task.milestone_ref,
-                                    scope: &task.spec.scope,
-                                },
-                            )?;
-                            validate_delivery_pointer(
-                                root,
-                                pointer,
-                                &accepted,
-                                &baseline,
-                                &task.spec.scope,
-                                &task.milestone_ref,
-                            )?;
-                            validated_upstream
-                                .entry(task.task_id.clone())
-                                .or_insert(accepted)
-                        };
-                        if !git_changed(root, accepted, theirs, scope)?
-                            && crate::core::git::git_clean_file_merge_matches(
-                                root, ours, theirs, merge, &path,
-                            )?
-                        {
-                            trusted_merges.push(merge.clone());
-                            break;
-                        }
-                    }
-                }
-                for merge in trusted_merges {
-                    if !git_changed(root, &merge, handoff, std::slice::from_ref(&path))? {
-                        explained = true;
-                        break;
-                    }
-                }
-            }
-            if !explained {
-                bail!(
-                    "TASK_LANDED_COMMIT_NOT_FOUND: task '{}' path '{}' differs from its accepted delivery, and no later reviewed delivery explains the final tree.\n\
-                     Differing paths in task scope:\n  - {}\n\
-                     Do: reconcile the branch with a reviewed delivery for task '{}' or a reviewed upstream merge; preserve integrated changes and review any conflict resolution.",
-                    earlier.task_ref,
-                    path,
-                    path,
-                    earlier.task_ref,
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Verifies completion, writes a handoff receipt, and archives the milestone.
-pub fn handoff(
-    root: &Path,
-    selector: &str,
-    commit: Option<&str>,
-    command: &str,
-    passed: u64,
-    failed: u64,
-) -> Result<Value> {
-    if command.trim().is_empty() || failed != 0 {
-        bail!("handoff requires a passed verification command and zero failed tests");
-    }
+fn ready_milestone(root: &Path, selector: &str) -> Result<(Snapshot, TasksStore, Vec<Task>)> {
     let mut found = snapshots(root, false, Some(selector))?;
     if found.len() != 1 {
         bail!("milestone selector must resolve to exactly one active document: {selector}");
@@ -565,7 +291,7 @@ pub fn handoff(
     let stored = store.list(None, "all", None)?;
     let prefix = format!("{}/{}:", item.project, item.id);
     let relevant: Vec<_> = stored
-        .iter()
+        .into_iter()
         .filter(|task| task.task_id.starts_with(&prefix))
         .collect();
     let mut incomplete = Vec::new();
@@ -594,90 +320,63 @@ pub fn handoff(
     if relevant.is_empty() {
         bail!("milestone tasks are not synced to SQLite");
     }
-    let expected_ids: Vec<String> = relevant.iter().map(|task| task.task_id.clone()).collect();
-    let sha = match commit {
-        Some(value) => value.to_string(),
-        None => crate::core::git::git_stdout(
-            root,
-            &["rev-parse", "HEAD"],
-            "unable to resolve milestone commit",
-        )?,
-    };
-    if !matches!(sha.len(), 40 | 64) || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("handoff commit must be a full Git SHA");
-    }
-    let commit_object = format!("{sha}^{{commit}}");
-    let verified_commit = crate::core::git::git_status(root, &["cat-file", "-e", &commit_object])?;
-    if !verified_commit.success() {
-        bail!("handoff commit is not available in the workspace Git object database");
-    }
-    let settings = crate::engine::tasks::TaskSettings::load(root).ok();
-    let record_task_commits = settings
-        .as_ref()
-        .map(|s| s.records_task_commits())
-        .unwrap_or(true);
-    let mut original_receipts = BTreeMap::new();
-    let mut landed_receipts = BTreeMap::new();
-    let history_output = crate::core::git::git_command(
-        root,
-        &["rev-list", "--first-parent", "--reverse", "--parents", &sha],
+    Ok((item, store, relevant))
+}
+
+fn validated_authority(
+    root: &Path,
+    item: &Snapshot,
+    store: &TasksStore,
+    relevant: &[Task],
+) -> Result<(String, Vec<String>)> {
+    let mut milestone = crate::core::tasks::Milestone::parse_with_identity(
+        &item.text,
+        &item.repository,
+        &item.project,
     )?;
-    if !history_output.status.success() {
-        bail!("unable to inspect milestone first-parent history");
+    milestone.project = item.project.clone();
+    if milestone.tasks.len() != relevant.len() {
+        bail!("TASK_AUTHORITY_MISSING: current milestone task set differs from accepted tasks");
     }
-    let history = String::from_utf8(history_output.stdout)?
-        .lines()
-        .map(|line| {
-            line.split_whitespace()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let first_parent = history
-        .iter()
-        .map(|parents| parents[0].clone())
-        .collect::<Vec<_>>();
-    let milestone_rel = item
-        .path
-        .strip_prefix(root)
-        .unwrap_or(&item.path)
-        .to_string_lossy()
-        .into_owned();
-    let mut landed_tasks = Vec::new();
-    let mut handoff_text = item.text.replace("\r\n", "\n");
-    for task in &relevant {
+    let milestone_rel = item.path.strip_prefix(root)?.to_string_lossy().into_owned();
+    let mut accepted = BTreeMap::new();
+    let mut builders = BTreeSet::new();
+    for task in relevant {
+        let spec = milestone
+            .tasks
+            .iter()
+            .find(|spec| milestone.task_id(spec) == task.task_id)
+            .context("TASK_AUTHORITY_MISSING: accepted task is missing from current milestone")?;
+        if milestone.digest(spec)? != task.digest
+            || spec.contract_revision != task.contract_revision
+        {
+            bail!(
+                "TASK_AUTHORITY_CHANGED: task '{}' contract differs from accepted authority",
+                task.task_id
+            );
+        }
         let original = task
             .receipt
             .as_ref()
             .context("TASK_RECEIPT_INVALID: completed task has no durable receipt")?;
+        let markdown = spec
+            .receipt
+            .as_ref()
+            .context("TASK_RECEIPT_INVALID: completed task has no Markdown receipt")?;
+        if !original.matches_proofs(markdown) {
+            bail!("TASK_RECEIPT_INVALID: Markdown receipt differs from accepted task proofs");
+        }
         let profile = store.profile_for_task(task)?;
+        let mut proof_receipt = original.clone();
+        proof_receipt.commit = None;
         crate::core::tasks::gates::validate_durable_receipt_with_profile(
-            original,
+            &proof_receipt,
             task.contract_revision,
             &profile,
         )?;
-        let (_, task_ref) = task
-            .task_id
-            .rsplit_once(':')
-            .context("invalid task identity")?;
-        let markdown_commit = item
-            .tasks
-            .iter()
-            .find(|spec| spec["task_ref"].as_str() == Some(task_ref))
-            .and_then(|spec| spec.get("receipt"))
-            .and_then(|receipt| receipt.get("commit"))
-            .and_then(|commit| commit.as_str());
-        if let Some(md_sha) = markdown_commit {
-            if !full_git_sha(md_sha) {
-                bail!("TASK_RECEIPT_INVALID: milestone task receipt contains invalid Git commit '{md_sha}'");
-            }
-            if !crate::core::git::git_commit_exists(root, md_sha)? {
-                bail!("TASK_COMMIT_NOT_FOUND: commit '{md_sha}' is not available in workspace Git repository");
-            }
-        }
-        let (accepted_delivery, candidate_baseline) = validate_task_provenance(
+        let evidence = validate_task_provenance(
             root,
-            &store,
+            store,
             TaskProvenance {
                 task_id: &task.task_id,
                 contract_revision: task.contract_revision,
@@ -688,70 +387,181 @@ pub fn handoff(
                 scope: &task.spec.scope,
             },
         )?;
-        let durable_delivery = original
-            .commit
-            .as_deref()
-            .context("TASK_RECEIPT_INVALID: completed task receipt has no delivery commit")?;
-        validate_delivery_pointer(
-            root,
-            durable_delivery,
-            &accepted_delivery,
-            &candidate_baseline,
-            &task.spec.scope,
-            &milestone_rel,
-        )?;
-        let mut landed = original.clone();
-        let effective_delivery = match markdown_commit {
-            Some(md_sha) => {
-                if original.commit.as_deref() != Some(md_sha) && !git_ancestor(root, md_sha, &sha)?
-                {
-                    bail!(
-                        "TASK_DELIVERY_COMMIT_INVALID: task '{task_ref}' receipt commit '{md_sha}' is not an ancestor of milestone handoff commit '{sha}'.\n\
-                         Do: merge '{md_sha}' into '{sha}', or update the milestone markdown receipt to the repacked commit SHA."
-                    );
-                }
-                validate_delivery_pointer(
-                    root,
-                    md_sha,
-                    &accepted_delivery,
-                    &candidate_baseline,
-                    &task.spec.scope,
-                    &milestone_rel,
-                )
-                .map_err(|e| anyhow::anyhow!("TASK_DELIVERY_COMMIT_INVALID: {e}"))?;
-                md_sha
+        for gate in &profile.gates {
+            let proof = &evidence[&gate.id];
+            if gate.proof.kind() == Some(crate::core::tasks::profile::ProofKind::Command) {
+                builders.insert(proof.worker_id.clone());
             }
-            None => durable_delivery,
-        };
-        let (landed_sha, landing_index) = task_landed_commit(
-            root,
-            &first_parent,
-            effective_delivery,
-            &candidate_baseline,
-            &task.spec.scope,
-            task_ref,
-        )?;
-        landed_tasks.push(LandedTask {
-            task_ref: task_ref.to_owned(),
-            delivery: accepted_delivery,
-            landing_index,
-            scope: task.spec.scope.clone(),
-        });
-        landed.commit = Some(landed_sha.clone());
-        let mut doc_receipt = landed.clone();
-        if !record_task_commits {
-            doc_receipt.commit = None;
+            for commit in [
+                proof.commit.as_deref(),
+                proof.candidate_baseline_head.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                crate::core::git::retain_proof_commit(root, commit)?;
+            }
         }
-        handoff_text =
-            render_task_receipt(&handoff_text, task_ref, &doc_receipt, &task.spec.subtasks)?;
+        accepted.insert(task.task_id.clone(), json!({"digest":task.digest, "contract_revision":task.contract_revision, "scope":task.spec.scope, "profile":profile.as_ref(), "gates":evidence, "receipt":proof_receipt}));
+    }
+    Ok((
+        integration::digest(&accepted)?,
+        builders.into_iter().collect(),
+    ))
+}
+
+fn binding(
+    root: &Path,
+    item: &Snapshot,
+    store: &TasksStore,
+    relevant: &[Task],
+    commit: &str,
+    target: &str,
+) -> Result<HandoffBinding> {
+    integration::require_clean_tree(root, commit)?;
+    let (authority_digest, builders) = validated_authority(root, item, store, relevant)?;
+    let milestone_path = item.path.strip_prefix(root)?.to_string_lossy().into_owned();
+    let changes = crate::core::git::git_command(
+        root,
+        &["diff", "--name-only", "--no-renames", "-z", target, commit],
+    )?;
+    if !changes.status.success() {
+        bail!("HANDOFF_CONTENT_UNAVAILABLE: cannot compare target base and final content");
+    }
+    for path in changes
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        let path = std::str::from_utf8(path)?;
+        if path != milestone_path
+            && !relevant.iter().any(|task| {
+                task.spec
+                    .scope
+                    .iter()
+                    .any(|entry| crate::core::tasks::path_matches_scope_entry(path, entry))
+            })
+        {
+            bail!("HANDOFF_SCOPE_UNADMITTED: final delta contains unadmitted path '{path}'");
+        }
+    }
+    Ok(HandoffBinding {
+        version: 1,
+        repository: item.repository.clone(),
+        project: item.project.clone(),
+        milestone: item.id.clone(),
+        authority_digest,
+        implementation_digest: integration::content_digest(root, commit, &milestone_path)?,
+        target_base_digest: integration::content_digest(root, target, &milestone_path)?,
+        builders,
+    })
+}
+
+/// Prepare content identities for external integration review and verification.
+/// Accepted proof objects are retained independently of mutable branch history.
+pub fn handoff_context(root: &Path, selector: &str, target_base: &str) -> Result<Value> {
+    let (item, store, relevant) = ready_milestone(root, selector)?;
+    let commit = integration::resolve_commit(root, "HEAD")?;
+    let target = integration::resolve_commit(root, target_base)?;
+    let binding = binding(root, &item, &store, &relevant, &commit, &target)?;
+    crate::core::git::retain_proof_commit(root, &commit)?;
+    crate::core::git::retain_proof_commit(root, &target)?;
+    Ok(json!({"binding":binding, "commit":commit, "target_base":target}))
+}
+
+fn navigation_pointer(
+    root: &Path,
+    head: &str,
+    accepted: &str,
+    scope: &[String],
+) -> Result<Option<String>> {
+    if crate::core::git::git_ancestor(root, accepted, head)? {
+        return Ok(Some(accepted.to_owned()));
+    }
+    let mut args = vec!["log", "--format=%H", "--full-history", head, "--"];
+    args.extend(scope.iter().map(String::as_str));
+    let history = crate::core::git::git_command(root, &args)?;
+    if !history.status.success() {
+        return Ok(None);
+    }
+    let mut found = None;
+    for candidate in String::from_utf8(history.stdout)?.lines() {
+        if !crate::core::git::git_scoped_tree_changed(root, accepted, candidate, scope)? {
+            if found.is_some() {
+                return Ok(None);
+            }
+            found = Some(candidate.to_owned());
+        }
+    }
+    Ok(found)
+}
+
+/// Archive a completed milestone using immutable task proofs and final content evidence.
+pub fn handoff(
+    root: &Path,
+    selector: &str,
+    commit: Option<&str>,
+    evidence: &IntegrationEvidence,
+) -> Result<Value> {
+    let (item, mut store, relevant) = ready_milestone(root, selector)?;
+    let sha = integration::resolve_commit(root, commit.unwrap_or("HEAD"))?;
+    let target = integration::resolve_commit(root, &evidence.target_base)?;
+    let current = binding(root, &item, &store, &relevant, &sha, &target)?;
+    evidence.validate(&current)?;
+    crate::core::git::retain_proof_commit(root, &sha)?;
+    crate::core::git::retain_proof_commit(root, &target)?;
+    let prefix = format!("{}/{}:", item.project, item.id);
+    let expected_ids: Vec<String> = relevant.iter().map(|task| task.task_id.clone()).collect();
+    let settings = tasks::TaskSettings::load(root)?;
+    let record_task_commits = settings.records_task_commits();
+    let mut original_receipts = BTreeMap::new();
+    let mut landed_receipts = BTreeMap::new();
+    let mut handoff_text = item.text.replace("\r\n", "\n");
+    for task in &relevant {
+        let original = task
+            .receipt
+            .as_ref()
+            .context("TASK_RECEIPT_INVALID: completed task has no receipt")?;
+        let mut landed = original.clone();
+        let profile = store.profile_for_task(task)?;
+        let accepted = accepted_gate_evidence(
+            root,
+            &store,
+            &task.task_id,
+            task.contract_revision,
+            &task.spec.proof_policy,
+            &profile,
+        )?;
+        let delivery = profile
+            .gates
+            .iter()
+            .find(|gate| {
+                gate.proof.kind() == Some(crate::core::tasks::profile::ProofKind::Delivery)
+            })
+            .context("delivery gate missing")?;
+        landed.commit = if record_task_commits {
+            navigation_pointer(
+                root,
+                &sha,
+                accepted[&delivery.id]
+                    .commit
+                    .as_deref()
+                    .context("accepted delivery missing")?,
+                &task.spec.scope,
+            )?
+        } else {
+            None
+        };
+        let (_, task_ref) = task
+            .task_id
+            .rsplit_once(':')
+            .context("invalid task identity")?;
+        handoff_text = render_task_receipt(&handoff_text, task_ref, &landed, &task.spec.subtasks)?;
         original_receipts.insert(task.task_id.clone(), original.clone());
         landed_receipts.insert(task.task_id.clone(), landed);
     }
-    let upstream = stored
-        .iter()
-        .filter(|task| !task.task_id.starts_with(&prefix) && task.status == "completed")
-        .collect::<Vec<_>>();
-    validate_later_scope_changes(root, &sha, &landed_tasks, &store, &upstream, &history)?;
+    // A mutable ref or worktree edit during evidence inspection cannot publish a different tree.
+    integration::require_clean_tree(root, &sha)?;
     let started = match item.frontmatter["started_at"].as_str() {
         Some(value) => chrono::DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc),
         None => Utc
@@ -777,7 +587,7 @@ pub fn handoff(
     map.insert("started_at".into(), started.to_rfc3339().into());
     map.insert("handoff".into(), serde_yaml::to_value(json!({
         "completed_at": completed.to_rfc3339(), "duration": format!("{}h {}m", minutes / 60, minutes % 60),
-        "commit": sha, "verification": {"command": command, "status": "passed", "tests_passed": passed, "tests_failed": failed}
+        "commit": sha, "target_base": target, "integration_evidence": evidence, "verification": {"command": evidence.verification.command, "status": "passed", "tests_passed": evidence.verification.tests_passed, "tests_failed": evidence.verification.tests_failed}
     }))?);
     let relative = item.path.strip_prefix(root)?.to_string_lossy().into_owned();
     let parent = item.path.parent().context("milestone parent missing")?;
@@ -858,56 +668,6 @@ fn prune_snapshot_refs(root: &Path, prefix: &str) {
 
 #[cfg(test)]
 #[test]
-fn missing_landing_diagnostic_preserves_user_work() {
-    let root = std::env::temp_dir().join(format!(
-        "forge-safe-handoff-{}-{}",
-        std::process::id(),
-        Utc::now().timestamp_nanos_opt().unwrap()
-    ));
-    fs::create_dir_all(&root).unwrap();
-    let git = |args: &[&str]| {
-        let output = crate::core::git::git_command(&root, args).unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout).unwrap().trim().to_owned()
-    };
-    git(&["init", "--quiet"]);
-    git(&["config", "user.name", "ACDD test"]);
-    git(&["config", "user.email", "acdd-test@example.invalid"]);
-    git(&["config", "commit.gpgsign", "false"]);
-    fs::write(root.join("source.rs"), "baseline\n").unwrap();
-    git(&["add", "source.rs"]);
-    git(&["commit", "-m", "baseline"]);
-    let baseline = git(&["rev-parse", "HEAD"]);
-    fs::write(root.join("source.rs"), "reviewed\n").unwrap();
-    git(&["commit", "-am", "reviewed"]);
-    let delivery = git(&["rev-parse", "HEAD"]);
-    git(&["checkout", "-b", "different", &baseline]);
-    fs::write(root.join("source.rs"), "user work\n").unwrap();
-    git(&["commit", "-am", "different"]);
-    let head = git(&["rev-parse", "HEAD"]);
-    let before = fs::read(root.join("source.rs")).unwrap();
-    let error = task_landed_commit(
-        &root,
-        &[baseline.clone(), head],
-        &delivery,
-        &baseline,
-        &["source.rs".into()],
-        "change",
-    )
-    .unwrap_err()
-    .to_string();
-    assert_eq!(fs::read(root.join("source.rs")).unwrap(), before);
-    fs::remove_dir_all(root).unwrap();
-    assert!(!error.contains("git checkout"), "{error}");
-    assert!(error.contains("reconcile"), "{error}");
-}
-
-#[cfg(test)]
-#[test]
 fn handoff_accepts_completed_reviewed_shared_scope() {
     // The integration suite owns the full permutation table. This native adapter
     // also gives the static seam index a direct edge to the public handoff owner.
@@ -935,6 +695,7 @@ fn handoff_accepts_completed_reviewed_shared_scope() {
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     };
     git(&["init", "--quiet"]);
+    fs::write(root.join(".git/info/exclude"), ".forge/\n").unwrap();
     git(&["config", "user.name", "ACDD test"]);
     git(&["config", "user.email", "acdd-test@example.invalid"]);
     git(&["config", "commit.gpgsign", "false"]);
@@ -950,6 +711,7 @@ fn handoff_accepts_completed_reviewed_shared_scope() {
     fs::write(root.join("src/shared.rs"), "pub fn shared() -> u8 { 0 }\n").unwrap();
     git(&["add", "forge-mcp.yaml", "docs", "src"]);
     git(&["commit", "-m", "admit native shared handoff"]);
+    let base = git(&["rev-parse", "HEAD"]);
     let milestone = crate::core::tasks::Milestone::parse(source, "forge-mcp").unwrap();
     let mut store = TasksStore::open(&root.join(".forge/tasks.sqlite")).unwrap();
     store.sync(&milestone, active, root).unwrap();
@@ -1008,14 +770,13 @@ fn handoff_accepts_completed_reviewed_shared_scope() {
     let before = fs::read(root.join(active)).unwrap();
     let head = git(&["rev-parse", "HEAD"]);
     drop(store);
-    let result = handoff(
-        root,
-        "m-native-shared",
-        Some(&head),
-        "cargo test --test acdd",
-        1,
-        0,
-    );
+    let context = handoff_context(root, "m-native-shared", &base).unwrap();
+    let evidence: IntegrationEvidence = serde_json::from_value(json!({
+        "binding": context["binding"], "target_base": base,
+        "review": {"worker_id":"integration-reviewer", "decision":"pass", "summary":"Reviewed combined delta and task authority", "scope_findings":[], "contract_findings":[]},
+        "verification": {"command":"cargo test --test acdd", "exit_code":0, "tests_passed":1, "tests_failed":0}
+    })).unwrap();
+    let result = handoff(root, "m-native-shared", Some(&head), &evidence);
     if result.is_err() {
         assert_eq!(fs::read(root.join(active)).unwrap(), before);
         assert!(!root.join(archived).exists());

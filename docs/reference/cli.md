@@ -164,14 +164,15 @@ SQLite and milestone Markdown, resets the task to the first gate in its active p
 
 ## Repository milestones
 
-`milestone init`, `list`, `show`, and `handoff` are CLI-only. The MCP interface
+`milestone init`, `list`, `show`, `handoff-context`, and `handoff` are CLI-only. The MCP interface
 provides task operations and has no milestone lifecycle tools.
 
 ```sh
 contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|cancelled|all]
 contextunity-forge-mcp milestone show <id-or-number> [--full]
 contextunity-forge-mcp milestone init [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
-contextunity-forge-mcp milestone handoff <id-or-number> [--commit <full-sha>] --verification-command "<verified TESTS.md milestone gate>" --tests-passed <count> --tests-failed 0
+contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
+contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
 ```
 
 `milestone list` returns a table and structured rows containing ID, title,
@@ -192,29 +193,20 @@ supplies a description and task blocks. Planned milestones omit `started_at`;
 `--active` records the current time. The command returns the file path and
 task sync and claim guidance.
 
-`milestone handoff` requires every milestone task in SQLite to be completed,
-a nonempty verification command, and a supplied failed-test count of zero. Run
-the verification gate from [`TESTS.md`](../../TESTS.md) before calling it; the
-CLI records the caller-verified result and does not execute the command.
+`milestone handoff-context` prepares canonical content and accepted-task proof
+identities for external review and verification against an explicit target base.
+`milestone handoff --evidence-file` validates the resulting typed JSON record,
+requires completed tasks and a clean committed implementation, and archives the
+milestone with the supplied evidence. The independent reviewer differs from all
+milestone builders. Forge launches no agents and runs no verification commands.
 
-The handoff contract validates each durable receipt against its accepted gate
-evidence, then resolves the earliest first-parent milestone commit after the
-task's accepted snapshot baseline that introduces the same scoped tree as its
-delivery. This also handles a scope-equivalent repacked commit when the original
-delivery commit is not on the milestone branch. A later task may change a shared
-path only when its own completed, reviewed delivery contains the final value for
-that path; an unexplained shared-path edit blocks handoff. SQLite records each
-task's actual landing SHA. When `record_task_commits` is enabled (the default),
-the CLI also rewrites `receipt.commit` in each task block before archiving; when
-disabled, the Markdown receipt omits that commit. It requires `status: completed` and a
-`handoff` frontmatter receipt whose `commit` records the milestone branch `HEAD`
-at handoff, or the supplied `--commit`, alongside `completed_at`, `duration`,
-and the verification `command`, `tests_passed`, and `tests_failed` fields. The
-CLI archives the milestone and updates SQLite task references. Commit the
-archived milestone afterward, staging both the archived file in `archive/` and the removal of the pre-archive working manifest, and unlinking any untracked pre-archive copies; that archive commit SHA is not recorded in the
-handoff or any task `receipt.commit`. An omitted `--commit` uses the current Git
-`HEAD`. See [repository tasks](tasks.md) for task claims, receipts, and
-activation timing.
+See [integration evidence](tasks.md#milestone-cli-lifecycle) for the exact fields,
+content projection, proof retention, diagnostics, and optional commit pointers.
+Rewriting branch SHAs alone does not invalidate unchanged content evidence.
+Changed final or target-base content needs fresh review and verification. An
+optional `--commit` resolves a Git selector whose content must match the current
+clean worktree HEAD. Commit the archived manifest and working-file removal after
+handoff; that archive commit is not recorded in its own receipt.
 
 ## Server, guide, and checkpoints
 

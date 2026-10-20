@@ -41,14 +41,21 @@ Before `milestone handoff`, run each command from the repository root:
 2. `cargo clippy --all-targets --all-features -- -D warnings`
 3. `cargo test --all-targets`
 
-Pass the complete gate as the `--verification-command` string:
+Record the complete command in the final integration evidence's
+`verification.command`:
 `cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets`.
-Set tests-passed to the sum of the passed counts reported by each test target in
-`cargo test --all-targets`.
-Set tests-failed to 0. Clippy contributes no test count. Record the exact command
-and these counts in the handoff receipt.
-Run the verification yourself before invoking `milestone handoff`; that command
-records the supplied result and does not execute the verification command.
+Set `verification.exit_code` to `0`, `tests_passed` to the sum of passed counts
+from `cargo test --all-targets`, and `tests_failed` to `0`; count the standalone
+commitment run only once and exclude Clippy from test counts.
+
+Prepare the binding with `milestone handoff-context <id> --target-base main` and
+obtain independent integration review against that exact final content and base.
+Follow the documentation-agent scan in [AGENTS.md](AGENTS.md#documentation-scan-before-handoff)
+before final verification. Supply the completed review and verification record to
+`milestone handoff <id> --evidence-file /tmp/handoff-evidence.json`; see the
+[record fields](docs/reference/tasks.md#milestone-cli-lifecycle). Forge validates
+and records supplied evidence without running verification. Changed content or
+authority requires fresh final review and verification.
 
 Use `test-suite-refactor` only when the admitted change splits, replaces,
 deduplicates, or removes a typed test suite. It is not a general final-verification
