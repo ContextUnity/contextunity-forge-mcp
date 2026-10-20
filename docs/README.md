@@ -11,7 +11,7 @@ If you are connecting a client, start with [MCP setup](reference/mcp-setup.md): 
 
 If you are planning work, read [ACDD](reference/acdd.md) for the loop, [task operations](reference/tasks.md) for claims, evidence, and receipts, and [ACDD profiles](reference/profiles.md) for gates, roles, and pins on a milestone or a task. Admitted work lives in [milestones](milestones/README.md). Proposals that are not yet admitted live in [plans](plans/README.md). [Roadmap](roadmap.md) is the short strategic note above both.
 
-If you are writing pages Forge should retrieve, follow [documentation instructions](AGENTS.md). Headings become searchable sections. A backticked symbol becomes an edge to code, and inspect returns that section with the symbol.
+If you are writing pages Forge should retrieve, follow [documentation instructions](AGENTS.md). Headings become searchable sections. A backticked code claim is a candidate for linking; only a unique eligible declaration in the first non-empty match tier becomes a verified edge. Use an exact declaration name and, when needed, a source-file link to confine resolution. Forge keeps ambiguous candidates for navigation without treating them as verified coverage. See the [documentation query contract](reference/mcp-tools.md#documentation-queries).
 
 If you are reading or extending the graph, the [MCP tools](reference/mcp-tools.md) reference and the [CLI](reference/cli.md) reference name every call. [Languages](reference/languages.md) lists compiled profiles and the static limits of each one. [Framework manifests](reference/framework-manifests.md) explains project rule files and what it takes to add a language. [Indexing](architecture/indexing.md) and [engine modularity](architecture/modularity.md) describe how extraction, linking, and storage fit together.
 
@@ -47,6 +47,6 @@ Operational ceilings, freshness, and what a failed query looks like are in [limi
 - [Milestones](milestones/README.md)
 - [Historical archive](archive/README.md)
 
-Current milestone and plan directories are the `milestones` and `plans` entries in `forge-mcp.yaml`. Individual plan and milestone contracts are excluded from documentation search. Their README pages stay indexed.
+Markdown and MDX in configured documentation roots are searchable, including individual milestone and plan contracts. Their inclusion does not admit a proposal as a task or change which manifests own lifecycle and execution authority; see [configuration](reference/configuration.md#indexing-scope) and [milestones](milestones/README.md).
 
 For a code change, start with the workspace overview, select an exact symbol, inspect direct relationships, and verify the relevant source. Missing edges are bounded by the indexed languages, roots, and unresolved-reference coverage.

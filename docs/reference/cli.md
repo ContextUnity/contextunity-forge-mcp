@@ -197,9 +197,13 @@ task sync and claim guidance.
 `milestone handoff-context` prepares canonical content and accepted-task proof
 identities for external review and verification against an explicit target base.
 `milestone handoff --evidence-file` validates the resulting typed JSON record,
-requires completed tasks and a clean committed implementation, and archives the
+requires every task to be completed with accepted proofs or identically cancelled
+in the manifest and task store without a completion receipt, plus a clean
+committed implementation, and archives the
 milestone with the supplied evidence. The independent reviewer differs from all
-milestone builders. Forge launches no agents and runs no verification commands.
+completed-task builders. Cancelled tasks retain their history without completion
+credit or implementation-scope permission. Forge launches no agents and runs no
+verification commands.
 
 See [integration evidence](tasks.md#milestone-cli-lifecycle) for the exact fields,
 content projection, proof retention, diagnostics, and optional commit pointers.

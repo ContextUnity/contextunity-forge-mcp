@@ -37,6 +37,27 @@ CLI build / scan / delta             MCP request
 - Unmodified files reuse extracted facts across worktrees via a content-addressed binary `ExtractionCache` (`src/db/writer/cache.rs`), keyed by source digest, grammar ID, semantics version, and effective framework ruleset hash.
 - `src/db/` stores generations, nodes, edges, documents, and source metadata; its readers implement selectors, traversal, search, and analysis. Local syntax facts use Zstandard-compressed JSON, reverse dependency lookups use the target index on `dependencies`, and repeated resolution evidence uses a shared dictionary.
 
+## Documentation references and verification
+
+The scanner selects configured Markdown and MDX files, and the documentation
+extractor splits them into heading sections and records links and code claims.
+The linker resolves code claims within the eligible workspace or an explicitly
+linked source file. Only a unique declaration in the first non-empty candidate
+tier creates a verified documentation edge; ambiguous candidates remain
+available for navigation and do not count as verified coverage. A same-line
+`INV-*` claim with an explicit source link can create a verified `governs` edge
+when that declaration resolves uniquely. A GitHub alert callout's
+`is_invariant` section flag is a separate discovery signal.
+
+For the current implementation, follow [`collect_documentation_paths`](../../src/engine/scanner/mod.rs#L622-L685),
+[`extract_with_details`](../../src/engine/docs.rs#L24-L69), and
+[`document_symbol_candidates`](../../src/engine/linker/resolution.rs#L23-L62).
+The incremental parity test
+[`source_delta_relinks_affected_docs_with_bare_suffix_references`](../../tests/incremental/doc_parity.rs#L70-L160)
+checks documentation links, invariant claims, diagnostics, and cold/delta
+parity. The [MCP documentation query contract](../reference/mcp-tools.md#documentation-queries)
+defines the candidate and verified-edge response distinction.
+
 A root workspace owns the index under its `.forge` directory by default. Linked workspaces add files to that same index when enabled and available. Each linked workspace has its own roots and ignore settings. A source root is an inventory boundary; it does not by itself declare an import prefix. Use the actual package and module structure when interpreting imports.
 
 `build` creates a full index. `delta` updates it from changed and deleted files. `scan` reports admitted files without creating an index. The MCP server checks indexed ownership, source inventory, adapter configuration, and file changes before serving database-backed requests. When the indexed state is stale, it updates affected files or rebuilds as needed. CLI readers use the index already on disk; run `build` or `delta` after editing source before relying on CLI results.

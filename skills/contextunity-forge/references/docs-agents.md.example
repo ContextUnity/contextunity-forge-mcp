@@ -1,0 +1,66 @@
+Copy only the content inside the fence to `docs/AGENTS.md`, then adapt it. Any links in copied
+content should be relative to that destination file; replace or remove links and repository-specific
+facts before use.
+
+````markdown
+---
+title: "Documentation instructions"
+doc_type: guide
+---
+
+# Documentation instructions
+
+## Ownership and style
+
+- Read the repository root `AGENTS.md` and the instructions nearest to the files being changed.
+- Keep each contract with its owner; use `docs/README.md` for navigation, architecture pages for
+  current system shape, reference pages for interfaces, ADRs for accepted decisions, and plans for
+  proposals. Use the roadmap only for brief strategic context.
+- Verify behavior against this repository's source, configuration, and tests. Do not copy example
+  commands, paths, symbols, or decisions without checking that they exist here.
+- Write current behavior and direct instructions. Keep documentation in the repository's chosen
+  language and style.
+
+## Indexed Markdown
+
+- If this repository uses Forge indexing, begin each indexed Markdown page with valid frontmatter
+  containing a title and supported document type. Use clear second- and third-level headings and
+  relative repository links that resolve from the page containing them.
+- For Forge code claims, link the exact backticked identifier to the real source file when
+  disambiguation matters; add a line range when citing a specific passage. Unscoped claims stay
+  within the source document's workspace. An explicit normalized file path confines lookup to that
+  file, and an invalid path does not broaden it.
+- Resolution checks eligible claims in this order: exact qualified name (`::` and `.` are
+  equivalent), exact declared name, then qualified-name segment suffix. The first non-empty tier
+  wins; one eligible target verifies the reference. Keep ambiguity visible as navigation only: it
+  creates no verified documentation edge and does not count as verified coverage. Do not describe
+  candidates as confirmed links.
+- For governance, put the real invariant ID and its linked code claim on the same source line. The
+  code link must have an explicit normalized source-file target, and its selected tier must resolve
+  uniquely. Use a repository-unique INV-<AREA>-<NUMBER>: identifier only for a real invariant; that
+  ID declares an invariant node. A GitHub alert block beginning with [!IMPORTANT], [!WARNING], or
+  [!NOTE] and containing Invariant: marks its section as is_invariant but does not declare an ID
+  node. Neither syntax alone proves governance.
+
+  The fenced patterns below are syntax examples only. Replace every placeholder with verified
+  repository facts before turning a pattern into a claim; otherwise remove it.
+
+  ```markdown
+  [`ACTUAL_SYMBOL`](../src/REPLACE_WITH_REAL_FILE#L1-L2)
+
+  > [!IMPORTANT]
+  > INV-<AREA>-<NUMBER>: [`ACTUAL_SYMBOL`](../src/REPLACE_WITH_REAL_FILE#L1-L2) <state a rule that this exact source declaration governs>
+  ```
+
+  The pattern above is a syntax illustration, not a portable claim. Replace the ID, declaration,
+  file, and rule with verified repository facts. A real ID declares an invariant node; it creates a
+  governance edge only when the same-line linked source claim resolves uniquely.
+
+## Local commands and boundaries
+
+- Keep verification commands, path conventions, owners, and operational limits specific to this
+  repository. Verify each command before documenting it; link to the repository's testing guide or
+  runbooks rather than copying another project's command list.
+- Preserve approval and security boundaries. Update this file and the owning documentation page
+  when the documented workflow changes.
+````

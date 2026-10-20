@@ -40,11 +40,15 @@ Blackboard messages belong to a milestone, task, or subtask. An explicit `scope`
 
 ### Documentation discovery
 
-Overview `README.md` files at the roots of `docs/milestones/` and `docs/plans/` are indexed. Individual milestone and plan contracts remain outside `doc_search` indexing.
+Markdown and MDX under configured documentation roots, including individual
+milestone and plan contracts, are searchable through the documentation index.
+Search visibility does not admit a proposal as a task or execution commitment.
+The milestone manifest and task lifecycle continue to own their respective
+authority; documentation search provides discovery, not admission.
 
 ## Consequences
 
-Milestone manifests preserve the durable lifecycle record, while SQLite can discard cancelled operational state and retain blockers on work that remains. Task listings provide a compact active queue, and agents can coordinate at the milestone, task, or subtask level without reading message payloads until they inspect a specific message. The milestone and plan overviews remain discoverable without making every contract a general documentation search result.
+Milestone manifests preserve the durable lifecycle record, while SQLite can discard cancelled operational state and retain blockers on work that remains. Task listings provide a compact active queue, and agents can coordinate at the milestone, task, or subtask level without reading message payloads until they inspect a specific message. Searchable milestone and plan contracts improve discovery without changing task admission or lifecycle authority.
 
 ## Non-goals
 

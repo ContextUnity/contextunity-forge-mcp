@@ -1321,27 +1321,50 @@ impl TasksStore {
         tx.commit()?;
         Ok(())
     }
-    /// Relocate a completed milestone while replacing every task receipt with its landed commit.
+    /// Relocate terminal tasks, preserving cancellations and accepted completed proofs.
     pub fn handoff_milestone(
         &mut self,
         milestone_prefix: &str,
-        _old_ref: &str,
+        old_ref: &str,
         new_ref: &str,
-        expected_ids: &[String],
+        expected_tasks: &[Task],
         receipts: &std::collections::BTreeMap<String, Receipt>,
     ) -> Result<()> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let descriptors: Vec<String> = tx
-            .prepare("SELECT descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 AND substr(task_id,1,length(?2))=?2")?
-            .query_map(params![milestone_prefix, self.id_prefix], |row| row.get(0))?
+        let descriptors: Vec<(String, String, String)> = tx
+            .prepare("SELECT task_id, milestone_ref, descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 AND substr(task_id,1,length(?2))=?2")?
+            .query_map(params![milestone_prefix, self.id_prefix], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?;
         let mut found_ids = Vec::new();
-        for descriptor in descriptors {
+        let mut completed_ids = Vec::new();
+        for (stored_id, stored_ref, descriptor) in descriptors {
             let mut task: Task = serde_json::from_str(&descriptor)?;
-            if task.status != "completed" {
+            let expected = expected_tasks
+                .iter()
+                .find(|expected| expected.task_id == task.task_id)
+                .context("milestone task set changed during handoff")?;
+            if stored_id != task.task_id
+                || stored_ref != old_ref
+                || task.milestone_ref != old_ref
+                || !matches!(task.status.as_str(), "completed" | "cancelled")
+                || serde_json::to_value(&task)? != serde_json::to_value(expected)?
+            {
                 bail!("milestone task state changed during handoff");
+            }
+            if task.status == "cancelled" {
+                if task.spec.status.as_deref() != Some("cancelled")
+                    || task.receipt.is_some()
+                    || task.spec.receipt.is_some()
+                    || receipts.contains_key(&task.task_id)
+                {
+                    bail!("TASK_RECEIPT_INVALID: cancelled task cannot carry a handoff receipt");
+                }
+                task.milestone_ref = new_ref.into();
+                found_ids.push(task.task_id.clone());
+                save(&tx, &task)?;
+                continue;
             }
             let receipt = receipts
                 .get(&task.task_id)
@@ -1365,14 +1388,19 @@ impl TasksStore {
             task.spec.receipt = Some(receipt.clone());
             task.milestone_ref = new_ref.into();
             found_ids.push(task.task_id.clone());
+            completed_ids.push(task.task_id.clone());
             save(&tx, &task)?;
         }
         found_ids.sort();
-        let mut expected = expected_ids.to_vec();
+        let mut expected = expected_tasks
+            .iter()
+            .map(|task| task.task_id.clone())
+            .collect::<Vec<_>>();
         expected.sort();
         let mut receipt_ids = receipts.keys().cloned().collect::<Vec<_>>();
         receipt_ids.sort();
-        if found_ids != expected || receipt_ids != expected {
+        completed_ids.sort();
+        if found_ids != expected || receipt_ids != completed_ids {
             bail!("milestone task or receipt set changed during handoff");
         }
         tx.commit()?;

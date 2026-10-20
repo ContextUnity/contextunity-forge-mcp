@@ -229,6 +229,11 @@ rejects cancellation of an accepted completed task and rejects completion receip
 on cancelled specifications. Milestone-level cancellation retains its separate
 pruning behavior; see [milestone lifecycle](#milestone-cli-lifecycle).
 
+Milestone handoff retains cancelled tasks when their manifest and SQLite identity,
+contract digest, revision, status and milestone location agree. Cancellation
+supplies no completion receipt, accepted builder, dependency satisfaction or
+implementation scope permission. Other incomplete tasks still block handoff.
+
 Complex domain tasks often contain finer-grained milestones, discovered edge cases,
 or sub-component checklists (e.g. testing specific UI fixtures, verifying individual DOM
 queries, or step-by-step refactoring). Instead of proliferating root-level milestone tasks
@@ -523,7 +528,10 @@ or cancelled status filters include archived contracts.
 Commit the final implementation and follow the instruction-level documentation
 scan in root [AGENTS.md](../../AGENTS.md#documentation-scan-before-handoff).
 Run `milestone handoff-context <id> --target-base main` in the milestone worktree.
-The command validates completed tasks and their accepted proofs, retains required
+The command validates the exact manifest and SQLite task set: completed tasks
+require their accepted proofs, and identically cancelled tasks require no
+completion receipt. It binds cancelled authority separately from completed
+proofs, retains required
 Git proof objects, and returns `binding`, resolved `target_base`, and diagnostic
 `commit`. Obtain an independent review of the combined delta against this base
 and run the repository verification from [TESTS.md](../../TESTS.md). The reviewer
@@ -575,7 +583,11 @@ gate evidence.
 Handoff archives the supplied integration record and verification result in
 frontmatter, records the selected final implementation commit (default `HEAD`),
 sets `status: completed`, and updates SQLite task references to `archive/` with
-the existing rollback checks. Duration starts at `started_at` or the earliest
+the existing rollback checks. Completed and cancelled task history relocates in
+one transaction that rechecks the original milestone location and complete task
+state. Only completed tasks receive updated navigation receipts; cancelled tasks
+retain their status, attempts, gates, subtasks, dependencies and evidence.
+Duration starts at `started_at` or the earliest
 claim timestamp. Commit the archive afterward, staging its addition and the
 working manifest's removal; this later commit SHA is not part of its own receipt.
 Historical archived receipts remain readable without rewriting them.

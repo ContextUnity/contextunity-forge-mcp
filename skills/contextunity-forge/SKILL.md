@@ -5,286 +5,204 @@ description: Load before repository code discovery, symbol lookup, dependency tr
 
 # ContextUnity Forge MCP
 
-`contextunity-forge` provides high-performance semantic code-graph querying, architectural inspection, impact analysis, and **ACDD (Augmented Context-Driven Development)** task coordination for repositories indexed by Forge.
+Use Forge's semantic code graph, architectural inspection, impact analysis, and ACDD task
+coordination in indexed repositories.
 
-## Documentation layers
+## Documentation ownership
 
-Every indexed repository uses these roles. Create a directory only when it has pages. A page states current behavior or a command.
+Keep pages about current behavior or commands. Follow the [documentation layout](references/documentation-layout.md).
+When starting docs in another repository, adapt the [docs README](references/docs-readme.md.example)
+and [docs rules](references/docs-agents.md.example). The repository root `AGENTS.md` owns local
+verification commands and Git permissions. The Forge repository owns schemas in `docs/reference/`
+and indexed-page markup in `docs/AGENTS.md`.
 
-| Path | Contains |
-| --- | --- |
-| `docs/AGENTS.md` | Authoring rules for that tree |
-| `docs/README.md` | Navigation |
-| `docs/roadmap.md` | One or two strategic paragraphs |
-| `docs/architecture/` | Current system topology |
-| `docs/adr/` | Accepted decisions |
-| `docs/reference/` | Interfaces: configuration, CLI, tools, and schemas |
-| `docs/runbooks/` | Commands and operational sequence for that repository |
-| `docs/testing/` | How that repository verifies |
-| `docs/milestones/` | Admitted commitments. `archive/` keeps receipts |
-| `docs/plans/` | Proposals before admission |
-| `docs/archive/` | Retained history outside the documentation index |
+## Forge-first tool selection
 
-The repository `AGENTS.md` names the verification command and the Git permission. The Forge binary's schemas stay in the Forge repository's `docs/reference/`. Indexer markup for pages Forge searches is in the Forge repository's `docs/AGENTS.md`.
+- Use registered Forge MCP tools as the primary path for discovery, architecture inspection,
+  documentation search, and task lifecycle. Use the CLI where it owns the operation; fall back to
+  scripts or raw text search only when Forge is unavailable.
+- Use the active server registry and schemas. Common registrations are `contextunity-forge` and
+  `contextunity-forge-mcp`; see [routing examples](references/agents.md.example). Start with
+  `code_map_overview()` and confirm `workspace_root`, coverage, and components.
+- Pass `worktree` when needed: absolute/server-relative path, exact directory, or unique
+  hyphen-delimited suffix. Otherwise keep the linked server worktree; absent that, use one unique
+  claimed worktree when workspace configuration is loaded or `forge-mcp.yaml` exists (even empty),
+  and use the primary root when neither exists. Ambiguity returns `WORKTREE_AMBIGUOUS`; `"."` selects
+  the server root. MCP requests do not carry client cwd.
+- Milestone `init`, `list`, `show`, `handoff-context`, and `handoff` are CLI-only. `task next` and
+  MCP `task_manage(action="next", ...)` atomically claim the next eligible task and return claim
+  context or `status: "idle"`; parked tasks resume in their retained worktree.
+- `task show` aliases `task inspect`; inspect/submit accept `--task`, sync accepts `--file`, and
+  `task list --detail compact|full` supports `--full` only without `--detail`. See the
+  [tool catalog](references/tool-catalog.md) for dispatch order and signatures.
+- MCP AST search infers language only from a recognized extension; otherwise supply a compiled
+  profile ID. CLI `ast grep` requires `--lang`. On Unix, `contextunity-forge-mcp reload` sends
+  `SIGHUP` and replaces running servers without breaking client connections.
 
-## Forge MCP Server & CLI Dual-Surface Binding
+## Query and response bounds
 
-> **CRITICAL DIRECTIVE**: Agents **MUST** use registered `contextunity-forge-mcp` MCP tools as the primary mechanism for code discovery, architecture inspection, documentation search, and task lifecycle operations whenever the server is active. Do NOT fallback to ad-hoc scripts or raw `grep` for code discovery unless Forge is unavailable.
+Each SQLite query has a 2-second budget; unbounded queries fail fast. Responses cap at 64 KiB. Pages
+default to 30 items and allow at most 100. Continue when `next_offset > 0` by passing that offset and the
+prior generation token. Prefer compact detail on broad queries; use full detail for a narrow entity.
+On budget errors, narrow the selector/path or reduce depth.
 
-- **MCP & CLI Dual-Surface**: Use registered Forge MCP tools or the CLI (`contextunity-forge-mcp`) on the surface providing the required operation.
-- **Server Identity**: The MCP server is typically registered as `contextunity-forge` or `contextunity-forge-mcp`; use the active registry and tool schemas.
-- **Repository Setup**: Repositories declare tool routing using the canonical template in [references/agents.md.example](references/agents.md.example).
-- **CLI-Only Operations**: Milestone lifecycle commands (`milestone init/list/show/handoff-context/handoff`) are intentionally CLI-only.
-- **Task Dispatch**: `task next --worker WORKER --worktree PATH [--workspace WS]` and `task_manage(action: "next", worker_id, worktree, workspace?)` atomically claim the next eligible task. Both return claim context or `status: "idle"`; a parked task resumes in its retained worktree.
-- **CLI Task Aliases**: `task show TASK_ID` aliases `task inspect TASK_ID`. Inspect and submit accept `--task TASK_ID` instead of the positional ID; sync accepts `--file PATH` instead of the positional milestone reference. Use `task list --detail compact|full`; `--full` remains supported and cannot combine with `--detail`.
-- **AST Surfaces**: Use MCP `ast_grep_search(pattern, path="file.rs")` to infer the language from a recognized file extension, or supply `language` explicitly. CLI uses `contextunity-forge-mcp ast grep --lang rust --path file.rs 'PATTERN'`; `--lang` is required on the CLI.
-- **Session Kickoff**: Start with `code_map_overview()` to verify active workspace, components, and indexing coverage.
-- **Hot Reload**: On Unix, `contextunity-forge-mcp reload` sends `SIGHUP` to running servers, replacing the executable in-place without breaking client connections.
+`code_map_impact` accepts exactly one symbol selector or Git change mode (`staged`, `unstaged`,
+`head`). Its continuation generation binds the graph and captured change snapshot. Check
+`unmapped_changes` and `complete` before treating a change view as exhaustive.
 
-## Core Operational Boundaries
+## Discovery and verification workflow
 
-- **SQLite Timeout**: 2.0 seconds per query. Unbounded queries fail fast.
-- **Output Limit**: Responses capped at 64 KiB.
-- **Pagination**: Default page size is 30 items (max 100).
-- **Continuation**: When `next_offset` > 0, supply `offset=next_offset` AND `generation="<token>"` from the previous page to continue.
-- **Detail Mode**: Use `detail="compact"` on broad queries to avoid payload overflow. Use `detail="full"` only when inspecting single entities.
-- **Budget Recovery**: If a query times out or exceeds budget, narrow `selector`/`path` or reduce `depth` (e.g., `depth=1`).
-- **Impact Change Views**: `code_map_impact` takes exactly one symbol `selector` or Git `changes` mode (`staged`, `unstaged`, or `head`); its continuation generation binds the graph and captured change snapshot. Review `unmapped_changes` and `complete` before treating the result as exhaustive.
+- Orient with `code_map_overview`; verify the active worktree and indexed coverage before claiming
+  something is absent.
+- Locate with `code_map_search` (compact for broad searches); use `code_map_inspect` for the exact
+  declaration, signature, docs, and invariants.
+- Use `code_map_explain` for ownership/callers/callees and depth-1 `code_map_impact` before edits or
+  removals.
+- Use `code_map_tests` to trace exact calls from classified test cases. Helpers and fixtures may
+  occur in a path but are not coverage roots; `possible_calls` and lexical suggestions do not prove
+  coverage, and a lexical suggestion has no `call_path`.
+- Read a bounded `get_code_snippet` preview, then use `ctx_read` for exact source ranges before
+  editing. Inspect/snippet default to 5 leading and 200 body lines; requested body lines clamp to
+  1..500 within byte caps.
+- Claim the active ACDD gate before task work, implement its accepted contract, and submit through
+  its claim-bound evidence template.
 
----
+## ACDD authority and scope
 
-## Canonical Discovery Workflow
+ACDD connects Git milestone contracts (`docs/milestones/*.md`) to `.forge/tasks.sqlite`; rebuilding the code index does not
+reset task state. The [task reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/tasks.md) owns operation/evidence schemas. The active profile and claim's
+`workflow_guidance` own gates/order, proof policy, roles/models, review contours, and profile-specific
+behavior. Do not infer a fixed workflow from this skill. Use [references/acdd_profile.yaml.example](references/acdd_profile.yaml.example) only as a configuration
+example.
 
-```mermaid
-flowchart TD
-    A["1. code_map_overview()"] --> B["2. code_map_search(pattern='name*')"]
-    B --> C["3. code_map_inspect(selector='...')"]
-    C --> D["4. code_map_explain(selector='...')"]
-    D --> E["5. code_map_impact(selector='...', depth=1)"]
-    E --> F["6. code_map_tests(selector='...')"]
-    F --> G["7. get_code_snippet(selector='...')"]
-    G --> H["8. ctx_read('path', 'lines:N-M') for exact edit"]
-    H --> I["9. task_claim() -> TDD -> task_submit()"]
-```
+The repository `AGENTS.md` names this skill, local verification commands, and Git permissions; it
+must not duplicate this procedure. Install the skill at `~/.agents/skills/contextunity-forge/SKILL.md` or `.agents/skills/contextunity-forge/SKILL.md`. Claim/inspect
+return `TASK_GUIDANCE_MISSING` if configured guidance is missing, does not name the skill, or the skill is not
+installed.
 
-1. **Orient**: `code_map_overview()`
-   - Verify `workspace_root` matches the active worktree.
-   - Check indexed coverage and components before making claims about absence.
-2. **Locate**: `code_map_search(pattern="Token*", detail="compact")`
-   - Use prefix wildcard (`prefix*`) or full-text terms.
-   - Retrieves matching symbols with kinds, paths, and fully-qualified selectors.
-3. **Inspect**: `code_map_inspect(selector="function:...")`
-   - Reads exact definition, signature, docstring, and declared architectural invariants.
-4. **Relate**: `code_map_explain(selector="...")`
-   - Unveils symbol ownership, direct callers (inbound), callees (outbound), and invariants.
-5. **Blast Radius**: `code_map_impact(selector="...", depth=1)`
-   - Traces inbound dependency chains before modifying or removing symbols.
-   - Keep `depth=1` initially to avoid combinatorial explosions.
-6. **Tests**: `code_map_tests(selector="...", direction="inbound")`
-    - Inbound follows exact `calls` edges from classified `test_case` roots and returns the shortest `call_path`; helpers and fixtures may appear within a path but are not coverage roots. Outbound follows exact calls from a test into production code. `possible_calls` and lexical fallback suggestions do not prove coverage; a bounded lexical suggestion has no `call_path`.
-7. **AST Preview**: `get_code_snippet(selector="...")`
-   - Reads a bounded source preview (5 leading + 200 body lines by default; requested body lines clamp to 1..500, within byte caps).
-8. **Verify Source**: Use `ctx_read` for exact source ranges before editing.
-9. **Task Lifecycle**: Claim, execute, and submit tasks via ACDD gates.
+When a task changes observable behavior, interfaces, workflows, configuration, or operational
+assumptions, update its documentation and agent instructions during build. Include those files in
+initial scope or admit them with `extend_scope` before editing; do not defer changes caused by the
+task's own contract.
 
----
+Task claims inject these guardrails into `workflow_guidance.rules`:
 
-## ACDD
+- `PROTECTED`: milestone `id`, `invariants`, `owners`, `depends_on`, and `acdd_profile` cannot
+  change while tasks are active.
+- `ISOLATION`: work only in the assigned dedicated worktree.
+- `IMMUTABILITY`: do not change admitted scope after review passes or during delivery.
+- `INDEPENDENCE`: reviewer `worker_id` differs from the accepted builder.
+- `NO_PREFLIGHT_SUBAGENTS`: start active-gate work without preflight agents.
+- `NEVER_EDIT_RECEIPTS`: never edit milestone receipt/status blocks;
+  `task_submit(stage="deliver")` manages receipts.
 
-ACDD connects Git milestone contracts (`docs/milestones/*.md`) to a task queue in SQLite (`.forge/tasks.sqlite`). A code-index rebuild does not reset task state. The Forge repository's [task reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/tasks.md) owns operation and evidence schemas.
+The embedded roles are `contract_author`, `builder`, and `independent_reviewer`. The author posts the build draft to
+task blackboard with `topic=draft` and `gate=build`; the same independent reviewer continues through
+review and delivery. Use the claim-bound `expected_evidence_template` and registered scoped commands. Contract/build
+context can include `external_callers`, direct/two-hop `covering_tests`, and ADR summaries. Seams must reach an
+in-scope production symbol; out-of-scope indexed callers on changed public signatures can fail with
+`TASK_SEAM_DISCONNECTED` or `TASK_SCOPE_INCOMPLETE`. For admitted greenfield files absent from disk, the contract author adds
+minimal compiling stubs and module/import declarations before index refresh.
 
-The shared skill provides generic Forge MCP and CLI guidance. The active task profile and the current claim's `workflow_guidance` own gate identifiers and order, proof policy, role and model selection, review contours, and profile-specific behavior. Follow those returned instructions; do not infer a fixed workflow from this skill. Use [references/acdd_profile.yaml.example](references/acdd_profile.yaml.example) only as a profile configuration example.
+Lifecycle errors use `{CODE}: {task_id}. {facts}. Do: {action}` (or action/milestone-scoped equivalents). `AUTHORITY_GAP` distinguishes
+milestone-frontmatter divergence from task-spec changes and gives exact remediation.
 
-The repository `AGENTS.md` names this skill, local verification instructions, and standing Git permissions (see [references/agents.md.example](references/agents.md.example)). It does not restate this procedure. Install the skill at `~/.agents/skills/contextunity-forge/SKILL.md` or `.agents/skills/contextunity-forge/SKILL.md` in the repository. Claim and inspect return `TASK_GUIDANCE_MISSING` when the configured guidance file is missing, does not name the skill, or the skill is not installed.
+### Tests and scope
 
-### Documentation and instructions co-evolution
+Drive admitted contracts through real collaborating components and the existing domain suites, not
+synthetic stubs. Prefer existing test suites; inspect `covering_tests` during contract work and add cases
+to existing domain suites where possible. Create a test file only when no existing suite covers the
+module or a genuinely isolated regression harness is required. Use structured case tables, shared
+fixtures/harnesses/temp directories, and `TESTS.md` plus `tests/AGENTS.md` for target placement and
+commands.
 
-A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates the corresponding documentation and agent instructions during its configured build stage. Include affected documentation files in the task's initial `scope:` at milestone design time, or admit them via `extend_scope` before editing; do not defer documentation updates caused by the task's own contract.
+Keep each task focused on one public production seam and add subtask cases there. Stay within
+admitted scope; use `task_manage(action="extend_scope")` before editing outside it and follow the contract's scope
+roots/revision rules.
 
-Task claims inject standing runtime guardrails into `workflow_guidance.rules`:
-- `PROTECTED`: Milestone `id`, `invariants`, `owners`, `depends_on`, and `acdd_profile` are immutable while tasks are active.
-- `ISOLATION`: Develop exclusively inside the assigned dedicated worktree.
-- `IMMUTABILITY`: Keep admitted scope unchanged after review pass and during deliver.
-- `INDEPENDENCE`: Review stage requires a worker_id distinct from the accepted builder.
-- `NO_PREFLIGHT_SUBAGENTS`: Start the active gate work without launching preflight subagents.
-- `NEVER_EDIT_RECEIPTS`: Never manually edit receipt: or status: blocks in docs/milestones/*.md; task_submit(stage=deliver) writes and commits receipts automatically.
+Record discoveries with `task subtask add`, not a new root task. `subtask_dod` is advisory; status updates
+record caller evidence and do not score it. Subtasks accept `ready`, `in_progress`, `completed`,
+`cancelled`, and `blocked`; legacy `pending` aliases to `ready`. `parked` is for top-level
+worktree affinity. Cancelled tasks retain history, do not satisfy dependencies, and leave dispatch;
+follow the task reference for specification sync/reset/reopen, and reopen terminal parents before
+editing subtasks.
 
-The embedded profile has `contract_author`, `builder`, and `independent_reviewer` subagent roles. The contract author posts the draft on the task blackboard with `topic=draft` and `gate=build`; the same independent reviewer session continues through review and delivery. Registered command guidance includes scoped test commands, and `expected_evidence_template` is bound to the active task, stage, revisions, worker, and worktree. Contract/build context carries indexed `external_callers`, direct and two-hop `covering_tests`, and ADR invariant summaries. Contract seams must reach an in-scope production symbol; changed public signatures with out-of-scope indexed callers fail with `TASK_SEAM_DISCONNECTED` or `TASK_SCOPE_INCOMPLETE` as applicable. For greenfield features where admitted scope files do not exist yet on disk, the contract author creates minimal file scaffolding with compiling production stubs and module/import declarations in admitted scope so AST imports resolve before index refresh.
+The advisory completion criteria are bounded contract resolution, ADR/milestone alignment,
+production-seam proof, preservation of untouched behavior, and fail-closed escalation when attempts
+stall.
 
-Lifecycle errors follow a deterministic single-line format: `{CODE}: {task_id}. {facts}. Do: {action}` (or action- and milestone-scoped equivalents). Structured `AUTHORITY_GAP` diagnostics distinguish milestone frontmatter divergence from task specification changes with exact remediation commands.
+## Blackboard
 
-### Tests
+- Use milestone scope for cross-task state, task scope for task results, and subtask scope for a
+  local case. Topics are `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`.
+- After claim, read applicable messages. `read` returns metadata; inspect message IDs for full
+  payloads because summaries may be truncated or omitted.
+- Builders post verification as `notes`; reviewers post findings or no-findings as `findings`;
+  coordinators reconcile as `notes`. Post blockers when found and resolution when state changes.
+- Publish material results, decisions, blockers, or ownership changes with contract
+  revision/candidate, check/outcome, evidence, and next owner/action. Keep posts concise and preserve
+  durable evidence outside temporary paths.
+- Before handoff, post status, unresolved findings, evidence, and next action. Omit `gate` for
+  cross-gate notes or target the next gate. Claims include untargeted/current-gate messages; read
+  targeted items through `workflow_guidance.blackboard_messages`.
+- Before delivery, record accepted decisions and deferred work with owner/destination. Delivery
+  copies them to `architectural_notes` before clearing messages. Blackboard does not amend task
+  authority or replace proof.
 
-Keep each admitted task focused on one public production seam; add subtask cases to that seam. Drive tests through real collaborating components and domain test suites rather than synthetic stubs mocking away system complexity. Drive permutations and error codes through structured test case tables. Reuse shared fixtures, test harnesses, and temporary directories. The repository's test instructions (`TESTS.md`, `tests/AGENTS.md`) name the test domains and commands.
+## Delivery and milestone handoff
 
-### Scope
+The active profile controls commits: `auto_commit: true` makes Forge commit the delivered candidate and
+receipt; do not duplicate it. With `false`, Forge records the receipt without a commit; create
+exactly one scoped commit under repository rules.
 
-Stay inside the admitted scope. Use `task_manage(action=extend_scope)` to add paths before editing outside the task's current scope. Follow the active contract and profile for scope roots and revision requirements.
+Before handoff, follow the repository documentation scan. The coordinator runs `agent-instructions` against
+the final diff and admitted docs, records the result on the milestone board, and reviews changes
+before final verification; Forge launches no agent and adds no gate.
 
-### Subtasks
-
-Record discoveries with `task subtask add`. Do not add a root milestone task for them. `context_bundle.guidance.subtask_dod` is advisory. A status update records the caller-provided status and evidence and does not score it.
-
-Use `ready`, `in_progress`, `completed`, `cancelled`, or `blocked` for subtasks.
-New subtasks default to `ready`; legacy `pending` is accepted as an alias and
-responses use `ready`. Reserve `parked` for top-level task worktree affinity.
-Cancelled tasks retain their history and do not satisfy dependencies or enter
-dispatch. Follow the task reference for cancellation through specification sync
-and explicit reset/reopen; reopen a terminal parent before editing its subtasks.
-
-- Contract slice resolution: Demonstrably resolves an explicit, bounded slice of the contract without breaking boundaries.
-- Milestone and ADR alignment: Builds upon existing architectural seams rather than ad-hoc isolated patches.
-- Production-seam evidence: Validates through real production paths rather than synthetic stubs mocking away system complexity.
-- Systemic non-regression: Preserves existing behavior and untouched invariants.
-- Anti-looping invariant: Retain fail-closed boundaries and escalate via `task_blackboard` when repeated attempts stall.
-
-### Blackboard
-
-Post and read messages at milestone, task, and subtask scope. Use only `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`; post/read may target or filter by a gate id from the active task profile. Claims include untargeted messages plus those targeted to the current gate, and expose the targeted set through `workflow_guidance.blackboard_messages` with a compact `blackboard_info` summary. Delivery copies `decisions` and `deferred` into the existing `architectural_notes` receipt vector with topic labels before clearing that task's messages.
-
-### Delivery and milestone handoff
-
-The active delivery profile controls whether Forge automatically commits the candidate tree during delivery:
-
-- With `auto_commit: true`, Forge automatically creates the delivery commit and records the receipt in SQLite; do not create duplicate task commits.
-- With `auto_commit: false`, Forge records the delivery receipt in SQLite without creating a commit; create the scoped task commit under repository-owned Git permissions.
-
-Before milestone handoff, follow the repository's documentation-scan instructions.
-The coordinator launches a documentation agent using `agent-instructions` against
-the final milestone diff and admitted documentation scope. Record its result on
-the milestone blackboard and review its edits before final verification; Forge
-does not launch the agent or add a milestone gate.
-
-Commit the final implementation, prepare its binding, obtain independent integration
-review, and run repository verification against the same content and target base:
+Commit the final implementation, prepare a binding, obtain independent integration review, and
+verify the same content against the target base:
 
 ```sh
 contextunity-forge-mcp milestone handoff-context <id> --target-base main > /tmp/handoff-context.json
-# The coordinator supplies completed external review and verification evidence.
+# Coordinator supplies completed external review and verification evidence.
 contextunity-forge-mcp milestone handoff <id> --evidence-file /tmp/handoff-evidence.json
 ```
 
-Use the repository task reference for the typed record fields and canonical
-projection. The integration reviewer differs from all accepted task builders.
-Preserve accepted task proofs; rebase, cherry-pick, merge and multi-task squash
-may change optional navigation SHAs without reopening completed tasks. Changed
-content or authority needs fresh final review and verification. Forge retains
-required proof objects independently of branch history, validates the supplied
-record and archives it; it launches no agents and runs no tests. Commit the
-archived manifest and the working manifest removal afterward. Follow repository
-Git permissions for landing and cleanup.
+Use the task reference for typed evidence/projection. Integration review must differ from every
+accepted task builder. Preserve task proofs through rebase/cherry-pick/merge/squash; optional
+navigation SHAs may change without reopening tasks. Changed content or authority needs fresh final
+review and verification. Forge validates and archives the supplied record but runs no tests or
+agents. Commit the archive and working manifest removal afterward under repository Git permissions.
 
+## Adapters and framework packs
 
-## Workspace Adapters (`forge-mcp.yaml`) & Default Behavior
+Use [adapter defaults](references/adapters.md) and the canonical [adapter example](references/forge-mcp.yaml.example) for roots, linked workspaces, ignores, task identity,
+response limits, and no-config behavior.
 
-### Where Adapters Live
-- Primary adapter: `forge-mcp.yaml` in the repository root.
-- Linked adapters: sibling repositories configured under `linked_workspaces`.
-- Starter file generation: `contextunity-forge-mcp guide init`.
+Use [framework pack guidance](references/framework-packs.md) and its TOML/YAML examples for declarative rules. For language support, provide all
+six `SyntaxGrammarSpec` categories and use shared `SinglePassExtractor` owner frames; keep language body events/linking
+in existing owners, preserve public facts/commitments, do not add a recursive body collector, and
+keep query experiments out of default indexing.
 
-### Connecting Adapters
-```yaml
-roots:
-  - src
-docs:
-  - docs
-milestones:
-  - docs/milestones
-plans:
-  - docs/plans
-ignore:
-  - target
-  - node_modules
-linked_workspaces:
-  - name: shared-core
-    path: ../shared-core
-    enabled: true
-    roots:
-      - src
-    tasks:
-      enabled: true
-      milestones_dir: docs/milestones
-      agents_guidance: AGENTS.md
-tasks_db: .forge/tasks.sqlite
-task_repository: forge-mcp
-task_project: forge-mcp
-agents_guidance: AGENTS.md
-response:
-  page_size: 30
-  max_output_bytes: 65536
-```
+## Documentation graph and provenance
 
-### Default Behavior (Without `forge-mcp.yaml`)
-- **Code Graph**: Scans workspace root (`.`), respects `.gitignore`, excludes common build/cache folders (`target`, `node_modules`, `.git`, `.venv`, `__pycache__`), and outputs `.forge/code-map.sqlite`.
-- **Tasks Database**: Defaults to `.forge/tasks.sqlite`.
-- **Git Worktrees Auto-Resolution**: Relative `tasks_db` paths resolve to the primary worktree root, so parallel workers share the task database. Code-tool worktree selection is described under Discovery & Search below.
-- **Identity Defaults**: `task_repository` and `task_project` default to `forge-mcp`; `agents_guidance` defaults to `AGENTS.md`; milestone directory defaults to `docs/milestones/`.
+Confined Markdown links/wikilinks create `cites_doc`/`cited_by_doc` edges only when one section resolves.
+Documentary code claims use the source document's workspace unless an explicit normalized file path
+confines them elsewhere; invalid or unsafe paths never fall back globally. Document, invariant, and
+component nodes cannot verify claims; module and file declarations remain eligible. For each
+eligible claim occurrence, the first non-empty tier wins: exact normalized qualname (`::` and
+`.` equivalent), exact declared name, then qualified-name segment suffix. Only one target in
+that tier verifies the reference; lower tiers do not combine with it.
 
----
+Full `get_doc` pages ambiguous selected-tier `referenced_symbol_candidates`; compact omits them and hints at full
+detail. Candidates are navigation only: they do not create `documents`, `references_doc`, `governs`, or
+`governed_by` edges and do not establish verified coverage. MCP and CLI `docs get` default to full.
+Suggestions and token similarity are not verified references or governance. Inspect exposes verified
+`documented_in`; impact exposes `affected_docs`, including retained source-file claims after declaration
+removal. `INV-*` rules become invariant nodes. A `governs` edge requires a unique code claim with
+an explicit normalized source-file target on the same source line as its invariant ID; uniqueness
+alone is insufficient. Inspect, impact, and task context show at most five direct rules and five one-hop IDs
+with source locations and omitted counts. This projection supplements and never replaces task
+invariants, profile guidance, decisions, commands, or proof.
 
-## Declarative framework packs
-
-Project rules live in each workspace's `.forge/frameworks/<framework-id>.toml`, `.yaml`, or `.yml`. Start with the equivalent [TOML](references/frameworks/declarative-rules.toml.example) or [YAML](references/frameworks/declarative-rules.yaml.example) examples for class receivers, route decorators, route calls, dependency-injection calls and imported calls to actual template files. Keep the four legacy arrays (`receivers`, `builtins`, `filters`, `routes`) even when empty. Project rules extend the bundled identifier by default; `replace = true` replaces it. Rebuild or update the index after editing rules.
-
-The Forge repository's [framework manifest reference](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/framework-manifests.md) owns the schema, merge identities, activation rules, and validation limits. Use manifests for data supported by existing language hooks; a new language or new extraction semantics requires profile code and production-seam proof.
-
-Read `framework_rule_diagnostics` in actual build and delta reports after replacing bundled rules. Compare removed eligible identities rather than rule counts; clean reports contain an empty list. These diagnostics are ephemeral and do not belong in parser errors or persisted facts. Effective typed rules compile against the actual Tree-sitter grammar and invalidate with registry changes.
-
-For structural language support, supply the six `SyntaxGrammarSpec` categories and use the shared `SinglePassExtractor` enter/exit owner frames. Keep language-specific body events and linker semantics in their existing owners. Preserve public facts and all commitment domains against the delivered baseline; do not implement a new recursive body collector. Tree-sitter query experiments remain opt-in research outside default indexing.
-
-## MCP Tool Reference
-
-### Operational Task Lifecycle
-- `task_list(repository?, milestone_ref?, milestone_status?, status?, stage?, detail?)`: Query task cards; defaults to ready tasks in active milestones. `milestone` is accepted as an alias for `milestone_ref`; `status: "cancelled"` selects retained cancelled tasks.
-- `task_claim(task_id, stage, worker_id, worktree, bundle?)`: Claim the current gate; returns stage-specific guidance and context bundles.
-- `task_submit(task_id, stage, action, evidence, findings?)`: Submit claim-bound JSON proof or review findings.
-- `task_manage`: Manage tasks via flat actions (`create`, `sync`, `inspect`, `context`, `next`, `delete`, `extend_scope`, `subtask_add`, `subtask_update`, `subtask_list`, `reset`, `reopen`).
-- `task_blackboard`: Post/read/inspect messages at `milestone`, `task`, or `subtask` scope. Post/read may include `gate` to target or filter messages by an active profile gate. Runtime topics are `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`; the last two are copied to the existing `architectural_notes` receipt vector with topic labels. Claims include untagged messages plus those targeted to the active gate, with targeted messages also listed in `workflow_guidance.blackboard_messages` and a compact `blackboard_info` summary.
-
-`task_list` accepts `parked` to select tasks waiting for a scope owner while retaining worker/worktree affinity. `task next --worker WORKER --worktree PATH [--workspace WS]` exposes the same atomic dispatch as `task_manage(action: "next", worker_id, worktree, workspace?)`; it prioritizes independent delivery, independent review, the requesting worker's unblocked parked work, then ordinary ready work by wave and task ID. It returns claim context or `status: "idle"` when no work is eligible.
-
-### Discovery & Search
-Code discovery and inspection tools accept `worktree`: an absolute or server-relative path, exact directory name, or unique hyphen-delimited name suffix. Without it, retain the server's linked worktree; otherwise use one unique active claimed worktree when workspace configuration is loaded or `forge-mcp.yaml` exists (an empty `{}` file suffices). Without configuration or an active claim, retain the primary root. Multiple active directories or matching names return `WORKTREE_AMBIGUOUS`; pass an explicit path/name. Use `worktree: "."` for the server root. MCP requests do not transmit the client's current directory.
-- `code_map_overview(aspects?, worktree?, limit?, offset?, detail?, generation?)`: Indexed workspace root, component inventory, graph counts, language resolution coverage, compiled profiles, and persisted primary/linked `coverage_by_workspace` counts. Use `aspects` to select collections; cycles are opt-in.
-- `code_map_search(pattern, kind?, path?, exact?, include_docs?, include_preview?, group_by_file?, worktree?, detail?, limit?, offset?, generation?)`: Eligible exact name or qualified-name matches take priority by default; otherwise use ranked full-text and prefix search. `query` is accepted as an alias for `pattern`. Use `exact=true` for an indexed name or qualified name, or `pattern="*"` with a `path` or `kind` scope to list symbols. An empty `path` leaves results unfiltered. Results include signatures and `inspect_selector`; source previews appear automatically for at most three total hits, or on request via `include_preview=true` for larger result sets, capped at three previews.
-- `ast_grep_search(pattern, language?, path?, worktree?, detail?, limit?, offset?, generation?)`: Tree-sitter AST syntax matching with `$NAME` and `$$$ARGS` captures. Omit `language` only when `path` has a recognized file extension; otherwise use a compiled profile ID from `code_map_overview`.
-- `search_docs(query, doc_type?, component?, worktree?, limit?)`: Full-text search across documentation, guides, and ADRs.
-- `get_doc(path_or_id, section?, worktree?)`: Read indexed markdown doc or exact heading anchor.
-
-### Inspection & Hierarchy
-- `code_map_inspect(selector, worktree?, include_coverage?, show_doc?, show_source?, leading_lines?, max_body_lines?)`: Symbol summary, receiver metadata, exact callers/callees, paged verified `documented_in` sections and compact `governing_invariants`, paged `analysis_gaps` (e.g. `trait_object_dispatch`, `macro_expansion_not_analyzed`), and candidate dispatch targets (`possible_calls`).
-- `get_code_snippet(selector, worktree?, leading_lines?, max_body_lines?, source_offset?, generation?)`: Bounded, digest-verified AST source preview.
-  Preview line budgets for inspect and snippet requests are clamped to supported bounds. Continue a truncated preview with the returned `next_source_offset` as `source_offset` and the same `generation`.
-- `code_map_explain(selector, direction?, worktree?, include_coverage?, show_doc?, show_source?)`: Direct relationships with both public endpoint IDs and query-relative direction, candidate dispatch edges, symbol ownership, and architectural invariants; full detail includes stored edge evidence.
-- `code_map_impact(selector?, changes?, direction?, depth?, worktree?, detail?, limit?, offset?, generation?)`: Inbound blast radius (`direction="inbound"`, default, traversing both exact `calls` and candidate `possible_calls`), outbound dependencies, or a staged/unstaged/HEAD Git change view. Selector results include paged affected documentation and compact governing invariants. Depth-one non-seed nodes carry their selected edge endpoints, direction, location, and confidence. A change range maps only when its selected postimage matches the indexed file; inspect `unmapped_changes` and `complete`.
-- `code_map_tests(selector, direction?, worktree?, detail?, limit?, offset?, generation?)`: Find verified test cases connected by exact call paths, or production dependencies reached from a test. Test roles distinguish cases, helpers, and fixtures; a bounded inbound lexical fallback can suggest cases when no graph path exists.
-
-### Verification & Safety
-- `code_map_prove_removal(selector)`: Proves whether a symbol can be safely removed based on static references; treats candidate callers (`possible_calls`) as potential incoming dependencies that block safe removal.
-- `code_map_analyze(target, lint?, include_cycles?)`:
-  - `target=""`: Workspace-wide diagnostics and syntax errors.
-  - `target="path/to/file.py"`: File-scoped diagnostics with digest-verified source snippets and evidence-backed reasons when known.
-  - An exact Markdown or MDX target can include paged `doc_diagnostics` for broken links, stale source ranges, and dead symbol claims; suggested symbols are remediation hints, not verified links.
-  - `untested_public_surface`: Paged declared-public production symbols in the selected path scope that no indexed test case reaches through exact calls.
-  - `lint=true`: Returns stored AST parse and syntax errors.
-  - `include_cycles=true`: Detects dependency cycles.
-- `code_map_query(operation, selector?, include_coverage?, depth?, limit?, offset?, generation?)`: Graph slices, unwired nodes, or read-only SQL (`operation="sql"`).
-- `session_checkpoint(action, name?, content?)`: Manage workflow checkpoints in `.forge/checkpoints.json`.
-- `forge_guide(topic?, force?)`: Interactive guidance (`topic="acdd"`, `"query"`, `"adapter"`, `"docs"`, `"ast"`).
-
-### Documentation graph and invariant provenance
-
-Markdown and MDX admitted by the workspace documentation roots, including milestone and plan documents, are indexed with section locations and frontmatter status. Relative Markdown links and wikilinks create `cites_doc`/`cited_by_doc` edges only for a confined path and a uniquely resolved section. Symbol claims use the document's workspace unless an explicit normalized file path confines the target. `get_doc` returns citation pages and uniquely verified `referenced_symbols`; full detail also pages ambiguous `referenced_symbol_candidates` for discovery. Compact detail omits candidates and provides a full-detail hint. MCP `get_doc` and CLI `docs get` default to full detail. Inspect returns `documented_in`, and impact returns `affected_docs`, including a source-file claim whose declaration has since been removed.
-
-Declared `INV-*` rules become indexed invariant nodes. A verified `governs` edge ties a rule to its uniquely referenced symbol. Inspect, impact, and task context surface at most five direct rules and five one-hop invariant IDs with source locations and omitted counts. Suggestions, ambiguous symbol candidates, and token similarity do not establish governance or a verified reference. This graph projection supplements task authority: it does not replace task contract invariants, profile guidance, decisions, commands, or proof receipts.
-
----
-
-## Resilient Selectors & Query Resolution
-
-- **Exact ID**: Canonical node IDs (`function:src/scanner.rs:42:scan`, `class:...`, `module:...`).
-- **File Paths**: `src/scanner.rs` automatically selects the module node. Strips `file://`, `file:`, and `./`.
-- **Path + Symbol**: `src/scanner.rs:scan` resolves directly to the inner symbol inside the file.
-- **Path + Line Coordinates**: `src/scanner.rs:42` or `src/scanner.rs#L42` resolves to the innermost AST node spanning that line.
-- **Bare Names**: Reported with candidate IDs when ambiguous; never hijacked into modules.
-- **Documentation**: Selectors ending in `.md` automatically direct agents to `get_doc` or `search_docs`.
+See the [tool catalog](references/tool-catalog.md) for tool signatures, selector forms, and full graph behavior.

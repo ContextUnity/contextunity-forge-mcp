@@ -298,15 +298,16 @@ fn ready_milestone(root: &Path, selector: &str) -> Result<(Snapshot, TasksStore,
     for spec in &item.tasks {
         let task_ref = spec["task_ref"].as_str().context("task_ref missing")?;
         let id = format!("{prefix}{task_ref}");
-        if !relevant
-            .iter()
-            .any(|task| task.task_id == id && task.status == "completed")
-        {
+        if !relevant.iter().any(|task| {
+            task.task_id == id
+                && matches!(task.status.as_str(), "completed" | "cancelled")
+                && spec["status"].as_str() == Some(task.status.as_str())
+        }) {
             incomplete.push(task_ref.to_string());
         }
     }
     for task in &relevant {
-        if task.status != "completed"
+        if !matches!(task.status.as_str(), "completed" | "cancelled")
             && !incomplete
                 .iter()
                 .any(|name| task.task_id.ends_with(&format!(":{name}")))
@@ -348,12 +349,27 @@ fn validated_authority(
             .find(|spec| milestone.task_id(spec) == task.task_id)
             .context("TASK_AUTHORITY_MISSING: accepted task is missing from current milestone")?;
         if milestone.digest(spec)? != task.digest
+            || milestone.digest(&task.spec)? != task.digest
             || spec.contract_revision != task.contract_revision
+            || task.spec.contract_revision != task.contract_revision
+            || spec.status.as_deref() != Some(task.status.as_str())
+            || task.milestone_ref != milestone_rel
         {
             bail!(
                 "TASK_AUTHORITY_CHANGED: task '{}' contract differs from accepted authority",
                 task.task_id
             );
+        }
+        if task.status == "cancelled" {
+            if task.spec.status.as_deref() != Some("cancelled")
+                || task.receipt.is_some()
+                || task.spec.receipt.is_some()
+                || spec.receipt.is_some()
+            {
+                bail!("TASK_RECEIPT_INVALID: cancelled task cannot carry completion authority");
+            }
+            accepted.insert(task.task_id.clone(), json!({"digest":task.digest, "contract_revision":task.contract_revision, "status":"cancelled", "milestone_ref":task.milestone_ref}));
+            continue;
         }
         let original = task
             .receipt
@@ -436,10 +452,12 @@ fn binding(
         let path = std::str::from_utf8(path)?;
         if path != milestone_path
             && !relevant.iter().any(|task| {
-                task.spec
-                    .scope
-                    .iter()
-                    .any(|entry| crate::core::tasks::path_matches_scope_entry(path, entry))
+                task.status == "completed"
+                    && task
+                        .spec
+                        .scope
+                        .iter()
+                        .any(|entry| crate::core::tasks::path_matches_scope_entry(path, entry))
             })
         {
             bail!("HANDOFF_SCOPE_UNADMITTED: final delta contains unadmitted path '{path}'");
@@ -511,13 +529,12 @@ pub fn handoff(
     crate::core::git::retain_proof_commit(root, &sha)?;
     crate::core::git::retain_proof_commit(root, &target)?;
     let prefix = format!("{}/{}:", item.project, item.id);
-    let expected_ids: Vec<String> = relevant.iter().map(|task| task.task_id.clone()).collect();
     let settings = tasks::TaskSettings::load(root)?;
     let record_task_commits = settings.records_task_commits();
     let mut original_receipts = BTreeMap::new();
     let mut landed_receipts = BTreeMap::new();
     let mut handoff_text = item.text.replace("\r\n", "\n");
-    for task in &relevant {
+    for task in relevant.iter().filter(|task| task.status == "completed") {
         let original = task
             .receipt
             .as_ref()
@@ -619,18 +636,26 @@ pub fn handoff(
         &prefix,
         &relative,
         &archive_ref,
-        &expected_ids,
+        &relevant,
         &landed_receipts,
     ) {
         fs::remove_file(&archived)?;
         return Err(error);
     }
     if let Err(error) = fs::remove_file(&item.path) {
+        let mut archived_tasks = relevant.clone();
+        for task in &mut archived_tasks {
+            task.milestone_ref = archive_ref.clone();
+            if let Some(receipt) = landed_receipts.get(&task.task_id) {
+                task.receipt = Some(receipt.clone());
+                task.spec.receipt = Some(receipt.clone());
+            }
+        }
         store.handoff_milestone(
             &prefix,
             &archive_ref,
             &relative,
-            &expected_ids,
+            &archived_tasks,
             &original_receipts,
         )?;
         fs::remove_file(&archived)?;

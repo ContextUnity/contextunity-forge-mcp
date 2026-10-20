@@ -40,7 +40,7 @@ to code symbols in the SQLite code map. Follow these structural standards:
    ```yaml
    ---
    title: "Descriptive Document Title"
-   doc_type: architecture # architecture | adr | api | guide | contract | plan
+   doc_type: architecture
    ---
    ```
    Forge uses `doc_type` for filtered documentation search (`search_docs`).
@@ -51,9 +51,16 @@ to code symbols in the SQLite code map. Follow these structural standards:
    an independent BM25 full-text search unit.
 
 3. **Symbol linkage**:
-   Enclose code symbols in backticks matching `[a-zA-Z_][a-zA-Z0-9_.:]*`:
-   - Examples: `LanguageProfile`, `source_inventory`, `crate::engine::scanner`, `SessionCheckpoint.save`.
-   - Forge resolves each claim against eligible declarations. An explicit
+   For repository-specific code claims, use the exact indexed declaration name
+   and link it to its source file when a path is needed to identify the intended
+   declaration. Do not invent a qualified name or present an approximate symbol
+   as a verified code claim. For example, this claim names a real declaration
+   and explicitly selects its source file:
+   [`extract_with_details`](../src/engine/docs.rs#L24-L28).
+   Ordinary inline code remains useful for commands, configuration keys, and
+   other technical text; a code span alone does not certify that its contents
+   match an indexed declaration.
+   - Forge resolves each code claim against eligible declarations. An explicit
      normalized file target confines eligibility to that file; an unscoped claim
      is limited to the source document's workspace. Document, invariant, and
      component nodes do not verify code claims.
@@ -69,17 +76,30 @@ to code symbols in the SQLite code map. Follow these structural standards:
      evidence.
 
 4. **Architectural invariants**:
-   Declare architectural invariants within GitHub alert callouts containing `Invariant:`:
+   A GitHub alert callout containing `Invariant:` marks the section for
+   prioritized display during impact analysis and symbol inspection:
    ```markdown
    > [!IMPORTANT]
    > Invariant: Every reader holds the shared database snapshot lock while reading and rejects a result if the snapshot identity changes.
    ```
    Supported alert tags: `[!IMPORTANT]`, `[!WARNING]`, `[!NOTE]`.
-   Forge marks matching sections with `is_invariant: true`, indexing them for
-   prioritized display during impact analysis and symbol inspection.
+   Forge marks such a section with `is_invariant: true`; this section flag alone
+   does not create an invariant node or a `governs` edge. To declare a linked
+   invariant, put its `INV-*` identifier and an exact, source-linked code claim
+   on the same line. The linked declaration must resolve uniquely for Forge to
+   create a verified governance edge. This guide declares the resolver's actual
+   priority rule:
+   - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../src/engine/linker/resolution.rs#L23-L62).
+   The identifier remains documentation authority; the code link identifies
+   the governed declaration. See [documentation queries](reference/mcp-tools.md#documentation-queries)
+   for the distinction between invariant discovery and verified governance.
 
 5. **Relative links**:
-   Resolve cross-document links using relative repository paths.
+   Resolve cross-document links using relative repository paths. A link to a
+   file without a heading fragment remains useful whole-document navigation;
+   add a heading fragment when the link is meant to identify one specific
+   indexed section. Check configured roots before treating an existing but
+   unadmitted file as a broken filesystem link.
 
 ## Planning and documentation alignment
 

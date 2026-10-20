@@ -7,6 +7,7 @@ Use this short router in a repository root `AGENTS.md` when ContextUnity Forge i
 # Repository Agent Instructions
 
 - Load the shared `contextunity-forge` skill for generic Forge MCP, CLI, and task tool guidance.
+- Follow its Blackboard procedure for claim context, progress reports, and gate or agent handoffs.
 - Follow the active task profile and the `workflow_guidance` returned by `task claim` or `task next` for gate sequence, proof policy, role and model selection, review contours, and profile-specific behavior.
 - Read task reference for operation and evidence schemas, and `TESTS.md` for required verification commands.
 - Read the nearest `AGENTS.md` for test placement and other subtree-owned rules.
@@ -32,7 +33,7 @@ Worktrees live at `.worktrees/<milestone-prefix>-<slug>` for milestones and `.wo
   - With `auto_commit: false`, create exactly one scoped task commit containing task changes and the generated receipt after delivery.
 - History integration: Preserve accepted task proofs while integrating branches. Rebase, cherry-pick, merge, amend, and squash may change navigation SHAs without reopening completed tasks. Before handoff, obtain independent integration review and repository verification bound to the final content and explicit target base; follow the task and CLI references for the evidence file.
 - Branch integration: Merge each delivered task branch into the milestone branch, delete the temporary task branch, and remove its worktree (`git worktree remove .worktrees/<milestone-prefix>-<task-slug>`).
-- Handoff commit: When all milestone tasks are delivered and verified, run `contextunity-forge-mcp milestone handoff` in the milestone worktree. Commit the archived milestone document, along with any out-of-scope adjustments, deferred fixes, and recorded findings, documenting them in the handoff commit message.
+- Handoff commit: When every milestone task is completed with accepted proofs or identically cancelled in the manifest and task store without a completion receipt, run `contextunity-forge-mcp milestone handoff` in the milestone worktree. Preserve cancelled history without completion credit. Commit the archived milestone document, along with any out-of-scope adjustments, deferred fixes, and recorded findings, documenting them in the handoff commit message.
 - Milestone landing: In the primary worktree (`main`), fast-forward the milestone branch (`git merge --ff-only <milestone-branch>`), remove the milestone worktree (`git worktree remove .worktrees/<milestone-prefix>-<slug>`), and delete the milestone branch (`git branch -d <milestone-branch>`).
 
 ### Operations requiring explicit user approval

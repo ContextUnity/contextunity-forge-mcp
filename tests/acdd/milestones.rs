@@ -1308,6 +1308,241 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         meta["handoff"]["duration"].as_str().unwrap(),
         format!("{}h {}m", minutes / 60, minutes % 60)
     );
+
+    let mut failures = Vec::new();
+    for scenario in [
+        "archive",
+        "ready",
+        "manifest-status",
+        "digest",
+        "revision",
+        "missing-task",
+        "cancelled-scope",
+        "cancelled-receipt",
+        "old-ref",
+        "dependent",
+        "rollback",
+    ] {
+        let root = ScopedWorkspace::new("forge_retained_cancelled_handoff");
+        root.write(".gitignore", ".forge/\n");
+        root.write(
+            "forge-mcp.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        );
+        root.write("src/lib.rs", "pub fn finish() -> u8 { 0 }\n");
+        root.write("deferred/work.rs", "pub fn transferred() -> u8 { 0 }\n");
+        let active = "docs/milestones/030-terminal.md";
+        let archive = "docs/milestones/archive/030-terminal.md";
+        let source = "---\nid: m-terminal\ntitle: Retained terminal authority\ndoc_type: contract\nstatus: active\n---\n# Terminal authority\n```yaml\ntask_ref: finish\ntarget: Complete admitted work\nproof_policy: seam-test-first\nscope: [src/lib.rs]\n```\n```yaml\ntask_ref: transferred\ntarget: Work transferred to another milestone\nproof_policy: seam-test-first\ncontract_revision: 1\nscope: [deferred/]\ndepends_on: [finish]\nsubtasks:\n- subtask_ref: retained-case\n  title: Retain cancellation history\n```\n";
+        root.write(active, source);
+        commit_handoff_fixture_inputs(
+            &root,
+            &[".gitignore", "forge-mcp.yaml", "src", "deferred", "docs"],
+        );
+        let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+        let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
+        store.sync(&milestone, active, &root.0).unwrap();
+        let finish_id = milestone.task_id(&milestone.tasks[0]);
+        let transferred_id = milestone.task_id(&milestone.tasks[1]);
+        root.write("src/lib.rs", "pub fn finish() -> u8 { 1 }\n");
+        complete_task_through_engine(&root, &store, &finish_id);
+        tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: transferred_id.clone(),
+                stage: "contract".into(),
+                worker_id: "transferred-contract-author".into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let delivered = std::fs::read_to_string(root.0.join(active)).unwrap();
+        let cancelled = delivered.replace(
+            "task_ref: transferred\n",
+            "task_ref: transferred\nstatus: cancelled\n",
+        );
+        root.write(active, &cancelled);
+        store
+            .sync(
+                &Milestone::parse(&cancelled, "forge-mcp").unwrap(),
+                active,
+                &root.0,
+            )
+            .unwrap();
+        let cancelled_history = store.inspect_details(&transferred_id).unwrap();
+        assert_eq!(cancelled_history["status"], "cancelled");
+        assert!(!cancelled_history["attempts"].as_array().unwrap().is_empty());
+        assert!(store.inspect(&transferred_id).unwrap().receipt.is_none());
+        let completed_receipt = store.inspect(&finish_id).unwrap().receipt.unwrap();
+        match scenario {
+            "ready" => {
+                let ready = cancelled
+                    .replace("status: cancelled\n", "status: ready\n")
+                    .replace(
+                        "contract_revision: 1\nscope: [deferred/]",
+                        "contract_revision: 2\nscope: [deferred/]",
+                    );
+                root.write(active, &ready);
+                store
+                    .sync(
+                        &Milestone::parse(&ready, "forge-mcp").unwrap(),
+                        active,
+                        &root.0,
+                    )
+                    .unwrap();
+            }
+            "manifest-status" => root.write(
+                active,
+                &cancelled.replace("status: cancelled\n", "status: ready\n"),
+            ),
+            "digest" => root.write(
+                active,
+                &cancelled.replace(
+                    "Work transferred to another milestone",
+                    "Unaccepted changed authority",
+                ),
+            ),
+            "revision" => root.write(
+                active,
+                &cancelled.replace(
+                    "contract_revision: 1\nscope: [deferred/]",
+                    "contract_revision: 2\nscope: [deferred/]",
+                ),
+            ),
+            "missing-task" => root.write(
+                active,
+                cancelled
+                    .split("```yaml\ntask_ref: transferred")
+                    .next()
+                    .unwrap(),
+            ),
+            "cancelled-scope" => {
+                root.write("deferred/work.rs", "pub fn transferred() -> u8 { 99 }\n")
+            }
+            "cancelled-receipt" | "old-ref" => {
+                let mut task = store.inspect(&transferred_id).unwrap();
+                if scenario == "cancelled-receipt" {
+                    task.receipt = Some(completed_receipt.clone());
+                    task.spec.receipt = task.receipt.clone();
+                } else {
+                    task.milestone_ref = "docs/milestones/foreign.md".into();
+                }
+                store
+                    .connection
+                    .execute(
+                        "UPDATE tasks SET descriptor=?1, milestone_ref=?2 WHERE task_id=?3",
+                        rusqlite::params![
+                            serde_json::to_string(&task).unwrap(),
+                            task.milestone_ref,
+                            transferred_id
+                        ],
+                    )
+                    .unwrap();
+            }
+            "dependent" => {
+                let pending = format!("{cancelled}\n```yaml\ntask_ref: dependent\ntarget: Must remain blocked on cancelled work\nproof_policy: seam-test-first\nscope: [dependent/]\ndepends_on: [transferred]\n```\n");
+                root.write(active, &pending);
+                let pending_milestone = Milestone::parse(&pending, "forge-mcp").unwrap();
+                store.sync(&pending_milestone, active, &root.0).unwrap();
+                let claimed = tasks::claim(
+                    &root.0,
+                    tasks::Claim {
+                        task_id: pending_milestone.task_id(&pending_milestone.tasks[2]),
+                        stage: "contract".into(),
+                        worker_id: "dependent-author".into(),
+                        worktree: root.0.to_string_lossy().into_owned(),
+                        ..Default::default()
+                    },
+                );
+                assert!(
+                    claimed.is_err(),
+                    "cancelled task must not satisfy dependencies"
+                );
+            }
+            "rollback" => {
+                store.connection.execute_batch("CREATE TRIGGER reject_cancelled_relocation BEFORE UPDATE ON tasks WHEN NEW.task_id LIKE '%:transferred' AND NEW.milestone_ref LIKE '%/archive/%' BEGIN SELECT RAISE(ABORT, 'fixture relocation failure'); END;").unwrap();
+            }
+            _ => {}
+        }
+        commit_handoff_fixture_inputs(&root, &["docs", "deferred"]);
+        let before_doc = std::fs::read(root.0.join(active)).unwrap();
+        let before_tasks = store
+            .list(None, "all", None)
+            .unwrap()
+            .into_iter()
+            .map(|task| {
+                let details = store.inspect_details(&task.task_id).unwrap();
+                (task.task_id, details)
+            })
+            .collect::<Vec<_>>();
+        let evidence_file =
+            fixture_evidence_file(&root.0, "m-terminal", "cargo test --test acdd", 1, 0);
+        if scenario == "archive" {
+            let evidence =
+                fixture_integration_evidence(&root.0, "m-terminal", "cargo test --test acdd", 1, 0);
+            let context =
+                milestone_engine::handoff_context(&root.0, "m-terminal", &evidence.target_base);
+            if let Ok(context) = context {
+                assert_eq!(context["binding"]["builders"], json!(["builder"]));
+            } else {
+                failures.push(format!(
+                    "{scenario}: retained cancellation blocked handoff context: {}",
+                    context.unwrap_err()
+                ));
+            }
+        }
+        let output = milestone_cli(
+            &root,
+            &["handoff", "m-terminal", "--evidence-file", &evidence_file],
+        );
+        let expected_success = scenario == "archive";
+        if output.status.success() != expected_success {
+            failures.push(format!(
+                "{scenario}: expected success={expected_success}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+            continue;
+        }
+        if expected_success {
+            assert!(!root.0.join(active).exists());
+            let archived_text = std::fs::read_to_string(root.0.join(archive)).unwrap();
+            let archived = Milestone::parse(&archived_text, "forge-mcp").unwrap();
+            let retained = archived
+                .tasks
+                .iter()
+                .find(|spec| spec.task_ref == "transferred")
+                .unwrap();
+            assert_eq!(retained.status.as_deref(), Some("cancelled"));
+            assert!(retained.receipt.is_none());
+            let mut expected_history = cancelled_history;
+            expected_history["milestone_ref"] = json!(archive);
+            assert_eq!(
+                store.inspect_details(&transferred_id).unwrap(),
+                expected_history
+            );
+            let accepted = store.inspect(&finish_id).unwrap();
+            assert_eq!(accepted.milestone_ref, archive);
+            assert!(completed_receipt.matches_proofs(accepted.receipt.as_ref().unwrap()));
+            let dependencies: i64 = store.connection.query_row("SELECT count(*) FROM task_dependencies WHERE dependency_id=?1 AND satisfied<>0", [&transferred_id], |row| row.get(0)).unwrap();
+            assert_eq!(dependencies, 0);
+        } else {
+            assert_eq!(
+                std::fs::read(root.0.join(active)).unwrap(),
+                before_doc,
+                "{scenario}"
+            );
+            assert!(!root.0.join(archive).exists(), "{scenario}");
+            for (id, details) in before_tasks {
+                assert_eq!(
+                    store.inspect_details(&id).unwrap(),
+                    details,
+                    "{scenario}: task history changed"
+                );
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]

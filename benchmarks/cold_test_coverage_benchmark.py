@@ -12,9 +12,12 @@ import shutil
 import sqlite3
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any
+
+from cold_coverage_metrics import compare_evidence, digest, evidence, metrics
 
 
 def resolve_binary(value: str) -> pathlib.Path:
@@ -37,7 +40,7 @@ def run_build(
     db: pathlib.Path,
     work: pathlib.Path,
     extra_env: dict[str, str] | None = None,
-) -> dict[str, float | int]:
+) -> dict[str, Any]:
     stdout_path = work / "build.stdout"
     stderr_path = work / "build.stderr"
     command = [str(binary), "--root", str(repo), "--db", str(db), "build"]
@@ -46,6 +49,7 @@ def run_build(
         environment.update(extra_env)
     if "FORGE_EXTRACTION_CACHE_DIR" not in environment:
         environment["FORGE_EXTRACTION_CACHE_DIR"] = str(work / "extraction-cache")
+    host_load_before = list(os.getloadavg()) if hasattr(os, "getloadavg") else None
     start = time.perf_counter()
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         process = subprocess.Popen(command, cwd=repo, env=environment, stdout=stdout, stderr=stderr)
@@ -69,7 +73,7 @@ def run_build(
     if not db.is_file():
         raise RuntimeError(f"build succeeded without creating its database: {db}")
 
-    result: dict[str, float | int] = {"wall_seconds": elapsed}
+    result: dict[str, Any] = {"wall_seconds": elapsed, "host_load_before_build": host_load_before}
     if usage is not None:
         result["user_seconds"] = usage.ru_utime
         result["system_seconds"] = usage.ru_stime
@@ -100,17 +104,29 @@ def query_overview(binary: pathlib.Path, repo: pathlib.Path, db: pathlib.Path) -
     if not isinstance(counts, dict) or not isinstance(languages, list):
         raise RuntimeError("query overview is missing graph counts or language coverage")
 
-    resolved = sum(int(row.get("resolved", 0)) for row in languages)
-    ambiguous = sum(int(row.get("ambiguous", 0)) for row in languages)
-    unresolved = sum(int(row.get("unresolved", 0)) for row in languages)
-    external = sum(int(row.get("external_imports", 0)) for row in languages)
+    # Overview collections are paged; aggregate the complete persisted snapshot.
+    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
+        persisted_metadata = dict(connection.execute(
+            "SELECT key,value FROM metadata WHERE key IN ('index_semantics_version','indexer_engine')"
+        ))
+        statuses = dict(connection.execute(
+            "SELECT status,sum(records) FROM coverage_language_counts GROUP BY status"
+        ))
+        components = [row[0] for row in connection.execute(
+            "SELECT DISTINCT p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id "
+            "WHERE n.kind='component' ORDER BY p.path"
+        )]
+    resolved = int(statuses.get("resolved", 0))
+    ambiguous = int(statuses.get("ambiguous", 0))
+    unresolved = int(statuses.get("unresolved", 0))
+    external = int(statuses.get("external", 0))
     resolvable = resolved + ambiguous + unresolved
-    components_page = overview.get("components", {})
-    components = [item.get("path", item.get("name", "")) for item in components_page.get("items", [])]
 
     return {
         "workspace_root": metadata["workspace_root"],
-        "index_semantics_version": metadata.get("index_semantics_version"),
+        "index_semantics_version": persisted_metadata.get("index_semantics_version"),
+        "indexer_engine": persisted_metadata.get("indexer_engine"),
+        "compiled_profiles": overview.get("compiled_profiles"),
         "counts": counts,
         "resolution": {
             "resolved": resolved,
@@ -233,6 +249,9 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=5, help="fresh-database builds per binary (default: 5)")
     parser.add_argument("--max-peak-rss-mb", type=float, help="require every candidate run to stay below this RSS limit in decimal MB")
     parser.add_argument("--output", type=pathlib.Path, help="write the JSON report to this file")
+    parser.add_argument("--artifacts-dir", type=pathlib.Path, help="retain logs, canonical evidence, and the first database per binary outside measured build time")
+    parser.add_argument("--comparison-policy", choices=("strict", "coverage"), default="strict",
+                        help="strict requires identical versioned commitments; coverage gates canonical code losses and per-binary determinism instead")
     args = parser.parse_args()
 
     repo = args.repo.expanduser().resolve()
@@ -249,6 +268,11 @@ def main() -> int:
         candidate_binary = resolve_binary(args.candidate_binary)
         results: dict[str, list[dict[str, Any]]] = {"baseline": [], "candidate": []}
         binaries = {"baseline": baseline_binary, "candidate": candidate_binary}
+        first_evidence = {}
+        binary_hashes = {label: hashlib.sha256(binary.read_bytes()).hexdigest()
+                         for label, binary in binaries.items()}
+        if args.artifacts_dir:
+            args.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
         # Alternate order to reduce systematic drift while keeping builds strictly sequential.
         for repetition in range(args.repeats):
@@ -280,7 +304,24 @@ def main() -> int:
                     }
                     if isinstance(build.get("pipeline"), dict):
                         run["pipeline"] = build["pipeline"]
+                    graph_evidence = evidence(db)
+                    run["code_coverage"] = metrics(graph_evidence, run["database_bytes"], run["wall_seconds"])
+                    if label not in first_evidence:
+                        first_evidence[label] = graph_evidence
+                        if args.artifacts_dir:
+                            (args.artifacts_dir / f"{label}-evidence.json").write_text(
+                                json.dumps(graph_evidence, sort_keys=True) + "\n"
+                            )
+                            with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as source:
+                                with sqlite3.connect(args.artifacts_dir / f"{label}.sqlite") as target:
+                                    source.backup(target)
+                    run["host_load_after_build"] = list(os.getloadavg()) if hasattr(os, "getloadavg") else None
+                    if args.artifacts_dir:
+                        for name in ("build.stdout", "build.stderr"):
+                            shutil.copyfile(work / name, args.artifacts_dir / f"{label}-{repetition + 1}-{name}")
                     results[label].append(run)
+                    print(f"{label} repetition {repetition + 1}/{args.repeats}: "
+                          f"{timing['wall_seconds']:.3f}s", file=sys.stderr, flush=True)
 
         report = {
             "workspace": str(repo),
@@ -290,6 +331,9 @@ def main() -> int:
             "build_policy": "sequential cold builds; forge-mcp.yaml and enabled linked_workspaces are read from the supplied workspace",
             "baseline_binary": str(baseline_binary),
             "candidate_binary": str(candidate_binary),
+            "binary_sha256": binary_hashes,
+            "comparison_policy": args.comparison_policy,
+            "os_page_cache_policy": "not flushed; only index and extraction caches are cold",
             "environment": {
                 key: os.environ[key]
                 for key in ("RAYON_NUM_THREADS", "MALLOC_ARENA_MAX", "FORGE_MEMORY_BUDGET_MB")
@@ -299,6 +343,24 @@ def main() -> int:
             "candidate": summarize_runs(results["candidate"]),
         }
         report["comparison"] = compare(report["baseline"], report["candidate"])
+        evidence_comparison = compare_evidence(first_evidence["baseline"], first_evidence["candidate"])
+        report["code_coverage_comparison"] = evidence_comparison
+        if args.artifacts_dir:
+            (args.artifacts_dir / "code-coverage-diff.json").write_text(
+                json.dumps(evidence_comparison, indent=2, sort_keys=True) + "\n"
+            )
+        report["deterministic_by_binary"] = {
+            label: len({digest([run["output_root"], run["domain_commitments"],
+                               run["code_coverage"]["evidence_sha256"]]) for run in runs}) == 1
+            for label, runs in results.items()
+        }
+        report["code_coverage_preserved"] = not any(evidence_comparison[key] for key in (
+            "lost_code_files", "lost_code_nodes", "lost_exact_call_pairs", "lost_exact_call_occurrences",
+            "lost_code_edges", "lost_resolved_references"
+        )) and not evidence_comparison["aligned_test_reachability"]["lost_production_nodes"]
+        report["candidate_median_not_slower"] = (
+            report["candidate"]["median"]["wall_seconds"] <= report["baseline"]["median"]["wall_seconds"]
+        )
         comparison = report["comparison"]
         report["semantic_parity"] = (
             all(delta == 0 for delta in comparison["graph_count_deltas"].values())
@@ -319,7 +381,11 @@ def main() -> int:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(rendered + "\n")
         print(rendered)
-        return 0 if report["semantic_parity"] and report.get("peak_rss_limit_passed", True) else 1
+        semantic_gate = report["semantic_parity"] if args.comparison_policy == "strict" else (
+            report["code_coverage_preserved"] and all(report["deterministic_by_binary"].values())
+        )
+        # Timing is reported independently; exit 0 never implies a speed pass.
+        return 0 if semantic_gate and report.get("peak_rss_limit_passed", True) else 1
     except (OSError, RuntimeError, ValueError) as error:
         parser.error(str(error))
     return 2

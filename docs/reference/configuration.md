@@ -61,8 +61,9 @@ limits:
 
 This repository lists current documentation files and directories explicitly in
 `docs`: governance, navigation, roadmap, ADRs, architecture, reference,
-runbooks, and testing. Milestones and plans are declared separately in `milestones`
-and `plans`, keeping them out of the general code search index.
+runbooks, testing, and the milestone and plan trees configured separately in
+`milestones` and `plans`. Those Markdown and MDX contracts are searchable too;
+this indexing scope does not change task-discovery or authority rules.
 
 ## Source-only linked libraries
 
@@ -150,7 +151,7 @@ response:
     max_body_lines: 35
 ```
 
-`page_size` accepts 1–100; `max_output_bytes` accepts 1,024–65,536. Source previews accept 0–20 leading lines and 1–100 body lines. `detail` is `compact` or `full`. These settings control presentation and do not change extracted facts or require an index rebuild. Unknown response fields and out-of-range values are rejected.
+`page_size` accepts 1–100; `max_output_bytes` accepts 1,024–65,536. Source previews default to 5 leading lines and 200 body lines. The request may select 0–20 leading lines and 1–500 body lines; configured `source_context` policy values are validated within those bounds. This repository overrides `max_body_lines` to 35 in `forge-mcp.yaml`. `detail` is `compact` or `full`. These settings control presentation and do not change extracted facts or require an index rebuild. Unknown response fields and out-of-range values are rejected.
 
 The root `forge-mcp.yaml` and the file selected with CLI `--adapter` are configuration rather than indexed sources. Nested files with that name and linked-workspace adapters remain ordinary YAML sources when admitted by their configured roots. A linked workspace's own adapter does not control the parent index.
 

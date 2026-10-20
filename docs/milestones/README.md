@@ -17,7 +17,7 @@ Use `contextunity-forge-mcp milestone list` to inspect queue order and dependenc
 Continue an active commitment; admit the next planned commitment when its
 dependencies are satisfied. Its first accepted task claim activates it.
 
-Only this overview README is admitted for documentation indexing; individual milestone contracts remain separate from `doc_search`. See [ADR 0014](../adr/0014-milestone-task-subtask-hierarchy-and-visibility.md) for lifecycle, task visibility, and coordination invariants.
+Milestone contracts are searchable documentation when admitted by the configured documentation roots. Search visibility does not admit a milestone or task, make a proposal an execution commitment, or change the manifest as the source of lifecycle truth. Use the task operations to inspect and change operational state. See [ADR 0014](../adr/0014-milestone-task-subtask-hierarchy-and-visibility.md) for lifecycle, task visibility, and coordination invariants.
 
 ## Milestone Taxonomy and Naming Groups
 

@@ -1,0 +1,34 @@
+Copy only the content inside the fence to `docs/README.md`, then adapt it. The links inside the
+template are relative to that destination file, so they intentionally do not resolve from this
+skill reference. Keep only links whose targets exist in the target repository.
+
+````markdown
+---
+title: "Documentation"
+doc_type: guide
+---
+
+# Documentation
+
+Use this page to find current system behavior, interfaces, operations, and accepted decisions.
+Keep it as navigation; put each contract on its owning page. Remove links for pages the repository
+does not maintain.
+
+## Start here
+
+- [Project overview](../README.md)
+- [Architecture](architecture/README.md)
+- [Interfaces and configuration](reference/README.md)
+- [Operations](runbooks/README.md)
+
+## Decisions and planning
+
+- [Accepted decisions](adr/README.md)
+- [Roadmap](roadmap.md)
+- [Milestones](milestones/README.md)
+- [Plans](plans/README.md)
+
+## Verification
+
+- [Testing guide](testing/README.md)
+````

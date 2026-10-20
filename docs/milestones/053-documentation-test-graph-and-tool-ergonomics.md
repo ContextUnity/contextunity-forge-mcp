@@ -617,3 +617,134 @@ subtasks:
     title: "Add unit and integration tests verifying Markdown fidelity, token density, and contract guidance preservation"
     status: pending
 ```
+
+### task: cancelled-task-handoff-and-finalization
+
+Close the user-authorized milestone delivery while retaining the cancelled task
+transferred to milestone 054. This task does not implement that transferred work
+or alter any accepted task receipt. The final closure artifacts include the
+requested lossless skill routing and benchmark evidence integration; benchmark
+execution remains subject to the repository's explicit authorization rule.
+
+```yaml
+task_ref: cancelled-task-handoff-and-finalization
+target: Accept retained cancelled task authority during milestone handoff without completion credit, preserve completed proofs and cancellation history atomically, integrate the authorized final instruction packaging and benchmark evidence artifacts, and align the six audited documentation cases before handoff
+proof_policy: seam-test-first
+contract_revision: 2
+invariants:
+- 'INV-TERMINAL-HANDOFF-AUTHORITY: Milestone handoff accepts only an exact manifest and SQLite task set whose tasks are completed with valid accepted proofs or identically cancelled without completion receipts. Cancellation identity, revision, digest, status and milestone location are bound and revalidated; all other task states, mismatches and missing proofs fail closed.'
+- 'INV-CANCELLED-NONDELIVERY: Cancelled tasks retain their status, attempts, gates, subtasks, dependencies and evidence through archive relocation and rollback. They supply no accepted builder, completion receipt, dependency satisfaction or implementation scope credit; completed task proofs remain immutable.'
+- 'INV-LOSSLESS-CLOSURE-ARTIFACTS: Final skill routing preserves actionable guidance through packaged repository references, and benchmark evidence records attributable observed results without inventing performance thresholds or changing benchmark authorization. Transferred milestone 054 implementation and held architecture decisions remain excluded.'
+scope:
+- src/engine/milestones/handoff.rs
+- src/db/tasks_store/mod.rs
+- tests/acdd/milestones.rs
+- docs/reference/tasks.md
+- docs/reference/cli.md
+- docs/README.md
+- docs/AGENTS.md
+- docs/milestones/README.md
+- docs/architecture/indexing.md
+- docs/reference/configuration.md
+- docs/adr/0014-milestone-task-subtask-hierarchy-and-visibility.md
+- AGENTS.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/
+- benchmarks/cold_test_coverage_benchmark.py
+- benchmarks/cold_coverage_metrics.py
+subtasks:
+- subtask_ref: cancelled-terminal-authority-and-proof-partition
+  title: Bind matching cancelled authority separately from completed proofs and reject incomplete, forged or changed task authority without scope, builder or dependency credit
+  status: completed
+  evidence: 'Independent REVIEW7: exact matching terminal task set/digest/revision/status/location, completed-only proof/builders/scope, real existing11-case CLI/Git/SQLite seam all green. Full final compound exit0; ACDD116/0, all-targets811/0/1ignored and strictClippy0. Candidatead0e6fa all30 scopedblobs equal. /tmp/forge053-close-review7-findings.json; /tmp/forge053-close-review7-verification.json.'
+- subtask_ref: atomic-terminal-archive-relocation
+  title: Relocate completed and cancelled history atomically with exact task and completed-receipt sets, old-reference fencing and unchanged rollback guarantees
+  status: completed
+  evidence: 'Independent REVIEW7: IMMEDIATE transaction fences SQLidentity/oldref and entire expectedTask snapshot, exact alltask/completedreceipt sets; cancelled history fields/tables unchanged. Real trigger rollback, oldref/forgedreceipt and public archive cases pass, independent fullACDD116/0+all811/0/1ignored/Clippy0. /tmp/forge053-close-review7-findings.json.'
+- subtask_ref: lossless-skill-route-packaging
+  title: Preserve actionable instruction content through repository-owned routed skill references and verify packaged reference availability
+  status: completed
+  evidence: Independent REVIEW7:208-line skill + four routed references and two portable examples read; before/after map verified, all30 scopedblobs current and complete copied skill tree byteequal. Independent fullMCP91/0 includes recursive supported-layout/link tests. No external installer/global sync claim. /tmp/forge053-close-review7-binding.json; /tmp/forge053-close-review7-verification.json.
+- subtask_ref: benchmark-evidence-integration
+  title: Integrate authorized benchmark metric collection and attributable final evidence without new performance promises or unauthorized benchmark execution
+  status: completed
+  evidence: 'Independent REVIEW7: runnerSHA931a987a6c5e78b2038621ab12a1495a7ab71cfe750f004edf38df7553a57634 and helperSHAc1bb7bec78a28cb45fcfe47fe306297fa5f598dd5cd2886a7ce126a28d3c610c match prior independent source/realDB metric audit PASS exactly. Separate timing/code coverage provenance and comparison policy retained. No benchmark execution or invented threshold/speed claim in closure. /tmp/forge053-installed-benchmark-20261020/benchmark-independent-review.md; currentbinding /tmp/forge053-close-review7-binding.json.'
+- subtask_ref: current-documentation-alignment
+  title: Align the overview symbol-link promise, explicit same-line INV authoring example, universal documentation admission versus planning authority and ADR0014, actual link-diagnostic triage, extractor/linker/test navigation, and preview policy defaults with verified current behavior
+  status: completed
+  evidence: 'Independent REVIEW7: all six current cases verified against exact resolver/extractor/indexing/response source and finalscan. Terminal completed/cancelled wording aligned in root/CLI/tasks/template; actual docsAGENTS same-line explicit source unique INV-DOC-FIRST-MATCH-TIER surfaces direct with0omitted. Historical accepted receipt unchanged. Fullfinal811/0/1ignored+Clippy0. /tmp/forge053-close-review7-findings.json; /tmp/forge053-close-final-governing-inspect.json.'
+status: completed
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-20T21:35:08.747854331+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd && cargo test --test mcp
+      exit_code: 0
+      tests_passed: 207
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS: all30 scoped source/reference blobs equal accepted BUILD6 candidate ad0e6fae741884e6bef762a97cacaf66683883c6, baseline dfa2b75e5967edfffce642b74d75a71c2fcec76a. Tracked diff SHA2569360538d7340f5b89ab67284ec7ca1a869c8e18036d1b5732f4ca381a08ff121. All16 tracked changes and7 new files are admitted scope or engine-managed milestone authority; prior completed receipts unchanged. No054, heldADR, config, schema or installed-skill edits. /tmp/forge053-close-review7-binding.json.'
+        claims:
+          applicable: true
+          evidence: 'PASS: handoff.rs278-427 enforces exact terminal task set/digests/revisions/status/location and separates cancelled authority from completed proof/builders;429-475 grants only completed scope;518-668 preserves completed proof receipts and cancelled history. tasks_store/mod.rs1324-1408 and existing milestones.rs1312-1547 provide real Git/CLI/SQLite11-case acceptance, status/digest/revision/missing-task, forged receipt, old-ref, dependency, scope and injected rollback proof. Skill208-line routing retains actionable content through four references plus two portable templates; MCP supported-layout proof covers full copied tree, not external installers. Six docs cases match actual current source and governing proof. Benchmark files exactly match prior reviewed runner931a987a/helperc1bb7bec; no new timing or performance claims. Independent final full compound exit0, all-targets811/0/1ignored, Clippy0; standalone16 excluded from duplicate count. /tmp/forge053-close-review7-verification.json.'
+        concurrency:
+          applicable: true
+          evidence: 'PASS: tasks_store/mod.rs1333-1406 uses IMMEDIATE transaction and fences SQL identity/old location plus complete expected Task snapshot before updates; exact full task and completed-only receipt sets gate commit. Cancellation changes only milestone_ref; save1426-1432 does not mutate attempts/gates/subtasks/dependency/evidence tables. Engine archive publication removes archive on transaction failure and reverses full archived snapshot on source-removal failure; original rollback path preserved. Trigger-injected real relocation failure and complete detail equality checked in existing handoff table; all ACDD116 passed independently in full gate. No new lock order or profile edge.'
+        project_isolation:
+          applicable: true
+          evidence: 'PASS: active root explicit throughout lifecycle/runtime and Cargo. Handoff ready_milestone opens repository/project store; relocation SQL intersects milestone_prefix and self.id_prefix, requires both stored and descriptor old_ref. Existing core filesystem/path, adapter/profile, Git and publication guards retained without new bypass; full gate includes project, symlink/path and cross-worktree guards. Fresh copied repository skill under /tmp only; all skill files byte-equal and no host installation writes. Runtime graph57156849461818118cf758b7428779b7ce054cae680fdcd1a9c27d7e47661104 is current WT, external049 used for lifecycle only.'
+        administration:
+          applicable: true
+          evidence: 'PASS: contract2/BUILD6/candidatead0e6fa bound to independent reviewer codex-053-final-reviewer distinct builder codex-053-handoff-builder. No schema/profile pin/protected header or accepted receipt rewriting. Exact candidate fence and diff-check0 retained through final full test. Completed receipt matches_proofs validation/provenance retention unchanged; cancellation never obtains completion authority. Six resolved deferrals described in new manifest section while historical Task5 receipt immutable. Five subtasks reassessed through canonical Forge operations; review/delivery use claim templates and auto_commit, no manual commit. Final delivery result/parent/hash/clean-state proof is recorded separately after automatic commit.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-EXACT-SEARCH-PRIORITY: When exact is false (default) and symbol search candidates contain exact name or qualname matches, the engine automatically filters out noisy BM25 candidates and returns only exact matches, eliminating surrounding token pollution for known symbol identifiers.'
+    - 'INV-ERGONOMIC-PREVIEW-BUDGET: Source previews for symbols up to 200 lines are returned completely in a single response without artificial pagination; preview line budgets are clamped between 1 and 500 lines.'
+    - 'INV-NATURAL-DOC-SEARCH: Documentation search automatically filters common English stop-words and weights section title matches 3x over body text via FTS5 BM25, eliminating empty results caused by rigid AND conjunction of natural-language query phrases.'
+    - 'INV-TEST-CHAIN-AND-ROLE-TRANSPARENCY: code_map_tests classifies test entities into explicit roles (test_case, test_helper, test_fixture) and returns verified call paths (call_path) from test cases through helpers to target symbols instead of flat scope_or_transitive markers.'
+    - 'INV-EXPLICIT-EDGE-EVIDENCE: Graph inspection (impact and explain) at depth 1 returns full edge objects specifying edge kind (calls vs possible_calls), direction, and exact source location, strictly distinguishing statically proven calls from heuristic name candidates.'
+    - 'INV-UNRESOLVED-TAXONOMY: Unresolved references are categorized into specific granular reasons (dynamic_callback, unresolved_receiver_type, framework_magic, external_unindexed) with call expression snippets rather than generic other groupings.'
+    - 'INV-SCOPE-COVERAGE-TRANSPARENCY: code_map_overview provides coverage diagnostics broken down by primary workspace and linked_workspaces components rather than only global aggregate counts.'
+    - 'INV-DOC-GRAPH-TRACEABILITY: Markdown relative links and wikilinks are extracted into bidirectional cites_doc/cited_by_doc edges; governing invariants (INV-* rules) from linked doc sections are automatically surfaced on inspect and impact.'
+    - 'INV-TERMINAL-HANDOFF-AUTHORITY: Milestone handoff accepts only an exact manifest and SQLite task set whose tasks are completed with valid accepted proofs or identically cancelled without completion receipts. Cancellation identity, revision, digest, status and milestone location are bound and revalidated; all other task states, mismatches and missing proofs fail closed.'
+    - 'INV-CANCELLED-NONDELIVERY: Cancelled tasks retain their status, attempts, gates, subtasks, dependencies and evidence through archive relocation and rollback. They supply no accepted builder, completion receipt, dependency satisfaction or implementation scope credit; completed task proofs remain immutable.'
+    - 'INV-LOSSLESS-CLOSURE-ARTIFACTS: Final skill routing preserves actionable guidance through packaged repository references, and benchmark evidence records attributable observed results without inventing performance thresholds or changing benchmark authorization. Transferred milestone 054 implementation and held architecture decisions remain excluded.'
+    architectural_notes:
+    - 'decisions: Final closure contract2 fulfilled: cancellation remains terminal non-delivery authority, completed proofs/builders/scope remain separately verified; all5 subtasks completed via API with evidence. Final registered-prefix command Clippy+ACDD116+MCP91 exit0 /tmp/forge053-close-final-build.log, focused seam1 not double counted; original RED101 retained. Six documentation findings resolved and independently scanned BB636–637. Skill208 lines routes packaged references/examples tested in copied supported layouts. Benchmark artifacts integrated from prior authorized work; no benchmark execution in closure, no new speed promise or external installation. Framework example audit BB635 remains read-only informational, no unauthorized cleanup. Current graph proves docs/AGENTS.md INV-DOC-FIRST-MATCH-TIER directly governs resolver: /tmp/forge053-close-final-governing-inspect.json. BUILD submission is not final review or milestone handoff.'
+    - 'decisions: Closure acceptance evidence, not new authority: independent REVIEW7 contract2 accepted BUILD6 candidatead0e6fae741884e6bef762a97cacaf66683883c6 across all5contours. Exact full compound cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets exited0:811passed0failed1ignored, standalone16 not doublecounted, strictClippy0; logSHA256fe217408b04f2120b084b805df7f8ac0672b26115c24507d4fbe6a8cb4751c58. All30 scopedblobs frozen, tracked diffSHA9360538d7340f5b89ab67284ec7ca1a869c8e18036d1b5732f4ca381a08ff121. All5subtasks independently completed. Cancelled Task6 retains history, no receipt/builders/scope/dependency credit. Skill208lines routes losslessly; full copied repository skill supported-layout tests pass, no external installer/host sync claim. Benchmark runner931a987a6c5e78b2038621ab12a1495a7ab71cfe750f004edf38df7553a57634/helperc1bb7bec78a28cb45fcfe47fe306297fa5f598dd5cd2886a7ce126a28d3c610c match prior independent metric audit. No benchmark execution or new performance promise. Six authorized documentation cases and terminal wording F1 confirmedfixed; earlier accepted Task5 receipt immutable. Framework example635 inventory remains informational with no cleanup authorization. Full findings/proof artifacts /tmp/forge053-close-review7-{findings.json,findings.md,binding.json,verification.json}. Parent owns subsequent final integration binding/review, archive and landing; no new deferred implementation.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```
+
+## Resolved documentation audit follow-up
+
+The six documentation proposals retained from blackboard 581 are addressed in
+the closure task. [The overview](../README.md) qualifies symbol linkage;
+[authoring guidance](../AGENTS.md) distinguishes first-class same-line INV claims
+from alert classification. The overview, [milestone navigation](README.md), and
+[ADR0014](../adr/0014-milestone-task-subtask-hierarchy-and-visibility.md) align
+universal Markdown indexing with separate planning authority. [Indexing
+architecture](../architecture/indexing.md) provides verified extractor, linker,
+and test navigation; [configuration](../reference/configuration.md) distinguishes
+the 200-line default and 1..500 range from this repository's explicit 35-line
+adapter setting.
+
+Triage of the audit's 36 `broken_doc_link` diagnostics identifies 22 existing
+physical targets: 21 admitted documents have multiple sections and valid
+unanchored whole-page navigation, and `skills/README.md` is outside documentation
+admission. No missing physical target or broken anchor was found. The six typed
+deferrals are therefore removed; the immutable Task5 receipt retains its
+historical audit disposition. The documentation owner's final diff check passes.
