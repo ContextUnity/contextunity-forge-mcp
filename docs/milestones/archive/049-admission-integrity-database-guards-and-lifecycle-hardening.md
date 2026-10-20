@@ -2,7 +2,7 @@
 id: m-admission-integrity-database-guards-and-lifecycle-hardening
 title: Admission integrity, database collision protection, and MCP lifecycle hardening
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-declarative-framework-packs-and-cold-build-pipeline
 owners:
@@ -25,6 +25,39 @@ invariants:
 related_plans:
 - docs/plans/forge-mcp-audit-and-architecture.md
 started_at: 2026-10-19T14:47:39+00:00
+handoff:
+  completed_at: 2026-10-20T11:43:54.221958149+00:00
+  duration: 20h 56m
+  commit: ff4226d40233e6ad8af7acc505462457f87a577c
+  target_base: 1dc907d8c3184f75e9a735fd9f2a4ede36f38f45
+  integration_evidence:
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: m-admission-integrity-database-guards-and-lifecycle-hardening
+      authority_digest: b0fda0621a7e3396a7e19fc119084075ceebee97c8107ffaaf4c4a3d90aa9306
+      implementation_digest: 8338a2e0d6998d208b650968bb74834cf5b3acc2953615758acf71ce35df9902
+      target_base_digest: 68cfc8dab3b48dac607ee6c230581cd8d095b30d8c82951118c80b409edb16db
+      builders:
+      - codex-049-builder
+    target_base: 1dc907d8c3184f75e9a735fd9f2a4ede36f38f45
+    review:
+      worker_id: codex-049-whole-branch-reviewer
+      decision: pass
+      summary: 'Independent integration review of the complete settled milestone delta from main1dc907d8c3184f75e9a735fd9f2a4ede36f38f45 to ff4226d40233e6ad8af7acc505462457f87a577c: all70 changed files map to the13 admitted completed task contracts or authorized milestone metadata, including the separately authorized exact-five companion skill sync. Reconciled original whole-branch review503, closure512/514 and final feature review523/524 against current source and accepted task authority; WR1–4, nested discovery, canonical project identity and commitless receipt binding findings are closed. All11 original task blocks remain byte-identical. Manifest admission, database fencing, workspace/worktree routing, parent liveness, greenfield/retirement seams, lifecycle statuses, Cargo identity, documentation instructions and final handoff content evidence align with current contracts and canonical docs; ADR0015 amendment is explicitly authorized and other accepted ADR boundaries remain intact. Indexing/MCP optimizations are preserved, with exactly10 original allocator trims at the same five owners and no MCP dispatch trim; no new benchmark claim. Reused attributable complete target/mutation evidence and independently verified the final Git HEAD/base, clean worktree, namespace/binding and reviewer independence from all accepted builders. No unresolved scope or contract findings. This review covers the combined branch delta; fresh final repository verification is supplied separately by the coordinator.'
+      scope_findings: []
+      contract_findings: []
+    verification:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 810
+      tests_failed: 0
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 810
+    tests_failed: 0
 ---
 
 # Admission integrity, database collision protection, and MCP lifecycle hardening
@@ -741,6 +774,7 @@ subtasks:
   evidence: repair-closure-ledger.md; full gate 804 passed, 0 failed, 1 existing ignored; strict all-target/all-feature Clippy exit0; isolated documented global-skill fixture. Independent confirmation pending.
 status: completed
 receipt:
+  commit: fe98f78606a0e83759a1b95b789055ef9225cb2e
   contract_revision: 1
   passed_at: 2026-10-19T22:17:14.415467268+00:00
   evidence:
@@ -845,6 +879,7 @@ subtasks:
   status: completed
   evidence: 'Full affected targets: cargo clippy --all-targets --all-features -- -D warnings && cargo test --lib --test acdd --test mcp; exit0, 297 passed,0 failed. status-build-targets-final.log. Includes cancellation cached dependency same-digest/higher-revision/fresh-import red→green regression; independent final review pending.'
 receipt:
+  commit: 5914910e0a15c637cfae501bd1079eceeaf6399b
   contract_revision: 2
   passed_at: 2026-10-19T22:58:43.749842907+00:00
   evidence:
@@ -930,6 +965,7 @@ subtasks:
   status: completed
   evidence: Real production ACDD contract seam test passes via Cargo package import without TASK_SEAM_DISCONNECTED. Complete acdd115 PASS; existing boundary target test now requires exact newly connected external covering target while retaining strict canonical commands/caller admission. Strict Clippy + total561 tests PASS0failed0ignored; H/cargo-import-build-{clippy,targets}.log.
 receipt:
+  commit: 8971a164c6c43799396d25f0da0ac72c2bc4b3bf
   contract_revision: 2
   passed_at: 2026-10-19T23:32:57.033742001+00:00
   evidence:
@@ -1025,6 +1061,7 @@ subtasks:
   evidence: null
 status: completed
 receipt:
+  commit: 3fa51ce9ffc41f795a4952e21891513f5696ae96
   contract_revision: 1
   passed_at: 2026-10-20T01:42:57.171357649+00:00
   evidence:
@@ -1162,6 +1199,7 @@ subtasks:
   evidence: Independent source/doc review of candidate20e0b65 confirms authorized ADR0015 amendment, AGENTS instruction-only documentation scan, TESTS verification record, CLI/task/config references and packaged Forge skill/example alignment. Documentation scan520 binds final diff; no new runtime agent/gate/test runner or indexing/MCP hot-path work. All changed paths admitted in contract3 and extension.
 status: completed
 receipt:
+  commit: ff4226d40233e6ad8af7acc505462457f87a577c
   contract_revision: 3
   passed_at: 2026-10-20T02:47:16.688251015+00:00
   evidence:
