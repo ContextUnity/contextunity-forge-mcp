@@ -39,6 +39,34 @@ fn method_owner(node: Syntax<'_>) -> Option<Syntax<'_>> {
     None
 }
 
+fn has_cfg_test(node: Syntax<'_>, source: &str) -> bool {
+    let mut current = Some(node);
+    while let Some(declaration) = current {
+        let mut sibling = declaration.prev_named_sibling();
+        while let Some(attribute) = sibling.filter(|sibling| sibling.kind() == "attribute_item") {
+            if text(attribute, source)
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+                == "#[cfg(test)]"
+            {
+                return true;
+            }
+            sibling = attribute.prev_named_sibling();
+        }
+        current = declaration.parent();
+    }
+    false
+}
+
+fn unrestricted_public(node: Syntax<'_>, source: &str) -> bool {
+    text(node, source)
+        .trim_start()
+        .strip_prefix("pub")
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(char::is_whitespace)
+}
+
 fn has_unproven_bounds(node: Syntax<'_>, source: &str) -> bool {
     node.named_children(&mut node.walk())
         .any(|child| child.kind() == "where_clause")
@@ -881,6 +909,7 @@ impl LanguageProfile for Rust {
             return SymbolMetadata {
                 param_types,
                 is_async: value_flow::is_async(node, source),
+                is_public: Some(unrestricted_public(node, source)),
                 ..Default::default()
             };
         };
@@ -907,6 +936,7 @@ impl LanguageProfile for Rust {
             receiver_type,
             is_method: Some(true),
             is_static: Some(!has_receiver),
+            is_public: Some(unrestricted_public(node, source)),
             ..Default::default()
         }
     }
@@ -942,6 +972,24 @@ impl LanguageProfile for Rust {
             previous = attr.prev_named_sibling();
         }
         false
+    }
+    fn test_role(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        _path: &str,
+        _file: &FileContext,
+    ) -> Option<&'static str> {
+        if !matches!(node.kind(), "function_item" | "function_signature_item") {
+            return None;
+        }
+        if self.test_attribute(node, source) {
+            Some("test_case")
+        } else if has_cfg_test(node, source) {
+            Some("test_helper")
+        } else {
+            None
+        }
     }
 }
 

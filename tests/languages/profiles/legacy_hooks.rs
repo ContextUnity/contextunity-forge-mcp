@@ -50,6 +50,7 @@ impl DefaultHooks {
             is_overload: true,
             is_stub: true,
             is_conditional: true,
+            is_public: None,
         }
     }
     fn contextual_flow(&self, node: tree_sitter::Node<'_>) -> ValueFlowFacts {

@@ -1106,6 +1106,11 @@ pub fn analyze_paged(
         |r| r.get(0),
     )?;
     let mut result = json!({"target":target,"total_errors":total_errors,"total_unresolved":total_unresolved,"total_external_imports":total_external_imports,"scope":if exact_file {"file"} else {"summary"}});
+    let public_surface_sql = format!(
+        "WITH RECURSIVE covered(node_hash) AS (SELECT n.node_hash FROM nodes n WHERE n.is_test=1 AND json_extract(n.details,'$.test_role')='test_case' UNION SELECT e.dst_hash FROM edges e JOIN covered c ON c.node_hash=e.src_hash WHERE e.kind='calls') SELECT {} FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE (?1='' OR p.path=?1 OR (p.path>=?2 AND p.path<?3)) AND n.is_test=0 AND json_extract(n.details,'$.is_public')=1 AND NOT EXISTS(SELECT 1 FROM covered c WHERE c.node_hash=n.node_hash) ORDER BY p.path,n.line,n.id",
+        paging::nodes_with_path("n", options.detail, "p.path")
+    );
+    result["untested_public_surface"] = paging::query(conn, &public_surface_sql, params, options)?;
     let (language_sql, language_params): (&str, &[&dyn rusqlite::ToSql]) = if path.is_empty() {
         ("SELECT c.language,sum(CASE WHEN c.status='resolved' THEN c.records ELSE 0 END) resolved,sum(CASE WHEN c.status='ambiguous' THEN c.records ELSE 0 END) ambiguous,sum(CASE WHEN c.status='unresolved' THEN c.records ELSE 0 END) unresolved,sum(CASE WHEN c.status='external' THEN c.records ELSE 0 END) external_imports FROM coverage_language_counts c GROUP BY c.language ORDER BY c.language LIMIT 100", &[])
     } else {

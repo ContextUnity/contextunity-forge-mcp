@@ -80,7 +80,7 @@ flowchart TD
    - Traces inbound dependency chains before modifying or removing symbols.
    - Keep `depth=1` initially to avoid combinatorial explosions.
 6. **Tests**: `code_map_tests(selector="...", direction="inbound")`
-   - Identifies which tests exercise the target code (`inbound`), or what production code a test relies on (`outbound`).
+    - Inbound follows exact `calls` edges from classified `test_case` roots and returns the shortest `call_path`; helpers and fixtures may appear within a path but are not coverage roots. Outbound follows exact calls from a test into production code. `possible_calls` and lexical fallback suggestions do not prove coverage; a bounded lexical suggestion has no `call_path`.
 7. **AST Preview**: `get_code_snippet(selector="...")`
    - Reads a bounded source preview (5 leading + 200 body lines by default; requested body lines clamp to 1..500, within byte caps).
 8. **Verify Source**: Use `ctx_read` for exact source ranges before editing.
@@ -256,13 +256,14 @@ Code discovery and inspection tools accept `worktree`: an absolute or server-rel
   Preview line budgets for inspect and snippet requests are clamped to supported bounds. Continue a truncated preview with the returned `next_source_offset` as `source_offset` and the same `generation`.
 - `code_map_explain(selector, direction?, worktree?, include_coverage?, show_doc?, show_source?)`: Direct relationships, candidate dispatch edges, symbol ownership, and architectural invariants.
 - `code_map_impact(selector, direction?, depth?, worktree?, detail?, limit?, offset?, generation?)`: Inbound blast radius (`direction="inbound"`, default, traversing both exact `calls` and candidate `possible_calls`) or outbound dependencies.
-- `code_map_tests(selector, direction?, worktree?, detail?, limit?, offset?, generation?)`: Find tests covering a target, or production dependencies of a test.
+- `code_map_tests(selector, direction?, worktree?, detail?, limit?, offset?, generation?)`: Find verified test cases connected by exact call paths, or production dependencies reached from a test. Test roles distinguish cases, helpers, and fixtures; a bounded inbound lexical fallback can suggest cases when no graph path exists.
 
 ### Verification & Safety
 - `code_map_prove_removal(selector)`: Proves whether a symbol can be safely removed based on static references; treats candidate callers (`possible_calls`) as potential incoming dependencies that block safe removal.
 - `code_map_analyze(target, lint?, include_cycles?)`:
   - `target=""`: Workspace-wide diagnostics and syntax errors.
   - `target="path/to/file.py"`: File-scoped diagnostics.
+  - `untested_public_surface`: Paged declared-public production symbols in the selected path scope that no indexed test case reaches through exact calls.
   - `lint=true`: Returns stored AST parse and syntax errors.
   - `include_cycles=true`: Detects dependency cycles.
 - `code_map_query(operation, selector?, include_coverage?, depth?, limit?, offset?, generation?)`: Graph slices, unwired nodes, or read-only SQL (`operation="sql"`).

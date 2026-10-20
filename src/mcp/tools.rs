@@ -333,7 +333,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Test relationships for a narrow selector. inbound finds tests that exercise the target; outbound finds production code a test depends on. A hit is a direct edge or scope_or_transitive, not a full path. Broad scopes are rejected."
+        description = "Test relationships for a narrow selector. Inbound returns verified test cases connected by exact calls paths and keeps the bounded lexical fallback when no call path exists; outbound returns production dependencies reached through exact calls. Results include test roles and shortest call paths where graph evidence exists. Possible calls do not establish coverage. Broad scopes are rejected."
     )]
     fn code_map_tests(&self, Parameters(p): Parameters<Tests>) -> CallToolResult {
         self.responding(|adapter, policy| {
@@ -424,7 +424,7 @@ impl Server {
         })
     }
     #[tool(
-        description = "Diagnostics for the workspace or one path, stored syntax diagnostics, or static cycles. lint=true cannot combine with include_cycles=true."
+        description = "Diagnostics for the workspace or one path, declared-public production symbols not reached by an indexed test case, stored syntax diagnostics, or static cycles. lint=true cannot combine with include_cycles=true."
     )]
     fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
         self.responding(|adapter, policy| {

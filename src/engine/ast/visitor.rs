@@ -873,6 +873,7 @@ impl SinglePassExtractor<'_> {
                 frame.legacy_flow = Some(flow);
                 metadata
             };
+            let test_role = context.profile.test_role(node, source, path, context.file);
             let prototype_owner = (language == "javascript"
                 && matches!(node.kind(), "function_expression" | "arrow_function")
                 && metadata.is_method == Some(true))
@@ -889,6 +890,12 @@ impl SinglePassExtractor<'_> {
             };
             let mut details = json!({"receiver_name":metadata.receiver_name,"bindings":bindings.all,"rebindings":bindings.rebindings,"default_export":metadata.default_export,"doc":syntax_doc(context, node),"decorators":metadata.decorators,"bases":metadata.bases,"receiver":metadata.receiver,"signature":declaration_signature(node,source),"async":metadata.is_async});
             details["column"] = json!(node.start_position().column);
+            if let Some(test_role) = test_role {
+                details["test_role"] = json!(test_role);
+            }
+            if let Some(is_public) = metadata.is_public {
+                details["is_public"] = json!(is_public);
+            }
             if let Some(receiver_type) = metadata.receiver_type {
                 details["receiver_type"] = json!(receiver_type);
             }
@@ -926,7 +933,9 @@ impl SinglePassExtractor<'_> {
                 path: path.into(),
                 line,
                 end_line: node.end_position().row + offset + 1,
-                is_test: is_test(path) || context.profile.test_attribute(node, source),
+                is_test: is_test(path)
+                    || test_role.is_some()
+                    || context.profile.test_attribute(node, source),
                 language: language.into(),
                 generated: false,
                 details,
@@ -1162,8 +1171,10 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
         else {
             return;
         };
+        let mut visibility_exports = None;
         if self.name.is_none() {
             if let Some((exports, lazy_exports)) = module_outputs {
+                visibility_exports = Some(exports.clone());
                 if lazy_exports
                     .as_array()
                     .is_some_and(|entries| !entries.is_empty())
@@ -1189,6 +1200,7 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
                     context.source,
                     &bindings,
                 ) {
+                    visibility_exports = Some(exports.clone());
                     if exports.is_empty() {
                         node.details
                             .as_object_mut()
@@ -1258,6 +1270,11 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
                 .as_object_mut()
                 .expect("scope details object")
                 .shift_remove("value_flow");
+        }
+        if let Some(exports) = visibility_exports.as_deref() {
+            context
+                .profile
+                .finalize_file_visibility(self.root, context.source, facts, exports);
         }
     }
 }

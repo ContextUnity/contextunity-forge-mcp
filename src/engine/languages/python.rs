@@ -815,7 +815,50 @@ impl LanguageProfile for Python {
             is_overload,
             is_stub,
             is_conditional: conditional_class_member(node),
+            is_public: Some(module_scope(node) && !_name.starts_with('_')),
             ..Default::default()
+        }
+    }
+    fn test_role(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        path: &str,
+        _file: &FileContext,
+    ) -> Option<&'static str> {
+        if !crate::core::models::is_test(path)
+            || !matches!(node.kind(), "function_definition" | "lambda")
+        {
+            return None;
+        }
+        let decorators = node
+            .parent()
+            .filter(|parent| parent.kind() == "decorated_definition")
+            .map(|parent| {
+                let mut cursor = parent.walk();
+                parent
+                    .named_children(&mut cursor)
+                    .filter(|child| child.kind() == "decorator")
+                    .map(|decorator| text(decorator, source).trim().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if decorators.iter().any(|decorator| {
+            let name = decorator
+                .trim_start_matches('@')
+                .split('(')
+                .next()
+                .unwrap_or_default()
+                .trim();
+            name == "fixture" || name.ends_with(".fixture")
+        }) {
+            return Some("test_fixture");
+        }
+        let name = field(node, source, "name").unwrap_or_default();
+        if name.starts_with("test_") {
+            Some("test_case")
+        } else {
+            Some("test_helper")
         }
     }
     fn extract_relations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {

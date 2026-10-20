@@ -398,7 +398,7 @@ fn broad_slice_is_rejected_before_recursive_pagination() {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("before its unbounded dependency walk"),
+            error.contains("before its bounded exact-call graph walk"),
             "{error}"
         );
         assert!(error.contains("narrower module or symbol"), "{error}");

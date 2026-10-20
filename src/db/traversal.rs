@@ -190,10 +190,6 @@ pub(super) fn custom_dependency_steps(
     }
 }
 
-pub(super) fn dependency_steps(inbound: bool, bounded: bool, structural: bool) -> String {
-    let (forward, reverse) = resolve_traversal_kinds(None, None, structural);
-    custom_dependency_steps(inbound, bounded, &forward, &reverse)
-}
 pub use super::cycles::cycles;
 
 /// Performs impact inbound.

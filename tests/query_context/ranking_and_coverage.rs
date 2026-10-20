@@ -436,12 +436,137 @@ fn search_ranking_applies_to_other_names_and_wildcard_pages() {
 
 #[test]
 fn test_mapping_marks_direct_evidence_and_does_not_invent_transitive_paths() {
+    let mut failures = Vec::new();
     let workspace = Workspace::new();
     workspace.write(
         "service.py",
         "def target(): pass\ndef wrapper(): target()\n",
     );
     workspace.write("tests/test_service.py", "from service import target, wrapper\ndef test_direct(): target()\ndef test_indirect(): wrapper()\n");
+    workspace.write(
+        "surface.py",
+        r#"def covered(): pass
+def long_covered(): pass
+def cycle_covered(): pass
+def diamond_covered(): pass
+def helper_only(): pass
+def fixture_only(): pass
+def possible_only(): pass
+def untouched(): pass
+def _internal(): pass
+def outer():
+    def nested(): pass
+class Alpha:
+    def execute(self): possible_only()
+class Beta:
+    def execute(self): possible_only()
+def dispatch(condition):
+    if condition:
+        receiver = Alpha()
+    else:
+        receiver = Beta()
+    receiver.execute()
+"#,
+    );
+    workspace.write("tests/test_surface.py", r#"import pytest
+from surface import covered, long_covered, cycle_covered, diamond_covered, helper_only, fixture_only, dispatch
+def helper_six(): long_covered()
+def helper_five(): helper_six()
+def helper_four(): helper_five()
+def helper_three(): helper_four()
+def helper_two(): helper_three()
+def helper_one(): helper_two()
+def cycle_a(): cycle_b()
+def cycle_b():
+    cycle_a()
+    cycle_covered()
+def route_a(): diamond_covered()
+def route_z(): diamond_covered()
+def unused_helper(): helper_only()
+@pytest.fixture
+def prepared_surface(): fixture_only()
+def test_covered(): covered()
+def test_long(): helper_one()
+def test_cycle(): cycle_a()
+def test_diamond():
+    route_z()
+    route_a()
+def test_possible(): dispatch(True)
+"#);
+    workspace.write("application.py", "def test_noncase(): pass\n");
+    workspace.write("tests/test_decoy.py", "def untouched(): pass\n");
+    #[cfg(feature = "lang-rust")]
+    workspace.write(
+        "src/visibility.rs",
+        r#"pub fn rust_covered() {}
+pub fn rust_untouched() {}
+pub(crate) fn rust_crate_only() {}
+mod inner {
+    pub(super) fn rust_parent_only() {}
+    pub fn rust_declared_public() {}
+    fn rust_private() {}
+}
+#[cfg(test)]
+fn rust_helper() { rust_covered(); }
+#[test]
+fn rust_case() { rust_helper(); }
+#[tokio::test]
+async fn rust_async_case() { rust_helper(); }
+"#,
+    );
+    #[cfg(feature = "lang-typescript")]
+    {
+        workspace.write(
+            "src/visibility.ts",
+            r#"export function ts_covered() {}
+export function ts_untouched() {}
+export function false_covered() {}
+function ts_named() {}
+export { ts_named as named };
+export default function ts_default() {}
+function ts_internal() {}
+export function same() {}
+function outer() {
+    function same() {}
+}
+{
+    function same() {}
+}
+export class Twin {
+    duplicate() {}
+}
+{
+    class Twin {
+        duplicate() {}
+    }
+}
+export class Visible {
+    public ts_public_member() {}
+    ts_implicit_member() {}
+    private ts_private_member() {}
+    protected ts_protected_member() {}
+    #ts_hash_private() {}
+    static #ts_static_hash_private() {}
+}
+"#,
+        );
+        workspace.write(
+            "tests/visibility.test.ts",
+            r#"import { test, beforeEach } from 'node:test';
+import { ts_covered, false_covered } from '../src/visibility';
+function ts_helper() { ts_covered(); }
+beforeEach(function ts_fixture() { ts_helper(); });
+test('covered', function ts_case() { ts_helper(); });
+function shadowed(test: Function) {
+    test('ordinary callback', function ts_noncase() {});
+}
+{
+    const test = (name: string, fn: Function) => {};
+    test('shadowed callback', function shadowed_callback() { false_covered(); });
+}
+"#,
+        );
+    }
     let conn = workspace.build();
     let inbound = symbols::tests_paged(&conn, "target", "inbound", &options(10)).unwrap();
     let items = inbound["nodes"]["items"].as_array().unwrap();
@@ -457,7 +582,9 @@ fn test_mapping_marks_direct_evidence_and_does_not_invent_transitive_paths() {
         .iter()
         .find(|item| item["name"] == "test_indirect")
         .unwrap();
-    assert_eq!(indirect["connection"]["relation"], "scope_or_transitive");
+    if indirect["connection"]["relation"] != "transitive" {
+        failures.push(format!("verified indirect relation: {indirect}"));
+    }
     assert!(indirect["connection"].get("path").is_none());
     let outbound = symbols::tests_paged(&conn, "test_direct", "outbound", &options(10)).unwrap();
     let target = outbound["nodes"]["items"]
@@ -477,6 +604,326 @@ fn test_mapping_marks_direct_evidence_and_does_not_invent_transitive_paths() {
         .find(|item| item["name"] == "test_direct")
         .unwrap();
     assert_eq!(direct["connection"]["path"], "tests/test_service.py");
+    let node = |selector: &str| reader::select(&conn, selector).unwrap();
+    for detail in [Detail::Compact, Detail::Full] {
+        let mut query = options(100);
+        query.detail = detail;
+        for (selector, case, path) in [
+            (
+                "service.py:target",
+                "test_direct",
+                vec!["tests/test_service.py:test_direct", "service.py:target"],
+            ),
+            (
+                "service.py:target",
+                "test_indirect",
+                vec![
+                    "tests/test_service.py:test_indirect",
+                    "service.py:wrapper",
+                    "service.py:target",
+                ],
+            ),
+            (
+                "surface.py:covered",
+                "test_covered",
+                vec!["tests/test_surface.py:test_covered", "surface.py:covered"],
+            ),
+            (
+                "surface.py:long_covered",
+                "test_long",
+                vec![
+                    "tests/test_surface.py:test_long",
+                    "tests/test_surface.py:helper_one",
+                    "tests/test_surface.py:helper_two",
+                    "tests/test_surface.py:helper_three",
+                    "tests/test_surface.py:helper_four",
+                    "tests/test_surface.py:helper_five",
+                    "tests/test_surface.py:helper_six",
+                    "surface.py:long_covered",
+                ],
+            ),
+            (
+                "surface.py:cycle_covered",
+                "test_cycle",
+                vec![
+                    "tests/test_surface.py:test_cycle",
+                    "tests/test_surface.py:cycle_a",
+                    "tests/test_surface.py:cycle_b",
+                    "surface.py:cycle_covered",
+                ],
+            ),
+            (
+                "surface.py:diamond_covered",
+                "test_diamond",
+                vec![
+                    "tests/test_surface.py:test_diamond",
+                    "tests/test_surface.py:route_a",
+                    "surface.py:diamond_covered",
+                ],
+            ),
+        ] {
+            let found = symbols::tests_paged(&conn, selector, "inbound", &query).unwrap();
+            let expected = Value::Array(
+                path.iter()
+                    .map(|selector| node(selector)["id"].clone())
+                    .collect(),
+            );
+            match found["nodes"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["name"] == case)
+            {
+                Some(item)
+                    if item["connection"]["call_path"] == expected
+                        && item["test_role"] == "test_case" => {}
+                other => failures.push(format!(
+                    "{detail:?} {case} exact path expected={expected}, actual={other:?}"
+                )),
+            }
+        }
+    }
+    if target["connection"]["call_path"]
+        != serde_json::json!([
+            node("tests/test_service.py:test_direct")["id"],
+            node("service.py:target")["id"]
+        ])
+    {
+        failures.push(format!(
+            "outbound path must retain case-to-target orientation: {target}"
+        ));
+    }
+    let mut roles = vec![
+        ("tests/test_service.py:test_direct", Some("test_case")),
+        ("tests/test_surface.py:helper_one", Some("test_helper")),
+        ("tests/test_surface.py:unused_helper", Some("test_helper")),
+        (
+            "tests/test_surface.py:prepared_surface",
+            Some("test_fixture"),
+        ),
+        ("application.py:test_noncase", None),
+        ("tests/test_decoy.py:untouched", Some("test_helper")),
+    ];
+    #[cfg(feature = "lang-rust")]
+    roles.extend([
+        ("rust_case", Some("test_case")),
+        ("rust_async_case", Some("test_case")),
+        ("rust_helper", Some("test_helper")),
+    ]);
+    #[cfg(feature = "lang-typescript")]
+    roles.extend([
+        ("ts_case", Some("test_case")),
+        ("ts_helper", Some("test_helper")),
+        ("ts_fixture", Some("test_fixture")),
+        ("ts_noncase", Some("test_helper")),
+        ("shadowed_callback", Some("test_helper")),
+    ]);
+    for (selector, role) in roles {
+        let selected = node(selector);
+        if selected["details"]["test_role"].as_str() != role {
+            failures.push(format!("{selector} role={role:?}: {selected}"));
+        }
+    }
+    let mut language_paths: Vec<Vec<&str>> = Vec::new();
+    #[cfg(feature = "lang-rust")]
+    language_paths.extend([
+        vec!["rust_case", "rust_helper", "rust_covered"],
+        vec!["rust_async_case", "rust_helper", "rust_covered"],
+    ]);
+    #[cfg(feature = "lang-typescript")]
+    language_paths.push(vec!["ts_case", "ts_helper", "ts_covered"]);
+    for path in language_paths {
+        let expected = Value::Array(
+            path.iter()
+                .map(|selector| node(selector)["id"].clone())
+                .collect(),
+        );
+        let found =
+            symbols::tests_paged(&conn, path.last().unwrap(), "inbound", &options(100)).unwrap();
+        let case_id = node(path[0])["id"].clone();
+        if !found["nodes"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["id"] == case_id
+                    && item["test_role"] == "test_case"
+                    && item["connection"]["call_path"] == expected
+            })
+        {
+            failures.push(format!(
+                "language-profile verified path expected={expected}: {found}"
+            ));
+        }
+    }
+    let mut visibility = vec![
+        ("surface.py:covered", true),
+        ("surface.py:untouched", true),
+        ("surface.py:_internal", false),
+        ("nested", false),
+        ("application.py:test_noncase", true),
+    ];
+    #[cfg(feature = "lang-rust")]
+    visibility.extend([
+        ("rust_covered", true),
+        ("rust_untouched", true),
+        ("rust_declared_public", true),
+        ("rust_crate_only", false),
+        ("rust_parent_only", false),
+        ("rust_private", false),
+    ]);
+    #[cfg(feature = "lang-typescript")]
+    visibility.extend([
+        ("ts_covered", true),
+        ("ts_untouched", true),
+        ("ts_named", true),
+        ("ts_default", true),
+        ("ts_internal", false),
+        ("ts_public_member", true),
+        ("ts_implicit_member", true),
+        ("ts_private_member", false),
+        ("ts_protected_member", false),
+        ("ts_hash_private", false),
+        ("src/visibility.ts:8", true),
+        ("src/visibility.ts:10", false),
+        ("ts_static_hash_private", false),
+        ("false_covered", true),
+        ("src/visibility.ts:13", false),
+        ("src/visibility.ts:15", true),
+        ("src/visibility.ts:16", true),
+        ("src/visibility.ts:19", false),
+        ("src/visibility.ts:20", false),
+    ]);
+    for (selector, public) in &visibility {
+        let selected = node(selector);
+        if selected["details"]["is_public"] != *public {
+            failures.push(format!("{selector} declared-public={public}: {selected}"));
+        }
+    }
+    let source =
+        SourceOptions::resolve(&ResponsePolicy::default(), Some(false), None, None, 0).unwrap();
+    let dispatch = symbols::explain_with_options(
+        &conn,
+        &workspace.0,
+        "surface.py:dispatch",
+        &symbols::ExplainOptions {
+            direction: Some("outgoing"),
+            show_doc: false,
+            source: &source,
+            coverage: CoverageOptions::default(),
+            page: &options(100),
+        },
+    )
+    .unwrap();
+    let possible = dispatch["outgoing"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|edge| edge["kind"] == "possible_calls")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        possible.len(),
+        2,
+        "fixture must exercise real ambiguous dispatch: {dispatch}"
+    );
+    assert!(possible.iter().all(|edge| edge["confidence"] == "possible"));
+    for selector in [
+        "surface.py:helper_only",
+        "surface.py:fixture_only",
+        "surface.py:possible_only",
+        "surface.py:untouched",
+    ] {
+        let found = symbols::tests_paged(&conn, selector, "inbound", &options(100)).unwrap();
+        if found["nodes"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["connection"].get("call_path").is_some())
+        {
+            failures.push(format!(
+                "non-case/possible-only evidence must not establish verified coverage: {found}"
+            ));
+        }
+    }
+    let shadowed = symbols::tests_paged(
+        &conn,
+        "src/visibility.ts:false_covered",
+        "inbound",
+        &options(100),
+    )
+    .unwrap();
+    if shadowed["nodes"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| {
+            item["name"] == "shadowed_callback" && item["connection"].get("call_path").is_some()
+        })
+    {
+        failures.push(format!(
+            "a block-shadowed runner must not establish verified coverage: {shadowed}"
+        ));
+    }
+    // Test roots outside the selected production path still establish coverage.
+    for limit in [1, 100] {
+        let mut query = options(limit);
+        let mut untested = BTreeSet::new();
+        loop {
+            let analysis = reader::analyze_paged(&conn, "surface.py", None, &query).unwrap();
+            let page = &analysis["untested_public_surface"];
+            let Some(items) = page["items"].as_array() else {
+                failures.push(format!("missing public-surface diagnostic: {analysis}"));
+                break;
+            };
+            untested.extend(
+                items
+                    .iter()
+                    .map(|item| item["id"].as_str().unwrap().to_owned()),
+            );
+            if !continue_page(&mut query, page) {
+                break;
+            }
+        }
+        for (selector, expected) in [
+            ("surface.py:covered", false),
+            ("surface.py:long_covered", false),
+            ("surface.py:cycle_covered", false),
+            ("surface.py:diamond_covered", false),
+            ("surface.py:helper_only", true),
+            ("surface.py:fixture_only", true),
+            ("surface.py:possible_only", true),
+            ("surface.py:untouched", true),
+            ("surface.py:_internal", false),
+            ("nested", false),
+        ] {
+            if untested.contains(node(selector)["id"].as_str().unwrap()) != expected {
+                failures.push(format!(
+                    "limit={limit} {selector} untested={expected}: {untested:?}"
+                ));
+            }
+        }
+    }
+    for (selector, public) in visibility {
+        let selected = node(selector);
+        if selected["path"] == "surface.py" {
+            continue;
+        }
+        let analysis = reader::analyze_paged(
+            &conn,
+            selected["path"].as_str().unwrap(),
+            None,
+            &options(100),
+        )
+        .unwrap();
+        let expected = public && selector != "rust_covered" && selector != "ts_covered";
+        let actual = analysis["untested_public_surface"]["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["id"] == selected["id"]));
+        if actual != expected {
+            failures.push(format!("{selector} untested={expected}: {analysis}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -495,6 +942,16 @@ fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
         inbound["nodes"]["items"][0]["name"],
         "test_ChannelSyncEntry"
     );
+    let lexical = &inbound["nodes"]["items"][0];
+    assert_eq!(lexical["test_role"], "test_case");
+    assert!(lexical["connection"].get("call_path").is_none());
+    let analysis = reader::analyze_paged(&conn, "service.py", None, &options(10)).unwrap();
+    let id = reader::select(&conn, "ChannelSyncEntry").unwrap()["id"].clone();
+    assert!(analysis["untested_public_surface"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["id"] == id));
 }
 
 #[test]
@@ -527,8 +984,33 @@ fn test_mapping_places_direct_evidence_before_earlier_transitive_tests() {
     assert_eq!(second["nodes"]["items"][0]["name"], "test_indirect");
     assert_eq!(
         second["nodes"]["items"][0]["connection"]["relation"],
-        "scope_or_transitive"
+        "transitive"
     );
+    for (page, path) in [
+        (
+            &first,
+            vec!["tests/z_test_service.py:test_direct", "service.py:target"],
+        ),
+        (
+            &second,
+            vec![
+                "tests/a_test_service.py:test_indirect",
+                "service.py:wrapper",
+                "service.py:target",
+            ],
+        ),
+    ] {
+        let expected = Value::Array(
+            path.iter()
+                .map(|selector| reader::select(&conn, selector).unwrap()["id"].clone())
+                .collect(),
+        );
+        assert_eq!(
+            page["nodes"]["items"][0]["connection"]["call_path"],
+            expected
+        );
+        assert_eq!(page["nodes"]["items"][0]["test_role"], "test_case");
+    }
 }
 
 #[test]

@@ -5,7 +5,262 @@ use crate::db::traversal;
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+const MAX_CALL_GRAPH_NODES: usize = 20_000;
+const MAX_CALL_GRAPH_EDGES_PER_FRONTIER: usize = 20_000;
+const MAX_CALL_GRAPH_DEPTH: usize = 128;
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct NodeKey {
+    path: String,
+    line: i64,
+    id: String,
+}
+#[derive(Clone, Debug)]
+struct CallNode {
+    hash: i64,
+    id: String,
+    path: String,
+    line: i64,
+    is_test: bool,
+    test_role: Option<String>,
+}
+
+impl CallNode {
+    fn key(&self) -> NodeKey {
+        NodeKey {
+            path: self.path.clone(),
+            line: self.line,
+            id: self.id.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CallPath {
+    hashes: Vec<i64>,
+    nodes: Vec<NodeKey>,
+    edges: Vec<(String, i64)>,
+}
+
+impl CallPath {
+    fn precedes(&self, other: &Self) -> bool {
+        (&self.nodes, &self.edges) < (&other.nodes, &other.edges)
+    }
+}
+
+fn call_node(row: &Value) -> Result<CallNode> {
+    Ok(CallNode {
+        hash: row["hash"]
+            .as_i64()
+            .context("invalid call graph node hash")?,
+        id: row["id"]
+            .as_str()
+            .context("invalid call graph node id")?
+            .to_owned(),
+        path: row["path"]
+            .as_str()
+            .context("invalid call graph node path")?
+            .to_owned(),
+        line: row["line"]
+            .as_i64()
+            .context("invalid call graph node line")?,
+        is_test: row["is_test"].as_i64() == Some(1),
+        test_role: row["test_role"].as_str().map(str::to_owned),
+    })
+}
+
+fn selected_call_node(conn: &Connection, hash: i64) -> Result<CallNode> {
+    let rows = reader::rows(
+        conn,
+        "SELECT n.node_hash AS hash,n.id,p.path,n.line,n.is_test,json_extract(n.details,'$.test_role') AS test_role FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.node_hash=?1",
+        &[&hash],
+        1,
+    )?;
+    call_node(
+        rows.first()
+            .context("selected symbol disappeared from the index")?,
+    )
+}
+
+fn call_paths(
+    conn: &Connection,
+    selected_hash: i64,
+    inbound: bool,
+) -> Result<(HashMap<i64, CallNode>, HashMap<i64, CallPath>)> {
+    let selected = selected_call_node(conn, selected_hash)?;
+    let root_path = CallPath {
+        hashes: vec![selected.hash],
+        nodes: vec![selected.key()],
+        edges: Vec::new(),
+    };
+    let mut nodes = HashMap::from([(selected.hash, selected)]);
+    let mut paths = HashMap::from([(selected_hash, root_path)]);
+    let mut visited = HashSet::from([selected_hash]);
+    let mut frontier = vec![selected_hash];
+
+    for depth in 0..MAX_CALL_GRAPH_DEPTH {
+        if frontier.is_empty() {
+            return Ok((nodes, paths));
+        }
+        let frontier_json = serde_json::to_string(&frontier)?;
+        let (next_hash, current_hash) = if inbound {
+            ("e.src_hash", "e.dst_hash")
+        } else {
+            ("e.dst_hash", "e.src_hash")
+        };
+        let sql = format!(
+            "SELECT {next_hash} AS hash,{current_hash} AS parent_hash,min(e.line) AS edge_line,ep.path AS edge_path,n.id,p.path,n.line,n.is_test,json_extract(n.details,'$.test_role') AS test_role FROM edges e JOIN json_each(?1) frontier ON {current_hash}=CAST(frontier.value AS INTEGER) JOIN nodes n ON n.node_hash={next_hash} JOIN path_dictionary p ON p.path_id=n.path_id JOIN path_dictionary ep ON ep.path_id=e.path_id WHERE e.kind='calls' GROUP BY {next_hash},{current_hash},ep.path ORDER BY p.path,n.line,n.id,edge_line,edge_path LIMIT {}",
+            MAX_CALL_GRAPH_EDGES_PER_FRONTIER + 1
+        );
+        let expanded = reader::rows(
+            conn,
+            &sql,
+            &[&frontier_json],
+            MAX_CALL_GRAPH_EDGES_PER_FRONTIER + 1,
+        )?;
+        if expanded.len() > MAX_CALL_GRAPH_EDGES_PER_FRONTIER {
+            bail!("verified test call graph exceeds the per-frontier budget; narrow the selected symbol or path");
+        }
+        let mut next_paths: HashMap<i64, (CallNode, CallPath)> = HashMap::new();
+        for row in expanded {
+            let candidate_node = call_node(&row)?;
+            if visited.contains(&candidate_node.hash) {
+                continue;
+            }
+            let parent_hash = row["parent_hash"]
+                .as_i64()
+                .context("invalid call graph parent hash")?;
+            let parent_path = paths
+                .get(&parent_hash)
+                .context("call graph frontier lost its path")?;
+            let edge = (
+                row["edge_path"]
+                    .as_str()
+                    .context("invalid call edge path")?
+                    .to_owned(),
+                row["edge_line"]
+                    .as_i64()
+                    .context("invalid call edge line")?,
+            );
+            let candidate = if inbound {
+                let mut hashes = Vec::with_capacity(parent_path.hashes.len() + 1);
+                hashes.push(candidate_node.hash);
+                hashes.extend(parent_path.hashes.iter().copied());
+                let mut node_keys = Vec::with_capacity(parent_path.nodes.len() + 1);
+                node_keys.push(candidate_node.key());
+                node_keys.extend(parent_path.nodes.iter().cloned());
+                let mut edges = Vec::with_capacity(parent_path.edges.len() + 1);
+                edges.push(edge);
+                edges.extend(parent_path.edges.iter().cloned());
+                CallPath {
+                    hashes,
+                    nodes: node_keys,
+                    edges,
+                }
+            } else {
+                let mut hashes = parent_path.hashes.clone();
+                hashes.push(candidate_node.hash);
+                let mut node_keys = parent_path.nodes.clone();
+                node_keys.push(candidate_node.key());
+                let mut edges = parent_path.edges.clone();
+                edges.push(edge);
+                CallPath {
+                    hashes,
+                    nodes: node_keys,
+                    edges,
+                }
+            };
+            let entry = next_paths.entry(candidate_node.hash);
+            match entry {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert((candidate_node, candidate));
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    if candidate.precedes(&entry.get().1) {
+                        entry.insert((candidate_node, candidate));
+                    }
+                }
+            }
+        }
+        if paths.len().saturating_add(next_paths.len()) > MAX_CALL_GRAPH_NODES {
+            bail!("verified test call graph exceeds the node budget; narrow the selected symbol or path");
+        }
+        frontier = next_paths.keys().copied().collect();
+        frontier.sort_by_key(|hash| {
+            next_paths
+                .get(hash)
+                .map(|(node, _)| node.key())
+                .unwrap_or_else(|| NodeKey {
+                    path: String::new(),
+                    line: 0,
+                    id: String::new(),
+                })
+        });
+        for (hash, (node, path)) in next_paths {
+            visited.insert(hash);
+            nodes.insert(hash, node);
+            paths.insert(hash, path);
+        }
+        if depth + 1 == MAX_CALL_GRAPH_DEPTH && !frontier.is_empty() {
+            bail!("verified test call graph exceeds the depth budget; narrow the selected symbol or path");
+        }
+    }
+    Ok((nodes, paths))
+}
+
+fn page_call_nodes(
+    conn: &Connection,
+    candidates: &[(i64, CallPath)],
+    options: &QueryOptions,
+    generation: &str,
+    selected_path: &str,
+    compact: bool,
+) -> Result<Value> {
+    let total = candidates.len();
+    let page = candidates
+        .iter()
+        .skip(options.offset)
+        .take(options.limit)
+        .collect::<Vec<_>>();
+    let hashes = page.iter().map(|(hash, _)| *hash).collect::<Vec<_>>();
+    let serialized = serde_json::to_string(&hashes)?;
+    let columns = paging::nodes_with_path("n", options.detail, "p.path");
+    let sql = format!(
+        "SELECT {columns},json_extract(n.details,'$.test_role') AS test_role FROM json_each(?1) requested JOIN nodes n ON n.node_hash=CAST(requested.value AS INTEGER) JOIN path_dictionary p ON p.path_id=n.path_id ORDER BY CAST(requested.key AS INTEGER)"
+    );
+    let mut items = reader::rows(conn, &sql, &[&serialized], options.limit)?;
+    for (item, (_hash, path)) in items.iter_mut().zip(page) {
+        let call_path = path
+            .nodes
+            .iter()
+            .map(|key| key.id.clone())
+            .collect::<Vec<_>>();
+        let direct = path.hashes.len() == 2;
+        let mut connection = json!({
+            "relation": if direct {"direct"} else {"transitive"},
+            "call_path": call_path
+        });
+        if direct {
+            connection["edge_kind"] = json!("calls");
+            if let Some((edge_path, _)) = path.edges.first() {
+                connection["path"] = json!(edge_path);
+                if compact
+                    && (edge_path == selected_path
+                        || edge_path == item["path"].as_str().unwrap_or_default())
+                {
+                    connection
+                        .as_object_mut()
+                        .context("invalid direct call connection")?
+                        .remove("path");
+                }
+            }
+        }
+        item["connection"] = connection;
+    }
+    Ok(paging::value(items, total, options, generation))
+}
 
 fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> {
     let seeds = paging::count(
@@ -16,7 +271,7 @@ fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> 
     let dependencies = traversal::immediate_links(conn, id, inbound, false)?;
     let immediate = seeds.saturating_add(dependencies);
     if immediate > 1000 {
-        bail!("test mapping from {id} starts with {immediate} direct graph links before its unbounded dependency walk. Select a narrower module or symbol; reducing limit alone does not reduce traversal work");
+        bail!("test mapping from {id} starts with {immediate} direct graph links before its bounded exact-call graph walk. Select a narrower module or symbol; reducing limit alone does not reduce traversal work");
     }
     Ok(())
 }
@@ -38,12 +293,12 @@ pub(crate) fn tests_paged_with_path(
     direction: &str,
     options: &QueryOptions,
 ) -> Result<Value> {
-    let (inbound, is_test) = match direction {
-        "inbound" => (true, 1),
-        "outbound" => (false, 0),
+    let inbound = match direction {
+        "inbound" => true,
+        "outbound" => false,
         _ => bail!("direction must be inbound or outbound"),
     };
-    paging::generation(conn, options)?;
+    let generation = paging::generation(conn, options)?;
     let node = reader::select_detail_with_path(conn, selector, path, options.detail)?;
     let id = node["id"].as_str().context("invalid node id")?;
     let id_hash = stable_hash64(id);
@@ -60,15 +315,35 @@ pub(crate) fn tests_paged_with_path(
         )
         .unwrap_or(0);
 
-    let steps = traversal::dependency_steps(inbound, true, false);
-    let (forward_candidate, forward_selected, reverse_candidate, reverse_selected) = if inbound {
-        ("src_hash", "dst_hash", "dst_hash", "src_hash")
-    } else {
-        ("dst_hash", "src_hash", "src_hash", "dst_hash")
-    };
-    let max_depth = 4;
-    let sql = format!("WITH RECURSIVE seeds(id,depth) AS (SELECT ?1,0 UNION SELECT e.dst_hash,s.depth+1 FROM seeds s JOIN edges e ON e.src_hash=s.id WHERE e.kind='contains' AND s.depth<?2), walk(id,depth) AS (SELECT id,depth FROM seeds UNION {steps}), reached(id) AS (SELECT id FROM walk GROUP BY id) SELECT {} FROM reached w JOIN nodes n ON n.node_hash=w.id JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.is_test=?3 AND n.kind IN ('function','method','class','struct') AND n.node_hash!=?1 ORDER BY CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.{forward_selected}=?1 AND e.{forward_candidate}=n.node_hash AND e.kind IN({})) OR EXISTS(SELECT 1 FROM edges e WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate}=n.node_hash AND e.kind IN({})) THEN 0 ELSE 1 END,p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path"), traversal::FORWARD_DEPENDENCIES, traversal::REVERSE_DEPENDENCIES);
-    let mut nodes = paging::query(conn, &sql, &[&id_hash, &max_depth, &is_test], options)?;
+    let (available_nodes, paths) = call_paths(conn, id_hash, inbound)?;
+    let mut candidates = paths
+        .into_iter()
+        .filter_map(|(hash, call_path)| {
+            let node = available_nodes.get(&hash)?;
+            let include = if inbound {
+                node.is_test && node.test_role.as_deref() == Some("test_case")
+            } else {
+                !node.is_test
+            };
+            (include && hash != id_hash).then_some((hash, call_path))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|(left_hash, left), (right_hash, right)| {
+        (left.hashes.len(), &left.nodes, &left.edges, left_hash).cmp(&(
+            right.hashes.len(),
+            &right.nodes,
+            &right.edges,
+            right_hash,
+        ))
+    });
+    let mut nodes = page_call_nodes(
+        conn,
+        &candidates,
+        options,
+        &generation,
+        path,
+        options.detail == crate::core::response::Detail::Compact,
+    )?;
     let mut discovery_method = "graph";
     if inbound && nodes["total"].as_u64() == Some(0) {
         let name = node["name"].as_str().unwrap_or_default();
@@ -104,23 +379,20 @@ pub(crate) fn tests_paged_with_path(
         if !lexical_query.is_empty() {
             nodes = paging::query(
                 conn,
-                &format!("SELECT {} FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE node_search MATCH ?1 AND n.is_test=1 AND f.is_test=1 AND n.kind IN('function','method','class','struct') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")),
+                &format!("SELECT {},json_extract(n.details,'$.test_role') AS test_role FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE node_search MATCH ?1 AND n.is_test=1 AND json_extract(n.details,'$.test_role')='test_case' AND f.is_test=1 AND n.kind IN('function','method','class','struct') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")),
                 &[&lexical_query, &id, &name, &snake],
                 options,
             )?;
             if nodes["total"].as_u64().is_some_and(|total| total > 0) {
                 discovery_method = "lexical_fallback";
+                if let Some(items) = nodes["items"].as_array_mut() {
+                    for item in items {
+                        item["connection"] = json!({"relation":"lexical_fallback"});
+                    }
+                }
             }
         }
     }
-    annotate_test_connections(
-        conn,
-        &mut nodes,
-        id,
-        path,
-        inbound,
-        options.detail == crate::core::response::Detail::Compact,
-    )?;
     let scope_note = if unresolved_count > 0 {
         format!("indexed static dependencies; {unresolved_count} unresolved reference(s) within symbol scope may conceal dynamic test callers")
     } else {
@@ -129,88 +401,4 @@ pub(crate) fn tests_paged_with_path(
     Ok(
         json!({"selector":node,"direction":direction,"nodes":nodes,"discovery_method":discovery_method,"unresolved_references":unresolved_count,"scope":scope_note}),
     )
-}
-
-fn annotate_test_connections(
-    conn: &Connection,
-    page: &mut Value,
-    selected_id: &str,
-    selected_path: &str,
-    inbound: bool,
-    compact: bool,
-) -> Result<()> {
-    let items = page["items"]
-        .as_array_mut()
-        .context("missing test result items")?;
-    if items.is_empty() {
-        return Ok(());
-    }
-    let ids: Vec<String> = items
-        .iter()
-        .map(|item| {
-            item["id"]
-                .as_str()
-                .context("invalid test result id")
-                .map(str::to_owned)
-        })
-        .collect::<Result<_>>()?;
-    let placeholders = (2..=ids.len() + 1)
-        .map(|index| format!("?{index}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let (forward_candidate, forward_selected, reverse_candidate, reverse_selected) = if inbound {
-        ("src_hash", "dst_hash", "dst_hash", "src_hash")
-    } else {
-        ("dst_hash", "src_hash", "src_hash", "dst_hash")
-    };
-    let sql = format!(
-        "SELECT e.{forward_candidate} related_hash,e.kind,p.path,e.line FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE e.{forward_selected}=?1 AND e.{forward_candidate} IN ({placeholders}) AND e.kind IN({}) UNION ALL SELECT e.{reverse_candidate} related_hash,e.kind,p.path,e.line FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE e.{reverse_selected}=?1 AND e.{reverse_candidate} IN ({placeholders}) AND e.kind IN({}) ORDER BY related_hash,kind,path,line",
-        traversal::FORWARD_DEPENDENCIES,
-        traversal::REVERSE_DEPENDENCIES,
-    );
-    let selected_hash = stable_hash64(selected_id);
-    let candidate_hashes: Vec<i64> = ids.iter().map(|id| stable_hash64(id)).collect();
-    let bindings: Vec<&dyn rusqlite::ToSql> =
-        std::iter::once(&selected_hash as &dyn rusqlite::ToSql)
-            .chain(
-                candidate_hashes
-                    .iter()
-                    .map(|hash| hash as &dyn rusqlite::ToSql),
-            )
-            .collect();
-    // At most seven dependency kinds are persisted per selected/candidate pair.
-    let direct = reader::rows(conn, &sql, &bindings, ids.len() * 7)?;
-    let mut reasons = HashMap::new();
-    for edge in direct {
-        let related_hash = edge["related_hash"]
-            .as_i64()
-            .context("invalid related node hash")?;
-        reasons.entry(related_hash).or_insert_with(|| {
-            json!({
-                "relation": "direct",
-                "edge_kind": edge["kind"],
-                "path": edge["path"],
-                "line": edge["line"],
-            })
-        });
-    }
-    for item in items {
-        let id = item["id"].as_str().context("invalid test result id")?;
-        let mut connection = reasons
-            .remove(&stable_hash64(id))
-            .unwrap_or_else(|| json!({"relation":"scope_or_transitive"}));
-        if compact && connection["relation"] == "direct" {
-            let evidence_path = connection["path"].as_str().unwrap_or("");
-            if evidence_path == selected_path
-                || evidence_path == item["path"].as_str().unwrap_or("")
-            {
-                connection
-                    .as_object_mut()
-                    .context("invalid direct connection")?
-                    .remove("path");
-            }
-        }
-        item["connection"] = connection;
-    }
-    Ok(())
 }

@@ -186,6 +186,10 @@ pub struct FileContext {
     pub lazy_exports: Vec<LazyExport>,
     /// Names exported as defaults.
     pub default_exports: HashSet<String>,
+    /// Local bindings imported from `node:test` as executable test cases.
+    pub test_case_imports: HashSet<String>,
+    /// Local bindings imported from `node:test` as test fixtures.
+    pub test_fixture_imports: HashSet<String>,
     /// Package namespace when the source belongs to a package.
     pub package: Option<String>,
     /// Scope identifiers where a local binding shadows CommonJS `require`.
@@ -481,6 +485,8 @@ pub struct SymbolMetadata {
     pub is_stub: bool,
     /// Whether a declaration is guarded by source control flow in its owner scope.
     pub is_conditional: bool,
+    /// Whether the declaration is public under this language's visibility rules.
+    pub is_public: Option<bool>,
 }
 
 /// Borrowed syntax and source context passed to extraction hooks.
@@ -702,6 +708,25 @@ pub trait LanguageProfile: Send + Sync {
         _file: &FileContext,
     ) -> SymbolMetadata {
         SymbolMetadata::default()
+    }
+    /// Projects supported test declarations into stable semantic roles.
+    fn test_role(
+        &self,
+        _node: Syntax<'_>,
+        _source: &str,
+        _path: &str,
+        _file: &FileContext,
+    ) -> Option<&'static str> {
+        None
+    }
+    /// Applies canonical module export facts to declaration visibility metadata.
+    fn finalize_file_visibility(
+        &self,
+        _root: Syntax<'_>,
+        _source: &str,
+        _facts: &mut Facts,
+        _exports: &[crate::core::semantic::ExportBinding],
+    ) {
     }
     /// Analyzes one declaration, allowing profiles to share local intermediate facts.
     fn declaration(

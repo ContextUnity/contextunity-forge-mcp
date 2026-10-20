@@ -336,37 +336,37 @@
       [
         "local_facts",
         null,
-        "c794ae72f98048435411bc0ba97611f67eb4a44e0194091a41487961a0bd0e96"
+        "ee1ae540e5e9eb175d2473006a0e0d92a27c447e8930e2568d78941024b9c6e0"
       ],
       [
         "local_facts",
         "src/helper.py",
-        "7862577ae250caa6bd4c260cb34af1b8fa8d439cee8f8fbfe9c9e66f8b156233"
+        "353663dc70de6754259a7b69703eb08a415a4f1f7365f4719a79a6608b0d338e"
       ],
       [
         "local_facts",
         "src/helper.rs",
-        "6a9417594643b88c1ac5ccf8fea831c716974cf03490e421e63782b09d020ae7"
+        "fc6d9f71d80fbdcf26b9c392f9dd937104f5ab1064ea14d2e546283969e3040a"
       ],
       [
         "local_facts",
         "src/helper.ts",
-        "8837108f0563a47138e8a2b03c583d23c38a576768a8db1e0fb52fd7fa392842"
+        "5ed9da80e1334ab32f5560d4aa6c031fa5d073d9e5fd54692644102551d1e561"
       ],
       [
         "local_facts",
         "src/lib.rs",
-        "2b3a4a6945aadc4f29be3ed8001f0f14a87459a379c1dd4ffed9515a45a7e375"
+        "6d3e5fdebe82e258047c0571936f6f6e08075bf3066e0a36d74e57e55127fb63"
       ],
       [
         "local_facts",
         "src/main.py",
-        "b4c39db8204c6df173b1696394097dca41909d99b90388aee2ccd720fc87fcc3"
+        "0aeef5d61d23bccccbd85a17061e5efc8f3b02a310badd656b27f7f4f04af453"
       ],
       [
         "local_facts",
         "src/main.ts",
-        "e5ad2080025a38b4d1c62f249d2dabf55699c79799dcba54c31fc8ee2a66fb4b"
+        "1f790df33445fe06295a23aef2b4c29ccef3d252211fb7ccce8c0971c5b5798f"
       ],
       [
         "node_search_config",
@@ -381,37 +381,37 @@
       [
         "nodes",
         null,
-        "380ff1ba1fe7674c250ffe258ae2f051d6d37920376b027f83ffb18a59299eee"
+        "b22f25d1d240b35750b346c8c47b663d063c04f317436c59469c926fcb34d777"
       ],
       [
         "nodes",
         "src/helper.py",
-        "363d1c6357836ad53638f6b58d8627ca0ff977ad326588d44e5b96350f984c00"
+        "6e58e04ba5d97ee0fe023361c7460137a0273f5e3dfc550a008db9283806a780"
       ],
       [
         "nodes",
         "src/helper.rs",
-        "edf40efb6deb4c7ca24f7bf0a0bde7e160be5fdef6ee364765cab66c25e2904d"
+        "bdcf626f7d80baa1646d3a3d6423a21cd4c14b222d28d6667b0f5b943b15b623"
       ],
       [
         "nodes",
         "src/helper.ts",
-        "1054d4fad6785fab4c01b6b0358acbe8d4db7a7274f6933bb90059c7eaa33815"
+        "c6c5f055004e9127a4e290d4798526087b72d651826389df22cfa7004502c71e"
       ],
       [
         "nodes",
         "src/lib.rs",
-        "a3317d9ed08e3519569d413f5fda5b9e7e571028159a21d11994d10830f2f9b7"
+        "d3dd715f41da763bdd17570ddfa534460aedb1f7c232d276115329bb6ef5f708"
       ],
       [
         "nodes",
         "src/main.py",
-        "d39bb07fea951913c4218b038035ca2eec93a28cb93f37cbd1da8cc6a3f024e5"
+        "938d7a9c0b7f25d94527b2848631694d5eff144a74ef04d55417f6a0614738aa"
       ],
       [
         "nodes",
         "src/main.ts",
-        "3ed7ad043db3945acadf8eae9d8f070adcf8522988b8d5ef252029cdea2042bb"
+        "a72efca0bd5cd1fe00bd22b59bdddd6635b244df62227490cc44673da4e4567b"
       ],
       [
         "resolution_coverage",
@@ -2374,7 +2374,7 @@
             },
             {
               "type": "blob",
-              "hex": "c794ae72f98048435411bc0ba97611f67eb4a44e0194091a41487961a0bd0e96"
+              "hex": "ee1ae540e5e9eb175d2473006a0e0d92a27c447e8930e2568d78941024b9c6e0"
             }
           ],
           [
@@ -2388,7 +2388,7 @@
             },
             {
               "type": "blob",
-              "hex": "7862577ae250caa6bd4c260cb34af1b8fa8d439cee8f8fbfe9c9e66f8b156233"
+              "hex": "353663dc70de6754259a7b69703eb08a415a4f1f7365f4719a79a6608b0d338e"
             }
           ],
           [
@@ -2402,7 +2402,7 @@
             },
             {
               "type": "blob",
-              "hex": "6a9417594643b88c1ac5ccf8fea831c716974cf03490e421e63782b09d020ae7"
+              "hex": "fc6d9f71d80fbdcf26b9c392f9dd937104f5ab1064ea14d2e546283969e3040a"
             }
           ],
           [
@@ -2416,7 +2416,7 @@
             },
             {
               "type": "blob",
-              "hex": "8837108f0563a47138e8a2b03c583d23c38a576768a8db1e0fb52fd7fa392842"
+              "hex": "5ed9da80e1334ab32f5560d4aa6c031fa5d073d9e5fd54692644102551d1e561"
             }
           ],
           [
@@ -2430,7 +2430,7 @@
             },
             {
               "type": "blob",
-              "hex": "2b3a4a6945aadc4f29be3ed8001f0f14a87459a379c1dd4ffed9515a45a7e375"
+              "hex": "6d3e5fdebe82e258047c0571936f6f6e08075bf3066e0a36d74e57e55127fb63"
             }
           ],
           [
@@ -2444,7 +2444,7 @@
             },
             {
               "type": "blob",
-              "hex": "b4c39db8204c6df173b1696394097dca41909d99b90388aee2ccd720fc87fcc3"
+              "hex": "0aeef5d61d23bccccbd85a17061e5efc8f3b02a310badd656b27f7f4f04af453"
             }
           ],
           [
@@ -2458,7 +2458,7 @@
             },
             {
               "type": "blob",
-              "hex": "e5ad2080025a38b4d1c62f249d2dabf55699c79799dcba54c31fc8ee2a66fb4b"
+              "hex": "1f790df33445fe06295a23aef2b4c29ccef3d252211fb7ccce8c0971c5b5798f"
             }
           ],
           [
@@ -2500,7 +2500,7 @@
             },
             {
               "type": "blob",
-              "hex": "380ff1ba1fe7674c250ffe258ae2f051d6d37920376b027f83ffb18a59299eee"
+              "hex": "b22f25d1d240b35750b346c8c47b663d063c04f317436c59469c926fcb34d777"
             }
           ],
           [
@@ -2514,7 +2514,7 @@
             },
             {
               "type": "blob",
-              "hex": "363d1c6357836ad53638f6b58d8627ca0ff977ad326588d44e5b96350f984c00"
+              "hex": "6e58e04ba5d97ee0fe023361c7460137a0273f5e3dfc550a008db9283806a780"
             }
           ],
           [
@@ -2528,7 +2528,7 @@
             },
             {
               "type": "blob",
-              "hex": "edf40efb6deb4c7ca24f7bf0a0bde7e160be5fdef6ee364765cab66c25e2904d"
+              "hex": "bdcf626f7d80baa1646d3a3d6423a21cd4c14b222d28d6667b0f5b943b15b623"
             }
           ],
           [
@@ -2542,7 +2542,7 @@
             },
             {
               "type": "blob",
-              "hex": "1054d4fad6785fab4c01b6b0358acbe8d4db7a7274f6933bb90059c7eaa33815"
+              "hex": "c6c5f055004e9127a4e290d4798526087b72d651826389df22cfa7004502c71e"
             }
           ],
           [
@@ -2556,7 +2556,7 @@
             },
             {
               "type": "blob",
-              "hex": "a3317d9ed08e3519569d413f5fda5b9e7e571028159a21d11994d10830f2f9b7"
+              "hex": "d3dd715f41da763bdd17570ddfa534460aedb1f7c232d276115329bb6ef5f708"
             }
           ],
           [
@@ -2570,7 +2570,7 @@
             },
             {
               "type": "blob",
-              "hex": "d39bb07fea951913c4218b038035ca2eec93a28cb93f37cbd1da8cc6a3f024e5"
+              "hex": "938d7a9c0b7f25d94527b2848631694d5eff144a74ef04d55417f6a0614738aa"
             }
           ],
           [
@@ -2584,7 +2584,7 @@
             },
             {
               "type": "blob",
-              "hex": "3ed7ad043db3945acadf8eae9d8f070adcf8522988b8d5ef252029cdea2042bb"
+              "hex": "a72efca0bd5cd1fe00bd22b59bdddd6635b244df62227490cc44673da4e4567b"
             }
           ],
           [
@@ -6590,7 +6590,7 @@
             },
             {
               "type": "blob",
-              "hex": "28b52ffd0048dc1500a6656521506d9a03c6834d2392d8886c766b7f2784dca5c9ccc0ba4de08b3f9c44cc4ced0157005c005f008bebda957a3b7d7ee1e3648ce6588cfcc5318b3cf4f9e225c86ddf905d3e0ac8cf8588cafb28909f0b8dcc68b7f858bfe0190349178f8130f2954b1fe76af8d8b10ce8173c8320e9a223a3986264b5fc6840de2b967e048c2ac66857925164e0580a90536190a5948e3d1f237d431903c09569978bb5fbbd0765ed94a52b1f1b3931a56c9938d290b9e4cae72032897ce512d147aca7ebc1c0ee61d23794312005da3d4ca769ae3e0e0dc8bbc8a5723df8811c2d9f6c51586a9a05851fc8c9565bcb96d31cf1928f112f3d90cfe04520a94cbbfa812cc13041cee045f81404bc710a4072a590906cb5944cf2c6292861b56b8becf239a30d21bb164743100412fc0624a300c99513fcda097e7d60908c0e648d4303f22a537d62cac741b974286414536ee1f92816f192adddeb32f1276558caeb93ab8fc3b218ab4f0906a068ab120cdaaad3b8a59b78922cad5cc91592f26a456cae6bc9da2a1f27dd85ba8f43d33cddb20d65128aa49b74516ca8611d514aa9191a49419242a1314082834ca57912184644dac4918a182334c428d14c504149925052d28c010308ce5d13d72064ccb72bc7be2baab6c7739a6710c4d7dd4a7eea93b408011cc8dbf32e5c70e915672a3c2e42557e714077cae436884462f3d550dddec58af9497c5135c122d5c801a1461b0d58cbb43c0bcc762ddcf6b3f6cba03af60f76a6deaee805d70297083276fe0dafa5f1320586b837bba36cff724c28d15209b992f027fc7fb500d32dc79c46000240cb1e529eaf9a3761d6d8b58d843ead33ab0e40202b878fd1b29234892587998b1203b87a35784836b8cbf0b350db8de87251621af7d0f09e1af32fbcc74822ff8d864ae09570da74da8accb68d852cf8e0f894a127925ea39f821a924a95ea9dda1c8ce0178e530d010000"
+              "hex": "28b52ffd0048541600e6266820506d9a03c6838710496c24cddfdadf092177693233b06e13f8e20f271133537b5a005f0062000f861c2faa634fe9ecf4f9858d7331d863f1f117d7167968f3c5538ed99e25ab6c148e9f0a9394b7511c3f15fa98c16eb1b17ec13306902e5e83f0f11d97364ed5b0f16319d02f780601d23dc79696c3c74919d270bc4f2b0d098e6c7a0c1ecb9bb263a4f0a12dc92a9b82e374345c08e563cfc647dfd0c500706dec72a176bff7a08b9d2ef464631fa395742d134f18b6539e6c0c62cbe33b2e137d843aba1e0cec1e227d4317c3519cdd43642291ab8d43c3f12e52a554018b63a148644161c8712ec5d4aec5448e78c8c6888720c76f7811496a6357438e25162ac91b5e84cd9bb2828037ce01a03c2924e4520c6553de38c74950ecd826ab6cde949d64d5f26008020a7e03b22980f26405bfb6825f1f1864d3816c9a16833d118786e3d5a57ab4928d83e3f291b0a5e5388567a358c4cba576afcbc48fb42d94d72b571b874531569f120b40c1362518b04d2662866ee24a2ea452294f09ca2715b1a98ee5629b6c8c7417e9360e91c8d12ddbd025a140ba48f7b07cae6fa871216148a1991949419242a1314082838ca179129846843389b388182334c4a06826a0802429909434633708de5e73a721d90090ab1cb5ae809a67cf353c9f27bec556474efd4c7bffb04076cf6f78c1d12bda543458c255ac6841cd9459a82138c434bc5540dcc50a134b2f6bb5c57265885846f04f9558d561b399d9ba929b7bbae6190493b17af755e2fdf2e3260b158f08e04f23dd45efa8749bdfbd7f33ff59e13612adfed53f699084ff41d14e30133dbec58500afc5f38c02c23f7c73e4dd2d7d1b5a9e39549c9ebee0e391438f85a0d4ce149335199841281b0abe5cd989e2479980cbe396a39a4cfec959534670d20c9cfaf99fde172525ffcd182a616ac007d2f585b8db2242055cb63831439b49b72d0f9f1a523495ea3b698119295ac84d35010000"
             }
           ],
           [
@@ -6616,7 +6616,7 @@
             },
             {
               "type": "blob",
-              "hex": "28b52ffd0048a4150026a46322308daa03c055922d49bb4201c6686191163b0e06da0868035f0b1ddee73a1818860153005a006100c8db58825feb30e9f3101fc38d6ae4435284646a3edf961664b887ca329f85b2f23e0be4276b468ec0c4f858cfb447144ab7a5d860e4bb943e4e26f1f1aa42cfb44708942e7a8beb39232fe6c902f27ebdf4248d710c81d118c71805c8e9627b4a65c4a6045451e126182263e46b8429216cf79b18f4c1a44f7df9d8c8ea2d7d0cc415d8625abe7c4e6b3191ef522a7a07767555401515ae5ea24f012dd0ea699aabcf63017921c95632064f02eb3e8fa6699a84818440c025c9257271e46350655c2e490e399ac6060c769772921ae1d513e487d716e5b1250706135c6599cfa342a42cf36918305822612021b0b42f4040464de4e2a57d7dd0c8a88a8cba5e04de6554d46022a0d218c714c502cd630179f5a95ebde5f3685cca88d5e27a2eb1967c1cf9d8ee9581f895c6a7f2fae5eaf3605864f5f9f0120ba58b603e1fe39e7234188d718cc1388da14a105ff2291fbb43a65ce51773b8cf629325984fc15d3e56ba906aa89129314a958c8ca4a0a0690d50c23153681d129887c2710cc30c31464808710223508211c84820558104dbc201ad09205d3fdfc9d02e79049284119689f4d5b6a77461d3ff6dc49d9a735948b945e9841a222c9674e4158482b74e7234fbcda85d77448762740bf1c84584fa290852816826e545444513b88546b29b3e7ab33dcbe7c016e6aa5ddc82f64db8bf096c88e4a233c2e145e02935aaf129daeffb4ecd82001a680de533beab60ad09949a6c5ff903f3dcf4f019c3bfadb2f180ae279d53073b56d428b404706ce6157fd9c4110b63f548e1c88d868c46dec12c52bed94239b134e5c8621127183f883ff367ccf4a05191f7d3b6a702fe0c9f23e2db2271d4a62345806cdb89c8d642db0a9f51f5d154303952e1529908a3e217aaa10a010000"
+              "hex": "28b52ffd004824160096656723308b5607004ddf44529f521a12ff85dc2c982c0c7423c02c5614a1d739d9191111500158005c0064006cd5f1487a375530194ba838379ba3c38efcf46c546c56b5a3eca69874d80997d6a3c4c2368f12e9b9da9efe80ca393aa7d3f28158dc4dc585a7a7537bf455c8d19b119c4ecb07c1e24ed9227beee94c1f61a477b2b78f044a739c2a1919a62f6d8ee82cad4705e9eb627b6bed43ab04aec8b01347749e9e1ca1da46bbb395831f54fc56b2a33f7d3dc6cf71c805b6a8986447a8b5b8e9e9d42e9c0c9a2b19015764d89c107e0a29919ad1f3241f3518e9ddac06cf1319260c24020109512e5966b14fe1dac82444b9b4789e1b289a4e6d6439c2e447d21b5e63968c4d312854b097d6a38c0cd3d27aa43050344918480498960d10b0919365ceb4ec1f2836326223b3f780e9367252380f70698ed36529e766d31ca708014f8391defc98733d76d4789cda07d6227b4e69538b7dda9dec38642e8e6f6d7232c9470d471fcdb90d2f492cee0437f739eead8542698e534541cfe1520ec9ec5b47770975c9b5c994218f12bdaae0be059b1d7d71372c8f1acf136ba87129314c2919194d4141d31a50c23153781d12988792710ae31862949010e20446a0044620135605156c0b07f20935de3e2492cc6ea45216f99a26b084536b03b6a90d60df781e6b22a7909216f4e3357482a1ac134c90036e6ed244f56a465d44a40d14d1df09f816fd7a585d4885444c3a968818fbba428d64409f48ab739df82677dd5ce4bab11fc85b3c484c4737ed3e70f9d911e04a8deaea5dd285cc5b9da0db1e420c05360e6c78270d98d4a6b59d7704586ab732977e787fcae08d8d9e34d70ff6f069c1088924d7ea0fe7ccba607860187d084c0cd762036e4a8d54a20106ac797ac627e755cf1b3f143d9c675478605c91f1d37ea702660c9f83f8ae0818b57d848b21db4e4cb259d1e6c167507d94150c8954a8545ec168f8056ea802010000"
             }
           ],
           [
@@ -6642,7 +6642,7 @@
             },
             {
               "type": "blob",
-              "hex": "28b52ffd00488c150056666721408bda06f84bb145bb6caf15c90f5cb66421df310c0317d61ca0178f6cc730801b59005e0062006c5da352d8b798e8f879336b132323e9a3a3e39a238ffd20b36ba037632bbc7e0ed031175354e24f021d73b1a33ffa989f2f320c1f88b4ccae2d1c1d97cb9fe782fc9c1bb1c8307c08a46584ac295d8eaed6270b7446a5f9497c09ab7dab09d5cf8f9e54ad320da8346bd740f5b35c2a8b918509b700c17c2ca104e23e4d83fbc340c82da7d96b96b054051949ff30d6121d5953bab04bca7ebe085945982cd0b9579906fc612cd0d9914be54a5058217559347d82ce01efd4b63935357611450000426e391c285257a76c0da4681a5c2e27b9ad713f416750d650b0b18bacbe6685d70fb66d74a58fc645e1858ca4158284a5e501050064dbf37af40906b22d22db2a7d34665b34a040cfa5314d29257c07dcd6978ec58c010d6381ceabbb9854614a5c6ce0fe3098f5e0c564d043222da34e4c65164d8a95ab814a51fa685c064ef34ed7808dd4747b2ca15252a25a11fc4970aeebd466f5f3b4ec50f8c3689aa649240cd03117fb043d75f562654e838c5dfa0966a861a5424a898c8c8c2449b28c0140426290aa330f12188d232dc6528a2861844081044524108a243031361c2d0b60d9899f6f6de1d1d0f4c0f2c124a01f8aaa6b4e8f0f472111b7e4b4e68948a6784318b324241aa117403790a2021449428cad5d21def5bf7ab4460e6572da98069c657cfdc9ffadeb2fc2511e9bcc395200bdd1d9a168b930632040ca82902312129b21c8ff811ec828804d3c554c3ccb9d466df8e3a144afe946169165b4505c348a9110b5ec9df4db502f0068d3335fdc40d441343c9ca1d99809e6b111809e3f838082bc3ef1bbe3270fa6f54a94d8ca2ff0829d62fb07045cd45756be987590c3db43279416353cf50a2c53eea588ec3bcca8478bad5466eab430d97d41a3d4010000"
+              "hex": "28b52ffd00480c160006e76821408bda06f8abd5ab5db6d78ae4072ebb6c185d15c5a193deced08b47b66318c00d5a006000620067b6ae5129ec5b4c7cfcbc99b5899191f4d1f171ed91c77e90d939d09bb1155e3f07e8988b292af127818eb9d8d1217dcccf17198610445a66d7148e8ecbe5cf73457ece8d5864184204d23242d6942e4757eb93053aa3d2fc248dd5bed584eae7474faa569906549ab573a05a2e95c5858509b700c17c2ca104e23e4d5aacd1188517ee0f0323b79c66af59c252156424fdc3584b74644de9c22e29fbf962641561b240e75e651af087b140e7472e95aba17042eab268fa0405cda9a9b15b50040060e496c381227575cae6408aa6c1e57292db1af7137406650e051bbb859fbe6685d70fb66d74a590c645e1858ca41582c6d2f2800200b2ed7941fa0403d916916d95421ab32d1a68db0af45c1ad3f49312be036eebcbc76246be0d6381ceabbb9854614a5c74e0fe309805e1c564d043222da34e4c65164d8a95cb814a510a695c064ef34ed7808ed4747b2ca15252a25a0bf893e05cd7a9cdeae769f9a1f087d1344d934818a0632ef6097aeaeac5ca9c0619bbf4f34e6d036aa871a5420c898c8c680a926419034042620c559a0712180e242506628e282328040a249891402692605a2e1c2dccccee89afd81a66686802c2d660c3f40aa2b227145440510a049b9e28c319598097842e4beff3c87911d7a0b08a0444b739380c67fb88030e1d78528f231bd832eb9b07087d3739e0febfacbf9847d96db2718985ec4d9d0d45d7515d63833070300d394eb00ceb3248040c85d2af6a7e6bf86c718ab98f7f7f64bec202ca9e1378dbb96e8e56d6947cf81aaf8df0250063485665e74c859d9a01ed20fc87a37d7866277ad72101e98b40e34067e0716209270e379e45f4f23b4334217c199e46aa84ee81ef0c0604ecec6b8e6a3d2632a691bbe9573018cb06144d688714f56872950a49652e8c92b9100a6a010000"
             }
           ],
           [
@@ -6668,7 +6668,7 @@
             },
             {
               "type": "blob",
-              "hex": "28b52ffd00488c2000a6f18623308bb60d801addbac22ffb71acf86d931f9994148295db62187e19399a261d1818080377007b008100e9d072652b89e5f6b0515732a6f3d164508a729da228fba9b1a0ee1edbd836c727ea4e1bbe642c1f766e3e9efe1cd457cf07428f457d4aa7d8a83f978f71ede96051cf6dcab0cd27453db7e9d5191e3e4f77344dac768a50c3d5d3c17dfa36c8d35d271c4d07563b950a3176aeceda270bea2e19ef2701cdf1f33489b0364c428a0e4fd195d971f5076af389bacb47f218071b9fa745d11009028800657620d403b501e854c585d806e1809e77429a234f6f545ceee90fd4e604cb622dd4a8e2520b02f57520e5b556e210c1d8b97a36f4701fcdb974e8687ed8bc923dfdea8b59f3f390cc53089b644f49155af57470990e2c1f3edec5c582b174429a1594529d90e608c0018361f9489e626c835009410720c20c195c42d0f9625996083364706a5916002c9fcb456cc348b07c2e5731a2e88ba2b174701fc963b6a197fdd488109403468122a17eea8acbed35b6bc9ea26f8417b29082404951f484a073f54c555c4f57c535513f580ad4739b7ea2bedc5e516341dd3577e762f6d430581604050141b1305016ea4427a43962a0a842ab0aadb214a8e24a517370252c396c8a4f04cb6b7e9c961074969b73d9cf4336c46bb3b3c97e6a3c8dc1756e8411ca6aa7dee6f2e3f0622c0b6391a2bf850fd92cafa73bf91ab336597370dbf02dafe7d8d357bb07cba7463f0fc9e423794f0f80c2a8c1252323138c8c88244941d2185022213366550f12984403628cc328848120a68484104518111c82d08888109907ec13c059e84a66896890f74c1c864d84e97d105e00c4b86fb25fe3de6401641d920a329d3e357eea22edc2a35191bdd04f958384490bc3e25d0ce5e7dccf9e2e447fa4124601b3c26d1746f9a9c4ac301ca5b465fa5e2bcd2f037f742472510d55909a56cf171ed4b5843395f26b8d2048262d193034bb18e487a6147e9bb03891e93c0ac5a31512b071657948433dff439ebc940a08e023c5437fa4263a1ef3ac7445564000deddb1de3c18d4c2a8ae63849916ecd0b55fc2f630a6cb1de3e922404e2959631f3feb09604872b12af5b198ee1139075184f3365644dc9cf73437a29a561d00e435cb0294a2937d353a437c90465df02eb567efe191ec7e9d96641e1479b2be7719c7ac1e515857040eb34660e64a1f460861a4c1107ec4af9201c8a1c071a972642662d2d9c91c28cb5d8f3bafd20357ebb93709062da91dcd427e273982cc312f02222535d291a6a1403798e8c0fbc17c64f5c0576f7e574a998fd0296c82ecc0cd9eb3265abc51d19bbd9d5645641d6c22a7fb3d1409c01ff5a364405fc6fdf51cc22110cc15d499b1336ee0217248fdc486780f01b33d7714bd53bfd6e1e55d9b2c1f9601db61b84be2cf24158e5295798b6e720ce51dbe9c6a010000"
+              "hex": "28b52ffd0048ec200066b28823408b9b03f8178b36652cc9d622c716eed290328ee1ec5109fedb55bcc29197cb30c60478007c008400ccb43a345dda0a825d83d9b94b19d30aad322845bd4e51a4fdc458507f0e6e8c5be311f5b72da132a6305b591d4f872ff6d5d591d1c1b94ffa361b75f81432af3d1d2ceaca6d19c6faa4a82bb7bd3a034ce8e98db688d56f33365c5d9fe4a773739efe1ad1683bb0fa29ddc8dc7375d61e59507fca1c3f126e1b46e3a6c353f475ae7175476ef388fa53080299273ba1278d0d97444b1204928075ae9128476e03d0ba9b2be1266944e8ad4ebbc7d33b37d77bba23b739c1a2581c9bdd5c4ad1b61121e6b52702757ee2bab518f23261eeb9ba7684c98ef69ebe6cb483d96e297bfad59763eda00765e0c66c943da5ddc8eafa648e39158ac5d2eab453504ab53aed1e00070b862904816ac14da2d4c907e0e158323c75f2b96259968763c9f0d4b2280098c2a79c70b34030854f592da2e84ba2317d92210864b823d47e624408cac1a220a1b1a1fa26bb061b63b79ea2f3c3b1c33141a0a428ba3af95c5d7537d7d3777345d40f960275e5b68fa8b36bb03d073d451e01116341fdb5ebd6e5d813c360591014048484c240e1d88856a7ddc340d98dbc1b59590a7673a52719c2d2cbb6f944b0c076d0d3d4c9875d7b4f1b7ad08e6eb1b636da4f0ca831bc567eb84459fd146465073d6e2d9665a148d1e1ca076dd8ada73f0a1bb358597378dc12b25bf0b1a7af7e0ea64f8c861e945108029fce14260c80c4a8b1252333138c8c88244941d2185022213366550f129844a3698ce330848120a68484104414111c8210129121320f4314e02c74251b459ccb7b260e034f84e17d102f0062c46f32b6c6c7640e644d271564087eea7e8a92f6b7a3d18fcbd0cf95838c490bc3f95d0c85e990cf1e2e4443a42b4605599177172e30958dacd098d245cbaaf6576a2f3b7d142272710d35799b7ecf571ed43e8bb396f2fd3b21f948ad0f189a7a2ea44453a6b9cd6e9cc8749e8f22628538e588b36caba190fffd27cbc7420df8a8c94339abef8e21680bbe225f2084f2fb58df3c0c7a30dad2b1ae9b0edeab2c34615718237dc739d028137fcaac0d91a985a2f239b92da0fadc52ab44666d2e51bd952f9135f43dbc9b7c4d9b07407ccd250b6c0d9865350a8009726035fc1d569403e39c3eff49367df7275b71f5df23d4d8fe1975a03708a8e65376b3b457c38f1acf34dc7ec46f4958da3920bbefe940ad99c561224e900062ed18b5733c3b2f97ffe026c1204a364340d7dfc94f5839e685206452a307d26438dc1e2632f02630bfac38f0efcdef4f6ff3167aee4928527c0a768ac4ae375578ce6eb91512c108ad98d321efc10bf61ff55312f631336e93099703c5045f8e822366cc8c321ec081d49ad860e821a0b1e78ed0bbef473b7e716d53e2c366c01618eefae619a7c2d15a651ea21be3a16e8797a61a010000"
             }
           ],
           [
@@ -6694,7 +6694,7 @@
             },
             {
               "type": "blob",
-              "hex": "28b52ffd0048941e0006318422408bda06f8179575259b5c1b2a51d8b6099c1e45d18f18f711cd426b9d89740c7326760076008100d98a94382cb7b7d6593a5571a9849234e879b28f1808eaceb18d6d4bf844dd69c3978ce5c3ce4dc7d1971f4fd25c3d1de83816f5289de2a2fe5cbe866b4708453db769836d1e25f5dca6577f3c6c8ebe0d99c36aa7e82c5c3d19dca36f831c5dd21cb62133b0daa95487317375d63e415077c9783f096923bc90750a9405cbe772d1f33c21c85c3d5315d7d155714dd49f4552a8e736fd447db9bde6b8399a445897463a8a0c4704eacb38ca6badc4e1d19580037509e854c505b024bb7ab6f3701dcdb97498d0fcb079253bfad517b3e6a6211b4f1d5c92bd13d21c39ba0375395275563d19dc462743cb15470c841280501485e5b6f3b295a218a49410640812824c4084193e5c4290490729c20c1f4e1da4a760f17c9d3e282ed6c6b6f3b28f18cfe3b0292aca41a213d21c0960f95caee262555cac0b8383327818cfc3400cede1763ec5a327b6b142e3b1163be188f12c52229d7eea8acbed35b6bc8e1eb6d990304e383acb86974328010f0341dd3577e76276c44028699192029148a44e4873c4202916aaceaa3a8b480a555ce8690cae841dbdb3d17c5c3dd561cc386c8aee35374c5b6ece65370d99ab1d5e9b9d4bf611a3690fd7b9110648ab9d7a9bcb0dc34b510e92017afe1636e4b2bcdab6255923d7266b0c799470dbf02dafe7d8d1573b07cb80b3a8912d244422223252509042a1317042a1b9227a12984402d230495188218811450821081a23229190880422c4038111007d520f0d92399b78fce20c9dad854092bc73ff4578d118c791e1b6fbeb695882195f4ba863a1eff4afe1de074f098340c41f1b5a480e4839906ba1e5c7758408a8900b0935591237a845a0c9d33d4ac93583d27c16bcb13ffa78d1d827145d099282b47bcef31d381de15436bd955247e154ed72e0220735f5097ab0524c292626e93b4e5c7036b192bb980613d598b8432f919d2eda4ebac9c25c2b124f89d6ae91c65dfd01a5883fc5b0bee9df00786409004040cddfed0937f87f99a5cf57f389c39f5199c28ce80c749d461d8cd32e851ebdca833800c1b2151431522be34757aa0570dfc024ce1139479d7fb7069fe2855c6bd62ccd301840ee42d1bff0d9e04221535e683a4897ca67ec97800ea3f0ae47bce0570530265c6d8ddbd17d024c1efa72e50ba41fb085765a82c47890ab1eacdfe9a782ae338524d80d98da0ff179a9ea8911b28f1da51a46c476c1cda5b4678f47afa0cbbaa7db72f981deac7a61823521400428c8bf61041ae8810523d2d33c03e29544f1caf1d15244c251793a7b141c82c9e7c14a0d010000"
+              "hex": "28b52ffd00483c1f0016f2862230a9b60dc371dcbae2bffb5516d1a44d4ee13030d072350ec78c90609ea40b030361790079008400a9d0726527148461b9bdb550d3a98a4b2194e4495194fdc43850778e6d6c5be31375a70d5f32960f3b371d4f5f7e3cc973f57420e458d4a7748a8dfa73f918d79e0e8b7a6e53866d3e29eab94daffe78f83c7d1b3a86d54e114ab87a3ab84fdf0679bae4316c436760b553a91063e7eaac7d72a0ee92f17e1250c1b260f95c6e8aa227049dab67aae27aba2aae897ab45012eab94d3f515f6eaf397e9e2611d686494851e129a17eeaab69037a18d79e08d4d78194d75a89c3a72b01076a13d0a98a0ba04976f56ce8e13a9a73e9b0d1fcb079257bfad517b3e6672199a71036c9de09698e3cdd81da3ca942ab9e0e2ed3018cc31270589685e536f4b2d5b228142521e81024049d8008337cb884a0a318281166f870ca40890a16d1176a83e26265b6a197fdc48822874d71590c109d90e64800cbe7721517abe2625d280c4a1131a2889114dac3ed7c8a4f476c6304e6b116bbf1c488160a22a17eea8acbed35b6bc9e22b6c94818379ecef2e1e50e8bb2115ec80611e340dd3577e762f6c4382cca425112070442e9843447144a62a10aad2ab40725a18a2b45cdc195b0a7773e9a8faba7428c1d874dd1bde6c769cbcdb9ec67217335c46bb3b3c97e623cede13a37c200ca6aa7dee6f2e3f05a16034591a2bf850bd92cafb6ad49c6e4da644d219f106e1bbee5f51c7bfa6ae760f91480b6a8b12d243322223252509042a13170429939aa7a12980402d230885108218819450821081a2322810889482042f4c611007d9287469231a54b0079c6466b3c92248f0afe68246954ce116db643b268f8831943b238d162cca9791bf0e5478885204d1f1fd6900c4079886d017b0ff908426c21181235b23c6a403754944c6f7e36c5e46ce359d4c40bb9e645875ae82227a429a9280e0176a4a32266d96d555a84caa9eaf5c1390e6aea299d605799c62774161be7ae6c7b5d692de0ab496e4c90cc99f076192167ee0467d617c9b8249be808f9bb1471990409a233fc6a0ba60412d245d02960f340e701641ae8d5d682414bc1241fcc6d77ea56c37021cfe6bd678ef92b0a0523de1611d800ac0a960cc6b1f8810489f762816fdc92eb79e0372544ba8fa30d021c9d75211ebc787121090233f21fea1a8802851f22d003f18383a1ac14c44b09ba5b0ebdedc812be824563e7fa41acaa23203c79e80b05d169588035b4f30f48b801728905bb76c5f4d8d53948d3a592b1e710df973277cca17ffe5332d290f97568effadff3b947adc840f5b1b4e5f7038fb0ba00132e13829dc00aa0371800367a7909411a689ee578f1a25858fee8292245a83c263d6a912498cfcf941a010000"
             }
           ],
           [
@@ -6720,7 +6720,7 @@
             },
             {
               "type": "blob",
-              "hex": "28b52ffd00482c240016f8962320adb40da059bb75e5986c9bb10b5c36d52311103004620633e1839871620240021407850089009200cb916c2cef48d5d9f45467715354ac47ef544575594877afb981c823c842baa32c5bcb2411d7b0dc1aab5fd29d327cb9563eecdca41cfd35ac95cbc6f29e9e1474288b7a944e7192fe5cbe8863470f467a2ed3c8da3c5aa4e7327d3ac3c3e6e8cbb029543b45c7e1e9d9708fbe8c39ba7b8a65d80454bb94ea2c6e4f5fec978574978bf797cbf497f465f698e3e6e8925e619d44d2517c387afe740aeae49774978de5451a3636478ff46d8eb2526b7178f480c554664922515027009daaa812d9cec3a530e7d2a1a4f961b3ca75f4a72b5ecd0d44469e3a38c9f54ea6b972f44ea6b11d9d823a79c38d743eb054d9078b8662993db5ce2435927be879b28f202bb79d975de1850c0e3d8dcf593489940c36800a2f6470c9606b30d282f1381ecfd7698543a618d9765ef611e431602ca4bbce08a6c81e5b164995e0735a634790e73160147432cd0a4f049d4cb342227532cd158095cfe53a648a0e99a28143b1f2b9dce47820cff3380c166b3362592c39faca86952378603b5834d2e997aeb8cc1e5bcbea6860910cb6a767aaa23aba2aaa06e3f9567899752ee90604e9190f6421dd3577a7e2750429583018030d47a341b0e8649a2b8e8743d55955671f0b025554e8610dd7b28eded968320828ee90291e0d34378d2d33e7b21b884cd50eabcdce49f611a4610cae732b9c50edd2db5c6e1a2bc782e140cf9f42889c2c2b6c54952ba236177bc8a3865b866f593db78eaeda51561e410a001e8ee4583018c9607b7a32d81e92e66c22012111001080e1a8b1293323222322220549923406704299a93a7a1298c442b234c870883108192420c420840c0924129a1911d50eec13e03df783609f2b23f6b3f11550eb36135147755e94b14dbb8cadd19f8a26342e9d23f2f9a1b768849dd1cd4e5d9a37e985ec1832bee3220b7d85e27142917148d98930c466572ed1b63f06b9a9dd78a7709b4531b3e17791d623defb40e4522403c1a3c784322338914e9921631f325161e5203b09dc84a3cadb0a21c69ac93f1cc64cca92468b89260da4b68b2ef5c8d3e2c959be66c270ff6545d7193425a5a6891ac9b40f4efdce9a9abd57102f90028b2f83644e047890dcf1f85097e468c2ca72f970b2e1c668a5ca8e65e5fb5603b07d119933b15fb15adac88970d489871a02021dc827150e7aad33ae2536d2df1a4bd20132a0c248ec4bf0d022fac7b362238f12f293666e687a5fea5e27320380369c4b86cc56a8ebdcd103eaaf1e987a5b5db85e37d42ebc6e1ab72d79b61a51249f3b94d75024470b40b31808918bf9d104584ffd93bb002359e6474f037f69a400052c0abc5de702061cec452584392b09f85c7bded1a0caac67f6d64d2ca879a5804324cd7f0168834b24d1cfae91cc1a990c62ccbea0018f89fe3a121cc2e2dc1146fbf4f82f6d5261c71e09678d1c46d29f1e95357f927406e41e5e079a6f4cab7050c038681fc0bba481004580bc2dbc93ef6bfd9e67445b0430bbde322d5199b0c924dbf3a79717d479d9ac4f3aa9be8d8ab4e8ca6304a1564e029b798f5203010000"
+              "hex": "28b52ffd0048c42400c6b89823308d9b03405fe42688db952be30e85ec2606743322283ff4d718dbc51c84d1938242c187008c00920092e5d7e823894fbb10abeb42ecb9cdf5f6e9adbbb9260bea30f67b20f4a9b1a00e21dc183747031bf839f7d627ea705b46654c63b6b2429e1e9fd60bea23895757484210ce7d52b8f9508f506303db136351576edb30d627455db9edd519623e4fe7964eb11a6e420e575797fc746eced36154704b27b01a2a5d883d7775d63e595087ca1e7f12eafc5a6cf03d4f13f5c8db47a3d0e6c353f4ab43721f9fa8437d24b171d9f93c31d4d941fbd6134b603e3d8053f73d474241721f00adbbb912da504c86340815a6a35fcc7e4bd9d3afbe1eebf740681317ca87b2b73afd224f6f753addd321b98fbbe4a6f5a1e9d23e50160a7e2d2e861e6aa1604cd16aeb809e0636eda706536e286a471e4b0698a2ce08030091c79201aa936eb1286589184674865a01b36d36dc50d47e6a4406cb823a6c8d689b2d366e8dae2323e45c7b6a4491c152d0eaf453b8226875fa292454abd32f02c0344265986d1366db3460144c2354560cd4316a4451c418288cb591b0e7783ad3e72d48c04877a02c14eaa8bec9afc5c6f8ada701459d745757ddcdf5f4dd5c8b253a471e3b0c4dd40d08d495db7e125163411df6ebd6f5d853a34059968105b3581028ad4ebf08c3607621de8598a110ece64a2e59c29edefaac3208280eb36d3e0df47b5ce3d720d47e205457436fb1b63eb49f1a4f6380ad1c7989d55045567e8f7b8b511626458f2b21f4c16f65e72e65cd6265ed419f16905b467e2b42f6f4d510c2f4a95100c06014b328cba24ebaabab938ee1701027121012010009a54eba80e5a8b1293323222322220549923406604299a9ba7a12980403629a6340c418840c121042103288042281d0cc88a8763114c00bee8761d96446e113c21761adab99501d3a79f58c7deb326293fe243cd278768ed8f788de4503c60c6e760a229c532f1cc73a29b06d4440b4371e08144250a27722b658656f09697b40109c9aa9c229406031cc6c3c2ee2f088fd0588a044025df00530b1cc014fc4a93962f44166073ca9dd8bca9560ec8e8d1b32ac4926e4c866529634ea48348921fd5ef4a9c7b11814cefe9aa99bbb2f2b5fab8094949a266a24e43a38ed55f86ab65f418c410a2cbe0cde9c88f0a81c033743a262c8e0562465e671d74eae43cb1f792be6c32d42eda59077a3bc027879e413f9d1004d6a105e96281fd592a81787c8611832808624291cf91793140ccb6a465f021c19d1637a2a5a522b4437caea5aaf5d25a0bf45651508e4b288555d725f75a00aa08251527d89a05c602dc8bd374d3758b795da5679d61c8328bd3dcbcf1621c531f2b82e8917920aa009de9d0b40100b98c95281d26924504a4e50cdb241b5a17380c5097c51443118a50204b8050dd7ee3bfaa152b499a72893164c49d2815526cdaf02f8c1b5b8e8f7d7486f8d4e26d2b35378e0c1a6bfa804316a8c7b846fbfaefccb3da83031cf80c3460e0c52a48f128b38513a23734f4107be154cdfb4e3503870aea070b1c18204056ea37c6641a30fe63b6bc8ce2a440043171e9b421512e69896b6f8e9f98591bc8cdba79d541f49459a6ee57983709e1315669e38d5010000"
             }
           ]
         ]
@@ -7513,7 +7513,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"class Worker:\"}"
+              "value": "{\"signature\":\"class Worker:\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -7571,7 +7571,7 @@
             },
             {
               "type": "text",
-              "value": "{\"receiver_name\":\"self\",\"signature\":\"def run(self):\",\"receiver_type\":\"Worker\",\"is_method\":true,\"is_static\":false}"
+              "value": "{\"receiver_name\":\"self\",\"signature\":\"def run(self):\",\"is_public\":false,\"receiver_type\":\"Worker\",\"is_method\":true,\"is_static\":false}"
             },
             {
               "type": "integer",
@@ -7629,7 +7629,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"def make():\"}"
+              "value": "{\"signature\":\"def make():\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -7803,7 +7803,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"pub struct Worker\"}"
+              "value": "{\"signature\":\"pub struct Worker\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -7861,7 +7861,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"impl Worker\",\"generic_impl\":false,\"receiver_type\":\"Worker\"}"
+              "value": "{\"signature\":\"impl Worker\",\"is_public\":false,\"generic_impl\":false,\"receiver_type\":\"Worker\"}"
             },
             {
               "type": "integer",
@@ -7919,7 +7919,7 @@
             },
             {
               "type": "text",
-              "value": "{\"receiver_name\":\"self\",\"signature\":\"pub fn run(&self) -> i32\",\"receiver_type\":\"Worker\",\"is_method\":true,\"is_static\":false}"
+              "value": "{\"receiver_name\":\"self\",\"signature\":\"pub fn run(&self) -> i32\",\"is_public\":true,\"receiver_type\":\"Worker\",\"is_method\":true,\"is_static\":false}"
             },
             {
               "type": "integer",
@@ -7977,7 +7977,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"pub fn make() -> Worker\"}"
+              "value": "{\"signature\":\"pub fn make() -> Worker\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -8035,7 +8035,7 @@
             },
             {
               "type": "text",
-              "value": "{\"exports\":[{\"name\":\"Worker\",\"local\":\"Worker\",\"module\":null,\"type_only\":false,\"star\":false},{\"name\":\"make\",\"local\":\"make\",\"module\":null,\"type_only\":false,\"star\":false}]}"
+              "value": "{\"exports\":[{\"name\":\"Worker\",\"local\":\"Worker\",\"module\":null,\"type_only\":false,\"star\":false},{\"name\":\"make\",\"local\":\"make\",\"module\":null,\"type_only\":false,\"star\":false}],\"is_public\":false}"
             },
             {
               "type": "integer",
@@ -8093,7 +8093,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"class Worker\"}"
+              "value": "{\"signature\":\"class Worker\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -8151,7 +8151,7 @@
             },
             {
               "type": "text",
-              "value": "{\"receiver_name\":\"this\",\"signature\":\"run(): number\",\"receiver_type\":\"Worker\",\"is_method\":true,\"is_static\":false}"
+              "value": "{\"receiver_name\":\"this\",\"signature\":\"run(): number\",\"is_public\":true,\"receiver_type\":\"Worker\",\"is_method\":true,\"is_static\":false}"
             },
             {
               "type": "integer",
@@ -8209,7 +8209,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"function make()\"}"
+              "value": "{\"signature\":\"function make()\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -8325,7 +8325,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"mod helper\"}"
+              "value": "{\"signature\":\"mod helper\",\"is_public\":false}"
             },
             {
               "type": "integer",
@@ -8383,7 +8383,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"pub fn caller(flag: bool) -> i32\"}"
+              "value": "{\"signature\":\"pub fn caller(flag: bool) -> i32\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -8441,7 +8441,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"fn nested() -> i32\"}"
+              "value": "{\"signature\":\"fn nested() -> i32\",\"is_public\":false}"
             },
             {
               "type": "integer",
@@ -8499,7 +8499,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"pub fn shadow(make: fn() -> i32) -> i32\"}"
+              "value": "{\"signature\":\"pub fn shadow(make: fn() -> i32) -> i32\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -8557,7 +8557,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"pub fn typed_receiver(worker: helper::Worker) -> i32\"}"
+              "value": "{\"signature\":\"pub fn typed_receiver(worker: helper::Worker) -> i32\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -8673,7 +8673,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"def caller(flag):\"}"
+              "value": "{\"signature\":\"def caller(flag):\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -8731,7 +8731,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"def nested(worker):\"}"
+              "value": "{\"signature\":\"def nested(worker):\",\"is_public\":false}"
             },
             {
               "type": "integer",
@@ -8789,7 +8789,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"def shadow(make):\"}"
+              "value": "{\"signature\":\"def shadow(make):\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -8847,7 +8847,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"def returned():\"}"
+              "value": "{\"signature\":\"def returned():\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -8905,7 +8905,7 @@
             },
             {
               "type": "text",
-              "value": "{\"exports\":[{\"name\":\"caller\",\"local\":\"caller\",\"module\":null,\"type_only\":false,\"star\":false},{\"name\":\"shadow\",\"local\":\"shadow\",\"module\":null,\"type_only\":false,\"star\":false},{\"name\":\"returned\",\"local\":\"returned\",\"module\":null,\"type_only\":false,\"star\":false}]}"
+              "value": "{\"exports\":[{\"name\":\"caller\",\"local\":\"caller\",\"module\":null,\"type_only\":false,\"star\":false},{\"name\":\"shadow\",\"local\":\"shadow\",\"module\":null,\"type_only\":false,\"star\":false},{\"name\":\"returned\",\"local\":\"returned\",\"module\":null,\"type_only\":false,\"star\":false}],\"is_public\":false}"
             },
             {
               "type": "integer",
@@ -8963,7 +8963,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"function caller(flag: boolean)\"}"
+              "value": "{\"signature\":\"function caller(flag: boolean)\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -9021,7 +9021,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"function nested(worker: Worker)\"}"
+              "value": "{\"signature\":\"function nested(worker: Worker)\",\"is_public\":false}"
             },
             {
               "type": "integer",
@@ -9079,7 +9079,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"function shadow(make: () => number)\"}"
+              "value": "{\"signature\":\"function shadow(make: () => number)\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -9137,7 +9137,7 @@
             },
             {
               "type": "text",
-              "value": "{\"signature\":\"function returned()\"}"
+              "value": "{\"signature\":\"function returned()\",\"is_public\":true}"
             },
             {
               "type": "integer",
@@ -12168,37 +12168,37 @@
       [
         "local_facts",
         null,
-        "c794ae72f98048435411bc0ba97611f67eb4a44e0194091a41487961a0bd0e96"
+        "ee1ae540e5e9eb175d2473006a0e0d92a27c447e8930e2568d78941024b9c6e0"
       ],
       [
         "local_facts",
         "src/helper.py",
-        "7862577ae250caa6bd4c260cb34af1b8fa8d439cee8f8fbfe9c9e66f8b156233"
+        "353663dc70de6754259a7b69703eb08a415a4f1f7365f4719a79a6608b0d338e"
       ],
       [
         "local_facts",
         "src/helper.rs",
-        "6a9417594643b88c1ac5ccf8fea831c716974cf03490e421e63782b09d020ae7"
+        "fc6d9f71d80fbdcf26b9c392f9dd937104f5ab1064ea14d2e546283969e3040a"
       ],
       [
         "local_facts",
         "src/helper.ts",
-        "8837108f0563a47138e8a2b03c583d23c38a576768a8db1e0fb52fd7fa392842"
+        "5ed9da80e1334ab32f5560d4aa6c031fa5d073d9e5fd54692644102551d1e561"
       ],
       [
         "local_facts",
         "src/lib.rs",
-        "2b3a4a6945aadc4f29be3ed8001f0f14a87459a379c1dd4ffed9515a45a7e375"
+        "6d3e5fdebe82e258047c0571936f6f6e08075bf3066e0a36d74e57e55127fb63"
       ],
       [
         "local_facts",
         "src/main.py",
-        "b4c39db8204c6df173b1696394097dca41909d99b90388aee2ccd720fc87fcc3"
+        "0aeef5d61d23bccccbd85a17061e5efc8f3b02a310badd656b27f7f4f04af453"
       ],
       [
         "local_facts",
         "src/main.ts",
-        "e5ad2080025a38b4d1c62f249d2dabf55699c79799dcba54c31fc8ee2a66fb4b"
+        "1f790df33445fe06295a23aef2b4c29ccef3d252211fb7ccce8c0971c5b5798f"
       ],
       [
         "node_search_config",
@@ -12213,37 +12213,37 @@
       [
         "nodes",
         null,
-        "380ff1ba1fe7674c250ffe258ae2f051d6d37920376b027f83ffb18a59299eee"
+        "b22f25d1d240b35750b346c8c47b663d063c04f317436c59469c926fcb34d777"
       ],
       [
         "nodes",
         "src/helper.py",
-        "363d1c6357836ad53638f6b58d8627ca0ff977ad326588d44e5b96350f984c00"
+        "6e58e04ba5d97ee0fe023361c7460137a0273f5e3dfc550a008db9283806a780"
       ],
       [
         "nodes",
         "src/helper.rs",
-        "edf40efb6deb4c7ca24f7bf0a0bde7e160be5fdef6ee364765cab66c25e2904d"
+        "bdcf626f7d80baa1646d3a3d6423a21cd4c14b222d28d6667b0f5b943b15b623"
       ],
       [
         "nodes",
         "src/helper.ts",
-        "1054d4fad6785fab4c01b6b0358acbe8d4db7a7274f6933bb90059c7eaa33815"
+        "c6c5f055004e9127a4e290d4798526087b72d651826389df22cfa7004502c71e"
       ],
       [
         "nodes",
         "src/lib.rs",
-        "a3317d9ed08e3519569d413f5fda5b9e7e571028159a21d11994d10830f2f9b7"
+        "d3dd715f41da763bdd17570ddfa534460aedb1f7c232d276115329bb6ef5f708"
       ],
       [
         "nodes",
         "src/main.py",
-        "d39bb07fea951913c4218b038035ca2eec93a28cb93f37cbd1da8cc6a3f024e5"
+        "938d7a9c0b7f25d94527b2848631694d5eff144a74ef04d55417f6a0614738aa"
       ],
       [
         "nodes",
         "src/main.ts",
-        "3ed7ad043db3945acadf8eae9d8f070adcf8522988b8d5ef252029cdea2042bb"
+        "a72efca0bd5cd1fe00bd22b59bdddd6635b244df62227490cc44673da4e4567b"
       ],
       [
         "resolution_coverage",
@@ -23827,7 +23827,8 @@
             "receiver": null,
             "signature": "class Worker:",
             "async": false,
-            "column": 0
+            "column": 0,
+            "is_public": true
           }
         },
         {
@@ -23855,6 +23856,7 @@
             "signature": "def run(self):",
             "async": false,
             "column": 4,
+            "is_public": false,
             "receiver_type": "Worker",
             "is_method": true,
             "is_static": false
@@ -23883,6 +23885,7 @@
             "signature": "def make():",
             "async": false,
             "column": 0,
+            "is_public": true,
             "value_flow": {
               "return_value": {
                 "kind": "call",
@@ -23980,7 +23983,8 @@
             "receiver": null,
             "signature": "pub struct Worker",
             "async": false,
-            "column": 0
+            "column": 0,
+            "is_public": true
           }
         },
         {
@@ -24006,6 +24010,7 @@
             "signature": "impl Worker",
             "async": false,
             "column": 0,
+            "is_public": false,
             "generic_impl": false,
             "receiver_type": "Worker"
           }
@@ -24033,6 +24038,7 @@
             "signature": "pub fn run(&self) -> i32",
             "async": false,
             "column": 4,
+            "is_public": true,
             "receiver_type": "Worker",
             "is_method": true,
             "is_static": false,
@@ -24067,6 +24073,7 @@
             "signature": "pub fn make() -> Worker",
             "async": false,
             "column": 0,
+            "is_public": true,
             "value_flow": {
               "return_type": {
                 "kind": "named",
@@ -24161,7 +24168,8 @@
               }
             ],
             "bindings": [],
-            "rebindings": []
+            "rebindings": [],
+            "is_public": false
           }
         },
         {
@@ -24186,7 +24194,8 @@
             "receiver": null,
             "signature": "class Worker",
             "async": false,
-            "column": 7
+            "column": 7,
+            "is_public": true
           }
         },
         {
@@ -24212,6 +24221,7 @@
             "signature": "run(): number",
             "async": false,
             "column": 4,
+            "is_public": true,
             "receiver_type": "Worker",
             "is_method": true,
             "is_static": false,
@@ -24255,7 +24265,8 @@
                 "line": 8,
                 "column": 11
               }
-            }
+            },
+            "is_public": true
           }
         }
       ],
@@ -24332,7 +24343,8 @@
             "receiver": null,
             "signature": "mod helper",
             "async": false,
-            "column": 0
+            "column": 0,
+            "is_public": false
           }
         },
         {
@@ -24365,6 +24377,7 @@
             "signature": "pub fn caller(flag: bool) -> i32",
             "async": false,
             "column": 0,
+            "is_public": true,
             "param_types": {
               "flag": "bool"
             },
@@ -24454,6 +24467,7 @@
             "signature": "fn nested() -> i32",
             "async": false,
             "column": 4,
+            "is_public": false,
             "value_flow": {
               "return_type": {
                 "kind": "named",
@@ -24487,6 +24501,7 @@
             "signature": "pub fn shadow(make: fn() -> i32) -> i32",
             "async": false,
             "column": 0,
+            "is_public": true,
             "value_flow": {
               "return_type": {
                 "kind": "named",
@@ -24520,6 +24535,7 @@
             "signature": "pub fn typed_receiver(worker: helper::Worker) -> i32",
             "async": false,
             "column": 0,
+            "is_public": true,
             "param_types": {
               "worker": "helper::Worker"
             },
@@ -24746,6 +24762,7 @@
             "signature": "def caller(flag):",
             "async": false,
             "column": 0,
+            "is_public": true,
             "value_flow": {
               "bindings": [
                 {
@@ -24853,6 +24870,7 @@
             "signature": "def nested(worker):",
             "async": false,
             "column": 4,
+            "is_public": false,
             "value_flow": {
               "bindings": [
                 {
@@ -24903,6 +24921,7 @@
             "signature": "def shadow(make):",
             "async": false,
             "column": 0,
+            "is_public": true,
             "value_flow": {
               "return_value": {
                 "kind": "call",
@@ -24938,6 +24957,7 @@
             "signature": "def returned():",
             "async": false,
             "column": 0,
+            "is_public": true,
             "value_flow": {
               "return_value": {
                 "kind": "call",
@@ -25123,7 +25143,8 @@
               }
             ],
             "bindings": [],
-            "rebindings": []
+            "rebindings": [],
+            "is_public": false
           }
         },
         {
@@ -25223,7 +25244,8 @@
                   }
                 }
               ]
-            }
+            },
+            "is_public": true
           }
         },
         {
@@ -25295,7 +25317,8 @@
                 "line": 7,
                 "column": 15
               }
-            }
+            },
+            "is_public": false
           }
         },
         {
@@ -25335,7 +25358,8 @@
                 "line": 22,
                 "column": 11
               }
-            }
+            },
+            "is_public": true
           }
         },
         {
@@ -25370,7 +25394,8 @@
                 "line": 26,
                 "column": 11
               }
-            }
+            },
+            "is_public": true
           }
         }
       ],

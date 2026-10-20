@@ -243,33 +243,100 @@ receipt:
 
 ```yaml
 task_ref: test-discovery-chains-and-role-classification
-target: "Classify test entities into test_case, test_helper, and test_fixture roles, trace explicit call paths in code_map_tests, and report untested public surface"
+target: Classify test entities into test_case, test_helper, and test_fixture roles, trace explicit call paths in code_map_tests, and report untested public surface
 proof_policy: seam-test-first
-contract_revision: 6
+contract_revision: 9
 invariants:
-  - 'INV-TEST-CHAIN-AND-ROLE-TRANSPARENCY: code_map_tests classifies test entities into explicit roles (test_case, test_helper, test_fixture) and returns verified call paths (call_path) from test cases through helpers to target symbols instead of flat scope_or_transitive markers.'
-  - 'INV-UNTESTED-PUBLIC-SURFACE: code_map_analyze identifies and reports public symbols that have zero call paths originating from verified test_case nodes, distinguishing untested public surface from internal implementation details.'
+- 'INV-TEST-CHAIN-AND-ROLE-TRANSPARENCY: code_map_tests classifies test entities into explicit roles (test_case, test_helper, test_fixture) and returns verified call paths (call_path) from test cases through helpers to target symbols instead of flat scope_or_transitive markers.'
+- 'INV-UNTESTED-PUBLIC-SURFACE: code_map_analyze identifies and reports public symbols that have zero call paths originating from verified test_case nodes, distinguishing untested public surface from internal implementation details.'
 scope:
-  - src/engine/ast/
-  - src/db/symbols/test_discovery.rs
-  - src/db/reader.rs
-  - src/mcp/tools.rs
-  - tests/query_context/ranking_and_coverage.rs
-  - docs/reference/mcp-tools.md
-status: ready
+- src/engine/ast/
+- src/engine/languages/mod.rs
+- src/engine/languages/python.rs
+- src/engine/languages/rust.rs
+- src/engine/languages/typescript/mod.rs
+- src/db/symbols.rs
+- src/db/symbols/test_discovery.rs
+- src/db/reader.rs
+- src/db/traversal.rs
+- src/mcp/tools.rs
+- tests/query_context/ranking_and_coverage.rs
+- tests/query_context/search_and_paging.rs
+- tests/languages/profiles/legacy_hooks.rs
+- tests/languages/profiles.rs
+- tests/languages/fixtures/three_tier/pre_refactor.json
+- docs/reference/mcp-tools.md
+- docs/reference/mcp-markdown-contracts.md
+- skills/contextunity-forge/SKILL.md
+status: completed
 subtasks:
-  - subtask_ref: test-role-ast-extraction
-    title: "Extract granular test roles (test_case, test_helper, test_fixture) across Python, Rust, and TypeScript profiles"
-    status: pending
-  - subtask_ref: test-call-path-traversal
-    title: "Trace explicit call chains from test cases through intermediate helpers to target symbols in test_discovery"
-    status: pending
-  - subtask_ref: untested-public-surface-diagnostic
-    title: "Diagnose public API symbols lacking direct or transitive test_case call paths in code_map_analyze"
-    status: pending
-  - subtask_ref: test-chains-seam-tests
-    title: "Add tests verifying test role attributes, call_path arrays, and untested public surface reports"
-    status: pending
+- subtask_ref: test-role-ast-extraction
+  title: Extract granular test roles (test_case, test_helper, test_fixture) across Python, Rust, and TypeScript profiles
+  status: ready
+  evidence: null
+- subtask_ref: test-call-path-traversal
+  title: Trace explicit call chains from test cases through intermediate helpers to target symbols in test_discovery
+  status: ready
+  evidence: null
+- subtask_ref: test-chains-seam-tests
+  title: Add tests verifying test role attributes, call_path arrays, and untested public surface reports
+  status: ready
+  evidence: null
+- subtask_ref: untested-public-surface-diagnostic
+  title: Diagnose public API symbols lacking direct or transitive test_case call paths in code_map_analyze
+  status: ready
+  evidence: null
+receipt:
+  contract_revision: 9
+  passed_at: 2026-10-20T02:37:57.591509339+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test query_context
+      log: CARGO_TARGET_DIR=/home/oleksii/ContextUnity/projects/contextunity-forge-mcp/.worktrees/053-documentation-test-graph-and-tool-ergonomics/target; strict Clippy exit 0; query_context 43 passed, 0 failed; additionally languages 262/0, lib 85/0, MCP 85/0 with isolated current skill copy
+      exit_code: 0
+      tests_passed: 43
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: 'PASS: acceptedrev9 admitted15 implementation blobs equal candidate; latest repair exactly four admitted owner/test paths. External authority manifest/futureTask4/5 scopes preserved. Generated proof relocated out of worktree before pass; no protected config/source edits by reviewer.'
+        claims:
+          applicable: true
+          evidence: 'PASS: both invariants and existing acceptance proof reviewed cumulatively; all3 findingIDs confirmed-fixed. Actual module-declaration identity and actual exported class-body member ownership independently verified in source, original/block current CLI fixtures, and permanent class/member SQLite/analyze seam. Direct/named/default export positives, internal/nested/block/private negatives, JSunknown/PythonRust and genuine/shadowed runner roles preserved. Exact shortest calls-only cycle-safe paths and complete fail-closed absence/paging proof unchanged from prior reviewed source. Current strictClippy0/query43/languages262/lib85/MCP85 passed; golden/fingerprint proof retained where unchanged. No optional authority expansion.'
+        concurrency:
+          applicable: true
+          evidence: 'PASS for changed mechanisms: no task transactions, revision/claim fencing, receipt publication, rollback or lock changes. Independent worker distinct from builder, frozen candidate checked, sequential Cargo, all jobs completed.'
+        project_isolation:
+          applicable: true
+          evidence: 'PASS: explicit active worktree root for operations, separately rooted authorized /tmp actual fixtures/copied skill. No049 implementation transfer, host skill mutation, linked workspace profile/config resolution or project namespace changes.'
+        administration:
+          applicable: true
+          evidence: 'PASS for changed mechanisms: no schema/migration/profile/gate/hook/receipt changes, no manual commit. Bound contract9/claim18/snapshota7a7282/baselineb18. Actual Forge candidate validation governs review/delivery. No Markdown/ADR/Task6 or crate/linker work.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-EXACT-SEARCH-PRIORITY: When exact is false (default) and symbol search candidates contain exact name or qualname matches, the engine automatically filters out noisy BM25 candidates and returns only exact matches, eliminating surrounding token pollution for known symbol identifiers.'
+    - 'INV-ERGONOMIC-PREVIEW-BUDGET: Source previews for symbols up to 200 lines are returned completely in a single response without artificial pagination; preview line budgets are clamped between 1 and 500 lines.'
+    - 'INV-NATURAL-DOC-SEARCH: Documentation search automatically filters common English stop-words and weights section title matches 3x over body text via FTS5 BM25, eliminating empty results caused by rigid AND conjunction of natural-language query phrases.'
+    - 'INV-TEST-CHAIN-AND-ROLE-TRANSPARENCY: code_map_tests classifies test entities into explicit roles (test_case, test_helper, test_fixture) and returns verified call paths (call_path) from test cases through helpers to target symbols instead of flat scope_or_transitive markers.'
+    - 'INV-EXPLICIT-EDGE-EVIDENCE: Graph inspection (impact and explain) at depth 1 returns full edge objects specifying edge kind (calls vs possible_calls), direction, and exact source location, strictly distinguishing statically proven calls from heuristic name candidates.'
+    - 'INV-UNRESOLVED-TAXONOMY: Unresolved references are categorized into specific granular reasons (dynamic_callback, unresolved_receiver_type, framework_magic, external_unindexed) with call expression snippets rather than generic other groupings.'
+    - 'INV-SCOPE-COVERAGE-TRANSPARENCY: code_map_overview provides coverage diagnostics broken down by primary workspace and linked_workspaces components rather than only global aggregate counts.'
+    - 'INV-DOC-GRAPH-TRACEABILITY: Markdown relative links and wikilinks are extracted into bidirectional cites_doc/cited_by_doc edges; governing invariants (INV-* rules) from linked doc sections are automatically surfaced on inspect and impact.'
+    - 'INV-TEST-CHAIN-AND-ROLE-TRANSPARENCY: code_map_tests classifies test entities into explicit roles (test_case, test_helper, test_fixture) and returns verified call paths (call_path) from test cases through helpers to target symbols instead of flat scope_or_transitive markers.'
+    - 'INV-UNTESTED-PUBLIC-SURFACE: code_map_analyze identifies and reports public symbols that have zero call paths originating from verified test_case nodes, distinguishing untested public surface from internal implementation details.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: graph-edge-evidence-unresolved-taxonomy-and-scope-transparency
@@ -278,7 +345,7 @@ subtasks:
 task_ref: graph-edge-evidence-unresolved-taxonomy-and-scope-transparency
 target: "Provide explicit edge descriptors in impact/explain, Git-diff impact analysis, granular unresolved taxonomy, and workspace coverage breakdown"
 proof_policy: seam-test-first
-contract_revision: 6
+contract_revision: 8
 invariants:
   - 'INV-EXPLICIT-EDGE-EVIDENCE: Graph inspection (impact and explain) at depth 1 returns full edge objects specifying edge kind (calls vs possible_calls), direction, and exact source location, strictly distinguishing statically proven calls from heuristic name candidates.'
   - 'INV-DIFF-IMPACT-ANALYSIS: code_map_impact supports a changes parameter (staged, unstaged, head) to map modified Git diff ranges directly to AST symbols, impacted graph neighbors, and affected tests.'
@@ -286,13 +353,17 @@ invariants:
   - 'INV-SCOPE-COVERAGE-TRANSPARENCY: code_map_overview provides coverage diagnostics broken down by primary workspace and linked_workspaces components rather than only global aggregate counts.'
 scope:
   - src/db/reader.rs
-  - src/db/reader/impact.rs
-  - src/db/reader/explain.rs
-  - src/db/reader/coverage.rs
+  - src/db/symbols.rs
+  - src/mcp/tools/inputs.rs
+  - src/cli/mod.rs
   - src/mcp/tools.rs
   - tests/query_context/symbol_context.rs
   - tests/query_context/ranking_and_coverage.rs
+  - tests/mcp/tool_evolution/mcp_boundaries.rs
   - docs/reference/mcp-tools.md
+  - docs/reference/mcp-markdown-contracts.md
+  - docs/reference/cli.md
+  - skills/contextunity-forge/SKILL.md
 status: ready
 subtasks:
   - subtask_ref: explicit-edge-descriptors-in-impact-and-explain
@@ -315,7 +386,7 @@ subtasks:
 task_ref: documentation-knowledge-graph-and-invariant-traceability
 target: "Extract documentation citation graph, surface affected docs on impact and documented_in on inspect, index governing invariants from all docs as first-class graph entities, and diagnose doc drift with suggested symbol remediation"
 proof_policy: seam-test-first
-contract_revision: 7
+contract_revision: 9
 invariants:
   - 'INV-DOC-GRAPH-TRACEABILITY: Markdown relative links and wikilinks are extracted into bidirectional cites_doc/cited_by_doc edges; governing invariants (INV-* rules) from linked doc sections are automatically surfaced on inspect and impact.'
   - 'INV-UNIVERSAL-INVARIANT-INDEX: INV-* invariants across all docs/**/*.md and AGENTS.md are indexed as first-class graph nodes with bidirectional governs/governed_by edges to referenced symbols, replacing single-directory ADR token scraping.'
@@ -326,12 +397,21 @@ invariants:
   - 'INV-COMPACT-INVARIANT-PAYLOAD: Governing invariants in tool responses and task context are bounded to compact ID, single-line rule, and source reference; transitive invariants are summarized by ID with a strict cap of 3-5 direct invariants to prevent context-window bloat.'
 scope:
   - src/engine/docs.rs
+  - src/engine/scanner/mod.rs
+  - src/engine/pipeline.rs
+  - src/engine/tasks/context.rs
   - src/engine/linker/resolution.rs
   - src/db/reader.rs
-  - src/db/traversal.rs
   - src/mcp/tools.rs
   - tests/mcp/context.rs
+  - src/db/symbols.rs
+  - tests/mcp/freshness/stdio_and_response.rs
+  - tests/incremental/doc_parity.rs
+  - tests/acdd/mcp.rs
   - docs/reference/mcp-tools.md
+  - docs/reference/mcp-markdown-contracts.md
+  - docs/reference/tasks.md
+  - skills/contextunity-forge/SKILL.md
 status: ready
 subtasks:
   - subtask_ref: markdown-citation-graph-extraction
@@ -374,11 +454,14 @@ scope:
   - docs/reference/mcp-tools.md
 status: ready
 subtasks:
+  - subtask_ref: inspect-markdown-formatter-and-relation-contracts
+    title: "Implement structured Markdown formatter for code_map_inspect per docs/reference/mcp-markdown-contracts.md#21-code_map_inspect"
+    status: pending
   - subtask_ref: dead-metadata-and-generation-hash-stripping
     title: "Omit generation hashes and empty collections from responses when has_more is false"
     status: pending
   - subtask_ref: code-map-markdown-formatter
-    title: "Implement structured Markdown formatters for code_map_inspect, search, impact, and overview"
+    title: "Implement structured Markdown formatters for search, impact, and overview per mcp-markdown-contracts.md"
     status: pending
   - subtask_ref: task-context-compact-markdown-formatter
     title: "Format task context, claim, and inspect as structured Markdown retaining all rules, guidance, and DoD"

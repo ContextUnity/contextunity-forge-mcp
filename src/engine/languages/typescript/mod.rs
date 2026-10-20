@@ -20,6 +20,86 @@ pub(crate) use commonjs::commonjs_bindings;
 mod package_metadata;
 mod scope_facts;
 pub(crate) mod value_flow;
+
+/// Matches transient AST owners to facts using the source coordinates recorded by the visitor.
+/// Qualified names are insufficient because statement blocks do not appear in them.
+fn source_key(node: Syntax<'_>, line_offset: usize) -> (usize, usize) {
+    let position = node.start_position();
+    (position.row + 1 + line_offset, position.column)
+}
+
+fn collect_module_declaration<'tree>(
+    node: Syntax<'tree>,
+    source: &str,
+    declarations: &mut Vec<(String, Syntax<'tree>)>,
+) {
+    match node.kind() {
+        "function_declaration"
+        | "class_declaration"
+        | "enum_declaration"
+        | "interface_declaration"
+        | "type_alias_declaration" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                declarations.push((text(name, source).to_owned(), node));
+            }
+        }
+        "lexical_declaration" | "variable_declaration" => {
+            let mut cursor = node.walk();
+            for declaration in node.named_children(&mut cursor) {
+                if declaration.kind() != "variable_declarator" {
+                    continue;
+                }
+                let Some(name) = declaration
+                    .child_by_field_name("name")
+                    .filter(|name| name.kind() == "identifier")
+                else {
+                    continue;
+                };
+                let name = text(name, source).to_owned();
+                declarations.push((name.clone(), declaration));
+                if let Some(value) = declaration.child_by_field_name("value") {
+                    if matches!(value.kind(), "function_expression" | "arrow_function" | "class") {
+                        declarations.push((name, value));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn module_declarations<'tree>(
+    root: Syntax<'tree>,
+    source: &str,
+) -> Vec<(String, Syntax<'tree>)> {
+    let mut declarations = Vec::new();
+    let mut cursor = root.walk();
+    // Only visit declarations owned by the module. In particular, do not enter statement blocks.
+    for statement in root.named_children(&mut cursor) {
+        if statement.kind() == "export_statement" {
+            let mut export_cursor = statement.walk();
+            for declaration in statement.named_children(&mut export_cursor) {
+                collect_module_declaration(declaration, source, &mut declarations);
+            }
+        } else {
+            collect_module_declaration(statement, source, &mut declarations);
+            if statement.kind() == "expression_statement" {
+                if let Some(value) = statement
+                    .named_child(0)
+                    .filter(|node| node.kind() == "assignment_expression")
+                    .and_then(|assignment| assignment.child_by_field_name("right"))
+                    .filter(|value| matches!(value.kind(), "function_expression" | "class"))
+                {
+                    if let Some(name) = value.child_by_field_name("name") {
+                        declarations.push((text(name, source).to_owned(), value));
+                    }
+                }
+            }
+        }
+    }
+    declarations
+}
+
 /// Performs language.
 pub fn language(path: &str, language: &str) -> tree_sitter::Language {
     if language == "javascript"
@@ -334,6 +414,121 @@ thread_local! {
 }
 
 impl TypeScript {
+    fn imported_test_runners(root: Syntax<'_>, source: &str, file: &mut FileContext) {
+        let mut cursor = root.walk();
+        for import in root
+            .named_children(&mut cursor)
+            .filter(|node| node.kind() == "import_statement")
+        {
+            if field(import, source, "source")
+                .is_none_or(|module| module.trim_matches(['\'', '"']) != "node:test")
+            {
+                continue;
+            }
+            let mut pending = vec![import];
+            while let Some(node) = pending.pop() {
+                if node.kind() == "import_specifier" {
+                    let imported = field(node, source, "name").unwrap_or_default();
+                    let local = field(node, source, "alias").unwrap_or(imported);
+                    match imported {
+                        "test" | "it" => {
+                            file.test_case_imports.insert(local.to_owned());
+                        }
+                        "beforeEach" | "before" | "afterEach" | "after" => {
+                            file.test_fixture_imports.insert(local.to_owned());
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                let mut cursor = node.walk();
+                pending.extend(node.named_children(&mut cursor));
+            }
+        }
+    }
+
+    fn block_binds_name(block: Syntax<'_>, source: &str, name: &str) -> bool {
+        let mut cursor = block.walk();
+        let found = block.named_children(&mut cursor).any(|statement| match statement.kind() {
+            "lexical_declaration" | "variable_declaration" => {
+                let mut declaration_cursor = statement.walk();
+                let bound = statement
+                    .named_children(&mut declaration_cursor)
+                    .filter(|declarator| declarator.kind() == "variable_declarator")
+                    .any(|declarator| {
+                        declarator
+                            .child_by_field_name("name")
+                            .is_some_and(|pattern| {
+                                let mut bindings = Vec::new();
+                                collect_pattern_binding_names(pattern, source, &mut bindings);
+                                bindings.iter().any(|binding| binding == name)
+                            })
+                    });
+                bound
+            }
+            "function_declaration" | "class_declaration" => statement
+                .child_by_field_name("name")
+                .is_some_and(|binding| text(binding, source).trim() == name),
+            _ => false,
+        });
+        found
+    }
+
+    fn callback_runner(
+        node: Syntax<'_>,
+        source: &str,
+        file: &FileContext,
+    ) -> Option<&'static str> {
+        let mut current = node;
+        while let Some(parent) = current.parent() {
+            if parent.kind() == "arguments" {
+                let call = parent.parent().filter(|candidate| candidate.kind() == "call_expression")?;
+                let callee = call
+                    .child_by_field_name("function")
+                    .filter(|candidate| candidate.kind() == "identifier")?;
+                let local = text(callee, source).trim();
+                let mut scope = call.parent();
+                let mut shadowed = false;
+                while let Some(ancestor) = scope {
+                    if (ancestor.kind() == "statement_block"
+                        && Self::block_binds_name(ancestor, source, local))
+                        || (matches!(
+                        ancestor.kind(),
+                        "function_declaration"
+                            | "function_expression"
+                            | "arrow_function"
+                            | "method_definition"
+                    ) && ast::scope_bindings(ancestor, source)
+                            .all
+                            .iter()
+                            .any(|binding| binding == local))
+                    {
+                        shadowed = true;
+                        break;
+                    }
+                    scope = ancestor.parent();
+                }
+                if !shadowed && file.test_case_imports.contains(local) {
+                    return Some("test_case");
+                }
+                if !shadowed && file.test_fixture_imports.contains(local) {
+                    return Some("test_fixture");
+                }
+                return None;
+            }
+            if current.id() != node.id()
+                && matches!(
+                    current.kind(),
+                    "function_declaration" | "function_expression" | "arrow_function"
+                )
+            {
+                return None;
+            }
+            current = parent;
+        }
+        None
+    }
+
     fn metadata_with_documented(
         &self,
         mut node: Syntax<'_>,
@@ -497,6 +692,22 @@ impl TypeScript {
         ) && node.child_by_field_name("body").is_none();
         let is_overload = is_ts_without_body;
         let is_stub = is_ts_without_body;
+        let member_is_public = if self.javascript {
+            None
+        } else if is_method_node || node.kind() == "field_definition" {
+            let mut cursor = node.walk();
+            let is_private_or_protected = node.named_children(&mut cursor).any(|child| {
+                child.kind() == "accessibility_modifier"
+                    && matches!(text(child, source).trim(), "private" | "protected")
+            });
+            let is_hash_private = node
+                .child_by_field_name("name")
+                .or_else(|| node.child_by_field_name("property"))
+                .is_some_and(|name| text(name, source).trim_start().starts_with('#'));
+            Some(!is_private_or_protected && !is_hash_private)
+        } else {
+            None
+        };
         let mut default_export = false;
         while let Some(parent) = node.parent() {
             if parent.kind() == "export_statement"
@@ -541,6 +752,7 @@ impl TypeScript {
             is_static,
             is_overload,
             is_stub,
+            is_public: member_is_public,
             ..Default::default()
         }
     }
@@ -1494,6 +1706,7 @@ impl LanguageProfile for TypeScript {
         let mut file = FileContext {
             ..Default::default()
         };
+        Self::imported_test_runners(root, source, &mut file);
         let scope_fact_needs =
             scope_facts::classify_scope_fact_needs(root, source, self.javascript);
         let needs_dom_scope_facts = scope_fact_needs.dom_scope_facts;
@@ -1556,6 +1769,100 @@ impl LanguageProfile for TypeScript {
         bindings: &ast::ScopeBindings,
     ) -> Option<Vec<crate::core::semantic::ExportBinding>> {
         Some(value_flow::exports(root, source, bindings))
+    }
+
+    fn test_role(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        path: &str,
+        file: &FileContext,
+    ) -> Option<&'static str> {
+        if !crate::core::models::is_test(path)
+            || !matches!(
+                node.kind(),
+                "function_declaration"
+                    | "function_expression"
+                    | "arrow_function"
+                    | "method_definition"
+            )
+        {
+            return None;
+        }
+        Self::callback_runner(node, source, file).or(Some("test_helper"))
+    }
+
+    fn finalize_file_visibility(
+        &self,
+        root: Syntax<'_>,
+        source: &str,
+        facts: &mut Facts,
+        exports: &[crate::core::semantic::ExportBinding],
+    ) {
+        if self.javascript {
+            return;
+        }
+        let exported_locals = exports
+            .iter()
+            .filter(|export| !export.type_only && export.module.is_none())
+            .filter_map(|export| export.local.as_deref())
+            .collect::<HashSet<_>>();
+        let module_line = facts
+            .nodes
+            .iter()
+            .find(|node| node.kind == "module")
+            .map(|node| node.line)
+            .unwrap_or(1);
+        let line_offset = module_line.saturating_sub(root.start_position().row + 1);
+        let mut exported_declarations = HashSet::new();
+        let mut exported_class_members = HashSet::new();
+        for (name, declaration) in module_declarations(root, source) {
+            if !exported_locals.contains(name.as_str()) {
+                continue;
+            }
+            exported_declarations.insert(source_key(declaration, line_offset));
+            if matches!(declaration.kind(), "class_declaration" | "class") {
+                // The class declaration's actual members carry its owner identity, even when a
+                // block-local class happens to share its name and qualified name.
+                if let Some(body) = declaration
+                    .child_by_field_name("body")
+                    .or_else(|| {
+                        let mut cursor = declaration.walk();
+                        let body = declaration
+                            .named_children(&mut cursor)
+                            .find(|child| child.kind() == "class_body");
+                        body
+                    })
+                {
+                    let mut cursor = body.walk();
+                    exported_class_members.extend(
+                        body.named_children(&mut cursor)
+                            .map(|member| source_key(member, line_offset)),
+                    );
+                }
+            }
+        }
+        for node in &mut facts.nodes {
+            let position = node
+                .details
+                .get("column")
+                .and_then(serde_json::Value::as_u64)
+                .map(|column| (node.line, column as usize));
+            let is_public = match node.kind.as_str() {
+                "class" => position.is_some_and(|position| exported_declarations.contains(&position)),
+                "method" | "field" => node
+                    .details
+                    .get("column")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|column| (node.line, column as usize))
+                    .is_some_and(|position| {
+                        exported_class_members.contains(&position)
+                            && node.details["is_public"] != serde_json::Value::Bool(false)
+                    }),
+                _ => position.is_some_and(|position| exported_declarations.contains(&position)),
+            };
+            node.details["is_public"] = serde_json::json!(is_public);
+        }
     }
 
     fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::core::semantic::ValueFlowFacts {
