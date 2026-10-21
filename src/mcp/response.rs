@@ -1,7 +1,7 @@
 use crate::core::format::{self, DiscoveryKind, OperationKind, OutputFormat};
-use crate::core::response::{ResponsePolicy, MAX_OUTPUT_BYTES};
+use crate::core::response::{MAX_OUTPUT_BYTES, ResponsePolicy};
 use rmcp::model::{CallToolResult, ContentBlock};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     io,
     pin::Pin,
@@ -67,9 +67,13 @@ pub(crate) fn result_for_presented(
             if discovery == Some(DiscoveryKind::Ast) && value.get("diagnostic").is_some() {
                 let diagnostic = &value["diagnostic"];
                 let rendered = match output_format {
-                    OutputFormat::Markdown => {
-                        format::render_presented(&value, output_format, title, discovery)
-                    }
+                    OutputFormat::Markdown => format::render_for_operation(
+                        &value,
+                        output_format,
+                        title,
+                        discovery,
+                        operation,
+                    ),
                     OutputFormat::Json => format::ast_legacy_error(diagnostic),
                 };
                 return if success_text_bytes(&rendered) <= budget {
@@ -83,7 +87,13 @@ pub(crate) fn result_for_presented(
             }
             let mut compacted = value.clone();
             format::compact(&mut compacted, operation, explain);
-            let rendered = format::render_presented(&compacted, output_format, title, discovery);
+            let rendered = format::render_for_operation(
+                &compacted,
+                output_format,
+                title,
+                discovery,
+                operation,
+            );
             if success_text_bytes(&rendered) <= budget {
                 return CallToolResult::success(vec![ContentBlock::text(rendered)]);
             }
@@ -97,8 +107,13 @@ pub(crate) fn result_for_presented(
             // Preserve candidate tokens until tail trimming has decided which pages
             // remain active; compact only after the retained set is known.
             let mut trimmed_value = value;
-            let original =
-                format::render_presented(&trimmed_value, output_format, title, discovery);
+            let original = format::render_for_operation(
+                &trimmed_value,
+                output_format,
+                title,
+                discovery,
+                operation,
+            );
             let mut excess = success_text_bytes(&original)
                 .saturating_sub(budget)
                 .saturating_add(256);
@@ -106,8 +121,13 @@ pub(crate) fn result_for_presented(
                 return output_too_large();
             }
             format::compact(&mut trimmed_value, operation, explain);
-            let rendered =
-                format::render_presented(&trimmed_value, output_format, title, discovery);
+            let rendered = format::render_for_operation(
+                &trimmed_value,
+                output_format,
+                title,
+                discovery,
+                operation,
+            );
             if success_text_bytes(&rendered) > budget {
                 return output_too_large();
             }
@@ -240,7 +260,13 @@ pub fn compact_mcp_metadata(value: &mut Value) {
 
 /// Performs checkpoint result.
 pub fn checkpoint_result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
-    checkpoint_result_for(value, policy, OutputFormat::default(), "session_checkpoint")
+    checkpoint_result_for(
+        value,
+        policy,
+        OutputFormat::default(),
+        "session_checkpoint",
+        "",
+    )
 }
 
 pub(crate) fn checkpoint_result_for(
@@ -248,11 +274,12 @@ pub(crate) fn checkpoint_result_for(
     policy: &ResponsePolicy,
     output_format: OutputFormat,
     title: &str,
+    action: &str,
 ) -> CallToolResult {
     match value {
         Ok(value) => {
             let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
-            let rendered = format::render(&value, output_format, title);
+            let rendered = format::render_checkpoint(&value, output_format, title, action);
             if success_text_bytes(&rendered) <= budget {
                 CallToolResult::success(vec![ContentBlock::text(rendered)])
             } else {

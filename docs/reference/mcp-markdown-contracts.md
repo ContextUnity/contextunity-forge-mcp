@@ -16,15 +16,26 @@ MCP tools accept optional `format: "markdown" | "json"`. CLI commands accept
 global `--format markdown|json`. Both default to Markdown and reject unknown
 formats before running a query or mutation. Serve mode continues to use JSON-RPC
 framing; this flag changes operation content, not the transport protocol.
+Every registered MCP tool advertises the same optional `format` selector with
+the exact string enum `markdown` and `json`; clients can omit it to receive the
+default. The shared CLI/MCP seam tests compare omitted and explicit Markdown,
+then compare parsed JSON for operations with CLI equivalents. `get_code_snippet`
+remains MCP-only and is checked for default Markdown, explicit Markdown, and
+explicit JSON without adding a synthetic CLI command. See
+[`stdio_compact_navigation_preserves_symbol_and_page_contracts`](../../tests/mcp/context.rs)
+and [`mcp_exposes_and_executes_evolution_tools`](../../tests/mcp/tool_evolution/cli_and_relations.rs).
 For every shared operation, route equivalent validated input and semantic data
 through the same formatter. Compare Markdown content exactly and JSON after
 parsing. Normalize only transport framing, trailing newline, transport-specific
 worker identity, and values that actually changed between requests.
 MCP graph operations may append a top-level server-owned `freshness` envelope
-after the callback in [`read_with_adapter`](../src/mcp/server.rs#L442-L479).
-Parity checks assert the emitted envelope separately, then normalize only that
-exact top-level block before comparing domain Markdown or parsed JSON. Preserve
-nested and arbitrary domain freshness fields.
+after the callback in [`read_with_adapter`](../../src/mcp/server.rs#L442-L479).
+Dedicated discovery Markdown may omit inactive matched freshness display metadata
+while JSON retains the actual envelope under the existing compaction policy.
+Meaningful freshness notices remain visible. Parity checks separately assert the
+exact emitted envelope or its permitted absence, then normalize only that exact
+top-level block before comparing domain Markdown or parsed JSON. Preserve nested
+and arbitrary domain freshness fields.
 
 JSON retains structured domain values. Compaction applies only to explicitly
 recognized operation envelopes. Preserve SQL rows and arbitrary checkpoint content
@@ -60,6 +71,58 @@ and JSON-RPC escaping count toward the existing response budget.
 
 Durable gate/content/candidate hashes and receipts are evidence, not display
 metadata. Task and checkpoint content retains all data admitted by its operation.
+
+## Task lifecycle
+
+`task_list`, `task_claim`, `task_submit`, and `task_manage` use dedicated Markdown
+layouts. Task rows retain the returned task identity, target, actual status and
+profile stage, owner, agent type, revision, declared `depends_on` references, and
+the requested subtask detail. A cancelled task remains labelled `cancelled`; it
+is not rendered as completed. Listing filters and stored status transitions stay
+in the task engine.
+
+Claim and context layouts show lifecycle state, the admitted contract, active
+stage guidance, exact registered commands and evidence templates, applicable
+invariants, scope, dependencies, subtask DoD, and available ADR, symbol, test,
+finding, candidate-snapshot, and receipt context. Identical contract data already
+shown in lifecycle state is not repeated; distinct instructions and evidence are
+retained. `bundle: false` stays minimal and only presents fields supplied by that
+mode. Inspect and submit layouts retain available gate history, claim attempts,
+findings, candidate bindings, and durable receipts.
+
+Only blackboard messages whose topic is `blockers` become
+`> [!CAUTION] BLOCKER (#id) by author` callouts. The callout keeps the original
+message ID, scope, task/subtask identity, gate, timestamp, and supplied body.
+When the context contains a truncated body summary, Markdown marks the summary and
+includes the existing `task_blackboard(action: "inspect", message_id: id)`
+recovery. Other topics keep separate headings and their original payloads. The
+formatter adds no task-state transitions, response fields, or budget beyond the
+existing task and blackboard bounds. JSON retains the same semantic task values.
+
+Use headings for task/stage/revision/status/worktree and the admitted contract:
+target, dependencies, write scope, invariants, subtasks and DoD. Preserve the
+complete active `workflow_guidance`, stage rules, proof policies, role/model
+guidance, exact scoped commands, evidence templates and claim identities.
+Preserve rejected findings, candidate bindings, and durable receipts.
+
+Honor existing ADR 0016 stage tailoring and `bundle: false`; do not add raw
+historical archives to lean operations. Full inspect remains the on-demand
+history operation and preserves its available gate/finding/attempt evidence.
+Render task lists with actual status and dependencies; cancellation is not
+completion. Submit output retains acceptance/rejection, task identity,
+stage/revision transition, evidence binding and remediation.
+
+A contextual next-step line can replace duplicated prose only when it preserves
+all distinct operative instructions. Do not substitute hardcoded gate lists,
+invented `--proof` flags, made-up claim-force operations, or commit rules.
+Use returned workflow guidance and actual `--evidence` commands.
+
+Embedded blackboard context in claim/context and contract-stage bundles uses
+the same blocker callout specified below. Preserve the message identity,
+author, scope, gate, timestamp, supplied body and existing full-body recovery.
+The lifecycle task owns this embedded presentation; the coordination task owns
+standalone blackboard presentation. Existing stage selection and ADR 0016
+summary bounds remain binding; formatting adds no new truncation.
 
 ## Code discovery
 
@@ -168,6 +231,11 @@ and enclosing symbol when provided. Preserve exact/lower-bound totals,
 `computation_truncated` warnings and active continuation; do not render
 incomplete computation as exhaustive search.
 
+CLI AST limits 1..100 use the same `matches` page object as MCP and share
+Markdown/parsed-JSON parity for equivalent requests. CLI limits 101..10000 keep
+the aggregate `matches` array, `limit`, and `truncated` result; this larger
+CLI-only range is outside shared page parity.
+
 Unsupported-pattern diagnostics retain the producer's code, pattern span when
 available, language, reason, supported examples, and next step in a caution
 callout. Use `AstSearchCapabilities.valid_examples` and
@@ -217,9 +285,9 @@ Render verified `connection.call_path` in its producer order as a compact arrow
 breadcrumb: test case -> intermediate helpers -> selected target. Link each
 node using verified symbol coordinates, annotate `test_case`/`test_helper`/
 `test_fixture` only when supplied by the role producer, and mark the selected
-target explicitly. The baseline path carries IDs; the traversal task hydrates
-only returned path IDs through bounded existing symbol queries. Missing roles
-or coordinates remain unavailable; names never establish either. Retain the
+target explicitly. The baseline path carries IDs; the traversal task attaches
+coordinates and roles only to returned path IDs from its bounded graph walk.
+Missing roles or coordinates remain unavailable; names never establish either. Retain the
 graph/lexical discovery method, unresolved caveat and every page continuation.
 
 The baseline has no `positive_seam` / `negative_seam` intent producer.
@@ -242,38 +310,11 @@ parity. Preserve SQL values and removal uncertainty, including fail-closed
 assessment, unresolved references and parse errors. Markdown changes no query
 authorization or removal proof semantics.
 
-## Task lifecycle
-
-Use headings for task/stage/revision/status/worktree and the admitted contract:
-target, dependencies, write scope, invariants, subtasks and DoD. Preserve the
-complete active `workflow_guidance`, stage rules, proof policies, role/model
-guidance, exact scoped commands, evidence templates and claim identities.
-Preserve rejected findings, candidate bindings, and durable receipts.
-
-Honor existing ADR 0016 stage tailoring and `bundle: false`; do not add raw
-historical archives to lean operations. Full inspect remains the on-demand
-history operation and preserves its available gate/finding/attempt evidence.
-Render task lists with actual status and dependencies; cancellation is not
-completion. Submit output retains acceptance/rejection, task identity,
-stage/revision transition, evidence binding and remediation.
-
-A contextual next-step line can replace duplicated prose only when it preserves
-all distinct operative instructions. Do not substitute hardcoded gate lists,
-invented `--proof` flags, made-up claim-force operations, or commit rules.
-Use returned workflow guidance and actual `--evidence` commands.
-
-Embedded blackboard context in claim/context and contract-stage bundles uses
-the same blocker callout specified below. Preserve the message identity,
-author, scope, gate, timestamp, supplied body and existing full-body recovery.
-The lifecycle task owns this embedded presentation; the coordination task owns
-standalone blackboard presentation. Existing stage selection and ADR 0016
-summary bounds remain binding; formatting adds no new truncation.
-
 ## Coordination and documentation
 
 Blackboard supports `post`, `read`, and `inspect`; topics are `draft`,
 `notes`, `findings`, `blockers`, `decisions`, and `deferred`.
-Group read results by their actual topic while preserving chronological order,
+Group read results by their actual topic while preserving the page's newest-first order,
 message identity, exact hierarchy scope, gate, author, timestamp and payload.
 Render each `topic: blockers` message as `> [!CAUTION] BLOCKER (#<id>) by <author>`,
 followed by scope, gate, timestamp and the supplied message body. Other topics
@@ -286,11 +327,15 @@ Existing claim summaries may bound body text; preserve that indication and
 Grouping does not invent reply-parent edges or unresolved/resolved blocker
 state. Preserve every read-page continuation and explicit summary truncation.
 
-Documentation search renders path/section/type, actual excerpt when requested,
-verified invariants/symbols and read instructions. Get-document uses
-`path_or_id` and actual section selector, renders source Markdown with available
-metadata/outline, and preserves full/compact detail and section continuation.
-Keep actual headings, content, and candidate ambiguity.
+Documentation search renders path/section/type and an excerpt only when supplied.
+Get-document uses `path_or_id` and the actual section selector, renders source
+Markdown or a compact outline according to detail, and retains the actual page
+continuations for each returned collection. Link a document or symbol coordinate
+only when the selected workspace adapter resolves its path; linked-workspace links
+use that workspace's resolved URI. Keep verified citations and referenced symbols
+separate from unverified ambiguous candidates. Render actual invariant metadata
+without treating it as a `governs` edge; candidate ambiguity remains navigation,
+not verification or governance.
 
 Checkpoint actions are `list|get|save|delete`. List returns names and stored
 byte sizes; save/delete return action and name. The store does not supply save
@@ -312,7 +357,7 @@ nonpaginated oversized-response error.
 | Ecosystem manifests | Discovery task supplies bounded producer; existing directory components alone are insufficient | Overview component entries |
 | AST | `src/cli/ast.rs`, `src/engine/ast/`, `src/engine/languages/` | AST results and language-specific alerts |
 | Relations / Git impact | `src/db/traversal.rs`, `src/db/symbols/test_discovery.rs` | Explain/impact/tests/query/removal |
-| Test breadcrumbs | `connection.call_path` IDs plus bounded hydration from verified symbol/role data | Linked ordered test -> helper -> target breadcrumb |
+| Test breadcrumbs | `src/db/symbols/test_discovery.rs` hydrates only returned `connection.call_path` IDs; `src/core/format/traversal.rs` renders them | Linked ordered test -> helper -> target breadcrumb |
 | Diagnostics / docs | `src/db/reader.rs`, `src/engine/docs.rs` | Analyze/search-doc/get-doc |
 | Tasks | `src/engine/tasks/`, `src/db/tasks_store/`, `src/cli/task.rs` | Task tools, CLI tasks, workflow agents |
 | Blocker alerts | Canonical `blockers` topic, stored message/inspect payload and existing context summaries | Standalone blackboard and embedded claim/contract callouts |
@@ -370,7 +415,7 @@ For the live exact call to `diagnostic_reason`, the edge coordinate differs from
 the caller's declaration coordinate:
 
 ```markdown
-- [annotate_diagnostic_page](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/src/db/reader.rs#L1824) [proven call] — calls diagnostic_reason at [src/db/reader.rs:1834](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/src/db/reader.rs#L1834)
+- [annotate_diagnostic_page](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/src/db/reader.rs#L1961) [proven call] — calls diagnostic_reason at [src/db/reader.rs:1971](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/src/db/reader.rs#L1971)
 ```
 
 A `possible_calls` fixture renders `[heuristic / candidate]` and its actual

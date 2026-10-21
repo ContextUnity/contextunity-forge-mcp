@@ -3,8 +3,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+mod coordination;
 mod discovery;
-pub use discovery::{file_uri_for_path, DiscoveryKind};
+pub(crate) mod lifecycle;
+mod traversal;
+pub use discovery::{DiscoveryKind, file_uri_for_path};
 
 /// Selects the wire presentation without changing the semantic response value.
 #[derive(
@@ -56,8 +59,21 @@ pub fn render(value: &Value, format: OutputFormat, title: &str) -> String {
         OutputFormat::Json => serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned()),
         OutputFormat::Markdown => match discovery_kind_for_title(title) {
             Some(kind) => discovery::render(value, title, kind),
-            None => render_markdown(value, title),
+            None if lifecycle::handles_title(title) => lifecycle::render(value, title),
+            None => match title {
+                "task_blackboard" => coordination::render_blackboard(value, title),
+                "search_docs" | "get_doc" => coordination::render_docs(value, title),
+                _ => render_markdown(value, title),
+            },
         },
+    }
+}
+
+/// Formats a checkpoint result using the request's explicit action.
+pub fn render_checkpoint(value: &Value, format: OutputFormat, title: &str, action: &str) -> String {
+    match format {
+        OutputFormat::Json => serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned()),
+        OutputFormat::Markdown => coordination::render_checkpoint(value, title, action),
     }
 }
 
@@ -86,6 +102,27 @@ pub fn render_presented(
         (OutputFormat::Markdown, Some(kind)) => discovery::render(value, title, kind),
         _ => render(value, format, title),
     }
+}
+
+/// Renders one operation with an admitted domain layout when its semantic
+/// operation is known. JSON and opaque SQL results retain the shared generic
+/// projection.
+pub fn render_for_operation(
+    value: &Value,
+    format: OutputFormat,
+    title: &str,
+    discovery: Option<DiscoveryKind>,
+    operation: OperationKind,
+) -> String {
+    if format == OutputFormat::Markdown
+        && operation == OperationKind::Navigation
+        && discovery.is_none()
+    {
+        if let Some(kind) = traversal::kind_for(title, value) {
+            return traversal::render(value, title, kind);
+        }
+    }
+    render_presented(value, format, title, discovery)
 }
 
 pub(crate) fn ast_legacy_error(diagnostic: &Value) -> String {

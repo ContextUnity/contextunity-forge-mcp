@@ -3,7 +3,7 @@ pub mod ast;
 pub(crate) mod discovery {
     use crate::{
         core::{
-            format::{file_uri_for_path, DiscoveryKind},
+            format::{DiscoveryKind, file_uri_for_path},
             response::QueryOptions,
         },
         db::reader,
@@ -11,7 +11,7 @@ pub(crate) mod discovery {
     };
     use anyhow::Result;
     use rusqlite::Connection;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::path::Path;
 
     /// Composes indexed, scanner-owned, and canonical task-owned workspace evidence.
@@ -179,6 +179,71 @@ pub(crate) mod discovery {
         }
     }
 
+    /// Adds workspace-resolved URIs to documentation coordinates before Markdown rendering.
+    pub(crate) fn attach_document_presentation_uris(
+        root: &Path,
+        adapter: &Adapter,
+        value: &mut Value,
+        title: &str,
+    ) {
+        match title {
+            "search_docs" => attach_page_uris(root, adapter, value.pointer_mut("/sections")),
+            "get_doc" => {
+                for field in ["sections", "referenced_symbols"] {
+                    attach_page_uris(root, adapter, value.get_mut(field));
+                }
+                for field in ["cites_doc", "cited_by_doc"] {
+                    attach_page_uris_without_line(root, adapter, value.get_mut(field));
+                }
+                if let Some(items) = value
+                    .pointer_mut("/referenced_symbol_candidates/items")
+                    .and_then(Value::as_array_mut)
+                {
+                    for candidate in items {
+                        for entity in ["source", "target"] {
+                            if let Some(entity) = candidate.get_mut(entity) {
+                                attach_uri_from_fields(root, adapter, entity, "path", "line");
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn attach_page_uris(root: &Path, adapter: &Adapter, page: Option<&mut Value>) {
+        let Some(items) = page
+            .and_then(|page| page.get_mut("items"))
+            .and_then(Value::as_array_mut)
+        else {
+            return;
+        };
+        for item in items {
+            attach_uri_from_fields(root, adapter, item, "path", "line");
+        }
+    }
+
+    fn attach_page_uris_without_line(root: &Path, adapter: &Adapter, page: Option<&mut Value>) {
+        let Some(items) = page
+            .and_then(|page| page.get_mut("items"))
+            .and_then(Value::as_array_mut)
+        else {
+            return;
+        };
+        for item in items {
+            let Some(path) = item.get("path").and_then(Value::as_str).map(str::to_owned) else {
+                continue;
+            };
+            let Ok(absolute) = scanner::resolve_file_path(root, adapter, &path) else {
+                continue;
+            };
+            if let Some(uri) = file_uri_for_path(&absolute, None) {
+                item["uri"] = json!(uri);
+            }
+        }
+    }
+
     /// Adds absolute coordinates for Markdown presentation after canonical path resolution.
     pub(crate) fn attach_presentation_uris(
         root: &Path,
@@ -213,6 +278,126 @@ pub(crate) mod discovery {
             DiscoveryKind::Inspect => attach_inspect_uris(root, adapter, value),
             DiscoveryKind::Search => attach_search_uris(root, adapter, value),
             DiscoveryKind::Ast => attach_ast_uris(root, adapter, value),
+        }
+    }
+
+    /// Adds guarded file links for supplied traversal coordinates in Markdown output.
+    pub(crate) fn attach_traversal_presentation_uris(
+        root: &Path,
+        adapter: &Adapter,
+        value: &mut Value,
+    ) {
+        if let Some(selector) = value.get_mut("selector") {
+            attach_uri_from_fields(root, adapter, selector, "path", "line");
+        }
+        if let Some(node) = value.get_mut("node") {
+            attach_uri_from_fields(root, adapter, node, "path", "line");
+        }
+
+        for field in ["nodes", "changed_symbols", "tests", "unmapped_changes"] {
+            if let Some(page) = value.get_mut(field) {
+                attach_traversal_page(root, adapter, page, "line");
+            }
+        }
+        for field in ["incoming", "outgoing"] {
+            if let Some(page) = value.get_mut(field) {
+                if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
+                    for item in items {
+                        attach_uri_from_fields(root, adapter, item, "path", "line");
+                    }
+                }
+            }
+        }
+        if let Some(page) = value.get_mut("affected_docs") {
+            if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
+                for item in items {
+                    attach_uri_from_fields(root, adapter, item, "path", "__no_line");
+                }
+            }
+        }
+        if let Some(page) = value.get_mut("documents") {
+            if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
+                for item in items {
+                    attach_uri_from_fields(root, adapter, item, "path", "doc_line");
+                }
+            }
+        }
+        for field in [
+            "analysis_gaps",
+            "untested_public_surface",
+            "errors",
+            "resolution",
+            "external_imports",
+            "doc_diagnostics",
+            "diagnostics",
+            "top_files",
+            "resolution_statuses",
+            "resolution_causes",
+            "parse_error_languages",
+        ] {
+            if let Some(page) = value.get_mut(field) {
+                attach_traversal_page(root, adapter, page, "line");
+            }
+        }
+        if let Some(invariants) = value.get_mut("governing_invariants") {
+            if let Some(rules) = invariants.get_mut("direct").and_then(Value::as_array_mut) {
+                for rule in rules {
+                    if let Some(source) = rule.get_mut("source") {
+                        attach_uri_from_fields(root, adapter, source, "path", "line");
+                    }
+                }
+            }
+            if let Some(entries) = invariants
+                .get_mut("omitted_sources")
+                .and_then(Value::as_array_mut)
+            {
+                for entry in entries {
+                    if let Some(source) = entry.get_mut("source") {
+                        attach_uri_from_fields(root, adapter, source, "path", "line");
+                    }
+                }
+            }
+        }
+        if let Some(changes) = value.get_mut("changes") {
+            if let Some(files) = changes.get_mut("files").and_then(Value::as_array_mut) {
+                for file in files {
+                    attach_uri_from_fields(root, adapter, file, "path", "__no_line");
+                }
+            }
+        }
+        if let Some(summary) = value.get_mut("summary") {
+            if let Some(calls) = summary.get_mut("calls") {
+                for direction in ["inbound", "outbound"] {
+                    if let Some(preview) = calls
+                        .get_mut(direction)
+                        .and_then(|direction| direction.get_mut("preview"))
+                        .and_then(Value::as_array_mut)
+                    {
+                        for item in preview {
+                            attach_uri_from_fields(root, adapter, item, "path", "line");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn attach_traversal_page(root: &Path, adapter: &Adapter, page: &mut Value, line: &str) {
+        if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
+            for item in items {
+                attach_uri_from_fields(root, adapter, item, "path", line);
+                if let Some(edge) = item.get_mut("edge") {
+                    attach_uri_from_fields(root, adapter, edge, "path", "line");
+                }
+                if let Some(path_nodes) = item
+                    .pointer_mut("/connection/verified_call_path_nodes")
+                    .and_then(Value::as_array_mut)
+                {
+                    for node in path_nodes {
+                        attach_uri_from_fields(root, adapter, node, "path", "line");
+                    }
+                }
+            }
         }
     }
 
@@ -347,12 +532,14 @@ pub mod reload;
 pub mod task;
 use crate::{
     core::format::{self, OperationKind, OutputFormat},
-    core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
+    core::response::{
+        CoverageOptions, Detail, MAX_PAGE_SIZE, QueryOptions, ResponsePolicy, SourceOptions,
+    },
     db::{reader, symbols, traversal, writer},
 };
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 #[derive(Parser, Debug)]
@@ -803,6 +990,10 @@ impl Cli {
         let command = self.command.unwrap_or(Command::Serve);
         let (operation, title, explain) = command_presentation(&command);
         let discovery = command_discovery(&command);
+        let checkpoint_action = match &command {
+            Command::Checkpoint { action, .. } => Some(action.clone()),
+            _ => None,
+        };
         let result: Value = match command {
             Command::Migrate { command } => migrate::run(&root, command)?,
             Command::Task { command } => task::run(&root, command)?,
@@ -871,8 +1062,20 @@ impl Cli {
                     },
             } => {
                 let conn = open_or_rebuild(&db, &root)?;
-                let mut result =
-                    ast::search(&conn, &root, &pattern, &language, path.as_deref(), limit)?;
+                // MCP accepts one AST page; share that producer throughout its limit range.
+                let mut result = if (1..=MAX_PAGE_SIZE).contains(&limit) {
+                    ast::search_paged(
+                        &conn,
+                        &root,
+                        &pattern,
+                        &language,
+                        path.as_deref(),
+                        &cli_page(limit)?,
+                    )?
+                } else {
+                    // Preserve the CLI's larger aggregate limit and its existing validation.
+                    ast::search(&conn, &root, &pattern, &language, path.as_deref(), limit)?
+                };
                 result["pattern"] = json!(pattern);
                 result["language"] = json!(language);
                 if output_format == OutputFormat::Markdown {
@@ -928,14 +1131,16 @@ impl Cli {
                         limit,
                     } => {
                         let page = cli_page(limit)?;
+                        let exact = false;
+                        let include_docs = false;
                         let result = symbols::search_with_options(
                             &conn,
                             &pattern,
                             &symbols::SearchOptions {
                                 kind: kind.as_deref(),
                                 path: None,
-                                include_docs: false,
-                                exact: false,
+                                include_docs,
+                                exact,
                                 page: &page,
                             },
                         )?;
@@ -946,6 +1151,8 @@ impl Cli {
                                 "workspace_root": root.display().to_string(),
                                 "pattern": pattern,
                                 "kind": kind,
+                                "exact": exact,
+                                "include_docs": include_docs,
                             });
                         }
                         result
@@ -1065,14 +1272,40 @@ impl Cli {
         };
         let mut result = result;
         if output_format == OutputFormat::Markdown {
-            if let (Some(kind), Ok(adapter)) =
-                (discovery, crate::engine::scanner::load_adapter(&root, None))
-            {
-                discovery::attach_presentation_uris(&root, &adapter, &mut result, kind);
+            if let Ok(adapter) = crate::engine::scanner::load_adapter(&root, None) {
+                if let Some(kind) = discovery {
+                    discovery::attach_presentation_uris(&root, &adapter, &mut result, kind);
+                }
+                if matches!(title, "search_docs" | "get_doc") {
+                    discovery::attach_document_presentation_uris(
+                        &root,
+                        &adapter,
+                        &mut result,
+                        title,
+                    );
+                }
+                if operation == OperationKind::Navigation
+                    && discovery.is_none()
+                    && matches!(
+                        title,
+                        "code_map_impact"
+                            | "code_map_explain"
+                            | "code_map_tests"
+                            | "code_map_analyze"
+                            | "code_map_query"
+                    )
+                {
+                    discovery::attach_traversal_presentation_uris(&root, &adapter, &mut result);
+                }
             }
         }
         format::compact(&mut result, operation, explain);
-        let formatted = format::render_presented(&result, output_format, title, discovery);
+        let formatted = match checkpoint_action.as_deref() {
+            Some(action) => format::render_checkpoint(&result, output_format, title, action),
+            None => {
+                format::render_for_operation(&result, output_format, title, discovery, operation)
+            }
+        };
         if let Ok(adapter) = crate::engine::scanner::load_adapter(&root, None) {
             if adapter.debug {
                 let cli_cmd = {

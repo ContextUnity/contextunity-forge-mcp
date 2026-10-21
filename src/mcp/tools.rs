@@ -9,8 +9,8 @@ use crate::{
     engine::scanner,
 };
 use rmcp::{
-    handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_handler, tool_router,
-    ServerHandler,
+    ServerHandler, handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_handler,
+    tool_router,
 };
 use serde_json::Value;
 
@@ -192,6 +192,29 @@ impl Server {
                 if output_format == OutputFormat::Markdown {
                     if let (Some(kind), Ok(value)) = (discovery, &mut value) {
                         cli::discovery::attach_presentation_uris(&self.root, &adapter, value, kind);
+                    } else if matches!(title, "search_docs" | "get_doc") {
+                        if let Ok(value) = &mut value {
+                            cli::discovery::attach_document_presentation_uris(
+                                &self.root, &adapter, value, title,
+                            );
+                        }
+                    }
+                    if operation == OperationKind::Navigation
+                        && discovery.is_none()
+                        && matches!(
+                            title,
+                            "code_map_impact"
+                                | "code_map_explain"
+                                | "code_map_tests"
+                                | "code_map_analyze"
+                                | "code_map_query"
+                        )
+                    {
+                        if let Ok(value) = &mut value {
+                            cli::discovery::attach_traversal_presentation_uris(
+                                &self.root, &adapter, value,
+                            );
+                        }
                     }
                 }
                 response::result_for_presented(
@@ -741,6 +764,7 @@ impl Server {
                 &adapter.response,
                 format,
                 "session_checkpoint",
+                &p.action,
             ),
             Err(error) => response::result_for(
                 Err(error.into()),

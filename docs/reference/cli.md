@@ -51,9 +51,12 @@ contextunity-forge-mcp --format json query overview
 The CLI `query inspect --show-source` returns the indexed symbol's full source range after checking the file digest. MCP source previews are bounded; see [limits and freshness](../runbooks/limits-and-freshness.md).
 
 `--format` is global and can be placed before or after a subcommand. Markdown
-uses the shared generic renderer for current command results and retains every
-returned field. JSON mode is intended for clients that parse stdout and preserves
-the returned semantic value.
+uses the shared operation-aware renderer and keeps traversal evidence visible:
+explain distinguishes exact calls from candidate relationships, deeper impact
+paths retain their available predecessor evidence, and graph-backed test results
+show ordered, linked test-to-target paths with only producer-supplied roles.
+Lexical test suggestions remain explicitly unverified. JSON mode preserves the
+returned semantic value for clients that parse stdout.
 
 `query inspect` and `query explain` include paged `analysis_gaps` for the selected source span. Each gap names its reason, path, line, scope symbol, and resolver evidence. Explain edge rows retain both public endpoint IDs, kind, path, line, and direction relative to the query; full detail also includes stored evidence. Rust trait-object calls report `trait_object_dispatch`; indexed macro invocations report `macro_expansion_not_analyzed` while retaining their macro-declaration navigation edge. Exact call edges use `calls`; bounded branch-join navigation uses `possible_calls` with confidence `possible`. Inbound impact follows possible calls, and removal analysis treats candidate callers as incoming dependencies.
 
@@ -66,6 +69,12 @@ contextunity-forge-mcp ast grep 'print($VALUE)' --lang python --path src
 ```
 
 `docs` reads indexed documents. `ast grep` reads admitted file paths from the index, narrows them with FTS terms, and parses matching source after checking its indexed digest. Both can trigger the missing or incompatible-index rebuild described above; `ast grep` also requires a compiled language profile. `docs search` accepts `--component` and `--limit`; `ast grep` accepts `--limit`.
+
+For `ast grep`, a `--limit` from 1 through 100 (default 100) returns the same
+JSON `matches` page object as MCP AST search, including applicable continuation
+and total-status fields. CLI limits 101..10000 retain the aggregate `matches`
+array, `limit`, and `truncated` result. That larger CLI-only range is outside
+shared page parity.
 
 ## Repository tasks
 
@@ -124,6 +133,11 @@ contract/build receive symbols and test seams; review receives the candidate
 snapshot; delivery receives snapshot and milestone references; completed tasks
 include the receipt. See
 [task context](tasks.md#unified-task-context-bundle) for fields and limits.
+Task commands print the shared lifecycle Markdown by default. It keeps the
+current task status, dependencies, requested subtask detail, active guidance,
+inspect history, findings, candidate bindings, and receipts; use `--format json`
+when a script needs the semantic response. See the
+[task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
 
 These commands deliver one task. `milestone handoff` below closes the whole
 milestone. Exchange temporary task context with:
@@ -141,6 +155,11 @@ three levels and returns newest-first, payload-free summaries with pagination
 metadata. The default page contains 10 messages and the maximum is 50.
 `inspect MESSAGE_ID` searches configured task workspaces and returns the first
 matching message including its payload.
+
+Markdown reads group messages by their actual topic and retain newest-first
+order within each group. Blockers preserve message identity, author, scope, gate,
+timestamp, and available body. Payload-free summaries include the exact inspect
+request.
 
 With scope and keys omitted, blackboard commands select the unique in-progress
 task; multiple in-progress tasks fail closed. If none is in progress, they fall
@@ -232,5 +251,9 @@ contextunity-forge-mcp checkpoint get --name review
 contextunity-forge-mcp checkpoint list
 contextunity-forge-mcp checkpoint delete --name review
 ```
+
+Markdown checkpoint lists show returned names and serialized byte sizes. Save
+and delete show the actual action and name; get preserves the saved JSON value,
+including user fields that resemble Forge metadata.
 
 `serve` uses stdin and stdout for MCP messages; the [MCP setup guide](mcp-setup.md) covers client configuration and automatic indexing. On Unix, `SIGHUP` replaces the server process with the executable currently installed at its path while preserving its PID and standard streams. On Linux, `reload` signals running `serve` processes owned by the current user and launched from the same executable path; it reports the signaled PIDs or fails when none are found. Start `serve` with this version once before using `reload`, then run `reload` after installing subsequent replacement binaries. An in-flight MCP request can be interrupted during replacement. The replacement restores that process's negotiated client handshake, so the client retries the interrupted request on the same connection. `guide` accepts `init`, `adapter`, `docs`, `acdd`, `query`, `ast`, and `validate`. `guide ast` prints the registered profile capability matrix and wildcard conventions. `guide init` creates `forge-mcp.yaml` and requires `--force` to replace it. Checkpoint content must be valid JSON; entries live in `.forge/checkpoints.json`.

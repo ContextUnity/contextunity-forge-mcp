@@ -12,7 +12,7 @@ use contextunity_forge_mcp::{
     },
     db::traversal,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 fn database(workspace: &Workspace) -> Result<Connection> {
     let conn = Connection::open(workspace.path("graph.sqlite"))?;
     conn.execute_batch(SCHEMA_DDL)?;
@@ -71,6 +71,21 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(first["nodes"]["items"][1]["via"]["id"], "a");
     assert_eq!(first["nodes"]["items"][1]["via"]["kind"], "calls");
     assert!(first["nodes"]["items"][1].get("evidence").is_none());
+    let markdown = contextunity_forge_mcp::core::format::render_for_operation(
+        &first,
+        contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+        "code_map_impact",
+        None,
+        contextunity_forge_mcp::core::format::OperationKind::Navigation,
+    );
+    assert!(markdown.contains("## Reached nodes"), "{markdown}");
+    assert!(
+        markdown.contains("Via ")
+            && markdown.contains("using")
+            && markdown.contains("calls")
+            && markdown.contains("this depth-grouped path has no call-site coordinate"),
+        "depth-grouped paths retain their relation without invented edge coordinates: {markdown}"
+    );
 
     let second = traversal::traverse_with_options(
         &conn,
@@ -123,10 +138,12 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
         },
     )?;
     assert_eq!(beyond["nodes"]["total"], 5);
-    assert!(beyond["nodes"]["items"]
-        .as_array()
-        .expect("page items")
-        .is_empty());
+    assert!(
+        beyond["nodes"]["items"]
+            .as_array()
+            .expect("page items")
+            .is_empty()
+    );
 
     let zero = traversal::traverse_with_options(
         &conn,
@@ -289,10 +306,12 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     assert_eq!(result["parse_errors"], 0);
     assert_eq!(result["safe_to_remove"], false);
     assert_eq!(result["incoming_dependencies"]["total"], 1);
-    assert!(result["proof_scope"]
-        .as_str()
-        .unwrap_or("")
-        .contains("indexed static references only"));
+    assert!(
+        result["proof_scope"]
+            .as_str()
+            .unwrap_or("")
+            .contains("indexed static references only")
+    );
 
     // Target-scoped unresolved reference blocks removal
     conn.execute(

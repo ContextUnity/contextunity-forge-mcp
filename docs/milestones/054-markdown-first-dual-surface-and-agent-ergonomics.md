@@ -54,12 +54,14 @@ a formatter.
 
 ## Execution order and boundaries
 
-Run the six tasks in the dependency order below. Domain formatters share
-`src/core/format/`, CLI dispatch, and MCP schemas, so their work is serialized.
-The first task makes format selection and safe generic rendering executable for
-all existing public responses; later tasks add domain presentations. Parity
-verification is last. Do not add a persisted response-format setting, storage
-schema, new MCP operation, test-intent inference, or new lifecycle semantics.
+Core and discovery retain their accepted execution and proof boundaries. Run
+the four remaining tasks concurrently in separate worktrees. Their declared
+dependencies retain receipt and integration ordering; they do not prohibit
+authorized parallel implementation. Integrate shared formatter, CLI dispatch,
+MCP schema and test changes before consolidated verification of the merged
+content against every task contract. Parity verification covers that combined
+content. Do not add a persisted response-format setting, storage schema, new MCP
+operation, test-intent inference, or new lifecycle semantics.
 
 Compaction reuses/moves the existing canonical pure machinery in
 `src/mcp/metadata.rs` into core as needed, retaining compatibility re-exports.
@@ -125,13 +127,23 @@ It requires presentation and preservation, not a new Git-diff capability.
 
 ## Proof policy
 
-Use seam-test-first and the active profile's returned workflow guidance. For
-each task record a focused production-seam command, failing/passing counts,
-sensitivity mutation, full affected-target counts, and strict Clippy exit code.
-Extend existing domain seam functions additively and bind their actual selectors
-at Contract. Future labels below identify proof areas, not authority for standalone
+Core and discovery retain seam-test-first and their accepted proof history. The
+four remaining tasks use the supported `deferred-final-test` policy and the
+active profile's returned workflow guidance. Contract may verify an existing
+production seam with its actual exit code 0; do not invent a failing baseline.
+Record actual focused seam results and runtime sensitivity evidence. Extend
+existing domain seam functions additively and bind their actual selectors at
+Contract. Future labels below identify proof areas, not authority for standalone
 duplicates. Create compiling production-connected scaffolding only for genuinely
 new boundaries.
+
+Defer the remaining tasks' full affected-target suites and strict Clippy to
+consolidated verification after all four implementations are merged. Bind the
+passing commands, actual counts, sensitivity results and independent integration
+review to the merged content and each applicable task contract. Separate branch
+full-suite runs are not required; focused branch checks report only what they
+actually verify. Preserve every acceptance claim and required affected target
+below, and run the full milestone gates on the final combined content.
 
 | Task | Production path and focused proof | Required affected targets | Sensitivity |
 | --- | --- | --- | --- |
@@ -142,7 +154,7 @@ new boundaries.
 | Coordination | Blackboard/docs/checkpoint caller -> persisted data -> formatter; `cargo test --test mcp markdown_coordination_contract` | `cargo test --test mcp`; `cargo test --test acdd` | Drop checkpoint user values or blocker identity/gate/body/recovery, relabel a nonblocker, or invent reply/timestamp; seam fails |
 | Parity | CLI process and MCP stdio -> same fixtures/results -> shared formatter; `cargo test --test mcp markdown_json_dual_surface_parity` | `cargo test --test mcp`; `cargo test --test cli_roots` | Bypass shared formatter on one surface or hide semantic data in normalization; parity fails |
 
-Every Rust build also runs
+Consolidated verification runs every required affected target above and
 `cargo clippy --all-targets --all-features -- -D warnings`.
 No benchmarks are admitted. Final documentation scan, independent integration
 review, binding, and full milestone gates follow [TESTS.md](../../TESTS.md).
@@ -371,47 +383,188 @@ receipt:
 
 ```yaml
 task_ref: graph-traversal-and-impact-markdown-contracts
-target: "Render explain/impact/tests/analyze with linked verified test breadcrumbs, explicit exact/candidate edge badges, governing-rule callouts and Git/docs evidence"
+target: Render explain/impact/tests/analyze with linked verified test breadcrumbs, explicit exact/candidate edge badges, governing-rule callouts and Git/docs evidence
 depends_on:
-  - code-discovery-markdown-contracts
-proof_policy: seam-test-first
-contract_revision: 4
+- code-discovery-markdown-contracts
+proof_policy: deferred-final-test
+contract_revision: 5
 invariants:
-  - 'INV-TRAVERSAL-EVIDENCE: Preserve exact versus lexical evidence, incompleteness, Git-change fingerprint continuation and verified documentation.'
-  - 'INV-CLICKABLE-COORDINATES: Render only actual symbol and edge coordinates.'
-  - 'INV-TRAVERSAL-PRESENTATION: Preserve ordered verified path roles/links, exact calls versus possible/lexical evidence, and supplied governing rules in IMPORTANT callouts without fabricated call sites.'
+- 'INV-TRAVERSAL-EVIDENCE: Preserve exact versus lexical evidence, incompleteness, Git-change fingerprint continuation and verified documentation.'
+- 'INV-CLICKABLE-COORDINATES: Render only actual symbol and edge coordinates.'
+- 'INV-TRAVERSAL-PRESENTATION: Preserve ordered verified path roles/links, exact calls versus possible/lexical evidence, and supplied governing rules in IMPORTANT callouts without fabricated call sites.'
 scope:
-  - src/core/format/
-  - src/db/reader.rs
-  - src/db/traversal.rs
-  - src/db/symbols.rs
-  - src/db/symbols/test_discovery.rs
-  - src/mcp/
-  - src/cli/mod.rs
-  - tests/impact_context.rs
-  - tests/query_context/
-  - tests/mcp/
-  - docs/reference/mcp-tools.md
-  - docs/reference/cli.md
-  - docs/reference/mcp-markdown-contracts.md
-  - skills/contextunity-forge/SKILL.md
-status: ready
+- src/core/format/
+- src/db/reader.rs
+- src/db/traversal.rs
+- src/db/symbols.rs
+- src/db/symbols/test_discovery.rs
+- src/mcp/
+- src/cli/mod.rs
+- tests/impact_context.rs
+- tests/query_context/
+- tests/mcp/
+- docs/reference/mcp-tools.md
+- docs/reference/cli.md
+- docs/reference/mcp-markdown-contracts.md
+- skills/contextunity-forge/SKILL.md
+status: completed
 subtasks:
-  - subtask_ref: impact-markdown-formatter
-    title: "Render depth, actual call-site links, proven calls versus candidate badges and verified IMPORTANT governing-rule callouts, affected docs and Git-change incompleteness"
-    status: ready
-  - subtask_ref: explain-markdown-formatter
-    title: "Render signature/docstring, verified governing-rule callouts when supplied, real call-site links and exact/candidate badges with inbound/outbound paging"
-    status: ready
-  - subtask_ref: tests-chains-markdown-formatter
-    title: "Render linked test_case -> verified helpers -> target breadcrumbs using bounded returned-ID hydration; preserve unknown roles/coordinates and graph/lexical caveats"
-    status: ready
-  - subtask_ref: analyze-diagnostics-markdown-formatter
-    title: "Render existing untested public-surface, syntax and documentation drift diagnostics with supported remediation"
-    status: ready
-  - subtask_ref: traversal-seam-tests
-    title: "Prove breadcrumb fixture order/roles/real links, calls versus possible_calls/dynamic/lexical badges, governing callouts, Git/docs incompleteness and nested continuation"
-    status: ready
+- subtask_ref: impact-markdown-formatter
+  title: Render depth, actual call-site links, proven calls versus candidate badges and verified IMPORTANT governing-rule callouts, affected docs and Git-change incompleteness
+  status: completed
+  evidence: |-
+    {
+      "command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast",
+      "exit_code": 0,
+      "tests_passed": 261,
+      "tests_failed": 0,
+      "archive_id": "f5fe4011bc1785ca",
+      "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d",
+      "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4",
+      "targets": {
+        "acdd": 116,
+        "cli_roots": 7,
+        "impact_context": 4,
+        "mcp": 91,
+        "query_context": 43
+      },
+      "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."
+    }
+- subtask_ref: explain-markdown-formatter
+  title: Render signature/docstring, verified governing-rule callouts when supplied, real call-site links and exact/candidate badges with inbound/outbound paging
+  status: completed
+  evidence: |-
+    {
+      "command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast",
+      "exit_code": 0,
+      "tests_passed": 261,
+      "tests_failed": 0,
+      "archive_id": "f5fe4011bc1785ca",
+      "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d",
+      "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4",
+      "targets": {
+        "acdd": 116,
+        "cli_roots": 7,
+        "impact_context": 4,
+        "mcp": 91,
+        "query_context": 43
+      },
+      "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."
+    }
+- subtask_ref: tests-chains-markdown-formatter
+  title: Render linked test_case -> verified helpers -> target breadcrumbs using bounded returned-ID hydration; preserve unknown roles/coordinates and graph/lexical caveats
+  status: completed
+  evidence: |-
+    {
+      "command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast",
+      "exit_code": 0,
+      "tests_passed": 261,
+      "tests_failed": 0,
+      "archive_id": "f5fe4011bc1785ca",
+      "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d",
+      "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4",
+      "targets": {
+        "acdd": 116,
+        "cli_roots": 7,
+        "impact_context": 4,
+        "mcp": 91,
+        "query_context": 43
+      },
+      "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."
+    }
+- subtask_ref: analyze-diagnostics-markdown-formatter
+  title: Render existing untested public-surface, syntax and documentation drift diagnostics with supported remediation
+  status: completed
+  evidence: |-
+    {
+      "command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast",
+      "exit_code": 0,
+      "tests_passed": 261,
+      "tests_failed": 0,
+      "archive_id": "f5fe4011bc1785ca",
+      "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d",
+      "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4",
+      "targets": {
+        "acdd": 116,
+        "cli_roots": 7,
+        "impact_context": 4,
+        "mcp": 91,
+        "query_context": 43
+      },
+      "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."
+    }
+- subtask_ref: traversal-seam-tests
+  title: Prove breadcrumb fixture order/roles/real links, calls versus possible_calls/dynamic/lexical badges, governing callouts, Git/docs incompleteness and nested continuation
+  status: completed
+  evidence: |-
+    {
+      "command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast",
+      "exit_code": 0,
+      "tests_passed": 261,
+      "tests_failed": 0,
+      "archive_id": "f5fe4011bc1785ca",
+      "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d",
+      "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4",
+      "targets": {
+        "acdd": 116,
+        "cli_roots": 7,
+        "impact_context": 4,
+        "mcp": 91,
+        "query_context": 43
+      },
+      "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."
+    }
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-21T04:48:28.467010979+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast
+      exit_code: 0
+      tests_passed: 261
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. Independent claim7/revision5 binds scoped snapshot494f759bd4a4c8dfad2a2c72afb15e424e9f3d23 to baseline83ac02b8a33887199959f1b46b475832f9ca9de4. Live admitted files match candidate exactly. Cumulative integration review used explicit target basee37a659694386df07cd048186c2a2a6004fad607 and frozen source treeb3e1406e22221bf79e8c0eeb8872915c0825281d, patcha4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4. No untracked source or diffcheck errors. Peer changes retain their admitted owners; exact six-path documentation closure belongs parityrev4. Generated subtask metadata alone changed after source verification. Formatter remains a pure leaf; returned-ID hydration belongs db/symbols/test_discovery.rs. No reviewer edits, staging, Cargo, index refresh, configuration or main-worktree mutation.
+        claims:
+          applicable: true
+          evidence: 'PASS. Traced explain/impact/tests/analyze/query adapters through bounded graph/Git/docs producers into shared traversal renderer. Proven calls require actual kind/confidence; possible/lexical edges retain candidate caveats. Verified test breadcrumbs preserve returned-ID order, actual roles/coordinates and missing-call-site warnings. Governing rules, diagnostics, Git-change identity, independent nested/source continuations and remaining supplied fields are retained. Actual CLI/MCP wire seams compare omitted/explicit Markdown exactly and parsed JSON, separately asserting only actual top-level server freshness before normalization; no hidden domain loss. AST common limits1..100 share canonical page data; larger CLI-only aggregate range remains explicit. Existing seams extended additively. Consolidated cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast exited0: strictClippy0,261passed/0failed/0ignored (ACDD116 CLI7 impact4 MCP91 query43), archivef5fe4011bc1785ca/board780, bound frozen source. Traversal exact-badge and missing-call-site-caveat production mutations caused actual runtime failures085786a71149b7c2; exact restoration verified. Invalid prior lifecycle-label sensitivity excluded; actual parsed-context/rules sensitivity separately recorded778/c2aed0b394ae63b5. No historical branch count or failed run is labelled current pass. Full milestone handoff gates remain pending coordinator.'
+        concurrency:
+          applicable: true
+          evidence: PASS. Formatting is request-local over immutable supplied Values, without global format state or changes to transactions, revision fencing, claim ownership, reader snapshot semantics or lock ordering. Existing admission, shared locks, generation/baseline comparisons, rollback and receipt implementation remain authoritative. Hydration is bounded to returned graph IDs. All source writers frozen for positive checks and review; deliberate mutations restored byte-exact before positive proof. Same independent reviewer continues through Deliver. No reviewer writer or Cargo lane introduced.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Existing selected/linked-root canonical adapter/scanner guards remain authoritative. Presentation-only URI decoration uses actual supplied coordinates; no JSON enrichment or invented call sites. Core has no filesystem/downstream adapter IO. Task/project namespaces, profile ownership, symlink/traversal confinement and malformed-input-before-mutation semantics remain intact. Actual selected-root/CLI/MCP seams passed within MCP91/CLI7. Review/Deliver confined to dedicated M054 milestone worktree; unrelated concurrent M060/main changes excluded and untouched.
+        administration:
+          applicable: true
+          evidence: PASS. Workerm054-integration-reviewer differs from accepted builderm054-traversal-builder. Returned claim-bound template and all five configured contours used. No migration/new operation/protected profile pin/gate/configuration change, historical receipt rewrite or privileged Git action. User override752 and supported deferred-final-test amendment758 are durable; traversalrev5 unchanged. Positive/negative intent remains deferred post054 with no invented producer/badges. Prior admitted integration findings closed or accurately corrected, current documentation rescan passed per coordinator; actual source/reference paths agree. Five subtasks completed viaForge. Deliver must preserve candidate equality and use this same independent worker; auto_commit owns atomic receipt/single scoped branch commit, no duplicate manual commit.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-DUAL-SURFACE-PARITY: Operations available on both surfaces share semantic projections and one formatting engine; equivalent data/options produce identical Markdown and equivalent parsed JSON. Existing CLI-only operations remain CLI-only.'
+    - 'INV-MARKDOWN-FIRST-DEFAULT: MCP tools and CLI default to high-density Markdown; explicit format: "json" and --format json preserve programmatic output under ADR 0019, amending ADR 0001 Decision 2.'
+    - 'INV-DEAD-METADATA-ELIMINATION: Omit inactive presentation metadata and empty optional graph sections through operation-aware compaction; preserve all active nested/source continuations and durable/domain data.'
+    - 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve all actionable workflow guidance, stage rules, evidence identities, applicable invariants, dependencies, allowed write scopes, subtask DoD, and receipts under existing operation bounds.'
+    - 'INV-CONTEXTUAL-ACTIONABLE-HINTS: Replace duplicated boilerplate only with equivalent concise contextual guidance; preserve supported recovery steps and error semantics.'
+    - 'INV-CLICKABLE-COORDINATES: Render available file, symbol, and document coordinates as absolute file:/// links with real line fragments; resolve against the selected workspace and never invent missing coordinates.'
+    - 'INV-TRAVERSAL-EVIDENCE: Preserve exact versus lexical evidence, incompleteness, Git-change fingerprint continuation and verified documentation.'
+    - 'INV-CLICKABLE-COORDINATES: Render only actual symbol and edge coordinates.'
+    - 'INV-TRAVERSAL-PRESENTATION: Preserve ordered verified path roles/links, exact calls versus possible/lexical evidence, and supplied governing rules in IMPORTANT callouts without fabricated call sites.'
+    architectural_notes:
+    - 'deferred: {"authority":"Explicit user decision: відклади це, зафіксуй як невизначеність щоб переглянути потім","item":"positive_seam / negative_seam intent badges","disposition":"Deferred outside M054; no longer a traversal implementation blocker after contract/store reconciliation","current_delivery":"Verified test_role, ordered call_path/breadcrumbs, actual coordinates and graph-vs-lexical caveats remain fully in M054","uncertainty":["Meaning and nonexclusive positive/negative or mixed cases","Declared author intent versus verified behavioral proof","Per-test intent versus target-specific edge intent","Producer and language support","Provenance precision, missing/malformed policy and measurable sensitivity proof"],"baseline":"Existing code supplies roles and path evidence but no positive/negative intent producer; original ADR example assumed otherwise","destination":"Post-M054 architecture/contract planning review; no producer, annotation syntax, schema or inference mechanism admitted now","next":"Same original manifest author updates only future traversal rev3→4 and docs; independent consistency review, coordinator transfer and Forge sync; core task rev2 remains unchanged"}'
+    - 'decisions: User deferral685 reconciled and independently reviewed PASS. Sibling manifest9e924044fe28abc54c5e892c67d3314ed4897d9a / refde3bff2bc787514ca2d2a56c444343c7dbcd7ac0; core composed manifest4e638cc69557fd0bb0398f657ac3820d2fdce095 / ref06d59fe080e7d2c31f4d5e886040fd785b51497b. Core ref also retains builder freshness note under separate implementation review. Supported CLI task sync054 succeeded all6; traversal revision4 ready/contract, then supported subtask_update set existing tests-chains ready without altering evidence. Allgatespending/dependencysequence preserved. No reset/reopen/history/receipt edits. Verified core digest/rev2/claim5/owner/buildstage/live scopeextensions/accepted gatehistory/4completedsubtasks+evidence identical before/afterSync. Deferred uncertainty remains post054 architecture/nextplanning; currentverifiedroles/paths/breadcrumbs/coordinates remain required.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: task-lifecycle-markdown-contracts-and-bundle-compaction
@@ -421,8 +574,8 @@ task_ref: task-lifecycle-markdown-contracts-and-bundle-compaction
 target: "Render task lifecycle and embedded claim/contract blackboard blocker callouts while preserving all operative guidance, DoD, evidence identities and receipts"
 depends_on:
   - graph-traversal-and-impact-markdown-contracts
-proof_policy: seam-test-first
-contract_revision: 4
+proof_policy: deferred-final-test
+contract_revision: 5
 invariants:
   - 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve task authority, stage guidance, proof commands/templates, write scopes, DoD and durable evidence.'
   - 'INV-CONTEXTUAL-ACTIONABLE-HINTS: Compact duplicate presentation while preserving every distinct operative instruction.'
@@ -467,8 +620,8 @@ task_ref: coordination-and-documentation-markdown-contracts
 target: "Render standalone blackboard CAUTION BLOCKER callouts, documentation and checkpoints with original identities, body/recovery, continuation and existing action semantics"
 depends_on:
   - task-lifecycle-markdown-contracts-and-bundle-compaction
-proof_policy: seam-test-first
-contract_revision: 3
+proof_policy: deferred-final-test
+contract_revision: 4
 invariants:
   - 'INV-COORDINATION-CONTENT: Preserve message/document/checkpoint content, actual actions and hierarchy; invent no threading, timestamps or state.'
   - 'INV-CLICKABLE-COORDINATES: Resolve actual document and symbol coordinates.'
@@ -512,8 +665,8 @@ task_ref: cli-surface-parity-json-alignment-and-seam-tests
 target: "Complete and verify shared-operation Markdown/JSON parity, supported errors and default selection across real CLI and MCP seams"
 depends_on:
   - coordination-and-documentation-markdown-contracts
-proof_policy: seam-test-first
-contract_revision: 2
+proof_policy: deferred-final-test
+contract_revision: 4
 invariants:
   - 'INV-DUAL-SURFACE-PARITY: Shared operations produce equivalent semantic results and use the same formatter; CLI-only operations retain their boundary.'
   - 'INV-DEAD-METADATA-ELIMINATION: Shared compaction preserves active recovery and all meaningful domain evidence.'
@@ -529,6 +682,12 @@ scope:
   - docs/reference/cli.md
   - docs/reference/mcp-tools.md
   - docs/reference/mcp-markdown-contracts.md
+  - README.md
+  - AGENTS.md
+  - docs/architecture/README.md
+  - docs/reference/README.md
+  - docs/runbooks/limits-and-freshness.md
+  - docs/adr/README.md
   - skills/contextunity-forge/SKILL.md
   - skills/contextunity-forge/references/
 status: ready

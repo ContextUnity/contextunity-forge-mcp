@@ -62,7 +62,9 @@ On budget errors, narrow the selector/path or reduce depth.
   removals.
 - Use `code_map_tests` to trace exact calls from classified test cases. Helpers and fixtures may
   occur in a path but are not coverage roots; `possible_calls` and lexical suggestions do not prove
-  coverage, and a lexical suggestion has no `call_path`.
+  coverage, and a lexical suggestion has no `call_path`. Markdown graph results show the ordered
+  test-to-target breadcrumb with verified links and producer-supplied roles; lexical suggestions are
+  explicitly unverified.
 - Read a bounded `get_code_snippet` preview, then use `ctx_read` for exact source ranges before
   editing. Inspect/snippet default to 5 leading and 200 body lines; requested body lines clamp to
   1..500 within byte caps.
@@ -106,6 +108,16 @@ in-scope production symbol; out-of-scope indexed callers on changed public signa
 `TASK_SEAM_DISCONNECTED` or `TASK_SCOPE_INCOMPLETE`. For admitted greenfield files absent from disk, the contract author adds
 minimal compiling stubs and module/import declarations before index refresh.
 
+Task tools and CLI task commands show Markdown by default; request MCP
+`format: "json"` or CLI `--format json` when consuming structured values. Read
+claim/context sections for lifecycle state, active profile guidance, exact proof
+commands/templates, scope, dependencies, and available task evidence. Embedded
+`blockers` are marked with their original identity and gate; when a body summary
+is truncated, follow its `task_blackboard(action="inspect", message_id=...)`
+recovery before treating the summary as complete. The
+[task lifecycle Markdown contract](https://github.com/ContextUnity/contextunity-forge-mcp/blob/main/docs/reference/mcp-markdown-contracts.md#task-lifecycle)
+defines the rendered fields and preserved JSON behavior.
+
 Lifecycle errors use `{CODE}: {task_id}. {facts}. Do: {action}` (or action/milestone-scoped equivalents). `AUTHORITY_GAP` distinguishes
 milestone-frontmatter divergence from task-spec changes and gives exact remediation.
 
@@ -139,6 +151,9 @@ stall.
   local case. Topics are `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`.
 - After claim, read applicable messages. `read` returns metadata; inspect message IDs for full
   payloads because summaries may be truncated or omitted.
+- Markdown reads group messages by their actual topic and preserve the page's newest-first order.
+  Blocker callouts retain message identity and available scope, gate, timestamp, and body; payload-free
+  summaries carry the exact inspect request. Grouping creates no reply or resolution state.
 - Builders post verification as `notes`; reviewers post findings or no-findings as `findings`;
   coordinators reconcile as `notes`. Post blockers when found and resolution when state changes.
 - Publish material results, decisions, blockers, or ownership changes with contract

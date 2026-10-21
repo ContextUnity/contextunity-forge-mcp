@@ -304,30 +304,34 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         names,
         (0..21).map(|i| format!("f{i:02}")).collect::<Vec<_>>()
     );
-    assert!(traversal::query_with_options(
-        &conn,
-        "sql",
-        Some("UPDATE nodes SET kind='changed'"),
-        &traversal::GraphQueryOptions {
-            depth: 1,
-            direction: None,
-            coverage: CoverageOptions::default(),
-            page: &options(6)
-        }
-    )
-    .is_err());
-    assert!(traversal::query_with_options(
-        &conn,
-        "sql",
-        None,
-        &traversal::GraphQueryOptions {
-            depth: 1,
-            direction: None,
-            coverage: CoverageOptions::default(),
-            page: &options(6)
-        }
-    )
-    .is_err());
+    assert!(
+        traversal::query_with_options(
+            &conn,
+            "sql",
+            Some("UPDATE nodes SET kind='changed'"),
+            &traversal::GraphQueryOptions {
+                depth: 1,
+                direction: None,
+                coverage: CoverageOptions::default(),
+                page: &options(6)
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        traversal::query_with_options(
+            &conn,
+            "sql",
+            None,
+            &traversal::GraphQueryOptions {
+                depth: 1,
+                direction: None,
+                coverage: CoverageOptions::default(),
+                page: &options(6)
+            }
+        )
+        .is_err()
+    );
 
     let inbound = traversal::query_with_options(
         &conn,
@@ -342,11 +346,13 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
     )
     .unwrap();
     assert_eq!(inbound["direction"], "inbound");
-    assert!(inbound["nodes"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|node| node["name"] == "caller"));
+    assert!(
+        inbound["nodes"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["name"] == "caller")
+    );
     let outbound = traversal::query_with_options(
         &conn,
         "impact",
@@ -360,23 +366,27 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
     )
     .unwrap();
     assert_eq!(outbound["direction"], "outbound");
-    assert!(outbound["nodes"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|node| node["name"] == "helper"));
-    assert!(traversal::query_with_options(
-        &conn,
-        "impact",
-        Some("target"),
-        &traversal::GraphQueryOptions {
-            depth: 1,
-            direction: Some("sideways"),
-            coverage: CoverageOptions::default(),
-            page: &options(10)
-        }
-    )
-    .is_err());
+    assert!(
+        outbound["nodes"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["name"] == "helper")
+    );
+    assert!(
+        traversal::query_with_options(
+            &conn,
+            "impact",
+            Some("target"),
+            &traversal::GraphQueryOptions {
+                depth: 1,
+                direction: Some("sideways"),
+                coverage: CoverageOptions::default(),
+                page: &options(10)
+            }
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -837,6 +847,47 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
     assert_eq!(possible.len(), 2);
     assert!(possible.iter().all(|edge| edge["confidence"] == "possible"));
     assert_ne!(possible[0]["dst_public_id"], possible[1]["dst_public_id"]);
+    let all = symbols::explain_with_options(
+        &conn,
+        &workspace.0,
+        "run",
+        &symbols::ExplainOptions {
+            direction: Some("outgoing"),
+            show_doc: false,
+            source: &source,
+            coverage: CoverageOptions::default(),
+            page: &options(100),
+        },
+    )
+    .unwrap();
+    let markdown = contextunity_forge_mcp::core::format::render_for_operation(
+        &all,
+        contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+        "code_map_explain",
+        None,
+        contextunity_forge_mcp::core::format::OperationKind::Navigation,
+    );
+    assert!(markdown.contains("[proven call]"), "{markdown}");
+    assert!(markdown.contains("[heuristic / candidate]"), "{markdown}");
+    assert!(
+        markdown.contains("branch.py:10"),
+        "callsite line is retained: {markdown}"
+    );
+    assert!(
+        markdown.contains("possible_calls"),
+        "candidate relationships remain distinct from exact calls: {markdown}"
+    );
+    let json = contextunity_forge_mcp::core::format::render_for_operation(
+        &all,
+        contextunity_forge_mcp::core::format::OutputFormat::Json,
+        "code_map_explain",
+        None,
+        contextunity_forge_mcp::core::format::OperationKind::Navigation,
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&json).unwrap(),
+        all
+    );
     // The same persisted relationships must explain shallow impact, including
     // possible dispatch at the callsite rather than the target definition.
     for detail in [Detail::Compact, Detail::Full] {

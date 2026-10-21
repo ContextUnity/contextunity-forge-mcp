@@ -71,40 +71,113 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     );
     workspace.write("other.py", "def target():\n    return 2\n");
     workspace.write("README.md", "# Fixture Guide\nquasarneedle appears here.\n");
+    workspace.write(
+        "tests/test_service.py",
+        "from service import entry\ndef test_entry():\n    entry()\n",
+    );
     fs::create_dir_all(workspace.path("nested")).unwrap();
     workspace.write("nested/helper.py", "def unique_nested():\n    return 3\n");
     let mut client = Client::new(&workspace);
 
     let parity_cases = [
-        ("task_list", vec!["task", "list"], json!({}), "# task_list"),
+        (
+            "code_map_overview",
+            vec!["query", "overview"],
+            json!({"limit":100}),
+        ),
+        ("task_list", vec!["task", "list"], json!({})),
         (
             "code_map_inspect",
             vec!["query", "inspect", "service.py:entry"],
             json!({"selector":"service.py:entry","show_doc":true,"include_coverage":true,"show_source":false,"limit":100,"detail":"compact"}),
-            "# code_map_inspect",
         ),
         (
             "code_map_explain",
             vec!["query", "explain", "service.py:entry"],
             json!({"selector":"service.py:entry","show_doc":true,"include_coverage":true,"show_source":false,"limit":100,"detail":"compact"}),
-            "# code_map_explain",
+        ),
+        (
+            "code_map_search",
+            vec!["query", "search", "target", "--kind", "function"],
+            json!({"pattern":"target","kind":"function","limit":100}),
+        ),
+        (
+            "code_map_search",
+            vec![
+                "query", "search", "target", "--kind", "function", "--limit", "1",
+            ],
+            json!({"pattern":"target","kind":"function","limit":1}),
+        ),
+        (
+            "code_map_tests",
+            vec!["query", "tests", "service.py:entry"],
+            json!({"selector":"service.py:entry","direction":"inbound","limit":100}),
+        ),
+        (
+            "code_map_impact",
+            vec!["query", "impact", "service.py:entry", "--depth", "1"],
+            json!({"selector":"service.py:entry","depth":1,"limit":100}),
+        ),
+        (
+            "code_map_prove_removal",
+            vec!["query", "remove", "service.py:entry"],
+            json!({"selector":"service.py:entry","limit":100}),
+        ),
+        (
+            "code_map_analyze",
+            vec!["query", "analyze", "service.py"],
+            json!({"target":"service.py","limit":100}),
+        ),
+        (
+            "code_map_query",
+            vec![
+                "query",
+                "run",
+                "inspect",
+                "service.py:entry",
+                "--depth",
+                "1",
+                "--limit",
+                "100",
+            ],
+            json!({"operation":"inspect","selector":"service.py:entry","depth":1,"limit":100}),
+        ),
+        (
+            "ast_grep_search",
+            vec!["ast", "grep", "def $NAME(): $$$BODY", "--lang", "python"],
+            json!({"pattern":"def $NAME(): $$$BODY","language":"python","limit":100}),
+        ),
+        (
+            "ast_grep_search",
+            vec![
+                "ast", "grep", "def $NAME(): $$$BODY", "--lang", "python", "--limit", "1",
+            ],
+            json!({"pattern":"def $NAME(): $$$BODY","language":"python","limit":1}),
         ),
         (
             "search_docs",
             vec!["docs", "search", "quasarneedle"],
             json!({"query":"quasarneedle","limit":100,"include_excerpt":false}),
-            "# search_docs",
         ),
         (
             "get_doc",
             vec!["docs", "get", "README.md"],
             json!({"path_or_id":"README.md","limit":100,"detail":"full"}),
-            "# get_doc",
+        ),
+        (
+            "forge_guide",
+            vec!["guide", "query"],
+            json!({"topic":"query"}),
+        ),
+        (
+            "session_checkpoint",
+            vec!["checkpoint", "list"],
+            json!({"action":"list"}),
         ),
     ];
     const FRESHNESS_MARKDOWN: &str = concat!(
         "- **freshness**\n",
-        "  - **files_checked**: `4`\n",
+        "  - **files_checked**: `5`\n",
         "  - **refresh**: `\"none\"`\n",
         "  - **status**: `\"matched\"`\n",
     );
@@ -129,11 +202,24 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         }
         (semantic_text, freshness_block)
     };
-    for (tool, cli_args, arguments, heading) in parity_cases {
+    for (tool, cli_args, arguments) in parity_cases {
         let cli_markdown = run_cli(&workspace, &cli_args);
         assertions::assert_command_succeeded(&cli_markdown);
         let cli_text = std::str::from_utf8(&cli_markdown.stdout).unwrap();
         let cli_text = cli_text.strip_suffix('\n').unwrap_or(cli_text);
+        let mut explicit_cli_args = Vec::with_capacity(cli_args.len() + 2);
+        explicit_cli_args.extend(["--format", "markdown"]);
+        explicit_cli_args.extend(cli_args.iter().copied());
+        let explicit_cli_markdown = run_cli(&workspace, &explicit_cli_args);
+        assertions::assert_command_succeeded(&explicit_cli_markdown);
+        let explicit_cli_text = std::str::from_utf8(&explicit_cli_markdown.stdout).unwrap();
+        assert_eq!(
+            explicit_cli_text
+                .strip_suffix('\n')
+                .unwrap_or(explicit_cli_text),
+            cli_text,
+            "{tool} omitted and explicit CLI Markdown"
+        );
 
         let (_, default_response) = client.call(tool, arguments.clone());
         assert_ne!(
@@ -143,52 +229,140 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         let default_text = default_response["result"]["content"][0]["text"]
             .as_str()
             .unwrap();
-        assert_eq!(default_text.lines().next(), Some(heading));
+        let mut markdown_arguments = arguments.clone();
+        markdown_arguments["format"] = json!("markdown");
+        let (_, explicit_markdown) = client.call(tool, markdown_arguments);
+        assert_ne!(
+            explicit_markdown["result"]["isError"], true,
+            "{tool}: {explicit_markdown}"
+        );
+        assert_eq!(
+            explicit_markdown["result"]["content"][0]["text"], default_text,
+            "{tool} omitted and explicit MCP Markdown"
+        );
 
         let cli_json = run_cli_json(&workspace, &cli_args);
         assertions::assert_command_succeeded(&cli_json);
         let cli_json: Value = serde_json::from_slice(&cli_json.stdout).unwrap();
-        let mut mcp_json = client.payload(tool, arguments.clone());
+        let mut json_arguments = arguments.clone();
+        json_arguments["format"] = json!("json");
+        let mut mcp_json = client.payload(tool, json_arguments);
         let mcp_freshness = mcp_json
             .as_object_mut()
             .and_then(|result| result.remove("freshness"));
         let (mcp_domain_text, markdown_freshness) = strip_top_level_freshness(default_text);
-        let expected_freshness = json!({"status":"matched","files_checked":4,"refresh":"none"});
+        let expected_freshness = json!({"status":"matched","files_checked":5,"refresh":"none"});
         if let Some(actual) = &mcp_freshness {
             assert_eq!(actual, &expected_freshness, "{tool} emitted freshness");
         }
         if tool == "task_list" {
             assert!(mcp_freshness.is_none(), "task_list emitted graph freshness");
         }
-        assert_eq!(
-            markdown_freshness.is_some(),
-            mcp_freshness.is_some(),
-            "{tool} Markdown freshness must match the actual JSON envelope presence"
+        let discovery_tool = matches!(
+            tool,
+            "code_map_overview"
+                | "code_map_inspect"
+                | "code_map_search"
+                | "ast_grep_search"
         );
-        if mcp_freshness.is_some() {
+        if tool == "code_map_overview" {
             assert_eq!(
-                markdown_freshness.as_deref(),
-                Some(FRESHNESS_MARKDOWN),
-                "{tool} actual Markdown freshness envelope"
+                mcp_freshness.as_ref(),
+                Some(&expected_freshness),
+                "overview must preserve its actual server-owned freshness envelope in JSON"
             );
-        } else {
+        }
+        if discovery_tool {
+            // Dedicated discovery layouts intentionally omit matched freshness display metadata.
+            // Assert its JSON envelope separately above instead of requiring a generic Markdown block.
             assert!(
                 markdown_freshness.is_none(),
-                "{tool} unexpected Markdown freshness"
+                "matched discovery freshness should not render as a Markdown domain block"
             );
+        } else {
+            assert_eq!(
+                markdown_freshness.is_some(),
+                mcp_freshness.is_some(),
+                "{tool} Markdown freshness must match the actual JSON envelope presence"
+            );
+            if mcp_freshness.is_some() {
+                assert_eq!(
+                    markdown_freshness.as_deref(),
+                    Some(FRESHNESS_MARKDOWN),
+                    "{tool} actual Markdown freshness envelope"
+                );
+            } else {
+                assert!(
+                    markdown_freshness.is_none(),
+                    "{tool} unexpected Markdown freshness"
+                );
+            }
         }
         assert_eq!(cli_json, mcp_json, "{tool} parsed JSON parity");
 
-        assert_eq!(cli_text, mcp_domain_text, "{tool} default Markdown parity");
+        if tool == "ast_grep_search" {
+            let page = &mcp_json["matches"];
+            assert!(page.is_object(), "AST matches must retain the shared page envelope: {page}");
+            let items = page["items"].as_array().expect("AST page items");
+            assert_eq!(page["limit"], arguments["limit"]);
+            if arguments["limit"].as_u64() == Some(1) {
+                assert_eq!(page["total_status"], "unavailable");
+                assert_eq!(page["has_more"], true);
+                assert_eq!(page["next_offset"], 1);
+                assert!(page["generation"].as_str().is_some());
+            } else {
+                assert_eq!(page["total_status"], "exact");
+                assert_eq!(page["total"], json!(items.len()));
+                assert_eq!(page["has_more"], false);
+                assert!(page.get("next_offset").is_none());
+                assert!(page.get("generation").is_none());
+            }
+        }
 
-        let mut markdown_arguments = arguments.clone();
-        markdown_arguments["format"] = json!("markdown");
-        let (_, explicit_markdown) = client.call(tool, markdown_arguments);
-        assert_eq!(
-            explicit_markdown["result"]["content"][0]["text"], default_text,
-            "{tool} explicit Markdown parity"
-        );
+        if arguments["limit"].as_u64() == Some(1) && tool != "ast_grep_search" {
+            assert_eq!(mcp_json["nodes"]["has_more"], true);
+            assert_eq!(mcp_json["nodes"]["next_offset"], 1);
+            assert!(mcp_json["nodes"]["generation"].as_str().is_some());
+        }
+
+        assert_eq!(cli_text, mcp_domain_text, "{tool} default Markdown parity");
+        if tool == "code_map_inspect" {
+            let source_uri = format!(
+                "file://{}#L1",
+                workspace
+                    .path("service.py")
+                    .canonicalize()
+                    .unwrap()
+                    .display()
+            );
+            assert!(
+                cli_text.contains(&source_uri),
+                "missing CLI source coordinate {source_uri}"
+            );
+            assert!(
+                mcp_domain_text.contains(&source_uri),
+                "missing MCP source coordinate {source_uri}"
+            );
+        }
     }
+
+    let extended_cli_ast = run_cli_json(
+        &workspace,
+        &[
+            "ast",
+            "grep",
+            "def $NAME(): $$$BODY",
+            "--lang",
+            "python",
+            "--limit",
+            "101",
+        ],
+    );
+    assertions::assert_command_succeeded(&extended_cli_ast);
+    let extended_cli_ast: Value = serde_json::from_slice(&extended_cli_ast.stdout).unwrap();
+    assert_eq!(extended_cli_ast["limit"], 101);
+    assert!(extended_cli_ast["matches"].is_array());
+    assert_eq!(extended_cli_ast["truncated"], false);
 
     let first = client.payload(
         "code_map_search",
@@ -461,6 +635,7 @@ fn cli_selector_commands_apply_workspace_path_scope() {
     fs::create_dir_all(&forge_dir).unwrap();
     let db = forge_dir.join("cli.sqlite");
     let run_cli = |args: &[&str]| query_cli_with_database(&workspace, &db, args);
+    let mut mcp = Client::new(&workspace);
 
     let inspected = run_cli(&["query", "inspect", "target", "--path", "other.py"]);
     assert_eq!(inspected["node"]["path"], "other.py");
@@ -474,6 +649,36 @@ fn cli_selector_commands_apply_workspace_path_scope() {
     assert_eq!(tested["selector"]["path"], "other.py");
     let removed = run_cli(&["query", "remove", "target", "--path", "other.py"]);
     assert_eq!(removed["selected_ids"]["total"], 1);
+
+    let cli_scoped = run_cli(&["query", "inspect", "target", "--path", "other.py"]);
+    let mcp_scoped = mcp.payload(
+        "code_map_inspect",
+        json!({"selector":"target","path":"other.py","format":"json"}),
+    );
+    assert_eq!(cli_scoped["node"]["path"], "other.py");
+    assert_eq!(mcp_scoped["node"]["path"], "other.py");
+    assert_eq!(cli_scoped["node"]["line"], mcp_scoped["node"]["line"]);
+
+    let invalid_cli_format = crate::common::mcp_client::run_cli(
+        &workspace,
+        &["--format", "plain", "query", "inspect", "target"],
+    );
+    assert!(
+        !invalid_cli_format.status.success(),
+        "CLI accepted unsupported format `plain`"
+    );
+    let (_, invalid_mcp_format) = mcp.call(
+        "code_map_inspect",
+        json!({"selector":"target","format":"plain"}),
+    );
+    assert_eq!(invalid_mcp_format["result"]["isError"], true);
+    let invalid_mcp_error: Value = serde_json::from_str(
+        invalid_mcp_format["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(invalid_mcp_error["error"]["code"], "INVALID_FORMAT");
 }
 
 #[test]
@@ -1002,10 +1207,24 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
     let listed = client.request_value("tools/list", json!({}));
     for tool in listed["result"]["tools"].as_array().unwrap() {
         let format = &tool["inputSchema"]["properties"]["format"];
-        let schema = format.to_string();
+        assert_eq!(format["type"], "string", "tool {}: {format}", tool["name"]);
+        assert_eq!(
+            format["enum"],
+            json!(["markdown", "json"]),
+            "tool {} has an unexpected format selector: {format}",
+            tool["name"]
+        );
+        let format_is_required =
+            tool["inputSchema"]["required"]
+                .as_array()
+                .is_some_and(|required| {
+                    required
+                        .iter()
+                        .any(|field| field.as_str() == Some("format"))
+                });
         assert!(
-            schema.contains("markdown") && schema.contains("json"),
-            "tool {} omits format selection: {format}",
+            !format_is_required,
+            "tool {} must permit omitted/default Markdown format",
             tool["name"]
         );
     }
@@ -1281,6 +1500,21 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
             listed[name]["bytes"],
             serde_json::to_vec(&value).unwrap().len()
         );
+        let (_, listed_markdown) = client.call(
+            "session_checkpoint",
+            json!({"action":"list","format":"markdown"}),
+        );
+        let listed_markdown = listed_markdown["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(listed_markdown.contains(&format!("**{name}**")));
+        assert!(listed_markdown.contains(&listed[name]["bytes"].to_string()));
+        let cli_list = run_cli(&workspace, &["--format", "markdown", "checkpoint", "list"]);
+        assertions::assert_command_succeeded(&cli_list);
+        let cli_list = std::str::from_utf8(&cli_list.stdout).unwrap();
+        assert!(cli_list.contains(&format!("**{name}**")));
+        assert!(cli_list.contains(&listed[name]["bytes"].to_string()));
+        assert_eq!(listed_markdown.trim_end(), cli_list.trim_end());
         assert_eq!(
             fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
             stored
@@ -1305,11 +1539,39 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
     let (_, saved) = client.call(
         "session_checkpoint",
         json!({
-            "action":"save","name":"format-contract","content":opaque
+            "action":"save","name":"format-contract","content":opaque,"format":"markdown"
         }),
     );
     assert_ne!(saved["result"]["isError"], true, "{saved}");
+    let save_markdown = saved["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(save_markdown.contains("**action**: `\"save\"`"));
+    assert!(save_markdown.contains("**name**: `\"format-contract\"`"));
+    let cli_saved_content = json!({"cli":"checkpoint","generation":"user-token"});
+    let cli_saved_content_argument = serde_json::to_string(&cli_saved_content).unwrap();
+    let cli_saved = run_cli(
+        &workspace,
+        &[
+            "--format",
+            "markdown",
+            "checkpoint",
+            "save",
+            "--name",
+            "cli-save-markdown",
+            "--content",
+            &cli_saved_content_argument,
+        ],
+    );
+    assertions::assert_command_succeeded(&cli_saved);
+    let cli_save_text = std::str::from_utf8(&cli_saved.stdout).unwrap();
+    assert!(cli_save_text.contains("**action**: `\"save\"`"));
+    assert!(cli_save_text.contains("**name**: `\"cli-save-markdown\"`"));
     let persisted = fs::read(workspace.path(".forge/checkpoints.json")).unwrap();
+    let persisted_value: Value = serde_json::from_slice(&persisted).unwrap();
+    assert_eq!(persisted_value["entries"]["format-contract"], opaque);
+    assert_eq!(
+        persisted_value["entries"]["cli-save-markdown"],
+        cli_saved_content
+    );
 
     // Invalid presentation must be rejected before a real persisted mutation.
     for invalid in ["yaml", "", "JSON"] {
@@ -1428,9 +1690,7 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
             cli_args.extend(["checkpoint", "get", "--name", name]);
             let (_, response) = client.call("session_checkpoint", arguments);
             assert_ne!(response["result"]["isError"], true, "{response}");
-            let mcp_text = response["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap();
+            let mcp_text = response["result"]["content"][0]["text"].as_str().unwrap();
             let cli = run_cli(&workspace, &cli_args);
             assertions::assert_command_succeeded(&cli);
             let cli_text = std::str::from_utf8(&cli.stdout).unwrap().trim_end();
@@ -1464,6 +1724,54 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
         "empty checkpoint roots were omitted: {}",
         missing_renderings.join("; ")
     );
+
+    for (name, content) in [
+        ("mcp-delete-markdown", json!({"keep":false})),
+        ("cli-delete-markdown", json!({"keep":0})),
+    ] {
+        client.payload(
+            "session_checkpoint",
+            json!({"action":"save","name":name,"content":content}),
+        );
+    }
+    let (_, mcp_deleted) = client.call(
+        "session_checkpoint",
+        json!({"action":"delete","name":"mcp-delete-markdown","format":"markdown"}),
+    );
+    assert_ne!(mcp_deleted["result"]["isError"], true, "{mcp_deleted}");
+    let mcp_delete_text = mcp_deleted["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(mcp_delete_text.contains("**action**: `\"delete\"`"));
+    assert!(mcp_delete_text.contains("**name**: `\"mcp-delete-markdown\"`"));
+    let deleted_entries: Value =
+        serde_json::from_slice(&fs::read(workspace.path(".forge/checkpoints.json")).unwrap())
+            .unwrap();
+    assert!(deleted_entries["entries"]
+        .get("mcp-delete-markdown")
+        .is_none());
+
+    let cli_deleted = run_cli(
+        &workspace,
+        &[
+            "--format",
+            "markdown",
+            "checkpoint",
+            "delete",
+            "--name",
+            "cli-delete-markdown",
+        ],
+    );
+    assertions::assert_command_succeeded(&cli_deleted);
+    let cli_delete_text = std::str::from_utf8(&cli_deleted.stdout).unwrap();
+    assert!(cli_delete_text.contains("**action**: `\"delete\"`"));
+    assert!(cli_delete_text.contains("**name**: `\"cli-delete-markdown\"`"));
+    let deleted_entries: Value =
+        serde_json::from_slice(&fs::read(workspace.path(".forge/checkpoints.json")).unwrap())
+            .unwrap();
+    assert!(deleted_entries["entries"]
+        .get("cli-delete-markdown")
+        .is_none());
 }
 #[tokio::test]
 async fn transport_accepts_exact_bound_and_replaces_oversized_frames() {
@@ -1707,7 +2015,8 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
                 "automatic selected root {label}: {wire_bytes} wire bytes, isError={is_error}, code={error_code:?}"
             ));
         }
-        if fs::read(&selected_index).ok().as_deref() != Some(index_before_auto_rejection.as_slice()) {
+        if fs::read(&selected_index).ok().as_deref() != Some(index_before_auto_rejection.as_slice())
+        {
             invalid_policy_failures.push(format!(
                 "automatic selected root {label} changed index bytes before rejection"
             ));

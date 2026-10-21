@@ -676,7 +676,82 @@ function shadowed(test: Function) {
             {
                 Some(item)
                     if item["connection"]["call_path"] == expected
-                        && item["test_role"] == "test_case" => {}
+                        && item["test_role"] == "test_case" =>
+                {
+                    let verified = item["connection"]["verified_call_path_nodes"]
+                        .as_array()
+                        .expect("ordered verified call-path nodes");
+                    if verified.len() != path.len() {
+                        failures.push(format!(
+                            "{detail:?} {case} hydrated path length: {verified:?}"
+                        ));
+                    } else {
+                        for (verified_node, selector) in verified.iter().zip(&path) {
+                            let canonical = node(selector);
+                            for field in ["id", "name", "path", "line"] {
+                                if verified_node[field] != canonical[field] {
+                                    failures.push(format!(
+                                        "{detail:?} {case} hydrated {field} for {selector}: {verified_node}"
+                                    ));
+                                }
+                            }
+                            if let Some(role) = canonical["details"]["test_role"].as_str() {
+                                if verified_node["test_role"] != role {
+                                    failures.push(format!(
+                                        "{detail:?} {case} supplied role for {selector}: {verified_node}"
+                                    ));
+                                }
+                            } else if verified_node.get("test_role").is_some() {
+                                failures.push(format!(
+                                    "{detail:?} {case} invented role for {selector}: {verified_node}"
+                                ));
+                            }
+                        }
+                    }
+                    if case == "test_long" {
+                        let markdown = contextunity_forge_mcp::core::format::render_for_operation(
+                            &found,
+                            contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+                            "code_map_tests",
+                            None,
+                            contextunity_forge_mcp::core::format::OperationKind::Navigation,
+                        );
+                        let breadcrumb = markdown
+                            .split("Verified call path:")
+                            .nth(1)
+                            .expect("verified breadcrumb");
+                        let names = [
+                            "test_long",
+                            "helper_one",
+                            "helper_two",
+                            "helper_three",
+                            "helper_four",
+                            "helper_five",
+                            "helper_six",
+                            "long_covered",
+                        ];
+                        let positions = names
+                            .iter()
+                            .map(|name| breadcrumb.find(name).expect("path node name"))
+                            .collect::<Vec<_>>();
+                        assert!(
+                            positions.windows(2).all(|pair| pair[0] < pair[1]),
+                            "{breadcrumb}"
+                        );
+                        assert!(breadcrumb.contains("test_case"), "{breadcrumb}");
+                        assert!(breadcrumb.contains("test_helper"), "{breadcrumb}");
+                        assert!(breadcrumb.contains("(target)"), "{breadcrumb}");
+
+                        let json = contextunity_forge_mcp::core::format::render_for_operation(
+                            &found,
+                            contextunity_forge_mcp::core::format::OutputFormat::Json,
+                            "code_map_tests",
+                            None,
+                            contextunity_forge_mcp::core::format::OperationKind::Navigation,
+                        );
+                        assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), found);
+                    }
+                }
                 other => failures.push(format!(
                     "{detail:?} {case} exact path expected={expected}, actual={other:?}"
                 )),
@@ -945,13 +1020,33 @@ fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
     let lexical = &inbound["nodes"]["items"][0];
     assert_eq!(lexical["test_role"], "test_case");
     assert!(lexical["connection"].get("call_path").is_none());
+    assert!(
+        lexical["connection"]
+            .get("verified_call_path_nodes")
+            .is_none()
+    );
+    let markdown = contextunity_forge_mcp::core::format::render_for_operation(
+        &inbound,
+        contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+        "code_map_tests",
+        None,
+        contextunity_forge_mcp::core::format::OperationKind::Navigation,
+    );
+    assert!(
+        markdown.contains("Lexical fallback is unverified")
+            && markdown.contains("Supplied role")
+            && !markdown.contains("Verified call path"),
+        "{markdown}"
+    );
     let analysis = reader::analyze_paged(&conn, "service.py", None, &options(10)).unwrap();
     let id = reader::select(&conn, "ChannelSyncEntry").unwrap()["id"].clone();
-    assert!(analysis["untested_public_surface"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|item| item["id"] == id));
+    assert!(
+        analysis["untested_public_surface"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == id)
+    );
 }
 
 #[test]
@@ -1095,10 +1190,12 @@ fn tests_reports_unresolved_references_in_symbol_scope() {
     let conn = workspace.build();
     let res = symbols::tests_paged(&conn, "test_one", "inbound", &options(10)).unwrap();
     assert!(res["unresolved_references"].as_u64().unwrap() >= 1);
-    assert!(res["scope"]
-        .as_str()
-        .unwrap()
-        .contains("unresolved reference(s)"));
+    assert!(
+        res["scope"]
+            .as_str()
+            .unwrap()
+            .contains("unresolved reference(s)")
+    );
 }
 
 #[test]
@@ -1117,11 +1214,13 @@ fn compact_coverage_keeps_scope_counts_and_full_detail_keeps_evidence() {
     assert!(item.get("evidence").is_none());
     assert!(item.get("path").is_none());
     assert_eq!(item["status"], "unresolved");
-    assert!(coverage["statuses"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| { s["status"] == "unresolved" && s["total"].as_u64().unwrap() > 0 }));
+    assert!(
+        coverage["statuses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| { s["status"] == "unresolved" && s["total"].as_u64().unwrap() > 0 })
+    );
     let mut full = options(10);
     full.detail = Detail::Full;
     let detailed = reader::inspect_paged(&conn, "target_func", false, &full).unwrap();
@@ -1284,20 +1383,22 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     )
     .unwrap();
     assert!(explained.get("coverage").is_none());
-    assert!(symbols::inspect_with_options(
-        &conn,
-        &workspace.0,
-        "target",
-        &symbols::InspectOptions {
-            show_doc: false,
-            source: &source,
-            coverage: CoverageOptions {
-                include_coverage: true,
-            },
-            page: &options(30)
-        }
-    )
-    .is_err());
+    assert!(
+        symbols::inspect_with_options(
+            &conn,
+            &workspace.0,
+            "target",
+            &symbols::InspectOptions {
+                show_doc: false,
+                source: &source,
+                coverage: CoverageOptions {
+                    include_coverage: true,
+                },
+                page: &options(30)
+            }
+        )
+        .is_err()
+    );
     let snippet =
         symbols::snippet_paged(&conn, &workspace.0, "target", &source, &options(30)).unwrap();
     assert_eq!(snippet["source"], inspect["source"]);

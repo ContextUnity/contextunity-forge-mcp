@@ -43,6 +43,42 @@ fn mcp_exposes_and_executes_evolution_tools() {
             assert!(payload["nodes"].get("generation").is_none());
         }
     }
+
+    let (_, default_snippet) = client.call(
+        "get_code_snippet",
+        serde_json::json!({"selector":"compute"}),
+    );
+    assert_eq!(
+        default_snippet["result"]["isError"], false,
+        "{default_snippet}"
+    );
+    let default_text = default_snippet["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        default_text.starts_with("# get_code_snippet"),
+        "{default_text}"
+    );
+
+    let (_, explicit_markdown) = client.call(
+        "get_code_snippet",
+        serde_json::json!({"selector":"compute","format":"markdown"}),
+    );
+    assert_eq!(
+        explicit_markdown["result"]["isError"], false,
+        "{explicit_markdown}"
+    );
+    assert_eq!(
+        explicit_markdown["result"]["content"][0]["text"], default_text,
+        "MCP-only source snippet defaults to Markdown and honors explicit Markdown"
+    );
+
+    let explicit_json = client.payload(
+        "get_code_snippet",
+        serde_json::json!({"selector":"compute","format":"json"}),
+    );
+    assert_eq!(explicit_json["source"], "def compute():\n    return 42\n");
+    assert_eq!(explicit_json["node"]["path"], "service.py");
 }
 
 #[test]

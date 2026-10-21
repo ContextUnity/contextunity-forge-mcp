@@ -1142,6 +1142,26 @@ fn mcp_search_ast_and_document_boundaries() {
         .as_str()
         .unwrap()
         .contains("[searchable]"));
+    let (_, search_markdown) = m.call(
+        "search_docs",
+        json!({"query":"searchable","include_excerpt":true,"format":"markdown"}),
+    );
+    let search_markdown = search_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(search_markdown.contains("### Intro"), "{search_markdown}");
+    assert!(
+        search_markdown.contains("Match excerpt"),
+        "{search_markdown}"
+    );
+    assert!(
+        search_markdown.contains("[searchable]"),
+        "{search_markdown}"
+    );
+    assert!(
+        search_markdown.contains("[docs/intro.md](file://"),
+        "search locations use the selected workspace URI: {search_markdown}"
+    );
     m.err("search_docs", json!({"query":""}), "search query is empty");
     let quoted = m.ok("search_docs", json!({"query":"\""}));
     assert_eq!(quoted["sections"]["total"], 0);
@@ -1152,6 +1172,29 @@ fn mcp_search_ast_and_document_boundaries() {
     assert_eq!(filtered["sections"]["total"], 0);
     let doc = m.ok("get_doc", json!({"path_or_id":"docs/intro.md"}));
     assert!(doc["sections"]["total"].as_u64().unwrap() >= 1);
+    let (_, document_markdown) = m.call(
+        "get_doc",
+        json!({"path_or_id":"docs/intro.md","format":"markdown"}),
+    );
+    let document_markdown = document_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(document_markdown.contains("Document sections"));
+    assert!(document_markdown.contains("Source Markdown"));
+    assert!(document_markdown.contains("A searchable contract."));
+    assert!(
+        document_markdown.contains("[docs/intro.md](file://"),
+        "document sections use the selected workspace URI: {document_markdown}"
+    );
+    let (_, outline_markdown) = m.call(
+        "get_doc",
+        json!({"path_or_id":"docs/intro.md","detail":"compact","format":"markdown"}),
+    );
+    let outline_markdown = outline_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(outline_markdown.contains("Document sections"));
+    assert!(!outline_markdown.contains("Source Markdown"));
     m.err(
         "get_doc",
         json!({"path_or_id":"docs/intro.md","section":"NonExistentSection"}),

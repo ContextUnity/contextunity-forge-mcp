@@ -2,9 +2,9 @@ use super::{paging, reader};
 use crate::core::models::stable_hash64;
 use crate::core::response::QueryOptions;
 use crate::db::traversal;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 const MAX_CALL_GRAPH_NODES: usize = 20_000;
@@ -21,6 +21,7 @@ struct NodeKey {
 struct CallNode {
     hash: i64,
     id: String,
+    name: String,
     path: String,
     line: i64,
     is_test: bool,
@@ -59,6 +60,10 @@ fn call_node(row: &Value) -> Result<CallNode> {
             .as_str()
             .context("invalid call graph node id")?
             .to_owned(),
+        name: row["name"]
+            .as_str()
+            .context("invalid call graph node name")?
+            .to_owned(),
         path: row["path"]
             .as_str()
             .context("invalid call graph node path")?
@@ -74,7 +79,7 @@ fn call_node(row: &Value) -> Result<CallNode> {
 fn selected_call_node(conn: &Connection, hash: i64) -> Result<CallNode> {
     let rows = reader::rows(
         conn,
-        "SELECT n.node_hash AS hash,n.id,p.path,n.line,n.is_test,json_extract(n.details,'$.test_role') AS test_role FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.node_hash=?1",
+        "SELECT n.node_hash AS hash,n.id,n.name,p.path,n.line,n.is_test,json_extract(n.details,'$.test_role') AS test_role FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.node_hash=?1",
         &[&hash],
         1,
     )?;
@@ -111,7 +116,7 @@ fn call_paths(
             ("e.dst_hash", "e.src_hash")
         };
         let sql = format!(
-            "SELECT {next_hash} AS hash,{current_hash} AS parent_hash,min(e.line) AS edge_line,ep.path AS edge_path,n.id,p.path,n.line,n.is_test,json_extract(n.details,'$.test_role') AS test_role FROM edges e JOIN json_each(?1) frontier ON {current_hash}=CAST(frontier.value AS INTEGER) JOIN nodes n ON n.node_hash={next_hash} JOIN path_dictionary p ON p.path_id=n.path_id JOIN path_dictionary ep ON ep.path_id=e.path_id WHERE e.kind='calls' GROUP BY {next_hash},{current_hash},ep.path ORDER BY p.path,n.line,n.id,edge_line,edge_path LIMIT {}",
+            "SELECT {next_hash} AS hash,{current_hash} AS parent_hash,min(e.line) AS edge_line,ep.path AS edge_path,n.id,n.name,p.path,n.line,n.is_test,json_extract(n.details,'$.test_role') AS test_role FROM edges e JOIN json_each(?1) frontier ON {current_hash}=CAST(frontier.value AS INTEGER) JOIN nodes n ON n.node_hash={next_hash} JOIN path_dictionary p ON p.path_id=n.path_id JOIN path_dictionary ep ON ep.path_id=e.path_id WHERE e.kind='calls' GROUP BY {next_hash},{current_hash},ep.path ORDER BY p.path,n.line,n.id,edge_line,edge_path LIMIT {}",
             MAX_CALL_GRAPH_EDGES_PER_FRONTIER + 1
         );
         let expanded = reader::rows(
@@ -121,7 +126,9 @@ fn call_paths(
             MAX_CALL_GRAPH_EDGES_PER_FRONTIER + 1,
         )?;
         if expanded.len() > MAX_CALL_GRAPH_EDGES_PER_FRONTIER {
-            bail!("verified test call graph exceeds the per-frontier budget; narrow the selected symbol or path");
+            bail!(
+                "verified test call graph exceeds the per-frontier budget; narrow the selected symbol or path"
+            );
         }
         let mut next_paths: HashMap<i64, (CallNode, CallPath)> = HashMap::new();
         for row in expanded {
@@ -185,7 +192,9 @@ fn call_paths(
             }
         }
         if paths.len().saturating_add(next_paths.len()) > MAX_CALL_GRAPH_NODES {
-            bail!("verified test call graph exceeds the node budget; narrow the selected symbol or path");
+            bail!(
+                "verified test call graph exceeds the node budget; narrow the selected symbol or path"
+            );
         }
         frontier = next_paths.keys().copied().collect();
         frontier.sort_by_key(|hash| {
@@ -204,7 +213,9 @@ fn call_paths(
             paths.insert(hash, path);
         }
         if depth + 1 == MAX_CALL_GRAPH_DEPTH && !frontier.is_empty() {
-            bail!("verified test call graph exceeds the depth budget; narrow the selected symbol or path");
+            bail!(
+                "verified test call graph exceeds the depth budget; narrow the selected symbol or path"
+            );
         }
     }
     Ok((nodes, paths))
@@ -212,6 +223,7 @@ fn call_paths(
 
 fn page_call_nodes(
     conn: &Connection,
+    available_nodes: &HashMap<i64, CallNode>,
     candidates: &[(i64, CallPath)],
     options: &QueryOptions,
     generation: &str,
@@ -237,10 +249,26 @@ fn page_call_nodes(
             .iter()
             .map(|key| key.id.clone())
             .collect::<Vec<_>>();
+        let verified_call_path_nodes = path
+            .hashes
+            .iter()
+            .zip(&path.nodes)
+            .map(|(hash, key)| {
+                let mut node = json!({"id":key.id,"path":key.path,"line":key.line});
+                if let Some(verified) = available_nodes.get(hash) {
+                    node["name"] = json!(verified.name);
+                    if let Some(role) = &verified.test_role {
+                        node["test_role"] = json!(role);
+                    }
+                }
+                node
+            })
+            .collect::<Vec<_>>();
         let direct = path.hashes.len() == 2;
         let mut connection = json!({
             "relation": if direct {"direct"} else {"transitive"},
-            "call_path": call_path
+            "call_path": call_path,
+            "verified_call_path_nodes": verified_call_path_nodes
         });
         if direct {
             connection["edge_kind"] = json!("calls");
@@ -271,7 +299,9 @@ fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> 
     let dependencies = traversal::immediate_links(conn, id, inbound, false)?;
     let immediate = seeds.saturating_add(dependencies);
     if immediate > 1000 {
-        bail!("test mapping from {id} starts with {immediate} direct graph links before its bounded exact-call graph walk. Select a narrower module or symbol; reducing limit alone does not reduce traversal work");
+        bail!(
+            "test mapping from {id} starts with {immediate} direct graph links before its bounded exact-call graph walk. Select a narrower module or symbol; reducing limit alone does not reduce traversal work"
+        );
     }
     Ok(())
 }
@@ -338,6 +368,7 @@ pub(crate) fn tests_paged_with_path(
     });
     let mut nodes = page_call_nodes(
         conn,
+        &available_nodes,
         &candidates,
         options,
         &generation,
@@ -379,7 +410,10 @@ pub(crate) fn tests_paged_with_path(
         if !lexical_query.is_empty() {
             nodes = paging::query(
                 conn,
-                &format!("SELECT {},json_extract(n.details,'$.test_role') AS test_role FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE node_search MATCH ?1 AND n.is_test=1 AND json_extract(n.details,'$.test_role')='test_case' AND f.is_test=1 AND n.kind IN('function','method','class','struct') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")),
+                &format!(
+                    "SELECT {},json_extract(n.details,'$.test_role') AS test_role FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE node_search MATCH ?1 AND n.is_test=1 AND json_extract(n.details,'$.test_role')='test_case' AND f.is_test=1 AND n.kind IN('function','method','class','struct') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),p.path,n.line,n.id",
+                    paging::nodes_with_path("n", options.detail, "p.path")
+                ),
                 &[&lexical_query, &id, &name, &snake],
                 options,
             )?;
@@ -394,7 +428,9 @@ pub(crate) fn tests_paged_with_path(
         }
     }
     let scope_note = if unresolved_count > 0 {
-        format!("indexed static dependencies; {unresolved_count} unresolved reference(s) within symbol scope may conceal dynamic test callers")
+        format!(
+            "indexed static dependencies; {unresolved_count} unresolved reference(s) within symbol scope may conceal dynamic test callers"
+        )
     } else {
         "indexed static dependencies; no unresolved references in symbol scope".to_string()
     };

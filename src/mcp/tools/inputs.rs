@@ -44,6 +44,7 @@ pub struct PageInput {
     /// Worktree path, exact directory name, or unique hyphen-delimited name suffix. Defaults to the server's linked worktree, otherwise one unique active claim or the primary root. Multiple matches require an explicit path/name.
     pub worktree: Option<String>,
     /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
 }
@@ -380,6 +381,7 @@ pub struct Guide {
     /// Whether force applies.
     pub force: bool,
     /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
 }
@@ -394,6 +396,7 @@ pub struct Checkpoint {
     /// Optional content value.
     pub content: Option<Value>,
     /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
 }
@@ -409,6 +412,7 @@ macro_rules! task_input {
             /// The operation's original typed request fields.
             pub request: $inner,
             /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+            #[serde(default)]
             #[schemars(schema_with = "output_format_schema")]
             pub format: Option<OutputFormat>,
         }

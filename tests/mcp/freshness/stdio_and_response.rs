@@ -53,26 +53,255 @@ fn sighup_reloads_replaced_binary_in_same_pid_with_stdio_connected() {
 #[test]
 fn mcp_document_retrieval_and_explain_output_controls() {
     let ws = Workspace::new();
+    ws.write("main.py", "def target(): pass\ndef caller(): target()\n");
     ws.write(
-        "main.rs",
-        "pub fn target() {}\npub fn caller() { target(); }\n",
+        "tests/test_main.py",
+        "from main import target\ndef helper_one(): target()\ndef test_target(): helper_one()\n",
     );
     ws.write(
         "README.md",
         "# Contract\n\nThe `target` function preserves the documented contract.\n",
     );
     let mut client = StdioClient::new(&ws);
-    let document = client.payload("get_doc", json!({"path_or_id":"README.md"}));
-    assert!(document["sections"]["items"][0]["content"]
+    let (_, tests_response) = client.call(
+        "code_map_tests",
+        json!({
+            "selector":"main.py:target",
+            "direction":"inbound",
+            "format":"markdown"
+        }),
+    );
+    assert_ne!(
+        tests_response["result"]["isError"], true,
+        "{tests_response}"
+    );
+    let tests_markdown = tests_response["result"]["content"][0]["text"]
         .as_str()
-        .unwrap()
-        .contains("documented contract"));
+        .expect("Markdown test mapping");
+    let breadcrumb = tests_markdown
+        .split("Verified call path:")
+        .nth(1)
+        .expect("verified test-to-target path");
+    let test_case = breadcrumb.find("test_target").expect("case node");
+    let helper = breadcrumb.find("helper_one").expect("helper node");
+    let target = breadcrumb.rfind("target").expect("target node");
+    assert!(test_case < helper && helper < target, "{breadcrumb}");
+    assert!(breadcrumb.contains("test_case"), "{breadcrumb}");
+    assert!(breadcrumb.contains("test_helper"), "{breadcrumb}");
+    assert!(breadcrumb.contains("(target)"), "{breadcrumb}");
+    assert!(
+        breadcrumb.contains("file://") && breadcrumb.contains("#L"),
+        "{breadcrumb}"
+    );
+
+    let cli_markdown_response =
+        std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args(["--root", ws.root().to_str().unwrap()])
+            .args(["query", "tests", "main.py:target"])
+            .output()
+            .unwrap();
+    assert!(
+        cli_markdown_response.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_markdown_response.stderr)
+    );
+    let cli_markdown = String::from_utf8_lossy(&cli_markdown_response.stdout);
+    assert!(
+        cli_markdown.contains("Verified call path:"),
+        "{cli_markdown}"
+    );
+    assert!(
+        cli_markdown.contains("test_case") && cli_markdown.contains("test_helper"),
+        "{cli_markdown}"
+    );
+    assert!(
+        cli_markdown.contains("file://") && cli_markdown.contains("#L"),
+        "{cli_markdown}"
+    );
+
+    let (_, mcp_json_response) = client.call(
+        "code_map_tests",
+        json!({
+            "selector":"main.py:target",
+            "direction":"inbound",
+            "format":"json"
+        }),
+    );
+    assert_ne!(
+        mcp_json_response["result"]["isError"], true,
+        "{mcp_json_response}"
+    );
+    let mcp_json: Value = serde_json::from_str(
+        mcp_json_response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("explicit MCP JSON mapping"),
+    )
+    .unwrap();
+    let cli_json_response =
+        std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            .args(["--root", ws.root().to_str().unwrap(), "--format", "json"])
+            .args(["query", "tests", "main.py:target"])
+            .output()
+            .unwrap();
+    assert!(
+        cli_json_response.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_json_response.stderr)
+    );
+    let cli_json: Value = serde_json::from_slice(&cli_json_response.stdout).unwrap();
+    assert_eq!(
+        cli_json["nodes"]["items"][0]["connection"]["call_path"],
+        mcp_json["nodes"]["items"][0]["connection"]["call_path"]
+    );
+    assert_eq!(
+        cli_json["nodes"]["items"][0]["connection"]["verified_call_path_nodes"],
+        mcp_json["nodes"]["items"][0]["connection"]["verified_call_path_nodes"]
+    );
+    assert_eq!(
+        cli_json["nodes"]["items"][0]["test_role"],
+        mcp_json["nodes"]["items"][0]["test_role"]
+    );
+
+    let document = client.payload("get_doc", json!({"path_or_id":"README.md"}));
+    assert!(
+        document["sections"]["items"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("documented contract")
+    );
     let outline = client.payload(
         "get_doc",
         json!({"path_or_id":"README.md","detail":"compact"}),
     );
     assert!(outline["sections"]["items"][0].get("content").is_none());
     assert_eq!(document["sections"]["total"], outline["sections"]["total"]);
+    let (_, search_markdown) = client.call(
+        "search_docs",
+        json!({"query":"documented contract","include_excerpt":true,"format":"markdown"}),
+    );
+    let search_markdown = search_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    let search_json = client.payload(
+        "search_docs",
+        json!({"query":"documented contract","include_excerpt":true}),
+    );
+    let section = &search_json["sections"]["items"][0];
+    assert_eq!(search_markdown.lines().next(), Some("# search_docs"));
+    assert!(
+        search_markdown.contains("Search results"),
+        "{search_markdown}"
+    );
+    assert!(search_markdown.contains("## Sections"), "{search_markdown}");
+    for field in [
+        "generation",
+        "has_more",
+        "limit",
+        "next_offset",
+        "offset",
+        "total",
+    ] {
+        assert!(
+            search_markdown.contains(&format!("**{field}**:")),
+            "missing sections page field {field}: {search_markdown}"
+        );
+    }
+    for token in [
+        "**has_more**: `false`",
+        "**limit**: `30`",
+        "**next_offset**: `null`",
+        "**offset**: `0`",
+        "**total**: `1`",
+    ] {
+        assert!(
+            search_markdown.contains(token),
+            "missing exact search page token {token}: {search_markdown}"
+        );
+    }
+    for field in [
+        "doc_id",
+        "doc_type",
+        "is_invariant",
+        "rank",
+        "section_title",
+        "size",
+    ] {
+        assert!(
+            search_markdown.contains(&format!("**{field}**:")),
+            "missing search section field {field}: {search_markdown}"
+        );
+    }
+    let section_title = section["section_title"].as_str().unwrap();
+    assert!(
+        search_markdown.contains(&format!("### {section_title}")),
+        "{search_markdown}"
+    );
+    assert!(
+        search_markdown.contains("Match excerpt"),
+        "{search_markdown}"
+    );
+    for field in ["doc_type", "is_invariant", "section_title"] {
+        let value = section.get(field).expect("canonical search section field");
+        let value = serde_json::to_string(value).unwrap();
+        let token = format!("**{field}**: `{value}`");
+        assert!(
+            search_markdown.contains(&token),
+            "missing JSON-derived section token {token}: {search_markdown}"
+        );
+    }
+    assert!(search_markdown.contains(
+        "# [Contract]\n\nThe `target` function preserves the [documented] [contract]."
+    ), "{search_markdown}");
+    assert!(
+        search_markdown.contains("[README.md](file://"),
+        "search excerpt has a workspace-resolved URI: {search_markdown}"
+    );
+    let (_, full_markdown) = client.call(
+        "get_doc",
+        json!({"path_or_id":"README.md","format":"markdown"}),
+    );
+    let full_markdown = full_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(full_markdown.contains("Document sections"));
+    assert!(full_markdown.contains("Source Markdown"));
+    assert!(full_markdown.contains("documented contract"));
+    assert!(full_markdown.contains("[README.md](file://"));
+    let (_, outline_markdown) = client.call(
+        "get_doc",
+        json!({"path_or_id":"README.md","detail":"compact","format":"markdown"}),
+    );
+    let outline_markdown = outline_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(outline_markdown.contains("Document sections"));
+    assert!(!outline_markdown.contains("Source Markdown"));
+    ws.write(
+        "README.md",
+        "# Contract\n\nThe `target` function preserves the documented contract.\nFreshly refreshed documentation evidence.\n",
+    );
+    invalidate_mcp_connection_cache(&ws.db()).unwrap();
+    let (_, refreshed_markdown) = client.call(
+        "get_doc",
+        json!({"path_or_id":"README.md","format":"markdown"}),
+    );
+    let refreshed_markdown = refreshed_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(refreshed_markdown.contains("Freshly refreshed documentation evidence."));
+    for token in [
+        "- **freshness**\n",
+        "  - **corpus_hash**:",
+        "  - **files_checked**:",
+        "  - **output_root**:",
+        "  - **refresh**: `\"delta\"`",
+        "  - **status**: `\"source_inventory_matched\"`",
+    ] {
+        assert!(
+            refreshed_markdown.contains(token),
+            "missing source-admitted freshness token {token}: {refreshed_markdown}"
+        );
+    }
     let mut explain = |arguments: Value| client.payload("code_map_explain", arguments);
     let with_docs = explain(json!({"selector":"target"}));
     assert!(with_docs["documents"]["total"].as_u64().unwrap() > 0);
@@ -148,17 +377,21 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         ["docs/rules.md", "docs/extra.md"].into_iter().collect()
     );
     let reciprocal = client.payload("get_doc", json!({"path_or_id":"docs/rules.md","limit":100}));
-    assert!(reciprocal["cited_by_doc"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|section| section["path"] == "docs/guide.md"));
+    assert!(
+        reciprocal["cited_by_doc"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|section| section["path"] == "docs/guide.md")
+    );
     let edges = client.payload("code_map_analyze", json!({"target":"SELECT e.kind,p.path,e.line FROM edges e JOIN path_dictionary p ON p.path_id=e.path_id WHERE e.kind IN('cites_doc','cited_by_doc') AND p.path='docs/guide.md' ORDER BY e.kind,e.line","limit":100}));
-    assert!(edges["rows"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|edge| edge["kind"] == "cites_doc" && edge["line"] == 6));
+    assert!(
+        edges["rows"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["kind"] == "cites_doc" && edge["line"] == 6)
+    );
 
     for (path, doc_type, status) in [
         ("AGENTS.md", "guide", Value::Null),
@@ -177,20 +410,24 @@ fn mcp_document_retrieval_and_explain_output_controls() {
             section["status"], status,
             "unspecified is not accepted: {section}"
         );
-        assert!(document["referenced_symbols"]["items"]
+        assert!(
+            document["referenced_symbols"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs")
+        );
+    }
+    let invariant_nodes = client.payload("code_map_analyze", json!({"target":"SELECT n.name,p.path,n.line FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='invariant' ORDER BY n.name,p.path,n.line","limit":100}));
+    assert!(
+        invariant_nodes["rows"]["items"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs"));
-    }
-    let invariant_nodes = client.payload("code_map_analyze", json!({"target":"SELECT n.name,p.path,n.line FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='invariant' ORDER BY n.name,p.path,n.line","limit":100}));
-    assert!(invariant_nodes["rows"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|node| node["name"] == "INV-PLAN"
-            && node["path"] == "docs/plans/proposed.md"
-            && node["line"] == 7));
+            .any(|node| node["name"] == "INV-PLAN"
+                && node["path"] == "docs/plans/proposed.md"
+                && node["line"] == 7)
+    );
     let governance = client.payload("code_map_analyze", json!({"target":"SELECT e.kind,s.name source_name,t.name target_name,p.path,e.line FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes t ON t.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=e.path_id WHERE e.kind IN('governs','governed_by') ORDER BY e.kind,s.name,t.name","limit":100}));
     let governance = governance["rows"]["items"].as_array().unwrap();
     for (kind, source, target) in [
@@ -260,11 +497,13 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         } else {
             "affected_docs"
         }];
-        assert!(docs["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|doc| doc["path"] == "docs/rules.md"));
+        assert!(
+            docs["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|doc| doc["path"] == "docs/rules.md")
+        );
         if tool == "code_map_inspect" {
             let (_, response) = client.call(tool, json!({"selector":"src/main.rs:target","limit":100,"show_source":false,"format":"markdown"}));
             assert_ne!(response["result"]["isError"], true, "{response}");
@@ -313,6 +552,60 @@ fn mcp_document_retrieval_and_explain_output_controls() {
             assert!(!markdown.contains("INV-DEEP"));
         }
     }
+
+    let (_, explain_markdown_response) = client.call(
+        "code_map_explain",
+        json!({
+            "selector":"src/main.rs:target",
+            "direction":"incoming",
+            "format":"markdown",
+            "limit":100
+        }),
+    );
+    assert_ne!(
+        explain_markdown_response["result"]["isError"], true,
+        "{explain_markdown_response}"
+    );
+    let explain_markdown = explain_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("Markdown explain response");
+    assert!(
+        explain_markdown.contains("[proven call]"),
+        "{explain_markdown}"
+    );
+    assert!(
+        explain_markdown.contains("src/main.rs:2"),
+        "{explain_markdown}"
+    );
+
+    let (_, impact_markdown_response) = client.call(
+        "code_map_impact",
+        json!({
+            "selector":"src/main.rs:target",
+            "depth":1,
+            "format":"markdown",
+            "limit":100
+        }),
+    );
+    assert_ne!(
+        impact_markdown_response["result"]["isError"], true,
+        "{impact_markdown_response}"
+    );
+    let impact_markdown = impact_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("Markdown impact response");
+    assert!(
+        impact_markdown.contains("[proven call]"),
+        "{impact_markdown}"
+    );
+    assert!(
+        impact_markdown.contains("src/main.rs:2"),
+        "{impact_markdown}"
+    );
+    assert!(
+        impact_markdown.contains("> [!IMPORTANT] Governing Invariants"),
+        "{impact_markdown}"
+    );
 
     let inspect_arguments = json!({
         "selector":"documented",
@@ -367,21 +660,25 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         .iter()
         .find(|item| item["path"] == "docs/allowed/inspect.md")
         .expect("linked inspect document");
-    assert!(document["content"]
-        .as_str()
-        .expect("full document content")
-        .contains("Unique full inspect document content"));
+    assert!(
+        document["content"]
+            .as_str()
+            .expect("full document content")
+            .contains("Unique full inspect document content")
+    );
 
     let coverage = &inspected["coverage"];
     assert_eq!(
         coverage["has_more"], false,
         "coverage page should be complete: {coverage}"
     );
-    assert!(coverage["items"]
-        .as_array()
-        .expect("full coverage page")
-        .iter()
-        .any(|item| item["expression"] == "helper" && item["status"] == "resolved"));
+    assert!(
+        coverage["items"]
+            .as_array()
+            .expect("full coverage page")
+            .iter()
+            .any(|item| item["expression"] == "helper" && item["status"] == "resolved")
+    );
     let resolved_total = coverage["statuses"]
         .as_array()
         .expect("scope-wide coverage statuses")
@@ -405,10 +702,12 @@ fn mcp_document_retrieval_and_explain_output_controls() {
             .expect("empty coverage-page JSON response"),
     )
     .expect("empty coverage-page JSON payload");
-    assert!(coverage_tail_json["coverage"]["items"]
-        .as_array()
-        .expect("empty coverage tail")
-        .is_empty());
+    assert!(
+        coverage_tail_json["coverage"]["items"]
+            .as_array()
+            .expect("empty coverage tail")
+            .is_empty()
+    );
     assert_eq!(
         coverage_tail_json["coverage"]["statuses"],
         coverage["statuses"]
@@ -596,11 +895,13 @@ fn mcp_document_retrieval_and_explain_output_controls() {
     );
     let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
     for response in [&cli, &expected] {
-        assert!(response["referenced_symbols"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs"));
+        assert!(
+            response["referenced_symbols"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|symbol| symbol["name"] == "target" && symbol["path"] == "src/main.rs")
+        );
     }
     assert_eq!(
         cli["referenced_symbols"]["total"],
@@ -612,12 +913,16 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         json!({"target":"docs/guide.md","limit":100}),
     );
     let diagnostics = broken["doc_diagnostics"]["items"].as_array().unwrap();
-    assert!(diagnostics
-        .iter()
-        .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 8));
-    assert!(diagnostics
-        .iter()
-        .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 9));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 8)
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|item| item["kind"] == "broken_doc_link" && item["line"] == 9)
+    );
     ws.write("src/main.rs", "// shifted\n// still a valid source range\npub fn target() {}\npub fn caller() { target(); }\npub fn grandcaller() { caller(); }\n");
     ws.delta(&["src/main.rs"]);
     invalidate_mcp_connection_cache(&ws.db()).unwrap();
@@ -654,11 +959,13 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         "code_map_analyze",
         json!({"target":"docs/range.md","limit":100}),
     );
-    assert!(!clear["doc_diagnostics"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|item| item["kind"] == "stale_doc_sections"));
+    assert!(
+        !clear["doc_diagnostics"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "stale_doc_sections")
+    );
     ws.write("src/main.rs", "pub fn target_renamed() {}\npub fn caller() { target_renamed(); }\npub fn grandcaller() { caller(); }\n");
     ws.delta(&["src/main.rs"]);
     invalidate_mcp_connection_cache(&ws.db()).unwrap();
@@ -948,6 +1255,32 @@ fn mcp_document_retrieval_and_explain_output_controls() {
             "candidate continuation requires the normal snapshot generation: {first_candidate}"
         ));
     }
+    let candidate_generation = first_candidate["referenced_symbol_candidates"]["generation"]
+        .as_str()
+        .unwrap();
+    let (_, candidate_markdown) = identity_client.call(
+        "get_doc",
+        json!({"path_or_id":"[library]/docs/header.md","section":"Header","detail":"full","limit":1,"format":"markdown"}),
+    );
+    let candidate_markdown = candidate_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        candidate_markdown.contains("Ambiguous symbol candidates (navigation only; unverified)")
+    );
+    assert!(candidate_markdown.contains("Verified document citations"));
+    assert!(candidate_markdown.contains("Verified incoming document citations"));
+    assert!(candidate_markdown.contains("Verified referenced symbols"));
+    assert!(candidate_markdown.contains("Claim source"));
+    assert!(candidate_markdown.contains("Possible target"));
+    assert!(candidate_markdown.contains(candidate_generation));
+    assert!(candidate_markdown.contains("**next_offset**: `1`"));
+    assert!(candidate_markdown.contains("**has_more**: `true`"));
+    assert!(
+        candidate_markdown.contains("[\\[library\\]/docs/header.md](file://")
+            && candidate_markdown.contains("[\\[library\\]/frontend/header.ts](file://"),
+        "candidate source and target links resolve against their linked roots: {candidate_markdown}"
+    );
     let stale_candidate_page = identity_client.request_value("tools/call", json!({"name":"get_doc","arguments":{"path_or_id":"[library]/docs/header.md","section":"Header","detail":"full","limit":1,"offset":1,"generation":"stale-candidate-generation"}}));
     assert_eq!(
         stale_candidate_page["result"]["isError"], true,

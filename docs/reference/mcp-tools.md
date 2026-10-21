@@ -29,6 +29,15 @@ the operation runs, including checkpoint writes. Formatting does not change quer
 scope, pagination, task evidence, or saved checkpoint content. SQL rows and
 checkpoint values remain opaque user data.
 
+Markdown blackboard reads group the returned page by topic while keeping the
+page's newest-first order within each group. Blockers use a caution callout that
+retains their identity and available metadata; payload-free summaries show the
+exact inspect request. Topic grouping creates no reply or resolution state.
+
+Task tools use the dedicated lifecycle layout: summaries retain dependencies and
+actual statuses, while claims and contexts preserve active guidance and available
+evidence. See the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
+
 ## Tools
 
 | Tool | Purpose and main input |
@@ -39,7 +48,7 @@ checkpoint values remain opaque user data.
 | `get_code_snippet` | Read indexed source around a `selector` with `leading_lines` and `max_body_lines` bounds. |
 | `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; edge rows include both public endpoint IDs and direction relative to the selected node. Full detail also includes stored edge evidence. |
 | `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`, or analyze one Git change view (`staged`, `unstaged`, or `head`); provide exactly one of `selector` and `changes`. Selector results also page affected documentation and governing invariants. Depth defaults to one edge. |
-| `code_map_tests` | Find test relationships for a narrow `selector`; `direction` accepts `inbound` or `outbound`. Inbound results identify verified test cases and shortest exact `calls` paths, with a bounded lexical fallback when no call path exists. Outbound results follow exact `calls` edges. Results classify test cases, helpers, and fixtures; `possible_calls` do not establish coverage. |
+| `code_map_tests` | Find test relationships for a narrow `selector`; `direction` accepts `inbound` or `outbound`. Inbound results identify verified test cases and shortest exact `calls` paths, with a bounded lexical fallback when no call path exists. Markdown links graph-backed paths in producer order and shows only producer-supplied test roles. Outbound results follow exact `calls` edges. Results classify test cases, helpers, and fixtures; `possible_calls` do not establish coverage. |
 | `code_map_prove_removal` | Estimate what a `selector` removal could affect; structural evidence, not a proof of runtime safety. |
 | `code_map_query` | Route an `operation` to graph queries or paged read-only SQL (`operation="sql"`). |
 | `code_map_analyze` | Read workspace or path diagnostics and paged declared-public production symbols not reached from an indexed test case through exact `calls`; exact-file diagnostic rows include a source snippet and a reason when persisted evidence identifies one. Exact Markdown paths can also return paged `doc_diagnostics` for broken links, stale source ranges, and dead symbol claims. Request stored syntax diagnostics with `lint:true` or opt into cycle analysis with `include_cycles`. |
@@ -103,6 +112,13 @@ Depth is limited to 16. A deep traversal whose first frontier exceeds 1,000 link
 
 `calls` edges identify exact indexed calls. `possible_calls` edges identify bounded local branch-join targets and carry confidence `possible`; candidate sets contain at most eight declarations, and overflow is recorded as incomplete coverage. Explain pages preserve the edge kind and paging fields such as `has_more` and `next_offset`. Inbound impact follows `possible_calls`, and removal analysis lists a possible caller as an incoming dependency that blocks `safe_to_remove`.
 
+Markdown traversal output preserves that distinction: explain marks only exact
+`calls` edges as proven and labels `possible_calls` as candidates; deeper impact
+paths retain their supplied `via` evidence without invented call-site locations.
+Graph-backed test paths render as ordered, linked case-to-helper-to-target
+breadcrumbs. Lexical suggestions remain explicitly unverified and have no graph
+breadcrumb. JSON continues to return the structured semantic result.
+
 For Python `from package import child`, a unique indexed child module contributes an import edge to that module and can resolve calls through its alias. A package can also expose a symbol through one explicit relative import in `__init__.py`; the graph links that import to the indexed declaration. When matching `.py` and `.pyi` modules exist, imports select the runtime `.py` module. If its indexed declarations omit a symbol, the matching type stub can supply that declaration; call evidence identifies the stub target. Other multiple child candidates remain ambiguous.
 
 `code_map_analyze` groups unresolved references by recorded resolver cause and counts affected files. It also groups parse error records by language and affected files, and pages `untested_public_surface` by the requested path scope. A call through a proven external import has status `external` and contributes to `external_imports` instead of unresolved coverage. Use an exact indexed file as `target` to page individual locations; `detail="full"` includes the underlying resolver evidence. Test coverage is based only on exact `calls` paths from `test_case` roots; ambiguous `possible_calls`, helpers, fixtures, and lexical fallback suggestions do not remove a declared-public symbol from the untested page.
@@ -148,6 +164,11 @@ Unsupported fragments and invalid syntax produce an MCP tool error with the diag
 
 ## SQL and checkpoints
 
+Markdown checkpoint lists show the returned names and serialized byte sizes;
+save and delete display the actual action and name. Get preserves the stored JSON
+value losslessly and does not interpret user fields such as `generation`,
+`freshness`, or `items` as Forge metadata.
+
 `code_map_query(operation="sql")` accepts exactly one `SELECT` or `WITH` statement. The connection is read-only, and write or administrative SQL is rejected. It has a query time budget; large result sets should be paged. For structural cycle analysis, use `code_map_analyze` with `include_cycles=true`. Cycles are static graph findings.
 
 A checkpoint saves a JSON value under a local name in `.forge/checkpoints.json`. `save` needs both a name and valid JSON content. `list` returns each name with its serialized JSON byte size; `get` loads the value. Names are 1–200 UTF-8 bytes and cannot contain `..`, `/`, `\`, or a NUL byte. Values are limited to 1 MiB. A checkpoint is local session data, not part of the source index.
@@ -165,6 +186,13 @@ Results include a rule ID, severity, language, path, line, and message, with pag
 Syntax lint mode does not execute cycle analysis. Use `code_map_query` for custom SQL or a separate `code_map_analyze` request for cycles. Ruff, Clippy, application-specific rules, and automatic fixes are outside this mode.
 
 ## Documentation queries
+
+Markdown search and document results render the actual sections, excerpts when
+requested, and selected detail. A path link appears only after the selected
+primary or linked workspace root resolves that path. Preserve each returned
+collection's page metadata independently. Keep verified document citations,
+referenced symbols, and invariant metadata separate from ambiguous candidates;
+candidates are navigation, not verified references or governance edges.
 
 Markdown and MDX in admitted roots are indexed as documents, including repository `AGENTS.md` files and configured milestone and plan documents. Optional frontmatter `doc_type`, `title`, and `status` describe a section; missing status stays unspecified. Natural-language searches ignore common English stop words and match a section when any remaining term appears. Section-title matches receive three times the BM25 weight of body and invariant text. A query containing only stop words returns an empty result page. `get_doc` addresses the document path and an exact heading section; a missing path or section is an error. Its default MCP response includes section content and line bounds. Set `detail="compact"` explicitly for a section outline without content; `search_docs` keeps compact discovery results by default. Set `include_excerpt=true` to add a short excerpt centered on a search match.
 
