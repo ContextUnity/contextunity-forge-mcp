@@ -144,21 +144,71 @@ receipt:
 
 ```yaml
 task_ref: resolve-diagnostic-scope-ambiguity
-target: "Fail unindexed diagnostic targets and unsupported overview aspects without treating indexed empty results as missing"
+target: Fail unindexed diagnostic targets and unsupported overview aspects without treating indexed empty results as missing
 proof_policy: seam-test-first
 contract_revision: 4
 depends_on:
-  - preserve-read-only-sql-results
+- preserve-read-only-sql-results
 scope:
-  - src/db/reader.rs
-  - src/db/lint.rs
-  - src/mcp/tools/inputs.rs
-  - tests/query_context/diagnostics_and_source.rs
-  - tests/mcp/lint_tools.rs
-  - docs/reference/mcp-tools.md
+- src/db/reader.rs
+- src/db/lint.rs
+- src/mcp/tools/inputs.rs
+- tests/query_context/diagnostics_and_source.rs
+- tests/mcp/lint_tools.rs
+- docs/reference/mcp-tools.md
 invariants:
-  - "DIAGNOSTIC-SCOPE-TRUTH: PATH_NOT_INDEXED means the path is outside the indexed inventory. Zero totals mean the indexed scope has no matching rows."
-status: planned
+- 'DIAGNOSTIC-SCOPE-TRUTH: PATH_NOT_INDEXED means the path is outside the indexed inventory. Zero totals mean the indexed scope has no matching rows.'
+status: completed
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-21T17:49:37.030388171+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test query_context && cargo test --test mcp
+      exit_code: 0
+      tests_passed: 134
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. Snapshot 49fac563fb846db3960e125142352511840857d2 against base b4562f32c18d5b75926a9ca6f007763f9d1e1ad5. The six admitted paths' git diff --binary SHA-256 is 1425c80ab3bcf16af50e9845233c45a1985d13d49d86db4c92dfb94e4080d88b, matching build note 900 before and after checks. Pre-existing lifecycle/tasks/workspaces edits and sibling tests/acdd/mcp red-test changes are outside scope and untouched; no config/profile paths changed.
+        claims:
+          applicable: true
+          evidence: 'PASS. analyze_paged classifies SQL before its indexed-path check; empty workspace, PATH_NOT_INDEXED, diagnostics/cycles mode errors, indexed exact-file zero totals and file-local continuation satisfy the contract. syntax_paged checks inventory before compiled-source availability and retains README''s compiled-profile error. Overview rejects unknown values with all 11 accepted names; omitted/empty defaults and cycles opt-in persist. The four adapter-owned aspects remain accepted and are still composed in src/cli/mod.rs, per decision #894. MCP and CLI parity is exercised.'
+        concurrency:
+          applicable: true
+          evidence: PASS. The change adds read-only inventory checks and does not mutate shared database/task/receipt state. Generation, pagination, and snapshot admission paths are unchanged. The stored lint seam verifies database bytes remain unchanged.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Production calls use the selected workspace connection and indexed file inventory; MCP and CLI seams use temporary Workspace fixtures. SQL classification precedes path validation, and lint retains workspace-relative path guards. No linked-workspace/profile resolution or cross-project behavior changed.
+        administration:
+          applicable: true
+          evidence: PASS. No schema, migration, profile/configuration, credentials, or delivery-policy files changed. The candidate is bound to base b4562f3; delivery and receipt are deferred to Forge's atomic task-submit path.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SINGLE-DOCUMENT-PROJECTION: Symbol inspection exposes one documentation page per cited section, with doc_id, path, section title, document type, citation line, and a resolved file:/// URI. Explain keeps its own documents page and does not grow a second inspect projection.'
+    - 'INV-COMPACT-DOC-HINT-ONCE: A compact get_doc response emits each omitted-detail hint once. Referenced-symbol rows keep the citing section and citation line. Full detail still returns candidate evidence.'
+    - 'INV-NARROWEST-NAVIGATION: Agent guidance selects the narrowest useful tool, reuses sufficient previews, and passes worktree when the server root is not the checkout being edited.'
+    - 'INV-RESPONSE-CONTRACT-PRESERVATION: Deduplication preserves pagination, generation validation, detail-level behavior, response budgets, exact evidence, and CLI/MCP parity.'
+    - 'INV-READ-ONLY-SQL-FIDELITY: Opaque user SQL keeps literals, comments, trailing semicolons of one statement, requested columns, and SQLite text. Structural graph rows keep parsed details and stripped internal ids. Writes and multiple statements stay rejected.'
+    - 'INV-TASK-PRESENTATION-DEDUPLICATION: Inspect Markdown uses the task-record heading and renders equal scope, target, proof policy, and task invariants once. A fixture with those repeated fields is smaller in Markdown than in JSON. The contract digest hash is omitted from task responses. Revisions, receipts, gates, attempts, and findings stay visible.'
+    - 'INV-EXPLICIT-DIAGNOSTIC-SCOPE: An unindexed analyze or lint target fails with PATH_NOT_INDEXED. An indexed scope with zero diagnostics stays success. The diagnostics and cycles mode errors stay specific. Unsupported overview aspects fail with the allowed set.'
+    - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Presentation attachment resolves a workspace path before file_uri_for_path. A resolvable coordinate is a file:/// link. Markdown omits the (link unavailable) fallback.'
+    - 'DIAGNOSTIC-SCOPE-TRUTH: PATH_NOT_INDEXED means the path is outside the indexed inventory. Zero totals mean the indexed scope has no matching rows.'
+    architectural_notes:
+    - 'decisions: Compatibility reconciliation: acceptance5 names seven database overview aspects, but does not authorize removing adapter-owned discovery aspects already supported by src/cli/mod.rs::discovery::includes_discovery (lines60-73): discovery,manifest_components,documentation_hubs,milestones (components shared). INV-RESPONSE-CONTRACT-PRESERVATION governs this live consumer; do not rewrite the existing freshness regression or change scanner ownership. Keep these existing discovery aspect names valid through reader validation, without adding new behavior or moving composition into DB. Unsupported truly unknown aspects must still fail and list all valid names (including the required seven database names). Implement minimally within reader.rs/inputs.rs/docs already admitted; add additive case coverage to in-scope existing test if needed. No src/cli/mod.rs or freshness test edits required. Source trace: MCP overview -> adapter discovery::overview passes unchanged aspects -> reader::overview_with_options validates -> adapter includes_discovery composes existing evidence. Classified regression: new validation rejected existing supported discovery names. Mutation matrix: remove any discovery name -> existing freshness/new additive cases fail; permit unknown -> new unsupported tests fail; default/empty -> opt-in cycle preservation tests. Clippy sibling needless_as_bytes routed to dedup owner; wait for stable sibling before final gates. No acceptance/perimeter change, contract revision4 unchanged.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

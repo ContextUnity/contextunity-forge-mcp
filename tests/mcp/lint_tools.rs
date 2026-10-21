@@ -1,10 +1,13 @@
-use crate::common::{mcp_client::StdioClient, Workspace};
+use crate::common::{
+    Workspace,
+    mcp_client::{StdioClient, run_cli, run_cli_json},
+};
 use contextunity_forge_mcp::{
     core::response::{QueryOptions, ResponsePolicy},
     db::lint,
     engine::languages,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs};
 
 fn populate(workspace: &Workspace) -> BTreeSet<String> {
@@ -90,6 +93,28 @@ fn stored_syntax_lint_covers_compiled_profiles_without_mutating_index() {
             "{target}"
         );
     }
+    let missing = lint::syntax_paged(&conn, "nonexistent.rs", &options)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        missing,
+        "PATH_NOT_INDEXED: 'nonexistent.rs' was not found in the indexed inventory"
+    );
+    let error = lint::syntax_paged(&conn, "README.md", &options)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("no indexed source files with a compiled language profile"),
+        "{error}"
+    );
+    assert!(!error.contains("PATH_NOT_INDEXED"), "{error}");
+    let unindexed = lint::syntax_paged(&conn, "ignored.unknown", &options)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        unindexed,
+        "PATH_NOT_INDEXED: 'ignored.unknown' was not found in the indexed inventory"
+    );
     assert_eq!(fs::read(workspace.db()).unwrap(), before);
 }
 
@@ -132,7 +157,39 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
     if populate(&workspace).is_empty() {
         return;
     }
+    workspace.write("clean.py", "def clean(): return 1\n");
     let mut client = StdioClient::new(&workspace);
+    let default_overview = client.payload("code_map_overview", json!({}));
+    let empty_aspect_overview = client.payload("code_map_overview", json!({"aspects":[]}));
+    for aspect in [
+        "components",
+        "counts",
+        "languages",
+        "coverage_by_workspace",
+        "compiled_profiles",
+        "metadata",
+        "discovery",
+    ] {
+        assert_eq!(
+            empty_aspect_overview[aspect], default_overview[aspect],
+            "aspect {aspect}"
+        );
+    }
+    assert!(default_overview.get("cycles").is_none());
+    assert!(empty_aspect_overview.get("cycles").is_none());
+    for (aspect, expected_facet) in [
+        ("discovery", "workspace_root"),
+        ("manifest_components", "manifest_components"),
+        ("documentation_hubs", "documentation_hubs"),
+        ("milestones", "active_milestones"),
+    ] {
+        let overview = client.payload("code_map_overview", json!({"aspects":[aspect]}));
+        assert!(
+            overview["discovery"].get(expected_facet).is_some(),
+            "supported discovery aspect {aspect} omitted {expected_facet}: {overview}"
+        );
+    }
+
     let normal = analyze_payload(&mut client, json!({"target":""}));
     assert!(normal.get("mode").is_none());
     let first = analyze_payload(&mut client, json!({"target":"","lint":true,"limit":1}));
@@ -177,4 +234,106 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
         json!({"target":"SELECT count(*) AS total FROM nodes"}),
     );
     assert!(sql["rows"]["items"][0]["total"].as_u64().unwrap() > 0);
+
+    let mcp_clean = analyze_payload(&mut client, json!({"target":"clean.py"}));
+    let cli_clean = run_cli_json(&workspace, &["query", "analyze", "clean.py"]);
+    assert!(
+        cli_clean.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_clean.stderr)
+    );
+    let cli_clean: Value = serde_json::from_slice(&cli_clean.stdout).unwrap();
+    for field in [
+        "scope",
+        "total_errors",
+        "total_unresolved",
+        "total_external_imports",
+    ] {
+        assert_eq!(mcp_clean[field], cli_clean[field], "field {field}");
+    }
+    for page in ["errors", "resolution", "external_imports"] {
+        assert_eq!(mcp_clean[page]["total"], cli_clean[page]["total"]);
+        assert_eq!(mcp_clean[page]["items"], cli_clean[page]["items"]);
+    }
+    assert_eq!(mcp_clean["scope"], "file");
+    assert_eq!(mcp_clean["total_errors"], 0);
+    assert_eq!(mcp_clean["total_unresolved"], 0);
+    assert_eq!(mcp_clean["total_external_imports"], 0);
+    assert!(mcp_clean.get("top_files").is_none());
+    assert!(cli_clean.get("top_files").is_none());
+
+    for mode in ["diagnostics", "cycles"] {
+        let expected_mode_error =
+            format!("analysis target '{mode}' is interpreted as a path, not an analysis mode");
+        let (_, mcp_mode_error) = client.call("code_map_analyze", json!({"target":mode}));
+        assert_eq!(
+            mcp_mode_error["result"]["isError"], true,
+            "{mcp_mode_error}"
+        );
+        assert!(
+            mcp_mode_error.to_string().contains(&expected_mode_error),
+            "{mcp_mode_error}"
+        );
+
+        let cli_mode_error = run_cli(&workspace, &["query", "analyze", mode]);
+        let cli_mode_stderr = String::from_utf8_lossy(&cli_mode_error.stderr);
+        assert!(!cli_mode_error.status.success(), "{cli_mode_stderr}");
+        assert!(
+            cli_mode_stderr.contains(&expected_mode_error),
+            "{cli_mode_stderr}"
+        );
+    }
+
+    let expected_missing =
+        "PATH_NOT_INDEXED: 'nonexistent.rs' was not found in the indexed inventory";
+    let (_, missing_analyze) = client.call("code_map_analyze", json!({"target":"nonexistent.rs"}));
+    let cli_missing = run_cli(&workspace, &["query", "analyze", "nonexistent.rs"]);
+    let cli_missing_stderr = String::from_utf8_lossy(&cli_missing.stderr);
+    assert!(
+        missing_analyze["result"]["isError"] == true && !cli_missing.status.success(),
+        "MCP: {missing_analyze}; CLI: {cli_missing_stderr}"
+    );
+    assert!(
+        missing_analyze.to_string().contains(expected_missing)
+            && cli_missing_stderr.contains(expected_missing),
+        "MCP: {missing_analyze}; CLI: {cli_missing_stderr}"
+    );
+
+    let missing_lint = analyze_call(&mut client, json!({"target":"nonexistent.rs","lint":true}));
+    assert_eq!(missing_lint["result"]["isError"], true, "{missing_lint}");
+    assert!(
+        missing_lint.to_string().contains(expected_missing),
+        "{missing_lint}"
+    );
+
+    let clean_lint = analyze_payload(&mut client, json!({"target":"clean.py","lint":true}));
+    assert_eq!(clean_lint["mode"], "lint");
+    assert_eq!(clean_lint["status"], "no_stored_syntax_diagnostics");
+    assert_eq!(clean_lint["diagnostics"]["total"], 0);
+
+    let unsupported_aspect = client
+        .call("code_map_overview", json!({"aspects":["unsupported"]}))
+        .1;
+    assert_eq!(
+        unsupported_aspect["result"]["isError"], true,
+        "{unsupported_aspect}"
+    );
+    for aspect in [
+        "counts",
+        "components",
+        "languages",
+        "coverage_by_workspace",
+        "cycles",
+        "compiled_profiles",
+        "metadata",
+        "discovery",
+        "manifest_components",
+        "documentation_hubs",
+        "milestones",
+    ] {
+        assert!(
+            unsupported_aspect.to_string().contains(aspect),
+            "missing allowed overview aspect {aspect}: {unsupported_aspect}"
+        );
+    }
 }

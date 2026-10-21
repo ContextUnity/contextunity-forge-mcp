@@ -23,6 +23,19 @@ pub(crate) use selectors::{select_detail, select_detail_with_path};
 const MAX_SQLITE_VALUE_BYTES: i32 = 8 * 1024 * 1024;
 const MAX_QUERY_RESULT_BYTES: usize = MAX_SQLITE_VALUE_BYTES as usize;
 const QUERY_RESULT_TOO_LARGE: &str = "query result exceeds the 8 MiB row budget; narrow the selector or path, request detail='compact' with a smaller limit, or select fewer and smaller SQL columns. Continue paged requests with the returned offset and generation";
+const VALID_OVERVIEW_ASPECTS: [&str; 11] = [
+    "counts",
+    "components",
+    "languages",
+    "coverage_by_workspace",
+    "cycles",
+    "compiled_profiles",
+    "metadata",
+    "discovery",
+    "manifest_components",
+    "documentation_hubs",
+    "milestones",
+];
 
 /// A selector failure that callers can handle without parsing diagnostic text.
 #[derive(Debug)]
@@ -669,6 +682,16 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     let aspects = request.aspects;
     let options = request.page;
     let generation = paging::generation(conn, options)?;
+    if let Some(aspect) = aspects.unwrap_or_default().iter().find(|aspect| {
+        !VALID_OVERVIEW_ASPECTS
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(aspect))
+    }) {
+        bail!(
+            "unsupported overview aspect '{aspect}'; allowed aspects: {}",
+            VALID_OVERVIEW_ASPECTS.join(", ")
+        );
+    }
     let has_aspect = |name: &str| -> bool {
         match aspects {
             None => name != "cycles",
@@ -1707,6 +1730,9 @@ pub fn analyze_paged(
         .any(|keyword| first.eq_ignore_ascii_case(keyword))
     {
         bail!("write or administrative SQL is not allowed");
+    }
+    if !indexed_path {
+        bail!("PATH_NOT_INDEXED: '{path}' was not found in the indexed inventory");
     }
     let params: &[&dyn rusqlite::ToSql] = &[&path, &prefix, &end];
     let scope = "(?1='' OR path=?1 OR (path>=?2 AND path<?3))";

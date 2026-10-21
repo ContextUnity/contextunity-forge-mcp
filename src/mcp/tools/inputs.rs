@@ -66,7 +66,7 @@ impl PageInput {
 #[derive(Default, Deserialize, JsonSchema)]
 /// Represents overview input data.
 pub struct OverviewInput {
-    /// Optional aspects to include: 'counts', 'components', 'languages', 'coverage_by_workspace', 'cycles', 'compiled_profiles', 'metadata'. If omitted, all standard aspects are included.
+    /// Optional database aspects: 'counts', 'components', 'languages', 'coverage_by_workspace', 'cycles', 'compiled_profiles', or 'metadata'. The discovery adapter also accepts 'discovery', 'manifest_components', 'documentation_hubs', and 'milestones'. An omitted or empty list selects every database aspect except 'cycles' and includes discovery; unsupported values report all accepted names.
     pub aspects: Option<Vec<String>>,
     #[serde(flatten)]
     /// The page value.

@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn diagnostics_summarize_directories_and_page_exact_files() {
     let workspace = Workspace::new();
+    workspace.write("pkg/clean.py", "def clean(): return 1\n");
     for file in 0..12 {
         let mut code = String::from("def entry():\n");
         for line in 0..45 {
@@ -36,6 +37,55 @@ fn diagnostics_summarize_directories_and_page_exact_files() {
         }
     }
     assert_eq!(lines, (2..47).collect::<Vec<_>>());
+
+    let mut exact_file_options = options(7);
+    let exact_file =
+        reader::analyze_paged(&conn, "pkg/file_00.py", None, &exact_file_options).unwrap();
+    assert_eq!(exact_file["scope"], "file");
+    assert_eq!(exact_file["total_errors"], 0);
+    assert_eq!(exact_file["resolution"]["total"], 45);
+    assert!(exact_file["resolution"]["has_more"].as_bool().unwrap());
+    assert!(exact_file.get("top_files").is_none());
+    assert!(continue_page(
+        &mut exact_file_options,
+        &exact_file["resolution"]
+    ));
+    let exact_file_continuation =
+        reader::analyze_paged(&conn, "pkg/file_00.py", None, &exact_file_options).unwrap();
+    assert_eq!(exact_file_continuation["scope"], "file");
+    assert_eq!(exact_file_continuation["resolution"]["total"], 45);
+    assert_eq!(exact_file_continuation["resolution"]["offset"], 7);
+    assert!(exact_file_continuation.get("top_files").is_none());
+
+    let clean = reader::analyze_paged(&conn, "pkg/clean.py", None, &options(7)).unwrap();
+    assert_eq!(clean["scope"], "file");
+    assert_eq!(clean["total_errors"], 0);
+    assert_eq!(clean["total_unresolved"], 0);
+    assert_eq!(clean["total_external_imports"], 0);
+    assert_eq!(clean["errors"]["total"], 0);
+    assert_eq!(clean["resolution"]["total"], 0);
+    assert_eq!(clean["external_imports"]["total"], 0);
+    assert!(clean.get("top_files").is_none());
+
+    for mode in ["diagnostics", "cycles"] {
+        let error = reader::analyze_paged(&conn, mode, None, &options(7))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!(
+                "analysis target '{mode}' is interpreted as a path, not an analysis mode"
+            )),
+            "{error}"
+        );
+        assert!(!error.contains("PATH_NOT_INDEXED"), "{error}");
+    }
+    let missing = reader::analyze_paged(&conn, "nonexistent.rs", None, &options(7))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        missing,
+        "PATH_NOT_INDEXED: 'nonexistent.rs' was not found in the indexed inventory"
+    );
 }
 
 #[test]
@@ -514,6 +564,17 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
         },
     )
     .unwrap();
+    let empty_aspects: Vec<String> = Vec::new();
+    let empty_aspect_overview = reader::overview_with_options(
+        &conn,
+        &reader::OverviewOptions {
+            aspects: Some(&empty_aspects),
+            page: &options(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(empty_aspect_overview, overview);
+    assert!(empty_aspect_overview.get("cycles").is_none());
     assert!(overview["generation"].is_string());
     assert!(overview["metadata"]
         .as_array()
