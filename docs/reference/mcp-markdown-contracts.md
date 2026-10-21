@@ -81,6 +81,18 @@ the requested subtask detail. A cancelled task remains labelled `cancelled`; it
 is not rendered as completed. Listing filters and stored status transitions stay
 in the task engine.
 
+`task_list` accepts safe logical milestone aliases such as `UX-001`,
+`docs/milestones/UX-001`, and `milestones/UX-001.md`, including one leading
+slash on those logical forms. Existing IDs, numeric prefixes, complete slugs,
+configured manifest paths, and archive paths retain direct resolution. Traversal,
+arbitrary absolute paths, foreign roots, ambiguity, and invalid existing
+manifests fail closed. Only after no milestone matches does the list operation
+resolve a full task ID or unique task slug to its parent. JSON carries one
+`resolution` object with `kind`, original `input`, canonical `task_id`, parent
+`milestone_id`, and `milestone_ref`; Markdown renders one correction note:
+`[auto-resolved task '<input>' to parent milestone '<milestone_id>']`. Direct
+milestone matches take precedence and do not emit a note.
+
 Claim and context layouts show lifecycle state, the admitted contract, active
 stage guidance, exact registered commands and evidence templates, applicable
 invariants, scope, dependencies, subtask DoD, and available ADR, symbol, test,
@@ -335,6 +347,14 @@ Existing claim summaries may bound body text; preserve that indication and
 `task_blackboard(action: "inspect", message_id: <id>)` full-body recovery.
 Grouping does not invent reply-parent edges or unresolved/resolved blocker
 state. Preserve every read-page continuation and explicit summary truncation.
+
+An explicit milestone-scoped blackboard request uses the same logical alias and
+task-parent resolution as `task_list`. A fallback returns the same structured
+`resolution` object and one Markdown correction note. Reads and inspect preserve
+all existing message IDs and scope fields; a fallback post creates exactly one
+message in the canonical parent milestone scope, which is the `milestone_ref`
+reported by the blackboard resolution. Task/subtask-scoped filters,
+lifecycle operations, and milestone sync do not reinterpret task selectors.
 
 Documentation search renders path/section/type and an excerpt only when supplied.
 Get-document uses `path_or_id` and the actual section selector, renders source

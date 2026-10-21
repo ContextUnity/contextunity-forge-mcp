@@ -63,6 +63,7 @@ struct ResolvedBlackboardContext {
     milestone_ref: String,
     task_id: Option<String>,
     subtask_ref: Option<String>,
+    task_parent: Option<workspaces::TaskParentResolution>,
 }
 
 fn active_milestones(registry: &Registry) -> Result<Vec<(&workspaces::Workspace, String)>> {
@@ -151,9 +152,14 @@ fn resolved_context_for_milestone(
     registry: &Registry,
     workspace: &workspaces::Workspace,
     reference: &str,
+    task_parent: Option<workspaces::TaskParentResolution>,
 ) -> Result<ResolvedBlackboardContext> {
     let store = workspace.open(&registry.database)?;
     let milestone_ref = store.milestone_scope_ref(reference)?;
+    let task_parent = task_parent.map(|mut resolution| {
+        resolution.milestone_ref = milestone_ref.clone();
+        resolution
+    });
     let full_path = confined_path(&workspace.root, reference)?;
     let text = std::fs::read_to_string(full_path)
         .with_context(|| format!("unable to read milestone manifest '{reference}'"))?;
@@ -172,7 +178,15 @@ fn resolved_context_for_milestone(
         milestone_ref,
         task_id: None,
         subtask_ref: None,
+        task_parent,
     })
+}
+
+fn with_resolution(mut value: Value, context: &ResolvedBlackboardContext) -> Value {
+    if let Some(resolution) = &context.task_parent {
+        value["resolution"] = resolution.value();
+    }
+    value
 }
 
 fn task_matches_milestone(
@@ -222,12 +236,13 @@ fn resolve_blackboard_context(
                         milestone_ref,
                         task_id: Some(task.task_id),
                         subtask_ref: None,
+                        task_parent: None,
                     })
                 }
                 count if count > 1 => bail!("TASK_BLACKBOARD_AMBIGUOUS_TASK"),
                 _ => {
                     let (workspace, reference) = active_milestone(registry)?;
-                    resolved_context_for_milestone(registry, workspace, &reference)
+                    resolved_context_for_milestone(registry, workspace, &reference, None)
                 }
             }
         }
@@ -235,11 +250,21 @@ fn resolve_blackboard_context(
             if request.task_id.is_some() || request.subtask_ref.is_some() {
                 bail!("TASK_BLACKBOARD_SCOPE_INVALID: milestone scope does not accept task keys");
             }
-            let (workspace, reference) = match request.milestone_ref.as_deref() {
-                Some(reference) => explicit_milestone(registry, reference)?,
-                None => active_milestone(registry)?,
+            let (workspace, reference, task_parent) = match request.milestone_ref.as_deref() {
+                Some(reference) => {
+                    let resolved = registry.resolve_milestone_or_task_parent(None, reference)?;
+                    (
+                        resolved.workspace,
+                        resolved.milestone_ref,
+                        resolved.task_parent,
+                    )
+                }
+                None => {
+                    let (workspace, reference) = active_milestone(registry)?;
+                    (workspace, reference, None)
+                }
             };
-            resolved_context_for_milestone(registry, workspace, &reference)
+            resolved_context_for_milestone(registry, workspace, &reference, task_parent)
         }
         Some(BlackboardScope::Task) => {
             if request.subtask_ref.is_some() {
@@ -278,6 +303,7 @@ fn resolve_blackboard_context(
                 milestone_ref,
                 task_id: Some(task.task_id),
                 subtask_ref: None,
+                task_parent: None,
             })
         }
         Some(BlackboardScope::Subtask) => {
@@ -331,6 +357,7 @@ fn resolve_blackboard_context(
                 milestone_ref,
                 task_id: Some(task.task_id),
                 subtask_ref: Some(subtask_ref),
+                task_parent: None,
             })
         }
     }
@@ -502,7 +529,7 @@ pub fn blackboard(root: &Path, request: BlackboardRequest, transport: &str) -> R
                         .as_deref()
                         .context("TASK_BLACKBOARD_INVALID: post requires payload")?,
                 })?;
-            Ok(json!({"id":id}))
+            Ok(with_resolution(json!({"id":id}), &context))
         }
         BlackboardAction::Read | BlackboardAction::Inspect => {
             let context = resolve_blackboard_context(&registry, &request)?;
@@ -519,7 +546,10 @@ pub fn blackboard(root: &Path, request: BlackboardRequest, transport: &str) -> R
                     limit: request.limit,
                     offset: request.offset,
                 })?;
-            Ok(json!({"messages":page.messages,"pagination":page.pagination}))
+            Ok(with_resolution(
+                json!({"messages":page.messages,"pagination":page.pagination}),
+                &context,
+            ))
         }
     }
 }

@@ -4303,11 +4303,13 @@ fn completed_task_reopen_and_mcp_manage_action_lifecycle() {
 
 #[test]
 fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_path() {
+    use contextunity_forge_mcp::engine::tasks as engine_tasks;
+
     let root = ScopedWorkspace::new("forge_milestone_ref_resolution");
     root.write("AGENTS.md", "# Rules\n");
     root.write(
         "forge-mcp.yaml",
-        "task_repository: test\ntask_project: test\nroots: []\n",
+        "task_repository: test\ntask_project: test\nroots: []\nmilestones: [docs/milestones, contracts]\n",
     );
     let milestone_content = "---\nid: m-tool-performance-and-storage-compaction\ntitle: Performance\ndoc_type: contract\ninvariants: []\n---\n```yaml\ntask_ref: compaction\ntarget: Compact storage\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     root.write(
@@ -4329,9 +4331,9 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
     assert_eq!(sync_by_id["tasks"].as_array().unwrap().len(), 1);
 
     // List by milestone ID
-    let list_by_id = tasks::list(
+    let list_by_id = engine_tasks::list(
         &root.0,
-        tasks::List {
+        engine_tasks::List {
             repository: Some("test".into()),
             milestone_ref: Some("m-tool-performance-and-storage-compaction".into()),
             milestone_status: None,
@@ -4355,9 +4357,9 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
     .unwrap();
     assert_eq!(sync_by_prefix["tasks"].as_array().unwrap().len(), 1);
 
-    let list_by_prefix = tasks::list(
+    let list_by_prefix = engine_tasks::list(
         &root.0,
-        tasks::List {
+        engine_tasks::List {
             repository: None,
             milestone_ref: Some("30".into()),
             milestone_status: None,
@@ -4407,6 +4409,430 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
     .unwrap();
     assert_eq!(sync_all["tasks"].as_array().unwrap().len(), 1);
 
+    let alias_path = "docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md";
+    let alias_task_ref = "normalize-and-resolve-milestone-references";
+    let alias_content = format!(
+        "---\nid: m-mcp-response-deduplication-and-agent-efficiency\ntitle: MCP response deduplication\ndoc_type: contract\nstatus: active\ninvariants: []\n---\n```yaml\ntask_ref: {alias_task_ref}\ntarget: Normalize milestone references\nproof_policy: seam-test-first\nscope: [src/]\n```\n"
+    );
+    root.write(alias_path, &alias_content);
+    let alias_sync = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some(alias_path.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let alias_task_id = alias_sync["tasks"][0]["task_id"].as_str().unwrap();
+
+    let configured_path = "contracts/040-configured-milestone-with-a-long-name.md";
+    let configured_content = "---\nid: m-configured-milestone\ntitle: Configured milestone\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: configured-task\ntarget: Resolve configured manifest directory\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    root.write(configured_path, configured_content);
+    tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some(configured_path.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let archived_path = "docs/milestones/archive/041-archived-milestone-with-a-long-name.md";
+    let archived_content = "---\nid: m-archived-milestone\ntitle: Archived milestone\ndoc_type: contract\nstatus: completed\n---\n```yaml\ntask_ref: archived-task\ntarget: Resolve archived manifest path\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    root.write(archived_path, archived_content);
+    tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some(archived_path.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let list_for = |reference: &str, repository: Option<&str>| {
+        engine_tasks::list(
+            &root.0,
+            engine_tasks::List {
+                repository: repository.map(str::to_owned),
+                milestone_ref: Some(reference.into()),
+                status: Some(tasks::Status::All),
+                ..Default::default()
+            },
+        )
+    };
+    for alias in [
+        "UX-001",
+        "UX-001.md",
+        "docs/milestones/UX-001",
+        "docs/milestones/UX-001.md",
+        "milestones/UX-001.md",
+    ] {
+        for reference in [alias.to_owned(), format!("/{alias}")] {
+            let listed = list_for(&reference, None).unwrap();
+            assert_eq!(listed["tasks"].as_array().unwrap().len(), 1, "{reference}");
+            assert_eq!(listed["tasks"][0]["task_id"], alias_task_id, "{reference}");
+            assert!(
+                listed.get("resolution").is_none(),
+                "a direct milestone alias must not fabricate a task-fallback warning: {reference}"
+            );
+        }
+    }
+
+    for reference in [alias_task_ref, alias_task_id] {
+        let listed = list_for(reference, Some("test")).unwrap();
+        assert_eq!(listed["tasks"].as_array().unwrap().len(), 1, "{reference}");
+        assert_eq!(listed["tasks"][0]["task_id"], alias_task_id);
+        assert_eq!(listed["resolution"]["kind"], "task_parent");
+        assert_eq!(listed["resolution"]["input"], reference);
+        assert_eq!(listed["resolution"]["task_id"], alias_task_id);
+        assert_eq!(
+            listed["resolution"]["milestone_id"],
+            "m-mcp-response-deduplication-and-agent-efficiency"
+        );
+        assert_eq!(listed["resolution"]["milestone_ref"], alias_path);
+    }
+
+    for (reference, task_id) in [
+        (
+            "m-configured-milestone",
+            "test/m-configured-milestone:configured-task",
+        ),
+        ("040", "test/m-configured-milestone:configured-task"),
+        (
+            configured_path,
+            "test/m-configured-milestone:configured-task",
+        ),
+        (
+            "m-archived-milestone",
+            "test/m-archived-milestone:archived-task",
+        ),
+        ("041", "test/m-archived-milestone:archived-task"),
+        (archived_path, "test/m-archived-milestone:archived-task"),
+    ] {
+        let listed = list_for(reference, None).unwrap();
+        assert_eq!(listed["tasks"].as_array().unwrap().len(), 1, "{reference}");
+        assert_eq!(listed["tasks"][0]["task_id"], task_id, "{reference}");
+    }
+
+    let task_slug_sync = tasks::manage(
+        &root.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            milestone_ref: Some(alias_task_ref.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        task_slug_sync.to_string().contains("not found"),
+        "sync must not reinterpret a task slug as a milestone: {task_slug_sync}"
+    );
+    assert!(
+        tasks::claim(
+            &root.0,
+            tasks::Claim {
+                task_id: alias_task_ref.into(),
+                stage: "contract".into(),
+                worker_id: "slug-is-not-a-task-id".into(),
+                worktree: root.0.to_string_lossy().into_owned(),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    let before_slug_delete =
+        contextunity_forge_mcp::db::tasks_store::TasksStore::open(&root.0.join(".forge/tasks.sqlite"))
+            .unwrap()
+            .connection
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+    assert!(
+        tasks::manage(
+            &root.0,
+            tasks::Manage {
+                action: tasks::ManageAction::Delete,
+                milestone_ref: Some(alias_task_ref.into()),
+                ..Default::default()
+            }
+        )
+        .is_err(),
+        "delete must not reinterpret a task slug as a milestone"
+    );
+    assert_eq!(
+        contextunity_forge_mcp::db::tasks_store::TasksStore::open(
+            &root.0.join(".forge/tasks.sqlite"),
+        )
+        .unwrap()
+        .connection
+        .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, i64>(0))
+        .unwrap(),
+        before_slug_delete,
+        "a rejected destructive selector must not change task records"
+    );
+    for action in [
+        tasks::ManageAction::Inspect,
+        tasks::ManageAction::Delete,
+        tasks::ManageAction::Reset,
+        tasks::ManageAction::Reopen,
+        tasks::ManageAction::SubtaskList,
+    ] {
+        assert!(
+            tasks::manage(
+                &root.0,
+                tasks::Manage {
+                    action,
+                    task_id: Some(alias_task_ref.into()),
+                    ..Default::default()
+                }
+            )
+            .is_err(),
+            "{action:?} must not reinterpret a task slug as a task ID"
+        );
+    }
+    for reference in ["../../outside/UX-001.md", "/etc/UX-001.md"] {
+        assert!(
+            list_for(reference, None).is_err(),
+            "unsafe or arbitrary absolute paths must not fall back by basename: {reference}"
+        );
+    }
+    let foreign = ScopedWorkspace::new("forge_foreign_milestone_reference");
+    let foreign_path = "docs/milestones/UX-001-foreign.md";
+    foreign.write(
+        foreign_path,
+        "---\nid: m-foreign\ntitle: Foreign\ndoc_type: contract\n---\n",
+    );
+    let foreign_absolute = foreign.0.join(foreign_path);
+    assert!(
+        list_for(&foreign_absolute.to_string_lossy(), None).is_err(),
+        "a foreign workspace path must not be reinterpreted as its basename"
+    );
+
+    let ambiguous = ScopedWorkspace::new("forge_ambiguous_milestone_alias");
+    ambiguous.write(
+        "forge-mcp.yaml",
+        "roots: []\nmilestones: [contracts, proposals]\n",
+    );
+    for (path, id) in [
+        ("contracts/UX-001-primary.md", "m-primary-alias"),
+        ("proposals/UX-001-secondary.md", "m-secondary-alias"),
+    ] {
+        ambiguous.write(
+            path,
+            &format!("---\nid: {id}\ntitle: Alias candidate\ndoc_type: contract\n---\n"),
+        );
+    }
+    let ambiguous_error = engine_tasks::list(
+        &ambiguous.0,
+        engine_tasks::List {
+            milestone_ref: Some("UX-001".into()),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        ambiguous_error.contains("ambiguous")
+            && ambiguous_error.contains("contracts/UX-001-primary.md")
+            && ambiguous_error.contains("proposals/UX-001-secondary.md"),
+        "normalized milestone aliases must fail closed with both candidates: {ambiguous_error}"
+    );
+
+    let primary = ScopedWorkspace::new("forge_task_parent_primary");
+    let linked = ScopedWorkspace::new("forge_task_parent_linked");
+    primary.write(
+        "forge-mcp.yaml",
+        &format!(
+            "task_repository: primary\ntask_project: primary\nroots: []\nlinked_workspaces:\n  - name: linked\n    path: {}\n    tasks: {{enabled: true}}\n",
+            linked.0.display()
+        ),
+    );
+    linked.write(
+        "forge-mcp.yaml",
+        "task_repository: linked\ntask_project: linked\nroots: []\n",
+    );
+    let primary_milestone = "---\nid: m-direct-match\ntitle: Primary\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: shared-task\ntarget: Primary shared task\nproof_policy: direct-proof\nscope: [src/]\n```\n```yaml\ntask_ref: primary-only\ntarget: Primary task for direct milestone match\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    primary.write(
+        "docs/milestones/010-primary-long-name.md",
+        primary_milestone,
+    );
+    let linked_milestone = "---\nid: m-linked\ntitle: Linked\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: shared-task\ntarget: Linked shared task\nproof_policy: direct-proof\nscope: [src/]\n```\n```yaml\ntask_ref: m-direct-match\ntarget: Linked task whose slug resembles a milestone ID\nproof_policy: direct-proof\nscope: [src/]\n```\n";
+    linked.write("docs/milestones/020-linked-long-name.md", linked_milestone);
+    let primary_sync = tasks::manage(
+        &primary.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            workspace: Some("primary".into()),
+            milestone_ref: Some("docs/milestones/010-primary-long-name.md".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let linked_sync = tasks::manage(
+        &primary.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            workspace: Some("linked".into()),
+            milestone_ref: Some("docs/milestones/020-linked-long-name.md".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let primary_shared_id = primary_sync["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["spec"]["task_ref"] == "shared-task")
+        .unwrap()["task_id"]
+        .as_str()
+        .unwrap();
+    let linked_shared_id = linked_sync["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["spec"]["task_ref"] == "shared-task")
+        .unwrap()["task_id"]
+        .as_str()
+        .unwrap();
+    let unique_slug = engine_tasks::list(
+        &primary.0,
+        engine_tasks::List {
+            repository: Some("primary".into()),
+            milestone_ref: Some("shared-task".into()),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(unique_slug["tasks"].as_array().unwrap().len(), 2);
+    assert!(
+        unique_slug["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["task_id"] == primary_shared_id)
+    );
+    assert_eq!(unique_slug["resolution"]["kind"], "task_parent");
+    assert_eq!(unique_slug["resolution"]["task_id"], primary_shared_id);
+    let linked_full_id = engine_tasks::list(
+        &primary.0,
+        engine_tasks::List {
+            repository: Some("linked".into()),
+            milestone_ref: Some(linked_shared_id.into()),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(linked_full_id["tasks"].as_array().unwrap().len(), 2);
+    assert!(
+        linked_full_id["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["task_id"] == linked_shared_id)
+    );
+    assert_eq!(linked_full_id["resolution"]["input"], linked_shared_id);
+    primary.write(
+        "docs/milestones/011-primary-second.md",
+        "---\nid: m-primary-second\ntitle: Another primary milestone\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: shared-task\ntarget: Same slug in another milestone\nproof_policy: direct-proof\nscope: [src/]\n```\n",
+    );
+    let second_primary_sync = tasks::manage(
+        &primary.0,
+        tasks::Manage {
+            action: tasks::ManageAction::Sync,
+            workspace: Some("primary".into()),
+            milestone_ref: Some("docs/milestones/011-primary-second.md".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let second_primary_task_id = second_primary_sync["tasks"][0]["task_id"].as_str().unwrap();
+    let same_workspace_collision = engine_tasks::list(
+        &primary.0,
+        engine_tasks::List {
+            repository: Some("primary".into()),
+            milestone_ref: Some("shared-task".into()),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        same_workspace_collision.contains("ambiguous")
+            && same_workspace_collision.contains(primary_shared_id)
+            && same_workspace_collision.contains(second_primary_task_id),
+        "task slug collisions within one workspace must report both parents: {same_workspace_collision}"
+    );
+    let all_workspace_collision = engine_tasks::list(
+        &primary.0,
+        engine_tasks::List {
+            repository: Some("all".into()),
+            milestone_ref: Some("shared-task".into()),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        all_workspace_collision.contains("ambiguous")
+            && all_workspace_collision.contains(primary_shared_id)
+            && all_workspace_collision.contains(second_primary_task_id)
+            && all_workspace_collision.contains(linked_shared_id),
+        "task slug collisions across selected workspaces must report candidates: {all_workspace_collision}"
+    );
+    let unknown_task_selector = engine_tasks::list(
+        &primary.0,
+        engine_tasks::List {
+            repository: Some("all".into()),
+            milestone_ref: Some("missing-task".into()),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        unknown_task_selector.contains("not found"),
+        "unknown task selectors remain errors: {unknown_task_selector}"
+    );
+    let direct_milestone = engine_tasks::list(
+        &primary.0,
+        engine_tasks::List {
+            repository: Some("all".into()),
+            milestone_ref: Some("m-direct-match".into()),
+            status: Some(tasks::Status::All),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(direct_milestone["tasks"].as_array().unwrap().len(), 2);
+    let primary_only_id = primary_sync["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["spec"]["task_ref"] == "primary-only")
+        .unwrap()["task_id"]
+        .as_str()
+        .unwrap();
+    let direct_task_ids = direct_milestone["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| task["task_id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(direct_task_ids.contains(&primary_only_id));
+    assert!(direct_task_ids.contains(&primary_shared_id));
+    assert!(!direct_task_ids.contains(&"linked/linked:m-direct-match"));
+    assert!(
+        direct_milestone.get("resolution").is_none(),
+        "an existing m-... milestone must win over an equal task slug"
+    );
+
     // 6. Non-existent milestone reference produces descriptive error instead of raw os error 2
     let err = tasks::manage(
         &root.0,
@@ -4420,6 +4846,26 @@ fn task_manage_sync_and_list_resolve_milestone_reference_by_id_prefix_stem_and_p
     assert!(
         err.to_string().contains("not found in workspace"),
         "error must be descriptive: {err}"
+    );
+
+    root.write(
+        "contracts/UX-001.md",
+        "---\nid: [invalid\ntitle: broken\n---\n",
+    );
+    let invalid_manifest = list_for("contracts/UX-001.md", None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        invalid_manifest.contains("invalid") || invalid_manifest.contains("parse"),
+        "an existing invalid manifest must fail instead of falling back by basename: {invalid_manifest}"
+    );
+    root.write("docs/milestones/UX-001.md", "---\nid: [invalid\n---\n");
+    let invalid_alias_manifest = list_for("docs/milestones/UX-001.md", None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        invalid_alias_manifest.contains("invalid") || invalid_alias_manifest.contains("parse"),
+        "an invalid existing alias path must not fall back to a similar manifest: {invalid_alias_manifest}"
     );
 }
 

@@ -469,10 +469,12 @@ fn resolve_manifest_status(root: &Path, milestone_ref: &str) -> Result<String> {
 pub fn list(root: &Path, mut p: List) -> Result<Value> {
     let registry = Registry::load(root)?;
     let mut resolved_workspace = None;
+    let mut task_parent_resolution = None;
     if let Some(m) = p.milestone_ref.as_deref() {
-        let (workspace, resolved) = registry.resolve_milestone(p.repository.as_deref(), m)?;
-        resolved_workspace = Some(workspace);
-        p.milestone_ref = Some(resolved);
+        let resolved = registry.resolve_milestone_or_task_parent(p.repository.as_deref(), m)?;
+        resolved_workspace = Some(resolved.workspace);
+        p.milestone_ref = Some(resolved.milestone_ref);
+        task_parent_resolution = resolved.task_parent.map(|resolution| resolution.value());
     }
     let status = p.status.unwrap_or(Status::Ready).name();
     let default_milestone_filter = if p.milestone_ref.is_some() {
@@ -572,14 +574,21 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
             );
         }
     }
-    if all_workspaces {
-        Ok(json!({"tasks":tasks,"workspaces":workspaces}))
+    let mut response = if all_workspaces {
+        json!({"tasks":tasks,"workspaces":workspaces})
     } else {
         selected
             .pop()
             .context("task workspace missing")?
-            .envelope(json!({"tasks":tasks}))
+            .envelope(json!({"tasks":tasks}))?
+    };
+    if let Some(resolution) = task_parent_resolution {
+        response
+            .as_object_mut()
+            .context("task list response must be an object")?
+            .insert("resolution".into(), resolution);
     }
+    Ok(response)
 }
 fn validate_authority(
     task: &crate::db::tasks_store::Task,
@@ -972,6 +981,9 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
         }
     };
     let mut response = serde_json::to_value(task_result)?;
+    if let Some(obj) = response.as_object_mut() {
+        obj.remove("digest");
+    }
     if let Some(snapshot) = &evidence.commit {
         if let Some(obj) = response.as_object_mut() {
             let inspect_cmd = snapshot_inspect_cmd(snapshot);

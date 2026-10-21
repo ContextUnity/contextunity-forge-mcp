@@ -254,8 +254,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     distinct["authority_snapshot"]["task_proof_policy"] = json!("authority proof policy marker");
     distinct["proof_policy"] = json!("response proof policy marker");
     distinct["spec"]["invariants"] = json!(["spec task invariant marker"]);
-    distinct["authority_snapshot"]["task_invariants"] =
-        json!(["authority task invariant marker"]);
+    distinct["authority_snapshot"]["task_invariants"] = json!(["authority task invariant marker"]);
     distinct["applicable_invariants"] = json!(["response invariant marker"]);
     let distinct_markdown = format::render(&distinct, OutputFormat::Markdown, "task_manage");
     for marker in [
@@ -935,13 +934,13 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
         "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
     );
     workspace.write(
-        "docs/milestones/010-blackboard.md",
+        "docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md",
         "---\nid: m-blackboard\ntitle: Blackboard\ndoc_type: contract\n---\n```yaml\ntask_ref: first\ntarget: Coordinate agents\nproof_policy: seam-test-first\nscope: [src/]\n```\n",
     );
     let mut client = Client::new(&workspace);
     let synced = client.payload(
         "task_manage",
-        json!({"action":"sync","milestone_ref":"docs/milestones/010-blackboard.md"}),
+        json!({"action":"sync","milestone_ref":"docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md"}),
     );
     let task_id = synced["tasks"][0]["task_id"].as_str().unwrap();
 
@@ -1046,6 +1045,325 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     );
     assert_eq!(stored[0].author, "mcp");
     assert_eq!(stored[1].author, "cli");
+
+    let mcp_list = client.payload("task_list", json!({"milestone_ref":"first","status":"all"}));
+    assert_eq!(mcp_list["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(mcp_list["resolution"]["kind"], "task_parent");
+    assert_eq!(mcp_list["resolution"]["input"], "first");
+    assert_eq!(mcp_list["resolution"]["task_id"], task_id);
+    assert_eq!(mcp_list["resolution"]["milestone_id"], "m-blackboard");
+    assert_eq!(
+        mcp_list["resolution"]["milestone_ref"],
+        "docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md"
+    );
+    let mcp_alias_list = client.payload(
+        "task_list",
+        json!({"milestone_ref":"UX-001","status":"all"}),
+    );
+    let cli_alias_list = json_cli()
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--milestone",
+            "UX-001",
+            "--status",
+            "all",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_alias_list.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_alias_list.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli_alias_list.stdout).unwrap(),
+        mcp_alias_list
+    );
+    assert_eq!(mcp_alias_list["tasks"].as_array().unwrap().len(), 1);
+    assert!(mcp_alias_list.get("resolution").is_none());
+    let cli_list = json_cli()
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--milestone",
+            "first",
+            "--status",
+            "all",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_list.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_list.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli_list.stdout).unwrap(),
+        mcp_list
+    );
+
+    let (_, mcp_list_markdown) = client.call(
+        "task_list",
+        json!({"milestone_ref":"first","status":"all","format":"markdown"}),
+    );
+    let mcp_list_markdown = mcp_list_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    let cli_list_markdown = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--format",
+            "markdown",
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--milestone",
+            "first",
+            "--status",
+            "all",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_list_markdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_list_markdown.stderr)
+    );
+    let cli_list_markdown = std::str::from_utf8(&cli_list_markdown.stdout).unwrap();
+    assert_eq!(mcp_list_markdown.trim_end(), cli_list_markdown.trim_end());
+    assert!(
+        mcp_list_markdown
+            .contains("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
+    );
+    assert_eq!(
+        mcp_list_markdown
+            .matches("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
+            .count(),
+        1,
+        "task-list Markdown displays fallback provenance exactly once"
+    );
+
+    let canonical_milestone = store
+        .milestone_scope_ref(
+            "docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md",
+        )
+        .unwrap();
+    let milestone_message_count = || {
+        store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM task_blackboard WHERE milestone_ref = ?1 AND task_id IS NULL AND subtask_ref IS NULL",
+                [&canonical_milestone],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let before_fallback_posts = milestone_message_count();
+    let mcp_alias_read = client.payload(
+        "task_blackboard",
+        json!({
+            "action":"read",
+            "scope":"milestone",
+            "milestone_ref":"UX-001",
+            "topic":"decisions"
+        }),
+    );
+    let cli_alias_read = json_cli()
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "blackboard",
+            "read",
+            "--scope",
+            "milestone",
+            "--milestone-ref",
+            "UX-001",
+            "--topic",
+            "decisions",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_alias_read.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_alias_read.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli_alias_read.stdout).unwrap(),
+        mcp_alias_read
+    );
+    assert!(mcp_alias_read["messages"].as_array().unwrap().is_empty());
+    assert!(mcp_alias_read.get("resolution").is_none());
+
+    let (_, mcp_fallback_post) = client.call(
+        "task_blackboard",
+        json!({
+            "action":"post",
+            "scope":"milestone",
+            "milestone_ref":"first",
+            "topic":"decisions",
+            "payload":"MCP fallback post",
+            "format":"json"
+        }),
+    );
+    assert_ne!(mcp_fallback_post["result"]["isError"], true);
+    let mcp_fallback_post: Value = serde_json::from_str(
+        mcp_fallback_post["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(mcp_fallback_post["resolution"]["kind"], "task_parent");
+    assert_eq!(mcp_fallback_post["resolution"]["input"], "first");
+    assert_eq!(mcp_fallback_post["resolution"]["task_id"], task_id);
+    assert_eq!(
+        mcp_fallback_post["resolution"]["milestone_id"],
+        "m-blackboard"
+    );
+    assert_eq!(
+        mcp_fallback_post["resolution"]["milestone_ref"],
+        "forge-mcp/forge-mcp/docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md"
+    );
+    assert_eq!(milestone_message_count(), before_fallback_posts + 1);
+
+    let cli_fallback_post = json_cli()
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "blackboard",
+            "post",
+            "--scope",
+            "milestone",
+            "--milestone-ref",
+            "first",
+            "--topic",
+            "decisions",
+            "--payload",
+            "CLI fallback post",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_fallback_post.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_fallback_post.stderr)
+    );
+    let cli_fallback_post: Value = serde_json::from_slice(&cli_fallback_post.stdout).unwrap();
+    assert_eq!(cli_fallback_post["resolution"]["kind"], "task_parent");
+    assert_eq!(cli_fallback_post["resolution"]["input"], "first");
+    assert_eq!(cli_fallback_post["resolution"]["task_id"], task_id);
+    assert_eq!(
+        cli_fallback_post["resolution"]["milestone_id"],
+        "m-blackboard"
+    );
+    assert_eq!(
+        cli_fallback_post["resolution"]["milestone_ref"],
+        "forge-mcp/forge-mcp/docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md"
+    );
+    assert_ne!(cli_fallback_post["id"], mcp_fallback_post["id"]);
+    assert_eq!(milestone_message_count(), before_fallback_posts + 2);
+
+    let mcp_fallback_read = client.payload(
+        "task_blackboard",
+        json!({
+            "action":"read",
+            "scope":"milestone",
+            "milestone_ref":"first",
+            "topic":"decisions"
+        }),
+    );
+    let cli_fallback_read = json_cli()
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "blackboard",
+            "read",
+            "--scope",
+            "milestone",
+            "--milestone-ref",
+            "first",
+            "--topic",
+            "decisions",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_fallback_read.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_fallback_read.stderr)
+    );
+    let cli_fallback_read: Value = serde_json::from_slice(&cli_fallback_read.stdout).unwrap();
+    assert_eq!(cli_fallback_read, mcp_fallback_read);
+    assert_eq!(mcp_fallback_read["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(mcp_fallback_read["resolution"]["kind"], "task_parent");
+    assert_eq!(mcp_fallback_read["resolution"]["input"], "first");
+    assert_eq!(mcp_fallback_read["resolution"]["task_id"], task_id);
+    assert_eq!(
+        mcp_fallback_read["resolution"]["milestone_id"],
+        "m-blackboard"
+    );
+    assert_eq!(milestone_message_count(), before_fallback_posts + 2);
+
+    let (_, mcp_fallback_markdown) = client.call(
+        "task_blackboard",
+        json!({
+            "action":"read",
+            "scope":"milestone",
+            "milestone_ref":"first",
+            "topic":"decisions",
+            "format":"markdown"
+        }),
+    );
+    let mcp_fallback_markdown = mcp_fallback_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    let cli_fallback_markdown = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--format",
+            "markdown",
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "blackboard",
+            "read",
+            "--scope",
+            "milestone",
+            "--milestone-ref",
+            "first",
+            "--topic",
+            "decisions",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_fallback_markdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_fallback_markdown.stderr)
+    );
+    let cli_fallback_markdown = std::str::from_utf8(&cli_fallback_markdown.stdout).unwrap();
+    assert_eq!(
+        mcp_fallback_markdown.trim_end(),
+        cli_fallback_markdown.trim_end()
+    );
+    assert!(
+        mcp_fallback_markdown
+            .contains("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
+    );
+    assert_eq!(
+        mcp_fallback_markdown
+            .matches("[auto-resolved task 'first' to parent milestone 'm-blackboard']")
+            .count(),
+        1,
+        "blackboard Markdown displays fallback provenance exactly once"
+    );
 }
 
 #[test]

@@ -127,7 +127,21 @@ Every task contract declares an explicit file perimeter (`scope`) bounding allow
 ## Five flat MCP tools
 
 `task_list` accepts `milestone` as an alias for `milestone_ref`, with the same
-milestone resolution and status defaults. Supply one name per request.
+milestone resolution and status defaults. It resolves safe logical spellings such
+as `UX-001`, `UX-001.md`, `docs/milestones/UX-001`, and
+`milestones/UX-001.md` to the matching manifest, including those spellings with
+one leading slash. Existing IDs, numeric prefixes, complete slugs, configured
+paths, and archive paths retain their normal resolution. Traversal, arbitrary
+absolute paths, foreign roots, ambiguity, and invalid existing manifests fail
+closed. Supply one name per request.
+
+When no milestone matches, `task_list` also accepts a full task ID or a unique
+task slug in the selected workspace set. The response contains one `resolution`
+object with `kind: "task_parent"`, the original `input`, canonical `task_id`,
+parent `milestone_id`, and canonical `milestone_ref`. Markdown displays one
+`[auto-resolved task '<input>' to parent milestone '<milestone_id>']` note.
+Direct milestone matches take precedence, including milestone IDs that resemble
+task slugs. Ambiguous or missing task selectors remain errors.
 
 The CLI accepts `task show` for `task inspect`, `--task TASK_ID` in place of
 the positional task ID on inspect/show and submit, and `--file PATH` in place
@@ -491,6 +505,14 @@ gate. Without a read gate, the requested scope returns messages from all gates.
 
 Use `scope: "milestone"` for milestone-level messages. It resolves the explicit
 milestone or the unique active milestone and never includes task-scoped entries.
+An explicit milestone scope accepts the same safe logical aliases and unique
+task-parent fallback as `task_list`; fallback returns the same structured
+`resolution` provenance and one Markdown correction note. Reads and message
+inspection keep their existing message IDs and scope columns; a fallback post
+inserts exactly one message at the canonical parent milestone scope, which is
+the `milestone_ref` reported by the blackboard resolution. Task and
+subtask scopes use `milestone_ref` only as a direct milestone filter and do not
+reinterpret task selectors.
 Use `scope: "task"` or `scope: "subtask"` to select those levels. Omitted task
 and subtask keys resolve only through unique in-progress contexts; missing or
 ambiguous contexts fail closed. When scope and keys are all omitted, Forge uses

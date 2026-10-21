@@ -372,32 +372,157 @@ receipt:
 4. On a fixture that repeats those equal fields, `markdown.len()` is strictly smaller than the JSON byte length. Do not require that inequality for a small inspect payload whose Markdown headings exceed the JSON.
 5. In the equal-scope fixture, each admitted scope path occurs once in the Markdown.
 
+### task: byte-bounded-single-symbol-snippets
+
+```yaml
+task_ref: byte-bounded-single-symbol-snippets
+target: "Return a complete single-symbol snippet when it fits the response byte budget instead of imposing a 500-line ceiling"
+proof_policy: seam-test-first
+contract_revision: 5
+depends_on:
+  - single-document-projection-for-inspection
+scope:
+  - src/core/response.rs
+  - src/db/symbols.rs
+  - src/mcp/tools.rs
+  - src/mcp/tools/inputs.rs
+  - src/mcp/response.rs
+  - src/cli/mod.rs
+  - tests/query_context/diagnostics_and_source.rs
+  - tests/mcp/context.rs
+  - tests/mcp/tool_evolution/mcp_boundaries.rs
+  - docs/reference/mcp-tools.md
+  - docs/reference/configuration.md
+  - docs/reference/cli.md
+  - docs/runbooks/limits-and-freshness.md
+  - skills/contextunity-forge/SKILL.md
+  - skills/contextunity-forge/references/tool-catalog.md
+invariants:
+  - "SINGLE-SYMBOL-BYTE-BOUND: Complete symbol source is limited by the configured serialized response budget, not an implicit 500-line ceiling. Exact source boundaries, explicit smaller requests, and byte-safe continuation remain enforced."
+status: planned
+```
+
+#### Acceptance
+
+1. `get_code_snippet` for one resolved function, method, or test returns its entire body on the first request when the caller has not requested a smaller body and the serialized response fits the active byte budget, including a body longer than 500 lines. Do not silently concatenate multiple declarations or return unrelated source.
+2. Remove the implicit 500-line clamp from this full-symbol request path, including input normalization and the fixed source-preview sub-budget. Explicit smaller `max_body_lines` values still bound the requested slice. Preserve configured default previews for inspect/explain unless the caller explicitly requests the full-symbol behavior.
+3. Use the configured response ceiling enforced at execution time. The owner-approved 96 KiB ceiling in ADR 0011 is implemented by `response-budget-96kib-and-graceful-task-list-truncation`; this snippet task does not raise the global cap. Count escaped UTF-8 source, metadata, Markdown/JSON framing, and the existing response envelope under the same budgeting rules as other responses. Do not return an over-budget payload or discard source merely because the old 8 KiB source sub-budget was reached.
+4. When the full symbol exceeds the response budget, retain bounded paging with truthful offsets, `has_more`, omitted counts, and continuation hints. Preserve oversized-single-line handling, checked offset arithmetic, indexed-digest verification, stale-generation rejection, linked-workspace confinement, and symlink/traversal rejection.
+5. Extend the existing source/MCP seams with a greater-than-500-line body that fits, an explicit smaller line request, an escaped/non-ASCII body near the byte boundary, an over-budget body, and a too-large single line. Exercise CLI/MCP output and configured smaller budgets. Mutations restoring either the 500-line clamp or 8 KiB sub-budget must fail the fitting-body case; mutations bypassing the response ceiling must fail the overflow case.
+6. Update the existing tool, configuration, CLI, runbook, and agent-navigation guidance in this task. The limits-and-freshness runbook distinguishes byte-bounded full-symbol `get_code_snippet` from preserved configured inspect/explain previews. Required Build/Review checks are strict all-target/all-feature Clippy and the complete `query_context` and `mcp` targets, not only the new focused case.
+
+### task: safe-source-snippet-continuation
+
+```yaml
+task_ref: safe-source-snippet-continuation
+target: "Recover an omitted source continuation generation only when the prior source request proves the active snapshot is unchanged"
+proof_policy: seam-test-first
+contract_revision: 3
+depends_on:
+  - byte-bounded-single-symbol-snippets
+scope:
+  - src/mcp/server.rs
+  - src/mcp/tools.rs
+  - src/mcp/tools/inputs.rs
+  - src/db/symbols.rs
+  - src/core/response.rs
+  - src/cli/mod.rs
+  - tests/mcp/context.rs
+  - tests/mcp/tool_evolution/mcp_boundaries.rs
+  - tests/query_context/diagnostics_and_source.rs
+  - docs/reference/mcp-tools.md
+  - docs/reference/cli.md
+  - skills/contextunity-forge/SKILL.md
+  - skills/contextunity-forge/references/tool-catalog.md
+invariants:
+  - "SOURCE-CONTINUATION-SNAPSHOT: Auto-heal never combines source pages from different snapshots, sessions, selected worktrees, databases, or symbols. Explicit generation validation remains authoritative."
+status: planned
+```
+
+#### Acceptance
+
+1. For a source continuation with `source_offset > 0` and no explicit `generation`, reuse the prior successful source page's generation only when the same MCP session has an unambiguous matching request and the selected worktree's active generation still equals that captured generation. Never substitute the current hash without evidence of the previous page's snapshot.
+2. Keep any inferred continuation state bounded and session-local, keyed by resolved workspace/database identity and exact symbol/request identity. Only successfully returned source pages seed it; failed, oversized, unrelated, or source-disabled requests do not. Inference must not leak between parallel requests, sessions, worktrees, linked workspace sources, or selectors that resolve to different symbols. No durable task-store or code-index writes are required for this convenience.
+3. An explicit generation always uses the existing validation path, including stale rejection. After an index change, unknown prior request, restart, or ambiguous cached match, fail closed with an actionable error explaining that the caller must restart at `source_offset=0` or provide the previous page's generation. A stateless CLI continuation without that proof gets the same actionable requirement rather than guessing a generation.
+4. Preserve source-file digest checks and validation within the same read snapshot used for source extraction; a change between inference and reading cannot produce a mixed-version success. Missing or inferred tokens must not relax unrelated collection pagination requirements.
+5. Extend existing production-seam cases for an unchanged first-page/continuation sequence with omitted generation, explicit valid and stale tokens, an intervening source/index change, a new session, different worktrees and symbols, ambiguous/failed seed requests, source-disabled requests that must not seed state, bounded-cache eviction, concurrent requests, and a stateless CLI continuation that returns the actionable token/restart error. Assert the chosen finite cache bound and behavior at and beyond it. Mutation checks must reject unconditional active-generation substitution, missing workspace identity, omitted generation validation, unbounded retention, seeding from a source-disabled result, and token-free stateless CLI continuation. Document successful inference without exposing internal cache contents.
+6. This task may add only the source-continuation state to the existing MCP server owner; the deferred default-worktree selection behavior remains out of scope. Co-evolve the admitted tool/CLI/agent guidance. Run strict all-target/all-feature Clippy and complete `mcp` and `query_context` targets at Build and Review.
+
 ### task: normalize-and-resolve-milestone-references
 
 ```yaml
 task_ref: normalize-and-resolve-milestone-references
-target: "Normalize milestone selector spellings and resolve an unambiguous task selector to its parent milestone with visible provenance"
+target: Normalize milestone selector spellings and resolve an unambiguous task selector to its parent milestone with visible provenance
 proof_policy: seam-test-first
-contract_revision: 4
+contract_revision: 5
 depends_on:
-  - deduplicate-task-inspection-presentation
+- deduplicate-task-inspection-presentation
 scope:
-  - src/engine/tasks/workspaces.rs
-  - src/engine/tasks/mod.rs
-  - src/engine/tasks/blackboard.rs
-  - src/engine/tasks/lifecycle.rs
-  - src/core/format/lifecycle.rs
-  - src/core/format/coordination.rs
-  - tests/acdd/mcp.rs
-  - tests/acdd/tasks.rs
-  - tests/acdd/blackboard.rs
-  - docs/reference/tasks.md
-  - docs/reference/mcp-markdown-contracts.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/tool-catalog.md
+- src/engine/tasks/workspaces.rs
+- src/engine/tasks/mod.rs
+- src/engine/tasks/blackboard.rs
+- src/engine/tasks/lifecycle.rs
+- src/core/format/lifecycle.rs
+- src/core/format/coordination.rs
+- tests/acdd/mcp.rs
+- tests/acdd/tasks.rs
+- tests/acdd/blackboard.rs
+- docs/reference/tasks.md
+- docs/reference/mcp-markdown-contracts.md
 invariants:
-  - "MILESTONE-REFERENCE-IDENTITY: Equivalent safe milestone spellings resolve to the same canonical manifest. Task-to-parent fallback is explicit, unambiguous, workspace-confined, and visible in both human and machine responses."
-status: planned
+- 'MILESTONE-REFERENCE-IDENTITY: Equivalent safe milestone spellings resolve to the same canonical manifest. Task-to-parent fallback is explicit, unambiguous, workspace-confined, and visible in both human and machine responses.'
+status: completed
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-21T21:05:04.517524845+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd && cargo test --test mcp
+      exit_code: 0
+      tests_passed: 207
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. Candidate scoped diff SHA-256 18c01081e0b92d74f6d339b64932dcbc3737fb8112b540c57e3dd658c2680b84 matches supplied snapshot 396bdd6ac401abb10cc3d4e803cbc60e583e9bcb against baseline 8975f04e6f39bbe71375ed1292953c0dbcf31335. Ten scoped files changed within the 11-path initial scope; src/engine/tasks/lifecycle.rs is unchanged. Current scoped files match the snapshot and scoped diff-check is clean. Parent-owned ADR and future manifest edits remain outside candidate scope; source-snippet test paths are clean. No staged unrelated paths.
+        claims:
+          applicable: true
+          evidence: PASS. normalize_milestone_reference rejects ParentDir components before stripping only documented logical aliases; exact confined paths pass through confined_path, then configured manifest matching supports descriptive stems, UX-number prefixes, numeric prefixes, IDs, and configured archive paths. Existing invalid manifests propagate parse errors; direct milestone resolution runs before fallback. Fallback matches full stored task IDs or unique task_ref slugs only at task list and milestone-scoped blackboard call sites; AST residual scan found exactly these two production calls, none in tests or lifecycle/destructive code. Same-workspace and all-workspace ambiguity, repo filters, unknown refs, invalid manifests, traversal/foreign roots, and direct-milestone precedence are covered. Structured resolution preserves original input and canonical task/milestone fields; Markdown emits one correction note. Blackboards preserve existing IDs/scopes/counts on read/inspect and one post writes one canonical milestone-scope message. Both admitted reference docs accurately cover task list and blackboard behavior.
+        concurrency:
+          applicable: true
+          evidence: PASS. Task-parent discovery uses existing project-scoped TasksStore list reads and does not mutate tasks, credentials, profiles, or receipts. Blackboard reads/inspects remain read-only; post delegates to the existing serialized write path exactly once. No new lock ordering, transaction, schema, lifecycle, or receipt mutation was introduced. Existing ACDD concurrency/lifecycle seams pass.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Explicit repository selection is retained; all-workspace lookup reports ambiguity rather than choosing a task. Manifest paths and stored task-parent paths are confined to the selected workspace root; parsed repository/project must match the owning workspace. Foreign absolute roots and traversal fail closed. Linked workspace selection and CLI/MCP parity are exercised by the existing seams.
+        administration:
+          applicable: true
+          evidence: PASS. Candidate changes no credentials, configuration, profiles, schema, migrations, or gate pins. Existing ID/output compatibility is additive; task fallback does not reach claim, submit, reset, delete, reopen, sync, or subtask lifecycle operations. Candidate is bound to validated baseline 8975f04e; Forge-managed delivery will create the one scoped task commit and receipt. Out-of-scope ADR/future manifest state is preserved.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SINGLE-DOCUMENT-PROJECTION: Symbol inspection exposes one documentation page per cited section, with doc_id, path, section title, document type, citation line, and a resolved file:/// URI. Explain keeps its own documents page and does not grow a second inspect projection.'
+    - 'INV-COMPACT-DOC-HINT-ONCE: A compact get_doc response emits each omitted-detail hint once. Referenced-symbol rows keep the citing section and citation line. Full detail still returns candidate evidence.'
+    - 'INV-NARROWEST-NAVIGATION: Agent guidance selects the narrowest useful tool, reuses sufficient previews, and passes worktree when the server root is not the checkout being edited.'
+    - 'INV-RESPONSE-CONTRACT-PRESERVATION: Deduplication preserves pagination, generation validation, detail-level behavior, response budgets, exact evidence, and CLI/MCP parity.'
+    - 'INV-READ-ONLY-SQL-FIDELITY: Opaque user SQL keeps literals, comments, trailing semicolons of one statement, requested columns, and SQLite text. Structural graph rows keep parsed details and stripped internal ids. Writes and multiple statements stay rejected.'
+    - 'INV-TASK-PRESENTATION-DEDUPLICATION: Inspect Markdown uses the task-record heading and renders equal scope, target, proof policy, and task invariants once. A fixture with those repeated fields is smaller in Markdown than in JSON. The contract digest hash is omitted from task responses. Revisions, receipts, gates, attempts, and findings stay visible.'
+    - 'INV-EXPLICIT-DIAGNOSTIC-SCOPE: An unindexed analyze or lint target fails with PATH_NOT_INDEXED. An indexed scope with zero diagnostics stays success. The diagnostics and cycles mode errors stay specific. Unsupported overview aspects fail with the allowed set.'
+    - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Presentation attachment resolves a workspace path before file_uri_for_path. A resolvable coordinate is a file:/// link. Markdown omits the (link unavailable) fallback.'
+    - 'MILESTONE-REFERENCE-IDENTITY: Equivalent safe milestone spellings resolve to the same canonical manifest. Task-to-parent fallback is explicit, unambiguous, workspace-confined, and visible in both human and machine responses.'
+    architectural_notes:
+    - 'decisions: Accepted decision for revision 5: normalize safe milestone spellings in the existing resolver; retain direct milestone precedence; allow task-ID/unique-task-ref parent resolution only for task listing and milestone-scoped blackboard; publish structured provenance and one Markdown correction note. Independent REVIEW found no defects. No additional architecture, API, task-store, or schema decision was made. This candidate does not implement the separately planned 96 KiB budget; runtime behavior remains as coded in the reviewed snapshot.'
+    - 'deferred: No defect or implementation work is deferred from this task. Separate `response-budget-96kib-and-graceful-task-list-truncation` work remains owned by its task/coordinator; this candidate does not implement that task. Preserve parent-owned `docs/adr/0011` and future milestone manifest edits. After this delivery, the source-snippet contract author/coordinator owns reapplying the prepared draft and rerunning its contract proof against the new HEAD before submitting Contract PASS. No review worktree source/test/docs changes were made by this reviewer.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance
@@ -409,7 +534,7 @@ status: planned
 5. A task-to-parent fallback returns structured resolution information and a visible Markdown note such as `[auto-resolved task '<input>' to parent milestone 'UX-001']`. Include the original input and canonical task/milestone identity so the caller can correct its next request. Do not fabricate a warning for normal milestone-ID lookup or duplicate it in the response. Preserve task/blackboard result data, paging, budgets, filters, and message scope.
 6. Apply fallback only to the admitted list and explicit milestone-blackboard selection surfaces, including CLI/MCP equivalents. Do not silently reinterpret task claim, reset, delete, submission, or lifecycle-admission requests. Blackboard reads/posts/inspect retain their existing scope and authorization checks and never migrate or duplicate messages as a side effect of resolution.
 7. Extend existing ACDD list/blackboard seams with the spelling matrix, direct milestone ID, full task ID and unique task slug, collisions within/across selected workspaces, unknown references, archived/configured manifest paths, traversal rejection, canonical precedence, and exact warning provenance. In the existing blackboard isolation seam, snapshot existing message IDs, scopes, and counts before fallback reads/inspect and assert they remain unchanged; a fallback post creates exactly one new message in the canonical resolved scope, leaving unrelated scopes intact. Mutations skipping suffix/prefix normalization, ignoring ambiguity, omitting the warning, crossing workspace boundaries, migrating existing messages, or duplicating a fallback post must fail the applicable cases.
-8. Preserve the pre-existing digest-omission changes in the task engine files. Co-evolve task/tool/agent documentation here, and include all three newly admitted UX capabilities in the final independent documentation scan. Required Build/Review proof is strict all-target/all-feature Clippy and complete `acdd` and `mcp` targets.
+8. Preserve the pre-existing digest-omission changes in the task engine files. Co-evolve the admitted task and Markdown reference pages here; `document-efficient-agent-navigation` owns the shared agent-skill and tool-catalog updates after this task. Include all newly admitted UX capabilities in the final independent documentation scan. Required Build/Review proof is strict all-target/all-feature Clippy and complete `acdd` and `mcp` targets.
 
 ### task: emit-compact-document-hint-once
 
@@ -473,7 +598,7 @@ status: planned
 task_ref: document-efficient-agent-navigation
 target: "Document the narrowed navigation, opaque SQL, diagnostic errors, and explicit worktree selection"
 proof_policy: direct-proof
-contract_revision: 4
+contract_revision: 5
 depends_on:
   - preserve-read-only-sql-results
   - resolve-diagnostic-scope-ambiguity
@@ -481,6 +606,9 @@ depends_on:
   - emit-compact-document-hint-once
   - deduplicate-task-inspection-presentation
   - universal-clickable-coordinates-and-heading-compaction
+  - normalize-and-resolve-milestone-references
+  - byte-bounded-single-symbol-snippets
+  - safe-source-snippet-continuation
 scope:
   - docs/reference/mcp-tools.md
   - docs/reference/tasks.md
@@ -494,85 +622,8 @@ status: planned
 
 1. Update the existing `skills/contextunity-forge/references/tool-catalog.md`. It is already in the authoring checkout.
 2. Tell agents to reuse search previews, call `get_code_snippet` only for a range the preview does not contain, and choose `code_map_inspect` for one declaration and `code_map_explain` for relationships.
-3. Document opaque SQL boundaries, preserved structural JSON, the fixture-scoped inspect byte budget, `PATH_NOT_INDEXED`, and aspect validation.
+3. Document opaque SQL boundaries, preserved structural JSON, the fixture-scoped inspect byte budget, `PATH_NOT_INDEXED`, aspect validation, milestone aliases and task-to-parent resolution provenance, byte-bounded full-symbol snippets, and safe source-continuation inference.
 4. Tell agents to pass `worktree` when the MCP server root is not the checkout they are editing. Leave default server-root selection to `docs/plans/universal-multi-worktree-resolution.md`.
-
-### task: byte-bounded-single-symbol-snippets
-
-```yaml
-task_ref: byte-bounded-single-symbol-snippets
-target: "Return a complete single-symbol snippet when it fits the response byte budget instead of imposing a 500-line ceiling"
-proof_policy: seam-test-first
-contract_revision: 3
-depends_on:
-  - document-efficient-agent-navigation
-scope:
-  - src/core/response.rs
-  - src/db/symbols.rs
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - src/mcp/response.rs
-  - src/cli/mod.rs
-  - tests/query_context/diagnostics_and_source.rs
-  - tests/mcp/context.rs
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
-  - docs/reference/mcp-tools.md
-  - docs/reference/configuration.md
-  - docs/reference/cli.md
-  - docs/runbooks/limits-and-freshness.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/tool-catalog.md
-invariants:
-  - "SINGLE-SYMBOL-BYTE-BOUND: Complete symbol source is limited by the configured serialized response budget, not an implicit 500-line ceiling. Exact source boundaries, explicit smaller requests, and byte-safe continuation remain enforced."
-status: planned
-```
-
-#### Acceptance
-
-1. `get_code_snippet` for one resolved function, method, or test returns its entire body on the first request when the caller has not requested a smaller body and the serialized response fits the active byte budget, including a body longer than 500 lines. Do not silently concatenate multiple declarations or return unrelated source.
-2. Remove the implicit 500-line clamp from this full-symbol request path, including input normalization and the fixed source-preview sub-budget. Explicit smaller `max_body_lines` values still bound the requested slice. Preserve configured default previews for inspect/explain unless the caller explicitly requests the full-symbol behavior.
-3. Use the existing configured response ceiling, currently at most 64 KiB; the user's 64-128 KiB example does not authorize increasing the global cap. Count escaped UTF-8 source, metadata, Markdown/JSON framing, and the existing response envelope under the same budgeting rules as other responses. Do not return an over-budget payload or discard source merely because the old 8 KiB source sub-budget was reached.
-4. When the full symbol exceeds the response budget, retain bounded paging with truthful offsets, `has_more`, omitted counts, and continuation hints. Preserve oversized-single-line handling, checked offset arithmetic, indexed-digest verification, stale-generation rejection, linked-workspace confinement, and symlink/traversal rejection.
-5. Extend the existing source/MCP seams with a greater-than-500-line body that fits, an explicit smaller line request, an escaped/non-ASCII body near the byte boundary, an over-budget body, and a too-large single line. Exercise CLI/MCP output and configured smaller budgets. Mutations restoring either the 500-line clamp or 8 KiB sub-budget must fail the fitting-body case; mutations bypassing the response ceiling must fail the overflow case.
-6. Update the existing tool, configuration, CLI, runbook, and agent-navigation guidance in this task. The limits-and-freshness runbook distinguishes byte-bounded full-symbol `get_code_snippet` from preserved configured inspect/explain previews. Required Build/Review checks are strict all-target/all-feature Clippy and the complete `query_context` and `mcp` targets, not only the new focused case.
-
-### task: safe-source-snippet-continuation
-
-```yaml
-task_ref: safe-source-snippet-continuation
-target: "Recover an omitted source continuation generation only when the prior source request proves the active snapshot is unchanged"
-proof_policy: seam-test-first
-contract_revision: 2
-depends_on:
-  - byte-bounded-single-symbol-snippets
-scope:
-  - src/mcp/server.rs
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - src/db/symbols.rs
-  - src/core/response.rs
-  - src/cli/mod.rs
-  - tests/mcp/context.rs
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
-  - tests/query_context/diagnostics_and_source.rs
-  - docs/reference/mcp-tools.md
-  - docs/reference/mcp-markdown-contracts.md
-  - docs/reference/cli.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/tool-catalog.md
-invariants:
-  - "SOURCE-CONTINUATION-SNAPSHOT: Auto-heal never combines source pages from different snapshots, sessions, selected worktrees, databases, or symbols. Explicit generation validation remains authoritative."
-status: planned
-```
-
-#### Acceptance
-
-1. For a source continuation with `source_offset > 0` and no explicit `generation`, reuse the prior successful source page's generation only when the same MCP session has an unambiguous matching request and the selected worktree's active generation still equals that captured generation. Never substitute the current hash without evidence of the previous page's snapshot.
-2. Keep any inferred continuation state bounded and session-local, keyed by resolved workspace/database identity and exact symbol/request identity. Only successfully returned source pages seed it; failed, oversized, unrelated, or source-disabled requests do not. Inference must not leak between parallel requests, sessions, worktrees, linked workspace sources, or selectors that resolve to different symbols. No durable task-store or code-index writes are required for this convenience.
-3. An explicit generation always uses the existing validation path, including stale rejection. After an index change, unknown prior request, restart, or ambiguous cached match, fail closed with an actionable error explaining that the caller must restart at `source_offset=0` or provide the previous page's generation. A stateless CLI continuation without that proof gets the same actionable requirement rather than guessing a generation.
-4. Preserve source-file digest checks and validation within the same read snapshot used for source extraction; a change between inference and reading cannot produce a mixed-version success. Missing or inferred tokens must not relax unrelated collection pagination requirements.
-5. Extend existing production-seam cases for an unchanged first-page/continuation sequence with omitted generation, explicit valid and stale tokens, an intervening source/index change, a new session, different worktrees and symbols, ambiguous/failed seed requests, source-disabled requests that must not seed state, bounded-cache eviction, concurrent requests, and a stateless CLI continuation that returns the actionable token/restart error. Assert the chosen finite cache bound and behavior at and beyond it. Mutation checks must reject unconditional active-generation substitution, missing workspace identity, omitted generation validation, unbounded retention, seeding from a source-disabled result, and token-free stateless CLI continuation. Document successful inference without exposing internal cache contents.
-6. This task may add only the source-continuation state to the existing MCP server owner; the deferred default-worktree selection behavior remains out of scope. Co-evolve the admitted tool/CLI/agent guidance. Run strict all-target/all-feature Clippy and complete `mcp` and `query_context` targets at Build and Review.
 
 ### task: response-budget-96kib-and-graceful-task-list-truncation
 
@@ -580,48 +631,56 @@ status: planned
 task_ref: response-budget-96kib-and-graceful-task-list-truncation
 target: "Increase the MCP response budget to 96 KiB and implement graceful boundary truncation with scoped task listing and subtask checkboxes"
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 3
 depends_on:
   - normalize-and-resolve-milestone-references
+  - safe-source-snippet-continuation
 scope:
   - src/core/response.rs
   - src/mcp/response.rs
   - src/mcp/tools.rs
+  - src/db/tasks_store/mod.rs
   - src/engine/tasks/mod.rs
   - src/engine/tasks/workspaces.rs
   - src/core/format/lifecycle.rs
   - src/cli/mod.rs
+  - src/cli/task.rs
   - tests/mcp/context.rs
   - tests/mcp/tool_evolution/mcp_boundaries.rs
   - tests/acdd/tasks.rs
+  - tests/acdd/mcp.rs
+  - docs/adr/0011-bounded-mcp-response-budgets.md
   - docs/reference/mcp-tools.md
   - docs/reference/configuration.md
   - docs/reference/cli.md
+  - docs/reference/tasks.md
+  - docs/reference/mcp-markdown-contracts.md
   - skills/contextunity-forge/SKILL.md
+  - skills/contextunity-forge/references/tool-catalog.md
 invariants:
   - "RESPONSE-BUDGET-96KIB-CEILING: The serialized response budget ceiling is increased to 96 KiB (98,304 bytes). Payloads that fit must not be rejected or arbitrarily truncated."
   - "GRACEFUL-BOUNDARY-TRUNCATION: Overflowing responses trim collection items (such as 'tasks' in task_list and 'items' in search) cleanly at item boundaries rather than failing with hard 'Output exceeds the response byte limit' errors. A truthful pagination and continuation hint with active filters is attached."
-  - "TASK-LIST-WORKTREE-CONFINEMENT: task_list defaults to the active milestone and tasks for the current worktree, omitting archived milestone records. It supports explicit status filtering and pagination (limit: 30, offset: 0) and renders subtasks with markdown checkboxes (- [x], - [ ])."
+  - "TASK-LIST-WORKTREE-CONFINEMENT: task_list uses the existing selected CLI/server root and namespace, defaults to ready tasks in its unique active milestone, and excludes archived records from active defaults. Task-view pagination is snapshot-bound independently of the code-index generation; cancelled subtasks never appear completed."
 status: planned
 ```
 
 #### Acceptance
 
-1. Increase the default response budget constant (`MAX_OUTPUT_BYTES`) from 64 KiB to 96 KiB (`98_304` bytes) in `src/core/response.rs` and `src/mcp/response.rs`. Ensure JSON framing and Markdown responses honor this new ceiling uniformly across MCP tools.
-2. In `src/mcp/response.rs` and response trimmer: Replace hard error responses on oversized structured output with graceful boundary truncation. When a response exceeds the 96 KiB ceiling, trim collection arrays at element boundaries (specifically supporting `"tasks"` in `task_list` as well as `"items"` in search results). Retain intact tasks and subtasks; never truncate in the middle of a UTF-8 character, token, or task record. Attach an actionable hint indicating total available items, the number omitted, and the exact continuation filter/offset parameters.
+1. Implement the owner-approved 96 KiB (`98_304` bytes) default and maximum from [ADR 0011](../adr/0011-bounded-mcp-response-budgets.md) in the canonical response policy and its MCP consumers. Configured smaller limits remain authoritative. Ensure JSON framing and Markdown responses honor this ceiling uniformly across MCP tools; budget preservation means preserving bounded serialization, not retaining the superseded numeric ceiling.
+2. In `src/mcp/response.rs` and the response trimmer, trim overflowing collections at intact item boundaries, supporting the existing `items` pages and the `task_list` `tasks` array. Preserve each retained task and all its subtasks, UTF-8 validity, metadata, active filters, and snapshot token. For task pages, `pagination` reports `total`, `limit`, `offset`, `returned`, `next_offset`, `has_more`, the logical task-view `generation`, and the number of requested-page items omitted by byte trimming. `total` counts all matching tasks before slicing; `next_offset` advances by the number actually returned, not the requested limit, and is absent at the end. A continuation hint repeats the effective canonical workspace/milestone/status/detail filters and generation. If one intact requested record or the required metadata cannot fit even alone, return a bounded actionable budget error identifying the case and suggesting a narrower or compact request, rather than an empty non-advancing continuation or a partial record.
 3. In `task_list` (MCP tool and CLI):
-   - Scope default: If milestone is unspecified, scope to the current worktree's active milestone and its open/active tasks instead of listing all historical repository milestones.
+   - Scope default: Use the root and namespace already selected by CLI `--root` or the current MCP server task handler. This task does not change the deferred default-worktree resolver or infer an agent's unrelated checkout. When no milestone is supplied under the default active-milestone filter, choose its unique active milestone; no active milestone returns an empty result, and multiple active milestones return an actionable ambiguity error listing candidates instead of choosing one or leaking unrelated history. Explicit milestone selection and explicit all-milestone selection retain their existing meaning and workspace confinement.
    - Archive exclusion: Exclude archived and handed-off milestones and their tasks from active defaults unless `--all` or `--milestone-status all` is explicitly requested.
-   - Pagination: Support `limit` (defaulting to 30) and `offset` (defaulting to 0) in tool arguments and CLI options.
-   - Filtering: Support filtering by task status (`ready`, `in_progress`, `completed`, `all`) with full CLI/MCP parity.
-   - Formatting: Render tasks and subtasks with Markdown task lists/checkboxes (`- [x]` for completed, `- [ ]` for incomplete/in-progress/ready/blocked) for clean agent consumption.
-4. `get_code_snippet`: When `source_offset > 0` and continuation fails or cannot be auto-inferred, return an actionable continuation hint explaining why generation is required, what active snapshot is expected, or how to restart at `source_offset=0`.
+   - Pagination: Support `limit` from 1 through 100 (default 30), nonnegative checked `offset` (default 0), and an optional task-view `generation` in tool arguments and CLI options. Capture the filtered task records and rendered subtask state under one task-store read snapshot. Bind the token to that logical state, canonical workspace/milestone identity, and normalized filters, independently of any code-index generation. A continuation with `offset > 0` requires the previous task-page token; a changed logical task view or different filters rejects it with a restart hint. Index-only changes do not invalidate an unchanged task view. This requires no new durable token cache or task-store schema.
+   - Filtering: Preserve the omitted-status default `ready` and every existing status value: `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, and `all`, with full CLI/MCP parity. An explicit all-task-status filter does not implicitly include archived milestones; all-milestone selection remains separately explicit.
+   - Formatting: Render tasks and subtasks with Markdown checkboxes, using `- [x]` only for completed records and `- [ ]` for all other statuses. Keep the explicit status label, including `parked` and `cancelled`; cancellation does not grant completion credit.
+4. Preserve the actionable missing-generation and restart behavior delivered by `safe-source-snippet-continuation`. This response-budget task does not introduce a second continuation owner or relax generation validation.
 5. Seam tests in `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`, and `tests/acdd/tasks.rs` verify:
-   - 96 KiB payload delivery without error.
-   - Graceful trimming of `"tasks"` array when milestone task count exceeds 96 KiB, verifying no panic, valid JSON/Markdown, and presence of pagination hint.
-   - `task_list` pagination (`limit: 30`, `offset`) and status filtering.
-   - Markdown checkbox rendering of subtasks.
-   - Default exclusion of completed/archived milestones from active worktree list.
+   - Serialized responses below, at, and above the 96 KiB ceiling and a configured smaller ceiling, counting escaped UTF-8 content and framing.
+   - Whole-record trimming of both `tasks` and `items`, including a non-ASCII task and nested subtasks at the boundary. Assert exact filtered totals, returned and omitted counts, advancing next offset, generation, and repeated continuation filters; exercise a final page, an empty match, and one individually over-budget record without panic, invalid JSON/Markdown, or a continuation loop.
+   - Default and explicit task-list pagination, limit values 0, 1, 30, 100, and 101, checked offset overflow, all existing statuses, no/one/multiple active milestones in the selected root, explicit archived/all selection, and linked-workspace confinement.
+   - Valid and stale task-view continuation tokens, changed task and subtask state, changed filters, index-only changes, and a consistent task/subtask read snapshot. Mutations using a code-index token, ignoring subtask changes, or advancing by requested rather than emitted count must fail the applicable production seam.
+   - Checkbox/status rendering for completed, ready, in-progress, blocked, parked, and cancelled subtasks, with no cancellation-as-completion regression.
 6. Documentation and skills update:
    - Co-evolve `docs/reference/mcp-tools.md`, `docs/reference/cli.md`, `docs/reference/configuration.md`, and `skills/contextunity-forge/SKILL.md` to reflect the 96 KiB response ceiling, `task_list` filters and pagination parameters, and boundary truncation behavior.
 

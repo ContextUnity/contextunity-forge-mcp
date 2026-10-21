@@ -3,6 +3,7 @@ use serde_json::{Map, Value};
 /// Renders standalone blackboard pages without changing their stored order or evidence.
 pub(super) fn render_blackboard(value: &Value, title: &str) -> String {
     let mut output = format!("# {}\n\n", escape_heading(title));
+    output.push_str(&render_resolution_notice(&value["resolution"]));
     if let Some(message) = value.get("message") {
         render_message(&mut output, message);
         return output;
@@ -14,7 +15,7 @@ pub(super) fn render_blackboard(value: &Value, title: &str) -> String {
         .map(Vec::as_slice)
         .unwrap_or_default();
     if messages.is_empty() && value.get("pagination").is_none() {
-        render_fields(&mut output, value, 0, &[]);
+        render_fields(&mut output, value, 0, &["resolution"]);
         return output;
     }
     let mut groups: Vec<(String, Vec<&Value>)> = Vec::new();
@@ -55,6 +56,19 @@ pub(super) fn render_blackboard(value: &Value, title: &str) -> String {
         output.push('\n');
     }
     output
+}
+
+pub(super) fn render_resolution_notice(resolution: &Value) -> String {
+    if resolution.get("kind").and_then(Value::as_str) != Some("task_parent") {
+        return String::new();
+    }
+    let Some(input) = resolution.get("input").and_then(Value::as_str) else {
+        return String::new();
+    };
+    let Some(milestone_id) = resolution.get("milestone_id").and_then(Value::as_str) else {
+        return String::new();
+    };
+    format!("[auto-resolved task '{input}' to parent milestone '{milestone_id}']\n\n")
 }
 
 fn render_message(output: &mut String, message: &Value) {

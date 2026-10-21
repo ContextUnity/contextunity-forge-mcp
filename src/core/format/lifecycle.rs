@@ -100,6 +100,9 @@ fn render_task_list(value: &Value) -> String {
         render_field(&mut output, "result", value, 0, &mut state);
         return output;
     };
+    if let Some(resolution) = object.get("resolution") {
+        output.push_str(&super::coordination::render_resolution_notice(resolution));
+    }
 
     if let Some(tasks) = object.get("tasks").and_then(Value::as_array) {
         output.push_str("\n## Tasks\n");
@@ -122,7 +125,7 @@ fn render_task_list(value: &Value) -> String {
         }
     }
 
-    let remaining = fields_without(object, &["tasks", "workspaces"]);
+    let remaining = fields_without(object, &["tasks", "workspaces", "resolution"]);
     if !remaining.is_empty() {
         output.push_str("\n## Listing details\n");
         render_fields(&mut output, &remaining, 0, &mut state);

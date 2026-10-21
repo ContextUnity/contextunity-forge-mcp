@@ -51,6 +51,8 @@ fn blackboard_persists_task_scoped_messages_in_chronological_order() {
 }
 #[test]
 fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
+    use contextunity_forge_mcp::engine::tasks as engine_tasks;
+
     let root = ScopedWorkspace::new("forge_blackboard_hierarchy");
     let manifest = "---\nid: m-blackboard\ntitle: Blackboard\ndoc_type: contract\nstatus: active\n---\n# Blackboard\n```yaml\ntask_ref: first\ntarget: Coordinate task agents\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Coordinate another task\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
@@ -77,7 +79,8 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
         .subtask_update(&first, "active-slice", "in_progress", None)
         .unwrap();
 
-    let call = |args| tasks::blackboard(&root.0, serde_json::from_value(args).unwrap(), "test");
+    let call =
+        |args| engine_tasks::blackboard(&root.0, serde_json::from_value(args).unwrap(), "test");
     let milestone_post = call(json!({
         "action":"post","scope":"milestone",
         "milestone_ref":"docs/milestones/010-blackboard.md",
@@ -138,6 +141,97 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
     }))
     .unwrap();
     assert_eq!(still_isolated["messages"][0]["id"], milestone_message_id);
+
+    let snapshot = || {
+        let mut statement = store
+            .connection
+            .prepare(
+                "SELECT id, milestone_ref, task_id, subtask_ref FROM task_blackboard ORDER BY id",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    let before_fallback = snapshot();
+    let canonical_milestone = store
+        .milestone_scope_ref("docs/milestones/010-blackboard.md")
+        .unwrap();
+    let task_scope_does_not_fallback = call(json!({
+        "action":"read",
+        "scope":"task",
+        "milestone_ref":"first"
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        task_scope_does_not_fallback.contains("not found"),
+        "task-scoped milestone filters remain direct milestone selectors: {task_scope_does_not_fallback}"
+    );
+    assert_eq!(snapshot(), before_fallback);
+    for action in ["read", "inspect"] {
+        for reference in [first.as_str(), "first"] {
+            let resolved = call(json!({
+                "action":action,
+                "scope":"milestone",
+                "milestone_ref":reference
+            }))
+            .unwrap();
+            assert_eq!(resolved["messages"], milestone_page["messages"]);
+            assert_eq!(resolved["messages"][0]["id"], milestone_message_id);
+            assert_eq!(resolved["resolution"]["kind"], "task_parent");
+            assert_eq!(resolved["resolution"]["input"], reference);
+            assert_eq!(resolved["resolution"]["task_id"], first);
+            assert_eq!(resolved["resolution"]["milestone_ref"], canonical_milestone);
+            assert_eq!(
+                snapshot(),
+                before_fallback,
+                "fallback {action} must not migrate, duplicate, or change scoped messages"
+            );
+        }
+    }
+
+    let fallback_post = call(json!({
+        "action":"post",
+        "scope":"milestone",
+        "milestone_ref":"first",
+        "topic":"notes",
+        "payload":"fallback post goes to the canonical milestone scope"
+    }))
+    .unwrap();
+    assert_eq!(fallback_post["resolution"]["kind"], "task_parent");
+    assert_eq!(fallback_post["resolution"]["task_id"], first);
+    let after_fallback_post = snapshot();
+    assert_eq!(after_fallback_post.len(), before_fallback.len() + 1);
+    assert_eq!(
+        after_fallback_post.last().unwrap().0 as u64,
+        fallback_post["id"]
+    );
+    assert_eq!(after_fallback_post.last().unwrap().1, canonical_milestone);
+    assert_eq!(after_fallback_post.last().unwrap().2, None);
+    assert_eq!(after_fallback_post.last().unwrap().3, None);
+    assert_eq!(
+        call(json!({
+            "action":"read",
+            "scope":"milestone",
+            "milestone_ref":"docs/milestones/010-blackboard.md"
+        }))
+        .unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "one fallback post must add exactly one canonical-scope message"
+    );
 }
 
 #[test]

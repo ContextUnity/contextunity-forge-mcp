@@ -326,6 +326,61 @@ fn milestone_projects_in_dir(directory: &Path) -> Result<(BTreeSet<String>, bool
     Ok((projects, has_undeclared))
 }
 
+struct NormalizedMilestoneReference {
+    direct_path: Option<String>,
+    selector: String,
+}
+
+fn normalize_milestone_reference(reference: &str) -> Option<NormalizedMilestoneReference> {
+    if Path::new(reference)
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let rooted = reference.starts_with('/');
+    let unrooted = reference.strip_prefix('/').unwrap_or(reference);
+    if unrooted.starts_with('/') {
+        return None;
+    }
+
+    let (direct_path, selector) = if let Some(selector) = unrooted
+        .strip_prefix("docs/milestones/")
+        .or_else(|| unrooted.strip_prefix("milestones/"))
+    {
+        (Some(unrooted.to_owned()), selector)
+    } else if unrooted.contains('/') {
+        return None;
+    } else {
+        (None, unrooted)
+    };
+
+    if selector.is_empty() || selector.contains('/') {
+        return None;
+    }
+    let selector = selector.strip_suffix(".md").unwrap_or(selector);
+    if selector.is_empty() {
+        return None;
+    }
+
+    // A leading slash is accepted only for documented short milestone aliases,
+    // not as a general way to reinterpret an absolute filesystem path.
+    if rooted && direct_path.is_none() {
+        let tagged_number = selector.split_once('-').is_some_and(|(_, number)| {
+            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+        });
+        let numeric = selector.bytes().all(|byte| byte.is_ascii_digit());
+        if !tagged_number && !numeric {
+            return None;
+        }
+    }
+
+    Some(NormalizedMilestoneReference {
+        direct_path,
+        selector: selector.to_owned(),
+    })
+}
+
 pub(super) struct Workspace {
     pub name: String,
     pub root: PathBuf,
@@ -414,6 +469,7 @@ impl Workspace {
         object.insert("workspace_root".into(), json!(self.root));
         object.insert("agents_guidance".into(), json!(self.guidance));
         object.insert("workspace".into(), json!(self.name));
+        object.remove("digest");
         shorten_task_response_commits(&mut value);
         Ok(value)
     }
@@ -665,47 +721,64 @@ impl Workspace {
         if reference.is_empty() {
             bail!("milestone reference cannot be empty");
         }
-        let mut reference_components = Path::new(reference).components();
-        let is_path_reference = !matches!(
-            reference_components.next(),
-            Some(std::path::Component::Normal(_))
-        ) || reference_components.next().is_some();
+        let normalized = normalize_milestone_reference(reference);
+        let path_reference = normalized
+            .as_ref()
+            .and_then(|reference| reference.direct_path.as_deref())
+            .unwrap_or(reference);
+        let is_path_reference = normalized
+            .as_ref()
+            .is_some_and(|reference| reference.direct_path.is_some())
+            || if reference.starts_with('/') && normalized.is_some() {
+                false
+            } else {
+                let mut components = Path::new(path_reference).components();
+                !matches!(components.next(), Some(std::path::Component::Normal(_)))
+                    || components.next().is_some()
+            };
         if is_path_reference {
-            let direct = confined_path(&self.root, reference)?;
-            if !direct.is_file() {
+            let direct = confined_path(&self.root, path_reference)?;
+            if direct.is_file() {
+                let relative = direct
+                    .strip_prefix(&self.root)
+                    .context("resolved milestone path escaped workspace root")?;
+                let selected = relative.to_string_lossy().into_owned();
+                if direct
+                    .extension()
+                    .is_some_and(|extension| extension == "md")
+                {
+                    // Explicit paths are validated as milestone manifests by the
+                    // registry after resolution. Keep path references compatible
+                    // with workspaces whose manifests live outside numbered dirs.
+                    return Ok(Some(selected));
+                }
+                bail!(
+                    "milestone path '{}' is not a Markdown manifest in workspace '{}'",
+                    reference,
+                    self.name
+                );
+            }
+            if normalized
+                .as_ref()
+                .is_none_or(|reference| reference.direct_path.is_none())
+            {
                 return Ok(None);
             }
-            let relative = direct
-                .strip_prefix(&self.root)
-                .context("resolved milestone path escaped workspace root")?;
-            let selected = relative.to_string_lossy().into_owned();
-            if direct
-                .extension()
-                .is_some_and(|extension| extension == "md")
-            {
-                // Explicit paths are validated as milestone manifests by the
-                // registry after resolution. Keep path references compatible
-                // with workspaces whose manifests live outside the numbered
-                // directories used by implicit discovery.
-                return Ok(Some(selected));
-            }
-            bail!(
-                "milestone path '{}' is not a Markdown manifest in workspace '{}'",
-                reference,
-                self.name
-            );
         }
         let manifests = self.manifests()?;
         if manifests.is_empty() {
             return Ok(None);
         }
 
+        let selector = normalized
+            .as_ref()
+            .map_or(reference, |reference| reference.selector.as_str());
+
         let mut exact_matches = Vec::new();
         let mut fuzzy_matches = Vec::new();
 
-        let numeric_ref = if !reference.is_empty() && reference.bytes().all(|b| b.is_ascii_digit())
-        {
-            reference.parse::<u64>().ok()
+        let numeric_ref = if !selector.is_empty() && selector.bytes().all(|b| b.is_ascii_digit()) {
+            selector.parse::<u64>().ok()
         } else {
             None
         };
@@ -726,28 +799,28 @@ impl Workspace {
                 None
             };
 
-            if id.as_deref() == Some(reference)
-                || stem == reference
-                || file_name == reference
-                || tag_prefix.as_deref() == Some(reference)
+            if id.as_deref() == Some(selector)
+                || stem == selector
+                || file_name == selector
+                || tag_prefix.as_deref() == Some(selector)
             {
                 exact_matches.push(manifest.clone());
                 continue;
             }
 
             if let Some(target_num) = numeric_ref {
-                if prefix_num == Some(target_num) || prefix_str == reference {
+                if prefix_num == Some(target_num) || prefix_str == selector {
                     exact_matches.push(manifest.clone());
                     continue;
                 }
             }
 
-            if slug == reference
-                || reference.strip_prefix("m-").is_some_and(|r| r == slug)
+            if slug == selector
+                || selector.strip_prefix("m-").is_some_and(|r| r == slug)
                 || id
                     .as_deref()
                     .and_then(|i| i.strip_prefix("m-"))
-                    .is_some_and(|i| i == reference)
+                    .is_some_and(|i| i == selector)
             {
                 fuzzy_matches.push(manifest.clone());
             }
@@ -854,6 +927,32 @@ pub(super) struct Registry {
     owners: std::collections::BTreeMap<String, String>,
     aliases: std::collections::BTreeMap<String, String>,
 }
+
+pub(super) struct ResolvedMilestoneReference<'a> {
+    pub workspace: &'a Workspace,
+    pub milestone_ref: String,
+    pub task_parent: Option<TaskParentResolution>,
+}
+
+pub(super) struct TaskParentResolution {
+    pub input: String,
+    pub task_id: String,
+    pub milestone_id: String,
+    pub milestone_ref: String,
+}
+
+impl TaskParentResolution {
+    pub fn value(&self) -> Value {
+        json!({
+            "kind": "task_parent",
+            "input": self.input,
+            "task_id": self.task_id,
+            "milestone_id": self.milestone_id,
+            "milestone_ref": self.milestone_ref,
+        })
+    }
+}
+
 impl Registry {
     pub fn open(&self, workspace: &Workspace) -> Result<TasksStore> {
         let mut store = workspace.open(&self.database)?;
@@ -1123,6 +1222,30 @@ impl Registry {
         workspace: Option<&str>,
         reference: &str,
     ) -> Result<(&Workspace, String)> {
+        self.find_milestone(workspace, reference)?
+            .ok_or_else(|| self.milestone_not_found(workspace, reference))
+    }
+
+    fn milestone_not_found(&self, workspace: Option<&str>, reference: &str) -> anyhow::Error {
+        if let Some(name) = workspace.filter(|name| *name != "all") {
+            anyhow::anyhow!(
+                "milestone reference '{}' not found in workspace '{}'",
+                reference,
+                name
+            )
+        } else {
+            anyhow::anyhow!(
+                "milestone reference '{}' not found in workspace selection",
+                reference
+            )
+        }
+    }
+
+    fn find_milestone(
+        &self,
+        workspace: Option<&str>,
+        reference: &str,
+    ) -> Result<Option<(&Workspace, String)>> {
         let primary = self.select(None)?;
         let mut found = match workspace {
             Some("all") => {
@@ -1162,19 +1285,7 @@ impl Registry {
         found.retain(|(candidate, path)| locations.insert((candidate.root.clone(), path.clone())));
 
         let (resolved_ws, path) = match found.len() {
-            0 => {
-                if let Some(name) = workspace.filter(|name| *name != "all") {
-                    bail!(
-                        "milestone reference '{}' not found in workspace '{}'",
-                        reference,
-                        name
-                    );
-                }
-                bail!(
-                    "milestone reference '{}' not found in workspace selection",
-                    reference
-                );
-            }
+            0 => return Ok(None),
             1 => found.pop().context("resolved milestone missing")?,
             _ => {
                 let matched_ws: Vec<&str> = found.iter().map(|(w, _)| w.name.as_str()).collect();
@@ -1192,6 +1303,101 @@ impl Registry {
             .parse_milestone_manifest(resolved_ws, &path, &text)
             .with_context(|| format!("invalid milestone manifest '{path}'"))?;
         let owner = self.owner(&format!("{}/{}", parsed.repository, parsed.project))?;
-        Ok((owner, path))
+        Ok(Some((owner, path)))
+    }
+
+    pub fn resolve_milestone_or_task_parent(
+        &self,
+        workspace: Option<&str>,
+        reference: &str,
+    ) -> Result<ResolvedMilestoneReference<'_>> {
+        let input = reference;
+        let reference = reference.trim();
+        if let Some((workspace, milestone_ref)) = self.find_milestone(workspace, reference)? {
+            return Ok(ResolvedMilestoneReference {
+                workspace,
+                milestone_ref,
+                task_parent: None,
+            });
+        }
+
+        let mut candidates = self.selected(workspace)?;
+        if workspace.is_none() {
+            candidates.truncate(1);
+        }
+        let mut matched = self.find_task_references(&candidates, reference)?;
+        if matched.is_empty() && workspace.is_none() {
+            let primary = self.select(None)?;
+            let remaining = self
+                .workspaces
+                .iter()
+                .filter(|candidate| candidate.name != primary.name)
+                .collect::<Vec<_>>();
+            matched = self.find_task_references(&remaining, reference)?;
+        }
+
+        match matched.len() {
+            0 => Err(self.milestone_not_found(workspace, reference)),
+            1 => {
+                let (workspace, task) = matched.pop().context("resolved task missing")?;
+                let full_path = confined_path(&workspace.root, &task.milestone_ref)?;
+                let text = std::fs::read_to_string(&full_path).with_context(|| {
+                    format!("unable to read parent milestone '{}'", task.milestone_ref)
+                })?;
+                let milestone = self
+                    .parse_milestone_manifest(workspace, &task.milestone_ref, &text)
+                    .with_context(|| {
+                        format!("invalid milestone manifest '{}'", task.milestone_ref)
+                    })?;
+                let owner =
+                    self.owner(&format!("{}/{}", milestone.repository, milestone.project))?;
+                if owner.repository != workspace.repository || owner.project != workspace.project {
+                    bail!("TASK_PROJECT_MISMATCH: task parent belongs to another workspace");
+                }
+                Ok(ResolvedMilestoneReference {
+                    workspace: owner,
+                    milestone_ref: task.milestone_ref.clone(),
+                    task_parent: Some(TaskParentResolution {
+                        input: input.to_owned(),
+                        task_id: task.task_id,
+                        milestone_id: milestone.id,
+                        milestone_ref: task.milestone_ref,
+                    }),
+                })
+            }
+            _ => {
+                let task_ids = matched
+                    .iter()
+                    .map(|(_, task)| task.task_id.as_str())
+                    .collect::<Vec<_>>();
+                bail!(
+                    "ambiguous task reference '{}' matches multiple tasks: {:?}",
+                    input,
+                    task_ids
+                );
+            }
+        }
+    }
+
+    fn find_task_references<'a>(
+        &self,
+        workspaces: &[&'a Workspace],
+        reference: &str,
+    ) -> Result<Vec<(&'a Workspace, crate::db::tasks_store::Task)>> {
+        let full_task_id = reference.contains(':');
+        let mut matches = Vec::new();
+        for workspace in workspaces {
+            let store = self.open(workspace)?;
+            let tasks = store.list(None, "all", None)?;
+            matches.extend(tasks.into_iter().filter_map(|task| {
+                let matches = if full_task_id {
+                    task.task_id == reference
+                } else {
+                    task.spec.task_ref == reference
+                };
+                matches.then_some((*workspace, task))
+            }));
+        }
+        Ok(matches)
     }
 }
