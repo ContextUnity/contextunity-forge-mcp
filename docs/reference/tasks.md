@@ -89,7 +89,12 @@ The single-workspace response puts `workspace_root`, `agents_guidance`, and
 `workspace` beside `tasks`. With `repository: "all"`, `workspaces` maps each
 `repository/project` namespace to those paths and its workspace name.
 Use `task_manage` with `action: "inspect"` to read the full task specification
-and attempts. Existing task IDs route claim, submit, inspect, reset, delete,
+and attempts. Inspect Markdown uses `## Task record`, separate from the claim
+context's `## Contract`, and renders equal scope, target, proof policy, and task
+invariant projections once. An extended write scope shows its initial paths and
+added paths separately. Distinct authority values and milestone invariants remain
+visible; inspect retains revisions, receipts, gates, attempts, and findings while
+omitting the contract digest. Existing task IDs route claim, submit, inspect, reset, delete,
 and scope extension to their owning namespace. Inspect and claim include absolute
 `workspace_root`, absolute `agents_guidance`, the milestone's local invariants,
 and stage-specific `workflow_guidance`. The latter gives `active_stage`,

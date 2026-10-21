@@ -77,6 +77,9 @@ pub(crate) fn render_blocker_callout(message: &Value) -> String {
 }
 
 fn render_manage(value: &Value) -> String {
+    if value.get("spec").is_some() {
+        return render_record(value, "task_manage", "Task management result");
+    }
     if value.get("context_bundle").is_some_and(Value::is_object)
         || (value.get("workflow_guidance").is_some_and(Value::is_object)
             && value.get("task_id").is_some()
@@ -279,6 +282,7 @@ fn render_context(value: &Value, heading: &str) -> String {
         "contract_revision",
         "worker_id",
         "worktree",
+        "digest",
         "milestone_ref",
         "context_bundle",
         "workflow_guidance",
@@ -380,10 +384,153 @@ fn render_record(value: &Value, title: &str, heading: &str) -> String {
         "contract_revision",
         "worker_id",
         "worktree",
+        "digest",
     ];
-    let fields = fields_without(object, &skip);
+    let fields = if title == "task_manage" && object.get("spec").is_some() {
+        task_inspection_fields(object, &skip)
+    } else {
+        fields_without(object, &skip)
+    };
     render_fields(&mut output, &fields, 0, &mut state);
     output
+}
+
+fn task_inspection_fields(object: &Map<String, Value>, skip: &[&str]) -> Map<String, Value> {
+    let mut fields = fields_without(object, skip);
+    let Some(mut spec) = object.get("spec").and_then(Value::as_object).cloned() else {
+        return fields;
+    };
+    let mut authority = object
+        .get("authority_snapshot")
+        .and_then(Value::as_object)
+        .cloned();
+
+    for (spec_key, authority_key, response_key) in [
+        ("target", "task_target", "goal"),
+        ("proof_policy", "task_proof_policy", "proof_policy"),
+    ] {
+        if let Some(value) = spec.get(spec_key) {
+            if authority
+                .as_ref()
+                .and_then(|snapshot| snapshot.get(authority_key))
+                == Some(value)
+            {
+                if let Some(snapshot) = authority.as_mut() {
+                    snapshot.remove(authority_key);
+                }
+            }
+            if fields.get(response_key) == Some(value) {
+                fields.remove(response_key);
+            }
+        }
+    }
+
+    if let (Some(current), Some(initial), Some(snapshot), Some(allowed)) = (
+        spec.get("scope").and_then(Value::as_array),
+        fields.get("initial_scope").and_then(Value::as_array),
+        authority.as_ref().and_then(|value| value.get("task_scope")),
+        fields.get("allowed_write_scope").and_then(Value::as_array),
+    ) {
+        let current = unique_scope_values(current);
+        let initial = unique_scope_values(initial);
+        if snapshot
+            .as_array()
+            .is_some_and(|scope| scope_values_equal(&initial, &unique_scope_values(scope)))
+            && scope_values_equal(&unique_scope_values(allowed), &current)
+        {
+            let presentation_scope = if scope_values_equal(&initial, &current) {
+                Some(Value::Array(current.clone()))
+            } else if let Some(added) = extended_scope_values(&initial, &current) {
+                let mut scope = Map::new();
+                scope.insert("initial_scope".into(), Value::Array(initial));
+                scope.insert("extended_scope".into(), Value::Array(added));
+                Some(Value::Object(scope))
+            } else {
+                None
+            };
+            if let Some(scope) = presentation_scope {
+                spec.insert("scope".into(), scope);
+                fields.remove("initial_scope");
+                fields.remove("allowed_write_scope");
+                if let Some(snapshot) = authority.as_mut() {
+                    snapshot.remove("task_scope");
+                }
+            }
+        }
+    }
+
+    if let Some(task_invariants) = spec.get("invariants").and_then(Value::as_array) {
+        if authority
+            .as_ref()
+            .and_then(|snapshot| snapshot.get("task_invariants"))
+            == spec.get("invariants")
+        {
+            let milestone_invariants = authority
+                .as_ref()
+                .and_then(|snapshot| snapshot.get("milestone_invariants"))
+                .and_then(Value::as_array)
+                .cloned();
+            if let Some(snapshot) = authority.as_mut() {
+                snapshot.remove("task_invariants");
+            }
+            if let Some(applicable) = fields
+                .get("applicable_invariants")
+                .and_then(Value::as_array)
+                .cloned()
+            {
+                let remaining = applicable
+                    .iter()
+                    .filter(|invariant| {
+                        !task_invariants.contains(invariant)
+                            && !milestone_invariants
+                                .as_ref()
+                                .is_some_and(|items| items.contains(invariant))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if remaining.len() != applicable.len() {
+                    if remaining.is_empty() {
+                        fields.remove("applicable_invariants");
+                    } else {
+                        fields.insert("applicable_invariants".into(), Value::Array(remaining));
+                    }
+                }
+            }
+        }
+    }
+
+    fields.insert("spec".into(), Value::Object(spec));
+    if let Some(authority) = authority {
+        fields.insert("authority_snapshot".into(), Value::Object(authority));
+    }
+    fields
+}
+
+fn unique_scope_values(values: &[Value]) -> Vec<Value> {
+    let mut unique = Vec::with_capacity(values.len());
+    for value in values {
+        if !unique.contains(value) {
+            unique.push(value.clone());
+        }
+    }
+    unique
+}
+
+fn scope_values_equal(left: &[Value], right: &[Value]) -> bool {
+    left.len() == right.len() && left.iter().all(|value| right.contains(value))
+}
+
+fn extended_scope_values(initial: &[Value], current: &[Value]) -> Option<Vec<Value>> {
+    if initial.len() >= current.len() || !initial.iter().all(|value| current.contains(value)) {
+        return None;
+    }
+    Some(
+        current
+            .iter()
+            .filter(|value| !initial.contains(value))
+            .cloned()
+            .collect(),
+    )
 }
 
 fn render_blackboard(output: &mut String, messages: &[Value], state: &mut RenderState) {
@@ -604,6 +751,8 @@ fn display_label(key: &str) -> &str {
         "worktree" => "Worktree",
         "goal" | "target" => "Target",
         "allowed_scope" | "allowed_write_scope" => "Write scope",
+        "initial_scope" => "Initial scope",
+        "extended_scope" => "Extended scope",
         "proof_policy" => "Proof policy",
         "depends_on" => "Dependencies",
         "applicable_invariants" | "invariants" => "Invariants",

@@ -275,17 +275,67 @@ status: planned
 
 ```yaml
 task_ref: deduplicate-task-inspection-presentation
-target: "Render equal inspect contract fields once under the task-record heading"
+target: Render equal inspect contract fields once under the task-record heading
 proof_policy: seam-test-first
-contract_revision: 3
+contract_revision: 4
 scope:
-  - src/core/format/lifecycle.rs
-  - tests/acdd/
-  - docs/reference/tasks.md
-  - docs/reference/mcp-markdown-contracts.md
+- src/core/format/lifecycle.rs
+- src/core/format/mod.rs
+- tests/acdd/
+- docs/reference/tasks.md
+- docs/reference/mcp-markdown-contracts.md
 invariants:
-  - "TASK-EVIDENCE-PRESERVATION: Equal scope, target, proof policy, and task invariants collapse in presentation. The contract digest hash is omitted. Milestone invariants, revisions, receipts, gates, attempts, and findings stay visible."
-status: planned
+- 'TASK-EVIDENCE-PRESERVATION: Equal scope, target, proof policy, and task invariants collapse in presentation. The contract digest hash is omitted. Milestone invariants, revisions, receipts, gates, attempts, and findings stay visible.'
+status: completed
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-21T18:26:34.056402164+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test acdd
+      exit_code: 0
+      tests_passed: 116
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. Candidate a1a374226935d75fda0fb83a3c7a70973ed8c85d based on 5541f0ba7c82fd29c7ec3e65fdeeab799f7dbdea. Six-path scoped diff SHA-256 f0c0599759e7313cfbd4eab66b29a5832d437ddcfaba2c37be2b851a2593fa7c matches build note 912 before and after verification. Candidate changes are within lifecycle.rs, tests/acdd/, and the two admitted reference pages; format/mod.rs is in scope but unchanged. Pre-existing engine/tasks/mod.rs and workspaces.rs plus out-of-scope mcp/context.rs and query_context/symbol_context.rs remain untouched.
+        claims:
+          applicable: true
+          evidence: 'PASS. The live MCP task_manage inspect response renders ## Task record and matches core::format::render; task claim context still renders ## Contract. Equal scope, target, proof-policy, and task-invariant projections collapse only when matching. Initial/extended scopes preserve additions; unequal authority values and milestone invariants remain visible. The contract digest is omitted while revisions, receipt, gates, attempts, and findings remain. The fixture verifies every scope path once and Markdown UTF-8 byte length below compact JSON. Docs match. Historical red for the unchanged seam on base 5541f0b before implementation is preserved in raw notes 905/907 and the revision-4 amendment note 911; current candidate passes.'
+        concurrency:
+          applicable: true
+          evidence: PASS. Changes are pure presentation over a resolved Value; no task-store writes, revision fencing, receipt handling, transactions, locks, or Git behavior changed. The ACDD suite, including lifecycle/concurrency seams, passes 116 tests.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Actual MCP linked-workspace task inspection remains exercised. The formatter performs no filesystem, workspace, project, profile, or Git access, and no out-of-scope workspace/task-engine source was changed.
+        administration:
+          applicable: true
+          evidence: PASS. No schema, migration, profile/configuration, credentials, hooks, or privileged delivery code changed. Candidate remains based on validated HEAD 5541f0b; task delivery and receipt remain Forge-managed.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SINGLE-DOCUMENT-PROJECTION: Symbol inspection exposes one documentation page per cited section, with doc_id, path, section title, document type, citation line, and a resolved file:/// URI. Explain keeps its own documents page and does not grow a second inspect projection.'
+    - 'INV-COMPACT-DOC-HINT-ONCE: A compact get_doc response emits each omitted-detail hint once. Referenced-symbol rows keep the citing section and citation line. Full detail still returns candidate evidence.'
+    - 'INV-NARROWEST-NAVIGATION: Agent guidance selects the narrowest useful tool, reuses sufficient previews, and passes worktree when the server root is not the checkout being edited.'
+    - 'INV-RESPONSE-CONTRACT-PRESERVATION: Deduplication preserves pagination, generation validation, detail-level behavior, response budgets, exact evidence, and CLI/MCP parity.'
+    - 'INV-READ-ONLY-SQL-FIDELITY: Opaque user SQL keeps literals, comments, trailing semicolons of one statement, requested columns, and SQLite text. Structural graph rows keep parsed details and stripped internal ids. Writes and multiple statements stay rejected.'
+    - 'INV-TASK-PRESENTATION-DEDUPLICATION: Inspect Markdown uses the task-record heading and renders equal scope, target, proof policy, and task invariants once. A fixture with those repeated fields is smaller in Markdown than in JSON. The contract digest hash is omitted from task responses. Revisions, receipts, gates, attempts, and findings stay visible.'
+    - 'INV-EXPLICIT-DIAGNOSTIC-SCOPE: An unindexed analyze or lint target fails with PATH_NOT_INDEXED. An indexed scope with zero diagnostics stays success. The diagnostics and cycles mode errors stay specific. Unsupported overview aspects fail with the allowed set.'
+    - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Presentation attachment resolves a workspace path before file_uri_for_path. A resolvable coordinate is a file:/// link. Markdown omits the (link unavailable) fallback.'
+    - 'TASK-EVIDENCE-PRESERVATION: Equal scope, target, proof policy, and task invariants collapse in presentation. The contract digest hash is omitted. Milestone invariants, revisions, receipts, gates, attempts, and findings stay visible.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

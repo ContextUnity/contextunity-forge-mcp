@@ -1,4 +1,5 @@
 use crate::common::{mcp_client::StdioClient, Workspace as SharedWorkspace};
+use contextunity_forge_mcp::core::format::{self, OutputFormat};
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf, process::Command};
 
@@ -123,7 +124,156 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         all
     );
     let inspected = client.payload("task_manage", json!({"action":"inspect","task_id":id}));
+    assert!(inspected.get("digest").is_none());
     assert_eq!(inspected["workspace_root"], linked.0.to_str().unwrap());
+    let (_, markdown_response) = client.call(
+        "task_manage",
+        json!({"action":"inspect","task_id":id,"format":"markdown"}),
+    );
+    crate::common::assertions::assert_rpc_succeeded(&markdown_response);
+    assert_ne!(
+        markdown_response["result"]["isError"], true,
+        "{markdown_response}"
+    );
+    let inspect_markdown = markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("task inspect should return Markdown text");
+    assert!(inspect_markdown.contains("## Task record"));
+    assert!(!inspect_markdown.contains("## Contract"));
+    assert!(!inspect_markdown.contains("digest"));
+    assert_eq!(
+        inspect_markdown,
+        format::render(&inspected, OutputFormat::Markdown, "task_manage")
+    );
+
+    let repeated_paths = [
+        "src/tasks/lifecycle/presentation/equal_scope/recorded_task_scope_with_a_very_long_filename_that_makes_repetition_material.rs",
+        "tests/acdd/fixtures/task_lifecycle/repeated_scope_authority_path_with_a_distinct_long_name.rs",
+        "docs/reference/tasks/fixtures/inspection_scope_path_that_is_repeated_across_every_authority_projection.md",
+        "src/engine/tasks/manifest/normalized_scope_path_with_another_deliberately_long_name.rs",
+        "tests/acdd/contract/presentation/repeated_initial_scope_and_allowed_write_scope_case.rs",
+    ];
+    let repeated_target = concat!(
+        "Render the inspected task contract once while preserving each distinct ",
+        "authority and lifecycle record "
+    )
+    .repeat(4);
+    let task_invariant = concat!(
+        "TASK-EVIDENCE-PRESERVATION: Equal scope, target, proof policy, and task invariants ",
+        "collapse in presentation. The contract digest hash is omitted. Milestone ",
+        "invariants, revisions, receipts, gates, attempts, and findings stay visible."
+    );
+    let milestone_invariant = concat!(
+        "INV-TASK-PRESENTATION-DEDUPLICATION: Inspect Markdown uses the task-record ",
+        "heading and renders equal scope, target, proof policy, and task invariants once. ",
+        "A fixture with those repeated fields is smaller in Markdown than in JSON. The ",
+        "contract digest hash is omitted from task responses. Revisions, receipts, gates, ",
+        "attempts, and findings stay visible."
+    );
+    let mut repeated = inspected.clone();
+    repeated["spec"]["scope"] = json!(repeated_paths);
+    repeated["authority_snapshot"]["task_scope"] = json!(repeated_paths);
+    repeated["initial_scope"] = json!(repeated_paths);
+    repeated["allowed_write_scope"] = json!(repeated_paths);
+    repeated["spec"]["target"] = json!(repeated_target);
+    repeated["authority_snapshot"]["task_target"] = json!(repeated_target);
+    repeated["goal"] = json!(repeated_target);
+    repeated["spec"]["proof_policy"] = json!("seam-test-first");
+    repeated["authority_snapshot"]["task_proof_policy"] = json!("seam-test-first");
+    repeated["proof_policy"] = json!("seam-test-first");
+    repeated["spec"]["invariants"] = json!([task_invariant]);
+    repeated["authority_snapshot"]["task_invariants"] = json!([task_invariant]);
+    repeated["authority_snapshot"]["milestone_invariants"] = json!([milestone_invariant]);
+    repeated["applicable_invariants"] = json!([milestone_invariant, task_invariant]);
+    repeated["claim_revision"] = json!(19);
+    repeated["contract_revision"] = json!(7);
+    repeated["receipt"] = json!({"commit":"retained-receipt-marker"});
+    repeated["gates"] = json!([{"stage":"retained-gate-marker"}]);
+    repeated["attempts"] = json!([{"worker_id":"retained-attempt-marker"}]);
+    repeated["findings"] = json!([{"summary":"retained-finding-marker"}]);
+    repeated["digest"] = json!("digest-must-not-be-rendered");
+    let repeated_markdown = format::render(&repeated, OutputFormat::Markdown, "task_manage");
+    for path in repeated_paths {
+        assert_eq!(
+            repeated_markdown.matches(path).count(),
+            1,
+            "each equal scope path should render once: {path}\n{repeated_markdown}"
+        );
+    }
+    assert_eq!(repeated_markdown.matches(&repeated_target).count(), 1);
+    assert_eq!(repeated_markdown.matches("seam-test-first").count(), 1);
+    assert_eq!(repeated_markdown.matches(task_invariant).count(), 1);
+    assert_eq!(repeated_markdown.matches(milestone_invariant).count(), 1);
+    assert!(!repeated_markdown.contains("digest-must-not-be-rendered"));
+    assert!(repeated_markdown.contains("Claim revision") && repeated_markdown.contains("19"));
+    assert!(repeated_markdown.contains("Contract revision") && repeated_markdown.contains("7"));
+    for marker in [
+        "retained-receipt-marker",
+        "retained-gate-marker",
+        "retained-attempt-marker",
+        "retained-finding-marker",
+    ] {
+        assert!(
+            repeated_markdown.contains(marker),
+            "missing lifecycle evidence {marker}"
+        );
+    }
+    assert!(
+        repeated_markdown.len() < serde_json::to_vec(&repeated).unwrap().len(),
+        "repeated-field Markdown must be smaller than JSON"
+    );
+
+    let extended_path =
+        "src/tasks/lifecycle/presentation/added_scope_is_distinct_from_the_initial_scope.rs";
+    let mut extended = repeated.clone();
+    let initial_scope = json!(repeated_paths);
+    let mut effective_paths = repeated_paths.to_vec();
+    effective_paths.push(extended_path);
+    let effective_scope = json!(effective_paths);
+    extended["spec"]["scope"] = effective_scope.clone();
+    extended["authority_snapshot"]["task_scope"] = initial_scope.clone();
+    extended["initial_scope"] = initial_scope;
+    extended["allowed_write_scope"] = effective_scope;
+    let extended_markdown = format::render(&extended, OutputFormat::Markdown, "task_manage");
+    assert!(extended_markdown.contains("Initial scope"));
+    assert!(extended_markdown.contains("Extended scope"));
+    for path in repeated_paths {
+        assert_eq!(
+            extended_markdown.matches(path).count(),
+            1,
+            "initial scope path should remain visible once: {path}\n{extended_markdown}"
+        );
+    }
+    assert_eq!(extended_markdown.matches(extended_path).count(), 1);
+
+    let mut distinct = repeated.clone();
+    distinct["spec"]["target"] = json!("spec target marker");
+    distinct["authority_snapshot"]["task_target"] = json!("authority target marker");
+    distinct["goal"] = json!("response target marker");
+    distinct["spec"]["proof_policy"] = json!("spec proof policy marker");
+    distinct["authority_snapshot"]["task_proof_policy"] = json!("authority proof policy marker");
+    distinct["proof_policy"] = json!("response proof policy marker");
+    distinct["spec"]["invariants"] = json!(["spec task invariant marker"]);
+    distinct["authority_snapshot"]["task_invariants"] =
+        json!(["authority task invariant marker"]);
+    distinct["applicable_invariants"] = json!(["response invariant marker"]);
+    let distinct_markdown = format::render(&distinct, OutputFormat::Markdown, "task_manage");
+    for marker in [
+        "spec target marker",
+        "authority target marker",
+        "response target marker",
+        "spec proof policy marker",
+        "authority proof policy marker",
+        "response proof policy marker",
+        "spec task invariant marker",
+        "authority task invariant marker",
+        "response invariant marker",
+    ] {
+        assert!(
+            distinct_markdown.contains(marker),
+            "distinct authoritative values must remain visible: {marker}"
+        );
+    }
     assert_eq!(
         inspected["agents_guidance"],
         linked.0.join("AGENTS.md").to_str().unwrap()
@@ -132,6 +282,8 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         "task_claim",
         json!({"task_id":id,"stage":"contract","worker_id":"builder","worktree":linked.0}),
     );
+    let claim_markdown = format::render(&claimed, OutputFormat::Markdown, "task_claim");
+    assert!(claim_markdown.contains("## Contract"));
     assert_eq!(claimed["agents_guidance"], inspected["agents_guidance"]);
     assert_eq!(claimed["applicable_invariants"], json!(["local-rules"]));
     let mut boundary_failures = Vec::new();

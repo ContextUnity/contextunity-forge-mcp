@@ -90,6 +90,15 @@ retained. `bundle: false` stays minimal and only presents fields supplied by tha
 mode. Inspect and submit layouts retain available gate history, claim attempts,
 findings, candidate bindings, and durable receipts.
 
+Full inspect uses `## Task record`; claim context keeps `## Contract`. Inspect
+Markdown retains the task specification as canonical and omits equal scope,
+target, proof-policy, and task-invariant projections from `authority_snapshot`
+and response-level fields. Equal scope paths appear once. When the write scope
+extends its initial scope, Markdown shows the initial paths and added paths
+separately. It preserves distinct authority values, milestone invariants,
+revisions, receipts, gates, attempts, and findings. Inspect omits the contract
+digest; the Markdown formatter also omits a digest field if one is supplied.
+
 Only blackboard messages whose topic is `blockers` become
 `> [!CAUTION] BLOCKER (#id) by author` callouts. The callout keeps the original
 message ID, scope, task/subtask identity, gate, timestamp, and supplied body.
