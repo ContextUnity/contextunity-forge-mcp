@@ -138,7 +138,7 @@ pub struct Snippet {
     pub show_source: Option<bool>,
     /// Optional leading lines value.
     pub leading_lines: Option<usize>,
-    /// Optional source body line limit; values clamp to 1..=500, omitted uses the configured default (200 by default).
+    /// Optional smaller source body line limit; omitted requests the complete symbol within the response byte budget.
     pub max_body_lines: Option<usize>,
     /// Body line offset returned as next_source_offset by a previous preview.
     #[serde(default)]
@@ -149,14 +149,15 @@ pub struct Snippet {
 }
 impl Snippet {
     pub(super) fn source(&self, policy: &ResponsePolicy) -> anyhow::Result<SourceOptions> {
-        source_options(
+        anyhow::ensure!(
+            self.source_offset == 0 || self.page.generation.is_some(),
+            "source continuation requires generation from the previous preview"
+        );
+        SourceOptions::resolve_full_symbol(
             policy,
-            self.show_source,
             self.leading_lines,
             self.max_body_lines,
             self.source_offset,
-            self.page.generation.as_deref(),
-            true,
         )
     }
 }

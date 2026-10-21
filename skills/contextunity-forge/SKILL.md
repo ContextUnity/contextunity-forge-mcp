@@ -65,9 +65,13 @@ On budget errors, narrow the selector/path or reduce depth.
   coverage, and a lexical suggestion has no `call_path`. Markdown graph results show the ordered
   test-to-target breadcrumb with verified links and producer-supplied roles; lexical suggestions are
   explicitly unverified.
-- Read a bounded `get_code_snippet` preview, then use `ctx_read` for exact source ranges before
-  editing. Inspect/snippet default to 5 leading and 200 body lines; requested body lines clamp to
-  1..500 within byte caps.
+- Use `get_code_snippet` to read a complete selected symbol when its serialized response fits the
+  configured byte limit; otherwise follow its source-line continuation. Inspect and explain retain
+  their configured preview defaults (5 leading and 200 body lines by default); snippet requests
+  default to the complete symbol and honor an explicit `max_body_lines` limit normalized to one
+  or more lines.
+- Use `ctx_read` for exact source ranges before editing. The MCP response byte limit includes
+  serialized metadata and the selected Markdown or JSON rendering.
 - Claim the active ACDD gate before task work, implement its accepted contract, and submit through
   its claim-bound evidence template.
 

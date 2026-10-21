@@ -192,7 +192,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
             .collect::<String>()
     );
     workspace.write("code.py", &format!("def previous():\r\n    return 'PREVIOUS_SECRET'\r\n\r\n# selected documentation\r\n{body}"));
-    let cases = [116, 200, 201, 500].map(|lines| {
+    let cases = [116, 200, 201, 500, 527].map(|lines| {
         let name = format!("selected_{lines}");
         let body = format!(
             "def {name}():\r\n{}    return 'Привіт'\r\n",
@@ -295,7 +295,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     .is_err());
     let mut failures = Vec::new();
     for (lines, name, body) in cases {
-        for requested in [None, Some(500)] {
+        for requested in [None, Some(35), Some(500)] {
             for explain in [false, true] {
                 let mut offset = 0;
                 let mut query = options(30);
@@ -385,7 +385,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
 }
 
 #[test]
-fn oversized_source_lines_are_bounded_with_honest_omission() {
+fn oversized_source_lines_fail_without_partial_code() {
     let workspace = Workspace::new();
     workspace.write(
         "large.py",
@@ -394,7 +394,7 @@ fn oversized_source_lines_are_bounded_with_honest_omission() {
     let conn = workspace.build();
     let source =
         SourceOptions::resolve(&ResponsePolicy::default(), Some(true), None, None, 0).unwrap();
-    let value = symbols::inspect_with_options(
+    let error = symbols::inspect_with_options(
         &conn,
         &workspace.0,
         "huge",
@@ -405,16 +405,10 @@ fn oversized_source_lines_are_bounded_with_honest_omission() {
             page: &options(30),
         },
     )
-    .unwrap();
-    assert!(serde_json::to_vec(&value["source"]).unwrap().len() <= 8192);
-    assert_eq!(value["source_preview"]["truncated_line"], true);
-    assert_eq!(value["source_preview"]["omitted_leading_lines"], 0);
-    assert_eq!(value["source_preview"]["has_more"], true);
-    assert!(value["source_preview"]["next_source_offset"].is_null());
-    assert!(value["source_preview"]["continuation_hint"]
-        .as_str()
-        .unwrap()
-        .contains("large.py"));
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("line exceeds"), "{error}");
+    assert!(error.contains("large.py"), "{error}");
 }
 
 #[test]

@@ -180,6 +180,30 @@ impl SourceOptions {
             offset,
         })
     }
+
+    /// Configures a complete-symbol request whose response layer applies the byte bound.
+    pub(crate) fn resolve_full_symbol(
+        policy: &ResponsePolicy,
+        leading_lines: Option<usize>,
+        max_body_lines: Option<usize>,
+        offset: usize,
+    ) -> anyhow::Result<Self> {
+        let defaults = &policy.source_context;
+        let leading_lines = leading_lines.unwrap_or(defaults.leading_lines).min(20);
+        let max_body_lines = max_body_lines
+            .unwrap_or_else(|| usize::MAX.saturating_sub(offset))
+            .max(1);
+        anyhow::ensure!(
+            offset.checked_add(max_body_lines).is_some(),
+            "source_offset is too large"
+        );
+        Ok(Self {
+            enabled: true,
+            leading_lines,
+            max_body_lines,
+            offset,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -223,6 +247,26 @@ fn source_preview_line_budgets_are_clamped() {
                 "policy body lines {configured}: expected accepted={accepted}"
             ));
         }
+    }
+    for (requested, offset, expected) in [
+        (None, 0, usize::MAX),
+        (None, 35, usize::MAX - 35),
+        (Some(501), 0, 501),
+        (Some(35), 0, 35),
+    ] {
+        match SourceOptions::resolve_full_symbol(&policy, None, requested, offset) {
+            Ok(options) if options.max_body_lines == expected => {}
+            Ok(options) => failures.push(format!(
+                "full-symbol request {requested:?} at {offset}: expected {expected}, got {}",
+                options.max_body_lines
+            )),
+            Err(error) => failures.push(format!(
+                "full-symbol request {requested:?} at {offset}: {error}"
+            )),
+        }
+    }
+    if SourceOptions::resolve_full_symbol(&policy, None, Some(usize::MAX), 1).is_ok() {
+        failures.push("overflowing full-symbol source offset was accepted".to_owned());
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

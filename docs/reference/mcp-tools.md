@@ -45,7 +45,7 @@ evidence. See the [task lifecycle Markdown contract](mcp-markdown-contracts.md#t
 | `code_map_overview` | Workspace, index, language and documentation summary; request `coverage_by_workspace` for persisted primary and linked workspace coverage counts. |
 | `code_map_search` | Search symbols by `pattern`; by default, if exact name or qualified-name matches exist within the active filters, only those matches are returned. Otherwise, prefixes and natural-language terms use ranked FTS5 BM25 exploratory search. Hits include an indexed `signature` and `inspect_selector` arguments for `code_map_inspect` with `show_source:true`. Previews appear automatically when the total is at most three; set `include_preview:true` for larger result sets. Supports `include_docs`, `group_by_file`, prefix patterns such as `parse*`, and optional file or directory `path` scope. |
 | `code_map_inspect` | Resolve a `selector` and return a compact signature, docstring, receiver-aware container, call counts, and direct caller/callee preview. Paged `documented_in` citations retain one linked row per cited section, with full-detail content shown beneath its citation. Inspect Markdown omits its duplicate `documents` JSON page while JSON keeps both pages. Bounded `governing_invariants` add verified documentation context. Set `include_coverage=true` for paged resolution evidence. |
-| `get_code_snippet` | Read indexed source around a `selector` with `leading_lines` and `max_body_lines` bounds. |
+| `get_code_snippet` | Read the complete indexed source range for one `selector` when it fits the serialized response byte limit; otherwise continue the source range with `source_offset` and `generation`. |
 | `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; edge rows include both public endpoint IDs and direction relative to the selected node. Full detail also includes stored edge evidence. |
 | `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`, or analyze one Git change view (`staged`, `unstaged`, or `head`); provide exactly one of `selector` and `changes`. Selector results also page affected documentation and governing invariants. Depth defaults to one edge. |
 | `code_map_tests` | Find test relationships for a narrow `selector`; `direction` accepts `inbound` or `outbound`. Inbound results identify verified test cases and shortest exact `calls` paths, with a bounded lexical fallback when no call path exists. Markdown links graph-backed paths in producer order and shows only producer-supplied test roles. Outbound results follow exact `calls` edges. Results classify test cases, helpers, and fixtures; `possible_calls` do not establish coverage. |
@@ -148,15 +148,26 @@ For a Git change view, pass `changes:"staged"`, `changes:"unstaged"`, or `change
 
 ## Result size and source
 
-Source options on `code_map_inspect`, `code_map_explain`, and `get_code_snippet`
-clamp `leading_lines` above 20 to 20 and requested `max_body_lines` to 1–500.
-When omitted, the body limit uses `response.source_context.max_body_lines` (200 by default).
-Negative values and overflowing source offsets remain invalid. Adapter
-`response.source_context.max_body_lines` values are strictly validated from 1 to 500.
+`code_map_inspect` and `code_map_explain` clamp `leading_lines` above 20 to 20
+and requested `max_body_lines` to 1–500. When omitted, their body limit uses
+`response.source_context.max_body_lines` (200 by default). Adapter
+`response.source_context.max_body_lines` values remain strictly validated from
+1 to 500. `get_code_snippet` defaults to the complete selected symbol and honors
+an explicit `max_body_lines` limit normalized to at least one, without an
+implicit 500-line cap.
+All three tools clamp `leading_lines` above 20 to 20. Negative values and
+overflowing source offsets remain invalid.
+
+The snippet response includes the serialized metadata and Markdown or JSON
+rendering in its configured byte limit. If the complete symbol does not fit, the
+tool returns a bounded page with a truthful `next_source_offset`, `has_more`, and
+the active generation. A single line that cannot fit returns a UTF-8-safe prefix
+and a local-file hint without a resumable line cursor. Source reads still verify
+the on-disk digest against the index.
 
 Paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 65,536 bytes.
 
-Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `get_code_snippet` supports `leading_lines` from 0 to 20 and clamps requested `max_body_lines` to 1–500. If source changed, refresh the index before relying on the result.
+Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `get_code_snippet` supports `leading_lines` from 0 to 20 and an explicit `max_body_lines` limit normalized to at least one; when omitted, it reads the complete selected symbol if the serialized response fits. If source changed, refresh the index before relying on the result.
 
 ## AST pattern capabilities
 

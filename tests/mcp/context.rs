@@ -1502,11 +1502,22 @@ fn stdio_symbol_search_groups_the_current_page_by_file() {
 #[test]
 fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     let workspace = Workspace::new();
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: [.]\nresponse:\n  max_output_bytes: 65536\n  source_context:\n    max_body_lines: 24\n",
+    );
     let body = (0..90)
         .map(|i| format!("    value_{i} = 'Привіт'\r\n"))
         .collect::<String>();
     let source = format!("def previous():\r\n    return 'secret'\r\n\r\n# selected\r\ndef selected():\r\n{body}    return value_0\r\ndef following(): return 'hidden'\r\n");
     workspace.write("service.py", &source);
+    let full_body = (0..850)
+        .map(|i| format!("    escaped_{i:04} = \"{}\"\r\n", r#"é\""#.repeat(4)))
+        .collect::<String>();
+    let full_source = format!(
+        "def full_symbol():\r\n{full_body}    return escaped_0000\r\n"
+    );
+    workspace.write("full.py", &full_source);
     let mut client = Client::new(&workspace);
     let default = client.payload("code_map_inspect", json!({"selector":"selected"}));
     assert!(default.get("source").is_none());
@@ -1518,8 +1529,66 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .as_str()
         .unwrap()
         .contains("def selected"));
+    assert_eq!(explanation["source_preview"]["body_lines"], 24);
     assert!(explanation.get("incoming").is_some());
     assert_eq!(explanation["relations"], json!(["incoming"]));
+
+    let inspection = client.payload(
+        "code_map_inspect",
+        json!({"selector":"full.py:full_symbol","show_source":true}),
+    );
+    assert_eq!(inspection["source_preview"]["body_lines"], 24);
+    assert_eq!(inspection["source_preview"]["total_body_lines"], full_source.lines().count());
+    assert_eq!(inspection["source_preview"]["has_more"], true);
+
+    let cli = run_cli_json(
+        &workspace,
+        &["query", "inspect", "full.py:full_symbol", "--show-source"],
+    );
+    assertions::assert_command_succeeded(&cli);
+    let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert!(cli["source"].as_str().unwrap().starts_with("def full_symbol():"));
+    assert!(cli["source_preview"]["body_lines"].as_u64().unwrap() > 0);
+
+    for (label, max_body_lines) in [
+        ("default", None),
+        ("explicit-full", Some(full_source.lines().count())),
+    ] {
+        let mut arguments = json!({
+            "selector":"full.py:full_symbol",
+            "leading_lines":0,
+            "format":"json"
+        });
+        if let Some(lines) = max_body_lines {
+            arguments["max_body_lines"] = json!(lines);
+        }
+        let (full_bytes, full_response) = client.call("get_code_snippet", arguments);
+        assert_ne!(full_response["result"]["isError"], true, "{label}: {full_response}");
+        assert!(full_bytes <= MAX_OUTPUT_BYTES, "{label} frame was {full_bytes} bytes");
+        let full = assertions::mcp_payload(&full_response);
+        assert!(
+            full["source"].as_str() == Some(full_source.as_str()),
+            "{label} snippet was {} bytes, expected {} bytes; preview={}",
+            full["source"].as_str().map(str::len).unwrap_or_default(),
+            full_source.len(),
+            full["source_preview"]
+        );
+        assert_eq!(full["source_preview"]["body_lines"], full_source.lines().count());
+        assert_eq!(full["source_preview"]["has_more"], false);
+        assert_eq!(full["source_preview"]["next_source_offset"], Value::Null);
+        assert_eq!(full["source_preview"]["truncated_line"], false);
+        if label == "explicit-full" {
+            assert!(full_bytes > MAX_OUTPUT_BYTES * 3 / 4, "frame was only {full_bytes} bytes");
+        }
+    }
+
+    let smaller = client.payload(
+        "get_code_snippet",
+        json!({"selector":"full.py:full_symbol","leading_lines":0,"max_body_lines":17}),
+    );
+    assert_eq!(smaller["source_preview"]["body_lines"], 17);
+    assert_eq!(smaller["source_preview"]["next_source_offset"], 17);
+    assert_eq!(smaller["source_preview"]["has_more"], true);
     let first = client.payload(
         "get_code_snippet",
         json!({"selector":"selected","max_body_lines":35}),
@@ -1537,13 +1606,83 @@ fn stdio_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         &format!("def enormous(): return '{}'\n", "Привіт".repeat(50_000)),
     );
     invalidate_mcp_connection_cache(&workspace.db()).unwrap();
-    let enormous = client.payload("get_code_snippet", json!({"selector":"enormous"}));
-    assert_eq!(enormous["source_preview"]["truncated_line"], true);
-    assert!(enormous["source_preview"]["next_source_offset"].is_null());
-    assert!(enormous["source_preview"]["continuation_hint"]
+    let (_, enormous) = client.call("get_code_snippet", json!({"selector":"enormous"}));
+    assert_eq!(enormous["result"]["isError"], true);
+    assert!(enormous["result"]["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("huge.py"));
+
+    let bounded_workspace = Workspace::new();
+    bounded_workspace.write(
+        "forge-mcp.yaml",
+        "roots: [.]\nresponse:\n  max_output_bytes: 4096\n  source_context:\n    max_body_lines: 16\n",
+    );
+    let bounded_body = (0..700)
+        .map(|i| format!("    value_{i:04} = 'x{}\\\\\"Привіт'\n", "x".repeat(36)))
+        .collect::<String>();
+    let bounded_source = format!("def bounded():\n{bounded_body}    return value_0000\n");
+    bounded_workspace.write("bounded.py", &bounded_source);
+    let mut bounded_client = Client::new(&bounded_workspace);
+    let mut offset = 0;
+    let mut generation = Value::Null;
+    let mut reconstructed = String::new();
+    loop {
+        let mut arguments = json!({
+            "selector":"bounded.py:bounded",
+            "leading_lines":0,
+            "max_body_lines":800,
+            "format":"json"
+        });
+        if offset > 0 {
+            arguments["source_offset"] = json!(offset);
+            arguments["generation"] = generation.clone();
+        }
+        let (frame_bytes, response) = bounded_client.call("get_code_snippet", arguments);
+        assert!(frame_bytes <= 4096, "configured response was {frame_bytes} bytes");
+        assert_ne!(response["result"]["isError"], true, "{response}");
+        let page = assertions::mcp_payload(&response);
+        let preview = &page["source_preview"];
+        assert_eq!(preview["body_offset"], offset);
+        assert_eq!(preview["total_body_lines"], bounded_source.lines().count());
+        reconstructed.push_str(page["source"].as_str().unwrap());
+        let next = preview["next_source_offset"].as_u64();
+        if let Some(next) = next {
+            assert_eq!(next, offset + preview["body_lines"].as_u64().unwrap());
+            assert!(next > offset);
+            assert_eq!(preview["has_more"], true);
+            assert!(preview["omitted_body_lines"].as_u64().unwrap() > 0);
+            generation = page["generation"].clone();
+            offset = next;
+        } else {
+            assert_eq!(preview["has_more"], false);
+            assert_eq!(preview["omitted_body_lines"], 0);
+            break;
+        }
+    }
+    assert_eq!(reconstructed, bounded_source);
+    let (markdown_bytes, markdown_response) = bounded_client.call(
+        "get_code_snippet",
+        json!({
+            "selector":"bounded.py:bounded",
+            "leading_lines":0,
+            "max_body_lines":800,
+            "format":"markdown"
+        }),
+    );
+    assert!(
+        markdown_bytes <= 4096,
+        "Markdown response was {markdown_bytes} bytes"
+    );
+    assert_ne!(
+        markdown_response["result"]["isError"],
+        true,
+        "{markdown_response}"
+    );
+    let markdown_text = markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(markdown_text.contains("value_0000"));
 }
 #[cfg(feature = "lang-python")]
 #[path = "../mcp_context/ast_search.rs"]

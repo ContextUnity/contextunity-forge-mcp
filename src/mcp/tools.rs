@@ -427,7 +427,7 @@ impl Server {
         )
     }
     #[tool(
-        description = "Bounded source preview for one selector. Defaults are 5 leading lines and 200 body lines. Requested body lines clamp to 1–500. The on-disk file must match the indexed digest. Continue with source_offset and generation."
+        description = "Byte-bounded source for one selector. Returns the complete selected symbol when it fits the serialized response limit; otherwise continue with source_offset and generation. Defaults to 5 leading lines; an explicit max_body_lines limit is honored. The on-disk file must match the indexed digest."
     )]
     fn get_code_snippet(&self, Parameters(p): Parameters<Snippet>) -> CallToolResult {
         let format = p.page.output_format();
@@ -439,13 +439,14 @@ impl Server {
                 let page = p.page.resolve(policy)?;
                 let source = p.source(policy)?;
                 self.read_with_adapter(adapter, |c| {
-                    let mut value = symbols::snippet_paged_with_path(
+                    let mut value = symbols::snippet_paged_with_response_budget(
                         c,
                         &self.root,
                         &p.selector,
                         p.path.as_deref(),
                         &source,
                         &page,
+                        policy.max_output_bytes,
                     )?;
                     if let (Some(path), Some(start), Some(end)) = (
                         value["node"]["path"].as_str(),

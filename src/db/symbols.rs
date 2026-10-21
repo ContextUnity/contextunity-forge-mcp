@@ -371,7 +371,14 @@ pub(crate) fn inspect_with_path_options(
         options.page,
         options.coverage,
     )?;
-    with_source(conn, root, result, options.source, options.page)
+    with_source(
+        conn,
+        root,
+        result,
+        options.source,
+        options.page,
+        SourcePreviewMode::Configured,
+    )
 }
 
 /// Performs snippet paged.
@@ -393,6 +400,46 @@ pub(crate) fn snippet_paged_with_path(
     source: &SourceOptions,
     options: &QueryOptions,
 ) -> Result<Value> {
+    snippet_paged_with_mode(
+        conn,
+        root,
+        selector,
+        path,
+        source,
+        options,
+        SourcePreviewMode::Configured,
+    )
+}
+
+pub(crate) fn snippet_paged_with_response_budget(
+    conn: &Connection,
+    root: &Path,
+    selector: &str,
+    path: Option<&str>,
+    source: &SourceOptions,
+    options: &QueryOptions,
+    response_bytes: usize,
+) -> Result<Value> {
+    snippet_paged_with_mode(
+        conn,
+        root,
+        selector,
+        path,
+        source,
+        options,
+        SourcePreviewMode::CompleteSymbol { response_bytes },
+    )
+}
+
+fn snippet_paged_with_mode(
+    conn: &Connection,
+    root: &Path,
+    selector: &str,
+    path: Option<&str>,
+    source: &SourceOptions,
+    options: &QueryOptions,
+    mode: SourcePreviewMode,
+) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
     let node = reader::select_detail_with_path(conn, selector, path, options.detail)?;
     with_source(
@@ -401,6 +448,7 @@ pub(crate) fn snippet_paged_with_path(
         json!({"node":node,"generation":generation}),
         source,
         options,
+        mode,
     )
 }
 
@@ -430,7 +478,14 @@ pub(crate) fn explain_with_path_options(
         options.page,
         options.coverage,
     )?;
-    with_source(conn, root, result, options.source, options.page)
+    with_source(
+        conn,
+        root,
+        result,
+        options.source,
+        options.page,
+        SourcePreviewMode::Configured,
+    )
 }
 
 pub(crate) fn inspect_paged_response(
@@ -910,28 +965,45 @@ fn direct_call_summary(
     Ok(json!({"count":count,"occurrences":occurrences,"preview":preview}))
 }
 
+#[derive(Clone, Copy)]
+enum SourcePreviewMode {
+    Configured,
+    CompleteSymbol { response_bytes: usize },
+}
+
 fn with_source(
     conn: &Connection,
     root: &Path,
     mut result: Value,
     source: &SourceOptions,
     options: &QueryOptions,
+    mode: SourcePreviewMode,
 ) -> Result<Value> {
+    anyhow::ensure!(
+        source.offset == 0 || options.generation.is_some(),
+        "source continuation requires generation from the previous page; pass the previous page's generation or restart at source_offset=0"
+    );
     if !source.enabled {
         return Ok(result);
     }
     anyhow::ensure!(
-        source.leading_lines <= 20 && (1..=500).contains(&source.max_body_lines),
+        source.leading_lines <= 20 && source.max_body_lines > 0,
         "invalid source preview bounds"
     );
-    anyhow::ensure!(
-        source.offset == 0 || options.generation.is_some(),
-        "source continuation requires generation from the previous page"
-    );
+    let source_bytes = match mode {
+        SourcePreviewMode::Configured => {
+            anyhow::ensure!(
+                source.max_body_lines <= 500,
+                "invalid source preview bounds"
+            );
+            8192
+        }
+        SourcePreviewMode::CompleteSymbol { response_bytes } => response_bytes,
+    };
     let node = &result["node"];
     let path = node["path"].as_str().context("invalid node path")?;
     let text = verified_source(conn, root, path)?;
-    let (snippet, preview) = source_preview(conn, node, &text, source, 8192)?;
+    let (snippet, preview) = source_preview(conn, node, &text, source, source_bytes)?;
     let gen = result.as_object_mut().and_then(|m| m.remove("generation"));
     result["source"] = json!(snippet);
     result["source_preview"] = preview;
@@ -1004,51 +1076,60 @@ fn source_preview(
     let mut output = leading;
     let mut cost = escaped_cost(&output);
     let mut emitted = 0;
-    let mut truncated_line = false;
     for line in body
         .iter()
         .skip(options.offset)
         .take(options.max_body_lines)
     {
         let line_cost = escaped_cost(line);
-        if cost + line_cost > source_bytes.saturating_sub(2) {
-            if emitted == 0 {
-                let available = source_bytes.saturating_sub(2).saturating_sub(cost);
-                let mut used = 0;
-                for ch in line.chars() {
-                    let next = escaped_char_cost(ch);
-                    if used + next > available {
-                        break;
-                    }
-                    output.push(ch);
-                    used += next;
-                }
-                truncated_line = true;
-            }
+        if emitted == 0 && cost.saturating_add(line_cost) > source_bytes.saturating_sub(2) {
+            output.clear();
+            leading_count = 0;
+            cost = 0;
+        }
+        if cost.saturating_add(line_cost) > source_bytes.saturating_sub(2) {
+            anyhow::ensure!(
+                emitted > 0,
+                "snippet line exceeds source preview byte budget at {path}:{}; use a larger response budget or read the local file",
+                start.checked_add(options.offset).context("source line overflow")?
+            );
             break;
         }
         output.push_str(line);
         cost += line_cost;
         emitted += 1;
     }
-    let next = options.offset + emitted;
+    let next = options
+        .offset
+        .checked_add(emitted)
+        .context("source continuation offset overflow")?;
     let has_more = next < body.len();
-    let hint = if truncated_line {
-        Some(format!("Line {} exceeds the source preview byte budget; read that line from local file {path}. No line continuation can return the omitted characters.",start+next))
-    } else if has_more {
+    let hint = if has_more {
         Some("Repeat the same tool and selector with show_source=true, next_source_offset as source_offset, and this generation.".to_owned())
     } else {
         None
     };
-    let start_line = (!output.is_empty()).then_some(start + options.offset - leading_count);
-    let end_line = (!output.is_empty()).then_some(if emitted == 0 {
-        start + options.offset
+    let symbol_line = start
+        .checked_add(options.offset)
+        .context("source start line overflow")?;
+    let source_start_line = symbol_line
+        .checked_sub(leading_count)
+        .context("source leading line overflow")?;
+    let end_line = if output.is_empty() {
+        None
+    } else if emitted == 0 {
+        Some(symbol_line)
     } else {
-        start + next - 1
-    });
+        Some(
+            start
+                .checked_add(next - 1)
+                .context("source end line overflow")?,
+        )
+    };
+    let start_line = (!output.is_empty()).then_some(source_start_line);
     Ok((
         output,
-        json!({"start_line":start_line,"end_line":end_line,"total_body_lines":body.len(),"body_offset":options.offset,"body_lines":emitted,"leading_lines":leading_count,"next_source_offset":if has_more && !truncated_line {Some(next)} else {None},"has_more":has_more,"omitted_leading_lines":available_leading.saturating_sub(leading_count),"omitted_body_lines":body.len().saturating_sub(next),"truncated_line":truncated_line,"continuation_hint":hint}),
+        json!({"start_line":start_line,"end_line":end_line,"total_body_lines":body.len(),"body_offset":options.offset,"body_lines":emitted,"leading_lines":leading_count,"next_source_offset":has_more.then_some(next),"has_more":has_more,"omitted_leading_lines":available_leading.saturating_sub(leading_count),"omitted_body_lines":body.len().saturating_sub(next),"truncated_line":false,"continuation_hint":hint}),
     ))
 }
 

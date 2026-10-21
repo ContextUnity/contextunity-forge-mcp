@@ -67,7 +67,7 @@ fn ergonomic_search_parameters_preserve_scope_and_paging() {
 }
 
 #[test]
-fn ergonomic_source_budgets_are_clamped_at_mcp_boundary() {
+fn ergonomic_source_budgets_preserve_defaults_and_explicit_limits_at_mcp_boundary() {
     use serde_json::json;
     let w = Workspace::new();
     let source = format!(
@@ -79,7 +79,7 @@ fn ergonomic_source_budgets_are_clamped_at_mcp_boundary() {
     w.write("app.py", &source);
     w.build();
     let mut m = Mcp::new(&w);
-    for tool in ["code_map_inspect", "code_map_explain", "get_code_snippet"] {
+    for tool in ["code_map_inspect", "code_map_explain"] {
         let clamped = m.ok(tool, json!({"selector":"app.py:preview","show_source":true,"leading_lines":30,"max_body_lines":501}));
         let bounded = m.ok(tool, json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":500}));
         assert_eq!(clamped["source"], bounded["source"], "{tool}");
@@ -100,12 +100,22 @@ fn ergonomic_source_budgets_are_clamped_at_mcp_boundary() {
         "get_code_snippet",
         json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":501}),
     );
+    assert_eq!(first_page["source_preview"]["body_lines"], 501);
+    assert_eq!(first_page["source_preview"]["next_source_offset"], 501);
+    assert_eq!(first_page["source_preview"]["has_more"], true);
+    let smaller_page = m.ok(
+        "get_code_snippet",
+        json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":17}),
+    );
+    assert_eq!(smaller_page["source_preview"]["body_lines"], 17);
+    assert_eq!(smaller_page["source_preview"]["next_source_offset"], 17);
+    assert_eq!(smaller_page["source_preview"]["has_more"], true);
     let next_page = m.ok(
         "get_code_snippet",
-        json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":500,"source_offset":first_page["source_preview"]["next_source_offset"],"generation":first_page["generation"]}),
+        json!({"selector":"app.py:preview","show_source":true,"leading_lines":20,"max_body_lines":501,"source_offset":first_page["source_preview"]["next_source_offset"],"generation":first_page["generation"]}),
     );
-    assert_eq!(next_page["source_preview"]["body_offset"], 500);
-    assert_eq!(next_page["source_preview"]["body_lines"], 11);
+    assert_eq!(next_page["source_preview"]["body_offset"], 501);
+    assert_eq!(next_page["source_preview"]["body_lines"], 10);
     assert_eq!(next_page["source_preview"]["has_more"], false);
 }
 
@@ -346,6 +356,13 @@ fn symbol_boundary_recovery_and_search_preview_resilience() {
                 );
             }
         }
+        if failure == "digest" || failure == "missing" {
+            let (_, response) = m.call(
+                "get_code_snippet",
+                json!({"selector":"a.py:resilient_hit","format":"json"}),
+            );
+            assert_eq!(response["result"]["isError"], true, "{failure}: {response}");
+        }
     }
 }
 
@@ -359,6 +376,7 @@ fn mcp_selector_and_source_boundaries() {
         "# license\ndef first(): pass\ndef last(): pass\n",
     );
     w.write("comments.py", "# license only\n# no code body\n");
+    w.write("guarded.py", "def guarded(): return 1\n");
     w.write("docs/contract.md", "# Contract\n\nA documented contract.\n");
     w.build();
     let mut m = Mcp::new(&w);
@@ -440,6 +458,25 @@ fn mcp_selector_and_source_boundaries() {
     let comments = m.ok("get_code_snippet", json!({"selector":"comments.py"}));
     assert_eq!(comments["node"]["kind"], "module");
     assert_eq!(comments["source"], "# license only\n# no code body\n");
+
+    let (_, traversal) = m.call(
+        "get_code_snippet",
+        json!({"selector":"scanner.py:scanner","path":"../outside.py","format":"json"}),
+    );
+    assert_eq!(traversal["result"]["isError"], true, "{traversal}");
+    #[cfg(unix)]
+    {
+        let outside = Workspace::new();
+        outside.write("outside.py", "def guarded(): return 'must-not-leak'\n");
+        fs::remove_file(w.path("guarded.py")).unwrap();
+        std::os::unix::fs::symlink(outside.path("outside.py"), w.path("guarded.py")).unwrap();
+        let (_, response) = m.call(
+            "get_code_snippet",
+            json!({"selector":"guarded.py:guarded","leading_lines":0,"format":"json"}),
+        );
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        assert!(!response.to_string().contains("must-not-leak"), "{response}");
+    }
 }
 
 #[test]

@@ -376,30 +376,80 @@ receipt:
 
 ```yaml
 task_ref: byte-bounded-single-symbol-snippets
-target: "Return a complete single-symbol snippet when it fits the response byte budget instead of imposing a 500-line ceiling"
+target: Return a complete single-symbol snippet when it fits the response byte budget instead of imposing a 500-line ceiling
 proof_policy: seam-test-first
 contract_revision: 5
 depends_on:
-  - single-document-projection-for-inspection
+- single-document-projection-for-inspection
 scope:
-  - src/core/response.rs
-  - src/db/symbols.rs
-  - src/mcp/tools.rs
-  - src/mcp/tools/inputs.rs
-  - src/mcp/response.rs
-  - src/cli/mod.rs
-  - tests/query_context/diagnostics_and_source.rs
-  - tests/mcp/context.rs
-  - tests/mcp/tool_evolution/mcp_boundaries.rs
-  - docs/reference/mcp-tools.md
-  - docs/reference/configuration.md
-  - docs/reference/cli.md
-  - docs/runbooks/limits-and-freshness.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/tool-catalog.md
+- src/core/response.rs
+- src/db/symbols.rs
+- src/mcp/tools.rs
+- src/mcp/tools/inputs.rs
+- src/mcp/response.rs
+- src/cli/mod.rs
+- tests/query_context/diagnostics_and_source.rs
+- tests/mcp/context.rs
+- tests/mcp/tool_evolution/mcp_boundaries.rs
+- docs/reference/mcp-tools.md
+- docs/reference/configuration.md
+- docs/reference/cli.md
+- docs/runbooks/limits-and-freshness.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/tool-catalog.md
 invariants:
-  - "SINGLE-SYMBOL-BYTE-BOUND: Complete symbol source is limited by the configured serialized response budget, not an implicit 500-line ceiling. Exact source boundaries, explicit smaller requests, and byte-safe continuation remain enforced."
-status: planned
+- 'SINGLE-SYMBOL-BYTE-BOUND: Complete symbol source is limited by the configured serialized response budget, not an implicit 500-line ceiling. Exact source boundaries, explicit smaller requests, and byte-safe continuation remain enforced.'
+status: completed
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-21T21:56:04.242915921+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test query_context && cargo test --test mcp
+      exit_code: 0
+      tests_passed: 134
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. The 14 changed paths are admitted by rev5; src/cli/mod.rs is unchanged. Candidate content remains bound to baseline 8121c1803a0177bf873fe8c122213cba8b41da58 and the scoped binary diff SHA-256 36ba88bde58fbfd1200fdf694e5e94ae35c9086e9d11cf013d6b53bf7bed0d4a. The only additional dirty path is pre-existing docs/adr/0011-bounded-mcp-response-budgets.md, excluded from the task binding and untouched. No generated/profile/credential paths changed.
+        claims:
+          applicable: true
+          evidence: 'PASS. Server::get_code_snippet uses SourceOptions::resolve_full_symbol and snippet_paged_with_response_budget; the dedicated CompleteSymbol mode uses the active response cap, then result_for_presented trims by serialized CallToolResult size after compact/render, preserving metadata and Markdown/JSON framing. SourceOptions::resolve and Configured inspect/explain mode retain 500 lines and the 8-KiB source budget. Actual stdio tests prove exact 852-line / 33,195-byte escaped UTF-8 source fits, explicit 17-line limits, 501-line requests, 4-KiB page reconstruction, frame-size bounds, CLI characterization, oversized-line no-cursor behavior, and existing digest/generation/path rejection. Builder mutation evidence #953 records detection of restored 500-line, 8-KiB and response-budget-bypass mutations. Independent strict Clippy plus query_context 43/43 and mcp 91/91 passed; each of the three focused boundary/stdio/options tests passed 1/1.'
+        concurrency:
+          applicable: true
+          evidence: PASS. The change remains on the read-only symbol/source path and introduces no shared mutable state, task-store writes, receipt changes, or lock-order changes. Existing generation capture/validation, source-offset requirement, adapter reader, and digest verification remain in force.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Source continues through verified_source and configured workspace/linked-workspace resolution. New boundary coverage rejects ../ traversal and symlink escape without leaking the outside sentinel; full MCP coverage exercises stale digest/missing-source failure. CLI characterization runs against the fixture workspace. Review task CLI inspect/context used --root .; Forge claim used the explicit assigned worktree.
+        administration:
+          applicable: true
+          evidence: PASS. No migration, profile, repository config, credential, or runtime-cap change is present; the active cap remains 65,536 bytes and the separate 96-KiB work is untouched. Contract rev5 and validated baseline were preserved. Review made no source edits, manual commits, hook bypasses, or receipt edits; Forge-owned deliver will create the scoped task commit and receipt against the validated base.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-SINGLE-DOCUMENT-PROJECTION: Symbol inspection exposes one documentation page per cited section, with doc_id, path, section title, document type, citation line, and a resolved file:/// URI. Explain keeps its own documents page and does not grow a second inspect projection.'
+    - 'INV-COMPACT-DOC-HINT-ONCE: A compact get_doc response emits each omitted-detail hint once. Referenced-symbol rows keep the citing section and citation line. Full detail still returns candidate evidence.'
+    - 'INV-NARROWEST-NAVIGATION: Agent guidance selects the narrowest useful tool, reuses sufficient previews, and passes worktree when the server root is not the checkout being edited.'
+    - 'INV-RESPONSE-CONTRACT-PRESERVATION: Deduplication preserves pagination, generation validation, detail-level behavior, response budgets, exact evidence, and CLI/MCP parity.'
+    - 'INV-READ-ONLY-SQL-FIDELITY: Opaque user SQL keeps literals, comments, trailing semicolons of one statement, requested columns, and SQLite text. Structural graph rows keep parsed details and stripped internal ids. Writes and multiple statements stay rejected.'
+    - 'INV-TASK-PRESENTATION-DEDUPLICATION: Inspect Markdown uses the task-record heading and renders equal scope, target, proof policy, and task invariants once. A fixture with those repeated fields is smaller in Markdown than in JSON. The contract digest hash is omitted from task responses. Revisions, receipts, gates, attempts, and findings stay visible.'
+    - 'INV-EXPLICIT-DIAGNOSTIC-SCOPE: An unindexed analyze or lint target fails with PATH_NOT_INDEXED. An indexed scope with zero diagnostics stays success. The diagnostics and cycles mode errors stay specific. Unsupported overview aspects fail with the allowed set.'
+    - 'INV-CLICKABLE-COORDINATE-COMPLETENESS: Presentation attachment resolves a workspace path before file_uri_for_path. A resolvable coordinate is a file:/// link. Markdown omits the (link unavailable) fallback.'
+    - 'SINGLE-SYMBOL-BYTE-BOUND: Complete symbol source is limited by the configured serialized response budget, not an implicit 500-line ceiling. Exact source boundaries, explicit smaller requests, and byte-safe continuation remain enforced.'
+    architectural_notes:
+    - 'decisions: Blocker951 environment drift RESOLVED using preexisting supported isolated-test hook tests/mcp/skill_sync.rs:18 CONTEXTUNITY_FORGE_TEST_GLOBAL_SKILL_DIR. Root copied entire repository skill to independent owned/tmp/kilo/ux001-skill-fixture-20261021T214349, not a symlink or same sourcepath, using allowedcp-a. No ~/.agents files or securityconfig changed. Actual skill_sync::test_global_skill_matches_local_skill_when_present run with that env passed1/1; all filetreecomparisonassertions enabled. Samebuilder reruns fullregisteredClippy+query_context+mcp with envmap and records testfixture/contentbinding. No gatepassed basedonlyfocusedtest; no partialsuitecredit. Originaluserglobalmirror stillold; this lane proves isolated installationmatchescurrentcandidate, notactualglobaldeployment. Each independentreview/finalverification should create fresh fullcopyfromitsfrozencandidate and record sameisolatedhook. Repository docs prohibit directglobalwrites; installoutside task belongs dedicated distributionworkflow. No source/testchanges to hidefailure.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 #### Acceptance

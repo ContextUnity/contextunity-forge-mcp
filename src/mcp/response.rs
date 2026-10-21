@@ -1,7 +1,7 @@
 use crate::core::format::{self, DiscoveryKind, OperationKind, OutputFormat};
-use crate::core::response::{MAX_OUTPUT_BYTES, ResponsePolicy};
+use crate::core::response::{ResponsePolicy, MAX_OUTPUT_BYTES};
 use rmcp::model::{CallToolResult, ContentBlock};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     io,
     pin::Pin,
@@ -117,7 +117,26 @@ pub(crate) fn result_for_presented(
             let mut excess = success_text_bytes(&original)
                 .saturating_sub(budget)
                 .saturating_add(256);
-            if !trim_page_tails(&mut trimmed_value, &mut excess) {
+            let trimmed = if title == "get_code_snippet" {
+                trim_snippet_source_to_budget(
+                    &mut trimmed_value,
+                    output_format,
+                    operation,
+                    title,
+                    explain,
+                    discovery,
+                    budget,
+                )
+            } else {
+                trim_page_tails(&mut trimmed_value, &mut excess)
+            };
+            if !trimmed {
+                if title == "get_code_snippet" && trimmed_value.get("source_preview").is_some() {
+                    return bounded_error(
+                        "Snippet line exceeds the serialized response byte budget; use a larger response budget or read the local source file. No partial line was returned.",
+                        budget,
+                    );
+                }
                 return output_too_large();
             }
             format::compact(&mut trimmed_value, operation, explain);
@@ -192,6 +211,219 @@ pub(crate) fn result_for_presented(
             }
         }
     }
+}
+
+fn trim_snippet_source_to_budget(
+    value: &mut Value,
+    output_format: OutputFormat,
+    operation: OperationKind,
+    title: &str,
+    explain: Option<bool>,
+    discovery: Option<DiscoveryKind>,
+    budget: usize,
+) -> bool {
+    let Some(source) = value.get("source").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(preview) = value.get("source_preview") else {
+        return false;
+    };
+    let Some(node_line) = value["node"]["line"]
+        .as_u64()
+        .and_then(|line| usize::try_from(line).ok())
+    else {
+        return false;
+    };
+    let Some(body_offset) = preview["body_offset"]
+        .as_u64()
+        .and_then(|number| usize::try_from(number).ok())
+    else {
+        return false;
+    };
+    let Some(total_body_lines) = preview["total_body_lines"]
+        .as_u64()
+        .and_then(|number| usize::try_from(number).ok())
+    else {
+        return false;
+    };
+    let Some(body_lines) = preview["body_lines"]
+        .as_u64()
+        .and_then(|number| usize::try_from(number).ok())
+    else {
+        return false;
+    };
+    let Some(leading_lines) = preview["leading_lines"]
+        .as_u64()
+        .and_then(|number| usize::try_from(number).ok())
+    else {
+        return false;
+    };
+    let omitted_leading = preview["omitted_leading_lines"]
+        .as_u64()
+        .and_then(|number| usize::try_from(number).ok())
+        .unwrap_or_default();
+    let Some(body_end) = body_offset.checked_add(body_lines) else {
+        return false;
+    };
+    if body_end > total_body_lines {
+        return false;
+    }
+
+    let source_lines = source.split_inclusive('\n').collect::<Vec<_>>();
+    if leading_lines > source_lines.len() {
+        return false;
+    }
+    let leading_parts = &source_lines[..leading_lines];
+    let body_parts = &source_lines[leading_lines..];
+    if body_parts.len() < body_lines {
+        return false;
+    }
+    let source_page = SnippetSourcePage {
+        node_line,
+        body_offset,
+        total_body_lines,
+        original_leading: leading_lines,
+        omitted_leading,
+    };
+    let fits = |candidate: &Value| {
+        let mut compacted = candidate.clone();
+        format::compact(&mut compacted, operation, explain);
+        let rendered =
+            format::render_for_operation(&compacted, output_format, title, discovery, operation);
+        success_text_bytes(&rendered) <= budget
+    };
+
+    if body_lines > 0 {
+        for kept_leading in (0..=leading_lines).rev() {
+            let leading_text = leading_parts[leading_lines - kept_leading..].concat();
+            let mut low = 1;
+            let mut high = body_lines;
+            let mut best = None;
+            while low <= high {
+                let kept_body = low + (high - low) / 2;
+                let body_text = body_parts[..kept_body].concat();
+                let Some(candidate) = snippet_source_candidate(
+                    value,
+                    &source_page,
+                    kept_leading,
+                    kept_body,
+                    &leading_text,
+                    &body_text,
+                ) else {
+                    return false;
+                };
+                if fits(&candidate) {
+                    best = Some((kept_body, candidate));
+                    low = kept_body.saturating_add(1);
+                } else {
+                    high = kept_body - 1;
+                }
+            }
+            if let Some((_, candidate)) = best {
+                *value = candidate;
+                return true;
+            }
+        }
+    } else if body_offset == total_body_lines {
+        for kept_leading in (0..=leading_lines).rev() {
+            let leading_text = leading_parts[leading_lines - kept_leading..].concat();
+            let Some(candidate) = snippet_source_candidate(
+                value,
+                &source_page,
+                kept_leading,
+                0,
+                &leading_text,
+                "",
+            ) else {
+                return false;
+            };
+            if fits(&candidate) {
+                *value = candidate;
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+struct SnippetSourcePage {
+    node_line: usize,
+    body_offset: usize,
+    total_body_lines: usize,
+    original_leading: usize,
+    omitted_leading: usize,
+}
+
+fn snippet_source_candidate(
+    original: &Value,
+    page: &SnippetSourcePage,
+    leading_lines: usize,
+    body_lines: usize,
+    leading: &str,
+    body: &str,
+) -> Option<Value> {
+    let next = page.body_offset.checked_add(body_lines)?;
+    let more = next < page.total_body_lines;
+    let start_line = if leading_lines > 0 {
+        page.node_line.checked_sub(leading_lines)?
+    } else {
+        page.node_line.checked_add(page.body_offset)?
+    };
+    let end_line = if body_lines > 0 {
+        page.node_line.checked_add(next.checked_sub(1)?)
+    } else if leading_lines > 0 {
+        page.node_line.checked_sub(1)
+    } else {
+        None
+    };
+    let hint = if more {
+        Some("Repeat the same tool and selector with show_source=true, next_source_offset as source_offset, and this generation.".to_owned())
+    } else {
+        None
+    };
+    let dropped_leading = page.original_leading.checked_sub(leading_lines)?;
+    let omitted_leading = page.omitted_leading.checked_add(dropped_leading)?;
+    let start_line_value =
+        (!leading.is_empty() || !body.is_empty()).then_some(start_line);
+    let mut candidate = original.clone();
+    candidate["source"] = json!(format!("{leading}{body}"));
+    {
+        let preview = candidate.get_mut("source_preview")?.as_object_mut()?;
+        preview.insert("start_line".into(), json!(start_line_value));
+        preview.insert("end_line".into(), json!(end_line));
+        preview.insert("body_lines".into(), json!(body_lines));
+        preview.insert("leading_lines".into(), json!(leading_lines));
+        preview.insert("omitted_leading_lines".into(), json!(omitted_leading));
+        preview.insert(
+            "omitted_body_lines".into(),
+            json!(page.total_body_lines.saturating_sub(next)),
+        );
+        preview.insert("has_more".into(), json!(more));
+        preview.insert("truncated_line".into(), json!(false));
+        preview.insert(
+            "next_source_offset".into(),
+            json!(more.then_some(next)),
+        );
+        preview.insert("continuation_hint".into(), json!(hint));
+    }
+    if let (Some(path), Some(start), Some(end)) = (
+        candidate["node"]["path"].as_str(),
+        start_line_value.and_then(|line| u64::try_from(line).ok()),
+        end_line.and_then(|line| u64::try_from(line).ok()),
+    ) {
+        candidate["header"] = json!(format!(
+            "{} {} in {path}:{start}-{end}",
+            candidate["node"]["kind"].as_str().unwrap_or("symbol"),
+            candidate["node"]["qualname"]
+                .as_str()
+                .or_else(|| candidate["node"]["name"].as_str())
+                .unwrap_or("symbol")
+        ));
+    } else if let Some(object) = candidate.as_object_mut() {
+        object.remove("header");
+    }
+    Some(candidate)
 }
 
 pub(crate) fn rejected_arguments(fields: &[String]) -> CallToolResult {
