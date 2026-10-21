@@ -35,6 +35,6 @@ If a source file has changed since it was indexed, `get_code_snippet` rejects st
 
 `code_map_analyze` accepts one read-only `SELECT` or `WITH` statement and rejects write and administrative SQL. It runs against a read-only connection. Set `include_cycles=true` only when cycle findings are needed; cycle analysis has separate graph limits. A structural result is evidence from indexed source, not a guarantee about runtime behavior.
 
-Source bodies are omitted from MCP responses by default. Opt in through the configured source preview settings or request `get_code_snippet`. `leading_lines` ranges from 0 to 20 and `max_body_lines` from 1 to 100. Pagination and response byte limits still apply. See [MCP tools](../reference/mcp-tools.md) for the request fields.
+Source bodies are omitted from MCP responses by default. Opt in through the configured source preview settings or request `get_code_snippet`. Source previews default to 5 leading lines and 200 body lines; requests accept `leading_lines` from 0 to 20 and `max_body_lines` from 1 to 500. Pagination and response byte limits still apply. See [MCP tools](../reference/mcp-tools.md) for the request fields.
 
 Local checkpoints live in `.forge/checkpoints.json`. A name must be 1–200 UTF-8 bytes and cannot contain `..`, `/`, `\`, or a NUL byte. `save` requires valid JSON content; `get` and `delete` report missing names as errors.

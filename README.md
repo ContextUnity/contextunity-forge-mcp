@@ -10,6 +10,11 @@ It follows a **zero-daemon, local-first architecture**: pure execution over stdi
 
 Each tool call returns a bounded slice: a symbol and its neighbors, a documentation section linked to that symbol, or the task bundle for the gate just claimed. Responses stay within 64 KiB. The agent continues from that slice — the contract, the code, and the docs that bear on the current step — while the rest of the repository stays on disk.
 
+Tool content and CLI command results default to Markdown. Select MCP
+`format: "json"` or CLI `--format json` for structured processing. Stdio MCP
+keeps JSON-RPC framing. See the [presentation contract](docs/reference/mcp-markdown-contracts.md)
+for shared formatting, preserved evidence, and continuations.
+
 ## How the pieces work together
 
 Three local stores share one workspace. `forge-mcp.yaml` in the repository root decides what is admitted.

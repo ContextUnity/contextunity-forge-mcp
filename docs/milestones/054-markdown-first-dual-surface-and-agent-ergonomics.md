@@ -768,43 +768,94 @@ receipt:
 
 ```yaml
 task_ref: cli-surface-parity-json-alignment-and-seam-tests
-target: "Complete and verify shared-operation Markdown/JSON parity, supported errors and default selection across real CLI and MCP seams"
+target: Complete and verify shared-operation Markdown/JSON parity, supported errors and default selection across real CLI and MCP seams
 depends_on:
-  - coordination-and-documentation-markdown-contracts
+- coordination-and-documentation-markdown-contracts
 proof_policy: deferred-final-test
 contract_revision: 4
 invariants:
-  - 'INV-DUAL-SURFACE-PARITY: Shared operations produce equivalent semantic results and use the same formatter; CLI-only operations retain their boundary.'
-  - 'INV-DEAD-METADATA-ELIMINATION: Shared compaction preserves active recovery and all meaningful domain evidence.'
+- 'INV-DUAL-SURFACE-PARITY: Shared operations produce equivalent semantic results and use the same formatter; CLI-only operations retain their boundary.'
+- 'INV-DEAD-METADATA-ELIMINATION: Shared compaction preserves active recovery and all meaningful domain evidence.'
 scope:
-  - src/core/format/
-  - src/cli/
-  - src/mcp/
-  - tests/cli_roots.rs
-  - tests/common/
-  - tests/mcp/
-  - docs/adr/0001-dual-surface-parity.md
-  - docs/adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md
-  - docs/reference/cli.md
-  - docs/reference/mcp-tools.md
-  - docs/reference/mcp-markdown-contracts.md
-  - README.md
-  - AGENTS.md
-  - docs/architecture/README.md
-  - docs/reference/README.md
-  - docs/runbooks/limits-and-freshness.md
-  - docs/adr/README.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/
-status: ready
+- src/core/format/
+- src/cli/
+- src/mcp/
+- tests/cli_roots.rs
+- tests/common/
+- tests/mcp/
+- docs/adr/0001-dual-surface-parity.md
+- docs/adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md
+- docs/reference/cli.md
+- docs/reference/mcp-tools.md
+- docs/reference/mcp-markdown-contracts.md
+- README.md
+- AGENTS.md
+- docs/architecture/README.md
+- docs/reference/README.md
+- docs/runbooks/limits-and-freshness.md
+- docs/adr/README.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/
+status: completed
 subtasks:
-  - subtask_ref: cli-markdown-wiring
-    title: "Close remaining shared-operation wiring gaps and preserve readable CLI-only output without new MCP operations"
-    status: ready
-  - subtask_ref: json-payload-compaction-and-alignment
-    title: "Prove equivalent parsed JSON with explicit documented transport/runtime normalization and protected domain fields"
-    status: ready
-  - subtask_ref: dual-surface-snapshot-parity-tests
-    title: "Exercise all registered tools and existing CLI equivalents through real processes, both formats, defaults, continuations and errors"
-    status: ready
+- subtask_ref: cli-markdown-wiring
+  title: Close remaining shared-operation wiring gaps and preserve readable CLI-only output without new MCP operations
+  status: completed
+  evidence: '{"command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast", "exit_code": 0, "tests_passed": 261, "tests_failed": 0, "archive_id": "f5fe4011bc1785ca", "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d", "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4", "targets": {"acdd": 116, "cli_roots": 7, "impact_context": 4, "mcp": 91, "query_context": 43}, "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."}'
+- subtask_ref: json-payload-compaction-and-alignment
+  title: Prove equivalent parsed JSON with explicit documented transport/runtime normalization and protected domain fields
+  status: completed
+  evidence: '{"command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast", "exit_code": 0, "tests_passed": 261, "tests_failed": 0, "archive_id": "f5fe4011bc1785ca", "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d", "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4", "targets": {"acdd": 116, "cli_roots": 7, "impact_context": 4, "mcp": 91, "query_context": 43}, "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."}'
+- subtask_ref: dual-surface-snapshot-parity-tests
+  title: Exercise all registered tools and existing CLI equivalents through real processes, both formats, defaults, continuations and errors
+  status: completed
+  evidence: '{"command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast", "exit_code": 0, "tests_passed": 261, "tests_failed": 0, "archive_id": "f5fe4011bc1785ca", "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d", "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4", "targets": {"acdd": 116, "cli_roots": 7, "impact_context": 4, "mcp": 91, "query_context": 43}, "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."}'
+receipt:
+  contract_revision: 4
+  passed_at: 2026-10-21T04:53:52.848768914+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast
+      exit_code: 0
+      tests_passed: 261
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. Reviewed integrated source tree b3e1406e22221bf79e8c0eeb8872915c0825281d against explicit target base e37a659694386df07cd048186c2a2a6004fad607; patch SHA-256 a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4. Live tracked content matched this binding, no untracked source, and diff checks passed. Traversal delivery0941313e791620c68d9f943868f723b07263a3fc preserved reviewed scoped bytes. Remaining task content is admitted under its own current scope; peer-owned changes remain attributed to those owners. Only Forge-generated task metadata/receipts may differ from the tested tree. No reviewer source, test, documentation, configuration, staging, Cargo or index mutation. Parity scope covers core formatter, CLI/MCP adapters, existing CLI/common/MCP tests, ADR0001/0019 and canonical interfaces/skills. Independently approved rev3-to4 amendment admits exactly README.md,AGENTS.md,docs/architecture/README.md,docs/reference/README.md,docs/runbooks/limits-and-freshness.md,docs/adr/README.md. All other task fields, protected authority and accepted receipts were preserved; the amendment closes authorized documentation perimeter only.
+        claims:
+          applicable: true
+          evidence: 'PASS. Traced existing shared-operation inputs/options and semantic values through one formatting/compaction path on real CLI processes and MCP stdio, with no surrogate renderer replacing actual wire output. Omitted/explicit Markdown compare exactly after admitted transport newline handling; JSON compares parsed values. Only exact actual top-level server-owned freshness is separately asserted then normalized; nested/arbitrary domain fields remain protected. Overview''s actual envelope and allowed inactive dedicated-discovery absence are explicit; meaningful notices are retained. Canonical headings, inspect/explain options and search continuation scope booleans agree. AST equivalent limits1..100 now use the same canonical matches page, pattern/language and Markdown request scope; active limit1 offset/generation/totals assertions are additive. CLI-only101..10000 aggregation remains supported and accurately documented outside MCP''s validated range. The four rows after AST share equivalent docs-search, docs-get, guide and checkpoint producers/options, with no further semantic mismatch found. Every registered MCP tool advertises optional exact markdown/json selector; defaults, invalid-before-operation, strict unknown fields, error identity/isError/CLI status, selected-root coordinates and active nested/source/byte-trim recovery remain covered by actual existing seams. MCP-only get_code_snippet is tested through its real wire boundary without inventing a CLI command. The genuine pre-fix CLI search-scope mismatch failed at runtime in archivef0a1860ba1f327f5; AST mismatch was corrected without normalizing payload away. Existing tests were extended rather than replacing domain assertions or adding duplicate standalone monoliths. Current source/reference/ADR amendment/docs/skill behavior is consistent; source preview bounds/defaults and portable links were verified. Current consolidated production-seam evidence: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast exited0, strictClippy0,261passed/0failed/0ignored (ACDD116 CLI7 impact4 MCP91 query43), archivef5fe4011bc1785ca/board780. This is the shared run on reviewed b3e source under user override752 and supported deferred-final-test amendment758; no per-task rerun or historical branch result is claimed. Full milestone handoff gates remain coordinator-owned.'
+        concurrency:
+          applicable: true
+          evidence: PASS. Request-local formatting over supplied immutable Values introduces no global format state. Existing storage transactions, claim/revision fencing, candidate baseline equality, reader locks, source admission, rollback and receipt implementation remain authoritative. No lock-order, shared-database namespace, migration or mutation behavior was changed by the presentation work. Writers were frozen for positive verification and review; deliberate mutations were restored byte-exactly before the positive run. Concurrent implementations were isolated then integrated under explicit user authority. Metadata-only gate transport must preserve the reviewed source and accepted current candidate.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Existing canonical selected/linked-root scanner and adapter guards remain authoritative. Core formatting performs no filesystem or downstream adapter IO. CLI/MCP presentation adapters attach only real supplied coordinates against the selected workspace; no fabricated URI/call site or JSON enrichment. Existing repository/project task namespaces, profile resolution, traversal/symlink confinement and malformed-input-before-mutation behavior remain intact. Actual CLI/MCP/root seams passed within the shared MCP91/CLI7 targets. All gate work remains in the dedicated M054 milestone worktree; unrelated primary-main M060 content is excluded and untouched.
+        administration:
+          applicable: true
+          evidence: PASS. Actual independent reviewer is the same stable session/worker m054-integration-reviewer, distinct from the implementation authors. Coordinator may transport this unchanged attributed proof inside the current accepted claim's exact template; transport is not a new self-review. No new MCP operation, storage schema, protected profile/gate/configuration semantics, historical receipt rewrite or privileged Git action. Core/discovery accepted histories remain intact. Current documentation scan and exact parity-only six-path amendment were independently reviewed; no extra functionality is admitted. Positive/negative test intent remains deferred post054. Any final receipt is generated by Forge; auto_commit owns the single scoped delivery commit, with no manual duplicate. Final candidate/claim binding must be reconciled against this source before submission. The six-path documentation scope amendment changes no functionality, target, proof policy, dependencies, invariants or subtask acceptance. No new transport or MCP operation is added.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-DUAL-SURFACE-PARITY: Operations available on both surfaces share semantic projections and one formatting engine; equivalent data/options produce identical Markdown and equivalent parsed JSON. Existing CLI-only operations remain CLI-only.'
+    - 'INV-MARKDOWN-FIRST-DEFAULT: MCP tools and CLI default to high-density Markdown; explicit format: "json" and --format json preserve programmatic output under ADR 0019, amending ADR 0001 Decision 2.'
+    - 'INV-DEAD-METADATA-ELIMINATION: Omit inactive presentation metadata and empty optional graph sections through operation-aware compaction; preserve all active nested/source continuations and durable/domain data.'
+    - 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve all actionable workflow guidance, stage rules, evidence identities, applicable invariants, dependencies, allowed write scopes, subtask DoD, and receipts under existing operation bounds.'
+    - 'INV-CONTEXTUAL-ACTIONABLE-HINTS: Replace duplicated boilerplate only with equivalent concise contextual guidance; preserve supported recovery steps and error semantics.'
+    - 'INV-CLICKABLE-COORDINATES: Render available file, symbol, and document coordinates as absolute file:/// links with real line fragments; resolve against the selected workspace and never invent missing coordinates.'
+    - 'INV-DUAL-SURFACE-PARITY: Shared operations produce equivalent semantic results and use the same formatter; CLI-only operations retain their boundary.'
+    - 'INV-DEAD-METADATA-ELIMINATION: Shared compaction preserves active recovery and all meaningful domain evidence.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```

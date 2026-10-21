@@ -27,5 +27,6 @@ Accepted decisions live here as owner-approved ADR files with stable IDs, status
 16. [ADR 0016: Lean Stage-Tailored Task Context Bundles and Response Bounding](0016-lean-stage-tailored-task-context-bundles.md)
 17. [ADR 0017: Serde-Driven Framework Manifest Formats](0017-serde-framework-manifest-formats.md)
 18. [ADR 0018: Layer Dependency Boundaries and Core Leaf Isolation](0018-layer-dependency-boundaries-and-core-leaf-isolation.md)
+19. [ADR 0019: Markdown-First Dual Surface Output and Dead Metadata Compaction](0019-mcp-markdown-output-and-dead-metadata-compaction.md)
 
 Decision amendments require explicit architectural admission. A superseding ADR links the accepted decision it replaces and the affected current architecture in [Architecture](../architecture/README.md).

@@ -19,7 +19,7 @@ Forge MCP serves two primary environments: AI coding assistants over the JSON-RP
    - Core discovery, inspection, relationship traversal, documentation search, and task lifecycle capabilities map directly between MCP tool arguments and CLI command-line flags.
 2. **Shared Engine Core**:
    - Both `src/mcp/` and `src/cli/` serve as thin protocol adapters over shared storage (`src/db/`), analysis (`src/engine/`), and task execution engines.
-   - Output formatting adheres to structured JSON across both interfaces, enabling seamless pipeline integration.
+   - Output defaults to structured Markdown through one shared formatter. Both interfaces support explicit JSON for pipelines, as prescribed by [ADR 0019](0019-mcp-markdown-output-and-dead-metadata-compaction.md). Parity applies to operations available on both surfaces; CLI-only administration and milestone operations retain their existing transport boundary.
 3. **Emergency Recovery & Scriptability**:
    - Administrative overrides, index maintenance, database migrations, and task state resets remain executable directly via CLI without an active MCP JSON-RPC session.
 4. **Modularity Invariant: Domain-Driven Type and Language Decomposition**:

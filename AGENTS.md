@@ -23,6 +23,10 @@ Use Forge MCP tools or the `contextunity-forge-mcp` CLI on the surface that prov
 
 The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. Use its `workflow_guidance.scoped_commands` entry for an affected test target and submit the task-bound `expected_evidence_template` with completed proof fields.
 
+<!-- acdd-forge:agents-verification:start -->
+When authoring contracts for existing capabilities, strengthen existing seam tests (in `tests/`) with additive parameterized cases rather than creating duplicate standalone test functions. Ensure tests compile cleanly and produce runtime assertion failures (exit code 101) for `contract` gate proof.
+<!-- acdd-forge:agents-verification:end -->
+
 ## Documentation scan before handoff
 
 Before milestone handoff, launch a documentation agent in the milestone worktree.
