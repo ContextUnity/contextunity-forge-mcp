@@ -1,6 +1,6 @@
 use super::paging;
 use crate::core::response::{Detail, QueryOptions};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use rusqlite::backup::Backup;
 use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Map, Value};
@@ -528,6 +528,22 @@ pub fn rows(
     params: &[&dyn rusqlite::ToSql],
     limit: usize,
 ) -> Result<Vec<Value>> {
+    rows_with_mode(conn, sql, params, limit, RowMode::Structural)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RowMode {
+    Structural,
+    Opaque,
+}
+
+pub(super) fn rows_with_mode(
+    conn: &Connection,
+    sql: &str,
+    params: &[&dyn rusqlite::ToSql],
+    limit: usize,
+    mode: RowMode,
+) -> Result<Vec<Value>> {
     if limit == 0 || limit > 500000 {
         bail!("internal row budget exceeded");
     }
@@ -552,10 +568,12 @@ pub fn rows(
         let mut minimum_row_bytes = 2usize;
         let mut property_count = 0usize;
         for (i, name) in names.iter().enumerate() {
-            if matches!(
-                name.as_str(),
-                "node_hash" | "path_hash" | "path_id" | "owner_path_id"
-            ) {
+            if mode == RowMode::Structural
+                && matches!(
+                    name.as_str(),
+                    "node_hash" | "path_hash" | "path_id" | "owner_path_id"
+                )
+            {
                 continue;
             }
             if names[i + 1..].iter().any(|later| later == name) {
@@ -563,10 +581,11 @@ pub fn rows(
                 continue;
             }
             let raw = row.get_ref(i)?;
-            let special_json_column = matches!(
-                name.as_str(),
-                "details" | "invariants" | "referenced_symbols"
-            );
+            let special_json_column = mode == RowMode::Structural
+                && matches!(
+                    name.as_str(),
+                    "details" | "invariants" | "referenced_symbols"
+                );
             let minimum_value_bytes = match raw {
                 ValueRef::Null => 4,
                 ValueRef::Integer(number) => number.to_string().len(),
@@ -627,6 +646,7 @@ pub fn rows(
     }
     Ok(result)
 }
+
 /// Resolves one fail-closed code selector and returns its full node projection.
 ///
 /// # Errors
@@ -1654,21 +1674,13 @@ pub fn analyze_paged(
 ) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
     let sql = target.trim();
-    let first = sql
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if matches!(first.as_str(), "select" | "with") {
-        if sql.contains(';') {
-            bail!("exactly one SELECT or WITH statement is allowed");
-        }
-        let statement = conn.prepare(sql)?;
+    if let Some(statement_sql) = classify_read_only_sql(sql)? {
+        let statement = conn.prepare(statement_sql)?;
         if !statement.readonly() {
             bail!("query must be read-only");
         }
         return Ok(
-            json!({"rows":paging::query(conn, sql, &[], options)?, "ordering":"SQL order is preserved; include a deterministic ORDER BY for stable pagination."}),
+            json!({"rows":paging::query_opaque(conn, statement_sql, &[], options)?, "ordering":"SQL order is preserved; include a deterministic ORDER BY for stable pagination."}),
         );
     }
     if sql.contains(';') {
@@ -1685,12 +1697,14 @@ pub fn analyze_paged(
     if !indexed_path && matches!(path, "diagnostics" | "cycles") {
         bail!("analysis target '{path}' is interpreted as a path, not an analysis mode. Use target='' for workspace diagnostics; pass include_cycles=true to compute cycles for the workspace or a narrower indexed path");
     }
+    let first = first_sql_keyword(sql)?.unwrap_or("");
     if !indexed_path
         && [
             "insert", "update", "delete", "drop", "alter", "create", "replace", "attach", "detach",
             "pragma", "vacuum", "reindex", "begin", "commit", "rollback",
         ]
-        .contains(&first.as_str())
+        .iter()
+        .any(|keyword| first.eq_ignore_ascii_case(keyword))
     {
         bail!("write or administrative SQL is not allowed");
     }
@@ -1806,6 +1820,98 @@ pub fn analyze_paged(
     };
     result["generation"] = json!(generation);
     Ok(result)
+}
+
+fn classify_read_only_sql(sql: &str) -> Result<Option<&str>> {
+    let Some(keyword) = first_sql_keyword(sql)? else {
+        return Ok(None);
+    };
+    if !keyword.eq_ignore_ascii_case("select") && !keyword.eq_ignore_ascii_case("with") {
+        return Ok(None);
+    }
+    let end = sql_statement_end(sql)?;
+    Ok(Some(&sql[..end]))
+}
+
+fn first_sql_keyword(sql: &str) -> Result<Option<&str>> {
+    let start = skip_sql_trivia(sql, 0)?;
+    let bytes = sql.as_bytes();
+    let mut end = start;
+    while end < bytes.len()
+        && (bytes[end].is_ascii_alphanumeric() || matches!(bytes[end], b'_' | b'$'))
+    {
+        end += 1;
+    }
+    Ok((start < end).then(|| &sql[start..end]))
+}
+
+fn sql_statement_end(sql: &str) -> Result<usize> {
+    let bytes = sql.as_bytes();
+    let mut offset = 0;
+    loop {
+        offset = skip_sql_trivia(sql, offset)?;
+        if offset == bytes.len() {
+            return Ok(offset);
+        }
+        match bytes[offset] {
+            b';' => {
+                ensure!(
+                    skip_sql_trivia(sql, offset + 1)? == bytes.len(),
+                    "exactly one SELECT or WITH statement is allowed"
+                );
+                return Ok(offset);
+            }
+            b'\'' | b'"' | b'`' => {
+                offset = skip_sql_quoted(sql, offset, bytes[offset])?;
+            }
+            b'[' => {
+                offset = skip_sql_quoted(sql, offset, b']')?;
+            }
+            _ => offset += 1,
+        }
+    }
+}
+
+fn skip_sql_trivia(sql: &str, mut offset: usize) -> Result<usize> {
+    let bytes = sql.as_bytes();
+    loop {
+        while offset < bytes.len() && bytes[offset].is_ascii_whitespace() {
+            offset += 1;
+        }
+        if bytes.get(offset..offset + 2) == Some(b"--") {
+            while offset < bytes.len() && bytes[offset] != b'\n' {
+                offset += 1;
+            }
+            continue;
+        }
+        if bytes.get(offset..offset + 2) == Some(b"/*") {
+            let comment_start = offset + 2;
+            let Some(comment_end) = sql[comment_start..].find("*/") else {
+                bail!("unterminated SQL block comment");
+            };
+            offset = comment_start + comment_end + 2;
+            continue;
+        }
+        return Ok(offset);
+    }
+}
+
+fn skip_sql_quoted(sql: &str, mut offset: usize, closing: u8) -> Result<usize> {
+    let bytes = sql.as_bytes();
+    let doubled_delimiter = closing != b']';
+    offset += 1;
+    while offset < bytes.len() {
+        if bytes[offset] == closing {
+            if doubled_delimiter && bytes.get(offset + 1) == Some(&closing) {
+                offset += 2;
+            } else {
+                return Ok(offset + 1);
+            }
+        } else {
+            offset += 1;
+        }
+    }
+    bail!("unterminated quoted value in SQL")
 }
 
 fn document_diagnostics(

@@ -1,4 +1,4 @@
-use super::reader::{rows, QueryBudget};
+use super::reader::{rows_with_mode, QueryBudget, RowMode};
 use crate::core::response::{Detail, QueryOptions, MAX_PAGE_SIZE};
 use anyhow::{ensure, Result};
 use rusqlite::{Connection, ToSql};
@@ -63,18 +63,37 @@ pub(crate) fn query(
     params: &[&dyn ToSql],
     options: &QueryOptions,
 ) -> Result<Value> {
+    query_with_mode(conn, sql, params, options, RowMode::Structural)
+}
+
+pub(crate) fn query_opaque(
+    conn: &Connection,
+    sql: &str,
+    params: &[&dyn ToSql],
+    options: &QueryOptions,
+) -> Result<Value> {
+    query_with_mode(conn, sql, params, options, RowMode::Opaque)
+}
+
+fn query_with_mode(
+    conn: &Connection,
+    sql: &str,
+    params: &[&dyn ToSql],
+    options: &QueryOptions,
+    mode: RowMode,
+) -> Result<Value> {
     let generation = generation(conn, options)?;
-    let total = count(conn, &format!("SELECT count(*) FROM ({sql})"), params)?;
+    let total = count(conn, &format!("SELECT count(*) FROM ({sql}\n)"), params)?;
     let limit = options.limit as i64;
     let offset = options.offset as i64;
     let mut bindings = params.to_vec();
     bindings.extend([&limit as &dyn ToSql, &offset as &dyn ToSql]);
     let bounded = format!(
-        "SELECT * FROM ({sql}) LIMIT ?{} OFFSET ?{}",
+        "SELECT * FROM ({sql}\n) LIMIT ?{} OFFSET ?{}",
         params.len() + 1,
         params.len() + 2
     );
-    let items = rows(conn, &bounded, &bindings, options.limit)?;
+    let items = rows_with_mode(conn, &bounded, &bindings, options.limit, mode)?;
     Ok(value(items, total, options, &generation))
 }
 

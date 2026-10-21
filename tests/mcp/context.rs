@@ -831,24 +831,27 @@ fn stdio_analyze_preserves_sql_columns_named_like_metadata() {
         result["rows"]["items"][0]["corpus_hash"],
         "abcdef0123456789"
     );
+    let returned_details = result["rows"]["items"][0]["details"].as_str().unwrap();
+    assert_eq!(returned_details, details.as_str());
+    let returned_details: Value = serde_json::from_str(returned_details).unwrap();
     assert_eq!(
-        result["rows"]["items"][0]["details"]["nodes"]["items"][0]["output_root"],
+        returned_details["nodes"]["items"][0]["output_root"],
         "node-root-12345"
     );
     assert_eq!(
-        result["rows"]["items"][0]["details"]["symbols"][0]["corpus_hash"],
+        returned_details["symbols"][0]["corpus_hash"],
         "symbol-hash-1234"
     );
     assert_eq!(
-        result["rows"]["items"][0]["details"]["doc_sections"][0]["output_root"],
+        returned_details["doc_sections"][0]["output_root"],
         "section-root-12"
     );
     assert_eq!(
-        result["rows"]["items"][0]["details"]["freshness"]["corpus_hash"],
+        returned_details["freshness"]["corpus_hash"],
         "nested-hash-12345"
     );
     assert_eq!(
-        result["rows"]["items"][0]["details"]["metadata"]["output_root"],
+        returned_details["metadata"]["output_root"],
         "nested-meta-1234"
     );
 

@@ -1670,6 +1670,64 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
         json!({"target":"SELECT count(*) AS count FROM nodes","limit":1}),
     );
     assert!(count["rows"]["items"][0]["count"].as_u64().unwrap() >= 2);
+    for sql in [
+        "SELECT ';' AS marker",
+        "SELECT ';' AS \"semi;column\"",
+        "/* ; */ SELECT ';' AS marker",
+        "-- ; comment\nSELECT ';' AS marker",
+        "SELECT ';' AS marker /* ; */;  \n",
+        "SELECT ';' AS marker -- trailing ; comment",
+        "WITH value AS (SELECT ';' AS marker) SELECT marker FROM value;",
+    ] {
+        for (tool, args) in [
+            ("code_map_analyze", json!({"target":sql})),
+            ("code_map_query", json!({"operation":"sql","selector":sql})),
+        ] {
+            let result = m.ok(tool, args);
+            let row = result["rows"]["items"][0].as_object().unwrap();
+            assert_eq!(row.values().collect::<Vec<_>>(), vec![&json!(";")], "{tool}: {sql}");
+        }
+    }
+    let sql = "SELECT 1 AS path_id, 2 AS owner_path_id, 'node' AS node_hash, 'path' AS path_hash, '{\"a\":1}' AS details, 'null' AS invariants, '[\"symbol\"]' AS referenced_symbols, 'raw text' AS note";
+    for (tool, args) in [
+        ("code_map_analyze", json!({"target":sql})),
+        ("code_map_query", json!({"operation":"sql","selector":sql})),
+    ] {
+        let result = m.ok(tool, args);
+        assert_eq!(result["rows"]["items"][0], json!({
+            "path_id":1,"owner_path_id":2,"node_hash":"node","path_hash":"path",
+            "details":"{\"a\":1}","invariants":"null","referenced_symbols":"[\"symbol\"]","note":"raw text"
+        }), "{tool}");
+    }
+    let conn = w.open();
+    let structural_rows = reader::rows(
+        &conn,
+        "SELECT 1 AS path_id, 2 AS owner_path_id, 'node' AS node_hash, 'path' AS path_hash, '{\"a\":1}' AS details, 'null' AS invariants, '[\"symbol\"]' AS referenced_symbols",
+        &[],
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        structural_rows[0],
+        json!({
+            "details":{"a":1},
+            "invariants":null,
+            "referenced_symbols":["symbol"]
+        })
+    );
+    for sql in [
+        "/* ; */ SELECT 1; SELECT 2",
+        "WITH value AS (SELECT 1) DELETE FROM nodes",
+    ] {
+        for (tool, args) in [
+            ("code_map_analyze", json!({"target":sql})),
+            ("code_map_query", json!({"operation":"sql","selector":sql})),
+        ] {
+            let (_, response) = m.call(tool, args);
+            assert_eq!(response["result"]["isError"], true, "{tool}: {sql}: {response}");
+            assert_eq!(persisted_state(&w), before, "{tool}: {sql}");
+        }
+    }
     let paged = m.ok(
         "code_map_analyze",
         json!({"target":"SELECT id FROM nodes ORDER BY id","limit":1}),
