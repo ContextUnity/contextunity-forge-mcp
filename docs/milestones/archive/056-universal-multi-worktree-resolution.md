@@ -2,22 +2,55 @@
 id: m-universal-multi-worktree-resolution
 title: Universal Multi-Worktree Resolution and Stable MCP Roots
 doc_type: contract
-status: active
+status: completed
 started_at: 2026-10-21T12:00:21.034253225+00:00
 owners:
-  - src/mcp/
-  - src/engine/tasks/mod.rs
-  - tests/mcp/
-  - tests/acdd/
-  - docs/reference/
-  - skills/contextunity-forge/
+- src/mcp/
+- src/engine/tasks/mod.rs
+- tests/mcp/
+- tests/acdd/
+- docs/reference/
+- skills/contextunity-forge/
 invariants:
-  - 'INV-STABLE-SERVER-ROOT: An omitted worktree always retains the canonical server root and configured index database, independent of active task claims, task settings, or claim transitions.'
-  - 'INV-UNIVERSAL-WORKTREE-ROUTING: Every MCP tool uses the same explicit worktree resolver; task manifests and adapters come from the selected root while Git-linked worktrees retain their shared task store.'
-  - 'INV-WORKTREE-MATCH-PRECEDENCE: Explicit paths and dot select directly; otherwise match exact name, prefix or zero-normalized milestone number, suffix, then substring. The first nonempty tier must have exactly one canonical candidate; missing and ambiguous selectors fail closed.'
-  - 'INV-CANONICAL-CLAIM-AFFINITY: Task claim and next persist the canonical selected path, never an unresolved numeric or slug selector; submit retains existing claim, candidate, authority, and reviewer independence checks.'
+- 'INV-STABLE-SERVER-ROOT: An omitted worktree always retains the canonical server root and configured index database, independent of active task claims, task settings, or claim transitions.'
+- 'INV-UNIVERSAL-WORKTREE-ROUTING: Every MCP tool uses the same explicit worktree resolver; task manifests and adapters come from the selected root while Git-linked worktrees retain their shared task store.'
+- 'INV-WORKTREE-MATCH-PRECEDENCE: Explicit paths and dot select directly; otherwise match exact name, prefix or zero-normalized milestone number, suffix, then substring. The first nonempty tier must have exactly one canonical candidate; missing and ambiguous selectors fail closed.'
+- 'INV-CANONICAL-CLAIM-AFFINITY: Task claim and next persist the canonical selected path, never an unresolved numeric or slug selector; submit retains existing claim, candidate, authority, and reviewer independence checks.'
 related_plans:
-  - docs/plans/universal-multi-worktree-resolution.md
+- docs/plans/universal-multi-worktree-resolution.md
+handoff:
+  completed_at: 2026-10-21T13:05:14.740194226+00:00
+  duration: 1h 4m
+  commit: f0e1684dc170a53184ac003a1afa835b67d4d460
+  target_base: c75c27ef4629dadd406b6a5f280b7e8884430108
+  integration_evidence:
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: m-universal-multi-worktree-resolution
+      authority_digest: 28d920118404c5384f7a3e18ffd09876867d9902733a315b1d4ce15c18110772
+      implementation_digest: 0c9182f660840f00d9dec119a97b380a7e2f892d18c000622b0eea01ce41d913
+      target_base_digest: 627266667a4f598dc636a5bb24072093450f9db9792a4e09264dfd1da78eaa58
+      builders:
+      - m056-native-builder
+    target_base: c75c27ef4629dadd406b6a5f280b7e8884430108
+    review:
+      worker_id: m056-native-integration-reviewer
+      decision: pass
+      summary: Read-only integration review of delivered commit f0e1684dc170a53184ac003a1afa835b67d4d460 against main base c75c27ef4629dadd406b6a5f280b7e8884430108. Independent handoff-context returned the stated authority, implementation, and target-base digests. All 17 reviewed scoped source/test/documentation postimages match repaired candidate b688d3e5; the additional milestone manifest contains the Forge-rendered completion receipt, accepted proofs, decisions, and admitted skill_sync extension. The combined delta contains only the 18 milestone paths; the worktree is clean. Prior full-candidate review and confirmed R1 schema-description repair remain applicable. The source-plan archive link is intentionally prospective until handoff; the parent owns its post-handoff verification. I ran no checks or mutations.
+      scope_findings: []
+      contract_findings: []
+    verification:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 815
+      tests_failed: 0
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 815
+    tests_failed: 0
 ---
 
 # Universal Multi-Worktree Resolution and Stable MCP Roots
@@ -100,6 +133,7 @@ scope:
 - skills/contextunity-forge/references/
 status: completed
 receipt:
+  commit: f0e1684dc170a53184ac003a1afa835b67d4d460
   contract_revision: 2
   passed_at: 2026-10-21T12:58:43.540870666+00:00
   evidence:
