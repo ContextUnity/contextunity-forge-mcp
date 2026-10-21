@@ -1,14 +1,14 @@
 use crate::{
     core::tasks::{
-        canonical_commit_from_prefix, confined_path, gates::Evidence,
-        shorten_task_response_commits, snapshot_inspect_cmd, Milestone,
+        Milestone, canonical_commit_from_prefix, confined_path, gates::Evidence,
+        shorten_task_response_commits, snapshot_inspect_cmd,
     },
     db::tasks_store::{BlackboardPageRequest, BlackboardPostInput, Task, TasksStore},
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 mod workspaces;
 use workspaces::Registry;
@@ -19,7 +19,7 @@ mod gates;
 mod git_snapshot;
 mod lifecycle;
 
-pub use blackboard::{blackboard, BlackboardAction, BlackboardRequest, BlackboardScope};
+pub use blackboard::{BlackboardAction, BlackboardRequest, BlackboardScope, blackboard};
 pub use lifecycle::{claim, manage, reopen, reset};
 
 /// Returns the registered workspace names for the repository at `root`.
@@ -488,7 +488,14 @@ pub(crate) fn active_claim_worktree(
         }
     }
     if worktrees.len() > 1 {
-        bail!("WORKTREE_AMBIGUOUS: multiple active worktrees: {}. Do: pass an explicit worktree path or unique name.", worktrees.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+        bail!(
+            "WORKTREE_AMBIGUOUS: multiple active worktrees: {}. Do: pass an explicit worktree path or unique name.",
+            worktrees
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     Ok(worktrees.into_iter().next())
 }
@@ -580,6 +587,7 @@ pub fn list(root: &Path, mut p: List) -> Result<Value> {
                     "owner": task.worker_id,
                     "agent_type": task.spec.agent_type.as_deref().unwrap_or("worker"),
                     "rev": task.contract_revision,
+                    "depends_on": task.spec.depends_on,
                 });
                 if !task.spec.subtasks.is_empty() {
                     item["subtasks"] = match detail {
@@ -777,10 +785,16 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     };
     let task = store.inspect(&p.task_id)?;
     if task.stage != observed_task.stage || task.profile_pin != observed_task.profile_pin {
-        bail!("TASK_STALE_SUBMISSION: task '{}'. stage or profile_pin changed concurrently. Do: retry submission.", p.task_id);
+        bail!(
+            "TASK_STALE_SUBMISSION: task '{}'. stage or profile_pin changed concurrently. Do: retry submission.",
+            p.task_id
+        );
     }
     if !p.evidence.is_object() {
-        bail!("TASK_EVIDENCE_INVALID: task '{}'. evidence is not a valid JSON object. Do: pass evidence as a JSON object.", p.task_id);
+        bail!(
+            "TASK_EVIDENCE_INVALID: task '{}'. evidence is not a valid JSON object. Do: pass evidence as a JSON object.",
+            p.task_id
+        );
     }
     let mut evidence: Evidence = serde_json::from_value(p.evidence)
         .context(format!("TASK_EVIDENCE_INVALID: task '{}'. evidence JSON does not match the evidence object. Do: pass the evidence fields required by stage '{}'.", p.task_id, p.stage))?;
@@ -812,7 +826,10 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
             if let Some(canonical) = canonical_commit_from_prefix(supplied, &snapshot) {
                 evidence.commit = Some(canonical);
             } else {
-                bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != scoped snapshot {snapshot}. Do: resubmit with commit {snapshot}.", p.task_id);
+                bail!(
+                    "TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != scoped snapshot {snapshot}. Do: resubmit with commit {snapshot}.",
+                    p.task_id
+                );
             }
         }
         evidence.commit = Some(snapshot);
@@ -833,7 +850,10 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                     .context("TASK_RECEIPT_INVALID: completed task has no delivery commit")?;
                 if let Some(supplied) = explicit_commit.as_deref() {
                     if canonical_commit_from_prefix(supplied, delivered).is_none() {
-                        bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != accepted receipt commit {delivered}. Do: resubmit with commit {delivered}.", p.task_id);
+                        bail!(
+                            "TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != accepted receipt commit {delivered}. Do: resubmit with commit {delivered}.",
+                            p.task_id
+                        );
                     }
                 }
                 evidence.commit = Some(delivered.to_owned());
@@ -844,7 +864,9 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                     "TASK_CANDIDATE_BASELINE_MISMATCH",
                 )?;
                 if head != candidate_baseline {
-                    bail!("TASK_CANDIDATE_BASELINE_MISMATCH: HEAD '{head}' does not match candidate baseline '{candidate_baseline}'");
+                    bail!(
+                        "TASK_CANDIDATE_BASELINE_MISMATCH: HEAD '{head}' does not match candidate baseline '{candidate_baseline}'"
+                    );
                 }
                 let (current, _) =
                     git_snapshot::capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
@@ -867,7 +889,10 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
         } else {
             if let Some(supplied) = explicit_commit.as_deref() {
                 if canonical_commit_from_prefix(supplied, &candidate).is_none() {
-                    bail!("TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != candidate snapshot {candidate}. Do: resubmit with commit {candidate}.", p.task_id);
+                    bail!(
+                        "TASK_CANDIDATE_MISMATCH: task '{}'. supplied commit {supplied} != candidate snapshot {candidate}. Do: resubmit with commit {candidate}.",
+                        p.task_id
+                    );
                 }
             }
             evidence.commit = Some(candidate.clone());

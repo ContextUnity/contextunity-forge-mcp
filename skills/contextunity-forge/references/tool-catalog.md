@@ -10,6 +10,7 @@ Use the active server registry and schemas as the final authority. This catalog 
 - `task show TASK_ID` aliases `task inspect TASK_ID`. Inspect and submit accept `--task TASK_ID`; sync accepts `--file PATH`. Use `task list --detail compact|full`; `--full` is supported but cannot be combined with `--detail`.
 - CLI-only milestone operations are `milestone init`, `list`, `show`, `handoff-context`, and `handoff`.
 - `task_blackboard` posts, reads, or inspects `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred` at milestone, task, or subtask scope. `gate` filters or targets posts/reads. `decisions` and `deferred` are copied with topic labels to delivery `architectural_notes`.
+- Task results default to Markdown; request MCP `format: "json"` or CLI `--format json` when parsing values. Context Markdown retains profile guidance and task evidence; truncated blocker summaries include an inspect recovery.
 
 ## Discovery and search
 

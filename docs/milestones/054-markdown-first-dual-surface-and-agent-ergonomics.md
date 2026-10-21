@@ -571,46 +571,99 @@ receipt:
 
 ```yaml
 task_ref: task-lifecycle-markdown-contracts-and-bundle-compaction
-target: "Render task lifecycle and embedded claim/contract blackboard blocker callouts while preserving all operative guidance, DoD, evidence identities and receipts"
+target: Render task lifecycle and embedded claim/contract blackboard blocker callouts while preserving all operative guidance, DoD, evidence identities and receipts
 depends_on:
-  - graph-traversal-and-impact-markdown-contracts
+- graph-traversal-and-impact-markdown-contracts
 proof_policy: deferred-final-test
 contract_revision: 5
 invariants:
-  - 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve task authority, stage guidance, proof commands/templates, write scopes, DoD and durable evidence.'
-  - 'INV-CONTEXTUAL-ACTIONABLE-HINTS: Compact duplicate presentation while preserving every distinct operative instruction.'
-  - 'INV-EMBEDDED-BLOCKER-PRESENTATION: Claim/context including contract-stage blackboard uses CAUTION BLOCKER callouts with complete message identity, author, scope, gate and supplied body/recovery; nonblocker topics remain distinct.'
+- 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve task authority, stage guidance, proof commands/templates, write scopes, DoD and durable evidence.'
+- 'INV-CONTEXTUAL-ACTIONABLE-HINTS: Compact duplicate presentation while preserving every distinct operative instruction.'
+- 'INV-EMBEDDED-BLOCKER-PRESENTATION: Claim/context including contract-stage blackboard uses CAUTION BLOCKER callouts with complete message identity, author, scope, gate and supplied body/recovery; nonblocker topics remain distinct.'
 scope:
-  - src/core/format/
-  - src/engine/tasks/context.rs
-  - src/engine/tasks/mod.rs
-  - src/db/tasks_store/lifecycle.rs
-  - src/mcp/
-  - src/cli/mod.rs
-  - src/cli/task.rs
-  - tests/mcp/
-  - tests/acdd/
-  - docs/reference/tasks.md
-  - docs/reference/acdd.md
-  - docs/reference/mcp-tools.md
-  - docs/reference/cli.md
-  - docs/reference/mcp-markdown-contracts.md
-  - skills/contextunity-forge/SKILL.md
-  - skills/contextunity-forge/references/
-status: ready
+- src/core/format/
+- src/engine/tasks/context.rs
+- src/engine/tasks/mod.rs
+- src/db/tasks_store/lifecycle.rs
+- src/mcp/
+- src/cli/mod.rs
+- src/cli/task.rs
+- tests/mcp/
+- tests/acdd/
+- docs/reference/tasks.md
+- docs/reference/acdd.md
+- docs/reference/mcp-tools.md
+- docs/reference/cli.md
+- docs/reference/mcp-markdown-contracts.md
+- skills/contextunity-forge/SKILL.md
+- skills/contextunity-forge/references/
+status: completed
 subtasks:
-  - subtask_ref: task-context-bundle-markdown-formatter
-    title: "Render each stage/minimal mode under ADR 0016; embedded claim/contract blockers use shared CAUTION callouts preserving identities, gate, supplied body and existing full-body recovery"
-    status: ready
-  - subtask_ref: task-inspect-and-manage-markdown-formatter
-    title: "Render full inspect history and manage/submit outcomes without removing available findings, candidate bindings or receipts"
-    status: ready
-  - subtask_ref: task-list-markdown-formatter
-    title: "Render hierarchy/status/dependencies and cancellation accurately"
-    status: ready
-  - subtask_ref: task-lifecycle-seam-tests
-    title: "Compare authority/evidence across formats/stages and prove contract claim blocker/nonblocker callouts with long identity, gate, multiline body, summary recovery and continuations"
-    status: ready
+- subtask_ref: task-context-bundle-markdown-formatter
+  title: Render each stage/minimal mode under ADR 0016; embedded claim/contract blockers use shared CAUTION callouts preserving identities, gate, supplied body and existing full-body recovery
+  status: completed
+  evidence: '{"command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast", "exit_code": 0, "tests_passed": 261, "tests_failed": 0, "archive_id": "f5fe4011bc1785ca", "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d", "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4", "targets": {"acdd": 116, "cli_roots": 7, "impact_context": 4, "mcp": 91, "query_context": 43}, "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."}'
+- subtask_ref: task-inspect-and-manage-markdown-formatter
+  title: Render full inspect history and manage/submit outcomes without removing available findings, candidate bindings or receipts
+  status: completed
+  evidence: '{"command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast", "exit_code": 0, "tests_passed": 261, "tests_failed": 0, "archive_id": "f5fe4011bc1785ca", "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d", "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4", "targets": {"acdd": 116, "cli_roots": 7, "impact_context": 4, "mcp": 91, "query_context": 43}, "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."}'
+- subtask_ref: task-list-markdown-formatter
+  title: Render hierarchy/status/dependencies and cancellation accurately
+  status: completed
+  evidence: '{"command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast", "exit_code": 0, "tests_passed": 261, "tests_failed": 0, "archive_id": "f5fe4011bc1785ca", "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d", "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4", "targets": {"acdd": 116, "cli_roots": 7, "impact_context": 4, "mcp": 91, "query_context": 43}, "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."}'
+- subtask_ref: task-lifecycle-seam-tests
+  title: Compare authority/evidence across formats/stages and prove contract claim blocker/nonblocker callouts with long identity, gate, multiline body, summary recovery and continuations
+  status: completed
+  evidence: '{"command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast", "exit_code": 0, "tests_passed": 261, "tests_failed": 0, "archive_id": "f5fe4011bc1785ca", "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d", "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4", "targets": {"acdd": 116, "cli_roots": 7, "impact_context": 4, "mcp": 91, "query_context": 43}, "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."}'
+receipt:
+  contract_revision: 5
+  passed_at: 2026-10-21T04:52:58.895830320+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast
+      exit_code: 0
+      tests_passed: 261
+      tests_failed: 0
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. Reviewed integrated source tree b3e1406e22221bf79e8c0eeb8872915c0825281d against explicit target base e37a659694386df07cd048186c2a2a6004fad607; patch SHA-256 a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4. Live tracked content matched this binding, no untracked source, and diff checks passed. Traversal delivery0941313e791620c68d9f943868f723b07263a3fc preserved reviewed scoped bytes. Remaining task content is admitted under its own current scope; peer-owned changes remain attributed to those owners. Only Forge-generated task metadata/receipts may differ from the tested tree. No reviewer source, test, documentation, configuration, staging, Cargo or index mutation. Lifecycle scope includes shared core formatting, engine task context/mod, task-store lifecycle, CLI/MCP task boundaries, existing MCP/ACDD seams and admitted task/ACDD/CLI/MCP/reference/skill documentation. Generic blackboard specialization was removed only from arbitrary nested values; actual root/bundle/guidance blackboard positions remain explicit.
+        claims:
+          applicable: true
+          evidence: 'PASS. Traced task list/claim/context/manage/inspect/submit output through real task engine/store into the shared lifecycle renderer. Actual statuses, cancellation, dependencies, write scopes, stage guidance, proof commands/templates, DoD, candidate/content/gate identities, histories and durable receipts are retained. Equal repeated guidance is deduplicated only after value equality; distinct operative instructions remain. Embedded blockers retain supplied contextual scope (including sibling), identity, author, gate, time, supplied body or exact full-message recovery; standalone canonical references are fallback only when scope was not supplied. Nonblocker topics retain their distinct data. Findings are preserved in both actual producer shapes: Build context parses unresolved_review_findings into objects, while completed inspect returns the complete opaque stored JSON string. Existing raw MCP lifecycle seam checks real rejection-to-Build context JSON equality and Markdown arbitrary blackboard/blackboard_messages values, plus completed-inspect full stored string, parsed semantic equality, candidate and receipt retention. Unsupported inspect nested-label assumptions were withdrawn, not converted into new production parsing. Source SHA5419391e0e0421436979fa37021bcaf3364edbbb7a380d562bcf33483cdad909 and test SHA93e0c8f223d9c0ab1945b581af2d9348c5f24249cfe1cb2402214648cd6cc1f7 were independently verified. Controlled rules omission and recursive arbitrary-blackboard interpretation compiled and caused exactly two actual runtime ACDD failures,10passed/2failed/exit101 archivec2aed0b394ae63b5, followed by exact restoration. Earlier lifecycle-label failure is invalid sensitivity and is excluded. Current consolidated production-seam evidence: cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast exited0, strictClippy0,261passed/0failed/0ignored (ACDD116 CLI7 impact4 MCP91 query43), archivef5fe4011bc1785ca/board780. This is the shared run on reviewed b3e source under user override752 and supported deferred-final-test amendment758; no per-task rerun or historical branch result is claimed. Full milestone handoff gates remain coordinator-owned.'
+        concurrency:
+          applicable: true
+          evidence: PASS. Request-local formatting over supplied immutable Values introduces no global format state. Existing storage transactions, claim/revision fencing, candidate baseline equality, reader locks, source admission, rollback and receipt implementation remain authoritative. No lock-order, shared-database namespace, migration or mutation behavior was changed by the presentation work. Writers were frozen for positive verification and review; deliberate mutations were restored byte-exactly before the positive run. Concurrent implementations were isolated then integrated under explicit user authority. Metadata-only gate transport must preserve the reviewed source and accepted current candidate.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Existing canonical selected/linked-root scanner and adapter guards remain authoritative. Core formatting performs no filesystem or downstream adapter IO. CLI/MCP presentation adapters attach only real supplied coordinates against the selected workspace; no fabricated URI/call site or JSON enrichment. Existing repository/project task namespaces, profile resolution, traversal/symlink confinement and malformed-input-before-mutation behavior remain intact. Actual CLI/MCP/root seams passed within the shared MCP91/CLI7 targets. All gate work remains in the dedicated M054 milestone worktree; unrelated primary-main M060 content is excluded and untouched.
+        administration:
+          applicable: true
+          evidence: PASS. Actual independent reviewer is the same stable session/worker m054-integration-reviewer, distinct from the implementation authors. Coordinator may transport this unchanged attributed proof inside the current accepted claim's exact template; transport is not a new self-review. No new MCP operation, storage schema, protected profile/gate/configuration semantics, historical receipt rewrite or privileged Git action. Core/discovery accepted histories remain intact. Current documentation scan and exact parity-only six-path amendment were independently reviewed; no extra functionality is admitted. Positive/negative test intent remains deferred post054. Any final receipt is generated by Forge; auto_commit owns the single scoped delivery commit, with no manual duplicate. Final candidate/claim binding must be reconciled against this source before submission. Lifecycle Contract claim5 and Build claim6 accepted at revision5; all four subtasks complete. Formal existing seam stdio_analyze_preserves_sql_columns_named_like_metadata in tests/mcp/context.rs has an actual indexed one-hop path to compact_mcp_metadata for nested/source/durable preservation. Actual ACDD116 raw-wire lifecycle checks and the two-failure mutation remain explicit material rendering proof; no standalone ACDD external-process graph edge, synthetic graph connection or accepted path beyond the verified seam is claimed.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-DUAL-SURFACE-PARITY: Operations available on both surfaces share semantic projections and one formatting engine; equivalent data/options produce identical Markdown and equivalent parsed JSON. Existing CLI-only operations remain CLI-only.'
+    - 'INV-MARKDOWN-FIRST-DEFAULT: MCP tools and CLI default to high-density Markdown; explicit format: "json" and --format json preserve programmatic output under ADR 0019, amending ADR 0001 Decision 2.'
+    - 'INV-DEAD-METADATA-ELIMINATION: Omit inactive presentation metadata and empty optional graph sections through operation-aware compaction; preserve all active nested/source continuations and durable/domain data.'
+    - 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve all actionable workflow guidance, stage rules, evidence identities, applicable invariants, dependencies, allowed write scopes, subtask DoD, and receipts under existing operation bounds.'
+    - 'INV-CONTEXTUAL-ACTIONABLE-HINTS: Replace duplicated boilerplate only with equivalent concise contextual guidance; preserve supported recovery steps and error semantics.'
+    - 'INV-CLICKABLE-COORDINATES: Render available file, symbol, and document coordinates as absolute file:/// links with real line fragments; resolve against the selected workspace and never invent missing coordinates.'
+    - 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve task authority, stage guidance, proof commands/templates, write scopes, DoD and durable evidence.'
+    - 'INV-CONTEXTUAL-ACTIONABLE-HINTS: Compact duplicate presentation while preserving every distinct operative instruction.'
+    - 'INV-EMBEDDED-BLOCKER-PRESENTATION: Claim/context including contract-stage blackboard uses CAUTION BLOCKER callouts with complete message identity, author, scope, gate and supplied body/recovery; nonblocker topics remain distinct.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: coordination-and-documentation-markdown-contracts

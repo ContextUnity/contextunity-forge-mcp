@@ -96,7 +96,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         selected["tasks"][0],
         json!({
             "task_id":id,"target":"Deliver","status":"ready","stage":"contract",
-            "owner":null,"agent_type":"worker","rev":1
+            "owner":null,"agent_type":"worker","rev":1,"depends_on":[]
         })
     );
     let output = json_cli()
@@ -501,7 +501,18 @@ scope: [src/]
             submitted["status"],
             if gate == 3 { "completed" } else { "ready" }
         );
-        assert_eq!(client.payload("task_submit", args), submitted);
+        assert_eq!(client.payload("task_submit", args.clone()), submitted);
+        if gate == 3 {
+            let (_, response) = client.call("task_submit", args);
+            let markdown = response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap();
+            assert!(markdown.starts_with("# Task submission"));
+            assert!(markdown.contains(id));
+            assert!(markdown.contains("completed"));
+            assert!(markdown.contains("Durable receipt"));
+            assert!(markdown.contains(submitted["receipt"]["commit"].as_str().unwrap()));
+        }
     }
     assert_eq!(client.payload("task_list", json!({}))["tasks"], json!([]));
     assert_eq!(
@@ -824,6 +835,38 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     assert_eq!(cli_read["messages"].as_array().unwrap().len(), 1);
     assert_eq!(cli_read["messages"][0]["id"], mcp_post["id"]);
 
+    let (_, mcp_markdown) = client.call(
+        "task_blackboard",
+        json!({"action":"read","task_id":task_id,"topic":"draft","format":"markdown"}),
+    );
+    let mcp_markdown = mcp_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    let cli_markdown = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--format",
+            "markdown",
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "blackboard",
+            "read",
+            task_id,
+            "--topic",
+            "draft",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_markdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_markdown.stderr)
+    );
+    let cli_markdown = std::str::from_utf8(&cli_markdown.stdout).unwrap();
+    assert_eq!(mcp_markdown.trim_end(), cli_markdown.trim_end());
+    assert!(mcp_markdown.contains("## draft"));
+    assert!(mcp_markdown.contains("task_blackboard(action: \"inspect\", message_id:"));
+
     let store = TasksStore::open(&workspace.0.join("tasks.sqlite")).unwrap();
     let stored = store.blackboard_read(task_id, None, None).unwrap();
     assert_eq!(stored.len(), 2);
@@ -851,13 +894,19 @@ fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
     let mut client = Client::new(&workspace);
 
     let mut message_id = 0;
+    let mut blocker_id = 0;
+    let mut posted_ids = Vec::new();
+    let blocker_body = "blocker needs review\nsecond body line";
     for index in 0..12 {
+        let is_blocker = index == 10;
         let (_, response) = client.call(
             "task_blackboard",
             json!({
                 "action":"post",
-                "topic":"decisions",
-                "payload":format!("milestone note {index}"),
+                "topic":if is_blocker {"blockers"} else if index == 9 {"notes"} else {"decisions"},
+                "author":if is_blocker {"fixture-builder"} else {"fixture-writer"},
+                "gate":if is_blocker {Some("build")} else {None},
+                "payload":if is_blocker {blocker_body.to_owned()} else {format!("milestone note {index}")},
                 "format":"json"
             }),
         );
@@ -869,6 +918,10 @@ fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
             serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
                 .unwrap();
         message_id = posted["id"].as_u64().unwrap();
+        posted_ids.push(message_id);
+        if is_blocker {
+            blocker_id = message_id;
+        }
     }
 
     let messages = client.payload("task_blackboard", json!({"action":"read"}));
@@ -880,6 +933,93 @@ fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
     assert_eq!(messages["messages"][0]["id"], message_id);
     assert_eq!(messages["messages"][0]["task_id"], Value::Null);
     assert!(messages["messages"][0].get("payload").is_none());
+    assert_eq!(messages["messages"][1]["id"], blocker_id);
+    assert_eq!(messages["messages"][1]["topic"], "blockers");
+    assert_eq!(messages["messages"][1]["author"], "fixture-builder");
+    assert!(messages["messages"][1]["milestone_ref"]
+        .as_str()
+        .unwrap()
+        .ends_with("docs/milestones/010-blackboard.md"));
+    assert!(messages["messages"][1]["task_id"].is_null());
+    assert!(messages["messages"][1]["subtask_ref"].is_null());
+    assert_eq!(messages["messages"][1]["gate"], "build");
+    assert!(messages["messages"][1]["created_at"].is_i64());
+    assert!(messages["messages"][1].get("payload").is_none());
+    assert!(messages["messages"]
+        .as_array()
+        .unwrap()
+        .windows(2)
+        .all(|pair| { pair[0]["id"].as_u64().unwrap() > pair[1]["id"].as_u64().unwrap() }));
+
+    let (_, listed_markdown) = client.call(
+        "task_blackboard",
+        json!({"action":"read","limit":10,"format":"markdown"}),
+    );
+    let listed_markdown = listed_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(listed_markdown.contains(&format!(
+        "[!CAUTION] BLOCKER (#{blocker_id}) by fixture-builder"
+    )));
+    let listed_lowercase = listed_markdown.to_lowercase();
+    assert!(listed_lowercase.contains("scope") && listed_lowercase.contains("milestone"));
+    assert!(listed_lowercase.contains("gate") && listed_lowercase.contains("build"));
+    let created_at = messages["messages"][1]["created_at"].as_i64().unwrap();
+    assert!(listed_markdown.contains(&created_at.to_string()));
+    let listed_blocker = listed_markdown
+        .split(&format!(
+            "> [!CAUTION] BLOCKER (#{blocker_id}) by fixture-builder"
+        ))
+        .nth(1)
+        .and_then(|section| section.split("\n\n").next())
+        .unwrap();
+    assert!(listed_blocker.contains(&format!(
+        "> Scope: `milestone`\n> Milestone ref: `{}`",
+        messages["messages"][1]["milestone_ref"].as_str().unwrap()
+    )));
+    assert!(listed_blocker.contains(&format!("> Timestamp: `{created_at}`")));
+    assert!(listed_markdown.contains(&format!(
+        "task_blackboard(action: \"inspect\", message_id: {blocker_id})"
+    )));
+    assert!(listed_markdown.contains("Body not included in this message summary."));
+    assert!(!listed_markdown.contains("> Body: \"\""));
+    assert!(!listed_markdown.contains("second body line"));
+    assert_eq!(listed_markdown.matches("[!CAUTION] BLOCKER").count(), 1);
+    assert!(listed_markdown.contains("## Pagination"));
+    assert!(listed_markdown.contains("**next_offset**: `10`"));
+    assert!(listed_markdown.contains("**has_more**: `true`"));
+    assert!(listed_markdown.contains("## decisions"));
+    assert!(listed_markdown.contains("## notes"));
+    let newest_decision = listed_markdown
+        .find(&format!("### Message #{}", posted_ids[11]))
+        .unwrap();
+    let older_decision = listed_markdown
+        .find(&format!("### Message #{}", posted_ids[8]))
+        .unwrap();
+    assert!(newest_decision < older_decision);
+
+    let second_page = client.payload(
+        "task_blackboard",
+        json!({"action":"read","limit":10,"offset":messages["pagination"]["next_offset"]}),
+    );
+    assert_eq!(second_page["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(second_page["messages"][0]["id"], posted_ids[1]);
+    assert_eq!(second_page["messages"][1]["id"], posted_ids[0]);
+    assert_eq!(second_page["pagination"]["offset"], 10);
+    assert_eq!(second_page["pagination"]["has_more"], false);
+    let (_, second_page_markdown) = client.call(
+        "task_blackboard",
+        json!({"action":"read","limit":10,"offset":messages["pagination"]["next_offset"],"format":"markdown"}),
+    );
+    let second_page_markdown = second_page_markdown["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(second_page_markdown.contains("**has_more**: `false`"));
+    assert!(second_page_markdown.contains("**offset**: `10`"));
+    assert!(second_page_markdown.contains("**next_offset**: `null`"));
+    assert!(!second_page_markdown.contains("[!CAUTION]"));
+    assert!(second_page_markdown.contains(&format!("### Message #{}", posted_ids[1])));
+    assert!(second_page_markdown.contains(&format!("### Message #{}", posted_ids[0])));
 
     let inspected = client.payload(
         "task_blackboard",
@@ -887,6 +1027,26 @@ fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
     );
     assert_eq!(inspected["message"]["id"], message_id);
     assert_eq!(inspected["message"]["payload"], "milestone note 11");
+
+    let (_, blocker_inspect) = client.call(
+        "task_blackboard",
+        json!({"action":"inspect","message_id":blocker_id,"format":"markdown"}),
+    );
+    let blocker_inspect = blocker_inspect["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(blocker_inspect.contains(&format!(
+        "[!CAUTION] BLOCKER (#{blocker_id}) by fixture-builder"
+    )));
+    let blocker_inspect_lowercase = blocker_inspect.to_lowercase();
+    assert!(
+        blocker_inspect_lowercase.contains("scope")
+            && blocker_inspect_lowercase.contains("milestone")
+    );
+    assert!(
+        blocker_inspect_lowercase.contains("gate") && blocker_inspect_lowercase.contains("build")
+    );
+    assert!(blocker_inspect.contains("second body line"));
 
     let cli_inspect = json_cli()
         .args([
@@ -907,6 +1067,29 @@ fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
     let cli_inspect: Value = serde_json::from_slice(&cli_inspect.stdout).unwrap();
     assert_eq!(cli_inspect["message"]["id"], message_id);
     assert_eq!(cli_inspect["message"]["payload"], "milestone note 11");
+
+    let empty_blocker = client.payload(
+        "task_blackboard",
+        json!({
+            "action":"post",
+            "topic":"blockers",
+            "author":"fixture-builder",
+            "gate":"build",
+            "payload":""
+        }),
+    );
+    let empty_blocker_id = empty_blocker["id"].as_u64().unwrap();
+    let (_, empty_blocker_response) = client.call(
+        "task_blackboard",
+        json!({"action":"inspect","message_id":empty_blocker_id,"format":"markdown"}),
+    );
+    let empty_blocker_markdown = empty_blocker_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(empty_blocker_markdown.contains("> Body: \"\""));
+    assert!(!empty_blocker_markdown.contains(&format!(
+        "task_blackboard(action: \"inspect\", message_id: {empty_blocker_id})"
+    )));
 }
 
 #[test]
@@ -1085,6 +1268,36 @@ fn subtask_mcp_and_cli_operations() {
     );
     let cancelled_json: Value = serde_json::from_slice(&cli_cancelled.stdout).unwrap();
     assert_eq!(cancelled_json["tasks"][0]["status"], "cancelled");
+    let (_, cancelled_response) = client.call(
+        "task_list",
+        json!({"status":"cancelled","milestone_ref":"docs/milestones/010-subtasks.md"}),
+    );
+    let cancelled_markdown = cancelled_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(cancelled_markdown.contains(task_id));
+    assert!(cancelled_markdown.contains("cancelled"));
+    let cli_cancelled_markdown = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--milestone",
+            "010",
+            "--status",
+            "cancelled",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_cancelled_markdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_cancelled_markdown.stderr)
+    );
+    let cli_cancelled_markdown = String::from_utf8(cli_cancelled_markdown.stdout).unwrap();
+    assert!(cli_cancelled_markdown.contains(task_id));
+    assert!(cli_cancelled_markdown.contains("cancelled"));
 }
 
 #[test]
@@ -1124,6 +1337,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     workspace.write("docs/adr/003-decision-after-rules.md", &decision_rules);
     workspace.write("docs/adr/004-headed-decision.md", "---\ntitle: Headed Decision\ndoc_type: adr\nstatus: accepted\n---\n# Governance\n- INV-HEADED: Preserve the decision through [`unique`](../../src/unique.rs#L1).\n## Decision\nRetain the complete decision from its own section.\n");
     workspace.write("src/minimal_routing.rs", "pub fn minimal_route_task() {}\n");
+    workspace.write("src/minimal_markdown.rs", "pub fn minimal_markdown_task() {}\n");
     workspace.write("tests/test_routing.rs", "#[test]\nfn test_routing() {}\n");
     workspace.write("src/cli_routing.rs", "pub fn route_cli_task() {}\n");
     workspace.write(
@@ -1131,8 +1345,10 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         "#[test]\nfn test_cli_routing() {}\n",
     );
 
-    let manifest = "---\nid: m-context\ntitle: Context Milestone\ndoc_type: contract\ninvariants: [routing-invariant]\n---\n```yaml\ntask_ref: routing-task\ntarget: Deliver unified routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n  - tests/test_routing.rs\n```\n```yaml\ntask_ref: cli-routing-task\ntarget: Deliver CLI unified routing\nproof_policy: seam-test-first\nscope:\n  - src/cli_routing.rs\n  - tests/test_cli_routing.rs\n```\n```yaml\ntask_ref: minimal-routing-task\ntarget: Deliver minimal routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n```\n";
+    let manifest = "---\nid: m-context\ntitle: Context Milestone\ndoc_type: contract\ninvariants: [routing-invariant]\n---\n```yaml\ntask_ref: routing-task-with-a-long-identity-for-blocker-regression\ntarget: Deliver unified routing\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\n  - tests/test_routing.rs\n```\n```yaml\ntask_ref: cli-routing-task\ntarget: Deliver CLI unified routing\nproof_policy: seam-test-first\nscope:\n  - src/cli_routing.rs\n  - tests/test_cli_routing.rs\n```\n```yaml\ntask_ref: minimal-routing-task\ntarget: Deliver minimal routing\nproof_policy: seam-test-first\nscope:\n  - src/minimal_routing.rs\n```\n";
     let manifest = format!("{manifest}```yaml\ntask_ref: decision-context-task\ntarget: Preserve governing ADR decisions\nproof_policy: seam-test-first\nscope:\n  - src/unique.rs\n```\n");
+    let manifest = format!("{manifest}```yaml\ntask_ref: dependency-context-task\ntarget: Preserve declared task dependencies\nproof_policy: seam-test-first\nscope:\n  - src/routing.rs\ndepends_on: [routing-task-with-a-long-identity-for-blocker-regression]\n```\n");
+    let manifest = format!("{manifest}```yaml\ntask_ref: minimal-markdown-context-task\ntarget: Render a minimal claim context\nproof_policy: seam-test-first\nscope:\n  - src/minimal_markdown.rs\n```\n");
     let manifest = manifest.replace("invariants: [routing-invariant]", "invariants: [routing-invariant, authority-2, authority-3, authority-4, authority-5, authority-6, authority-7]");
     workspace.write(
         "docs/milestones/010-context.md",
@@ -1161,9 +1377,11 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     let cli_task_id = sync_res["tasks"][1]["task_id"].as_str().unwrap();
     let minimal_task_id = sync_res["tasks"][2]["task_id"].as_str().unwrap();
     let decision_task_id = sync_res["tasks"][3]["task_id"].as_str().unwrap();
+    let dependency_task_id = sync_res["tasks"][4]["task_id"].as_str().unwrap();
+    let minimal_markdown_task_id = sync_res["tasks"][5]["task_id"].as_str().unwrap();
 
     // Post blackboard message
-    client.payload(
+    let decision_post = client.payload(
         "task_blackboard",
         json!({
             "action": "post",
@@ -1551,6 +1769,187 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         decision_regressions.is_empty(),
         "Task5 Decision retention regressions: {decision_regressions:#?}"
     );
+
+    let blocker_payload = format!(
+        "First blocker detail: keep the exact routing entry point.\nSecond blocker detail: wait for the contract owner.\n{}",
+        "Additional blocker evidence remains available through inspect. ".repeat(12)
+    );
+    let blocker_post = client.payload(
+        "task_blackboard",
+        json!({
+            "action":"post",
+            "task_id":task_id,
+            "topic":"blockers",
+            "gate":"contract",
+            "payload":blocker_payload.clone(),
+            "author":"release-coordinator"
+        }),
+    );
+    let blocker_id = blocker_post["id"].as_u64().unwrap();
+    let blocker_full = client.payload(
+        "task_blackboard",
+        json!({"action":"inspect","message_id":blocker_id}),
+    );
+    assert_eq!(blocker_full["message"]["payload"], blocker_payload);
+    let embedded_context = client.payload(
+        "task_manage",
+        json!({"action":"context","task_id":task_id}),
+    );
+    let embedded_blocker = embedded_context["workflow_guidance"]["blackboard_messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["id"] == blocker_id)
+        .unwrap();
+    assert_eq!(embedded_blocker["scope"], "task");
+    assert_eq!(embedded_blocker["task_id"], blocker_full["message"]["task_id"]);
+
+    let (_, context_response) = client.call(
+        "task_manage",
+        json!({"action":"context","task_id":task_id}),
+    );
+    let context_markdown = context_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    for expected in [
+        "# Task context",
+        "## Lifecycle state",
+        "Stage guidance",
+        "Deliver unified routing",
+        "src/routing.rs",
+        "seam-test-first",
+        "Expected evidence template",
+        "NEVER_EDIT_RECEIPTS:",
+        "## Blackboard messages",
+        "### Blackboard decisions message",
+        "BLOCKER (#",
+        "by release-coordinator",
+        "Scope:",
+        "Gate:",
+        "First blocker detail: keep the exact routing entry point.",
+        "Second blocker detail: wait for the contract owner.",
+        "... [truncated]",
+        "Full body recovery:",
+        &format!("message_id: {blocker_id}"),
+    ] {
+        assert!(context_markdown.contains(expected), "missing {expected:?} in:\n{context_markdown}");
+    }
+    assert!(context_markdown.contains(&format!("BLOCKER (#{blocker_id}) by release-coordinator")));
+    let blocker_callout = context_markdown
+        .split(&format!(
+            "> [!CAUTION] BLOCKER (#{blocker_id}) by release-coordinator"
+        ))
+        .nth(1)
+        .and_then(|section| section.split("\n\n").next())
+        .unwrap();
+    assert!(
+        blocker_callout.contains(&format!(
+            "> Scope: `{}`",
+            embedded_blocker["scope"].as_str().unwrap()
+        )),
+        "embedded blocker scope was not preserved: {blocker_callout}"
+    );
+    assert!(
+        blocker_callout.contains(&format!(
+            "> Task id: `{}`",
+            embedded_blocker["task_id"].as_str().unwrap()
+        )),
+        "embedded blocker task identity was not preserved: {blocker_callout}"
+    );
+    assert!(context_markdown.contains("**scope**: `sibling`"));
+    assert!(context_markdown.contains(&format!("**Task ID**: `{cli_task_id}`")));
+    assert!(context_markdown.contains(&format!("Task id: `{task_id}`")));
+    assert!(context_markdown.contains("Gate: `contract`"));
+    assert!(context_markdown.contains(task_id));
+    assert!(context_markdown.contains("contract"));
+    assert!(!context_markdown.contains(&format!("BLOCKER (#{})", decision_post["id"])));
+
+    let list_args = json!({
+        "status":"all",
+        "milestone_ref":"docs/milestones/010-context.md"
+    });
+    let listed = client.payload("task_list", list_args.clone());
+    let dependency = listed["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["task_id"] == dependency_task_id)
+        .unwrap();
+    assert_eq!(
+        dependency["depends_on"],
+        json!(["routing-task-with-a-long-identity-for-blocker-regression"])
+    );
+    let (_, list_response) = client.call("task_list", list_args);
+    let list_markdown = list_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(list_markdown.contains(dependency_task_id));
+    assert!(list_markdown.contains("Dependencies"));
+    assert!(list_markdown.contains("routing-task-with-a-long-identity-for-blocker-regression"));
+
+    let (_, claim_response) = client.call(
+        "task_claim",
+        json!({
+            "task_id":decision_task_id,
+            "stage":"contract",
+            "worker_id":"markdown-author",
+            "worktree":workspace.0
+        }),
+    );
+    assert_ne!(claim_response["result"]["isError"], true);
+    let claim_markdown = claim_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    for expected in [
+        "# Task claim",
+        "Stage guidance",
+        "Scope and proof context",
+        "CAUTION] BLOCKER",
+        "by release-coordinator",
+        "contract",
+        "Expected evidence template",
+    ] {
+        assert!(claim_markdown.contains(expected), "missing {expected:?} in:\n{claim_markdown}");
+    }
+
+    let (_, minimal_claim_response) = client.call(
+        "task_claim",
+        json!({
+            "task_id":minimal_markdown_task_id,
+            "stage":"contract",
+            "worker_id":"minimal-markdown-author",
+            "worktree":workspace.0,
+            "bundle":false
+        }),
+    );
+    let minimal_claim_markdown = minimal_claim_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(minimal_claim_markdown.contains("# Task claim"));
+    assert!(minimal_claim_markdown.contains("Stage guidance"));
+    assert!(minimal_claim_markdown.contains("Write scope"));
+    assert!(!minimal_claim_markdown.contains("## Scope and proof context"));
+
+    let cli_context = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "context",
+            decision_task_id,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_context.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_context.stderr)
+    );
+    let cli_context_markdown = String::from_utf8(cli_context.stdout).unwrap();
+    assert!(cli_context_markdown.starts_with("# Task context"));
+    assert!(cli_context_markdown.contains("Stage guidance"));
+    assert!(cli_context_markdown.contains("CAUTION] BLOCKER"));
+    assert!(cli_context_markdown.contains("release-coordinator"));
 }
 
 #[test]
@@ -1725,6 +2124,14 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
         full["tasks"][0]["subtasks"][0]["evidence"],
         "Verified through the listing seam"
     );
+    let (_, full_markdown_response) = client.call("task_list", json!({"detail":"full"}));
+    let full_markdown = full_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(full_markdown.contains(task_id));
+    assert!(full_markdown.contains("Detailed subtask"));
+    assert!(full_markdown.contains("Verified through the listing seam"));
+    assert!(full_markdown.contains("completed"));
     let subtask_details = client.payload(
         "task_manage",
         json!({"action":"subtask_list","task_id":task_id}),
@@ -1763,6 +2170,27 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
         cli_full_json["tasks"][0]["subtasks"][0]["evidence"],
         "Verified through the listing seam"
     );
+    let cli_full_markdown = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        .args([
+            "--root",
+            workspace.0.to_str().unwrap(),
+            "task",
+            "list",
+            "--milestone-status",
+            "active",
+            "--full",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli_full_markdown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_full_markdown.stderr)
+    );
+    let cli_full_markdown = String::from_utf8(cli_full_markdown.stdout).unwrap();
+    assert!(cli_full_markdown.starts_with("# Task list"));
+    assert!(cli_full_markdown.contains("Detailed subtask"));
+    assert!(cli_full_markdown.contains("Verified through the listing seam"));
 
     for conflicting_flags in [
         vec!["--planned", "--completed"],
@@ -1879,7 +2307,12 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         .collect();
     let review_reject_proof =
         json!({"review_proof": {"decision": "reject", "contours": contours.clone()}});
-    let review_findings = json!({"decision": "reject", "notes": "Need build commit"});
+    let review_findings = json!({
+        "decision": "reject",
+        "notes": "Need build commit",
+        "blackboard": ["durable-review-evidence"],
+        "blackboard_messages": ["durable-message-field-evidence"]
+    });
     client.payload(
         "task_submit",
         json!({
@@ -1907,6 +2340,29 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     assert_eq!(
         build_claim2["context_bundle"]["unresolved_review_findings"],
         review_findings
+    );
+
+    let build_context = client.payload(
+        "task_manage",
+        json!({"action": "context", "task_id": task_id}),
+    );
+    assert_eq!(
+        build_context["context_bundle"]["unresolved_review_findings"],
+        review_findings
+    );
+    let (_, response) = client.call(
+        "task_manage",
+        json!({"action": "context", "task_id": task_id, "format": "markdown"}),
+    );
+    let build_context_markdown = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("Build context should return Markdown text");
+    assert!(
+        build_context_markdown.contains("**blackboard**")
+            && build_context_markdown.contains("durable-review-evidence")
+            && build_context_markdown.contains("**blackboard_messages**")
+            && build_context_markdown.contains("durable-message-field-evidence"),
+        "Build context should render all review-finding fields: {build_context_markdown}"
     );
 
     let second_build = client.payload(
@@ -2086,6 +2542,52 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         completed_context["context_bundle"]["latest_snapshot"]["commit"],
         build_commit
     );
+    let inspected = client.payload(
+        "task_manage",
+        json!({"action":"inspect","task_id":task_id}),
+    );
+    let findings = inspected["findings"].as_array().unwrap();
+    assert!(findings.len() >= 2);
+    let review_finding = findings
+        .iter()
+        .find(|record| {
+            record["findings"]
+                .as_str()
+                .is_some_and(|text| text.contains("durable-review-evidence"))
+        })
+        .unwrap();
+    let finding_text = review_finding["findings"].as_str().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(finding_text).unwrap(),
+        review_findings
+    );
+    assert_eq!(inspected["latest_snapshot"]["commit"], build_commit);
+    assert_eq!(
+        inspected["receipt"]["commit"],
+        delivered["receipt"]["commit"]
+    );
+    let (_, inspect_response) = client.call(
+        "task_manage",
+        json!({"action":"inspect","task_id":task_id}),
+    );
+    let inspect_markdown = inspect_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    for expected in [
+        task_id,
+        "Need build commit",
+        "Missing changelog entry",
+        "Latest snapshot",
+        build_commit,
+        "Durable receipt",
+        delivered["receipt"]["commit"].as_str().unwrap(),
+        finding_text,
+    ] {
+        assert!(
+            inspect_markdown.contains(expected),
+            "missing {expected:?} in task inspect Markdown:\n{inspect_markdown}"
+        );
+    }
 }
 
 #[test]

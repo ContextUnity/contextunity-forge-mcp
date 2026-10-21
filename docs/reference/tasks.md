@@ -135,7 +135,7 @@ and the two detail flags are mutually exclusive within one invocation. See the
 
 | Tool | Arguments and behavior |
 | --- | --- |
-| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them and retained cancelled tasks. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. |
+| `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them and retained cancelled tasks. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. Each task summary includes its declared `depends_on` references. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
 | `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. `next` additionally requires `worker_id` and `worktree`; other actions reject these fields. Selectors follow the table below. |
@@ -144,6 +144,13 @@ and the two detail flags are mutually exclusive within one invocation. See the
 Unknown fields are rejected. Ready tasks are unclaimed and nonterminal, with
 satisfied local prerequisites. Missing or amended authority blocks open work.
 Null stage matches all gates.
+
+Task tools and CLI task commands default to Markdown. Use MCP `format: "json"`
+or global CLI `--format json` to parse the semantic payload. The lifecycle
+layouts preserve actual status, dependencies, requested subtask detail, claim
+guidance, inspect history, findings, candidate bindings, and receipts. See the
+[task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle)
+for blocker callouts and message recovery.
 
 | Manage action | Required fields | Other constraints |
 | --- | --- | --- |
@@ -491,6 +498,14 @@ active gate, message ids, count, and topic counts. Invalid topics or gate ids
 return the canonical topic descriptions, active profile gate ids, and a request
 example so the request can be corrected.
 
+Markdown read output groups messages by their actual topic and preserves the
+newest-first order inside each group. A blocker renders as a caution callout with
+its message ID, author, scope, gate, timestamp, and available body. Payload-free
+read summaries include the exact `task_blackboard(action: "inspect", message_id: <id>)`
+recovery request. Other topics remain separate from blocker
+severity. Grouping does not infer reply relationships or whether a blocker is
+resolved.
+
 At delivery, messages under `decisions` and `deferred` are copied into the
 receipt's existing `architectural_notes` vector as `decisions: <payload>` or
 `deferred: <payload>`, in `created_at`, then `id` order, before task blackboard
@@ -694,7 +709,7 @@ Without a reference, migration selects numbered Markdown milestones under
 
 ## Unified Task Context Bundle
 
-To achieve zero-shot agent orientation and eliminate exploratory tool-call loops, Forge aggregates task context by default upon MCP `task_claim` and CLI `task claim`, as well as through `task_manage(action: "context")` and CLI `task context <task-id>`. The MCP `task_claim` argument `bundle: false` returns minimal details; CLI `task claim` always returns the context bundle.
+To achieve zero-shot agent orientation and eliminate exploratory tool-call loops, Forge aggregates task context by default upon MCP `task_claim` and CLI `task claim`, as well as through `task_manage(action: "context")` and CLI `task context <task-id>`. The MCP `task_claim` argument `bundle: false` returns minimal details; CLI `task claim` always returns the context bundle. The shared lifecycle formatter preserves all fields each mode supplies; see the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
 
 ### Proof-Taxonomy Bundle Generation
 
