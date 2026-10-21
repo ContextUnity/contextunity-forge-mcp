@@ -21,6 +21,7 @@ fn error(message: impl Into<String>) -> std::io::Error {
 
 #[path = "adapter.rs"]
 mod adapter;
+pub(crate) mod discovery;
 pub use crate::core::config::*;
 pub use crate::core::config::{ENGINE_SCHEMA_VERSION, INDEX_SEMANTICS_VERSION};
 pub use crate::core::models::FileEntry;

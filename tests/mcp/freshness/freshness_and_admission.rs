@@ -30,6 +30,251 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
     let removed = evidence();
     assert_eq!(removed["manifest_digest"], before["manifest_digest"]);
     assert!(!removed["evidence"].as_str().unwrap().contains("manifest"));
+    let mut missing = Vec::new();
+    let packages = Workspace::new();
+    let linked_packages = Workspace::new();
+    for (path, content) in [
+        (
+            "rust/Cargo.toml",
+            "[package]\nname = 'manifest-cargo-package'\nversion = '0.1.0'\ndescription = 'Declared crate description'\n",
+        ),
+        (
+            "python/pyproject.toml",
+            "[project]\nname = 'manifest-python-package'\nversion = '0.1.0'\ndescription = 'Declared Python description'\n",
+        ),
+        (
+            "poetry/pyproject.toml",
+            "[tool.poetry]\nname = 'manifest-poetry-package'\nversion = '0.1.0'\ndescription = 'Declared Poetry description'\n",
+        ),
+        (
+            "javascript/package.json",
+            "{\"name\":\"manifest-npm-workspace\",\"workspaces\":[\"packages/*\"]}",
+        ),
+        (
+            "javascript/packages/child/package.json",
+            "{\"name\":\"manifest-npm-child\",\"description\":\"Declared npm description\"}",
+        ),
+        (
+            "pnpm/package.json",
+            "{\"name\":\"manifest-pnpm-workspace\"}",
+        ),
+        ("pnpm/pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n"),
+        (
+            "pnpm/packages/child/package.json",
+            "{\"name\":\"manifest-pnpm-child\"}",
+        ),
+        (
+            "yarn/package.json",
+            "{\"name\":\"manifest-yarn-workspace\",\"workspaces\":[\"packages/*\"]}",
+        ),
+        ("yarn/yarn.lock", "# yarn lockfile v1\n"),
+        (
+            "yarn/packages/child/package.json",
+            "{\"name\":\"manifest-yarn-child\"}",
+        ),
+        (
+            "go/go.mod",
+            "module example.org/manifest-go-module\n\ngo 1.22\n",
+        ),
+        ("directory-only/unit.py", "def directory_marker(): pass\n"),
+        ("broken/Cargo.toml", "this is not valid TOML = [\n"),
+        (
+            "unsupported/pyproject.toml",
+            "[tool.black]\nline-length = 88\n",
+        ),
+        (
+            "configured-ignored/Cargo.toml",
+            "[package]\nname='configured-ignored-package'\nversion='0.1.0'\n",
+        ),
+        (
+            "gitignored/Cargo.toml",
+            "[package]\nname='gitignored-package'\nversion='0.1.0'\n",
+        ),
+        (
+            "docs/guide.md",
+            "---\ntitle: Discovery documentation hub\ndoc_type: guide\n---\n# Discovery documentation hub\nDeclared guide.\n",
+        ),
+        (
+            "docs/milestones/010-discovery.md",
+            "---\nid: m-discovery-fixture\ntitle: Discovery active milestone\ndoc_type: contract\nstatus: active\n---\n# Discovery active milestone\n",
+        ),
+    ] {
+        packages.write(path, content);
+    }
+    linked_packages.write(
+        "weird+%#1/pyproject.toml",
+        "[project]\nname = 'linked-manifest-package'\n",
+    );
+    packages.write(".gitignore", "gitignored/\n");
+    packages.write(
+        "forge-mcp.yaml",
+        &format!(
+            "milestones: [docs/milestones]\nignore: [configured-ignored]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [.]\n",
+            linked_packages.root().display()
+        ),
+    );
+    drop(packages.build());
+    // Scanner and milestone composition belong upstream of the DB reader.
+    let mut client = StdioClient::new(&packages);
+    let hub = client.payload("get_doc", json!({"path_or_id":"docs/guide.md"}));
+    let hub_line = hub["sections"]["items"][0]["line"].as_u64().unwrap();
+    let overview = client.payload("code_map_overview", json!({"limit":100}));
+    assert_eq!(
+        overview["discovery"]["active_milestones"]["availability"],
+        "available"
+    );
+    let milestone = overview["discovery"]["active_milestones"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|milestone| milestone["id"] == "m-discovery-fixture")
+        .expect("canonical active milestone row");
+    assert_eq!(milestone["status"], "active");
+    assert_eq!(milestone["completion"], "0/0");
+    let (_, response) = client.call(
+        "code_map_overview",
+        serde_json::json!({"limit":100,"format":"markdown"}),
+    );
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    let package_markdown = response["result"]["content"][0]["text"].as_str().unwrap();
+    for expected in [
+        "manifest-cargo-package",
+        "manifest-python-package",
+        "manifest-poetry-package",
+        "manifest-npm-workspace",
+        "manifest-npm-child",
+        "manifest-pnpm-workspace",
+        "manifest-pnpm-child",
+        "manifest-yarn-workspace",
+        "manifest-yarn-child",
+        "example.org/manifest-go-module",
+        "linked-manifest-package",
+        "Discovery documentation hub",
+        "Discovery active milestone",
+        "m-discovery-fixture",
+        "0/0 complete",
+    ] {
+        if !package_markdown.contains(expected) {
+            missing.push(format!(
+                "overview must supply actual admitted manifest/hub identity {expected:?}"
+            ));
+        }
+    }
+    for (path, line) in [("docs/guide.md", Some(hub_line)), ("rust", None)] {
+        let coordinate = format!(
+            "file://{}{}",
+            packages.root().join(path).display(),
+            line.map_or_else(String::new, |line| format!("#L{line}"))
+        );
+        if !package_markdown.contains(&coordinate) {
+            missing.push(format!(
+                "overview must resolve the actual coordinate {coordinate}"
+            ));
+        }
+    }
+    assert!(!package_markdown.contains("configured-ignored-package"));
+    assert!(!package_markdown.contains("gitignored-package"));
+    let directory_section = package_markdown
+        .split("## Directory components")
+        .nth(1)
+        .and_then(|section| section.split("\n## ").next())
+        .expect("overview directory components section");
+    assert!(directory_section.contains("directory-only"));
+    let manifest_section = package_markdown
+        .split("## Manifest components")
+        .nth(1)
+        .and_then(|section| section.split("\n## ").next())
+        .expect("overview manifest components section");
+    assert!(!manifest_section.contains("directory-only"));
+    assert!(!package_markdown.contains("directory_marker"));
+    assert!(
+        package_markdown.contains("malformed_manifest"),
+        "{package_markdown}"
+    );
+    assert!(
+        package_markdown.contains("unsupported_manifest_shape"),
+        "{package_markdown}"
+    );
+    assert!(
+        package_markdown.contains(&format!(
+            "file://{}/weird%2B%25%231/pyproject.toml",
+            linked_packages.root().display()
+        )),
+        "linked manifest URI must resolve against its owning root: {package_markdown}"
+    );
+    let full_manifest_page = &overview["discovery"]["manifest_components"];
+    let linked_manifest = full_manifest_page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "linked-manifest-package")
+        .expect("linked package identity comes from its admitted manifest");
+    assert_eq!(linked_manifest["workspace"], "library");
+    assert_eq!(linked_manifest["root"], "weird+%#1");
+    assert_eq!(linked_manifest["manifest_path"], "weird+%#1/pyproject.toml");
+
+    let (_, scoped_overview_response) = client.call(
+        "code_map_overview",
+        serde_json::json!({"aspects":["manifest_components"],"limit":1,"format":"markdown"}),
+    );
+    assert_ne!(scoped_overview_response["result"]["isError"], true);
+    let scoped_overview = scoped_overview_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("aspect-scoped overview Markdown");
+    let manifest_continuation = scoped_overview
+        .lines()
+        .find(|line| line.starts_with("Continue manifest components "))
+        .expect("bounded manifest page continuation");
+    assert!(
+        manifest_continuation.contains("aspects=[\"manifest_components\"]")
+            && manifest_continuation.contains(&format!(
+                "workspace_root={}",
+                packages.root().display()
+            )),
+        "overview continuation must retain its aspect selection and workspace: {manifest_continuation}"
+    );
+
+    let first_page = client.payload("code_map_overview", json!({"limit":1}));
+    let components = &first_page["discovery"]["manifest_components"];
+    assert_eq!(components["availability"], "available");
+    assert_eq!(components["items"].as_array().unwrap().len(), 1);
+    assert_eq!(components["limit"], 1);
+    assert!(components["has_more"].as_bool().unwrap());
+    assert_eq!(components["next_offset"], 1);
+    assert_eq!(components["diagnostics_available"], true);
+    assert_eq!(components["diagnostics"].as_array().unwrap().len(), 1);
+    assert_eq!(components["diagnostic_total"], 2);
+    assert_eq!(components["diagnostics_truncated"], true);
+    let next_page = client.payload(
+        "code_map_overview",
+        json!({"limit":1,"offset":1,"generation":components["generation"]}),
+    );
+    let next_components = &next_page["discovery"]["manifest_components"];
+    assert_eq!(next_components["total"], components["total"]);
+    assert_eq!(next_components["offset"], 1);
+    assert_ne!(next_components["items"][0], components["items"][0]);
+
+    let bounded = Workspace::new();
+    bounded.write("forge-mcp.yaml", "roots: [src]\nlimits:\n  max_files: 1\n");
+    bounded.write("src/app.py", "def app(): pass\n");
+    bounded.write("src/a/package.json", "{\"name\":\"bounded-a\"}");
+    bounded.write("src/b/package.json", "{\"name\":\"bounded-b\"}");
+    drop(bounded.build());
+    let mut bounded_client = StdioClient::new(&bounded);
+    let bounded_overview = bounded_client.payload("code_map_overview", json!({"limit":10}));
+    assert_eq!(
+        bounded_overview["discovery"]["manifest_components"]["availability"],
+        "unavailable"
+    );
+    assert_eq!(
+        bounded_overview["discovery"]["manifest_components"]["cause"],
+        "manifest_file_count_limit"
+    );
+    assert!(
+        missing.is_empty(),
+        "discovery composition contract: {}\n\n{package_markdown}",
+        missing.join("\n"),
+    );
 }
 
 #[test]

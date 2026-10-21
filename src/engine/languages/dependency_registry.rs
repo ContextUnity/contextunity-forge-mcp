@@ -800,7 +800,7 @@ fn load_framework_manifests(
                     "failed to inspect configuration directory {}",
                     forge_directory.display()
                 )
-            })
+            });
         }
     };
     if forge_metadata.file_type().is_symlink() {
@@ -825,7 +825,7 @@ fn load_framework_manifests(
                     "failed to inspect framework manifest directory {}",
                     directory.display()
                 )
-            })
+            });
         }
     };
     if metadata.file_type().is_symlink() {
@@ -937,7 +937,10 @@ fn filename_matches(pattern: &str, filename: &str) -> bool {
 
 /// Reports whether a filename matches a language profile's external dependency manifest.
 pub fn is_dependency_manifest_filename(filename: &str) -> bool {
-    profiles().any(|profile| {
+    matches!(
+        filename,
+        "Cargo.toml" | "pyproject.toml" | "package.json" | "pnpm-workspace.yaml" | "go.mod"
+    ) || profiles().any(|profile| {
         profile
             .manifest_filenames()
             .iter()
@@ -1070,15 +1073,21 @@ mod tests {
         for (extension, source) in [
             (
                 "toml",
-                include_str!("../../../skills/contextunity-forge/references/frameworks/declarative-rules.toml.example"),
+                include_str!(
+                    "../../../skills/contextunity-forge/references/frameworks/declarative-rules.toml.example"
+                ),
             ),
             (
                 "yaml",
-                include_str!("../../../skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example"),
+                include_str!(
+                    "../../../skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example"
+                ),
             ),
         ] {
             let parsed = FrameworkManifest::parse("django".to_owned(), extension, source)
-                .unwrap_or_else(|error| panic!("invalid documented {extension} example: {error:#}"));
+                .unwrap_or_else(|error| {
+                    panic!("invalid documented {extension} example: {error:#}")
+                });
             assert_eq!(parsed.class_hierarchy_receivers.len(), 1, "{extension}");
             assert_eq!(parsed.route_decorators.len(), 1, "{extension}");
             assert_eq!(parsed.route_calls.len(), 1, "{extension}");
@@ -1093,7 +1102,9 @@ mod tests {
         let gridviewspec = FrameworkManifest::parse(
             "gridviewspec".to_owned(),
             "toml",
-            include_str!("../../../skills/contextunity-forge/references/frameworks/gridviewspec.toml.example"),
+            include_str!(
+                "../../../skills/contextunity-forge/references/frameworks/gridviewspec.toml.example"
+            ),
         )
         .unwrap_or_else(|error| panic!("invalid documented GridViewSpec example: {error:#}"));
         assert_eq!(gridviewspec.class_hierarchy_receivers.len(), 28);
@@ -1590,11 +1601,26 @@ di_calls:
                         failures.push(format!("{label}: re-collection is not deterministic"));
                     }
                     for (invalid, content) in [
-                        ("missing section", "receivers = []\nbuiltins = []\nfilters = []\n"),
-                        ("unknown section", "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\nunknown = []\n"),
-                        ("wrong section shape", "receivers = {}\nbuiltins = []\nfilters = []\nroutes = []\n"),
-                        ("conflicting modes", "extend = true\nreplace = true\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n"),
-                        ("wrong mode shape", "extend = \"true\"\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n"),
+                        (
+                            "missing section",
+                            "receivers = []\nbuiltins = []\nfilters = []\n",
+                        ),
+                        (
+                            "unknown section",
+                            "receivers = []\nbuiltins = []\nfilters = []\nroutes = []\nunknown = []\n",
+                        ),
+                        (
+                            "wrong section shape",
+                            "receivers = {}\nbuiltins = []\nfilters = []\nroutes = []\n",
+                        ),
+                        (
+                            "conflicting modes",
+                            "extend = true\nreplace = true\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n",
+                        ),
+                        (
+                            "wrong mode shape",
+                            "extend = \"true\"\nreceivers = []\nbuiltins = []\nfilters = []\nroutes = []\n",
+                        ),
                     ] {
                         fs::write(directory.join("invalid.toml"), content).unwrap();
                         if DependencyRegistry::try_collect_with_paths(root, None, &[]).is_ok() {

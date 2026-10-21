@@ -1,9 +1,8 @@
 use super::{paging, reader};
 use crate::core::{
-    commitments,
-    config,
+    commitments, config,
     models::stable_hash64,
-    response::{CoverageOptions, Detail, QueryOptions, SourceOptions},
+    response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
 };
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
@@ -85,18 +84,22 @@ pub(crate) fn search_results_with_navigation(
         .filter_map(|item| item["id"].as_str())
         .collect::<Vec<_>>();
     let serialized_ids = serde_json::to_string(&ids)?;
-    let signature_rows = reader::rows(
+    let metadata_rows = reader::rows(
         conn,
-        "SELECT n.id,json_extract(n.details,'$.signature') AS signature FROM nodes n JOIN json_each(?1) requested ON requested.value=n.id",
+        "SELECT n.id,json_extract(n.details,'$.signature') AS signature,CASE WHEN n.is_test THEN 1 ELSE 0 END AS is_test,json_extract(n.details,'$.doc') AS docstring FROM nodes n JOIN json_each(?1) requested ON requested.value=n.id",
         &[&serialized_ids],
         ids.len(),
     )?;
-    let signatures = signature_rows
+    let metadata = metadata_rows
         .into_iter()
         .filter_map(|row| {
             Some((
                 row["id"].as_str()?.to_owned(),
-                row["signature"].as_str().map(str::to_owned),
+                (
+                    row["signature"].as_str().map(str::to_owned),
+                    row["is_test"].as_i64().map(|value| value != 0),
+                    row["docstring"].as_str().map(str::to_owned),
+                ),
             ))
         })
         .collect::<HashMap<_, _>>();
@@ -111,7 +114,8 @@ pub(crate) fn search_results_with_navigation(
             .and_then(Value::as_str)
             .context("search result has no symbol id")?
             .to_owned();
-        let signature = signatures.get(&id).and_then(Option::as_deref);
+        let (signature, is_test, docstring) =
+            metadata.get(&id).cloned().unwrap_or((None, None, None));
         object.insert(
             "signature".into(),
             signature
@@ -128,6 +132,28 @@ pub(crate) fn search_results_with_navigation(
             "inspect_selector".into(),
             json!({"selector":id,"show_source":true}),
         );
+
+        if let Some(is_test) = is_test {
+            object.insert("is_test".into(), json!(is_test));
+            let classification =
+                if object.get("language").and_then(Value::as_str) == Some("markdown") {
+                    "documentation"
+                } else if is_test {
+                    "test"
+                } else {
+                    "production"
+                };
+            object.insert("classification".into(), json!(classification));
+        }
+        if let Some(docstring) = docstring.as_deref().and_then(first_docstring_sentence) {
+            object.insert("docstring_first_sentence".into(), json!(docstring));
+        }
+
+        if index < PREVIEW_HIT_LIMIT
+            && object.get("language").and_then(Value::as_str) != Some("markdown")
+        {
+            object.insert("graph_pulse".into(), search_graph_pulse(conn, &id));
+        }
 
         if !previews_enabled
             || index >= PREVIEW_HIT_LIMIT
@@ -166,6 +192,105 @@ pub(crate) fn search_results_with_navigation(
         }
     }
     Ok(result)
+}
+
+fn search_graph_pulse(conn: &Connection, id: &str) -> Value {
+    let callers = match direct_call_summary(conn, id, true, 3) {
+        Ok(summary) => summary,
+        Err(_) => {
+            json!({"availability":"unavailable","cause":"caller relationships exceeded the indexed query budget"})
+        }
+    };
+    let implementations = (|| -> Result<usize> {
+        let budget = reader::QueryBudget::new(conn);
+        let count = conn.query_row(
+            "SELECT count(*) FROM edges WHERE kind='implements' AND (src_hash=?1 OR dst_hash=?1)",
+            [stable_hash64(id)],
+            |row| row.get::<_, usize>(0),
+        )?;
+        budget.check()?;
+        Ok(count)
+    })()
+    .map(|count| json!({"availability":"available","count":count}))
+    .unwrap_or_else(|_| json!({"availability":"unavailable","cause":"implementation relationships are unavailable within the indexed query budget"}));
+
+    let covering_tests = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(3),
+        0,
+        Some(Detail::Compact),
+        None,
+    )
+    .and_then(|page| test_discovery::tests_paged_with_path(conn, id, None, "inbound", &page))
+    .map(|result| {
+        let method = result["discovery_method"]
+            .as_str()
+            .unwrap_or("unavailable")
+            .to_owned();
+        let total = result["nodes"]["total"].clone();
+        json!({
+            "availability":"available",
+            "discovery_method":method,
+            "total":total,
+            "items":result["nodes"]["items"],
+            "unresolved_references":result["unresolved_references"]
+        })
+    })
+    .unwrap_or_else(|_| json!({"availability":"unavailable","cause":"test relationships are unavailable within the indexed query budget"}));
+
+    json!({
+        "availability":"available",
+        "callers":callers,
+        "implementations":implementations,
+        "covering_tests":covering_tests
+    })
+}
+
+fn first_docstring_sentence(docstring: &str) -> Option<String> {
+    const MAX_CHARS: usize = 240;
+    let literal = docstring.trim();
+    let prefix_len = literal
+        .char_indices()
+        .take_while(|(_, character)| {
+            matches!(character, 'r' | 'R' | 'u' | 'U' | 'b' | 'B' | 'f' | 'F')
+        })
+        .take(3)
+        .last()
+        .map_or(0, |(index, character)| index + character.len_utf8());
+    let content = (prefix_len > 0)
+        .then(|| strip_string_literal_delimiters(&literal[prefix_len..]))
+        .flatten()
+        .or_else(|| strip_string_literal_delimiters(literal))
+        .unwrap_or(literal);
+    let sentence = content.trim().lines().next()?.trim();
+    if sentence.is_empty() {
+        return None;
+    }
+    let end = sentence
+        .char_indices()
+        .find_map(|(index, character)| {
+            (matches!(character, '.' | '!' | '?')
+                && sentence[index + character.len_utf8()..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace))
+            .then_some(index + character.len_utf8())
+        })
+        .unwrap_or(sentence.len());
+    let sentence = sentence.get(..end)?;
+    let mut bounded = sentence.chars().take(MAX_CHARS).collect::<String>();
+    if sentence.chars().count() > MAX_CHARS {
+        bounded.push('…');
+    }
+    Some(bounded)
+}
+
+fn strip_string_literal_delimiters(literal: &str) -> Option<&str> {
+    ["\"\"\"", "'''", "\"", "'"].iter().find_map(|delimiter| {
+        literal
+            .strip_prefix(delimiter)
+            .and_then(|body| body.strip_suffix(delimiter))
+    })
 }
 
 pub(crate) fn verified_source(conn: &Connection, root: &Path, path: &str) -> Result<String> {
@@ -320,7 +445,7 @@ pub(crate) fn inspect_paged_response(
         .to_owned();
     result["documented_in"] = paging::query(
         conn,
-        "SELECT d.doc_id,d.path,d.section_title,d.doc_type,e.line FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN doc_sections d ON d.doc_id=n.id WHERE e.kind='references_doc' AND e.src_hash=?1 ORDER BY d.path,d.doc_id,e.line",
+        "SELECT d.doc_id,d.path,d.section_title,d.doc_type,n.line doc_line,e.line FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN doc_sections d ON d.doc_id=n.id WHERE e.kind='references_doc' AND e.src_hash=?1 ORDER BY d.path,d.doc_id,e.line",
         &[&stable_hash64(&id)],
         options,
     )?;

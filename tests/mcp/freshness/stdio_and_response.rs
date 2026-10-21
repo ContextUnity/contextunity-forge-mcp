@@ -95,8 +95,9 @@ fn mcp_document_retrieval_and_explain_output_controls() {
     ws.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs/allowed]\n");
     ws.write(
         "src/main.rs",
-        "pub fn target() {}\npub fn caller() { target(); }\npub fn grandcaller() { caller(); }\n",
+        "pub fn target() {}\npub fn caller() { target(); }\npub fn grandcaller() { caller(); }\n/// Full detail documentation from node.details.\npub fn documented() {\n    helper();\n    helper();\n}\npub fn helper() {}\n",
     );
+    ws.write("src/other.rs", "pub fn documented() {}\n");
     ws.write("src/ambiguous.rs", "pub struct A;\nimpl A { pub fn shared() {} }\npub struct B;\nimpl B { pub fn shared() {} }\n");
     ws.write(
         "AGENTS.md",
@@ -126,6 +127,10 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         "# Unspecified status\n- INV-UNKNOWN: Preserve [`target`](../src/main.rs#L1).\n",
     );
     ws.write("docs/range.md", "# Range\n[`target`](../src/main.rs#L1)\n[generic label](../src/main.rs#L2)\n[`target`](../src/main.rs#L0)\n[`target`](../src/main.rs#L999)\n[`shared`](../src/ambiguous.rs#L1)\n");
+    ws.write(
+        "docs/allowed/inspect.md",
+        "---\ntitle: Inspect context\ndoc_type: guide\n---\n# Inspect context\nUnique full inspect document content.\n[`documented`](../../src/main.rs#L5)\n",
+    );
     ws.build();
     let mut client = StdioClient::new(&ws);
 
@@ -260,7 +265,328 @@ fn mcp_document_retrieval_and_explain_output_controls() {
             .unwrap()
             .iter()
             .any(|doc| doc["path"] == "docs/rules.md"));
+        if tool == "code_map_inspect" {
+            let (_, response) = client.call(tool, json!({"selector":"src/main.rs:target","limit":100,"show_source":false,"format":"markdown"}));
+            assert_ne!(response["result"]["isError"], true, "{response}");
+            let markdown = response["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(
+                markdown.contains("> [!IMPORTANT] Governing Invariants"),
+                "verified rules need their admitted callout: {markdown}"
+            );
+            for rule in direct {
+                assert!(markdown.contains(rule["id"].as_str().unwrap()));
+                assert!(markdown.contains(rule["rule"].as_str().unwrap()));
+                let source = &rule["source"];
+                let coordinate = format!(
+                    "file://{}#L{}",
+                    ws.root().join(source["path"].as_str().unwrap()).display(),
+                    source["line"].as_u64().unwrap()
+                );
+                assert!(
+                    markdown.contains(&coordinate),
+                    "missing real rule source {coordinate}: {markdown}"
+                );
+            }
+            for id in invariants["transitive_ids"].as_array().unwrap() {
+                assert!(
+                    markdown.contains(id.as_str().unwrap()),
+                    "one-hop provenance must survive"
+                );
+            }
+            assert!(
+                markdown.contains("Omitted one-hop invariant references: 1"),
+                "bounded one-hop omission count must remain visible: {markdown}"
+            );
+            assert!(markdown.contains("### One-hop invariant source references"));
+            for reference in omitted {
+                let id = reference["id"].as_str().unwrap();
+                let source = &reference["source"];
+                let path = source["path"].as_str().unwrap();
+                let line = source["line"].as_u64().unwrap();
+                let coordinate = format!("file://{}#L{}", ws.root().join(path).display(), line);
+                let source_row = format!("- `{id}`: [{path}#L{line}]({coordinate})");
+                assert!(
+                    markdown.contains(&source_row),
+                    "missing producer-bound one-hop source {source_row}: {markdown}"
+                );
+            }
+            assert!(!markdown.contains("INV-DEEP"));
+        }
     }
+
+    let inspect_arguments = json!({
+        "selector":"documented",
+        "path":"src/main.rs",
+        "detail":"full",
+        "show_doc":true,
+        "include_coverage":true,
+        "show_source":true,
+        "max_body_lines":1,
+        "limit":100
+    });
+    let mut inspect_json_arguments = inspect_arguments.clone();
+    inspect_json_arguments["format"] = json!("json");
+    let (_, inspect_json_response) =
+        client.call("code_map_inspect", inspect_json_arguments.clone());
+    assert_ne!(
+        inspect_json_response["result"]["isError"], true,
+        "{inspect_json_response}"
+    );
+    let inspected: Value = serde_json::from_str(
+        inspect_json_response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("explicit JSON inspect response text"),
+    )
+    .expect("JSON inspect payload");
+    let node = &inspected["node"];
+    assert_eq!(node["path"], "src/main.rs");
+    assert_eq!(node["line"], 5);
+    let node_id = node["id"].as_str().expect("selected node id");
+    let details = &node["details"];
+    let signature = details["signature"].as_str().expect("full node signature");
+    let docstring = details["doc"].as_str().expect("full node documentation");
+    assert!(
+        signature.contains("documented")
+            && docstring.contains("Full detail documentation from node.details"),
+        "{details}"
+    );
+    let generation = inspected["generation"]
+        .as_str()
+        .expect("opaque inspect generation")
+        .to_owned();
+    assert!(!generation.is_empty());
+
+    let documents = &inspected["documents"];
+    assert_eq!(
+        documents["has_more"], false,
+        "document page should be complete: {documents}"
+    );
+    let document = documents["items"]
+        .as_array()
+        .expect("full documentation page")
+        .iter()
+        .find(|item| item["path"] == "docs/allowed/inspect.md")
+        .expect("linked inspect document");
+    assert!(document["content"]
+        .as_str()
+        .expect("full document content")
+        .contains("Unique full inspect document content"));
+
+    let coverage = &inspected["coverage"];
+    assert_eq!(
+        coverage["has_more"], false,
+        "coverage page should be complete: {coverage}"
+    );
+    assert!(coverage["items"]
+        .as_array()
+        .expect("full coverage page")
+        .iter()
+        .any(|item| item["expression"] == "helper" && item["status"] == "resolved"));
+    let resolved_total = coverage["statuses"]
+        .as_array()
+        .expect("scope-wide coverage statuses")
+        .iter()
+        .find(|status| status["status"] == "resolved")
+        .and_then(|status| status["total"].as_u64())
+        .expect("resolved scope count");
+    assert!(resolved_total > 0);
+
+    let coverage_total = coverage["total"].as_u64().expect("coverage page total");
+    let mut coverage_tail_json_arguments = inspect_json_arguments.clone();
+    coverage_tail_json_arguments["limit"] = json!(1);
+    coverage_tail_json_arguments["offset"] = json!(coverage_total);
+    coverage_tail_json_arguments["generation"] = coverage["generation"].clone();
+    let (_, coverage_tail_json_response) =
+        client.call("code_map_inspect", coverage_tail_json_arguments);
+    assert_ne!(coverage_tail_json_response["result"]["isError"], true);
+    let coverage_tail_json: Value = serde_json::from_str(
+        coverage_tail_json_response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("empty coverage-page JSON response"),
+    )
+    .expect("empty coverage-page JSON payload");
+    assert!(coverage_tail_json["coverage"]["items"]
+        .as_array()
+        .expect("empty coverage tail")
+        .is_empty());
+    assert_eq!(
+        coverage_tail_json["coverage"]["statuses"],
+        coverage["statuses"]
+    );
+
+    let mut coverage_tail_markdown_arguments = inspect_arguments.clone();
+    coverage_tail_markdown_arguments["limit"] = json!(1);
+    coverage_tail_markdown_arguments["offset"] = json!(coverage_total);
+    coverage_tail_markdown_arguments["generation"] = coverage["generation"].clone();
+    let (_, coverage_tail_markdown_response) =
+        client.call("code_map_inspect", coverage_tail_markdown_arguments);
+    assert_ne!(coverage_tail_markdown_response["result"]["isError"], true);
+    let coverage_tail_markdown = coverage_tail_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("empty coverage-page Markdown response");
+    assert!(
+        coverage_tail_markdown.contains("## coverage")
+            && coverage_tail_markdown.contains("\"statuses\"")
+            && coverage_tail_markdown.contains(&format!("\"total\": {resolved_total}")),
+        "coverage-wide status totals must survive an empty item page: {coverage_tail_markdown}"
+    );
+
+    let source_preview = &inspected["source_preview"];
+    let preview_start = source_preview["start_line"]
+        .as_u64()
+        .expect("preview start line");
+    let preview_end = source_preview["end_line"]
+        .as_u64()
+        .expect("preview end line");
+    let total_body_lines = source_preview["total_body_lines"]
+        .as_u64()
+        .expect("preview body size");
+    let next_source_offset = source_preview["next_source_offset"]
+        .as_u64()
+        .expect("source continuation offset");
+    assert!(preview_start > 0 && preview_end >= preview_start && total_body_lines > 1);
+    assert_eq!(source_preview["body_offset"], 0);
+    assert_eq!(source_preview["body_lines"], 1);
+    assert_eq!(source_preview["has_more"], true);
+    assert_eq!(next_source_offset, 1);
+    assert_eq!(source_preview["truncated_line"], false);
+
+    let mut nested_page_arguments = inspect_json_arguments.clone();
+    nested_page_arguments["limit"] = json!(1);
+    let (_, nested_page_response) = client.call("code_map_inspect", nested_page_arguments);
+    assert_ne!(nested_page_response["result"]["isError"], true);
+    let nested_pages: Value = serde_json::from_str(
+        nested_page_response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("bounded JSON inspect response text"),
+    )
+    .expect("bounded JSON inspect payload");
+    let nested_page_key = ["documents", "coverage"]
+        .into_iter()
+        .find(|key| nested_pages[key]["has_more"] == true)
+        .expect("fixture should provide an active nested inspect page");
+    let nested_page = &nested_pages[nested_page_key];
+    let nested_generation = nested_page["generation"]
+        .as_str()
+        .expect("nested page generation");
+    let nested_offset = nested_page["next_offset"]
+        .as_u64()
+        .expect("nested page next offset");
+
+    let mut nested_markdown_arguments = inspect_arguments.clone();
+    nested_markdown_arguments["limit"] = json!(1);
+    let (_, nested_markdown_response) = client.call("code_map_inspect", nested_markdown_arguments);
+    assert_ne!(nested_markdown_response["result"]["isError"], true);
+    let nested_markdown = nested_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("bounded Markdown inspect response");
+    let nested_continuation = nested_markdown
+        .lines()
+        .find(|line| line.starts_with(&format!("Continue {nested_page_key} ")))
+        .expect("active nested page continuation in Markdown");
+    assert!(
+        nested_continuation.contains("path=src/main.rs")
+            && nested_continuation.contains("selector=documented")
+            && nested_continuation.contains(&format!("offset {nested_offset}"))
+            && nested_continuation.contains(&format!("generation `{nested_generation}`")),
+        "nested continuation must retain its own scope and accepted token: {nested_continuation}"
+    );
+
+    let mut nested_json_continuation_arguments = inspect_json_arguments.clone();
+    nested_json_continuation_arguments["limit"] = json!(1);
+    nested_json_continuation_arguments["offset"] = json!(nested_offset);
+    nested_json_continuation_arguments["generation"] = json!(nested_generation);
+    let (_, nested_json_continuation_response) =
+        client.call("code_map_inspect", nested_json_continuation_arguments);
+    assert_ne!(
+        nested_json_continuation_response["result"]["isError"], true,
+        "the nested continuation must remain bound to its accepted page: {nested_json_continuation_response}"
+    );
+    let nested_continued: Value = serde_json::from_str(
+        nested_json_continuation_response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("nested continuation JSON response text"),
+    )
+    .expect("nested continuation JSON payload");
+    assert_eq!(nested_continued["node"]["id"], node_id);
+    assert_eq!(nested_continued["node"]["path"], "src/main.rs");
+    let continued_page = &nested_continued[nested_page_key];
+    assert_eq!(continued_page["offset"], nested_offset);
+    assert_eq!(continued_page["generation"], nested_generation);
+    assert!(!continued_page["items"].as_array().unwrap().is_empty());
+    assert_ne!(
+        continued_page["items"][0], nested_page["items"][0],
+        "the nested continuation should return the next item"
+    );
+
+    let (_, inspect_markdown_response) = client.call("code_map_inspect", inspect_arguments.clone());
+    assert_ne!(
+        inspect_markdown_response["result"]["isError"], true,
+        "{inspect_markdown_response}"
+    );
+    let inspect_markdown = inspect_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("default Markdown inspect response");
+    assert!(
+        inspect_markdown.contains(signature)
+            && inspect_markdown.contains(docstring)
+            && inspect_markdown.contains("docs/allowed/inspect.md")
+            && inspect_markdown.contains("Unique full inspect document content")
+            && inspect_markdown.contains("\"expression\": \"helper\"")
+            && inspect_markdown.contains("\"status\": \"resolved\"")
+            && inspect_markdown.contains("\"statuses\"")
+            && inspect_markdown.contains(&format!("\"total\": {resolved_total}")),
+        "full node details, document data, and coverage scope must survive inspect Markdown: {inspect_markdown}"
+    );
+    assert!(
+        inspect_markdown.contains("pub fn documented() {")
+            && inspect_markdown
+                .contains(&format!("Source range: lines {preview_start}-{preview_end}."))
+            && inspect_markdown.contains(&format!(
+                "Source preview state: body_offset=0, body_lines=1, total_body_lines={total_body_lines}, has_more=true, truncated_line=false"
+            ))
+            && inspect_markdown.contains(&format!(
+                "Continue source for `{node_id}` in `src/main.rs` with source_offset {next_source_offset} and generation `{generation}`."
+            ))
+    );
+
+    let mut continuation_arguments = inspect_arguments.clone();
+    continuation_arguments["source_offset"] = json!(next_source_offset);
+    continuation_arguments["generation"] = json!(generation);
+    let mut continuation_json_arguments = continuation_arguments.clone();
+    continuation_json_arguments["format"] = json!("json");
+    let (_, continuation_json_response) =
+        client.call("code_map_inspect", continuation_json_arguments);
+    assert_ne!(
+        continuation_json_response["result"]["isError"], true,
+        "the original path scope must disambiguate the continuation: {continuation_json_response}"
+    );
+    let continued: Value = serde_json::from_str(
+        continuation_json_response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("continuation JSON response text"),
+    )
+    .expect("continuation JSON payload");
+    assert_eq!(continued["node"]["id"], node_id);
+    assert_eq!(continued["node"]["path"], "src/main.rs");
+    assert_eq!(continued["generation"], generation);
+    assert_eq!(continued["source_preview"]["body_offset"], 1);
+
+    let (_, continuation_markdown_response) =
+        client.call("code_map_inspect", continuation_arguments);
+    assert_ne!(
+        continuation_markdown_response["result"]["isError"], true,
+        "{continuation_markdown_response}"
+    );
+    let continuation_markdown = continuation_markdown_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("continuation Markdown response");
+    assert!(
+        continuation_markdown.contains("helper();")
+            && continuation_markdown.contains("body_offset=1")
+            && continuation_markdown.contains(&format!("generation `{generation}`"))
+    );
+
     let expected = client.payload("get_doc", json!({"path_or_id":"docs/rules.md"}));
     let cli = crate::common::mcp_client::run_cli_json(&ws, &["docs", "get", "docs/rules.md"]);
     assert!(
@@ -360,9 +686,14 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         "code_map_impact",
         json!({"selector":"src/main.rs","limit":100}),
     );
-    assert!(affected["affected_docs"]["items"].as_array().unwrap().iter()
-        .any(|section| section["path"] == "docs/range.md"),
-        "deleting a documented symbol must retain affected documentation by its verified file claim: {affected}");
+    assert!(
+        affected["affected_docs"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|section| section["path"] == "docs/range.md"),
+        "deleting a documented symbol must retain affected documentation by its verified file claim: {affected}"
+    );
 
     let mut regressions = Vec::new();
     let relation_page0 = client.payload(

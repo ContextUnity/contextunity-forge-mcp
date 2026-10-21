@@ -548,4 +548,358 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
         assert_eq!(next["languages"]["items"][0]["language"], "rust");
         assert!(!next["languages"]["has_more"].as_bool().unwrap());
     }
+
+    use contextunity_forge_mcp::core::format::{self, OutputFormat};
+    let mut missing = Vec::new();
+    // These are recorded resolver outcomes, not inferred labels or visible-page totals.
+    for (unknown, external, health) in [(0, 0, "80.0%"), (0, 12, "80.0%"), (1, 12, "79.2%")] {
+        let fixture = Workspace::new();
+        let linked = Workspace::new();
+        fixture.write("scope.py", &"# recorded reference\n".repeat(120));
+        linked.write("linked_scope.py", "def linked_target(): pass\n");
+        fixture.write(
+            "forge-mcp.yaml",
+            &format!(
+                "roots: [.]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [.]\n",
+                linked.0.display()
+            ),
+        );
+        fixture.build();
+        let recorded = Connection::open(fixture.db()).unwrap();
+        let populations = [
+            (80, "resolved", "target", "exact indexed target"),
+            (
+                6,
+                "unresolved",
+                "callback",
+                "callee is shadowed by a parameter or local binding of unknown callable identity",
+            ),
+            (
+                4,
+                "unresolved",
+                "receiver.call",
+                "callee is shadowed by a parameter or local binding of unknown callable identity",
+            ),
+            (
+                3,
+                "unresolved",
+                "framework",
+                "diagnostic_reason=framework_magic",
+            ),
+            (
+                2,
+                "unresolved",
+                "external.call",
+                "call through external import package; callable target unverified",
+            ),
+            (5, "ambiguous", "candidate", "multiple indexed candidates"),
+            (
+                unknown,
+                "unresolved",
+                "unknown",
+                "unclassified resolver evidence",
+            ),
+            (
+                external,
+                "external",
+                "external.import",
+                "call through external import package; callable target unverified",
+            ),
+        ];
+        let mut line = 0;
+        for (count, status, expression, evidence) in populations {
+            recorded
+                .execute(
+                    "INSERT OR IGNORE INTO coverage_expressions(expression) VALUES(?1)",
+                    [expression],
+                )
+                .unwrap();
+            recorded
+                .execute(
+                    "INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES(?1)",
+                    [evidence],
+                )
+                .unwrap();
+            for _ in 0..count {
+                line += 1;
+                recorded.execute(
+                    "INSERT INTO resolution_coverage(path_id,line,expression_id,status,evidence_id) VALUES((SELECT path_id FROM path_dictionary WHERE path='scope.py'),?1,(SELECT expression_id FROM coverage_expressions WHERE expression=?2),?3,(SELECT evidence_id FROM coverage_evidence WHERE evidence=?4))",
+                    rusqlite::params![line, expression, status, evidence],
+                ).unwrap();
+            }
+        }
+        recorded
+            .execute(
+                "INSERT OR IGNORE INTO coverage_expressions(expression) VALUES('linked target')",
+                [],
+            )
+            .unwrap();
+        recorded
+            .execute(
+                "INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES('exact indexed linked target')",
+                [],
+            )
+            .unwrap();
+        recorded
+            .execute(
+                "INSERT INTO resolution_coverage(path_id,line,expression_id,status,evidence_id) VALUES((SELECT path_id FROM path_dictionary WHERE path='[library]/linked_scope.py'),1,(SELECT expression_id FROM coverage_expressions WHERE expression='linked target'),'resolved',(SELECT evidence_id FROM coverage_evidence WHERE evidence='exact indexed linked target'))",
+                [],
+            )
+            .unwrap();
+        // Keep the persisted language summary consistent with the recorded population.
+        recorded.execute("INSERT INTO coverage_owner_language(path_id,line,expression_id,status,evidence_id,language) SELECT path_id,line,expression_id,status,evidence_id,'python' FROM resolution_coverage", []).unwrap();
+        recorded.execute("INSERT INTO coverage_language_counts(path_id,language,status,records) SELECT path_id,'python',status,count(*) FROM resolution_coverage GROUP BY path_id,status", []).unwrap();
+        let diagnostics =
+            reader::analyze_paged(&recorded, "scope.py", None, &options(100)).unwrap();
+        let diagnostic_rows = diagnostics["resolution"]["items"].as_array().unwrap();
+        for (reason, count) in [
+            ("dynamic_callback", 6),
+            ("unresolved_receiver_type", 4),
+            ("framework_magic", 3),
+            ("external_unindexed", 2),
+            ("ambiguous_candidates", 5),
+        ] {
+            assert_eq!(
+                diagnostic_rows
+                    .iter()
+                    .filter(|row| row["reason"] == reason && row["status"] != "external")
+                    .count(),
+                count,
+                "fixture must use the canonical exact-file reason classifier: {reason}"
+            );
+        }
+        assert_eq!(
+            diagnostic_rows
+                .iter()
+                .filter(|row| row["reason"].is_null())
+                .count(),
+            unknown
+        );
+        let full_page = reader::overview_with_options(
+            &recorded,
+            &reader::OverviewOptions {
+                aspects: None,
+                page: &options(100),
+            },
+        )
+        .unwrap();
+        for limit in [1, 100] {
+            let mut page_options = options(limit);
+            if limit == 1 {
+                page_options.offset = 1;
+                page_options.generation = full_page["generation"].as_str().map(str::to_owned);
+            }
+            let overview = reader::overview_with_options(
+                &recorded,
+                &reader::OverviewOptions {
+                    aspects: None,
+                    page: &page_options,
+                },
+            )
+            .unwrap();
+            assert_eq!(overview["counts"]["unresolved"], 20 + unknown);
+            assert_eq!(overview["counts"]["external_imports"], external);
+            let json = format::render(&overview, OutputFormat::Json, "code_map_overview");
+            assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), overview);
+            let markdown = format::render(&overview, OutputFormat::Markdown, "code_map_overview");
+            let mut expected_rows = vec![
+                format!("Resolution Health: {health}"),
+                "dynamic_callback): 6".to_owned(),
+                "unresolved_receiver_type): 4".to_owned(),
+                "framework_magic): 3".to_owned(),
+                "external_unindexed, status=unresolved): 2".to_owned(),
+                "ambiguous_candidates): 5".to_owned(),
+                "Reason (ambiguous_candidates, status=ambiguous): 5".to_owned(),
+                format!("External references: {external} (excluded from health)"),
+                "external crate count: unavailable".to_owned(),
+            ];
+            if external > 0 {
+                expected_rows.push(format!(
+                    "reason=external_unindexed, status=external): {external}"
+                ));
+            }
+            for expected in expected_rows {
+                if !markdown.contains(&expected) {
+                    missing.push(format!("unknown={unknown}, external={external}, limit={limit}: missing {expected:?}"));
+                }
+            }
+            if unknown > 0
+                && !(markdown.to_ascii_lowercase().contains("unknown") && markdown.contains('1'))
+            {
+                missing.push(
+                    "unclassified recorded evidence must remain visible as unknown".to_owned(),
+                );
+            }
+        }
+        let scopes = full_page["coverage_by_workspace"]["items"]
+            .as_array()
+            .unwrap();
+        assert_eq!(full_page["coverage_by_workspace"]["total"], 2);
+        let primary = scopes
+            .iter()
+            .find(|scope| scope["name"] == "primary")
+            .unwrap();
+        let linked_scope = scopes
+            .iter()
+            .find(|scope| scope["name"] == "library")
+            .unwrap();
+        assert_eq!(
+            format!(
+                "{:.1}%",
+                primary["resolution_health"]["percent"].as_f64().unwrap()
+            ),
+            health
+        );
+        assert_eq!(linked_scope["resolution_health"]["resolved"], 1);
+        assert_eq!(linked_scope["resolution_health"]["denominator"], 1);
+        let mut second_scope_page = options(1);
+        second_scope_page.offset = 1;
+        second_scope_page.generation = full_page["generation"].as_str().map(str::to_owned);
+        let paged = reader::overview_with_options(
+            &recorded,
+            &reader::OverviewOptions {
+                aspects: None,
+                page: &second_scope_page,
+            },
+        )
+        .unwrap();
+        assert_eq!(paged["coverage_by_workspace"]["items"][0], *primary);
+    }
+    let empty = Workspace::new();
+    empty.write("empty.py", "# no references\n");
+    let empty_conn = empty.build();
+    let empty_overview = reader::overview_with_options(
+        &empty_conn,
+        &reader::OverviewOptions {
+            aspects: None,
+            page: &options(1),
+        },
+    )
+    .unwrap();
+    let empty_markdown =
+        format::render(&empty_overview, OutputFormat::Markdown, "code_map_overview");
+    if !empty_markdown.contains("Resolution Health: unavailable") {
+        missing.push("zero denominator must report unavailable, never an invented 100%".to_owned());
+    }
+
+    {
+        let projected = Workspace::new();
+        projected.write("source_tree/leaf.py", "def leaf(): return 1\n");
+        projected.write(
+            "cycles.py",
+            "def recursive(): return recursive()\ndef unresolved(): return missing_target()\n",
+        );
+        projected.write("syntax_error.py", "def broken(:\n    pass\n");
+        let conn = projected.build();
+        let requested_aspects =
+            ["components", "cycles", "languages", "metadata"].map(str::to_owned);
+        let overview = reader::overview_with_options(
+            &conn,
+            &reader::OverviewOptions {
+                aspects: Some(&requested_aspects),
+                page: &options(100),
+            },
+        )
+        .unwrap();
+
+        let component_page = &overview["components"];
+        let components = component_page["items"].as_array().unwrap();
+        let directory = components
+            .iter()
+            .find(|component| {
+                component["path"]
+                    .as_str()
+                    .is_some_and(|path| path.contains("source_tree"))
+            })
+            .expect("the real reader should report the source directory component");
+        let directory_path = directory["path"].as_str().unwrap();
+
+        let cycles = &overview["cycles"];
+        assert!(cycles["total"].as_u64().unwrap() > 0);
+        let cycle = &cycles["largest"][0];
+        let cycle_path = cycle["path"].as_str().unwrap();
+        let cycle_line = cycle["line"].as_u64().unwrap().to_string();
+
+        let languages = overview["languages"]["items"].as_array().unwrap();
+        let python = languages
+            .iter()
+            .find(|language| language["language"] == "python")
+            .expect("the real reader should report the Python language row");
+        for field in [
+            "files",
+            "resolved",
+            "ambiguous",
+            "unresolved",
+            "external_imports",
+            "parse_errors",
+        ] {
+            assert!(
+                python[field].as_u64().is_some(),
+                "the reader did not supply Python {field}: {python}"
+            );
+        }
+        assert!(python["resolved"].as_u64().unwrap() > 0);
+        assert!(python["unresolved"].as_u64().unwrap() > 0);
+
+        let metadata = overview["metadata"].as_array().unwrap();
+        let schema_version = metadata
+            .iter()
+            .find(|row| row["key"] == "schema_version")
+            .expect("schema version should come from the reader metadata")["value"]
+            .as_str()
+            .unwrap();
+        let workspace_root = metadata
+            .iter()
+            .find(|row| row["key"] == "workspace_root")
+            .expect("workspace root should come from the reader metadata")["value"]
+            .as_str()
+            .unwrap();
+
+        let markdown = format::render(&overview, OutputFormat::Markdown, "code_map_overview");
+        assert!(
+            markdown
+                .to_ascii_lowercase()
+                .contains("directory component"),
+            "directory nodes must stay distinct from manifest-backed packages: {markdown}"
+        );
+        assert!(markdown.contains(directory_path), "{markdown}");
+        assert!(
+            markdown.to_ascii_lowercase().contains("cycle")
+                && markdown.contains(cycle_path)
+                && markdown.contains(&cycle_line),
+            "the explicitly requested nonempty cycle summary must remain visible: {markdown}"
+        );
+        assert!(
+            markdown.to_ascii_lowercase().contains("schema")
+                && markdown.contains(schema_version)
+                && markdown.contains(workspace_root),
+            "the explicitly requested reader metadata must remain visible: {markdown}"
+        );
+
+        let language_section = markdown
+            .split("## Languages")
+            .nth(1)
+            .and_then(|section| section.split("\n## ").next())
+            .expect("overview Markdown should retain its language section");
+        for (field, label) in [
+            ("files", "files"),
+            ("resolved", "resolved"),
+            ("ambiguous", "ambiguous"),
+            ("unresolved", "unresolved"),
+            ("external_imports", "external"),
+            ("parse_errors", "parse"),
+        ] {
+            assert!(
+                language_section.to_ascii_lowercase().contains(label)
+                    && language_section.contains(&python[field].as_u64().unwrap().to_string()),
+                "the Python {field} value supplied by the reader must remain visible: {language_section}"
+            );
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "discovery overview contract: {}",
+        missing.join("\n")
+    );
 }

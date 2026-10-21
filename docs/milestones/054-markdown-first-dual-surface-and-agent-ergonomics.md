@@ -263,52 +263,108 @@ preservation; dedicated domain layout documentation co-evolves in later tasks.
 
 ```yaml
 task_ref: code-discovery-markdown-contracts
-target: "Implement inspect/search/overview/AST Markdown, verified invariant callouts, scoped health/reason counts, bounded enrichment, manifest components, milestone/doc hubs and profile diagnostics"
+target: Implement inspect/search/overview/AST Markdown, verified invariant callouts, scoped health/reason counts, bounded enrichment, manifest components, milestone/doc hubs and profile diagnostics
 depends_on:
-  - core-dual-surface-formatter-and-metadata-compaction
+- core-dual-surface-formatter-and-metadata-compaction
 proof_policy: seam-test-first
 contract_revision: 3
 invariants:
-  - 'INV-CLICKABLE-COORDINATES: Resolve real coordinates against the selected worktree.'
-  - 'INV-DISCOVERY-EVIDENCE: Components, enrichment, health and diagnostic examples come from actual bounded producers.'
-  - 'INV-DISCOVERY-PRESENTATION: Render verified governing rules in IMPORTANT callouts and canonical scoped reason counts; exclude external status from health, preserve actual units and unavailable data.'
+- 'INV-CLICKABLE-COORDINATES: Resolve real coordinates against the selected worktree.'
+- 'INV-DISCOVERY-EVIDENCE: Components, enrichment, health and diagnostic examples come from actual bounded producers.'
+- 'INV-DISCOVERY-PRESENTATION: Render verified governing rules in IMPORTANT callouts and canonical scoped reason counts; exclude external status from health, preserve actual units and unavailable data.'
 scope:
-  - src/core/format/
-  - src/db/symbols.rs
-  - src/db/symbols/
-  - src/db/reader.rs
-  - src/engine/scanner/
-  - src/engine/ast/
-  - src/engine/languages/
-  - src/engine/tasks/context.rs
-  - src/mcp/
-  - src/cli/mod.rs
-  - src/cli/ast.rs
-  - tests/query_context/
-  - tests/mcp/
-  - tests/mcp_context/
-  - tests/languages/
-  - docs/reference/mcp-tools.md
-  - docs/reference/cli.md
-  - docs/reference/mcp-markdown-contracts.md
-  - skills/contextunity-forge/SKILL.md
-status: ready
+- src/core/format/
+- src/db/symbols.rs
+- src/db/symbols/
+- src/db/reader.rs
+- src/engine/scanner/
+- src/engine/ast/
+- src/engine/languages/
+- src/engine/tasks/context.rs
+- src/mcp/
+- src/cli/mod.rs
+- src/cli/ast.rs
+- tests/query_context/
+- tests/mcp/
+- tests/mcp_context/
+- tests/languages/
+- docs/reference/mcp-tools.md
+- docs/reference/cli.md
+- docs/reference/mcp-markdown-contracts.md
+- skills/contextunity-forge/SKILL.md
+status: completed
 subtasks:
-  - subtask_ref: inspect-markdown-formatter
-    title: "Render verified DocGraph rules as IMPORTANT Governing Invariants bullets with source links and omission metadata; preserve ADRs/relations/source options and paging"
-    status: ready
-  - subtask_ref: search-markdown-formatter-with-enrichment
-    title: "Supply and render bounded prod/test classification, docstrings, graph pulse and exact-match reasons without fabricating evidence"
-    status: ready
-  - subtask_ref: overview-markdown-formatter
-    title: "Supply manifest components/milestone/doc hubs and same-scope health plus four canonical 053 reason aggregates, ambiguity/unknown and separate external-reference counts; unavailable package counts remain explicit"
-    status: ready
-  - subtask_ref: ast-grep-markdown-and-diagnostics
-    title: "Render matches/captures and profile-provided syntax diagnostics, spans when available, examples and actionable hints"
-    status: ready
-  - subtask_ref: code-discovery-seam-tests
-    title: "Prove discovery content/links, invariant callouts, manifest ecosystems, all reason-count mappings and external-excluded arithmetic/zero denominator, bounded full-scope aggregation and two language diagnostics"
-    status: ready
+- subtask_ref: inspect-markdown-formatter
+  title: Render verified DocGraph rules as IMPORTANT Governing Invariants bullets with source links and omission metadata; preserve ADRs/relations/source options and paging
+  status: completed
+  evidence: 'R1 post-repair actual MCP wire proof: `cargo test --test mcp freshness::stdio_and_response::mcp_document_retrieval_and_explain_output_controls` passed 1, failed 0 (archive 141ebe539e016b4b). Existing JSON fixture proves omitted_transitive=1 and bounded omitted_sources; the same Markdown assertion now verifies the omission count and every source ID/path/line file link while preserving direct rule, JSON, and continuation assertions.'
+- subtask_ref: search-markdown-formatter-with-enrichment
+  title: Supply and render bounded prod/test classification, docstrings, graph pulse and exact-match reasons without fabricating evidence
+  status: completed
+  evidence: 'Historical whole-candidate proof at 447442e33743a37e3761886ab2d9f3d5198fb7a9: unfiltered `cargo test --test query_context --test mcp --test languages` passed 397 (query_context 43, MCP 91, languages 263; 0 failed/ignored; archive 6b43ebb49cf88b42), including actual MCP search enrichment/ranking. R1 only changes inspect invariant omission rendering and its existing MCP seam; search implementation is unchanged.'
+- subtask_ref: overview-markdown-formatter
+  title: Supply manifest components/milestone/doc hubs and same-scope health plus four canonical 053 reason aggregates, ambiguity/unknown and separate external-reference counts; unavailable package counts remain explicit
+  status: completed
+  evidence: 'Historical whole-candidate proof at 447442e33743a37e3761886ab2d9f3d5198fb7a9: the same unfiltered command passed query_context 43/43 (archive 6b43ebb49cf88b42), including `diagnostics_and_source::overview_reports_language_breakdown_and_compiled_profiles` over real reader output and the pure renderer. The overview implementation/test are unchanged by R1.'
+- subtask_ref: ast-grep-markdown-and-diagnostics
+  title: Render matches/captures and profile-provided syntax diagnostics, spans when available, examples and actionable hints
+  status: completed
+  evidence: 'Historical whole-candidate proof at 447442e33743a37e3761886ab2d9f3d5198fb7a9: the unfiltered command passed MCP 91/91 and languages 263/263 (archive 6b43ebb49cf88b42), including existing actual MCP AST and language-diagnostic seams. R1 changes only inspect invariant metadata rendering and the associated inspect test.'
+- subtask_ref: code-discovery-seam-tests
+  title: Prove discovery content/links, invariant callouts, manifest ecosystems, all reason-count mappings and external-excluded arithmetic/zero denominator, bounded full-scope aggregation and two language diagnostics
+  status: completed
+  evidence: 'Historical candidate 447442e33743a37e3761886ab2d9f3d5198fb7a9 unfiltered proof: 397 passed, 0 failed/ignored (archive 6b43ebb49cf88b42). R1-specific post-repair actual MCP wire test passed 1/1, 0 failed (archive 141ebe539e016b4b), asserting supplied omitted_transitive and omitted_sources are preserved. Do not interpret the historical 397 as post-R1 evidence; root owns consolidated full verification after parallel-task integration.'
+receipt:
+  contract_revision: 3
+  passed_at: 2026-10-21T03:45:52.002878404+00:00
+  evidence:
+    command_proof:
+      command: cargo test --test mcp freshness::stdio_and_response::mcp_document_retrieval_and_explain_output_controls
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+      log: 'R1 focused actual MCP wire regression passed 1, failed 0, 90 filtered; archive 141ebe539e016b4b. The test checks the JSON producer''s omitted_transitive=1 and bounded omitted_sources, then asserts the Markdown omission count and every ID/path/line coordinate link. rustfmt targeted check and git diff --check exit 0. Current tracked diff SHA-256 7f6f6e6ee8860811a35b97b63a7990921e7b388b5cd9bb40bf50c5ba38235c1b; src/core/format/discovery.rs SHA-256 dc65da14789de3b6dc86e474494456339922654c0512cd73ee11190eaf7f5cf5; tests/mcp/freshness/stdio_and_response.rs SHA-256 622ca70affbe3646e10ddb8656b6364130303cdc37fdc215b177772e66407e33. Historical candidate 447442e33743a37e3761886ab2d9f3d5198fb7a9 only: strict Clippy 0 and full query_context/MCP/languages 397 passed, 0 failed/ignored, archive 6b43ebb49cf88b42. No full-suite or Clippy result is claimed for the R1-modified candidate; root will run consolidated verification after concurrent task integration under user override. Coordinator-approved lifecycle manifest amendment is unchanged and provenance is recorded on board748. Five subtasks were updated via Forge with explicit bounded evidence; no manual manifest or receipt edits.'
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: PASS. Review claim7/contract3 binds frozen f45fcea873c39c4e523b623981d13de9f37dc5fd to baseline24b35b4961dfea8e01cff6eb30c3c113d95a6a3d. Exact snapshot-to-snapshot delta from independently reviewed447442e consists only src/core/format/discovery.rs and additive lines within existing mcp_document_retrieval_and_explain_output_controls. Live tracked admitted files match frozen snapshot; new formatter blobc9d827f05e7c440211a887455111e152fe39f2c8 and scanner blob9ecdb66bf4a2fa1377ce58b670cacf061da5774e match candidate. git diff --check0. Cumulative scope/path review board750 remains applicable to unchanged content. Approved coordinator-only lifecycle rev4 manifest amendment remains separately recorded719/748. No reviewer source edits, staging, index refresh or manual commits.
+        claims:
+          applicable: true
+          evidence: 'PASS. M054-DISCOVERY-R1 CLOSED: render_inspect734–770 consumes existing positive omitted_transitive and every bounded omitted_sources entry, preserving supplied ID/path/line/URI and truthful coordinate/link-unavailable fallback. Existing actual raw MCP inspect seam296–312 asserts producer-bound omission count and each exact source row; JSON/direct/provenance/get_doc recovery baselines218–267 remain unchanged. Builder focused actual MCP command cargo test --test mcp freshness::stdio_and_response::mcp_document_retrieval_and_explain_output_controls exit0,1passed/0failed/0ignored/90filtered, archive141ebe539e016b4b independently inspected; rustfmt and diffcheck0 board757. Other prior D-P1/D-P2/search-heading/overview-aspects/empty-coverage-status/JSON baseline closures preserved because all other source/test bytes match447442e. HISTORICAL ONLY: independent447442e unfiltered query_context43+mcp91+languages263=397/0/0 archive8acba5903f4df015; accepted447442e strictClippy0 archiveee1588700c88b154. These are not represented as postrepair full/lint results. User execution override752/755 explicitly consolidates complete verification after integration; no extra branch full/lint run. Current review template requires decision and five contours, not fabricated command proof. Final merged all-contract strictClippy/full verification remains coordinator-owned pending work.'
+        concurrency:
+          applicable: true
+          evidence: PASS. Bounded repair is pure rendering of an already supplied immutable Value plus assertions; no producer, global state, storage, snapshot admission, QueryBudget, task revision, transaction, locks or receipt implementation changes. Unchanged cumulative read-only bounded aggregation and request-local formatting retain prior verified architecture. Candidate was frozen before claim and live source reconciled; concurrent remaining builders use separate worktrees per explicit override752 and do not write this candidate. No Cargo or source mutation was performed in this Review.
+        project_isolation:
+          applicable: true
+          evidence: PASS. Existing adapter selected/linked-root canonical guards and Markdown-only URI decoration remain byte-identical to447442e; JSON receives no added URI or speculative query fields. Repair prints only supplied validated URI/path/line and explicit unavailable fallbacks, with no invented coordinate lookup. Same existing actual MCP fixture verifies expected source links against its real selected workspace. Manifest inventory bounds/ignore/linked behavior unchanged; historical full target evidence remains expressly historical.
+        administration:
+          applicable: true
+          evidence: PASS. No new producer/schema/migration/protected profile pin/gate/receipt/privileged Git semantics. Same independent reviewer m054-discovery-reviewer differs from builder m054-discovery-builder; claim7/rev3 exact template used. Builder reconciled all five existing subtasks through Forge with evidence board757, no reviewer manual metadata edits. Root authorized Review→Deliver in this same session with auto_commit owning atomic receipt/single task commit. Positive/negative intent and later presentation owners remain deferred/unchanged, and user consolidation override752 is durable before delivery. No remaining admitted finding; R1 closed, prior closed clusters preserved, final integration verification explicitly pending rather than claimed.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-DUAL-SURFACE-PARITY: Operations available on both surfaces share semantic projections and one formatting engine; equivalent data/options produce identical Markdown and equivalent parsed JSON. Existing CLI-only operations remain CLI-only.'
+    - 'INV-MARKDOWN-FIRST-DEFAULT: MCP tools and CLI default to high-density Markdown; explicit format: "json" and --format json preserve programmatic output under ADR 0019, amending ADR 0001 Decision 2.'
+    - 'INV-DEAD-METADATA-ELIMINATION: Omit inactive presentation metadata and empty optional graph sections through operation-aware compaction; preserve all active nested/source continuations and durable/domain data.'
+    - 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve all actionable workflow guidance, stage rules, evidence identities, applicable invariants, dependencies, allowed write scopes, subtask DoD, and receipts under existing operation bounds.'
+    - 'INV-CONTEXTUAL-ACTIONABLE-HINTS: Replace duplicated boilerplate only with equivalent concise contextual guidance; preserve supported recovery steps and error semantics.'
+    - 'INV-CLICKABLE-COORDINATES: Render available file, symbol, and document coordinates as absolute file:/// links with real line fragments; resolve against the selected workspace and never invent missing coordinates.'
+    - 'INV-CLICKABLE-COORDINATES: Resolve real coordinates against the selected worktree.'
+    - 'INV-DISCOVERY-EVIDENCE: Components, enrichment, health and diagnostic examples come from actual bounded producers.'
+    - 'INV-DISCOVERY-PRESENTATION: Render verified governing rules in IMPORTANT callouts and canonical scoped reason counts; exclude external status from health, preserve actual units and unavailable data.'
+    architectural_notes:
+    - 'decisions: Exact source-scope treatment before final Build: new physical src/cli/discovery.rs not in allowed scope (only cli/mod.rs,cli/ast.rs). Original manifest author + independent m054-discovery-reviewer both read full source rules/helper/callsites and PASS same-behavior standard INLINE pub(crate) mod discovery within admitted cli/mod.rs, retaining cohesive module namespace/functions/visibility/callers. Frozen preimage helperf5330eb39faff57af7a1bddf52abdff3d904d272 (201lines), mod0cc17f50fca7cbc7940d6f439882f61b35cd1b58. src/AGENTS45/50/56–63/88 no router-only or arbitraryline/physicalfile requirement; responsibility separation retained inline. Same builder authorized exact body-preserving lexical move and removal of only new physical file, token/body comparison modulo indent, normal final proof after move. No scope extension attempted: existing ready parity src/cli/ ownership conflicts with physicalfile extension under store rules. No new semantic functionality, manifest/spec/revision/digest/claim/gates/reset/sync change justified. This is authority adjudication only, NOT frozen candidate gateReview. Final independent Review binds actual resulting candidate.'
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: graph-traversal-and-impact-markdown-contracts
@@ -366,7 +422,7 @@ target: "Render task lifecycle and embedded claim/contract blackboard blocker ca
 depends_on:
   - graph-traversal-and-impact-markdown-contracts
 proof_policy: seam-test-first
-contract_revision: 3
+contract_revision: 4
 invariants:
   - 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve task authority, stage guidance, proof commands/templates, write scopes, DoD and durable evidence.'
   - 'INV-CONTEXTUAL-ACTIONABLE-HINTS: Compact duplicate presentation while preserving every distinct operative instruction.'
@@ -374,6 +430,7 @@ invariants:
 scope:
   - src/core/format/
   - src/engine/tasks/context.rs
+  - src/engine/tasks/mod.rs
   - src/db/tasks_store/lifecycle.rs
   - src/mcp/
   - src/cli/mod.rs

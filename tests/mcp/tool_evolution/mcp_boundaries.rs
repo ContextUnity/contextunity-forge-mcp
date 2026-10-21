@@ -211,10 +211,34 @@ fn symbol_boundary_recovery_and_search_preview_resilience() {
     use contextunity_forge_mcp::core::response::{QueryOptions, ResponsePolicy, SourceOptions};
     use serde_json::json;
     let cases = [
-        ("alias.py", "from typing import Literal\nStrategy = Literal['direct', 'fallback']; neighbor = 1\n", "Strategy", "type", "Strategy = Literal['direct', 'fallback']"),
-        ("variable.py", "pool_size = 3; neighbor = 1\n", "pool_size", "variable", "pool_size = 3"),
-        ("fields.py", "class Pool:\n    size = (\n        3\n    )\n    def __init__(self):\n        self.strategy = 'direct'\n", "size", "field", "    size = (\n        3\n    )\n"),
-        ("instance.py", "class Pool:\n    def __init__(self):\n        self.strategy = 'direct'\n", "strategy", "field", "        self.strategy = 'direct'\n"),
+        (
+            "alias.py",
+            "from typing import Literal\nStrategy = Literal['direct', 'fallback']; neighbor = 1\n",
+            "Strategy",
+            "type",
+            "Strategy = Literal['direct', 'fallback']",
+        ),
+        (
+            "variable.py",
+            "pool_size = 3; neighbor = 1\n",
+            "pool_size",
+            "variable",
+            "pool_size = 3",
+        ),
+        (
+            "fields.py",
+            "class Pool:\n    size = (\n        3\n    )\n    def __init__(self):\n        self.strategy = 'direct'\n",
+            "size",
+            "field",
+            "    size = (\n        3\n    )\n",
+        ),
+        (
+            "instance.py",
+            "class Pool:\n    def __init__(self):\n        self.strategy = 'direct'\n",
+            "strategy",
+            "field",
+            "        self.strategy = 'direct'\n",
+        ),
     ];
     for (path, text, name, kind, expected) in
         cases
@@ -1144,6 +1168,7 @@ fn ast_language_inference_and_actionable_diagnostics() {
         "app.py",
         "class Widget:\n    pass\ndef target(value):\n    return value\n",
     );
+    w.write("more.py", "def target(other):\n    return other\n");
     w.write("lib.rs", "fn target() {}\n");
     w.build();
     let mut m = Mcp::new(&w);
@@ -1160,6 +1185,72 @@ fn ast_language_inference_and_actionable_diagnostics() {
         json!({"pattern":"class Widget","language":"python"}),
     );
     assert_eq!(explicit["matches"]["total"], 1);
+    let captured = m.ok(
+        "ast_grep_search",
+        json!({"pattern":"def target($ARG)","language":"python","limit":1}),
+    );
+    let captured_page = &captured["matches"];
+    assert_eq!(captured_page["total"], serde_json::Value::Null);
+    assert_eq!(captured_page["total_status"], "unavailable");
+    assert_eq!(captured_page["has_more"], true);
+    assert_eq!(captured_page["next_offset"], 1);
+    assert_eq!(captured_page["computation_truncated"], false);
+    let first_match = &captured_page["items"][0];
+    assert_eq!(first_match["path"], "app.py");
+    assert_eq!(first_match["line"], 3);
+    assert_eq!(first_match["end_line"], 4);
+    assert!(first_match["text"]
+        .as_str()
+        .unwrap()
+        .contains("def target(value):"));
+    assert_eq!(first_match["captures"]["ARG"], "value");
+    let (_, captured_response) = m.call(
+        "ast_grep_search",
+        json!({"pattern":"def target($ARG)","language":"python","limit":1,"format":"markdown"}),
+    );
+    assert_ne!(
+        captured_response["result"]["isError"], true,
+        "{captured_response}"
+    );
+    let captured_markdown = captured_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    for expected in [
+        "app.py#L3-L4",
+        "def target(value):",
+        "captures:",
+        "ARG",
+        "value",
+    ] {
+        assert!(captured_markdown.contains(expected), "{captured_markdown}");
+    }
+    assert!(
+        captured_markdown.lines().any(|line| {
+            line.starts_with("Continue AST matches for ")
+                && line.contains("pattern=def target($ARG)")
+                && line.contains("language=python")
+                && line.contains("at offset 1 with generation `")
+        }),
+        "AST continuation must retain its query, language, and accepted token: {captured_markdown}"
+    );
+    assert!(
+        !captured_markdown.contains("enclosing"),
+        "{captured_markdown}"
+    );
+    let next_ast_page = m.ok(
+        "ast_grep_search",
+        json!({
+            "pattern":"def target($ARG)",
+            "language":"python",
+            "limit":1,
+            "offset":1,
+            "generation":captured_page["generation"],
+        }),
+    );
+    assert_eq!(next_ast_page["matches"]["items"][0]["path"], "more.py");
+    assert_eq!(next_ast_page["matches"]["offset"], 1);
+    assert_eq!(next_ast_page["matches"]["has_more"], false);
+    assert_eq!(next_ast_page["matches"]["total"], 2);
     for language in [json!(null), json!("")] {
         let inferred = m.ok(
             "ast_grep_search",
@@ -1195,9 +1286,13 @@ fn ast_language_inference_and_actionable_diagnostics() {
         assert_eq!(response["result"]["isError"], true, "{response}");
         let message = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(message.contains("unsupported_ast_pattern"), "{message}");
-        assert!(message.contains(" at 1:"), "{message}");
+        assert!(message.contains("> [!CAUTION]"), "{message}");
         assert!(
-            message.contains("Hint:") && message.contains("Examples"),
+            message.contains("Pattern span:") && message.contains("start_line=1"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Hint:") && message.contains("Valid patterns for this profile"),
             "{message}"
         );
         for example in languages::require(language)
@@ -1205,12 +1300,53 @@ fn ast_language_inference_and_actionable_diagnostics() {
             .ast_search_capabilities()
             .valid_examples
         {
-            assert!(
-                message.contains(&example.replace('\n', "\n    ")),
-                "{message}"
-            );
+            assert!(message.contains(&example.replace('\n', " ")), "{message}");
         }
         assert!(!message.contains("\"diagnostic\":"), "{message}");
+        let (_, markdown_response) = m.call(
+            "ast_grep_search",
+            json!({"pattern":"def (","language":language,"format":"markdown"}),
+        );
+        assert_eq!(
+            markdown_response["result"]["isError"], true,
+            "{markdown_response}"
+        );
+        let markdown = markdown_response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(
+            markdown.contains("> [!CAUTION]"),
+            "profile diagnostics need a caution callout: {markdown}"
+        );
+        assert_eq!(markdown, message, "default and explicit Markdown agree");
+        assert!(markdown.contains("unsupported_ast_pattern") && markdown.contains(language));
+        for example in languages::require(language)
+            .unwrap()
+            .ast_search_capabilities()
+            .valid_examples
+        {
+            assert!(
+                example.lines().all(|line| markdown.contains(line)),
+                "selected profile examples must survive: {markdown}"
+            );
+        }
+        let (_, json_response) = m.call(
+            "ast_grep_search",
+            json!({"pattern":"def (","language":language,"format":"json"}),
+        );
+        assert_eq!(json_response["result"]["isError"], true, "{json_response}");
+        let json_error = json_response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        for expected in [
+            "unsupported_ast_pattern: Unsupported AST pattern",
+            " at 1:1 to 1:6.",
+            "Hint:",
+            "Examples of valid patterns",
+        ] {
+            assert!(json_error.contains(expected), "{json_error}");
+        }
+        assert!(!json_error.contains("> [!CAUTION]"), "{json_error}");
     }
 }
 
@@ -1226,10 +1362,34 @@ fn ast_diagnostics_reject_invalid_patterns_without_language_candidates() {
         json!({"pattern":"def (","language":"python"}),
     );
     assert_eq!(response["result"]["isError"], true, "{response}");
-    let message = response["result"]["content"][0]["text"].as_str().unwrap();
-    for expected in ["unsupported_ast_pattern", "python", "Hint:", "Examples"] {
-        assert!(message.contains(expected), "{message}");
+    let markdown = response["result"]["content"][0]["text"].as_str().unwrap();
+    for expected in [
+        "> [!CAUTION]",
+        "unsupported_ast_pattern",
+        "python",
+        "Pattern span:",
+        "Hint:",
+        "Valid patterns for this profile",
+    ] {
+        assert!(markdown.contains(expected), "{markdown}");
     }
+    let (_, json_response) = m.call(
+        "ast_grep_search",
+        json!({"pattern":"def (","language":"python","format":"json"}),
+    );
+    assert_eq!(json_response["result"]["isError"], true, "{json_response}");
+    let json_error = json_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    for expected in [
+        "unsupported_ast_pattern: Unsupported AST pattern",
+        " at 1:1 to 1:6.",
+        "Hint:",
+        "Examples of valid patterns",
+    ] {
+        assert!(json_error.contains(expected), "{json_error}");
+    }
+    assert!(!json_error.contains("> [!CAUTION]"), "{json_error}");
 }
 
 #[test]

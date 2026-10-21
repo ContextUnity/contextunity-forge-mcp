@@ -1,4 +1,4 @@
-use crate::core::format::{self, OperationKind, OutputFormat};
+use crate::core::format::{self, DiscoveryKind, OperationKind, OutputFormat};
 use crate::core::response::{ResponsePolicy, MAX_OUTPUT_BYTES};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Value};
@@ -41,12 +41,49 @@ pub(crate) fn result_for(
     title: &str,
     explain: Option<bool>,
 ) -> CallToolResult {
+    result_for_presented(
+        value,
+        policy,
+        output_format,
+        operation,
+        title,
+        explain,
+        None,
+    )
+}
+
+pub(crate) fn result_for_presented(
+    value: anyhow::Result<Value>,
+    policy: &ResponsePolicy,
+    output_format: OutputFormat,
+    operation: OperationKind,
+    title: &str,
+    explain: Option<bool>,
+    discovery: Option<DiscoveryKind>,
+) -> CallToolResult {
     let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
     match value {
         Ok(value) => {
+            if discovery == Some(DiscoveryKind::Ast) && value.get("diagnostic").is_some() {
+                let diagnostic = &value["diagnostic"];
+                let rendered = match output_format {
+                    OutputFormat::Markdown => {
+                        format::render_presented(&value, output_format, title, discovery)
+                    }
+                    OutputFormat::Json => format::ast_legacy_error(diagnostic),
+                };
+                return if success_text_bytes(&rendered) <= budget {
+                    CallToolResult::error(vec![ContentBlock::text(rendered)])
+                } else {
+                    bounded_error(
+                        "AST diagnostic exceeds the response byte limit; reduce the pattern or use JSON output.",
+                        budget,
+                    )
+                };
+            }
             let mut compacted = value.clone();
             format::compact(&mut compacted, operation, explain);
-            let rendered = format::render(&compacted, output_format, title);
+            let rendered = format::render_presented(&compacted, output_format, title, discovery);
             if success_text_bytes(&rendered) <= budget {
                 return CallToolResult::success(vec![ContentBlock::text(rendered)]);
             }
@@ -60,7 +97,8 @@ pub(crate) fn result_for(
             // Preserve candidate tokens until tail trimming has decided which pages
             // remain active; compact only after the retained set is known.
             let mut trimmed_value = value;
-            let original = format::render(&trimmed_value, output_format, title);
+            let original =
+                format::render_presented(&trimmed_value, output_format, title, discovery);
             let mut excess = success_text_bytes(&original)
                 .saturating_sub(budget)
                 .saturating_add(256);
@@ -68,7 +106,8 @@ pub(crate) fn result_for(
                 return output_too_large();
             }
             format::compact(&mut trimmed_value, operation, explain);
-            let rendered = format::render(&trimmed_value, output_format, title);
+            let rendered =
+                format::render_presented(&trimmed_value, output_format, title, discovery);
             if success_text_bytes(&rendered) > budget {
                 return output_too_large();
             }

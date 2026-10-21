@@ -2,7 +2,7 @@ use super::{response, server::Server};
 use crate::{
     cli,
     core::{
-        format::{OperationKind, OutputFormat},
+        format::{DiscoveryKind, OperationKind, OutputFormat},
         response::{CoverageOptions, Detail, ResponsePolicy},
     },
     db::{reader, symbols, traversal},
@@ -174,22 +174,44 @@ impl Server {
         run: impl FnOnce(&scanner::Adapter, &ResponsePolicy) -> anyhow::Result<Value>,
         explain: Option<bool>,
     ) -> CallToolResult {
+        self.responding_with_presentation(output_format, operation, title, run, explain, None)
+    }
+
+    fn responding_with_presentation(
+        &self,
+        output_format: OutputFormat,
+        operation: OperationKind,
+        title: &'static str,
+        run: impl FnOnce(&scanner::Adapter, &ResponsePolicy) -> anyhow::Result<Value>,
+        explain: Option<bool>,
+        discovery: Option<DiscoveryKind>,
+    ) -> CallToolResult {
         match self.adapter_snapshot() {
-            Ok(adapter) => response::result_for(
-                run(&adapter, &adapter.response),
-                &adapter.response,
-                output_format,
-                operation,
-                title,
-                explain,
-            ),
-            Err(error) => response::result_for(
+            Ok(adapter) => {
+                let mut value = run(&adapter, &adapter.response);
+                if output_format == OutputFormat::Markdown {
+                    if let (Some(kind), Ok(value)) = (discovery, &mut value) {
+                        cli::discovery::attach_presentation_uris(&self.root, &adapter, value, kind);
+                    }
+                }
+                response::result_for_presented(
+                    value,
+                    &adapter.response,
+                    output_format,
+                    operation,
+                    title,
+                    explain,
+                    discovery,
+                )
+            }
+            Err(error) => response::result_for_presented(
                 Err(error.into()),
                 &ResponsePolicy::default(),
                 output_format,
                 operation,
                 title,
                 explain,
+                discovery,
             ),
         }
     }
@@ -247,22 +269,31 @@ impl Server {
     )]
     fn code_map_overview(&self, Parameters(p): Parameters<OverviewInput>) -> CallToolResult {
         let format = p.page.output_format();
-        self.responding(
+        self.responding_with_presentation(
             format,
             OperationKind::Navigation,
             "code_map_overview",
             |adapter, policy| {
                 let page = p.page.resolve(policy)?;
-                self.read_with_adapter(adapter, |c| {
-                    reader::overview_with_options(
+                let mut result = self.read_with_adapter(adapter, |c| {
+                    cli::discovery::overview(
                         c,
-                        &reader::OverviewOptions {
-                            aspects: p.aspects.as_deref(),
-                            page: &page,
-                        },
+                        &self.root,
+                        Some(adapter),
+                        p.aspects.as_deref(),
+                        &page,
                     )
-                })
+                })?;
+                if format == OutputFormat::Markdown {
+                    result["request_scope"] = serde_json::json!({
+                        "workspace_root": self.root.display().to_string(),
+                        "aspects": p.aspects,
+                    });
+                }
+                Ok(result)
             },
+            None,
+            Some(DiscoveryKind::Overview),
         )
     }
     #[tool(
@@ -270,7 +301,7 @@ impl Server {
     )]
     fn code_map_inspect(&self, Parameters(p): Parameters<Inspect>) -> CallToolResult {
         let format = p.page.output_format();
-        self.responding_with_symbol(
+        self.responding_with_presentation(
             format,
             OperationKind::Navigation,
             "code_map_inspect",
@@ -280,7 +311,7 @@ impl Server {
                 let coverage = CoverageOptions {
                     include_coverage: p.include_coverage,
                 };
-                self.read_with_adapter(adapter, |c| {
+                let mut result = self.read_with_adapter(adapter, |c| {
                     symbols::inspect_with_path_options(
                         c,
                         &self.root,
@@ -293,9 +324,18 @@ impl Server {
                             page: &page,
                         },
                     )
-                })
+                })?;
+                if format == OutputFormat::Markdown {
+                    result["request_scope"] = serde_json::json!({
+                        "workspace_root": self.root.display().to_string(),
+                        "selector": p.selector,
+                        "path": p.path,
+                    });
+                }
+                Ok(result)
             },
             Some(false),
+            Some(DiscoveryKind::Inspect),
         )
     }
     #[tool(
@@ -343,7 +383,7 @@ impl Server {
     )]
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
         let format = p.page.output_format();
-        self.responding(
+        self.responding_with_presentation(
             format,
             OperationKind::Navigation,
             "code_map_search",
@@ -386,9 +426,21 @@ impl Server {
                                 serde_json::to_value(grouped).unwrap_or_default();
                         }
                     }
+                    if format == OutputFormat::Markdown {
+                        res["request_scope"] = serde_json::json!({
+                            "workspace_root": self.root.display().to_string(),
+                            "pattern": p.pattern,
+                            "kind": p.kind,
+                            "path": p.path,
+                            "exact": p.exact,
+                            "include_docs": p.include_docs,
+                        });
+                    }
                     Ok(res)
                 })
             },
+            None,
+            Some(DiscoveryKind::Search),
         )
     }
     #[tool(
@@ -557,7 +609,7 @@ impl Server {
     )]
     fn ast_grep_search(&self, Parameters(p): Parameters<Ast>) -> CallToolResult {
         let format = p.page.output_format();
-        self.responding(format, OperationKind::Navigation, "ast_grep_search", |adapter, policy| {
+        self.responding_with_presentation(format, OperationKind::Navigation, "ast_grep_search", |adapter, policy| {
             self.read_with_adapter(adapter, |conn| {
                 let language = match p.language.as_deref().filter(|l| !l.is_empty()) {
                     Some(lang) => lang.to_owned(),
@@ -588,7 +640,7 @@ impl Server {
                         }
                     }
                 };
-                let result = cli::ast::search_paged(
+                let mut result = cli::ast::search_paged(
                     conn,
                     &self.root,
                     &p.pattern,
@@ -596,32 +648,19 @@ impl Server {
                     p.path.as_deref(),
                     &p.page.resolve(policy)?,
                 )?;
-                if let Some(diagnostic) = result.get("diagnostic") {
-                    let hint = diagnostic["hint"].as_str().unwrap_or("");
-                    let lang = diagnostic["language"].as_str().unwrap_or(&language);
-                    let code = diagnostic["code"].as_str().unwrap_or("unsupported_ast_pattern");
-                    let span = &diagnostic["span"];
-                    let start_line = span["start_line"].as_u64().unwrap_or(1);
-                    let start_column = span["start_column"].as_u64().unwrap_or(1);
-                    let end_line = span["end_line"].as_u64().unwrap_or(start_line);
-                    let end_column = span["end_column"].as_u64().unwrap_or(start_column);
-                    let examples = diagnostic["examples"]
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str())
-                                .map(|s| format!("  - {}", s.replace('\n', "\n    ")))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        })
-                        .unwrap_or_default();
-                    return Err(anyhow::anyhow!(
-                        "{code}: Unsupported AST pattern for language '{lang}' at {start_line}:{start_column} to {end_line}:{end_column}.\nHint: {hint}\nExamples of valid patterns for {lang}:\n{examples}"
-                    ));
+                result["pattern"] = serde_json::json!(p.pattern);
+                result["language"] = serde_json::json!(language);
+                if format == OutputFormat::Markdown {
+                    result["request_scope"] = serde_json::json!({
+                        "workspace_root": self.root.display().to_string(),
+                        "pattern": p.pattern,
+                        "language": language,
+                        "path": p.path,
+                    });
                 }
                 Ok(result)
             })
-        })
+        }, None, Some(DiscoveryKind::Ast))
     }
     #[tool(
         description = "Search indexed Markdown sections with natural-language terms: common English stop words are ignored, any remaining term can match, and section-title matches receive three times the BM25 weight of body text. Returns paths and section anchors for get_doc. include_excerpt adds a short match-centered preview."

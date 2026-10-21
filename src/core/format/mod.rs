@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+mod discovery;
+pub use discovery::{file_uri_for_path, DiscoveryKind};
+
 /// Selects the wire presentation without changing the semantic response value.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema,
@@ -51,8 +54,42 @@ pub enum OperationKind {
 pub fn render(value: &Value, format: OutputFormat, title: &str) -> String {
     match format {
         OutputFormat::Json => serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned()),
-        OutputFormat::Markdown => render_markdown(value, title),
+        OutputFormat::Markdown => match discovery_kind_for_title(title) {
+            Some(kind) => discovery::render(value, title, kind),
+            None => render_markdown(value, title),
+        },
     }
+}
+
+fn discovery_kind_for_title(title: &str) -> Option<DiscoveryKind> {
+    match title {
+        "code_map_overview" => Some(DiscoveryKind::Overview),
+        "code_map_inspect" => Some(DiscoveryKind::Inspect),
+        "code_map_search" => Some(DiscoveryKind::Search),
+        "ast_grep_search" => Some(DiscoveryKind::Ast),
+        _ => None,
+    }
+}
+
+/// Formats a discovery result using its semantic operation identity.
+///
+/// The generic renderer remains the compatibility path for every other operation
+/// and for JSON. Discovery layouts consume only the evidence supplied by the
+/// operation adapter; this leaf module does not open files or query the index.
+pub fn render_presented(
+    value: &Value,
+    format: OutputFormat,
+    title: &str,
+    discovery: Option<DiscoveryKind>,
+) -> String {
+    match (format, discovery) {
+        (OutputFormat::Markdown, Some(kind)) => discovery::render(value, title, kind),
+        _ => render(value, format, title),
+    }
+}
+
+pub(crate) fn ast_legacy_error(diagnostic: &Value) -> String {
+    discovery::ast_legacy_error(diagnostic)
 }
 
 /// Applies only presentation compaction permitted for a known operation.

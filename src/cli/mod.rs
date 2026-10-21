@@ -1,5 +1,340 @@
 /// Implements ast support.
 pub mod ast;
+pub(crate) mod discovery {
+    use crate::{
+        core::{
+            format::{file_uri_for_path, DiscoveryKind},
+            response::QueryOptions,
+        },
+        db::reader,
+        engine::scanner::{self, Adapter},
+    };
+    use anyhow::Result;
+    use rusqlite::Connection;
+    use serde_json::{json, Value};
+    use std::path::Path;
+
+    /// Composes indexed, scanner-owned, and canonical task-owned workspace evidence.
+    ///
+    /// This is an adapter-level composition point: the database reader stays read-only
+    /// and never invokes scanners or task lifecycle services.
+    pub(crate) fn overview(
+        conn: &Connection,
+        root: &Path,
+        adapter: Option<&Adapter>,
+        aspects: Option<&[String]>,
+        page: &QueryOptions,
+    ) -> Result<Value> {
+        let mut result =
+            reader::overview_with_options(conn, &reader::OverviewOptions { aspects, page })?;
+        if !includes_discovery(aspects) {
+            return Ok(result);
+        }
+
+        let generation = result["generation"].as_str().unwrap_or_default().to_owned();
+        let mut discovery = serde_json::Map::new();
+        discovery.insert("workspace_root".into(), json!(root.display().to_string()));
+
+        let manifests = match adapter {
+            Some(adapter) => {
+                scanner::discovery::manifest_components(root, adapter, page, &generation)
+                    .unwrap_or_else(|error| unavailable("manifest_components", &error.to_string()))
+            }
+            None => unavailable("manifest_components", "workspace adapter is unavailable"),
+        };
+        discovery.insert("manifest_components".into(), manifests);
+
+        let hubs = if adapter.is_some() {
+            reader::documentation_hubs(conn, page)?
+        } else {
+            unavailable("documentation_hubs", "workspace adapter is unavailable")
+        };
+        discovery.insert("documentation_hubs".into(), hubs);
+        discovery.insert("active_milestones".into(), active_milestones(root, page));
+
+        result["workspace_root"] = json!(root.display().to_string());
+        result["discovery"] = Value::Object(discovery);
+        Ok(result)
+    }
+
+    fn includes_discovery(aspects: Option<&[String]>) -> bool {
+        match aspects {
+            None => true,
+            Some([]) => true,
+            Some(aspects) => aspects.iter().any(|aspect| {
+                matches!(
+                    aspect.to_ascii_lowercase().as_str(),
+                    "components"
+                        | "discovery"
+                        | "manifest_components"
+                        | "documentation_hubs"
+                        | "milestones"
+                )
+            }),
+        }
+    }
+
+    fn unavailable(field: &str, cause: &str) -> Value {
+        json!({"availability":"unavailable","cause":cause,"items":[],"field":field})
+    }
+
+    fn active_milestones(root: &Path, page: &QueryOptions) -> Value {
+        let listing = match crate::engine::milestones::list(root, false, Some("active")) {
+            Ok(listing) => listing,
+            Err(_) => {
+                return json!({
+                    "availability":"unavailable",
+                    "cause":"canonical active milestone inventory could not be read",
+                    "items":[]
+                });
+            }
+        };
+        let all = listing["milestones"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let total = all.len();
+        let start = page.offset.min(total);
+        let end = start.saturating_add(page.limit).min(total);
+        let items = all[start..end].to_vec();
+        json!({
+            "availability":"available",
+            "total":total,
+            "offset":start,
+            "limit":page.limit,
+            "items":items,
+            "omitted":total.saturating_sub(end),
+            "continuation_available":false,
+            "continuation_cause":"the canonical milestone listing has no continuation token"
+        })
+    }
+
+    fn attach_manifest_uris(root: &Path, adapter: &Adapter, page: &mut Value) {
+        let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for item in items {
+            let workspace = item["workspace"].as_str().unwrap_or("primary").to_owned();
+            if let Some(relative) = item["root"].as_str() {
+                if let Some(absolute) = resolve_component_path(root, adapter, &workspace, relative)
+                {
+                    if let Some(uri) = file_uri_for_path(&absolute, None) {
+                        item["root_uri"] = json!(uri);
+                    }
+                }
+            }
+            if let Some(relative) = item["manifest_path"].as_str() {
+                if let Some(absolute) = resolve_component_path(root, adapter, &workspace, relative)
+                {
+                    if let Some(uri) = file_uri_for_path(&absolute, None) {
+                        item["manifest_uri"] = json!(uri);
+                    }
+                }
+            }
+        }
+    }
+
+    fn resolve_component_path(
+        root: &Path,
+        adapter: &Adapter,
+        workspace: &str,
+        relative: &str,
+    ) -> Option<std::path::PathBuf> {
+        if relative.is_empty() || relative == "." {
+            if workspace == "primary" {
+                return scanner::canonical_root(root).ok();
+            }
+            return adapter
+                .linked_workspaces
+                .iter()
+                .find(|linked| linked.name == workspace)
+                .and_then(|linked| scanner::canonical_root(&linked.path).ok());
+        }
+        let selector = if workspace == "primary" {
+            relative.to_owned()
+        } else {
+            format!("[{workspace}]/{relative}")
+        };
+        scanner::resolve_file_path(root, adapter, &selector).ok()
+    }
+
+    fn attach_document_uris(root: &Path, adapter: &Adapter, page: &mut Value) {
+        let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for item in items {
+            let Some(path) = item.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            let Ok(absolute) = scanner::resolve_file_path(root, adapter, path) else {
+                continue;
+            };
+            let line = item
+                .get("line")
+                .and_then(Value::as_i64)
+                .and_then(|line| usize::try_from(line).ok());
+            if let Some(uri) = file_uri_for_path(&absolute, line) {
+                item["uri"] = json!(uri);
+            }
+        }
+    }
+
+    /// Adds absolute coordinates for Markdown presentation after canonical path resolution.
+    pub(crate) fn attach_presentation_uris(
+        root: &Path,
+        adapter: &Adapter,
+        value: &mut Value,
+        kind: DiscoveryKind,
+    ) {
+        match kind {
+            DiscoveryKind::Overview => {
+                if !value.get("workspace_root").is_some_and(Value::is_string) {
+                    value["workspace_root"] = json!(root.display().to_string());
+                }
+                if let Some(manifests) = value.pointer_mut("/discovery/manifest_components") {
+                    attach_manifest_uris(root, adapter, manifests);
+                }
+                if let Some(hubs) = value.pointer_mut("/discovery/documentation_hubs") {
+                    attach_document_uris(root, adapter, hubs);
+                }
+                if let Some(items) = value
+                    .pointer_mut("/discovery/active_milestones/items")
+                    .and_then(Value::as_array_mut)
+                {
+                    for item in items {
+                        if let Some(path) =
+                            item.get("path").and_then(Value::as_str).map(str::to_owned)
+                        {
+                            attach_uri(root, adapter, item, &path, "line");
+                        }
+                    }
+                }
+            }
+            DiscoveryKind::Inspect => attach_inspect_uris(root, adapter, value),
+            DiscoveryKind::Search => attach_search_uris(root, adapter, value),
+            DiscoveryKind::Ast => attach_ast_uris(root, adapter, value),
+        }
+    }
+
+    fn attach_inspect_uris(root: &Path, adapter: &Adapter, value: &mut Value) {
+        attach_uri_from_fields(root, adapter, &mut value["node"], "path", "line");
+        if let Some(summary) = value.get_mut("summary") {
+            attach_uri_from_fields(root, adapter, &mut summary["container"], "path", "line");
+            for direction in ["inbound", "outbound"] {
+                if let Some(items) = summary["calls"][direction]["preview"].as_array_mut() {
+                    for item in items {
+                        attach_uri_from_fields(root, adapter, item, "path", "line");
+                    }
+                }
+            }
+        }
+        for rule in value["governing_invariants"]["direct"]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+        {
+            attach_uri_from_fields(root, adapter, &mut rule["source"], "path", "line");
+        }
+        for source in value["governing_invariants"]["omitted_sources"]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+        {
+            attach_uri_from_fields(root, adapter, &mut source["source"], "path", "line");
+        }
+        for (field, line) in [
+            ("documented_in", "doc_line"),
+            ("analysis_gaps", "line"),
+            ("documents", "doc_line"),
+        ] {
+            if let Some(items) = value[field]["items"].as_array_mut() {
+                for item in items {
+                    attach_uri_from_fields(root, adapter, item, "path", line);
+                }
+            }
+        }
+    }
+
+    fn attach_search_uris(root: &Path, adapter: &Adapter, value: &mut Value) {
+        if let Some(items) = value["nodes"]["items"].as_array_mut() {
+            for item in items {
+                attach_uri_from_fields(root, adapter, item, "path", "line");
+                attach_search_pulse_uris(root, adapter, item);
+            }
+        }
+        if let Some(groups) = value["nodes"]["grouped_by_file"].as_object_mut() {
+            for (path, items) in groups {
+                if let Some(items) = items.as_array_mut() {
+                    for item in items {
+                        attach_uri(root, adapter, item, path, "line");
+                        attach_search_pulse_uris(root, adapter, item);
+                    }
+                }
+            }
+        }
+    }
+
+    fn attach_search_pulse_uris(root: &Path, adapter: &Adapter, item: &mut Value) {
+        if let Some(callers) = item["graph_pulse"]["callers"]["preview"].as_array_mut() {
+            for caller in callers {
+                attach_uri_from_fields(root, adapter, caller, "path", "line");
+            }
+        }
+        if let Some(tests) = item["graph_pulse"]["covering_tests"]["items"].as_array_mut() {
+            for test in tests {
+                attach_uri_from_fields(root, adapter, test, "path", "line");
+            }
+        }
+    }
+
+    fn attach_uri_from_fields(
+        root: &Path,
+        adapter: &Adapter,
+        item: &mut Value,
+        path_field: &str,
+        line_field: &str,
+    ) {
+        let Some(path) = item
+            .get(path_field)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        attach_uri(root, adapter, item, &path, line_field);
+    }
+
+    fn attach_uri(root: &Path, adapter: &Adapter, item: &mut Value, path: &str, line_field: &str) {
+        let Ok(absolute) = scanner::resolve_file_path(root, adapter, path) else {
+            return;
+        };
+        let line = item
+            .get(line_field)
+            .and_then(|line| {
+                line.as_i64()
+                    .or_else(|| line.as_u64().and_then(|line| i64::try_from(line).ok()))
+            })
+            .and_then(|line| usize::try_from(line).ok());
+        if let Some(uri) = file_uri_for_path(&absolute, line) {
+            item["uri"] = json!(uri);
+        }
+    }
+
+    pub(crate) fn attach_ast_uris(root: &Path, adapter: &Adapter, result: &mut Value) {
+        let Some(matches) = result.get_mut("matches") else {
+            return;
+        };
+        let items = match matches {
+            Value::Array(items) => Some(items),
+            Value::Object(page) => page.get_mut("items").and_then(Value::as_array_mut),
+            _ => None,
+        };
+        let Some(items) = items else { return };
+        for item in items {
+            attach_uri_from_fields(root, adapter, item, "path", "line");
+        }
+    }
+}
 /// Implements guide support.
 pub mod guide;
 /// Implements migrate support.
@@ -390,6 +725,19 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
     }
 }
 
+fn command_discovery(command: &Command) -> Option<format::DiscoveryKind> {
+    match command {
+        Command::Ast { .. } => Some(format::DiscoveryKind::Ast),
+        Command::Query { command } => match command {
+            QueryCommand::Overview => Some(format::DiscoveryKind::Overview),
+            QueryCommand::Inspect { .. } => Some(format::DiscoveryKind::Inspect),
+            QueryCommand::Search { .. } => Some(format::DiscoveryKind::Search),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn looks_like_sql(value: &str) -> bool {
     let value = value.trim_start().to_ascii_lowercase();
     value.starts_with("select ")
@@ -454,6 +802,7 @@ impl Cli {
         let db = self.db.clone().unwrap_or_else(|| default_db(&root));
         let command = self.command.unwrap_or(Command::Serve);
         let (operation, title, explain) = command_presentation(&command);
+        let discovery = command_discovery(&command);
         let result: Value = match command {
             Command::Migrate { command } => migrate::run(&root, command)?,
             Command::Task { command } => task::run(&root, command)?,
@@ -522,52 +871,85 @@ impl Cli {
                     },
             } => {
                 let conn = open_or_rebuild(&db, &root)?;
-                ast::search(&conn, &root, &pattern, &language, path.as_deref(), limit)?
+                let mut result =
+                    ast::search(&conn, &root, &pattern, &language, path.as_deref(), limit)?;
+                result["pattern"] = json!(pattern);
+                result["language"] = json!(language);
+                if output_format == OutputFormat::Markdown {
+                    result["request_scope"] = json!({
+                        "workspace_root": root.display().to_string(),
+                        "pattern": pattern,
+                        "language": language,
+                        "path": path,
+                    });
+                }
+                result
             }
             Command::Query { command } => {
                 let conn = open_or_rebuild(&db, &root)?;
                 match command {
-                    QueryCommand::Overview => reader::overview_with_options(
-                        &conn,
-                        &reader::OverviewOptions {
-                            aspects: None,
-                            page: &cli_page(100)?,
-                        },
-                    )?,
+                    QueryCommand::Overview => {
+                        let page = cli_page(100)?;
+                        let adapter = crate::engine::scanner::load_adapter(&root, None).ok();
+                        discovery::overview(&conn, &root, adapter.as_ref(), None, &page)?
+                    }
                     QueryCommand::Inspect {
                         selector,
                         path,
                         show_doc,
                         show_source,
-                    } => symbols::inspect_with_path_options(
-                        &conn,
-                        &root,
-                        &selector,
-                        path.as_deref(),
-                        &symbols::InspectOptions {
-                            show_doc,
-                            source: &cli_source(show_source)?,
-                            coverage: CoverageOptions {
-                                include_coverage: true,
+                    } => {
+                        let mut result = symbols::inspect_with_path_options(
+                            &conn,
+                            &root,
+                            &selector,
+                            path.as_deref(),
+                            &symbols::InspectOptions {
+                                show_doc,
+                                source: &cli_source(show_source)?,
+                                coverage: CoverageOptions {
+                                    include_coverage: true,
+                                },
+                                page: &cli_page(100)?,
                             },
-                            page: &cli_page(100)?,
-                        },
-                    )?,
+                        )?;
+                        if output_format == OutputFormat::Markdown {
+                            result["request_scope"] = json!({
+                                "workspace_root": root.display().to_string(),
+                                "selector": selector,
+                                "path": path,
+                            });
+                        }
+                        result
+                    }
                     QueryCommand::Search {
                         pattern,
                         kind,
                         limit,
-                    } => symbols::search_with_options(
-                        &conn,
-                        &pattern,
-                        &symbols::SearchOptions {
-                            kind: kind.as_deref(),
-                            path: None,
-                            include_docs: false,
-                            exact: false,
-                            page: &cli_page(limit)?,
-                        },
-                    )?,
+                    } => {
+                        let page = cli_page(limit)?;
+                        let result = symbols::search_with_options(
+                            &conn,
+                            &pattern,
+                            &symbols::SearchOptions {
+                                kind: kind.as_deref(),
+                                path: None,
+                                include_docs: false,
+                                exact: false,
+                                page: &page,
+                            },
+                        )?;
+                        let mut result =
+                            symbols::search_results_with_navigation(&conn, &root, result, false)?;
+                        if output_format == OutputFormat::Markdown {
+                            result["request_scope"] = json!({
+                                "workspace_root": root.display().to_string(),
+                                "pattern": pattern,
+                                "kind": kind,
+                            });
+                        }
+                        result
+                    }
                     QueryCommand::Tests {
                         selector,
                         path,
@@ -682,8 +1064,15 @@ impl Cli {
             }
         };
         let mut result = result;
+        if output_format == OutputFormat::Markdown {
+            if let (Some(kind), Ok(adapter)) =
+                (discovery, crate::engine::scanner::load_adapter(&root, None))
+            {
+                discovery::attach_presentation_uris(&root, &adapter, &mut result, kind);
+            }
+        }
         format::compact(&mut result, operation, explain);
-        let formatted = format::render(&result, output_format, title);
+        let formatted = format::render_presented(&result, output_format, title, discovery);
         if let Ok(adapter) = crate::engine::scanner::load_adapter(&root, None) {
             if adapter.debug {
                 let cli_cmd = {

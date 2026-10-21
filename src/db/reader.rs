@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     ops::Deref,
@@ -390,9 +390,7 @@ pub fn open(path: &Path, root: &Path) -> Result<Connection> {
     conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024);
     Ok(conn)
 }
-pub(crate) fn inventory_snapshot(
-    conn: &Connection,
-) -> Result<Vec<crate::core::models::FileEntry>> {
+pub(crate) fn inventory_snapshot(conn: &Connection) -> Result<Vec<crate::core::models::FileEntry>> {
     // Sealed inventory metadata can exceed the public SQL cell limit; restore it before tool queries.
     let previous_limit = conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, i32::MAX);
     let inventory = conn.query_row(
@@ -738,6 +736,19 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     Ok(serde_json::Value::Object(result))
 }
 
+/// Pages one indexed entry point per Markdown document for workspace discovery.
+///
+/// These rows come only from the existing document index; this read path does not
+/// scan the filesystem or promote unresolved documentation candidates.
+pub(crate) fn documentation_hubs(conn: &Connection, options: &QueryOptions) -> Result<Value> {
+    paging::query(
+        conn,
+        "SELECT d.doc_id,d.path,d.section_title,d.doc_type,n.line FROM doc_sections d LEFT JOIN nodes n ON n.id=d.doc_id WHERE d.rowid IN (SELECT min(rowid) FROM doc_sections GROUP BY path) ORDER BY d.path,d.doc_id",
+        &[],
+        options,
+    )
+}
+
 fn workspace_coverage(
     conn: &Connection,
     options: &QueryOptions,
@@ -773,11 +784,7 @@ fn workspace_coverage(
             }));
         }
     }
-    scopes.sort_by(|left, right| {
-        left["name"]
-            .as_str()
-            .cmp(&right["name"].as_str())
-    });
+    scopes.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
     let total = scopes.len();
     let linked_json = serde_json::to_string(&linked)?;
     let mut items = Vec::with_capacity(options.limit.min(total.saturating_sub(options.offset)));
@@ -804,9 +811,139 @@ fn workspace_coverage(
         for field in ["resolved", "ambiguous", "unresolved", "external_imports"] {
             item.insert(field.into(), counts[field].clone());
         }
+        item.insert("resolution_health".into(), resolution_health(&counts));
+        let reasons = match workspace_diagnostic_reason_counts(conn, prefix, &linked_json) {
+            Ok(counts) => json!({"availability":"available","counts":counts}),
+            Err(error) if is_query_budget_exhaustion(&error) => json!({
+                "availability":"unavailable",
+                "cause":"canonical reason aggregation exceeded an existing SQLite query budget"
+            }),
+            Err(error) => return Err(error),
+        };
+        item.insert("diagnostic_reasons".into(), reasons);
         items.push(Value::Object(item));
     }
     Ok(paging::value(items, total, options, generation))
+}
+
+fn resolution_health(counts: &Value) -> Value {
+    let status_count = |status: &str| counts[status].as_u64();
+    let Some(resolved) = status_count("resolved") else {
+        return json!({"availability":"unavailable","cause":"resolution status counts are outside the supported integer range"});
+    };
+    let Some(unresolved) = status_count("unresolved") else {
+        return json!({"availability":"unavailable","cause":"resolution status counts are outside the supported integer range"});
+    };
+    let Some(ambiguous) = status_count("ambiguous") else {
+        return json!({"availability":"unavailable","cause":"resolution status counts are outside the supported integer range"});
+    };
+    let Some(denominator) = resolved
+        .checked_add(unresolved)
+        .and_then(|total| total.checked_add(ambiguous))
+    else {
+        return json!({"availability":"unavailable","cause":"resolution status counts exceed the supported integer range"});
+    };
+    if denominator == 0 {
+        return json!({"availability":"unavailable","cause":"no in-scope resolution references"});
+    }
+    json!({
+        "availability":"available",
+        "resolved":resolved,
+        "denominator":denominator,
+        "percent":resolved as f64 * 100.0 / denominator as f64
+    })
+}
+
+fn workspace_diagnostic_reason_counts(
+    conn: &Connection,
+    prefix: &str,
+    linked_json: &str,
+) -> Result<Value> {
+    let cause = resolution_cause_sql();
+    let (sql, parameter) = if prefix.is_empty() {
+        (
+            format!(
+                "SELECT c.status,{cause} cause,x.expression,e.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE NOT EXISTS(SELECT 1 FROM json_each(?1) linked WHERE substr(p.path,1,length('['||json_extract(linked.value,'$.name')||']/'))='['||json_extract(linked.value,'$.name')||']/')"
+            ),
+            linked_json,
+        )
+    } else {
+        (
+            format!(
+                "SELECT c.status,{cause} cause,x.expression,e.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence e ON e.evidence_id=c.evidence_id WHERE substr(p.path,1,length(?1))=?1"
+            ),
+            prefix,
+        )
+    };
+
+    const REASONS: &[&str] = &[
+        "dynamic_callback",
+        "unresolved_receiver_type",
+        "framework_magic",
+        "external_unindexed",
+        "ambiguous_candidates",
+        "shadowed_binding",
+        "unknown",
+    ];
+    const STATUSES: &[&str] = &["resolved", "unresolved", "ambiguous", "external"];
+    let mut counts: BTreeMap<String, BTreeMap<String, u64>> = REASONS
+        .iter()
+        .map(|reason| {
+            (
+                (*reason).to_owned(),
+                STATUSES
+                    .iter()
+                    .map(|status| ((*status).to_owned(), 0))
+                    .collect(),
+            )
+        })
+        .collect();
+
+    let budget = QueryBudget::new(conn);
+    let mut statement = conn.prepare(&sql)?;
+    if !statement.readonly() {
+        bail!("query must be read-only");
+    }
+    let mut query = statement.query([parameter])?;
+    while let Some(row) = query.next()? {
+        budget.check()?;
+        let status = row.get_ref(0)?.as_str()?;
+        let cause = row.get_ref(1)?.as_str()?;
+        let expression = row.get_ref(2)?.as_str()?;
+        let evidence = row.get_ref(3)?.as_str()?;
+        let reason = diagnostic_reason(Some(status), Some(cause), Some(expression), evidence)
+            .or_else(|| (status != "resolved").then_some("unknown"));
+        if let Some(reason) = reason {
+            let count = counts
+                .entry(reason.to_owned())
+                .or_default()
+                .entry(status.to_owned())
+                .or_default();
+            *count = count
+                .checked_add(1)
+                .context("diagnostic reason reference count exceeds the supported integer range")?;
+        }
+    }
+    budget.check()?;
+    Ok(json!(counts))
+}
+
+fn is_query_budget_exhaustion(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.to_string() == "graph query exceeds two second budget"
+            || cause
+                .downcast_ref::<rusqlite::Error>()
+                .is_some_and(|error| {
+                    matches!(
+                        error,
+                        rusqlite::Error::SqliteFailure(sqlite_error, _)
+                            if matches!(
+                                sqlite_error.code,
+                                rusqlite::ErrorCode::OperationInterrupted | rusqlite::ErrorCode::TooBig
+                            )
+                    )
+                })
+    })
 }
 
 /// Inspects a selected declaration with bounded graph and documentation pages.
@@ -1841,7 +1978,11 @@ fn annotate_diagnostic_page(page: &mut Value, source: &str) {
             .get("line")
             .and_then(Value::as_u64)
             .filter(|line| *line > 0)
-            .and_then(|line| source.split_inclusive('\n').nth(line.saturating_sub(1) as usize))
+            .and_then(|line| {
+                source
+                    .split_inclusive('\n')
+                    .nth(line.saturating_sub(1) as usize)
+            })
             .map(|line| line.trim_end_matches(['\r', '\n']))
             .map(bounded_diagnostic_snippet);
         if let Some(object) = item.as_object_mut() {
@@ -1884,11 +2025,13 @@ fn diagnostic_reason(
     if evidence
         .contains("callee is shadowed by a parameter or local binding of unknown callable identity")
     {
-        return Some(if expression.is_some_and(|expression| expression.contains('.')) {
-            "unresolved_receiver_type"
-        } else {
-            "dynamic_callback"
-        });
+        return Some(
+            if expression.is_some_and(|expression| expression.contains('.')) {
+                "unresolved_receiver_type"
+            } else {
+                "dynamic_callback"
+            },
+        );
     }
     if evidence.starts_with("call through external import ")
         || cause == Some("external_import_call")
@@ -1903,7 +2046,10 @@ fn diagnostic_reason(
 
 #[allow(dead_code)]
 /// Reads and decodes typed facts for a single indexed file.
-pub(crate) fn file_facts(conn: &Connection, path: &str) -> Result<Option<crate::core::typed_facts::TypedFacts>> {
+pub(crate) fn file_facts(
+    conn: &Connection,
+    path: &str,
+) -> Result<Option<crate::core::typed_facts::TypedFacts>> {
     let mut st = conn.prepare("SELECT facts_blob FROM local_facts WHERE path=?1")?;
     let raw: Option<Vec<u8>> = st.query_row([path], |row| row.get(0)).optional()?;
     match raw {

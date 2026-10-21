@@ -218,7 +218,9 @@ pub fn search_paged(
     work_limited |= has_more && next >= ast::SEARCH_MATCH_HORIZON;
     let can_continue = has_more && !work_limited;
     let hint = if work_limited {
-        Some("AST computation limit reached; narrow path or pattern. Totals are unavailable and continuation cannot advance beyond this work horizon.")
+        Some(
+            "AST computation limit reached; narrow path or pattern. Totals are unavailable and continuation cannot advance beyond this work horizon.",
+        )
     } else {
         None
     };

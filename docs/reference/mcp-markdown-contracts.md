@@ -119,10 +119,15 @@ Add granular counts using the same scoped coverage records and canonical
 reasons are `dynamic_callback`, `unresolved_receiver_type`, `framework_magic`,
 and `external_unindexed`; preserve `ambiguous_candidates`, unknown reasons and
 recorded status separately rather than forcing every record into those four.
-The overview producer currently lacks these aggregate reason counts; the
-discovery task supplies bounded aggregation, not totals from a visible page.
+Produce these aggregate reason counts with bounded full-scope aggregation, not
+totals from a visible page.
 If a count cannot be established within the selected scope/budget, render
 `unavailable` with the cause. Emit zero only when the producer proves zero.
+Keep coverage status and diagnostic reason as separate dimensions: each reason
+retains its recorded `resolved`, `unresolved`, `ambiguous`, or `external` status.
+Unknown reasons are counted only for diagnostic rows without a canonical reason;
+external rows stay outside both the health denominator and non-external status
+subtotals.
 
 | Requested label | Supported meaning and unit |
 | --- | --- |
@@ -138,13 +143,23 @@ unresolved/ambiguous reason subtotal. An external-status record can itself carry
 
 Discover actual Cargo crates, Python project/Poetry packages, npm packages and
 npm/pnpm/yarn workspaces, and Go modules from their manifests. Entries contain
-name, ecosystem/unit, selected workspace-relative root, and description when
-declared. Directory components stay visibly distinct from manifest-backed
-packages. Respect configured roots, ignore policy, file size bounds, linked
-workspace ownership, and symlink guards; do not traverse outside admitted roots.
-Malformed or unsupported manifest data produces an explicit bounded diagnostic
-or unavailable field rather than a fabricated package. Component collection
-pages retain continuation under the shared response policy.
+declared name, ecosystem/unit, selected workspace-relative root and manifest
+path, plus declared description and workspace members when present. Directory
+components stay visibly distinct from manifest-backed packages. The adapter
+adds absolute file URIs only after resolving the guarded paths against the
+selected root. Respect configured roots, ignore policy, file size bounds,
+linked-workspace ownership, and symlink guards; do not traverse outside
+admitted roots. Malformed or unsupported manifest data produces an explicit
+bounded diagnostic or unavailable inventory rather than a fabricated package.
+Diagnostics are capped by the response limit and report exact totals only after
+a complete bounded scan. Component pages retain continuation under the shared
+response policy.
+
+Documentation hubs link admitted documents and their indexed section titles
+and actual lines. Active milestone rows come from the canonical task-store
+listing and retain id, title, status, and completion. Link a milestone document
+only when its real coordinate is available; otherwise say that its document
+coordinate is unavailable rather than inferring a path from its id.
 
 ### AST search
 
