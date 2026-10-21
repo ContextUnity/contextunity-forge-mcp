@@ -17,7 +17,12 @@ fn sighup_reloads_replaced_binary_in_same_pid_with_stdio_connected() {
     fs::rename(&replacement, &binary).unwrap();
     let new_inode = fs::metadata(&binary).unwrap().ino();
 
-    let reload = Command::new(&binary).arg("reload").output().unwrap();
+    let reload = Command::new(&binary)
+        .arg("--format")
+        .arg("json")
+        .arg("reload")
+        .output()
+        .unwrap();
     assert!(
         reload.status.success(),
         "{}",
@@ -257,7 +262,7 @@ fn mcp_document_retrieval_and_explain_output_controls() {
             .any(|doc| doc["path"] == "docs/rules.md"));
     }
     let expected = client.payload("get_doc", json!({"path_or_id":"docs/rules.md"}));
-    let cli = crate::common::mcp_client::run_cli(&ws, &["docs", "get", "docs/rules.md"]);
+    let cli = crate::common::mcp_client::run_cli_json(&ws, &["docs", "get", "docs/rules.md"]);
     assert!(
         cli.status.success(),
         "{}",
@@ -378,7 +383,7 @@ fn mcp_document_retrieval_and_explain_output_controls() {
         ));
     }
 
-    let cli_first = crate::common::mcp_client::run_cli(&ws, &["docs", "get", "docs/guide.md"]);
+    let cli_first = crate::common::mcp_client::run_cli_json(&ws, &["docs", "get", "docs/guide.md"]);
     if cli_first.status.success() {
         let cli_first: Value = serde_json::from_slice(&cli_first.stdout).unwrap();
         let mcp_first = client.payload("get_doc", json!({"path_or_id":"docs/guide.md"}));
@@ -399,17 +404,38 @@ fn mcp_document_retrieval_and_explain_output_controls() {
     let identity_ws = Workspace::new();
     let linked = Workspace::new();
     identity_ws.write("forge-mcp.yaml", &format!("roots: [.]\ndocs: [docs]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [src, frontend]\n    docs: [docs]\n", linked.root().display()));
-    identity_ws.write("primary.py", "def validate(): return 1\ndef primary_only(): return 2\n");
+    identity_ws.write(
+        "primary.py",
+        "def validate(): return 1\ndef primary_only(): return 2\n",
+    );
     identity_ws.write("phantomcomponent/unit.py", "def marker(): pass\n");
-    identity_ws.write("docs/PhantomDoc.md", "# PhantomDoc\nA document is not a code symbol.\n");
-    identity_ws.write("docs/context-primary.md", "# Primary\nUse `validate`, `linked_only`, `PhantomDoc`, and `phantomcomponent`.\n");
-    identity_ws.write("docs/cross-workspace.md", "# Cross workspace\n[`validate`](../[library]/src/validate.py)\n");
+    identity_ws.write(
+        "docs/PhantomDoc.md",
+        "# PhantomDoc\nA document is not a code symbol.\n",
+    );
+    identity_ws.write(
+        "docs/context-primary.md",
+        "# Primary\nUse `validate`, `linked_only`, `PhantomDoc`, and `phantomcomponent`.\n",
+    );
+    identity_ws.write(
+        "docs/cross-workspace.md",
+        "# Cross workspace\n[`validate`](../[library]/src/validate.py)\n",
+    );
     linked.write("src/validate.py", "# validation module\n");
     linked.write("src/validate/__init__.py", "# validation package\n");
     linked.write("src/validate/validate.py", "# nested validation module\n");
-    linked.write("src/header.py", "class GridViewHeader:\n    content: str = ''\ndef linked_only(): return 3\n");
-    linked.write("frontend/header.ts", "export interface GridViewHeader {\n  content: string;\n}\n");
-    linked.write("docs/context-linked.md", "# Linked\nUse `validate` and `primary_only`.\n");
+    linked.write(
+        "src/header.py",
+        "class GridViewHeader:\n    content: str = ''\ndef linked_only(): return 3\n",
+    );
+    linked.write(
+        "frontend/header.ts",
+        "export interface GridViewHeader {\n  content: string;\n}\n",
+    );
+    linked.write(
+        "docs/context-linked.md",
+        "# Linked\nUse `validate` and `primary_only`.\n",
+    );
     linked.write("docs/header.md", "# Header\nUse `GridViewHeader.content` and `GridViewHeader.content`.\n## Other\nUse `GridViewHeader.content`.\n");
     identity_ws.write("src/main.rs", "pub fn target() {}\n");
     identity_ws.write("src/provider.rs", "pub fn target() {}\n");
@@ -485,49 +511,99 @@ fn mcp_document_retrieval_and_explain_output_controls() {
     let mut identity_client = StdioClient::new(&identity_ws);
     for (path, expected_paths, candidate_paths) in [
         ("docs/context-primary.md", vec!["primary.py"], vec![]),
-        ("[library]/docs/context-linked.md", vec![], vec!["[library]/src/validate.py", "[library]/src/validate/__init__.py", "[library]/src/validate/validate.py"]),
-        ("docs/cross-workspace.md", vec!["[library]/src/validate.py"], vec![]),
+        (
+            "[library]/docs/context-linked.md",
+            vec![],
+            vec![
+                "[library]/src/validate.py",
+                "[library]/src/validate/__init__.py",
+                "[library]/src/validate/validate.py",
+            ],
+        ),
+        (
+            "docs/cross-workspace.md",
+            vec!["[library]/src/validate.py"],
+            vec![],
+        ),
     ] {
-        let result = identity_client.payload("get_doc", json!({"path_or_id":path,"detail":"full","limit":100}));
-        let actual_paths = result["referenced_symbols"]["items"].as_array().unwrap().iter()
-            .filter_map(|item| item["path"].as_str()).collect::<std::collections::BTreeSet<_>>();
+        let result = identity_client.payload(
+            "get_doc",
+            json!({"path_or_id":path,"detail":"full","limit":100}),
+        );
+        let actual_paths = result["referenced_symbols"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["path"].as_str())
+            .collect::<std::collections::BTreeSet<_>>();
         if actual_paths != expected_paths.into_iter().collect() {
-            regressions.push(format!("document workspace/path eligibility changed verified targets for {path}: {result}"));
+            regressions.push(format!(
+                "document workspace/path eligibility changed verified targets for {path}: {result}"
+            ));
         }
-        let candidates = result["referenced_symbol_candidates"]["items"].as_array().cloned().unwrap_or_default();
-        let actual_candidates = candidates.iter().filter_map(|item| item["target"]["path"].as_str())
+        let candidates = result["referenced_symbol_candidates"]["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let actual_candidates = candidates
+            .iter()
+            .filter_map(|item| item["target"]["path"].as_str())
             .collect::<std::collections::BTreeSet<_>>();
         if actual_candidates != candidate_paths.into_iter().collect()
-            || result["referenced_symbol_candidates"]["total"].as_u64() != Some(candidates.len() as u64)
+            || result["referenced_symbol_candidates"]["total"].as_u64()
+                != Some(candidates.len() as u64)
         {
             regressions.push(format!("only eligible ambiguous selected-tier targets must remain discoverable for {path}: {result}"));
         }
     }
     let header = identity_client.payload("get_doc", json!({"path_or_id":"[library]/docs/header.md","section":"Header","detail":"full","limit":100}));
-    let header_candidates = header["referenced_symbol_candidates"]["items"].as_array().cloned().unwrap_or_default();
-    let header_paths = header_candidates.iter().filter_map(|item| item["target"]["path"].as_str())
+    let header_candidates = header["referenced_symbol_candidates"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let header_paths = header_candidates
+        .iter()
+        .filter_map(|item| item["target"]["path"].as_str())
         .collect::<std::collections::BTreeSet<_>>();
     if header["referenced_symbols"]["total"] != 0
         || header["referenced_symbol_candidates"]["total"] != 2
-        || header_paths != ["[library]/frontend/header.ts", "[library]/src/header.py"].into_iter().collect()
-        || header_candidates.iter().any(|item| item["source"]["path"] != "[library]/docs/header.md"
-            || item["source"]["name"] != "GridViewHeader.content" || item["source"]["line"] != 2
-            || !item["source"]["doc_id"].is_string() || !item["target"]["id"].is_string()
-            || !item["target"]["qualname"].is_string() || !item["target"]["kind"].is_string()
-            || item["target"]["name"] != "content" || !item["target"]["line"].is_number())
+        || header_paths
+            != ["[library]/frontend/header.ts", "[library]/src/header.py"]
+                .into_iter()
+                .collect()
+        || header_candidates.iter().any(|item| {
+            item["source"]["path"] != "[library]/docs/header.md"
+                || item["source"]["name"] != "GridViewHeader.content"
+                || item["source"]["line"] != 2
+                || !item["source"]["doc_id"].is_string()
+                || !item["target"]["id"].is_string()
+                || !item["target"]["qualname"].is_string()
+                || !item["target"]["kind"].is_string()
+                || item["target"]["name"] != "content"
+                || !item["target"]["line"].is_number()
+        })
     {
         regressions.push(format!("ambiguous Python/TS fields require source-identified discovery, not verification or duplicate same-line claims: {header}"));
     }
-    let compact_header = identity_client.payload("get_doc", json!({"path_or_id":"[library]/docs/header.md","section":"Header","detail":"compact"}));
+    let compact_header = identity_client.payload(
+        "get_doc",
+        json!({"path_or_id":"[library]/docs/header.md","section":"Header","detail":"compact"}),
+    );
     if compact_header["referenced_symbol_candidates"]["omitted"] != true
-        || !compact_header["referenced_symbol_candidates"]["hint"].as_str().is_some_and(|hint| hint.contains("detail=full"))
+        || !compact_header["referenced_symbol_candidates"]["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("detail=full"))
     {
         regressions.push(format!("compact get_doc must omit heavy claim discovery with a full-detail hint: {compact_header}"));
     }
     let first_candidate = identity_client.payload("get_doc", json!({"path_or_id":"[library]/docs/header.md","section":"Header","detail":"full","limit":1}));
-    if let Some(generation) = first_candidate["referenced_symbol_candidates"]["generation"].as_str() {
+    if let Some(generation) = first_candidate["referenced_symbol_candidates"]["generation"].as_str()
+    {
         let next_candidate = identity_client.payload("get_doc", json!({"path_or_id":"[library]/docs/header.md","section":"Header","detail":"full","limit":1,"offset":1,"generation":generation}));
-        let combined = [first_candidate["referenced_symbol_candidates"]["items"][0].clone(), next_candidate["referenced_symbol_candidates"]["items"][0].clone()];
+        let combined = [
+            first_candidate["referenced_symbol_candidates"]["items"][0].clone(),
+            next_candidate["referenced_symbol_candidates"]["items"][0].clone(),
+        ];
         if first_candidate["referenced_symbol_candidates"]["total"] != 2
             || next_candidate["referenced_symbol_candidates"]["total"] != 2
             || first_candidate["referenced_symbol_candidates"]["next_offset"] != 1
@@ -537,18 +613,38 @@ fn mcp_document_retrieval_and_explain_output_controls() {
             regressions.push(format!("candidate paging must preserve selected-section scope, complete total and deterministic distinct identities: first={first_candidate}, next={next_candidate}"));
         }
     } else {
-        regressions.push(format!("candidate continuation requires the normal snapshot generation: {first_candidate}"));
+        regressions.push(format!(
+            "candidate continuation requires the normal snapshot generation: {first_candidate}"
+        ));
     }
     let stale_candidate_page = identity_client.request_value("tools/call", json!({"name":"get_doc","arguments":{"path_or_id":"[library]/docs/header.md","section":"Header","detail":"full","limit":1,"offset":1,"generation":"stale-candidate-generation"}}));
-    assert_eq!(stale_candidate_page["result"]["isError"], true, "{stale_candidate_page}");
+    assert_eq!(
+        stale_candidate_page["result"]["isError"], true,
+        "{stale_candidate_page}"
+    );
     let cli = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
-        .arg("--root").arg(identity_ws.root())
-        .args(["docs", "get", "[library]/docs/header.md", "--section", "Header"])
-        .output().unwrap();
-    assert!(cli.status.success(), "CLI get_doc failed: {}", String::from_utf8_lossy(&cli.stderr));
+        .arg("--format")
+        .arg("json")
+        .arg("--root")
+        .arg(identity_ws.root())
+        .args([
+            "docs",
+            "get",
+            "[library]/docs/header.md",
+            "--section",
+            "Header",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "CLI get_doc failed: {}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
     let cli_document: Value = serde_json::from_slice(&cli.stdout).unwrap();
     if cli_document["referenced_symbol_candidates"]["total"] != 2
-        || cli_document["referenced_symbol_candidates"]["items"] != header["referenced_symbol_candidates"]["items"]
+        || cli_document["referenced_symbol_candidates"]["items"]
+            != header["referenced_symbol_candidates"]["items"]
     {
         regressions.push(format!("CLI docs get must expose full candidate discovery matching MCP default/full: CLI={cli_document}, MCP={header}"));
     }
@@ -855,9 +951,15 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
 
     let mut client = StdioClient::new(&ws);
     let calls = [
-        ("code_map_overview", json!({"detail":"compact","limit":1})),
+        (
+            "code_map_overview",
+            json!({"detail":"compact","limit":1,"format":"json"}),
+        ),
         ("code_map_inspect", json!({"selector":"main.rs:current"})),
-        ("get_code_snippet", json!({"selector":"main.rs:current"})),
+        (
+            "get_code_snippet",
+            json!({"selector":"main.rs:current","format":"json"}),
+        ),
         (
             "code_map_search",
             json!({"pattern":"current","detail":"compact","limit":10}),
@@ -912,7 +1014,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
     invalidate_mcp_connection_cache(&database).unwrap();
     let response = client.request_value(
         "tools/call",
-        json!({"name":"code_map_overview","arguments":{"detail":"compact","limit":1}}),
+        json!({"name":"code_map_overview","arguments":{"detail":"compact","limit":1,"format":"json"}}),
     );
     assert!(response.get("error").is_none(), "{response}");
     assert_ne!(response["result"]["isError"], true, "{response}");

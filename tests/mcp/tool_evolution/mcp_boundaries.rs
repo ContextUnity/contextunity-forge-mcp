@@ -605,7 +605,7 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
         assert_eq!(cli["complete"], result["complete"]);
         assert_eq!(cli["changes"], result["changes"]);
     }
-    let cli_first = run_cli(
+    let cli_first = run_cli_json(
         &w,
         &[
             "query",
@@ -633,7 +633,7 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
         .as_str()
         .unwrap()
         .to_owned();
-    let cli_next = run_cli(
+    let cli_next = run_cli_json(
         &w,
         &[
             "query",
@@ -780,9 +780,7 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     let graph_source = |repeat_count: usize| {
         let mut source = String::from("def seed(): return 1\n");
         for index in 0..repeat_count {
-            source.push_str(&format!(
-                "def repeat_{index}(): seed(); repeat_{index}()\n"
-            ));
+            source.push_str(&format!("def repeat_{index}(): seed(); repeat_{index}()\n"));
         }
         source.push_str("def tail_0(): seed()\n");
         for index in 1..=15 {
@@ -793,7 +791,12 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     w.write("graph.py", &graph_source(670));
     w.build();
     git(&["add", "-A"]);
-    git(&["commit", "--quiet", "-m", "Review boundary fixture baseline"]);
+    git(&[
+        "commit",
+        "--quiet",
+        "-m",
+        "Review boundary fixture baseline",
+    ]);
 
     let mut regression_failures = Vec::new();
     let parse_payload = |response: &serde_json::Value| -> Option<serde_json::Value> {
@@ -810,7 +813,7 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     w.build();
     let (_, response) = m.call(
         "code_map_impact",
-        json!({"changes":"staged","path":"prefix.ts"}),
+        json!({"changes":"staged","path":"prefix.ts","format":"json"}),
     );
     if response["result"]["isError"] == true {
         regression_failures.push(format!("++ source line was rejected: {response}"));
@@ -837,18 +840,19 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     w.build();
     let (_, response) = m.call(
         "code_map_impact",
-        json!({"changes":"unstaged","path":"removed.ts"}),
+        json!({"changes":"unstaged","path":"removed.ts","format":"json"}),
     );
     if response["result"]["isError"] == true {
         regression_failures.push(format!("-- source deletion was rejected: {response}"));
     } else if let Some(result) = parse_payload(&response) {
-        let deletion_retained = result["unmapped_changes"]["items"]
-            .as_array()
-            .is_some_and(|items| {
-                items.iter().any(|item| {
-                    item["path"] == "removed.ts" && item["reason"] == "deleted_range"
-                })
-            });
+        let deletion_retained =
+            result["unmapped_changes"]["items"]
+                .as_array()
+                .is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item["path"] == "removed.ts" && item["reason"] == "deleted_range"
+                    })
+                });
         if result["complete"] != false || !deletion_retained {
             regression_failures.push(format!(
                 "-- source deletion was not retained as incomplete evidence: unmapped={}, complete={}",
@@ -868,7 +872,7 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     w.build();
     let (_, response) = m.call(
         "code_map_impact",
-        json!({"changes":"staged","path":"decor.py","depth":2,"limit":100}),
+        json!({"changes":"staged","path":"decor.py","depth":2,"limit":100,"format":"json"}),
     );
     if response["result"]["isError"] == true {
         regression_failures.push(format!("reverse predecessor response failed: {response}"));
@@ -887,7 +891,9 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
             ));
         }
     } else {
-        regression_failures.push(format!("reverse predecessor response was not JSON: {response}"));
+        regression_failures.push(format!(
+            "reverse predecessor response was not JSON: {response}"
+        ));
     }
 
     let control_w = Workspace::new();
@@ -918,11 +924,11 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     let mut control_m = Mcp::new(&control_w);
     let (_, changed_control_response) = control_m.call(
         "code_map_impact",
-        json!({"changes":"staged","depth":16,"limit":100}),
+        json!({"changes":"staged","depth":16,"limit":100,"format":"json"}),
     );
     let (_, selected_control_response) = control_m.call(
         "code_map_impact",
-        json!({"selector":"graph.py:seed","depth":16,"limit":100}),
+        json!({"selector":"graph.py:seed","depth":16,"limit":100,"format":"json"}),
     );
     match (
         changed_control_response["result"]["isError"]
@@ -955,11 +961,12 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
     w.write("graph.py", &changed_graph);
     git(&["add", "--", "graph.py"]);
     w.build();
-    let impact_args = json!({"changes":"staged","path":"graph.py","depth":16,"limit":100});
+    let impact_args =
+        json!({"changes":"staged","path":"graph.py","depth":16,"limit":100,"format":"json"});
     let (_, changed_graph_response) = m.call("code_map_impact", impact_args.clone());
     let (_, selected_graph_response) = m.call(
         "code_map_impact",
-        json!({"selector":"graph.py:seed","depth":16,"limit":100}),
+        json!({"selector":"graph.py:seed","depth":16,"limit":100,"format":"json"}),
     );
     match (
         changed_graph_response["result"]["isError"]
@@ -975,7 +982,7 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
             let generation = changed["nodes"]["generation"].clone();
             let (_, tail_response) = m.call(
                 "code_map_impact",
-                json!({"changes":"staged","path":"graph.py","depth":16,"limit":100,"offset":600,"generation":generation}),
+                json!({"changes":"staged","path":"graph.py","depth":16,"limit":100,"offset":600,"generation":generation,"format":"json"}),
             );
             let tail = parse_payload(&tail_response);
             let tail_15_present = tail.as_ref().is_some_and(|page| {
@@ -1025,7 +1032,10 @@ fn mcp_search_ast_and_document_boundaries() {
     w.build();
     let mut m = Mcp::new(&w);
     let overview = m.ok("code_map_overview", json!({"limit":1}));
-    assert!(overview["generation"].is_string());
+    assert_eq!(overview["languages"]["has_more"], true, "{overview}");
+    assert_eq!(overview["languages"]["next_offset"], 1, "{overview}");
+    assert_eq!(overview["generation"], overview["languages"]["generation"]);
+    assert!(overview.get("counts").is_some());
     for pattern in ["*", "***", "_", "%", "\\", "'", "\""] {
         m.err(
             "code_map_search",
@@ -1068,12 +1078,13 @@ fn mcp_search_ast_and_document_boundaries() {
     );
     assert!(!ast["matches"]["items"].as_array().unwrap().is_empty());
 
-    let ranked = m.ok("code_map_search", json!({"pattern":"item_name","limit":10}));
+    let ranked = m.ok("code_map_search", json!({"pattern":"item*","limit":1}));
     let ranked_total = ranked["nodes"]["total"].clone();
-    assert!(ranked_total.as_u64().unwrap() > 0);
+    assert_eq!(ranked_total, 2);
+    assert_eq!(ranked["nodes"]["has_more"], true);
     let empty_ranked_page = m.ok(
         "code_map_search",
-        json!({"pattern":"item_name","limit":10,"offset":100,"generation":ranked["nodes"]["generation"]}),
+        json!({"pattern":"item*","limit":1,"offset":100,"generation":ranked["nodes"]["generation"]}),
     );
     assert!(empty_ranked_page["nodes"]["items"]
         .as_array()
@@ -1734,10 +1745,16 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
                 .unwrap_or_else(|| {
                     panic!("{expression}: resolution={items:?}, external={external:?}")
                 });
-            assert_eq!(item["status"], "unresolved", "{detail}/{expression}: {item}");
+            assert_eq!(
+                item["status"], "unresolved",
+                "{detail}/{expression}: {item}"
+            );
             assert!(item["cause"].is_string(), "{detail}/{expression}: {item}");
             if detail == "full" {
-                assert!(item["evidence"].is_string(), "{detail}/{expression}: {item}");
+                assert!(
+                    item["evidence"].is_string(),
+                    "{detail}/{expression}: {item}"
+                );
             }
             if !item["reason"].is_null() {
                 diagnostic_failures.push(format!(
@@ -1865,7 +1882,12 @@ fn mcp_analyze_router_checkpoint_and_guide_boundaries() {
         changed["coverage_by_workspace"]["items"][0]["name"],
         "primary"
     );
-    assert_ne!(changed["generation"], full["generation"]);
+    assert!(full.get("generation").is_none());
+    assert!(changed.get("generation").is_none());
+    assert_ne!(
+        changed["coverage_by_workspace"]["total"],
+        full["coverage_by_workspace"]["total"]
+    );
     assert!(
         diagnostic_failures.is_empty(),
         "{}",

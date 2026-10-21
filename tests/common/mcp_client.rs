@@ -41,6 +41,14 @@ pub fn run_cli(workspace: &Workspace, args: &[&str]) -> Output {
         .expect("could not run contextunity-forge-mcp")
 }
 
+/// Runs the shipped CLI in JSON mode for callers that decode stdout as JSON.
+pub fn run_cli_json(workspace: &Workspace, args: &[&str]) -> Output {
+    let mut json_args = Vec::with_capacity(args.len() + 2);
+    json_args.extend(["--format", "json"]);
+    json_args.extend_from_slice(args);
+    run_cli(workspace, &json_args)
+}
+
 /// A JSON-RPC client backed by the real server binary and stdio transport.
 pub struct StdioClient {
     child: Child,
@@ -169,6 +177,13 @@ impl StdioClient {
 
     /// Calls one MCP tool and parses the JSON payload from its first text block.
     pub fn payload(&mut self, name: &str, arguments: Value) -> Value {
+        let mut arguments = arguments;
+        if arguments
+            .as_object()
+            .is_some_and(|arguments| !arguments.contains_key("format"))
+        {
+            arguments["format"] = json!("json");
+        }
         let (_, response) = self.call(name, arguments);
         assertions::mcp_payload(&response)
     }

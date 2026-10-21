@@ -6,6 +6,11 @@ This document defines the rules for placing, creating, refactoring, and maintain
 - Tests prove observable positive contracts, formal specifications, valid boundaries, and real fail-closed error states.
 - Verify defect fixes through existing domain contract seams. Structure tests around permanent specification requirements rather than transient historical incidents.
 - Prove admitted milestone requirements. Do not add a test that invents an uncontracted requirement in order to justify a new subsystem.
+<!-- acdd-forge:test-invariants:start -->
+- **Additive seam evolution**: When extending existing capabilities, do not create redundant standalone contract test functions. Instead, extend existing domain seam tests by adding parameterized test cases (table rows) or additive assertions to the existing test functions, while preserving existing regression baselines.
+- **Subsume duplicate tests**: When a strengthened seam covers the full contract, remove or replace weaker/duplicate tests in the same test diff rather than leaving redundant assertions and duplicate setups.
+- **Runtime-red contract proof**: Contract tests for extensions or greenfield must compile cleanly and fail at runtime on assertions (exit code 101). Never introduce compilation failures or unresolvable imports, as this breaks AST indexing and blocks gate submission.
+<!-- acdd-forge:test-invariants:end -->
 - For semantic receiver evidence, cover exact resolution separately from possible targets. Exercise complete and incomplete joins, unknown alternatives, overflow, and later unconditional writes through the linker and persisted query seam; possible targets must not appear as exact `calls` edges.
 
 ## 2. Compilation and Binary Budget (Coherent Domain Modules)

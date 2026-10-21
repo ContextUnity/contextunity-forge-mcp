@@ -2,6 +2,12 @@ use crate::common::{mcp_client::StdioClient, Workspace as SharedWorkspace};
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf, process::Command};
 
+fn json_cli() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+    command.args(["--format", "json"]);
+    command
+}
+
 struct Workspace(PathBuf, SharedWorkspace);
 
 impl std::ops::Deref for Workspace {
@@ -48,7 +54,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         "task_manage",
         json!({"action":"sync","milestone_ref":"docs/milestones/010-main.md"}),
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let output = json_cli()
         .args([
             "--root",
             main.0.to_str().unwrap(),
@@ -93,7 +99,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             "owner":null,"agent_type":"worker","rev":1
         })
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let output = json_cli()
         .args([
             "--root",
             main.0.to_str().unwrap(),
@@ -156,7 +162,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         json!({"scope":"task","task_id":id,"milestone_ref":"docs/milestones/010-linked.md"}),
         json!({"scope":"task","task_id":id,"milestone_ref":"docs/milestones/010-linked.md","subtask_ref":"ignored-subtask"}),
     ] {
-        let mut args = json!({"action":"inspect","message_id":message_id});
+        let mut args = json!({"action":"inspect","message_id":message_id,"format":"json"});
         args.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
@@ -177,6 +183,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         read["action"] = json!("read");
         read["limit"] = json!(1);
         read["offset"] = json!(0);
+        read["format"] = json!("json");
         let expected = client.payload("task_blackboard", read.clone());
         read["action"] = json!("inspect");
         let (_, response) = client.call("task_blackboard", read.clone());
@@ -387,7 +394,7 @@ scope: [src/]
     let id = synced["tasks"][0]["task_id"].as_str().unwrap();
     assert_eq!(id, "tooling/m-handoff:delivery");
     for action in ["preview", "apply", "verify"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        let output = json_cli()
             .args([
                 "--root",
                 builder.0.to_str().unwrap(),
@@ -678,7 +685,7 @@ fn task_mcp_and_cli_share_ready_claim_reset_selectors_and_diagnostic() {
     let id = synced["tasks"][0]["task_id"].as_str().unwrap();
     let ready = client.payload("task_list", json!({}));
     assert_eq!(ready["tasks"].as_array().unwrap().len(), 1);
-    let cli = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli = json_cli()
         .args(["--root", workspace.0.to_str().unwrap(), "task", "list"])
         .output()
         .unwrap();
@@ -688,8 +695,7 @@ fn task_mcp_and_cli_share_ready_claim_reset_selectors_and_diagnostic() {
         String::from_utf8_lossy(&cli.stderr)
     );
     assert_eq!(serde_json::from_slice::<Value>(&cli.stdout).unwrap(), ready);
-    let args =
-        json!({"task_id":id,"stage":"contract","worker_id":"builder","worktree":workspace.0});
+    let args = json!({"task_id":id,"stage":"contract","worker_id":"builder","worktree":workspace.0,"format":"json"});
     let claimed = client.payload("task_claim", args.clone());
     let direct_error = contextunity_forge_mcp::engine::tasks::claim(
         &workspace.0,
@@ -714,7 +720,7 @@ fn task_mcp_and_cli_share_ready_claim_reset_selectors_and_diagnostic() {
     assert_eq!(active["tasks"][0]["task_id"], id);
     assert_eq!(active["tasks"][0]["owner"], "builder");
     assert_eq!(active["tasks"][0]["stage"], "contract");
-    let reset = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let reset = json_cli()
         .args(["--root", workspace.0.to_str().unwrap(), "task", "reset", id])
         .output()
         .unwrap();
@@ -761,9 +767,9 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
 
     let (_, mcp_post) = client.call(
         "task_blackboard",
-        json!({"action":"post","task_id":task_id,"topic":"draft","payload":"{\"red\":true}"}),
+        json!({"action":"post","task_id":task_id,"topic":"draft","payload":"{\"red\":true}","format":"json"}),
     );
-    let cli_post = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_post = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -796,7 +802,7 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     assert_eq!(mcp_read["messages"][0]["id"], cli_post["id"]);
     assert_eq!(mcp_read["messages"][1]["id"], mcp_post["id"]);
 
-    let cli_read = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_read = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -851,7 +857,8 @@ fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
             json!({
                 "action":"post",
                 "topic":"decisions",
-                "payload":format!("milestone note {index}")
+                "payload":format!("milestone note {index}"),
+                "format":"json"
             }),
         );
         assert!(
@@ -881,7 +888,7 @@ fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
     assert_eq!(inspected["message"]["id"], message_id);
     assert_eq!(inspected["message"]["payload"], "milestone note 11");
 
-    let cli_inspect = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_inspect = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -966,7 +973,7 @@ fn subtask_mcp_and_cli_operations() {
     }
 
     // CLI task subtask add
-    let cli_add = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_add = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -987,7 +994,7 @@ fn subtask_mcp_and_cli_operations() {
     let cli_add_json: Value = serde_json::from_slice(&cli_add.stdout).unwrap();
     assert_eq!(cli_add_json["subtask"]["subtask_ref"], "step-2");
     assert_eq!(cli_add_json["subtask"]["status"], "ready");
-    let legacy_update = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let legacy_update = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -1010,7 +1017,7 @@ fn subtask_mcp_and_cli_operations() {
     assert_eq!(legacy_json["subtask"]["status"], "ready");
 
     // CLI task subtask list
-    let cli_list = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_list = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -1058,7 +1065,7 @@ fn subtask_mcp_and_cli_operations() {
         json!({"action": "next", "worker_id": "worker", "worktree": workspace.0.to_str().unwrap()}),
     );
     assert_eq!(idle["status"], "idle");
-    let cli_cancelled = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_cancelled = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -1112,7 +1119,8 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     for index in 0..6 {
         decision_rules.push_str(&format!("- INV-DEC{index:02}: Preserve decision rule {index} through [`unique`](../../src/unique.rs#L1).\n"));
     }
-    decision_rules.push_str("Decision: Keep the complete decision after every bounded navigation rule.\n");
+    decision_rules
+        .push_str("Decision: Keep the complete decision after every bounded navigation rule.\n");
     workspace.write("docs/adr/003-decision-after-rules.md", &decision_rules);
     workspace.write("docs/adr/004-headed-decision.md", "---\ntitle: Headed Decision\ndoc_type: adr\nstatus: accepted\n---\n# Governance\n- INV-HEADED: Preserve the decision through [`unique`](../../src/unique.rs#L1).\n## Decision\nRetain the complete decision from its own section.\n");
     workspace.write("src/minimal_routing.rs", "pub fn minimal_route_task() {}\n");
@@ -1322,7 +1330,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     );
 
     // 3. CLI task claim returns the same bundle by default without --bundle
-    let cli_claim = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_claim = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -1362,7 +1370,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     );
 
     // 4. CLI task context command
-    let cli_context = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_context = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -1498,7 +1506,7 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
             )),
         }
     }
-    let cli_decision = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_decision = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -1650,7 +1658,7 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
     assert_eq!(mcp_all, expected_all);
 
     let cli_filter = |flags: &[&str]| {
-        let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        let output = json_cli()
             .args(["--root", workspace.0.to_str().unwrap(), "task", "list"])
             .args(flags)
             .output()
@@ -1686,7 +1694,7 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
     cli_shorthand_all.sort();
     assert_eq!(cli_shorthand_all, expected_all);
 
-    let cli_help = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_help = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -1733,7 +1741,7 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
         "Verified through the listing seam"
     );
 
-    let cli_full = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let cli_full = json_cli()
         .args([
             "--root",
             workspace.0.to_str().unwrap(),
@@ -1763,7 +1771,7 @@ fn task_list_status_filter_is_typed_and_cli_flags_are_available() {
         vec!["--milestone-status", "active", "--planned"],
         vec!["--milestone-status", "all", "--all"],
     ] {
-        let conflict = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        let conflict = json_cli()
             .args(["--root", workspace.0.to_str().unwrap(), "task", "list"])
             .args(conflicting_flags)
             .output()
@@ -2091,7 +2099,8 @@ fn wave_sync_and_atomic_next_preserve_parked_worktrees() {
             failures.push(requirement.to_owned());
         }
     };
-    let call = |client: &mut Client, tool: &str, args: Value| {
+    let call = |client: &mut Client, tool: &str, mut args: Value| {
+        args["format"] = json!("json");
         let response = client.call(tool, args).1;
         response["result"]["content"][0]["text"]
             .as_str()
@@ -2325,7 +2334,7 @@ fn wave_sync_and_atomic_next_preserve_parked_worktrees() {
                     "MCP status={status} must preserve the exact task selection after parking"
                 ),
             );
-            let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            let output = json_cli()
                 .args([
                     "--root",
                     parking.0.to_str().unwrap(),
@@ -2348,7 +2357,7 @@ fn wave_sync_and_atomic_next_preserve_parked_worktrees() {
             task_ids(&call(&mut client, "task_list", json!({}))) == vec![ids[2].clone()],
             "default MCP status must remain ready and exclude parked work",
         );
-        let default_cli = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        let default_cli = json_cli()
             .args(["--root", parking.0.to_str().unwrap(), "task", "list"])
             .output()
             .unwrap();
@@ -2487,7 +2496,7 @@ fn wave_sync_and_atomic_next_preserve_parked_worktrees() {
     );
 
     let (cli, _client, ids) = fixture("cli-next", &[("only", "src/only.rs")]);
-    let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let output = json_cli()
         .args([
             "--root",
             cli.0.to_str().unwrap(),

@@ -1,7 +1,10 @@
 use super::{response, server::Server};
 use crate::{
     cli,
-    core::response::{CoverageOptions, Detail, ResponsePolicy},
+    core::{
+        format::{OperationKind, OutputFormat},
+        response::{CoverageOptions, Detail, ResponsePolicy},
+    },
     db::{reader, symbols, traversal},
     engine::scanner,
 };
@@ -15,7 +18,8 @@ use serde_json::Value;
 mod inputs;
 pub use inputs::{
     Analyze, Ast, Checkpoint, Explain, GetDoc, Guide, Impact, Inspect, OverviewInput, PageInput,
-    Query, SearchDocs, SearchSymbols, Selector, Snippet, Tests,
+    Query, SearchDocs, SearchSymbols, Selector, Snippet, TaskBlackboardInput, TaskClaimInput,
+    TaskListInput, TaskManageInput, TaskSubmitInput, Tests,
 };
 
 fn rejected_selector_fields(
@@ -145,7 +149,7 @@ fn rejected_selector_fields(
     };
     arguments
         .keys()
-        .filter(|field| !allowed.contains(&field.as_str()))
+        .filter(|field| field.as_str() != "format" && !allowed.contains(&field.as_str()))
         .take(16)
         .cloned()
         .collect()
@@ -154,23 +158,39 @@ fn rejected_selector_fields(
 impl Server {
     fn responding(
         &self,
+        output_format: OutputFormat,
+        operation: OperationKind,
+        title: &'static str,
         run: impl FnOnce(&scanner::Adapter, &ResponsePolicy) -> anyhow::Result<Value>,
     ) -> CallToolResult {
-        self.responding_with_symbol(run, None)
+        self.responding_with_symbol(output_format, operation, title, run, None)
     }
 
     fn responding_with_symbol(
         &self,
+        output_format: OutputFormat,
+        operation: OperationKind,
+        title: &'static str,
         run: impl FnOnce(&scanner::Adapter, &ResponsePolicy) -> anyhow::Result<Value>,
         explain: Option<bool>,
     ) -> CallToolResult {
         match self.adapter_snapshot() {
-            Ok(adapter) => response::result_with_symbol(
+            Ok(adapter) => response::result_for(
                 run(&adapter, &adapter.response),
                 &adapter.response,
+                output_format,
+                operation,
+                title,
                 explain,
             ),
-            Err(error) => response::result(Err(error.into()), &ResponsePolicy::default()),
+            Err(error) => response::result_for(
+                Err(error.into()),
+                &ResponsePolicy::default(),
+                output_format,
+                operation,
+                title,
+                explain,
+            ),
         }
     }
 }
@@ -180,58 +200,80 @@ impl Server {
     #[tool(
         description = "List tasks. The default is ready, unclaimed tasks with satisfied dependencies in the primary workspace. status accepts ready, in_progress, blocked, parked, completed, or all. milestone_status defaults to active and accepts active, planned, completed, or all; a targeted milestone_ref defaults to all statuses. Subtask listings are compact by default; set detail=full to include titles and verification evidence."
     )]
-    fn task_list(&self, Parameters(p): Parameters<super::tasks::List>) -> CallToolResult {
-        self.responding(|_, _| super::tasks::list(&self.root, p))
+    fn task_list(&self, Parameters(p): Parameters<TaskListInput>) -> CallToolResult {
+        let format = p.format.unwrap_or_default();
+        self.responding(format, OperationKind::Task, "task_list", |_, _| {
+            super::tasks::list(&self.root, p.request)
+        })
     }
     #[tool(
         description = "Atomically claim one gate in a worktree. Returns context tailored to the active gate by default; bundle=false returns minimal details."
     )]
-    fn task_claim(&self, Parameters(p): Parameters<super::tasks::Claim>) -> CallToolResult {
-        self.responding(|_, _| super::tasks::claim(&self.root, p))
+    fn task_claim(&self, Parameters(p): Parameters<TaskClaimInput>) -> CallToolResult {
+        let format = p.format.unwrap_or_default();
+        self.responding(format, OperationKind::Task, "task_claim", |_, _| {
+            super::tasks::claim(&self.root, p.request)
+        })
     }
     #[tool(
         description = "Pass or reject the claimed gate. Passing deliver writes the milestone receipt and clears the blackboard. The evidence field describes the required object."
     )]
-    fn task_submit(&self, Parameters(p): Parameters<super::tasks::Submit>) -> CallToolResult {
-        self.responding(|_, _| super::tasks::submit(&self.root, p))
+    fn task_submit(&self, Parameters(p): Parameters<TaskSubmitInput>) -> CallToolResult {
+        let format = p.format.unwrap_or_default();
+        self.responding(format, OperationKind::Task, "task_submit", |_, _| {
+            super::tasks::submit(&self.root, p.request)
+        })
     }
     #[tool(
         description = "Run one task-store action: next, create, sync, inspect, delete, extend_scope, subtask_add, subtask_update, subtask_list, reset, reopen, or context. next atomically claims eligible work and returns its context bundle; sync without milestone_ref imports the workspace milestone directory."
     )]
-    fn task_manage(&self, Parameters(p): Parameters<super::tasks::Manage>) -> CallToolResult {
-        self.responding(|_, _| super::tasks::manage(&self.root, p))
+    fn task_manage(&self, Parameters(p): Parameters<TaskManageInput>) -> CallToolResult {
+        let format = p.format.unwrap_or_default();
+        self.responding(format, OperationKind::Task, "task_manage", |_, _| {
+            super::tasks::manage(&self.root, p.request)
+        })
     }
     #[tool(
         description = "Post, read, or inspect milestone-, task-, and subtask-scoped messages. Omitted scope and keys resolve only from a unique active context. Reads default to 10 payload-free summaries, capped at 50; inspect by message_id returns the payload."
     )]
-    fn task_blackboard(
-        &self,
-        Parameters(p): Parameters<crate::engine::tasks::BlackboardRequest>,
-    ) -> CallToolResult {
-        self.responding(|_, _| crate::engine::tasks::blackboard(&self.root, p, "mcp"))
+    fn task_blackboard(&self, Parameters(p): Parameters<TaskBlackboardInput>) -> CallToolResult {
+        let format = p.format.unwrap_or_default();
+        self.responding(format, OperationKind::Task, "task_blackboard", |_, _| {
+            crate::engine::tasks::blackboard(&self.root, p.request, "mcp")
+        })
     }
     #[tool(
         description = "Workspace root, counts, languages, and resolution coverage, including paged coverage_by_workspace counts from the indexed primary and linked workspace snapshot. Uses server worktree routing; pass worktree for explicit selection."
     )]
     fn code_map_overview(&self, Parameters(p): Parameters<OverviewInput>) -> CallToolResult {
-        self.responding(|adapter, policy| {
-            let page = p.page.resolve(policy)?;
-            self.read_with_adapter(adapter, |c| {
-                reader::overview_with_options(
-                    c,
-                    &reader::OverviewOptions {
-                        aspects: p.aspects.as_deref(),
-                        page: &page,
-                    },
-                )
-            })
-        })
+        let format = p.page.output_format();
+        self.responding(
+            format,
+            OperationKind::Navigation,
+            "code_map_overview",
+            |adapter, policy| {
+                let page = p.page.resolve(policy)?;
+                self.read_with_adapter(adapter, |c| {
+                    reader::overview_with_options(
+                        c,
+                        &reader::OverviewOptions {
+                            aspects: p.aspects.as_deref(),
+                            page: &page,
+                        },
+                    )
+                })
+            },
+        )
     }
     #[tool(
         description = "Compact symbol record: signature, docstring, container, call counts, and at most five direct call previews per direction. include_coverage adds paged resolution evidence. Source stays off unless show_source is true."
     )]
     fn code_map_inspect(&self, Parameters(p): Parameters<Inspect>) -> CallToolResult {
+        let format = p.page.output_format();
         self.responding_with_symbol(
+            format,
+            OperationKind::Navigation,
+            "code_map_inspect",
             |adapter, policy| {
                 let page = p.page.resolve(policy)?;
                 let source = p.source(policy, false)?;
@@ -260,124 +302,156 @@ impl Server {
         description = "Bounded source preview for one selector. Defaults are 5 leading lines and 200 body lines. Requested body lines clamp to 1–500. The on-disk file must match the indexed digest. Continue with source_offset and generation."
     )]
     fn get_code_snippet(&self, Parameters(p): Parameters<Snippet>) -> CallToolResult {
-        self.responding(|adapter, policy| {
-            let page = p.page.resolve(policy)?;
-            let source = p.source(policy)?;
-            self.read_with_adapter(adapter, |c| {
-                let mut value = symbols::snippet_paged_with_path(
-                    c,
-                    &self.root,
-                    &p.selector,
-                    p.path.as_deref(),
-                    &source,
-                    &page,
-                )?;
-                if let (Some(path), Some(start), Some(end)) = (
-                    value["node"]["path"].as_str(),
-                    value["source_preview"]["start_line"].as_u64(),
-                    value["source_preview"]["end_line"].as_u64(),
-                ) {
-                    value["header"] = serde_json::json!(format!(
-                        "{} {} in {path}:{start}-{end}",
-                        value["node"]["kind"].as_str().unwrap_or("symbol"),
-                        value["node"]["qualname"]
-                            .as_str()
-                            .or_else(|| value["node"]["name"].as_str())
-                            .unwrap_or(&p.selector)
-                    ));
-                }
-                Ok(value)
-            })
-        })
+        let format = p.page.output_format();
+        self.responding(
+            format,
+            OperationKind::Navigation,
+            "get_code_snippet",
+            |adapter, policy| {
+                let page = p.page.resolve(policy)?;
+                let source = p.source(policy)?;
+                self.read_with_adapter(adapter, |c| {
+                    let mut value = symbols::snippet_paged_with_path(
+                        c,
+                        &self.root,
+                        &p.selector,
+                        p.path.as_deref(),
+                        &source,
+                        &page,
+                    )?;
+                    if let (Some(path), Some(start), Some(end)) = (
+                        value["node"]["path"].as_str(),
+                        value["source_preview"]["start_line"].as_u64(),
+                        value["source_preview"]["end_line"].as_u64(),
+                    ) {
+                        value["header"] = serde_json::json!(format!(
+                            "{} {} in {path}:{start}-{end}",
+                            value["node"]["kind"].as_str().unwrap_or("symbol"),
+                            value["node"]["qualname"]
+                                .as_str()
+                                .or_else(|| value["node"]["name"].as_str())
+                                .unwrap_or(&p.selector)
+                        ));
+                    }
+                    Ok(value)
+                })
+            },
+        )
     }
     #[tool(
         description = "Search names, qualified names, and tokens. A trailing * is a prefix. exact=true matches an indexed name or qualname without full text. Hits include indexed signatures and inspect_selector arguments for code_map_inspect; previews appear automatically for at most three total hits or on request, capped at three hits, 20 lines, and 12 KiB combined."
     )]
     fn code_map_search(&self, Parameters(p): Parameters<SearchSymbols>) -> CallToolResult {
-        self.responding(|adapter, policy| {
-            self.read_with_adapter(adapter, |c| {
-                let page = p.page.resolve(policy)?;
-                let res = symbols::search_with_options(
-                    c,
-                    &p.pattern,
-                    &symbols::SearchOptions {
-                        kind: p.kind.as_deref(),
-                        path: p.path.as_deref().filter(|path| !path.is_empty()),
-                        include_docs: p.include_docs,
-                        exact: p.exact,
-                        page: &page,
-                    },
-                )?;
-                let mut res =
-                    symbols::search_results_with_navigation(c, &self.root, res, p.include_preview)?;
-                if p.group_by_file {
-                    if let Some(items) = res
-                        .get_mut("nodes")
-                        .and_then(|nodes| nodes.get_mut("items"))
-                        .and_then(Value::as_array_mut)
-                    {
-                        let mut grouped: std::collections::BTreeMap<String, Vec<Value>> =
-                            std::collections::BTreeMap::new();
-                        for mut item in items.drain(..) {
-                            let path = item["path"].as_str().unwrap_or("").to_string();
-                            if let Some(object) = item.as_object_mut() {
-                                object.remove("path");
+        let format = p.page.output_format();
+        self.responding(
+            format,
+            OperationKind::Navigation,
+            "code_map_search",
+            |adapter, policy| {
+                self.read_with_adapter(adapter, |c| {
+                    let page = p.page.resolve(policy)?;
+                    let res = symbols::search_with_options(
+                        c,
+                        &p.pattern,
+                        &symbols::SearchOptions {
+                            kind: p.kind.as_deref(),
+                            path: p.path.as_deref().filter(|path| !path.is_empty()),
+                            include_docs: p.include_docs,
+                            exact: p.exact,
+                            page: &page,
+                        },
+                    )?;
+                    let mut res = symbols::search_results_with_navigation(
+                        c,
+                        &self.root,
+                        res,
+                        p.include_preview,
+                    )?;
+                    if p.group_by_file {
+                        if let Some(items) = res
+                            .get_mut("nodes")
+                            .and_then(|nodes| nodes.get_mut("items"))
+                            .and_then(Value::as_array_mut)
+                        {
+                            let mut grouped: std::collections::BTreeMap<String, Vec<Value>> =
+                                std::collections::BTreeMap::new();
+                            for mut item in items.drain(..) {
+                                let path = item["path"].as_str().unwrap_or("").to_string();
+                                if let Some(object) = item.as_object_mut() {
+                                    object.remove("path");
+                                }
+                                grouped.entry(path).or_default().push(item);
                             }
-                            grouped.entry(path).or_default().push(item);
+                            res["nodes"]["grouped_by_file"] =
+                                serde_json::to_value(grouped).unwrap_or_default();
                         }
-                        res["nodes"]["grouped_by_file"] =
-                            serde_json::to_value(grouped).unwrap_or_default();
                     }
-                }
-                Ok(res)
-            })
-        })
+                    Ok(res)
+                })
+            },
+        )
     }
     #[tool(
         description = "Test relationships for a narrow selector. Inbound returns verified test cases connected by exact calls paths and keeps the bounded lexical fallback when no call path exists; outbound returns production dependencies reached through exact calls. Results include test roles and shortest call paths where graph evidence exists. Possible calls do not establish coverage. Broad scopes are rejected."
     )]
     fn code_map_tests(&self, Parameters(p): Parameters<Tests>) -> CallToolResult {
-        self.responding(|adapter, policy| {
-            self.read_with_adapter(adapter, |c| {
-                symbols::tests_paged_with_path(
-                    c,
-                    &p.selector,
-                    p.path.as_deref(),
-                    &p.direction,
-                    &p.page.resolve(policy)?,
-                )
-            })
-        })
+        let format = p.page.output_format();
+        self.responding(
+            format,
+            OperationKind::Navigation,
+            "code_map_tests",
+            |adapter, policy| {
+                self.read_with_adapter(adapter, |c| {
+                    symbols::tests_paged_with_path(
+                        c,
+                        &p.selector,
+                        p.path.as_deref(),
+                        &p.direction,
+                        &p.page.resolve(policy)?,
+                    )
+                })
+            },
+        )
     }
     #[tool(
         description = "Transitive reachability from one selector or a Git change view (staged, unstaged, or head). Provide exactly one of selector or changes. inbound (default) lists dependents; outbound lists dependencies. Each reached depth-one node includes the persisted edge endpoints, kind, path, line, direction, confidence, and occurrence count; full detail adds edge evidence. Change views bind every page to the graph, selected diff, and verified postimages, and report unmapped changes explicitly."
     )]
     fn code_map_impact(&self, Parameters(p): Parameters<Impact>) -> CallToolResult {
-        self.responding(|adapter, policy| {
-            let page = p.page.resolve(policy)?;
-            self.read_with_adapter(adapter, |c| {
-                traversal::impact_with_path_options(
-                    c,
-                    &self.root,
-                    p.selector.as_deref(),
-                    p.changes.as_deref(),
-                    p.path.as_deref(),
-                    &traversal::TraversalOptions {
-                        depth: p.depth,
-                        inbound: traversal::impact_inbound(Some(p.direction.as_str()))?,
-                        mode: p.mode.as_deref(),
-                        edge_types: p.edge_types.as_deref(),
-                        page: &page,
-                    },
-                )
-            })
-        })
+        let format = p.page.output_format();
+        self.responding(
+            format,
+            OperationKind::Navigation,
+            "code_map_impact",
+            |adapter, policy| {
+                let page = p.page.resolve(policy)?;
+                self.read_with_adapter(adapter, |c| {
+                    traversal::impact_with_path_options(
+                        c,
+                        &self.root,
+                        p.selector.as_deref(),
+                        p.changes.as_deref(),
+                        p.path.as_deref(),
+                        &traversal::TraversalOptions {
+                            depth: p.depth,
+                            inbound: traversal::impact_inbound(Some(p.direction.as_str()))?,
+                            mode: p.mode.as_deref(),
+                            edge_types: p.edge_types.as_deref(),
+                            page: &page,
+                        },
+                    )
+                })
+            },
+        )
     }
     #[tool(
         description = "Symbol summary plus paged incoming and outgoing edges of every kind. The embedded call summary shows counts and at most five direct call previews per direction. direction defaults to both."
     )]
     fn code_map_explain(&self, Parameters(p): Parameters<Explain>) -> CallToolResult {
+        let format = p.page.output_format();
         self.responding_with_symbol(
+            format,
+            OperationKind::Navigation,
+            "code_map_explain",
             |adapter, policy| {
                 let page = p.page.resolve(policy)?;
                 let source = p.source(policy, false)?;
@@ -407,7 +481,13 @@ impl Server {
         description = "Bounded graph operation or one read-only SELECT/WITH. Prefer code_map_inspect, code_map_explain, and code_map_impact for those jobs. unwired lists functions and methods with no indexed static caller and is not a dead-code proof."
     )]
     fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
-        self.responding(|adapter, policy| {
+        let format = p.page.output_format();
+        let operation = if p.operation == "sql" {
+            OperationKind::Sql
+        } else {
+            OperationKind::Navigation
+        };
+        self.responding(format, operation, "code_map_query", |adapter, policy| {
             self.read_with_adapter(adapter, |c| {
                 traversal::query_with_path_options(
                     c,
@@ -430,7 +510,13 @@ impl Server {
         description = "Diagnostics for the workspace or one path, declared-public production symbols not reached by an indexed test case, stored syntax diagnostics, or static cycles. Exact-file resolution and external-import rows include an evidence-based reason when known and a verified source-line snippet; full detail retains resolver evidence. lint=true cannot combine with include_cycles=true."
     )]
     fn code_map_analyze(&self, Parameters(p): Parameters<Analyze>) -> CallToolResult {
-        self.responding(|adapter, policy| {
+        let format = p.page.output_format();
+        let operation = if looks_like_sql(&p.target) {
+            OperationKind::Sql
+        } else {
+            OperationKind::Navigation
+        };
+        self.responding(format, operation, "code_map_analyze", |adapter, policy| {
             anyhow::ensure!(
                 !p.lint || p.include_cycles != Some(true),
                 "lint=true cannot be combined with include_cycles=true"
@@ -449,22 +535,29 @@ impl Server {
         description = "Indexed removal check for one symbol or file. Returns incoming dependency edges, candidate-scoped unresolved references and parse errors, and safe_to_remove. That verdict excludes workspace-wide diagnostics and is not a runtime-safety proof. More than 10000 nodes is rejected."
     )]
     fn code_map_prove_removal(&self, Parameters(p): Parameters<Selector>) -> CallToolResult {
-        self.responding(|adapter, policy| {
-            self.read_with_adapter(adapter, |c| {
-                traversal::removal_paged_with_path(
-                    c,
-                    &p.selector,
-                    p.path.as_deref(),
-                    &p.page.resolve(policy)?,
-                )
-            })
-        })
+        let format = p.page.output_format();
+        self.responding(
+            format,
+            OperationKind::Navigation,
+            "code_map_prove_removal",
+            |adapter, policy| {
+                self.read_with_adapter(adapter, |c| {
+                    traversal::removal_paged_with_path(
+                        c,
+                        &p.selector,
+                        p.path.as_deref(),
+                        &p.page.resolve(policy)?,
+                    )
+                })
+            },
+        )
     }
     #[tool(
         description = "Tree-sitter structural search over admitted source. Language profiles declare complete_syntax, declaration_without_body, fragment_probe, and attribute capabilities. $NAME captures one syntax node; $$$SEQ captures a syntax-node sequence. language must be a compiled profile id (e.g. 'python', 'rust', 'typescript') or omitted if path has a recognized file extension. Call forge_guide with topic=ast for the profile capability matrix and examples."
     )]
     fn ast_grep_search(&self, Parameters(p): Parameters<Ast>) -> CallToolResult {
-        self.responding(|adapter, policy| {
+        let format = p.page.output_format();
+        self.responding(format, OperationKind::Navigation, "ast_grep_search", |adapter, policy| {
             self.read_with_adapter(adapter, |conn| {
                 let language = match p.language.as_deref().filter(|l| !l.is_empty()) {
                     Some(lang) => lang.to_owned(),
@@ -534,37 +627,50 @@ impl Server {
         description = "Search indexed Markdown sections with natural-language terms: common English stop words are ignored, any remaining term can match, and section-title matches receive three times the BM25 weight of body text. Returns paths and section anchors for get_doc. include_excerpt adds a short match-centered preview."
     )]
     fn search_docs(&self, Parameters(p): Parameters<SearchDocs>) -> CallToolResult {
-        self.responding(|adapter, policy| {
-            self.read_with_adapter(adapter, |c| {
-                reader::search_docs_with_options(
-                    c,
-                    &p.query,
-                    &reader::DocSearchOptions {
-                        doc_type: p.doc_type.as_deref(),
-                        component: p.component.as_deref(),
-                        include_excerpt: p.include_excerpt,
-                        page: &p.page.resolve(policy)?,
-                    },
-                )
-            })
-        })
+        let format = p.page.output_format();
+        self.responding(
+            format,
+            OperationKind::Navigation,
+            "search_docs",
+            |adapter, policy| {
+                self.read_with_adapter(adapter, |c| {
+                    reader::search_docs_with_options(
+                        c,
+                        &p.query,
+                        &reader::DocSearchOptions {
+                            doc_type: p.doc_type.as_deref(),
+                            component: p.component.as_deref(),
+                            include_excerpt: p.include_excerpt,
+                            page: &p.page.resolve(policy)?,
+                        },
+                    )
+                })
+            },
+        )
     }
     #[tool(
         description = "Read one indexed Markdown document. The default detail is full text. detail=compact returns a heading outline. A missing path or section is an error."
     )]
     fn get_doc(&self, Parameters(p): Parameters<GetDoc>) -> CallToolResult {
-        self.responding(|adapter, policy| {
-            let mut page = p.page.resolve(policy)?;
-            if p.page.detail.is_none() {
-                page.detail = Detail::Full;
-            }
-            self.read_with_adapter(adapter, |c| {
-                reader::get_doc_paged(c, &p.path_or_id, p.section.as_deref(), &page)
-            })
-        })
+        let format = p.page.output_format();
+        self.responding(
+            format,
+            OperationKind::Navigation,
+            "get_doc",
+            |adapter, policy| {
+                let mut page = p.page.resolve(policy)?;
+                if p.page.detail.is_none() {
+                    page.detail = Detail::Full;
+                }
+                self.read_with_adapter(adapter, |c| {
+                    reader::get_doc_paged(c, &p.path_or_id, p.section.as_deref(), &page)
+                })
+            },
+        )
     }
     #[tool(description = "Built-in guide. The default topic is query.")]
     fn forge_guide(&self, Parameters(p): Parameters<Guide>) -> CallToolResult {
+        let format = p.format.unwrap_or_default();
         let topic = p.topic.as_deref().unwrap_or("query");
         let topic = if topic.trim().is_empty() {
             "query"
@@ -572,24 +678,74 @@ impl Server {
             topic.trim()
         };
         if topic == "init" {
-            return response::result(
+            return response::result_for(
                 cli::guide::run(&self.root, topic, p.force),
                 &ResponsePolicy::default(),
+                format,
+                OperationKind::Guide,
+                "forge_guide",
+                None,
             );
         }
-        self.responding(|_, _| cli::guide::run(&self.root, topic, p.force))
+        self.responding(format, OperationKind::Guide, "forge_guide", |_, _| {
+            cli::guide::run(&self.root, topic, p.force)
+        })
     }
     #[tool(
         description = "List, save, get, or delete a JSON checkpoint in .forge/checkpoints.json."
     )]
     fn session_checkpoint(&self, Parameters(p): Parameters<Checkpoint>) -> CallToolResult {
+        let format = p.format.unwrap_or_default();
         match self.adapter_snapshot() {
-            Ok(adapter) => response::checkpoint_result(
+            Ok(adapter) => response::checkpoint_result_for(
                 cli::guide::checkpoint(&self.root, &p.action, p.name.as_deref(), p.content),
                 &adapter.response,
+                format,
+                "session_checkpoint",
             ),
-            Err(error) => response::result(Err(error.into()), &ResponsePolicy::default()),
+            Err(error) => response::result_for(
+                Err(error.into()),
+                &ResponsePolicy::default(),
+                format,
+                OperationKind::Checkpoint,
+                "session_checkpoint",
+                None,
+            ),
         }
+    }
+}
+
+impl Server {
+    fn invalid_format_policy(
+        &self,
+        request: &rmcp::model::CallToolRequestParams,
+    ) -> ResponsePolicy {
+        let primary_adapter = scanner::load_adapter(&self.root, None);
+        let fallback_policy = primary_adapter
+            .as_ref()
+            .map(|adapter| adapter.response.clone())
+            .unwrap_or_default();
+        if is_task_tool(&request.name) {
+            return fallback_policy;
+        }
+
+        let requested_worktree = request
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("worktree"))
+            .and_then(Value::as_str);
+        let Ok((target_root, _)) =
+            self.resolve_target_root_and_db(requested_worktree, &primary_adapter)
+        else {
+            return fallback_policy;
+        };
+        if target_root == self.root {
+            return fallback_policy;
+        }
+
+        scanner::load_adapter(&target_root, None)
+            .map(|adapter| adapter.response)
+            .unwrap_or(fallback_policy)
     }
 }
 
@@ -606,6 +762,43 @@ fn is_task_tool(name: &str) -> bool {
     )
 }
 
+fn operation_kind(name: &str, arguments: Option<&serde_json::Map<String, Value>>) -> OperationKind {
+    match name {
+        "task_list" | "task_claim" | "task_submit" | "task_manage" | "task_blackboard" => {
+            OperationKind::Task
+        }
+        "forge_guide" => OperationKind::Guide,
+        "session_checkpoint" => OperationKind::Checkpoint,
+        "code_map_query"
+            if arguments
+                .and_then(|arguments| arguments.get("operation"))
+                .and_then(Value::as_str)
+                == Some("sql") =>
+        {
+            OperationKind::Sql
+        }
+        "code_map_analyze"
+            if arguments
+                .and_then(|arguments| arguments.get("target"))
+                .and_then(Value::as_str)
+                .is_some_and(looks_like_sql) =>
+        {
+            OperationKind::Sql
+        }
+        _ => OperationKind::Navigation,
+    }
+}
+
+fn looks_like_sql(value: &str) -> bool {
+    let value = value.trim_start().to_ascii_lowercase();
+    value.starts_with("select ")
+        || value.starts_with("select\n")
+        || value == "select"
+        || value.starts_with("with ")
+        || value.starts_with("with\n")
+        || value == "with"
+}
+
 #[tool_handler(
     name = "contextunity-forge-mcp",
     version = "0.3.0",
@@ -617,6 +810,25 @@ impl ServerHandler for Server {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let format_value = request
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("format"));
+        let output_format = match format_value {
+            None => OutputFormat::default(),
+            Some(value) => match value
+                .as_str()
+                .and_then(|requested| OutputFormat::parse(requested).ok())
+            {
+                Some(format) => format,
+                None => {
+                    let policy = self.invalid_format_policy(&request);
+                    return Ok(response::invalid_format(value, &policy).into());
+                }
+            },
+        };
+        let tool_name = request.name.clone();
+        let operation = operation_kind(&tool_name, request.arguments.as_ref());
         let rejected = rejected_selector_fields(&request.name, request.arguments.as_ref());
         if !rejected.is_empty() {
             return Ok(response::rejected_arguments(&rejected).into());
@@ -633,7 +845,15 @@ impl ServerHandler for Server {
             match self.resolve_target_root_and_db(requested_worktree, &primary_adapter) {
                 Ok(pair) => pair,
                 Err(error) => {
-                    return Ok(response::result(Err(error), &ResponsePolicy::default()).into());
+                    return Ok(response::result_for(
+                        Err(error),
+                        &ResponsePolicy::default(),
+                        output_format,
+                        operation,
+                        &tool_name,
+                        None,
+                    )
+                    .into());
                 }
             }
         };
@@ -670,9 +890,15 @@ impl ServerHandler for Server {
                 Ok(response::enforce(result, &policy).into())
             }
             Ok(result) => Ok(result),
-            Err(error) => {
-                Ok(response::result(Err(anyhow::anyhow!(error.to_string())), &policy).into())
-            }
+            Err(error) => Ok(response::result_for(
+                Err(anyhow::anyhow!(error.to_string())),
+                &policy,
+                output_format,
+                operation,
+                &tool_name,
+                None,
+            )
+            .into()),
         };
         if let Some((tool_name, tool_args)) = debug_request {
             let output_val = match &final_response {

@@ -19,6 +19,16 @@ A client receives three texts for this server. Keep each fact in one layer.
 
 Selector grammar, SQL shape, proof objects, and examples stay in this page and in `forge_guide`. Verify a changed sentence against the handler in `src/mcp/tools.rs` and the query implementation it calls. Connection and the first-call check stay in [MCP setup](mcp-setup.md).
 
+## Output format
+
+Every tool schema accepts an optional `format` value: `markdown` or `json`.
+Omit it for readable Markdown; `format: "json"` returns the semantic value as
+JSON text for clients that decode the result. The same selection is available on
+navigation, task, guide, and checkpoint tools. Invalid values are rejected before
+the operation runs, including checkpoint writes. Formatting does not change query
+scope, pagination, task evidence, or saved checkpoint content. SQL rows and
+checkpoint values remain opaque user data.
+
 ## Tools
 
 | Tool | Purpose and main input |

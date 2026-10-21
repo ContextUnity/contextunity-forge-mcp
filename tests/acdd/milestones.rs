@@ -9,6 +9,8 @@ fn cli_migration_reconciles_manifests_and_creation_selects_one_task() {
     let invoke = |action: &str| {
         std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
             .args([
+                "--format",
+                "json",
                 "--root",
                 root.0.to_str().unwrap(),
                 "migrate",
@@ -53,7 +55,14 @@ fn cli_migration_reconciles_manifests_and_creation_selects_one_task() {
     root.write("docs/milestones/archive/010-test.md", SPEC);
     for action in ["preview", "apply", "verify"] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
-            .args(["--root", root.0.to_str().unwrap(), "migrate", action])
+            .args([
+                "--format",
+                "json",
+                "--root",
+                root.0.to_str().unwrap(),
+                "migrate",
+                action,
+            ])
             .output()
             .unwrap();
         assert!(
@@ -67,7 +76,13 @@ fn cli_migration_reconciles_manifests_and_creation_selects_one_task() {
 }
 fn milestone_cli(root: &ScopedWorkspace, args: &[&str]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
-        .args(["--root", root.0.to_str().unwrap(), "milestone"])
+        .args([
+            "--format",
+            "json",
+            "--root",
+            root.0.to_str().unwrap(),
+            "milestone",
+        ])
         .args(args)
         .output()
         .unwrap()
@@ -711,6 +726,8 @@ fn milestone_init_scaffolds_numbered_planned_and_active_documents() {
     );
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args([
+            "--format",
+            "json",
             "--root",
             root.0.to_str().unwrap(),
             "milestone",
@@ -2576,6 +2593,8 @@ fn first_cli_task_claim_includes_claim_guidance_and_activates_planned_milestone(
     let id = milestone.task_id(&milestone.tasks[0]);
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args([
+            "--format",
+            "json",
             "--root",
             root.0.to_str().unwrap(),
             "task",
@@ -2662,7 +2681,14 @@ fn deferred_final_task_context_survives_delivery_and_prunes_blackboard() {
 
     let blackboard = |args: &[&str]| {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
-            .args(["--root", root.0.to_str().unwrap(), "task", "blackboard"])
+            .args([
+                "--format",
+                "json",
+                "--root",
+                root.0.to_str().unwrap(),
+                "task",
+                "blackboard",
+            ])
             .args(args)
             .output()
             .unwrap();
@@ -4829,7 +4855,14 @@ fn bulk_sync_rejects_invalid_numbered_manifests_in_custom_directories() {
             let invoke = |reference: Option<&str>| {
                 let mut command =
                     std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
-                command.args(["--root", root.0.to_str().unwrap(), "task", "sync"]);
+                command.args([
+                    "--format",
+                    "json",
+                    "--root",
+                    root.0.to_str().unwrap(),
+                    "task",
+                    "sync",
+                ]);
                 if let Some(reference) = reference {
                     command.arg(reference);
                 } else {

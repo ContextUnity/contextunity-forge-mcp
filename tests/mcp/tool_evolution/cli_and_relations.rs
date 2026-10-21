@@ -13,17 +13,20 @@ fn mcp_exposes_and_executes_evolution_tools() {
     let cases = [
         (
             "get_code_snippet",
-            serde_json::json!({"selector":"compute"}),
+            serde_json::json!({"selector":"compute","format":"json"}),
         ),
         (
             "code_map_inspect",
-            serde_json::json!({"selector":"compute","show_source":true}),
+            serde_json::json!({"selector":"compute","show_source":true,"format":"json"}),
         ),
         (
             "code_map_search",
-            serde_json::json!({"pattern":"comp*","kind":"function"}),
+            serde_json::json!({"pattern":"comp*","kind":"function","format":"json"}),
         ),
-        ("code_map_tests", serde_json::json!({"selector":"compute"})),
+        (
+            "code_map_tests",
+            serde_json::json!({"selector":"compute","format":"json"}),
+        ),
     ];
     for (i, (name, arguments)) in cases.into_iter().enumerate() {
         let (_, response) = client.call(name, arguments);
@@ -37,7 +40,7 @@ fn mcp_exposes_and_executes_evolution_tools() {
         } else {
             assert!(!payload["nodes"]["items"].as_array().unwrap().is_empty());
             assert!(payload["nodes"]["total"].as_u64().unwrap() > 0);
-            assert!(payload["nodes"]["generation"].is_string());
+            assert!(payload["nodes"].get("generation").is_none());
         }
     }
 }

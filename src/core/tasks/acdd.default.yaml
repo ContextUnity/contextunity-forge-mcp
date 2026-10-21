@@ -1,6 +1,6 @@
 subtask_dod:
   - "Contract slice resolution: Demonstrably resolves an explicit, bounded slice of the contract without breaking boundaries."
-  - "Milestone & ADR alignment: Builds upon existing architectural seams rather than ad-hoc isolated patches."
+  - "Milestone & ADR alignment: Builds upon and strengthens existing architectural and test seams rather than authoring isolated patches or duplicate test functions."
   - "Production-seam evidence: Validates through real production paths rather than synthetic stubs mocking away system complexity."
   - "Systemic non-regression: Zero warnings/lints and complete behavioral preservation of untouched invariants."
   - "Anti-looping invariant: If an approach fails after 2 iterations, halt, post blockers to task_blackboard, retain fail-closed behavior, and escalate."
@@ -19,7 +19,7 @@ roles:
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "As contract author, define the production-seam contract and red proof. For greenfield/new modules in task.scope, you MUST create minimal file scaffolding with compiling production stubs and module/import declarations so AST imports resolve before index refresh, then post a build-targeted draft for the builder."
+    guidance: "As contract author, define the production-seam contract and runtime-red proof (exit code 101). For existing capabilities, extend existing domain seam tests additively and subsume weaker duplicates; author new tests only for greenfield boundaries with compiling production stubs. Post a build-targeted draft for the builder."
   builder:
     mode: subagent
     reuse_on_reject: true
@@ -96,7 +96,7 @@ gates:
       - "search_docs"
       - "code_map_inspect"
     steps:
-      - "Author a sensitive failing seam test in the designated test suite (for greenfield/new modules in task.scope, create minimal file scaffolding with compiling production stubs and module/import declarations so AST imports resolve; or verify existing seam directly with exit code 0 if proof_policy: direct-proof or deferred-final-test)."
+      - "Author or extend a sensitive failing seam test in the designated test suite (extend existing domain seam tests for existing capabilities, subsuming weaker duplicates; for greenfield, create minimal compiling stubs; or verify existing seam directly with exit code 0 if direct-proof/deferred-final-test)."
       - "Post the contract draft to task_blackboard with topic=draft and gate=\"build\" so the builder receives a targeted handoff."
       - "Submit contract proof with seam test and red_exit_code."
 

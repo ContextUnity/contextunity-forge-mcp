@@ -11,11 +11,12 @@ pub mod reload;
 /// Implements task support.
 pub mod task;
 use crate::{
+    core::format::{self, OperationKind, OutputFormat},
     core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols, traversal, writer},
 };
 use anyhow::{bail, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -33,9 +34,31 @@ pub struct Cli {
     #[arg(long, global = true, env = "FORGE_DB")]
     /// Optional db value.
     pub db: Option<PathBuf>,
+    #[arg(long, global = true, value_enum, default_value = "markdown")]
+    /// Output format: markdown (default) or json.
+    pub format: CliOutputFormat,
     #[command(subcommand)]
     /// Optional command value.
     pub command: Option<Command>,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+/// Output representation selected for command results.
+pub enum CliOutputFormat {
+    #[default]
+    /// Human-readable Markdown, selected when `--format` is omitted.
+    Markdown,
+    /// JSON for callers that parse stdout.
+    Json,
+}
+
+impl From<CliOutputFormat> for OutputFormat {
+    fn from(value: CliOutputFormat) -> Self {
+        match value {
+            CliOutputFormat::Markdown => Self::Markdown,
+            CliOutputFormat::Json => Self::Json,
+        }
+    }
 }
 #[derive(Subcommand, Debug)]
 /// Enumerates the supported command values.
@@ -289,6 +312,94 @@ pub enum AstCommand {
 pub fn default_db(root: &std::path::Path) -> PathBuf {
     root.join(".forge/code-map.sqlite")
 }
+
+fn command_presentation(command: &Command) -> (OperationKind, &'static str, Option<bool>) {
+    match command {
+        Command::Task { command } => {
+            let title = match command {
+                task::TaskCommand::List { .. } => "task_list",
+                task::TaskCommand::Claim { .. } => "task_claim",
+                task::TaskCommand::Submit { .. } => "task_submit",
+                task::TaskCommand::Blackboard { .. } => "task_blackboard",
+                task::TaskCommand::Next { .. }
+                | task::TaskCommand::Subtask { .. }
+                | task::TaskCommand::Reset { .. }
+                | task::TaskCommand::Reopen { .. }
+                | task::TaskCommand::Context { .. }
+                | task::TaskCommand::Inspect { .. }
+                | task::TaskCommand::Create { .. }
+                | task::TaskCommand::Sync { .. }
+                | task::TaskCommand::ExtendScope { .. }
+                | task::TaskCommand::Delete { .. } => "task_manage",
+                task::TaskCommand::Cleanup => "task result",
+            };
+            (OperationKind::Task, title, None)
+        }
+        Command::Milestone { .. } => (OperationKind::Task, "task result", None),
+        Command::Guide { .. } => (OperationKind::Guide, "forge_guide", None),
+        Command::Checkpoint { .. } => (OperationKind::Checkpoint, "session_checkpoint", None),
+        Command::Ast { .. } => (OperationKind::Navigation, "ast_grep_search", None),
+        Command::Query {
+            command: QueryCommand::Run { operation, .. },
+        } => (
+            if operation == "sql" {
+                OperationKind::Sql
+            } else {
+                OperationKind::Navigation
+            },
+            "code_map_query",
+            None,
+        ),
+        Command::Query {
+            command: QueryCommand::Analyze { target },
+        } => (
+            if looks_like_sql(target) {
+                OperationKind::Sql
+            } else {
+                OperationKind::Navigation
+            },
+            "code_map_analyze",
+            None,
+        ),
+        Command::Query { command } => match command {
+            QueryCommand::Overview => (OperationKind::Navigation, "code_map_overview", None),
+            QueryCommand::Inspect { .. } => {
+                (OperationKind::Navigation, "code_map_inspect", Some(false))
+            }
+            QueryCommand::Search { .. } => (OperationKind::Navigation, "code_map_search", None),
+            QueryCommand::Tests { .. } => (OperationKind::Navigation, "code_map_tests", None),
+            QueryCommand::Impact { .. } => (OperationKind::Navigation, "code_map_impact", None),
+            QueryCommand::Explain { .. } => {
+                (OperationKind::Navigation, "code_map_explain", Some(true))
+            }
+            QueryCommand::Remove { .. } => {
+                (OperationKind::Navigation, "code_map_prove_removal", None)
+            }
+            QueryCommand::Analyze { .. } | QueryCommand::Run { .. } => unreachable!(),
+        },
+        Command::Docs { command } => match command {
+            DocsCommand::Search { .. } => (OperationKind::Navigation, "search_docs", None),
+            DocsCommand::Get { .. } => (OperationKind::Navigation, "get_doc", None),
+        },
+        Command::Build { .. } => (OperationKind::General, "build result", None),
+        Command::Scan { .. } => (OperationKind::General, "scan result", None),
+        Command::Delta { .. } => (OperationKind::General, "delta result", None),
+        Command::Migrate { .. } => (OperationKind::General, "migrate result", None),
+        Command::Reload => (OperationKind::General, "reload result", None),
+        Command::Serve => (OperationKind::General, "server", None),
+    }
+}
+
+fn looks_like_sql(value: &str) -> bool {
+    let value = value.trim_start().to_ascii_lowercase();
+    value.starts_with("select ")
+        || value.starts_with("select\n")
+        || value == "select"
+        || value.starts_with("with ")
+        || value.starts_with("with\n")
+        || value == "with"
+}
+
 fn cli_page(limit: usize) -> Result<QueryOptions> {
     QueryOptions::resolve(&ResponsePolicy::default(), Some(limit), 0, None, None)
 }
@@ -338,9 +449,11 @@ fn open_or_rebuild(db: &Path, root: &Path) -> Result<crate::db::reader::LockedCo
 impl Cli {
     /// Performs run.
     pub async fn run(self) -> Result<()> {
+        let output_format = OutputFormat::from(self.format);
         let root = command_root(self.root.as_deref(), None)?;
         let db = self.db.clone().unwrap_or_else(|| default_db(&root));
         let command = self.command.unwrap_or(Command::Serve);
+        let (operation, title, explain) = command_presentation(&command);
         let result: Value = match command {
             Command::Migrate { command } => migrate::run(&root, command)?,
             Command::Task { command } => task::run(&root, command)?,
@@ -568,7 +681,9 @@ impl Cli {
                 }
             }
         };
-        let formatted = serde_json::to_string_pretty(&result)?;
+        let mut result = result;
+        format::compact(&mut result, operation, explain);
+        let formatted = format::render(&result, output_format, title);
         if let Ok(adapter) = crate::engine::scanner::load_adapter(&root, None) {
             if adapter.debug {
                 let cli_cmd = {

@@ -1,105 +1,20 @@
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+//! Compatibility exports for the shared core response compactor.
 
-/// The short hash len value.
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub use crate::core::format::shorten_hash;
+
+/// Short hash width retained for callers that display verified metadata hashes.
 pub const SHORT_HASH_LEN: usize = 8;
 
-/// Returns an eight-byte prefix when it ends on a UTF-8 character boundary.
-pub fn shorten_hash(hash: &str) -> &str {
-    if hash.len() > SHORT_HASH_LEN {
-        hash.get(..SHORT_HASH_LEN).unwrap_or(hash)
-    } else {
-        hash
-    }
-}
-
-/// Shortens hashes in verified top-level MCP metadata envelopes and paging envelopes.
+/// Shortens only explicit, verified metadata hash fields.
+/// Continuation generations and nested/user values remain opaque.
 pub fn shorten_hashes_in_value(value: &mut Value) {
-    let Some(object) = value.as_object_mut() else {
-        return;
-    };
-
-    // Shorten top-level generation if present
-    if let Some(Value::String(gen)) = object.get_mut("generation") {
-        *gen = shorten_hash(gen).to_owned();
-    }
-
-    if object
-        .get("freshness")
-        .and_then(Value::as_object)
-        .is_some_and(is_freshness_envelope)
-    {
-        if let Some(freshness) = object.get_mut("freshness").and_then(Value::as_object_mut) {
-            shorten_fields(freshness, &["output_root", "corpus_hash"]);
-        }
-    }
-
-    if object
-        .get("metadata")
-        .and_then(Value::as_object)
-        .is_some_and(is_tool_metadata)
-    {
-        if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
-            shorten_fields(metadata, &["output_root", "corpus_hash", "generation"]);
-        }
-    }
-
-    // Shorten generation in top-level paging envelopes (e.g. nodes, components, languages, items, matches, rows)
-    for val in object.values_mut() {
-        if let Some(child_map) = val.as_object_mut() {
-            if is_paging_envelope(child_map) {
-                if let Some(Value::String(gen)) = child_map.get_mut("generation") {
-                    *gen = shorten_hash(gen).to_owned();
-                }
-            }
-        }
-    }
+    crate::core::format::shorten_metadata_hashes(value);
 }
 
-fn is_paging_envelope(object: &Map<String, Value>) -> bool {
-    object.contains_key("offset")
-        && object.contains_key("limit")
-        && object.get("generation").is_some_and(Value::is_string)
-}
-
-fn is_freshness_envelope(object: &Map<String, Value>) -> bool {
-    const ALLOWED: [&str; 7] = [
-        "status",
-        "output_root",
-        "corpus_hash",
-        "checked_at_unix_ms",
-        "files_checked",
-        "inventory_scan_ms",
-        "refresh",
-    ];
-
-    object.get("status").is_some_and(Value::is_string)
-        && object.get("output_root").is_some_and(Value::is_string)
-        && object.get("corpus_hash").is_some_and(Value::is_string)
-        && object.get("refresh").is_some_and(Value::is_string)
-        && object.keys().all(|k| ALLOWED.contains(&k.as_str()))
-}
-
-fn is_tool_metadata(object: &Map<String, Value>) -> bool {
-    object.get("generation").is_some_and(Value::is_string)
-        && object.iter().all(|(key, value)| match key.as_str() {
-            "generation" | "status" | "refresh" | "output_root" | "corpus_hash" => {
-                value.is_string()
-            }
-            "files_checked" => value.as_u64().is_some(),
-            _ => false,
-        })
-}
-
-fn shorten_fields(object: &mut Map<String, Value>, fields: &[&str]) {
-    for field in fields {
-        if let Some(Value::String(hash)) = object.get_mut(*field) {
-            *hash = shorten_hash(hash).to_owned();
-        }
-    }
-}
-
-/// Unified tool metadata format for MCP responses.
+/// Unified tool metadata format retained for source compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMetadata {
     /// The generation value.
@@ -121,206 +36,9 @@ pub struct ToolMetadata {
     pub corpus_hash: Option<String>,
 }
 
-/// Formats and orders metadata at the end of an MCP tool response object.
-///
-/// Ensures:
-/// 1. All primary content fields appear FIRST.
-/// 2. Verbose internal timing/diagnostics are stripped from `freshness`.
-/// 3. Display hashes are shortened only in verified top-level freshness or metadata envelopes.
-/// 4. Metadata fields (`metadata`, `generation`, `freshness`) are moved to the VERY END of the object.
+/// Compacts only recognized navigation metadata.
 pub fn finalize_mcp_metadata(value: &mut Value) {
-    finalize_mcp_metadata_for_symbol(value, None);
-}
-
-pub(crate) fn finalize_mcp_metadata_for_symbol(value: &mut Value, explain: Option<bool>) {
-    shorten_hashes_in_value(value);
-
-    if let Value::Object(map) = value {
-        if let Some(explain) = explain {
-            sparse_symbol(map, explain);
-        }
-        let (has_page, all_empty, paged_generation) = map
-            .values()
-            .filter_map(Value::as_object)
-            .filter(|page| is_paging_envelope(page))
-            .fold(
-                (false, true, false),
-                |(_, all_empty, same_generation), page| {
-                    (
-                        true,
-                        all_empty && empty_page(page),
-                        same_generation || page.get("generation") == map.get("generation"),
-                    )
-                },
-            );
-        let empty_result = has_page && all_empty;
-        for (key, child) in map.iter_mut() {
-            if key != "rows" {
-                compact_graph_value(child);
-            }
-        }
-        if paged_generation && !map.contains_key("counts") {
-            map.remove("generation");
-        }
-        // Strip verbose freshness timestamps
-        let mut matched_no_refresh = false;
-        if let Some(Value::Object(fmap)) = map.get_mut("freshness") {
-            if is_freshness_envelope(fmap) {
-                fmap.remove("checked_at_unix_ms");
-                fmap.remove("inventory_scan_ms");
-                if matches!(
-                    fmap["status"].as_str(),
-                    Some("matched" | "source_inventory_matched")
-                ) && fmap["refresh"] == "none"
-                {
-                    matched_no_refresh = true;
-                    let generation = fmap["output_root"].clone();
-                    fmap.clear();
-                    fmap.insert("status".into(), Value::String("matched".into()));
-                    fmap.insert("generation".into(), generation);
-                }
-            }
-        }
-
-        // Extract metadata fields
-        let metadata = map.remove("metadata");
-        let generation = map.remove("generation");
-        let freshness = map
-            .remove("freshness")
-            .filter(|_| !empty_result || !matched_no_refresh);
-
-        // Re-insert at the end in deterministic order
-        if let Some(meta) = metadata {
-            map.insert("metadata".into(), meta);
-        }
-        if let Some(gen) = generation {
-            map.insert("generation".into(), gen);
-        }
-        if let Some(fresh) = freshness {
-            map.insert("freshness".into(), fresh);
-        }
-    }
-}
-
-fn empty_collection(value: &Value) -> bool {
-    value.as_array().is_some_and(Vec::is_empty)
-        || value.get("total").is_some_and(|total| total == 0)
-        || (value.get("total").is_none()
-            && value
-                .get("items")
-                .and_then(Value::as_array)
-                .is_some_and(Vec::is_empty))
-        || value.as_object().is_some_and(Map::is_empty)
-}
-
-fn empty_page(page: &Map<String, Value>) -> bool {
-    page.get("has_more") != Some(&Value::Bool(true))
-        && !page_limited(page)
-        && (page.get("total").is_some_and(|total| total == 0)
-            || page
-                .get("items")
-                .and_then(Value::as_array)
-                .is_some_and(Vec::is_empty))
-}
-
-fn page_limited(page: &Map<String, Value>) -> bool {
-    ["computation_truncated", "byte_limited"]
-        .iter()
-        .any(|field| page.get(*field) == Some(&Value::Bool(true)))
-}
-
-fn sparse_symbol(object: &mut Map<String, Value>, explain: bool) {
-    for key in ["documents", "coverage"] {
-        if object.get(key).is_some_and(empty_collection) {
-            object.remove(key);
-        }
-    }
-    if explain {
-        let mut relations = Vec::new();
-        for key in [
-            "calls",
-            "callers",
-            "implements",
-            "implementors",
-            "overrides",
-            "dependencies",
-            "unwired",
-            "incoming",
-            "outgoing",
-        ] {
-            if object.get(key).is_some_and(empty_collection) {
-                object.remove(key);
-            } else if object.contains_key(key) {
-                relations.push(key);
-            }
-        }
-        object.insert("relations".into(), serde_json::json!(relations));
-    }
-}
-
-fn compact_graph_value(value: &mut Value) {
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                compact_graph_value(item);
-            }
-        }
-        Value::Object(object) => {
-            if ["id", "kind", "name", "path"]
-                .iter()
-                .all(|key| object.get(*key).is_some_and(Value::is_string))
-            {
-                for flag in ["is_test", "generated"] {
-                    if let Some(value) = object.get_mut(flag) {
-                        if value == false || value == 0 {
-                            object.remove(flag);
-                        } else if value == true || value.as_i64().is_some_and(|n| n != 0) {
-                            *value = Value::Bool(true);
-                        }
-                    }
-                }
-                if object.get("qualname") == object.get("name") {
-                    object.remove("qualname");
-                }
-            }
-            if is_paging_envelope(object) {
-                if empty_page(object) {
-                    for field in [
-                        "offset",
-                        "limit",
-                        "has_more",
-                        "generation",
-                        "next_offset",
-                        "continuation_hint",
-                    ] {
-                        object.remove(field);
-                    }
-                } else {
-                    shorten_fields(object, &["generation"]);
-                }
-                if !page_limited(object) {
-                    object.remove("continuation_hint");
-                }
-                if object.get("has_more") == Some(&Value::Bool(false)) {
-                    object.remove("next_offset");
-                }
-            }
-            for key in ["items", "nodes", "matches", "grouped_by_file"] {
-                if let Some(child) = object.get_mut(key) {
-                    if key == "grouped_by_file" {
-                        if let Some(groups) = child.as_object_mut() {
-                            for group in groups.values_mut() {
-                                compact_graph_value(group);
-                            }
-                        }
-                    } else {
-                        compact_graph_value(child);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
+    crate::core::format::finalize_metadata(value);
 }
 
 #[cfg(test)]
@@ -357,17 +75,12 @@ mod tests {
 
         finalize_mcp_metadata(&mut response);
 
-        let map = response.as_object().unwrap();
-        let keys: Vec<&String> = map.keys().collect();
-        assert_eq!(
-            keys,
-            vec!["components", "metadata", "generation", "freshness"]
-        );
-
-        assert_eq!(response["generation"], "abcdef01");
+        assert!(response.get("generation").is_none());
+        assert_eq!(response["components"], json!(["alpha", "beta"]));
+        assert_eq!(response["metadata"], json!([{"key":"schema","value":"7"}]));
         assert_eq!(
             response["freshness"],
-            json!({"status":"matched","generation":"11223344"})
+            json!({"status":"matched","files_checked":100,"refresh":"none"})
         );
         assert!(response["freshness"].get("checked_at_unix_ms").is_none());
         assert!(response["freshness"].get("inventory_scan_ms").is_none());
@@ -400,8 +113,8 @@ mod tests {
 
         finalize_mcp_metadata(&mut response);
 
-        assert_eq!(response["generation"], "a".repeat(8));
-        assert_eq!(response["pages"]["generation"], "b".repeat(8));
+        assert!(response.get("generation").is_none());
+        assert_eq!(response["pages"]["generation"], "b".repeat(64));
         assert_eq!(response["rows"]["items"][0]["generation"], "1234567é");
         assert_eq!(response["rows"]["items"][0]["output_root"], "0123456789");
         assert_eq!(response["metadata"]["output_root"], "metadata-root-1234");
@@ -442,7 +155,7 @@ mod tests {
         );
         assert_eq!(
             response["freshness"],
-            json!({"status":"matched","generation":"01234567"})
+            json!({"status":"matched","files_checked":4,"refresh":"none"})
         );
         assert!(response["freshness"].get("checked_at_unix_ms").is_none());
         assert!(response["freshness"].get("inventory_scan_ms").is_none());
@@ -458,7 +171,10 @@ mod tests {
             }
         });
         finalize_mcp_metadata(&mut tool_metadata);
-        assert_eq!(tool_metadata["metadata"]["generation"], "opaque-g");
+        assert_eq!(
+            tool_metadata["metadata"]["generation"],
+            "opaque-generation-1234"
+        );
         assert_eq!(tool_metadata["metadata"]["output_root"], "01234567");
         assert_eq!(tool_metadata["metadata"]["corpus_hash"], "abcdef01");
 
@@ -522,8 +238,49 @@ mod tests {
             extended_freshness["freshness"]["corpus_hash"],
             "abcdef0123456789"
         );
-        assert!(extended_freshness["freshness"]
-            .get("checked_at_unix_ms")
-            .is_some());
+        assert!(
+            extended_freshness["freshness"]
+                .get("checked_at_unix_ms")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn shortening_is_limited_to_verified_metadata_hashes() {
+        let mut value = json!({
+            "generation":"complete-page-token-1234",
+            "metadata":{"generation":"opaque-token-1234","status":"matched",
+                "refresh":"none","output_root":"root-hash-123456","corpus_hash":"corpus-hash-123456"},
+            "rows":{"items":[{"generation":"sql-value-123456"}]}
+        });
+        shorten_hashes_in_value(&mut value);
+        assert_eq!(value["generation"], "complete-page-token-1234");
+        assert_eq!(value["metadata"]["generation"], "opaque-token-1234");
+        assert_eq!(value["metadata"]["output_root"], "root-has");
+        assert_eq!(value["metadata"]["corpus_hash"], "corpus-h");
+        assert_eq!(value["rows"]["items"][0]["generation"], "sql-value-123456");
+    }
+
+    #[test]
+    fn metadata_compaction_preserves_active_tokens_and_durable_values() {
+        let mut value = json!({
+            "count":0,"complete":false,
+            "nodes":{"total":1,"offset":0,"limit":1,"has_more":false,"next_offset":null,
+                "generation":"inactive-token","items":[{"name":"x"}]},
+            "outgoing":{"total":2,"offset":0,"limit":1,"has_more":true,"next_offset":1,
+                "generation":"active-token","items":[{"name":"y"}]},
+            "task":{"candidate_hash":"candidate-hash-must-remain-complete",
+                "workflow_guidance":{"commands":{"test":"cargo test --test mcp"}}}
+        });
+        finalize_mcp_metadata(&mut value);
+        assert!(value.get("generation").is_none());
+        assert!(value["nodes"].get("generation").is_none());
+        assert_eq!(value["outgoing"]["generation"], "active-token");
+        assert_eq!(value["count"], 0);
+        assert_eq!(value["complete"], false);
+        assert_eq!(
+            value["task"]["candidate_hash"],
+            "candidate-hash-must-remain-complete"
+        );
     }
 }

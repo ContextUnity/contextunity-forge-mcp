@@ -2785,6 +2785,8 @@ fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
     }
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
         .args([
+            "--format",
+            "json",
             "--root",
             root.0.to_str().unwrap(),
             "task",
@@ -7169,6 +7171,8 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
 
         let sync = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
             .args([
+                "--format",
+                "json",
                 "--root",
                 root.0.to_str().unwrap(),
                 "task",
@@ -7188,6 +7192,8 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
             let task_id = synced["tasks"][0]["task_id"].as_str().unwrap();
             let inspect = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
                 .args([
+                    "--format",
+                    "json",
                     "--root",
                     root.0.to_str().unwrap(),
                     "task",
@@ -7211,6 +7217,8 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
             let task_id = synced["tasks"][0]["task_id"].as_str().unwrap();
             let inspect = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
                 .args([
+                    "--format",
+                    "json",
                     "--root",
                     root.0.to_str().unwrap(),
                     "task",

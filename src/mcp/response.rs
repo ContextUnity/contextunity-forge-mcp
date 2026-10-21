@@ -1,3 +1,4 @@
+use crate::core::format::{self, OperationKind, OutputFormat};
 use crate::core::response::{ResponsePolicy, MAX_OUTPUT_BYTES};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Value};
@@ -13,33 +14,65 @@ const ENVELOPE_RESERVE: usize = 256;
 
 /// Performs result.
 pub fn result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
-    result_with_symbol(value, policy, None)
+    result_with_format(value, policy, OutputFormat::default())
 }
 
-pub(crate) fn result_with_symbol(
+/// Formats a public response with an explicit presentation selection.
+pub fn result_with_format(
     value: anyhow::Result<Value>,
     policy: &ResponsePolicy,
+    output_format: OutputFormat,
+) -> CallToolResult {
+    result_for(
+        value,
+        policy,
+        output_format,
+        OperationKind::Navigation,
+        "Result",
+        None,
+    )
+}
+
+pub(crate) fn result_for(
+    value: anyhow::Result<Value>,
+    policy: &ResponsePolicy,
+    output_format: OutputFormat,
+    operation: OperationKind,
+    title: &str,
     explain: Option<bool>,
 ) -> CallToolResult {
     let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
     match value {
-        Ok(mut value) => {
-            super::metadata::finalize_mcp_metadata_for_symbol(&mut value, explain);
+        Ok(value) => {
+            let mut compacted = value.clone();
+            format::compact(&mut compacted, operation, explain);
+            let rendered = format::render(&compacted, output_format, title);
+            if success_text_bytes(&rendered) <= budget {
+                return CallToolResult::success(vec![ContentBlock::text(rendered)]);
+            }
+
             let output_too_large = || {
                 bounded_error(
                     "Output exceeds the response byte limit. Use detail='compact', a smaller limit, or a narrower selector/SQL projection. A single oversized item must be read from its local file; no items were skipped and no continuation was consumed.",
                     budget,
                 )
             };
-            let size = success_json_bytes(&value);
-            if size > budget {
-                let mut excess = size.saturating_sub(budget).saturating_add(256);
-                if !trim_page_tails(&mut value, &mut excess) || success_json_bytes(&value) > budget
-                {
-                    return output_too_large();
-                }
+            // Preserve candidate tokens until tail trimming has decided which pages
+            // remain active; compact only after the retained set is known.
+            let mut trimmed_value = value;
+            let original = format::render(&trimmed_value, output_format, title);
+            let mut excess = success_text_bytes(&original)
+                .saturating_sub(budget)
+                .saturating_add(256);
+            if !trim_page_tails(&mut trimmed_value, &mut excess) {
+                return output_too_large();
             }
-            CallToolResult::success(vec![ContentBlock::text(value.to_string())])
+            format::compact(&mut trimmed_value, operation, explain);
+            let rendered = format::render(&trimmed_value, output_format, title);
+            if success_text_bytes(&rendered) > budget {
+                return output_too_large();
+            }
+            CallToolResult::success(vec![ContentBlock::text(rendered)])
         }
         Err(error) => {
             if let Some(crate::db::reader::SelectorError::Ambiguous {
@@ -113,6 +146,54 @@ pub(crate) fn rejected_arguments(fields: &[String]) -> CallToolResult {
     )])
 }
 
+pub(crate) fn invalid_format(value: &Value, policy: &ResponsePolicy) -> CallToolResult {
+    let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
+    let mut preview_chars = 128;
+    loop {
+        let display_value = match value {
+            Value::String(value) => {
+                let preview = value.chars().take(preview_chars).collect::<String>();
+                let truncated = preview.chars().count() < value.chars().count();
+                let encoded =
+                    serde_json::to_string(&preview).unwrap_or_else(|_| "\"<string>\"".into());
+                if truncated {
+                    format!("{encoded} (truncated)")
+                } else {
+                    encoded
+                }
+            }
+            Value::Array(_) => "<array>".to_owned(),
+            Value::Object(_) => "<object>".to_owned(),
+            _ => value.to_string(),
+        };
+        let message = format!("invalid format {display_value}; expected 'markdown' or 'json'");
+        let result = CallToolResult::error(vec![ContentBlock::text(
+            json!({
+                "error": {
+                    "code": "INVALID_FORMAT",
+                    "message": message
+                }
+            })
+            .to_string(),
+        )]);
+        if serialized_bytes(&result) <= budget {
+            return result;
+        }
+        if !matches!(value, Value::String(_)) || preview_chars == 0 {
+            return CallToolResult::error(vec![ContentBlock::text(
+                json!({
+                    "error": {
+                        "code": "INVALID_FORMAT",
+                        "message": "invalid format value; expected 'markdown' or 'json'"
+                    }
+                })
+                .to_string(),
+            )]);
+        }
+        preview_chars /= 2;
+    }
+}
+
 /// Performs compact mcp metadata.
 pub fn compact_mcp_metadata(value: &mut Value) {
     super::metadata::finalize_mcp_metadata(value);
@@ -120,16 +201,36 @@ pub fn compact_mcp_metadata(value: &mut Value) {
 
 /// Performs checkpoint result.
 pub fn checkpoint_result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
+    checkpoint_result_for(value, policy, OutputFormat::default(), "session_checkpoint")
+}
+
+pub(crate) fn checkpoint_result_for(
+    value: anyhow::Result<Value>,
+    policy: &ResponsePolicy,
+    output_format: OutputFormat,
+    title: &str,
+) -> CallToolResult {
     match value {
         Ok(value) => {
             let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
-            if success_json_bytes(&value) <= budget {
-                CallToolResult::success(vec![ContentBlock::text(value.to_string())])
+            let rendered = format::render(&value, output_format, title);
+            if success_text_bytes(&rendered) <= budget {
+                CallToolResult::success(vec![ContentBlock::text(rendered)])
             } else {
-                bounded_error("Checkpoint output exceeds the response byte limit. Read the complete saved content from the local .forge/checkpoints.json file; checkpoint contents are unchanged and are not paginated.", budget)
+                bounded_error(
+                    "Checkpoint output exceeds the response byte limit. Read the complete saved content from the local .forge/checkpoints.json file; checkpoint contents are unchanged and are not paginated.",
+                    budget,
+                )
             }
         }
-        Err(error) => result(Err(error), policy),
+        Err(error) => result_for(
+            Err(error),
+            policy,
+            output_format,
+            OperationKind::Checkpoint,
+            title,
+            None,
+        ),
     }
 }
 
@@ -171,9 +272,9 @@ fn escaped_json_bytes(value: &Value) -> usize {
     counter.bytes.saturating_add(counter.escaped_bytes)
 }
 
-fn success_json_bytes(value: &Value) -> usize {
-    let empty = CallToolResult::success(vec![ContentBlock::text("")]);
-    serialized_bytes(&empty).saturating_add(escaped_json_bytes(value))
+fn success_text_bytes(text: &str) -> usize {
+    let result = CallToolResult::success(vec![ContentBlock::text(text)]);
+    serialized_bytes(&result)
 }
 
 /// Performs enforce.
@@ -378,8 +479,9 @@ mod tests {
     #[test]
     fn streamed_size_matches_the_serialized_mcp_envelope() {
         let value = json!({"message":"quotes: \"; slash: \\; newline: \n; unicode: λ", "items":[1, true, null]});
-        let actual = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
-        assert_eq!(success_json_bytes(&value), serialized_bytes(&actual));
+        let text = value.to_string();
+        let actual = CallToolResult::success(vec![ContentBlock::text(text.clone())]);
+        assert_eq!(success_text_bytes(&text), serialized_bytes(&actual));
     }
 
     #[test]

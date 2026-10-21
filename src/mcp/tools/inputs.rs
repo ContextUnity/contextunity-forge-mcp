@@ -1,3 +1,4 @@
+use crate::core::format::OutputFormat;
 use crate::core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -21,6 +22,13 @@ fn checkpoint_content_schema(_: &mut schemars::SchemaGenerator) -> schemars::Sch
     serde_json::Map::new().into()
 }
 
+fn output_format_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let mut schema = serde_json::Map::new();
+    schema.insert("type".into(), Value::String("string".into()));
+    schema.insert("enum".into(), serde_json::json!(["markdown", "json"]));
+    schema.into()
+}
+
 #[derive(Default, Deserialize, JsonSchema)]
 /// Represents page input data.
 pub struct PageInput {
@@ -35,8 +43,15 @@ pub struct PageInput {
     pub generation: Option<String>,
     /// Worktree path, exact directory name, or unique hyphen-delimited name suffix. Defaults to the server's linked worktree, otherwise one unique active claim or the primary root. Multiple matches require an explicit path/name.
     pub worktree: Option<String>,
+    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    #[schemars(schema_with = "output_format_schema")]
+    pub format: Option<OutputFormat>,
 }
 impl PageInput {
+    pub(super) fn output_format(&self) -> OutputFormat {
+        self.format.unwrap_or_default()
+    }
+
     pub(super) fn resolve(&self, policy: &ResponsePolicy) -> anyhow::Result<QueryOptions> {
         QueryOptions::resolve(
             policy,
@@ -364,6 +379,9 @@ pub struct Guide {
     #[serde(default)]
     /// Whether force applies.
     pub force: bool,
+    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    #[schemars(schema_with = "output_format_schema")]
+    pub format: Option<OutputFormat>,
 }
 #[derive(Deserialize, JsonSchema)]
 /// Represents checkpoint data.
@@ -375,4 +393,49 @@ pub struct Checkpoint {
     #[schemars(schema_with = "checkpoint_content_schema")]
     /// Optional content value.
     pub content: Option<Value>,
+    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    #[schemars(schema_with = "output_format_schema")]
+    pub format: Option<OutputFormat>,
 }
+
+macro_rules! task_input {
+    ($name:ident, $inner:ty) => {
+        #[derive(JsonSchema)]
+        /// Existing task request fields plus an optional output format.
+        #[schemars(deny_unknown_fields)]
+        pub struct $name {
+            #[serde(flatten)]
+            #[schemars(flatten)]
+            /// The operation's original typed request fields.
+            pub request: $inner,
+            /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+            #[schemars(schema_with = "output_format_schema")]
+            pub format: Option<OutputFormat>,
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                use serde::de::Error as _;
+
+                let mut properties = serde_json::Map::<String, Value>::deserialize(deserializer)?;
+                let format = properties
+                    .remove("format")
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(D::Error::custom)?;
+                let request =
+                    serde_json::from_value(Value::Object(properties)).map_err(D::Error::custom)?;
+                Ok(Self { request, format })
+            }
+        }
+    };
+}
+
+task_input!(TaskListInput, crate::engine::tasks::List);
+task_input!(TaskClaimInput, crate::engine::tasks::Claim);
+task_input!(TaskSubmitInput, crate::engine::tasks::Submit);
+task_input!(TaskManageInput, crate::engine::tasks::Manage);
+task_input!(TaskBlackboardInput, crate::engine::tasks::BlackboardRequest);

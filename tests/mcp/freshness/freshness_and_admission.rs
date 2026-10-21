@@ -553,7 +553,7 @@ fn stdio_rebuild_admission_preserves_corruption_and_rebuilds_valid_legacy_index(
     let mut client = StdioClient::new(&empty);
     let response = client.request_value(
         "tools/call",
-        json!({"name":"code_map_overview","arguments":{"detail":"compact"}}),
+        json!({"name":"code_map_overview","arguments":{"detail":"compact","format":"json"}}),
     );
     assert_eq!(response["result"]["isError"], true, "{response}");
     assert_eq!(fs::read(&database).unwrap(), before);
@@ -570,7 +570,7 @@ fn stdio_rebuild_admission_preserves_corruption_and_rebuilds_valid_legacy_index(
     let mut client = StdioClient::new(&legacy);
     let response = client.request_value(
         "tools/call",
-        json!({"name":"code_map_overview","arguments":{"detail":"compact"}}),
+        json!({"name":"code_map_overview","arguments":{"detail":"compact","format":"json"}}),
     );
     assert_ne!(response["result"]["isError"], true, "{response}");
     let overview: Value =

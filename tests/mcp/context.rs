@@ -1,10 +1,13 @@
 use crate::common::{
     assertions,
-    mcp_client::{invalidate_mcp_connection_cache, run_cli, StdioClient as Client},
+    mcp_client::{invalidate_mcp_connection_cache, run_cli, run_cli_json, StdioClient as Client},
     Workspace,
 };
 use contextunity_forge_mcp::{
-    core::response::{ResponsePolicy, MAX_OUTPUT_BYTES},
+    core::{
+        format::OutputFormat,
+        response::{ResponsePolicy, MAX_OUTPUT_BYTES},
+    },
     engine::scanner,
     mcp::response,
 };
@@ -50,7 +53,7 @@ fn query_cli_with_database(
     let mut full_args = Vec::with_capacity(args.len() + 2);
     full_args.extend(["--db", database]);
     full_args.extend_from_slice(args);
-    let output = run_cli(workspace, &full_args);
+    let output = run_cli_json(workspace, &full_args);
     assertions::assert_command_succeeded(&output);
     serde_json::from_slice(&output.stdout).unwrap()
 }
@@ -59,13 +62,134 @@ fn query_cli_with_database(
 fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     let workspace = Workspace::new();
     workspace.write(
+        "forge-mcp.yaml",
+        "roots: [.]\ntasks_db: .forge/tasks.sqlite\n",
+    );
+    workspace.write(
         "service.py",
         "def entry():\n    return target()\ndef target():\n    return 1\n",
     );
     workspace.write("other.py", "def target():\n    return 2\n");
+    workspace.write("README.md", "# Fixture Guide\nquasarneedle appears here.\n");
     fs::create_dir_all(workspace.path("nested")).unwrap();
     workspace.write("nested/helper.py", "def unique_nested():\n    return 3\n");
     let mut client = Client::new(&workspace);
+
+    let parity_cases = [
+        ("task_list", vec!["task", "list"], json!({}), "# task_list"),
+        (
+            "code_map_inspect",
+            vec!["query", "inspect", "service.py:entry"],
+            json!({"selector":"service.py:entry","show_doc":true,"include_coverage":true,"show_source":false,"limit":100,"detail":"compact"}),
+            "# code_map_inspect",
+        ),
+        (
+            "code_map_explain",
+            vec!["query", "explain", "service.py:entry"],
+            json!({"selector":"service.py:entry","show_doc":true,"include_coverage":true,"show_source":false,"limit":100,"detail":"compact"}),
+            "# code_map_explain",
+        ),
+        (
+            "search_docs",
+            vec!["docs", "search", "quasarneedle"],
+            json!({"query":"quasarneedle","limit":100,"include_excerpt":false}),
+            "# search_docs",
+        ),
+        (
+            "get_doc",
+            vec!["docs", "get", "README.md"],
+            json!({"path_or_id":"README.md","limit":100,"detail":"full"}),
+            "# get_doc",
+        ),
+    ];
+    const FRESHNESS_MARKDOWN: &str = concat!(
+        "- **freshness**\n",
+        "  - **files_checked**: `4`\n",
+        "  - **refresh**: `\"none\"`\n",
+        "  - **status**: `\"matched\"`\n",
+    );
+    let strip_top_level_freshness = |text: &str| {
+        let mut semantic_text = String::new();
+        let mut freshness_block = None;
+        let mut lines = text.split_inclusive('\n').peekable();
+        while let Some(line) = lines.next() {
+            if line.strip_suffix('\n').unwrap_or(line) == "- **freshness**" {
+                assert!(
+                    freshness_block.is_none(),
+                    "multiple top-level freshness blocks"
+                );
+                let mut block = line.to_owned();
+                while lines.peek().is_some_and(|next| next.starts_with("  ")) {
+                    block.push_str(lines.next().unwrap());
+                }
+                freshness_block = Some(block);
+            } else {
+                semantic_text.push_str(line);
+            }
+        }
+        (semantic_text, freshness_block)
+    };
+    for (tool, cli_args, arguments, heading) in parity_cases {
+        let cli_markdown = run_cli(&workspace, &cli_args);
+        assertions::assert_command_succeeded(&cli_markdown);
+        let cli_text = std::str::from_utf8(&cli_markdown.stdout).unwrap();
+        let cli_text = cli_text.strip_suffix('\n').unwrap_or(cli_text);
+
+        let (_, default_response) = client.call(tool, arguments.clone());
+        assert_ne!(
+            default_response["result"]["isError"], true,
+            "{default_response}"
+        );
+        let default_text = default_response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert_eq!(default_text.lines().next(), Some(heading));
+
+        let cli_json = run_cli_json(&workspace, &cli_args);
+        assertions::assert_command_succeeded(&cli_json);
+        let cli_json: Value = serde_json::from_slice(&cli_json.stdout).unwrap();
+        let mut mcp_json = client.payload(tool, arguments.clone());
+        let mcp_freshness = mcp_json
+            .as_object_mut()
+            .and_then(|result| result.remove("freshness"));
+        let (mcp_domain_text, markdown_freshness) = strip_top_level_freshness(default_text);
+        let expected_freshness = json!({"status":"matched","files_checked":4,"refresh":"none"});
+        if let Some(actual) = &mcp_freshness {
+            assert_eq!(actual, &expected_freshness, "{tool} emitted freshness");
+        }
+        if tool == "task_list" {
+            assert!(mcp_freshness.is_none(), "task_list emitted graph freshness");
+        }
+        assert_eq!(
+            markdown_freshness.is_some(),
+            mcp_freshness.is_some(),
+            "{tool} Markdown freshness must match the actual JSON envelope presence"
+        );
+        if mcp_freshness.is_some() {
+            assert_eq!(
+                markdown_freshness.as_deref(),
+                Some(FRESHNESS_MARKDOWN),
+                "{tool} actual Markdown freshness envelope"
+            );
+        } else {
+            assert!(
+                markdown_freshness.is_none(),
+                "{tool} unexpected Markdown freshness"
+            );
+        }
+        assert_eq!(cli_json, mcp_json, "{tool} parsed JSON parity");
+
+        assert_eq!(cli_text, mcp_domain_text, "{tool} default Markdown parity");
+
+        let mut markdown_arguments = arguments.clone();
+        markdown_arguments["format"] = json!("markdown");
+        let (_, explicit_markdown) = client.call(tool, markdown_arguments);
+        assert_eq!(
+            explicit_markdown["result"]["content"][0]["text"], default_text,
+            "{tool} explicit Markdown parity"
+        );
+    }
+
     let first = client.payload(
         "code_map_search",
         json!({"pattern":"target","exact":true,"limit":1,"detail":"full"}),
@@ -89,10 +213,11 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     assert_eq!(second["nodes"]["has_more"], false);
     assert!(second["nodes"].get("next_offset").is_none());
     assert!(second["nodes"].get("continuation_hint").is_none());
-    assert_eq!(
-        second["freshness"],
-        json!({"status":"matched","generation":page["generation"]})
-    );
+    assert_eq!(second["freshness"]["status"], "matched");
+    assert!(second["freshness"].get("output_root").is_none());
+    assert!(second["freshness"].get("corpus_hash").is_none());
+    assert!(second["freshness"].get("generation").is_none());
+    assert!(second["nodes"].get("generation").is_none());
     let inspected = client.payload("code_map_inspect", json!({"selector":selector}));
     assert_eq!(inspected["node"]["id"], selector);
     assert!(inspected.get("documents").is_none());
@@ -364,7 +489,7 @@ fn compact_symbol_page_has_stable_lean_serialization() {
     response::compact_mcp_metadata(&mut payload);
     assert!(payload.to_string().len() * 100 <= original_bytes * 65);
     assert_eq!(payload["nodes"]["items"].as_array().unwrap().len(), 30);
-    assert_eq!(payload["nodes"]["generation"], "aaaaaaaa");
+    assert!(payload["nodes"].get("generation").is_none());
     assert!(payload.get("generation").is_none());
     let stable = payload.clone();
     response::compact_mcp_metadata(&mut payload);
@@ -482,7 +607,7 @@ fn stdio_analyze_preserves_sql_columns_named_like_metadata() {
     .replace('\'', "''");
     let result = client.payload(
         "code_map_analyze",
-        json!({"target":format!("SELECT '1234567é' AS generation, '0123456789' AS output_root, 'abcdef0123456789' AS corpus_hash, '{details}' AS details")}),
+        json!({"format":"json","target":format!("SELECT '1234567é' AS generation, '0123456789' AS output_root, 'abcdef0123456789' AS corpus_hash, '{details}' AS details")}),
     );
     assert_eq!(result["rows"]["items"][0]["generation"], "1234567é");
     assert_eq!(result["rows"]["items"][0]["output_root"], "0123456789");
@@ -510,6 +635,100 @@ fn stdio_analyze_preserves_sql_columns_named_like_metadata() {
         result["rows"]["items"][0]["details"]["metadata"]["output_root"],
         "nested-meta-1234"
     );
+
+    // Real SQL values are opaque even when they resemble operation metadata.
+    let sql = client.payload("code_map_analyze", json!({"format":"json",
+        "target":"SELECT 'sql-generation-must-remain-complete' AS generation, 0 AS count, json('false') AS complete, json('[]') AS items"}));
+    assert_eq!(
+        sql["rows"]["items"][0]["generation"],
+        "sql-generation-must-remain-complete"
+    );
+    assert_eq!(sql["rows"]["items"][0]["count"], 0);
+    assert_eq!(sql["rows"]["items"][0]["items"], "[]");
+
+    assert_eq!(sql["rows"]["items"][0]["complete"], "false");
+    let complete = json!({"total":1,"offset":0,"limit":1,"has_more":false,
+        "next_offset":null,"generation":"inactive-display-generation","items":[{"name":"retained"}]});
+    let durable = json!({"task_id":"project/milestone:task","stage":"build","claim_revision":0,
+        "contract_revision":2,"worker_id":"worker","worktree":"/workspace",
+        "candidate_hash":"candidate-hash-must-remain-complete",
+        "content_hash":"content-hash-must-remain-complete","receipt":{"generation":"durable-generation"},
+        "workflow_guidance":{"rules":["ISOLATION: assigned worktree"],
+            "allowed_write_scope":["src/core/format/"],"subtask_dod":["production seam"],
+            "expected_evidence_template":{"proof":{"build_proof":{"exit_code":0}}},
+            "commands":{"test":"cargo test --test mcp"}},"complete":false});
+    for (case, mut semantic) in [
+        (
+            "inactive",
+            json!({"nodes":complete,"generation":"inactive-display-generation",
+            "count":0,"complete":false,"freshness":{"status":"matched","output_root":"display-root",
+                "corpus_hash":"display-corpus","refresh":"none"}}),
+        ),
+        (
+            "nested",
+            json!({"incoming":complete,"outgoing":{"total":2,"offset":0,"limit":1,
+            "items":[{"name":"retained"}],"has_more":true,"next_offset":1,
+            "generation":"independent-nested-continuation-token"}}),
+        ),
+        (
+            "source",
+            json!({"nodes":complete,"source":"def selected():",
+            "source_preview":{"next_source_offset":3,"has_more":true},
+            "generation":"source-only-continuation-token"}),
+        ),
+        ("durable", durable.clone()),
+    ] {
+        response::compact_mcp_metadata(&mut semantic);
+        match case {
+            "inactive" => {
+                assert!(semantic.get("generation").is_none(), "{semantic}");
+                assert!(semantic["nodes"].get("generation").is_none(), "{semantic}");
+                assert!(
+                    semantic["freshness"].get("generation").is_none(),
+                    "{semantic}"
+                );
+                assert!(
+                    semantic["freshness"].get("output_root").is_none(),
+                    "{semantic}"
+                );
+                assert_eq!(semantic["count"], 0);
+                assert_eq!(semantic["complete"], false);
+            }
+            "nested" => {
+                assert_eq!(
+                    semantic["outgoing"]["generation"],
+                    "independent-nested-continuation-token"
+                );
+                assert_eq!(semantic["outgoing"]["next_offset"], 1);
+            }
+            "source" => assert_eq!(semantic["generation"], "source-only-continuation-token"),
+            "durable" => {
+                assert_eq!(semantic, durable);
+                let rendered = response::result(Ok(semantic), &ResponsePolicy::default());
+                assert_ne!(rendered.is_error, Some(true));
+                let text = rendered.content[0].as_text().unwrap().text.as_str();
+                for preserved in [
+                    "candidate-hash-must-remain-complete",
+                    "content-hash-must-remain-complete",
+                    "durable-generation",
+                    "project/milestone:task",
+                    "ISOLATION: assigned worktree",
+                    "src/core/format/",
+                    "production seam",
+                    "cargo test --test mcp",
+                    "expected_evidence_template",
+                    "claim_revision",
+                    "contract_revision",
+                ] {
+                    assert!(
+                        text.contains(preserved),
+                        "durable guidance lost {preserved}: {text}"
+                    );
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 #[test]
 fn stdio_analyze_rejects_oversized_intermediate_sql_values() {
@@ -545,6 +764,10 @@ fn cold_build_populates_document_fts_search() {
 fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
     let workspace = Workspace::new();
     workspace.write(
+        "forge-mcp.yaml",
+        "roots: [.]\nresponse:\n  max_output_bytes: 1024\n",
+    );
+    workspace.write(
         "README.md",
         &format!("# Huge document\n{}", "\"\\Привіт\t".repeat(30_000)),
     );
@@ -571,6 +794,39 @@ fn stdio_caps_documents_scalars_checkpoints_and_tool_errors() {
         assert!(
             response["result"]["isError"] == true || response.get("error").is_some(),
             "{name}: {response}"
+        );
+    }
+    let invalid_formats = [
+        json!("\0".repeat(2_000)),
+        json!(true),
+        json!({"nested":["\"\\\nПривіт".repeat(2_000)]}),
+    ];
+    for (index, invalid_format) in invalid_formats.into_iter().enumerate() {
+        let name = format!("invalid-format-{index}");
+        let (bytes, response) = client.call(
+            "session_checkpoint",
+            json!({
+                "format":invalid_format,
+                "action":"save",
+                "name":name,
+                "content":{"must_not_persist":true}
+            }),
+        );
+        assert!(
+            bytes <= 1024,
+            "invalid format response frame was {bytes} bytes"
+        );
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let error: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(error["error"]["code"], "INVALID_FORMAT", "{error}");
+        assert!(
+            client
+                .payload("session_checkpoint", json!({"action":"list"}))
+                .get(format!("invalid-format-{index}"))
+                .is_none(),
+            "invalid format persisted checkpoint invalid-format-{index}"
         );
     }
     let (_, unknown) = client.call(&"\"\\Привіт".repeat(30_000), json!({}));
@@ -618,6 +874,36 @@ fn stdio_byte_pruning_continues_after_exactly_the_emitted_rows() {
         generation = page["generation"].clone();
     }
     assert_eq!(seen, (0..17).collect::<Vec<_>>());
+
+    // This real response boundary must decide token liveness after byte trimming.
+    let policy = ResponsePolicy {
+        max_output_bytes: 2048,
+        ..ResponsePolicy::default()
+    };
+    let bounded = response::result(
+        Ok(json!({"nodes":{"total":3,"offset":0,"limit":3,
+        "has_more":false,"next_offset":null,"generation":"tail-trim-continuation-token",
+        "items":[{"name":"first-retained","text":"x".repeat(800)},
+            {"name":"middle","text":"x".repeat(800)},
+            {"name":"last-omitted","text":"x".repeat(800)}]}})),
+        &policy,
+    );
+    assert_ne!(bounded.is_error, Some(true), "{bounded:?}");
+    assert!(response::serialized_bytes(&bounded) <= policy.max_output_bytes - 256);
+    let text = bounded.content[0].as_text().unwrap().text.as_str();
+    for retained in ["first-retained", "tail-trim-continuation-token", "offset=1"] {
+        assert!(
+            text.contains(retained),
+            "tail trimming lost {retained}: {text}"
+        );
+    }
+    assert!(
+        !text.contains("last-omitted"),
+        "fixture did not exercise tail trimming: {text}"
+    );
+    let oversized = response::result(Ok(json!({"scalar":"x".repeat(5000)})), &policy);
+    assert_eq!(oversized.is_error, Some(true));
+    assert!(response::serialized_bytes(&oversized) <= policy.max_output_bytes - 256);
 }
 #[test]
 fn adapter_policy_applies_without_changing_fact_identity_and_rejects_invalid_bounds() {
@@ -636,7 +922,8 @@ fn adapter_policy_applies_without_changing_fact_identity_and_rejects_invalid_bou
     workspace.write("forge-mcp.yaml", "roots: [.]\nresponse:\n  detail: full\n  page_size: 3\n  max_output_bytes: 2048\n  source_context:\n    max_body_lines: 10\n");
     let second = scanner::load_adapter(workspace.root(), None).unwrap();
     assert_eq!(first.digest, second.digest);
-    let (bytes, response) = client.call("get_doc", json!({"path_or_id":"README.md"}));
+    let (bytes, response) =
+        client.call("get_doc", json!({"path_or_id":"README.md","format":"json"}));
     assert!(bytes <= 2048, "{bytes}");
     assert_ne!(response["result"]["isError"], true, "{response}");
     assert_eq!(fs::metadata(database).unwrap().modified().unwrap(), before);
@@ -675,13 +962,20 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
         .map(|i| format!("def symbol_{i:03}():\n    return {i}\n"))
         .collect::<String>();
     workspace.write("service.py", &source);
+    let body = (0..12)
+        .map(|i| format!("    value_{i} = {i}\n"))
+        .collect::<String>();
+    workspace.write(
+        "preview.py",
+        &format!("def selected():\n{body}    return 0\n"),
+    );
     let mut client = Client::new(&workspace);
     let initial = client.payload(
         "code_map_search",
         json!({"pattern":"symbol_*","kind":"function"}),
     );
     let generation = initial["nodes"]["generation"].as_str().unwrap();
-    assert_eq!(generation.len(), 8);
+    assert!(!generation.is_empty());
     assert_eq!(initial["nodes"]["limit"], 30);
     assert_eq!(initial["nodes"]["items"].as_array().unwrap().len(), 30);
     assert_eq!(initial["nodes"]["total"], 125);
@@ -704,6 +998,42 @@ fn stdio_default_pages_and_stale_continuation_are_explicit() {
         json!({"pattern":"symbol_*","offset":30,"generation":initial["nodes"]["generation"]}),
     );
     assert_eq!(stale["result"]["isError"], true);
+
+    let listed = client.request_value("tools/list", json!({}));
+    for tool in listed["result"]["tools"].as_array().unwrap() {
+        let format = &tool["inputSchema"]["properties"]["format"];
+        let schema = format.to_string();
+        assert!(
+            schema.contains("markdown") && schema.contains("json"),
+            "tool {} omits format selection: {format}",
+            tool["name"]
+        );
+    }
+    // Source-only continuation must retain a usable token with every collection complete.
+    let source = client.payload(
+        "get_code_snippet",
+        json!({"selector":"selected",
+        "max_body_lines":3,"format":"json"}),
+    );
+    let offset = source["source_preview"]["next_source_offset"]
+        .as_u64()
+        .unwrap();
+    assert!(offset > 0, "{source}");
+    let token = source["generation"]
+        .as_str()
+        .expect("source continuation requires generation");
+    let resumed = client.payload(
+        "get_code_snippet",
+        json!({"selector":"selected",
+        "max_body_lines":3,"source_offset":offset,"generation":token,"format":"json"}),
+    );
+    assert_eq!(resumed["source_preview"]["body_offset"], offset);
+    let (_, stale) = client.call(
+        "get_code_snippet",
+        json!({"selector":"selected",
+        "source_offset":offset,"generation":"stale-token","format":"json"}),
+    );
+    assert_eq!(stale["result"]["isError"], true, "{stale}");
 }
 #[cfg(feature = "lang-python")]
 #[test]
@@ -927,15 +1257,25 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
         let stored = fs::read(workspace.path(".forge/checkpoints.json")).unwrap();
         let persisted: Value = serde_json::from_slice(&stored).unwrap();
         assert_eq!(persisted["entries"][name], value);
-        let (_, response) = client.call("session_checkpoint", json!({"action":"get","name":name}));
-        assert_eq!(
-            response["result"]["isError"], true,
-            "oversized {name} get created a fabricated page"
-        );
-        assert!(response["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains(".forge/checkpoints.json"));
+        for format in [None, Some("markdown"), Some("json")] {
+            let mut arguments = json!({"action":"get","name":name});
+            if let Some(format) = format {
+                arguments["format"] = json!(format);
+            }
+            let (_, response) = client.call("session_checkpoint", arguments);
+            assert_eq!(
+                response["result"]["isError"], true,
+                "oversized {name} {format:?} get created a fabricated page"
+            );
+            assert!(response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains(".forge/checkpoints.json"));
+            assert_eq!(
+                fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
+                stored
+            );
+        }
         let listed = client.payload("session_checkpoint", json!({"action":"list"}));
         assert_eq!(
             listed[name]["bytes"],
@@ -954,6 +1294,175 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
     assert_eq!(
         client.payload("session_checkpoint", json!({"action":"get","name":"small"})),
         small
+    );
+
+    let opaque = json!({
+        "generation":"checkpoint-generation-must-remain-complete",
+        "freshness":{"output_root":"user-root-must-remain-complete","refresh":"none"},
+        "metadata":{},"items":[],"count":0,"complete":false,
+        "nested":{"total":0,"offset":0,"limit":1,"generation":"user-page-token","items":[]}
+    });
+    let (_, saved) = client.call(
+        "session_checkpoint",
+        json!({
+            "action":"save","name":"format-contract","content":opaque
+        }),
+    );
+    assert_ne!(saved["result"]["isError"], true, "{saved}");
+    let persisted = fs::read(workspace.path(".forge/checkpoints.json")).unwrap();
+
+    // Invalid presentation must be rejected before a real persisted mutation.
+    for invalid in ["yaml", "", "JSON"] {
+        let (_, rejected) = client.call(
+            "session_checkpoint",
+            json!({
+                "action":"save","name":"format-contract","content":{"changed":true},"format":invalid
+            }),
+        );
+        assert!(
+            rejected.get("error").is_some() || rejected["result"]["isError"] == true,
+            "invalid MCP format {invalid:?}: {rejected}"
+        );
+        assert_eq!(
+            fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
+            persisted
+        );
+        let rejected = run_cli(
+            &workspace,
+            &[
+                "--format",
+                invalid,
+                "checkpoint",
+                "save",
+                "--name",
+                "format-contract",
+                "--content",
+                "{\"changed\":true}",
+            ],
+        );
+        assert!(!rejected.status.success(), "invalid CLI format {invalid:?}");
+        assert_eq!(
+            fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
+            persisted
+        );
+    }
+
+    let mut markdown = Vec::new();
+    for format in [None, Some("markdown"), Some("json")] {
+        let mut arguments = json!({"action":"get","name":"format-contract"});
+        let mut cli_args = Vec::new();
+        if let Some(format) = format {
+            arguments["format"] = json!(format);
+            cli_args.extend(["--format", format]);
+        }
+        cli_args.extend(["checkpoint", "get", "--name", "format-contract"]);
+        let (_, result) = client.call("session_checkpoint", arguments);
+        assert_ne!(result["result"]["isError"], true, "{result}");
+        let mcp_text = result["result"]["content"][0]["text"].as_str().unwrap();
+        let cli = run_cli(&workspace, &cli_args);
+        assertions::assert_command_succeeded(&cli);
+        let cli_text = std::str::from_utf8(&cli.stdout).unwrap().trim_end();
+        if format == Some("json") {
+            for text in [mcp_text, cli_text] {
+                assert_eq!(serde_json::from_str::<Value>(text).unwrap(), opaque);
+            }
+        } else {
+            for (surface, text) in [("MCP", mcp_text), ("CLI", cli_text)] {
+                assert!(
+                    serde_json::from_str::<Value>(text).is_err(),
+                    "{surface} {format:?} must render Markdown, received raw JSON: {text}"
+                );
+                for preserved in [
+                    "checkpoint-generation-must-remain-complete",
+                    "user-root-must-remain-complete",
+                    "user-page-token",
+                    "false",
+                    "0",
+                    "**metadata**: `{}`",
+                    "**items**: `[]`",
+                    "**nested**",
+                    "  - **generation**: `\"user-page-token\"`",
+                    "  - **items**: `[]`",
+                ] {
+                    assert!(
+                        text.contains(preserved),
+                        "{surface} lost {preserved}: {text}"
+                    );
+                }
+            }
+            assert_eq!(mcp_text.trim_end(), cli_text);
+            markdown.push(mcp_text.to_owned());
+        }
+    }
+    assert_eq!(
+        markdown[0], markdown[1],
+        "omission and explicit Markdown differ"
+    );
+    assert_eq!(
+        fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
+        persisted
+    );
+
+    let mut missing_renderings = Vec::new();
+    for (name, value, rendered) in [
+        ("empty-array", json!([]), "[]"),
+        ("empty-object", json!({}), "{}"),
+    ] {
+        let (_, saved) = client.call(
+            "session_checkpoint",
+            json!({"action":"save","name":name,"content":value}),
+        );
+        assert_ne!(saved["result"]["isError"], true, "{saved}");
+        let persisted = fs::read(workspace.path(".forge/checkpoints.json")).unwrap();
+        let stored: Value = serde_json::from_slice(&persisted).unwrap();
+        assert_eq!(stored["entries"][name], value);
+
+        let mut markdown = Vec::new();
+        for format in [None, Some("markdown"), Some("json")] {
+            let mut arguments = json!({"action":"get","name":name});
+            let mut cli_args = Vec::new();
+            if let Some(format) = format {
+                arguments["format"] = json!(format);
+                cli_args.extend(["--format", format]);
+            }
+            cli_args.extend(["checkpoint", "get", "--name", name]);
+            let (_, response) = client.call("session_checkpoint", arguments);
+            assert_ne!(response["result"]["isError"], true, "{response}");
+            let mcp_text = response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap();
+            let cli = run_cli(&workspace, &cli_args);
+            assertions::assert_command_succeeded(&cli);
+            let cli_text = std::str::from_utf8(&cli.stdout).unwrap().trim_end();
+            if format == Some("json") {
+                for text in [mcp_text, cli_text] {
+                    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), value);
+                }
+            } else {
+                for (surface, text) in [("MCP", mcp_text), ("CLI", cli_text)] {
+                    if !text.contains(rendered) {
+                        missing_renderings.push(format!(
+                            "{surface} {format:?} omitted root checkpoint {name}: {text}"
+                        ));
+                    }
+                }
+                assert_eq!(mcp_text.trim_end(), cli_text);
+                markdown.push(mcp_text.to_owned());
+            }
+            assert_eq!(
+                fs::read(workspace.path(".forge/checkpoints.json")).unwrap(),
+                persisted
+            );
+        }
+        assert_eq!(
+            markdown[0], markdown[1],
+            "empty {name} omission and explicit Markdown differ"
+        );
+    }
+    assert!(
+        missing_renderings.is_empty(),
+        "empty checkpoint roots were omitted: {}",
+        missing_renderings.join("; ")
     );
 }
 #[tokio::test]
@@ -981,20 +1490,25 @@ async fn transport_accepts_exact_bound_and_replaces_oversized_frames() {
 #[test]
 fn serialization_counts_second_escaping_and_bounds_a_single_item() {
     let policy = ResponsePolicy::default();
-    let result = response::result(
+    let result = response::result_with_format(
         Ok(
             json!({"nodes":{"total":2,"offset":0,"limit":30,"items":[{"id":"first","text":"\"\\\n".repeat(4000)},{"id":"second","text":"\"\\\n".repeat(4000)}],"has_more":false,"next_offset":null,"generation":"snapshot"}}),
         ),
         &policy,
+        OutputFormat::Json,
     );
     assert!(response::serialized_bytes(&result) <= MAX_OUTPUT_BYTES - 256);
-    assert_ne!(result.is_error, Some(true));
+    assert_ne!(result.is_error, Some(true), "{result:?}");
     let wire = serde_json::to_value(result).unwrap();
     let payload: Value =
         serde_json::from_str(wire["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(payload["nodes"]["items"].as_array().unwrap().len(), 1);
     assert_eq!(payload["nodes"]["next_offset"], 1);
-    let result = response::result(Ok(json!({"scalar":"\"\\Привіт".repeat(30_000)})), &policy);
+    let result = response::result_with_format(
+        Ok(json!({"scalar":"\"\\Привіт".repeat(30_000)})),
+        &policy,
+        OutputFormat::Json,
+    );
     assert_eq!(result.is_error, Some(true));
     assert!(response::serialized_bytes(&result) <= MAX_OUTPUT_BYTES - 256);
 }
@@ -1038,6 +1552,8 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
         "pub fn semantic_worktree_func() {}\n",
     )
     .unwrap();
+    let selected_config = worktree_dir.join("forge-mcp.yaml");
+    std::fs::write(&selected_config, "roots: [src]\n").unwrap();
 
     let mut client = Client::new(&workspace);
 
@@ -1065,6 +1581,48 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
 
     // 2. Explicit worktree parameter -> scopes to worktree and auto-indexes
     let wt_str = worktree_dir.to_str().unwrap();
+    let selected_index = worktree_dir.join(".forge/code-map.sqlite");
+    assert!(!selected_index.exists());
+    let invalid_formats = [
+        ("escaping string", json!("\0".repeat(2_000))),
+        ("non-string", json!(false)),
+    ];
+    let checkpoint_path = workspace.path(".forge/checkpoints.json");
+    let checkpoint_before = fs::read(&checkpoint_path).ok();
+    let mut invalid_policy_failures = Vec::new();
+    std::fs::write(
+        &selected_config,
+        "roots: [src]\nresponse:\n  max_output_bytes: 1024\n",
+    )
+    .unwrap();
+    for (label, invalid_format) in &invalid_formats {
+        let mut arguments = json!({"worktree":wt_str});
+        arguments["format"] = invalid_format.clone();
+        let (wire_bytes, response) = client.call("code_map_overview", arguments);
+        let is_error = response["result"]["isError"] == true;
+        let error_code = response["result"]["content"][0]["text"]
+            .as_str()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .and_then(|value| value["error"]["code"].as_str().map(str::to_owned))
+            .unwrap_or_default();
+        if wire_bytes > 1024 || !is_error || error_code != "INVALID_FORMAT" {
+            invalid_policy_failures.push(format!(
+                "explicit selected root {label}: {wire_bytes} wire bytes, isError={is_error}, code={error_code:?}"
+            ));
+        }
+        if selected_index.exists() {
+            invalid_policy_failures.push(format!(
+                "explicit selected root {label} created its index before rejection"
+            ));
+        }
+        if fs::read(&checkpoint_path).ok() != checkpoint_before {
+            invalid_policy_failures.push(format!(
+                "explicit selected root {label} changed checkpoint bytes before rejection"
+            ));
+        }
+    }
+    std::fs::write(&selected_config, "roots: [src]\n").unwrap();
+
     let overview_wt = client.payload(
         "code_map_overview",
         json!({"worktree": wt_str, "aspects":["counts","metadata"]}),
@@ -1126,6 +1684,53 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
         "INSERT INTO task_claims(task_id, revision, worker_id, worktree, claimed_at, ended) VALUES('021-task', 1, 'worker-1', ?1, 1000, 0)",
         rusqlite::params![canonical_wt.to_str().unwrap()],
     ).unwrap();
+
+    std::fs::write(
+        &selected_config,
+        "roots: [src]\nresponse:\n  max_output_bytes: 1024\n",
+    )
+    .unwrap();
+    let index_before_auto_rejection = fs::read(&selected_index).unwrap();
+    let tasks_db_before_auto_rejection = fs::read(&tasks_db_path).unwrap();
+    for (label, invalid_format) in &invalid_formats {
+        let mut arguments = json!({});
+        arguments["format"] = invalid_format.clone();
+        let (wire_bytes, response) = client.call("code_map_overview", arguments);
+        let is_error = response["result"]["isError"] == true;
+        let error_code = response["result"]["content"][0]["text"]
+            .as_str()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .and_then(|value| value["error"]["code"].as_str().map(str::to_owned))
+            .unwrap_or_default();
+        if wire_bytes > 1024 || !is_error || error_code != "INVALID_FORMAT" {
+            invalid_policy_failures.push(format!(
+                "automatic selected root {label}: {wire_bytes} wire bytes, isError={is_error}, code={error_code:?}"
+            ));
+        }
+        if fs::read(&selected_index).ok().as_deref() != Some(index_before_auto_rejection.as_slice()) {
+            invalid_policy_failures.push(format!(
+                "automatic selected root {label} changed index bytes before rejection"
+            ));
+        }
+        if fs::read(&tasks_db_path).ok().as_deref()
+            != Some(tasks_db_before_auto_rejection.as_slice())
+        {
+            invalid_policy_failures.push(format!(
+                "automatic selected root {label} changed task database bytes during rejection"
+            ));
+        }
+        if fs::read(&checkpoint_path).ok() != checkpoint_before {
+            invalid_policy_failures.push(format!(
+                "automatic selected root {label} changed checkpoint bytes during rejection"
+            ));
+        }
+    }
+    assert!(
+        invalid_policy_failures.is_empty(),
+        "selected-root invalid-format contract failed: {}",
+        invalid_policy_failures.join("; ")
+    );
+    std::fs::write(&selected_config, "roots: [src]\n").unwrap();
 
     // Call code_map_overview with NO worktree parameter -> automatically resolves to active claim worktree!
     let overview_auto = client.payload(

@@ -6,6 +6,8 @@ pub mod config;
 pub mod commitments;
 /// Implements debug log support.
 pub mod debug_log;
+/// Shared operation presentation and metadata compaction.
+pub mod format;
 /// Implements fs support.
 pub mod fs;
 /// Implements Git command support.

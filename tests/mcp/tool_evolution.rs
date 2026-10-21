@@ -2,7 +2,7 @@
 
 use crate::common::{
     assertions,
-    mcp_client::{run_cli, StdioClient},
+    mcp_client::{run_cli, run_cli_json, StdioClient},
     Workspace,
 };
 use contextunity_forge_mcp::db::reader;
@@ -15,7 +15,7 @@ trait WorkspaceQueryExt {
 
 impl WorkspaceQueryExt for Workspace {
     fn query(&self, args: &[&str]) -> Value {
-        let out = run_cli(self, args);
+        let out = run_cli_json(self, args);
         assertions::assert_command_succeeded(&out);
         serde_json::from_slice(&out.stdout).unwrap()
     }

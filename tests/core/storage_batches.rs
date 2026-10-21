@@ -426,6 +426,8 @@ fn cli_memory_budget_precedence_fallback_and_rejection_are_observable() {
         let database = ws.root().join(".forge").join(format!("{name}.sqlite"));
         let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
         command
+            .arg("--format")
+            .arg("json")
             .arg("build")
             .arg(ws.root())
             .arg("--output")

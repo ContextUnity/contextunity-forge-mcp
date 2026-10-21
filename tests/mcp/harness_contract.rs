@@ -28,7 +28,10 @@ fn shared_mcp_harness_supports_in_process_stdio_and_cli_seams() {
     let response = client.request_value("tools/list", json!({}));
     assert_rpc_succeeded(&response);
     assert!(!response["result"]["tools"].as_array().unwrap().is_empty());
-    let (_, response) = client.call("code_map_search", json!({"pattern":"entry","exact":true}));
+    let (_, response) = client.call(
+        "code_map_search",
+        json!({"pattern":"entry","exact":true,"format":"json"}),
+    );
     let payload: Value = mcp_payload(&response);
     assert_eq!(payload["nodes"]["total"], 1);
 
