@@ -2,7 +2,7 @@
 id: m-markdown-first-dual-surface-and-agent-ergonomics
 title: Markdown-First Dual-Surface Architecture, Rich Code Intelligence, and Agent Ergonomics
 doc_type: contract
-status: active
+status: completed
 depends_on:
 - m-documentation-test-graph-and-tool-ergonomics
 owners:
@@ -32,6 +32,45 @@ related_plans:
 - docs/adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md
 - docs/plans/forge-mcp-audit-and-architecture.md
 started_at: 2026-10-20T22:26:18+00:00
+handoff:
+  completed_at: 2026-10-21T06:11:42.512466660+00:00
+  duration: 7h 45m
+  commit: 64158d967ae0ace3a0914906a6960efdffd958e3
+  target_base: e37a659694386df07cd048186c2a2a6004fad607
+  integration_evidence:
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: m-markdown-first-dual-surface-and-agent-ergonomics
+      authority_digest: 09667760d5d520948c197b89a4193c5390bd8ac3102df178eb2ff6461f6c52c5
+      implementation_digest: 73aee3907b33a8bc3189d8ade9e592170a2f01a07c4e16ffa881bed7b57563bf
+      target_base_digest: 638e7ede1021b4f23c7cfdd62ad8e1e2ec0a68f7b89c5b83b193ca0c811bbcbf
+      builders:
+      - m054-coordination-builder
+      - m054-core-builder
+      - m054-discovery-builder
+      - m054-finalization-builder
+      - m054-lifecycle-builder
+      - m054-parity-builder
+      - m054-traversal-builder
+    target_base: e37a659694386df07cd048186c2a2a6004fad607
+    review:
+      worker_id: m054-integration-reviewer
+      decision: pass
+      summary: 'Independently reviewed the combined M054 implementation against explicit base e37a659694386df07cd048186c2a2a6004fad607, and reconciled final clean commit 64158d967ae0ace3a0914906a6960efdffd958e3 / tree e044b8374a87d9ac5831f049a17cd6bb1c82f549 with native handoff-context. Exact binding: authority 09667760d5d520948c197b89a4193c5390bd8ac3102df178eb2ff6461f6c52c5, implementation 73aee3907b33a8bc3189d8ade9e592170a2f01a07c4e16ffa881bed7b57563bf, target-base 638e7ede1021b4f23c7cfdd62ad8e1e2ec0a68f7b89c5b83b193ca0c811bbcbf. Review covers canonical core formatting and architectural leaf boundaries; CLI/MCP defaults, explicit JSON and actual-wire semantic parity; strict invalid-input/error bounds before mutation; operation-aware metadata compaction; preservation of meaningful opaque/domain values, durable workflow evidence, active nested/source continuation tokens and original offsets; discovery/traversal evidence and real coordinates; lifecycle blocker/recovery authority; document freshness and opaque checkpoint handling; and documentation/ADR/skill consistency. Prior consolidated findings were repaired through the same builders and existing production seams. Final source beyond previously reviewed 693d0eaa changes only the four admitted finalization paths and generated milestone metadata. The handoff repair separately validates original contract digests and admitted effective scope while retaining full effective-scope provenance, accepted-gate and receipt checks. Its existing real extension and unrecorded-scope rejection seam retains no-archive/history-preservation checks and prior negative scenarios. All six original task blocks and receipts are byte-unchanged; the seventh accepted review and auto-commit receipt match my authored five-contour packet. Native handoff-context now succeeds for the legitimate core and seventh-task extensions. Corrected Commerce benchmark evidence is summarized only in the manifest with accurate limits; no benchmark report artifact is committed. Documentation scan 797 matches the final non-generated changes. Reconciled final archive 6c9c752ee79c7c0d: affected ACDD 116/0, standalone commitment 16/0, strict Clippy exit 0, and all-targets 816 passed / 0 failed / 1 ignored, without double-counting prefix checks. Reviewer is distinct from every builder in the binding. No unresolved admitted scope, contract, architecture, integration, or proof findings remain.'
+      scope_findings: []
+      contract_findings: []
+    verification:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 816
+      tests_failed: 0
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 816
+    tests_failed: 0
 ---
 
 # Markdown-First Dual-Surface Architecture, Rich Code Intelligence, and Agent Ergonomics
@@ -39,9 +78,9 @@ started_at: 2026-10-20T22:26:18+00:00
 ## Outcome and authority
 
 Implement the admitted Markdown default and shared formatting architecture in
-[ADR 0019](../adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md),
+[ADR 0019](../../adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md),
 with field semantics in the
-[Markdown contracts](../reference/mcp-markdown-contracts.md).
+[Markdown contracts](../../reference/mcp-markdown-contracts.md).
 
 The user authorizes M054 implementation and contract consistency reconciliation.
 The Markdown amendment to ADR 0001 is admitted. This contract preserves the
@@ -96,7 +135,7 @@ they do not change the active core task specification:
   bodies and existing recovery. Coordination applies the same presentation to
   standalone blackboard while preserving distinct nonblocker topics.
 
-The [reference examples](../reference/mcp-markdown-contracts.md#presentation-examples)
+The [reference examples](../../reference/mcp-markdown-contracts.md#presentation-examples)
 bind field mappings, fixture coordinates, count arithmetic and proof sensitivity.
 The overview lacks baseline reason aggregates and test paths carry IDs without
 per-hop metadata; discovery and traversal respectively own these bounded producer
@@ -159,7 +198,7 @@ Consolidated verification runs every required affected target above and
 The user separately authorized three alternating cold-build and graph-coverage
 pairs on the isolated Commerce control with 30-second intervals. These measurements
 add no performance acceptance requirement. Final documentation scan, independent integration
-review, binding, and full milestone gates follow [TESTS.md](../../TESTS.md).
+review, binding, and full milestone gates follow [TESTS.md](../../../TESTS.md).
 
 ## Control benchmark
 
@@ -220,6 +259,7 @@ subtasks:
   status: completed
   evidence: '`cargo test --test mcp context:: -- --nocapture`: exit 0, 28 passed; `cargo test --test mcp`: exit 0, 91 passed. Sensitivity: default-format mutant and active-continuation-token mutant each caused runtime assertion failures (exit 101); no compile-failure red. Both production files were restored to the exact pre-mutation hashes.'
 receipt:
+  commit: 24b35b4961dfea8e01cff6eb30c3c113d95a6a3d
   contract_revision: 2
   passed_at: 2026-10-21T01:17:09.234380767+00:00
   evidence:
@@ -338,6 +378,7 @@ subtasks:
   status: completed
   evidence: 'Historical candidate 447442e33743a37e3761886ab2d9f3d5198fb7a9 unfiltered proof: 397 passed, 0 failed/ignored (archive 6b43ebb49cf88b42). R1-specific post-repair actual MCP wire test passed 1/1, 0 failed (archive 141ebe539e016b4b), asserting supplied omitted_transitive and omitted_sources are preserved. Do not interpret the historical 397 as post-R1 evidence; root owns consolidated full verification after parallel-task integration.'
 receipt:
+  commit: 83ac02b8a33887199959f1b46b475832f9ca9de4
   contract_revision: 3
   passed_at: 2026-10-21T03:45:52.002878404+00:00
   evidence:
@@ -526,6 +567,7 @@ subtasks:
       "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."
     }
 receipt:
+  commit: 0941313e791620c68d9f943868f723b07263a3fc
   contract_revision: 5
   passed_at: 2026-10-21T04:48:28.467010979+00:00
   evidence:
@@ -627,6 +669,7 @@ subtasks:
   status: completed
   evidence: '{"command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast", "exit_code": 0, "tests_passed": 261, "tests_failed": 0, "archive_id": "f5fe4011bc1785ca", "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d", "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4", "targets": {"acdd": 116, "cli_roots": 7, "impact_context": 4, "mcp": 91, "query_context": 43}, "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."}'
 receipt:
+  commit: 664562762152dbed7d87c93c1bad18ffc5758be1
   contract_revision: 5
   passed_at: 2026-10-21T04:52:58.895830320+00:00
   evidence:
@@ -725,6 +768,7 @@ subtasks:
   status: completed
   evidence: '{"command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast", "exit_code": 0, "tests_passed": 261, "tests_failed": 0, "archive_id": "f5fe4011bc1785ca", "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d", "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4", "targets": {"acdd": 116, "cli_roots": 7, "impact_context": 4, "mcp": 91, "query_context": 43}, "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."}'
 receipt:
+  commit: fca63b801337e42b0b8b51eacecbc6ae3de3f396
   contract_revision: 4
   passed_at: 2026-10-21T04:53:22.387064543+00:00
   evidence:
@@ -822,6 +866,7 @@ subtasks:
   status: completed
   evidence: '{"command": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --test cli_roots --test impact_context --test query_context --test mcp --test acdd --no-fail-fast", "exit_code": 0, "tests_passed": 261, "tests_failed": 0, "archive_id": "f5fe4011bc1785ca", "tree": "b3e1406e22221bf79e8c0eeb8872915c0825281d", "patch_sha256": "a4fdd392ea30d6171cee841b1dc05d8561ea45a4276a55962605e4b7857e47e4", "targets": {"acdd": 116, "cli_roots": 7, "impact_context": 4, "mcp": 91, "query_context": 43}, "notes": "User-authorized concurrent isolated builds integrated before one consolidated strict Clippy + all five full affected targets. Actual global skill matches repository. Controlled sensitivity evidence /tmp/m054-sensitivity-evidence.md; all mutations restored exact before passing run. No new per-task Cargo run."}'
 receipt:
+  commit: 693d0eaa0fb14ab7bc8fb03664e096a5d973cecd
   contract_revision: 4
   passed_at: 2026-10-21T04:53:52.848768914+00:00
   evidence:
@@ -925,6 +970,7 @@ subtasks:
       "counts_policy": "Final all-targets sum only; standalone commitment and affected-target prefix not counted twice"
     }
 receipt:
+  commit: 64158d967ae0ace3a0914906a6960efdffd958e3
   contract_revision: 2
   passed_at: 2026-10-21T06:09:01.058235264+00:00
   evidence:

@@ -7,7 +7,7 @@ doc_type: reference
 
 [ADR 0019](../adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md)
 owns the output decision.
-[Milestone 054](../milestones/054-markdown-first-dual-surface-and-agent-ergonomics.md)
+[Milestone 054](../milestones/archive/054-markdown-first-dual-surface-and-agent-ergonomics.md)
 owns implementation and acceptance.
 
 ## Shared format selection

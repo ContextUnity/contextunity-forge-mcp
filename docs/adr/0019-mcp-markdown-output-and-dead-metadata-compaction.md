@@ -9,7 +9,7 @@ date: 2026-10-21
 
 ## Status
 
-Accepted for [Milestone 054](../milestones/054-markdown-first-dual-surface-and-agent-ergonomics.md).
+Accepted for [Milestone 054](../milestones/archive/054-markdown-first-dual-surface-and-agent-ergonomics.md).
 The owner admission authorizes the Markdown default prescribed by that milestone.
 This decision amends Decision 2 of [ADR 0001](0001-dual-surface-parity.md).
 [ADR 0011](0011-bounded-mcp-response-budgets.md) response bounds and
