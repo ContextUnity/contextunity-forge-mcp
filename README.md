@@ -45,8 +45,8 @@ The built-in profile walks a task through `contract`, `build`, `review`, and `de
 
 ### Worktrees and multi-repo workspaces
 
-- **Independent Code Maps**: Each Git worktree maintains its own `.forge/code-map.sqlite`, indexing the exact branch state of that worktree so parallel agents never observe stale cross-branch code.
-- **Single Centralized Task Queue**: Relative `tasks_db` paths automatically resolve to the primary worktree root (via `git rev-parse --git-common-dir`). All parallel workers in separate worktrees share the same `.forge/tasks.sqlite` queue with atomic claims and exclusive file locks (`scope_roots`).
+- **Branch-local workspace state**: Each worktree keeps its own `.forge/code-map.sqlite`, adapter/configuration, milestone manifests, and `.forge/checkpoints.json`, so indexed and file-backed state follows the checked-out branch.
+- **Git-shared task state**: Git-linked worktrees use the shared task database resolved by the task store. Standalone repositories keep independent databases unless explicitly configured to share one.
 - **Linked Workspaces (Multi-Repo)**: Sibling repositories listed under `linked_workspaces` in `forge-mcp.yaml` join the workspace code graph for cross-repo symbol resolution, import linking, and task federation.
 
 
@@ -106,7 +106,7 @@ tasks_db: .forge/tasks.sqlite
 agents_guidance: AGENTS.md
 ```
 
-With no adapter, Forge scans the workspace root, respects `.gitignore`, skips common build and cache directories, and writes `.forge/code-map.sqlite`. The task database defaults to `.forge/tasks.sqlite`. Inside a Git worktree that relative path resolves to the primary worktree, so parallel agents share one queue.
+With no adapter, Forge scans the selected workspace root, respects `.gitignore`, skips common build and cache directories, and writes that worktree's `.forge/code-map.sqlite`. The task database defaults to `.forge/tasks.sqlite`; Git-linked worktrees share it through task-store resolution, while standalone repositories remain independent unless configured to share a store.
 
 | Path | What it holds | In Git |
 |---|---|---|

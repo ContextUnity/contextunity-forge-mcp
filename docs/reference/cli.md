@@ -85,6 +85,10 @@ Use [repository tasks](tasks.md) for `task list`, `create`, `sync`, `inspect`,
 `task submit --evidence` accepts a JSON object with claim-bound identity and
 typed proof. The `contextunity-forge` skill completes a task with:
 
+CLI task `--worktree` inputs are existing directory paths; the MCP
+human-friendly exact-name, numeric-prefix, suffix, and substring selectors do
+not apply to CLI commands. CLI query commands choose a workspace with `--root`.
+
 ```sh
 contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage STAGE] [--milestone-status active|planned|completed|all] [--planned|--completed|--all] [--full]
 ```

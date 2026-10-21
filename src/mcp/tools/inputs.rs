@@ -41,7 +41,7 @@ pub struct PageInput {
     pub detail: Option<Detail>,
     /// Use the generation returned by the previous page when offset is nonzero.
     pub generation: Option<String>,
-    /// Worktree path, exact directory name, or unique hyphen-delimited name suffix. Defaults to the server's linked worktree, otherwise one unique active claim or the primary root. Multiple matches require an explicit path/name.
+    /// Worktree selector: omit to keep the canonical server root; `.` selects it explicitly. Absolute paths or values containing `/` or `\` are resolved explicitly (relative paths start at the server root) and must name a directory. Otherwise, canonical-path-deduplicated registered Git worktrees and immediate `.worktrees/` children are matched in order: exact name, literal prefix (or zero-normalized numeric milestone prefix), suffix, then substring. The first non-empty tier must be unique (`WORKTREE_AMBIGUOUS`); no match returns `WORKTREE_NOT_FOUND`.
     pub worktree: Option<String>,
     /// Output format. Omit for readable Markdown; choose JSON for machine clients.
     #[serde(default)]
@@ -380,6 +380,8 @@ pub struct Guide {
     #[serde(default)]
     /// Whether force applies.
     pub force: bool,
+    /// Worktree selector: omit to keep the canonical server root; `.` selects it explicitly. Absolute paths or values containing `/` or `\` are resolved explicitly (relative paths start at the server root) and must name a directory. Otherwise, canonical-path-deduplicated registered Git worktrees and immediate `.worktrees/` children are matched in order: exact name, literal prefix (or zero-normalized numeric milestone prefix), suffix, then substring. The first non-empty tier must be unique (`WORKTREE_AMBIGUOUS`); no match returns `WORKTREE_NOT_FOUND`.
+    pub worktree: Option<String>,
     /// Output format. Omit for readable Markdown; choose JSON for machine clients.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
@@ -395,10 +397,38 @@ pub struct Checkpoint {
     #[schemars(schema_with = "checkpoint_content_schema")]
     /// Optional content value.
     pub content: Option<Value>,
+    /// Worktree selector: omit to keep the canonical server root; `.` selects it explicitly. Absolute paths or values containing `/` or `\` are resolved explicitly (relative paths start at the server root) and must name a directory. Otherwise, canonical-path-deduplicated registered Git worktrees and immediate `.worktrees/` children are matched in order: exact name, literal prefix (or zero-normalized numeric milestone prefix), suffix, then substring. The first non-empty tier must be unique (`WORKTREE_AMBIGUOUS`); no match returns `WORKTREE_NOT_FOUND`.
+    pub worktree: Option<String>,
     /// Output format. Omit for readable Markdown; choose JSON for machine clients.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
+}
+
+fn deserialize_task_input<'de, D, T>(
+    deserializer: D,
+    extract_worktree: bool,
+) -> Result<(T, Option<OutputFormat>, Option<String>), D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    use serde::de::Error as _;
+
+    let mut properties = serde_json::Map::<String, Value>::deserialize(deserializer)?;
+    let format = properties
+        .remove("format")
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(D::Error::custom)?;
+    let worktree = if extract_worktree {
+        serde_json::from_value(properties.remove("worktree").unwrap_or(Value::Null))
+            .map_err(D::Error::custom)?
+    } else {
+        None
+    };
+    let request = serde_json::from_value(Value::Object(properties)).map_err(D::Error::custom)?;
+    Ok((request, format, worktree))
 }
 
 macro_rules! task_input {
@@ -422,24 +452,57 @@ macro_rules! task_input {
             where
                 D: serde::Deserializer<'de>,
             {
-                use serde::de::Error as _;
-
-                let mut properties = serde_json::Map::<String, Value>::deserialize(deserializer)?;
-                let format = properties
-                    .remove("format")
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(D::Error::custom)?;
-                let request =
-                    serde_json::from_value(Value::Object(properties)).map_err(D::Error::custom)?;
+                let (request, format, _) =
+                    deserialize_task_input::<D, $inner>(deserializer, false)?;
                 Ok(Self { request, format })
+            }
+        }
+    };
+    ($name:ident, $inner:ty, routing_worktree) => {
+        #[derive(JsonSchema)]
+        /// Existing task request fields plus an optional worktree selector and output format.
+        #[schemars(deny_unknown_fields)]
+        pub struct $name {
+            #[serde(flatten)]
+            #[schemars(flatten)]
+            /// The operation's original typed request fields.
+            pub request: $inner,
+            /// Worktree selector: omit to keep the canonical server root; `.` selects it explicitly. Absolute paths or values containing `/` or `\` are resolved explicitly (relative paths start at the server root) and must name a directory. Otherwise, canonical-path-deduplicated registered Git worktrees and immediate `.worktrees/` children are matched in order: exact name, literal prefix (or zero-normalized numeric milestone prefix), suffix, then substring. The first non-empty tier must be unique (`WORKTREE_AMBIGUOUS`); no match returns `WORKTREE_NOT_FOUND`.
+            #[serde(default)]
+            pub worktree: Option<String>,
+            /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+            #[serde(default)]
+            #[schemars(schema_with = "output_format_schema")]
+            pub format: Option<OutputFormat>,
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let (request, format, worktree) =
+                    deserialize_task_input::<D, $inner>(deserializer, true)?;
+                Ok(Self {
+                    request,
+                    worktree,
+                    format,
+                })
             }
         }
     };
 }
 
-task_input!(TaskListInput, crate::engine::tasks::List);
+task_input!(TaskListInput, crate::engine::tasks::List, routing_worktree);
 task_input!(TaskClaimInput, crate::engine::tasks::Claim);
-task_input!(TaskSubmitInput, crate::engine::tasks::Submit);
+task_input!(
+    TaskSubmitInput,
+    crate::engine::tasks::Submit,
+    routing_worktree
+);
 task_input!(TaskManageInput, crate::engine::tasks::Manage);
-task_input!(TaskBlackboardInput, crate::engine::tasks::BlackboardRequest);
+task_input!(
+    TaskBlackboardInput,
+    crate::engine::tasks::BlackboardRequest,
+    routing_worktree
+);

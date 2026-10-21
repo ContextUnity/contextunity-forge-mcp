@@ -24,11 +24,11 @@ and indexed-page markup in `docs/AGENTS.md`.
 - Use the active server registry and schemas. Common registrations are `contextunity-forge` and
   `contextunity-forge-mcp`; see [routing examples](references/agents.md.example). Start with
   `code_map_overview()` and confirm `workspace_root`, coverage, and components.
-- Pass `worktree` when needed: absolute/server-relative path, exact directory, or unique
-  hyphen-delimited suffix. Otherwise keep the linked server worktree; absent that, use one unique
-  claimed worktree when workspace configuration is loaded or `forge-mcp.yaml` exists (even empty),
-  and use the primary root when neither exists. Ambiguity returns `WORKTREE_AMBIGUOUS`; `"."` selects
-  the server root. MCP requests do not carry client cwd.
+- Pass `worktree` when needed. Every MCP tool, including task tools, `forge_guide`, and `session_checkpoint`, uses the same request-local resolver. Omitted `worktree` always retains the canonical server root, independent of active claims.
+- Selectors resolve in this order: `"."` or an absolute/server-root-relative explicit path; exact directory name; literal prefix or pure-digit milestone prefix after leading-zero normalization; literal suffix; literal substring. Candidate paths are canonicalized and deduplicated. The first nonempty tier must be unique; ambiguity returns `WORKTREE_AMBIGUOUS`, and a missing or empty selector returns `WORKTREE_NOT_FOUND`.
+- Selected worktrees use their own adapter/configuration, index, milestone manifests, and checkpoints. Git-linked worktrees share the task database through task-store resolution; standalone repositories remain independent unless explicitly configured to share one. Selecting the server root retains a custom MCP `--db` path. MCP requests do not carry client cwd.
+- Keep normal adapter, task-store, and index safety validation in place; selecting a worktree does not bypass configuration or reserved-database checks.
+- These human-friendly selectors apply to MCP requests, not CLI commands. CLI queries select a workspace with `--root`; CLI task claim/next use an existing `--worktree` directory path.
 - Milestone `init`, `list`, `show`, `handoff-context`, and `handoff` are CLI-only. `task next` and
   MCP `task_manage(action="next", ...)` atomically claim the next eligible task and return claim
   context or `status: "idle"`; parked tasks resume in their retained worktree.

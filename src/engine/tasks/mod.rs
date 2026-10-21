@@ -1,14 +1,14 @@
 use crate::{
     core::tasks::{
-        Milestone, canonical_commit_from_prefix, confined_path, gates::Evidence,
-        shorten_task_response_commits, snapshot_inspect_cmd,
+        canonical_commit_from_prefix, confined_path, gates::Evidence,
+        shorten_task_response_commits, snapshot_inspect_cmd, Milestone,
     },
     db::tasks_store::{BlackboardPageRequest, BlackboardPostInput, Task, TasksStore},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::Path;
 mod workspaces;
 use workspaces::Registry;
@@ -19,7 +19,7 @@ mod gates;
 mod git_snapshot;
 mod lifecycle;
 
-pub use blackboard::{BlackboardAction, BlackboardRequest, BlackboardScope, blackboard};
+pub use blackboard::{blackboard, BlackboardAction, BlackboardRequest, BlackboardScope};
 pub use lifecycle::{claim, manage, reopen, reset};
 
 /// Returns the registered workspace names for the repository at `root`.
@@ -147,7 +147,9 @@ pub struct Claim {
     pub stage: String,
     /// Unique identifier of the claiming agent worker (must differ between builder and reviewer).
     pub worker_id: String,
-    /// Absolute or repository-relative path of the development worktree executing this stage.
+    /// Development worktree for this stage. MCP resolves explicit paths, exact names,
+    /// prefixes (including zero-normalized milestone numbers), suffixes, or substring
+    /// aliases to a canonical path before claiming. CLI and engine callers pass a path.
     pub worktree: String,
     #[serde(default)]
     /// Return the aggregated zero-shot task context bundle (defaults to true; set false for minimal details).
@@ -220,7 +222,10 @@ pub enum ManageAction {
 pub struct Manage {
     /// Worker receiving an atomic next claim.
     pub worker_id: Option<String>,
-    /// Worktree used for next, unless a parked task retains its original worktree.
+    /// In MCP, selects the request root for every action using explicit paths, exact names,
+    /// prefixes (including zero-normalized milestone numbers), suffixes, or substring aliases;
+    /// omission retains the server root for other actions. Required for next; parked tasks
+    /// resume in their retained worktree. CLI and engine callers use this path only for next.
     pub worktree: Option<String>,
     /// Workspace or repository name (defaults to primary configured workspace).
     pub workspace: Option<String>,
@@ -447,57 +452,6 @@ pub fn store(root: &Path) -> Result<TasksStore> {
     store.project_owners = settings.owners;
     store.project_aliases = settings.aliases;
     Ok(store)
-}
-
-/// Resolves a single physical worktree from all active claims; ambiguity requires explicit selection.
-pub(crate) fn active_claim_worktree(
-    repository: &Path,
-    database: &Path,
-) -> Result<Option<std::path::PathBuf>> {
-    let metadata = match std::fs::metadata(database) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if !metadata.is_file() {
-        bail!(
-            "tasks database must be a regular file: '{}'",
-            database.display()
-        );
-    }
-    let database = database.canonicalize()?;
-    let conn = rusqlite::Connection::open_with_flags(
-        &database,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
-    conn.busy_timeout(std::time::Duration::from_millis(200))?;
-    let mut stmt = conn.prepare("SELECT DISTINCT worktree FROM task_claims WHERE ended = 0")?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-    let mut worktrees = std::collections::BTreeSet::new();
-    for row in rows {
-        let p = std::path::PathBuf::from(row?);
-        let resolved = if p.is_absolute() {
-            p
-        } else {
-            repository.join(p)
-        };
-        if let Ok(canonical) = resolved.canonicalize() {
-            if canonical.is_dir() {
-                worktrees.insert(canonical);
-            }
-        }
-    }
-    if worktrees.len() > 1 {
-        bail!(
-            "WORKTREE_AMBIGUOUS: multiple active worktrees: {}. Do: pass an explicit worktree path or unique name.",
-            worktrees
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-    Ok(worktrees.into_iter().next())
 }
 
 fn resolve_manifest_status(root: &Path, milestone_ref: &str) -> Result<String> {

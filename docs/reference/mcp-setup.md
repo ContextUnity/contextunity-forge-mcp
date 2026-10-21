@@ -65,10 +65,14 @@ For clients without a `cwd` setting, pass the repository root to Forge:
 
 ## First request and subsequent reads
 
-Code tools accept a worktree path, exact name, or unique name suffix; see
-[worktree selection](mcp-tools.md#worktree-selection). A server rooted in a linked
-worktree retains that context by default. Requests do not transmit the client's
-current directory.
+All 20 MCP tools support the same `worktree` selector; it is optional except
+for `task_claim` and `task_manage(action: "next")`, which require it for task
+affinity. See [worktree selection](mcp-tools.md#worktree-selection) for
+exact-name, prefix, zero-normalized number, suffix, substring, and path
+precedence. Omitting the selector always retains the server root, regardless
+of task claims. Selected worktree manifests, configuration, indexes, and
+checkpoints stay local to that branch, while Git-linked worktrees use the
+shared task database. Requests do not transmit the client's current directory.
 
 The server keeps connected clients alive regardless of inactivity. On Unix it
 exits when its launching parent disappears, including while awaiting MCP

@@ -7,46 +7,49 @@ status: approved
 # Universal Multi-Worktree Resolution & Zero-Jump Architecture
 
 ## Executive Summary
-This document provides a complete, step-by-step implementation plan to resolve root-jumping and worktree split-brain defects in ContextUnity Forge MCP.
 
-Currently, running a single MCP server from the repository root causes:
-1. **Asymmetric Routing (`is_task_tool`)**: Task tools (`task_blackboard`, `task_list`, etc.) unconditionally force `target_root = main`, discarding the `worktree` parameter entirely, while code navigation tools (`code_map_*`) dynamically switch to worktrees.
-2. **Spooky Root Jumping (`active_claim_worktree`)**: When `worktree` is omitted, the server checks SQLite for any unended task claim and silently re-points code navigation tools to that claim's worktree. When the claim ends or transitions, the root unpredictably snaps back to `main`.
-3. **Restricted Worktree Resolution**: Worktree selection only supports exact directory names or trailing suffixes (`-slug`), failing completely on milestone/task numbers (e.g., `023`, `060`) or middle slugs (`sql-schema`).
+This source plan preserves the implementation requirements for universal MCP
+worktree routing and stable server roots. The accepted
+[milestone 056 contract](../milestones/archive/056-universal-multi-worktree-resolution.md#outcome-and-authority)
+owns scope and authority; handoff moves its manifest to that archive path.
+This source plan retains selector and proof requirements.
 
-This plan fixes these flaws by establishing a **Universal Multi-Worktree Hub Architecture** where a single server running at the repository root predictably serves any worktree on demand via number, slug, or explicit path.
+The supplied baseline design identified three defects addressed by this plan:
+1. **Asymmetric routing**: task tools were dispatched from the server root while code-navigation tools could select worktrees.
+2. **Claim-driven default roots**: an omitted selector could follow an active task claim rather than retain the server root.
+3. **Restricted matching**: exact names and trailing suffixes did not cover numeric milestone aliases or middle slugs.
+
+These are baseline notes, not current runtime claims. See the [MCP worktree reference](../reference/mcp-tools.md#worktree-selection) for the live contract.
+
+This plan establishes a universal multi-worktree MCP interface in which every
+tool can target a worktree per request without claim-driven root changes.
 
 ---
 
 ## Architecture Specification
 
 ```
-                               ┌──────────────────────────────────────────────────┐
-                               │       Forge MCP Server (Root: repository main)   │
-                               │      Shared SQLite: .forge/tasks.sqlite          │
-                               └────────────────────────┬─────────────────────────┘
-                                                        │
-                      Incoming Tool Request (worktree: "023" OR "control-member-repair")
-                                                        │
-                                                        ▼
-                                   ┌─────────────────────────────────────────┐
-                                   │   Enhanced resolve_explicit_worktree    │
-                                   │   1. Number / Prefix match ("023" -> 023-*)  │
-                                   │   2. Exact Directory Name Match             │
-                                   │   3. Suffix Match ("*-repair")               │
-                                   │   4. Slug Substring Match ("*sql-schema*")  │
-                                   │   5. Absolute / Relative Path (Last Resort) │
-                                   └────────────────────┬────────────────────┘
-                                                        │
-                         Identical Resolution for ALL Tools (code_map_* AND task_*)
-                                                        │
-                                                        ▼
-                                    Target Worktree: .worktrees/023-sql-...
-                        ┌────────────────────────────────────────────────────────┐
-                        │ • Code Index: .worktrees/023-.../.forge/code_map.sqlite│
-                        │ • Task Manifests: .worktrees/023-.../docs/milestones/  │
-                        │ • Blackboard: .worktrees/023-... (branch scoped)       │
-                        └────────────────────────────────────────────────────────┘
+                               ┌────────────────────────────────────────────────────┐
+                               │ Forge MCP server: canonical server root + DB       │
+                               └─────────────────────────┬──────────────────────────┘
+                                                         │
+                Any MCP tool (worktree: "023" or "control-member-repair")
+                                                         │
+                                                         ▼
+                                 ┌──────────────────────────────────────────────┐
+                                 │ Shared worktree resolver                    │
+                                 │ "." / explicit path; exact name; prefix or   │
+                                 │ zero-normalized number; suffix; substring    │
+                                 └─────────────────────┬────────────────────────┘
+                                                       │
+                         Same request-local routing for all 20 MCP tools
+                                                       │
+                                                       ▼
+                                  Selected worktree: .worktrees/023-sql-...
+                    ┌─────────────────────────────────────────────────────────────┐
+                    │ Branch-local: adapter/config, code index, milestone files,  │
+                    │ and checkpoints; Git-linked worktrees share the task DB.   │
+                    └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -55,139 +58,105 @@ This plan fixes these flaws by establishing a **Universal Multi-Worktree Hub Arc
 
 ### Step 1: Flexible Worktree Matching in `src/mcp/server.rs`
 
-Update `resolve_explicit_worktree` in `src/mcp/server.rs` around line 559 to prioritize human-friendly numbers and slugs:
+Implement the shared resolver for explicit `worktree` selectors:
 
 #### Matching Cascade Order:
-1. **Direct Path Check (Absolute or Explicit Relative with separators)**:
-   If `requested` contains `/` or `\` and `path.is_dir()`, resolve canonical path.
-2. **Collect Candidates**:
-   Scan `.worktrees/*` and `git worktree list --porcelain -z`.
-3. **Exact Name Match**:
-   `name == requested` (e.g., `023-sql-schema-indexing-entrypoints-and-topology-slices`).
-4. **Prefix / Number Match**:
-   `name.starts_with(&format!("{requested}-"))` or `name.starts_with(requested)` (e.g., `"023"` or `"23"` matches `023-*`).
-5. **Suffix Match**:
-   `name.ends_with(&format!("-{requested}"))` or `name.ends_with(requested)` (e.g., `"topology-slices"`).
-6. **Unique Substring / Slug Match**:
-   `name.contains(requested)` (e.g., `"sql-schema"`).
-7. **Ambiguity & Missing Handling**:
-   - Exactly 1 match: return `Ok(canonical_path)`.
-   - 0 matches: return `Err(WORKTREE_NOT_FOUND: no worktree matching '{requested}')`.
-   - > 1 matches: return `Err(WORKTREE_AMBIGUOUS: '{requested}' matches [a, b]. Pass a more specific number or name.)`.
+1. **Direct root or path**: `"."` selects the server root. An absolute path or a path relative to the server root containing `/` or `\` selects that existing directory directly; a missing explicit path returns `WORKTREE_NOT_FOUND`.
+2. **Collect candidates**: inspect Git-registered worktrees and immediate `.worktrees/` children, canonicalizing paths and deduplicating candidates.
+3. **Exact name**: match the entire candidate directory name.
+4. **Prefix / number**: match a literal prefix. If the selector is all digits, compare the candidate's milestone-number prefix after removing leading zeroes from both digit strings; do not parse through a bounded integer type. Thus `"23"` and `"023"` select the same `023-*` candidate.
+5. **Suffix**: match a literal suffix.
+6. **Substring**: match a literal substring.
+7. **Ambiguity and missing results**: stop at the first nonempty tier. One candidate resolves; multiple candidates return `WORKTREE_AMBIGUOUS` with candidates and do not fall through; no candidate, including an empty selector, returns `WORKTREE_NOT_FOUND`.
 
 ---
 
-### Step 2: Remove Spooky Action-at-a-Distance in `resolve_target_root_and_db`
+### Step 2: Keep the default root stable in `resolve_target_root_and_db`
 
-In `src/mcp/server.rs` around line 484:
-1. **Default to Server Root when `requested_worktree` is None**:
-   Do NOT query `task_claims` for an arbitrary unended claim to hijack `self.root`.
-   When `requested_worktree.is_none()`, the server root remains **stable and deterministic**: `target = context.root.clone()`.
-2. **Worktree Isolation**:
-   When `requested_worktree` is provided, resolve `target_root = target` and `target_db = target.join(".forge/code_map.sqlite")`.
-   If `.forge/code_map.sqlite` does not exist in the worktree, fallback to `cli::default_db(&target)`.
-
----
-
-### Step 3: Eliminate `is_task_tool` Discrimination in `src/mcp/tools.rs`
-
-In `src/mcp/tools.rs` around line 905:
-
-#### Before:
-```rust
-let (target_root, target_db) = if is_task_tool(&request.name) {
-    (self.root.clone(), self.db.clone())
-} else {
-    match self.resolve_target_root_and_db(requested_worktree, &primary_adapter) {
-        Ok(pair) => pair,
-        Err(error) => ...
-    }
-};
-```
-
-#### After:
-```rust
-let (target_root, target_db) = match self.resolve_target_root_and_db(requested_worktree, &primary_adapter) {
-    Ok(pair) => pair,
-    Err(error) => {
-        return Ok(response::result_for(
-            Err(error),
-            &ResponsePolicy::default(),
-            output_format,
-            operation,
-            &tool_name,
-            None,
-        ).into());
-    }
-};
-```
-Delete `is_task_tool` helper function completely. All tools dispatch through `request_server = self.with_root_and_db(target_root, target_db, adapter.clone())`.
+When `worktree` is omitted, retain the canonical server root and its configured
+index database. Do not inspect active task claims to select another root.
+For an explicit selector, resolve the canonical selected root and use its
+branch-local adapter/configuration, milestone manifests, and default code index.
+Selecting the server root preserves a custom server `--db` path. Git-linked
+worktrees continue to share the task database through existing task-store
+resolution; standalone repositories stay independent unless explicitly
+configured to share a store. Do not migrate task storage.
 
 ---
 
-### Step 4: Add `worktree` to Task Input Schemas in `src/mcp/tools/inputs.rs`
+### Step 3: Remove tool-specific routing in `src/mcp/tools.rs`
 
-In `src/mcp/tools/inputs.rs`, add `pub worktree: Option<String>` to:
-1. `TaskBlackboardInput`:
-   ```rust
-   pub struct TaskBlackboardInput {
-       #[serde(default)]
-       pub worktree: Option<String>,
-       #[serde(default)]
-       pub format: Option<OutputFormat>,
-       #[serde(flatten)]
-       pub request: BlackboardRequest,
-   }
-   ```
-2. `TaskListInput`:
-   ```rust
-   pub struct TaskListInput {
-       #[serde(default)]
-       pub worktree: Option<String>,
-       #[serde(default)]
-       pub format: Option<OutputFormat>,
-       #[serde(flatten)]
-       pub query: TaskListQuery,
-   }
-   ```
-3. `TaskClaimInput` & `TaskSubmitInput` & `TaskManageInput`:
-   Ensure `worktree` is accepted and passed through to the command execution context.
-4. Update `rejected_selector_fields` in `src/mcp/tools.rs` to allow `"worktree"` across all task tools.
+Route every MCP tool through the same resolver and request-local server,
+including all `code_map_*` and task tools, `forge_guide`, and
+`session_checkpoint`. Remove `is_task_tool` and any task-only dispatch bypass.
+Keep invalid-format checks before mutations and retain strict unknown-field
+rejection.
 
 ---
 
-### Step 5: Test Verification Suite
+### Step 4: Add routing context to MCP tool inputs
 
-Add dedicated integration tests in `tests/mcp/context.rs`:
+Expose `worktree` on all 20 MCP tools, including `TaskBlackboardInput`,
+`TaskListInput`, `TaskClaimInput`, `TaskSubmitInput`, `TaskManageInput`,
+`forge_guide`, and `session_checkpoint`.
 
-1. **`test_worktree_resolution_by_number_prefix`**:
-   - Setup a repo with `.worktrees/023-sql-schema` and `.worktrees/060-acdd`.
-   - Call `code_map_overview(worktree: "023")` -> resolves to `023-sql-schema`.
-   - Call `code_map_overview(worktree: "060")` -> resolves to `060-acdd`.
-2. **`test_worktree_resolution_by_slug`**:
-   - Call `code_map_search(worktree: "sql-schema", pattern: "...")` -> resolves correctly.
-3. **`test_task_blackboard_in_worktree`**:
-   - Place a milestone manifest `docs/milestones/023-*.md` with `status: active` only in the worktree branch.
-   - Call `task_blackboard(worktree: "023", action: "read")`.
-   - Verify it successfully finds the milestone and returns messages without reporting "Milestone not found".
-4. **`test_server_root_stability_without_worktree`**:
-   - Create an active claim in `.worktrees/022-repair`.
-   - Call `code_map_overview` without `worktree`.
-   - Verify it returns `primary` workspace metadata and does NOT jump to `022-repair`.
-5. **`test_ambiguity_rejection`**:
-   - Create `.worktrees/010-foo-bar` and `.worktrees/020-baz-bar`.
-   - Call `worktree: "bar"` -> asserts error contains `WORKTREE_AMBIGUOUS`.
+- `task_claim` and `task_manage(action="next")` require a selector. Resolve it
+  before engine execution so the claim stores the canonical selected path.
+- Other task-management actions accept `worktree` only as routing context; keep
+  their action-specific engine validation unchanged.
+- `task_submit` accepts an optional routing selector without changing claim,
+  candidate, authority, reviewer-independence, or evidence-identity validation.
+- Route task manifests and adapter configuration from the selected branch while
+  preserving the shared task database for Git-linked worktrees.
+- Keep code indexes and checkpoints local to the selected branch. Keep all
+  unknown-selector rejection and response-budget rules intact.
+
+---
+
+### Step 5: Strengthen existing MCP contract seams
+
+Extend the existing production stdio seams in `tests/mcp/context.rs` with
+parameterized cases rather than duplicate standalone test functions:
+
+1. **Numeric prefixes**: aliases with and without leading zeros, including
+   `"023"`/`"23"` and `"060"`.
+2. **Slug matching**: literal prefix, middle substring, and suffix selectors.
+3. **Precedence and errors**: exact-name precedence, explicit paths, ambiguous
+   candidates, missing selectors, and empty selectors.
+4. **Universal task routing**: branch-only milestone manifests through task
+   sync/list/blackboard, with task state in the shared Git task database.
+5. **Stable defaults and affinity**: omitted selectors remain at the server root
+   before and after active-claim transitions; claim and next persist canonical
+   selected paths; submit keeps existing identity validation.
+6. **Tool coverage and locality**: all 20 schemas accept `worktree`; checkpoints
+   and indexes remain worktree-local.
+7. **ACDD fixtures**: use Git-linked worktrees or explicit shared task-database
+   configuration where independent repositories need a shared store.
 
 ---
 
 ## Acceptance Criteria
-- [x] Passing `worktree: "023"` resolves to `.worktrees/023-*` without needing the full path.
-- [x] Passing `worktree: "sql-schema"` resolves to `.worktrees/023-sql-schema-*`.
-- [x] `task_blackboard` and `task_list` respect the `worktree` parameter identically to `code_map_*`.
-- [x] Omitting `worktree` never jumps roots based on background claims.
-- [x] All tests in `tests/mcp/context.rs` compile and pass with strict Clippy checks.
 
-## Implementation verification
+- `worktree: "023"` and `"23"` resolve the corresponding zero-padded numeric
+  milestone prefix without requiring a full path; `"060"` resolves similarly.
+- Literal prefixes, suffixes, and substrings follow the documented cascade,
+  with exact names taking precedence and ambiguous tiers rejected.
+- Explicit paths and `"."` select directly; missing and empty selectors fail
+  with `WORKTREE_NOT_FOUND`.
+- Every MCP tool routes through the selected root; task manifests/configuration
+  come from that branch while Git-linked worktrees share the task database.
+- Omitted `worktree` always retains the server root regardless of task claims.
+- Task claim and next persist canonical paths; submit retains existing evidence
+  and claim identity validation.
+- Branch-local indexes and checkpoints remain isolated; unknown selectors and
+  invalid formats fail before mutation.
+
+## Supplied historical verification (not candidate evidence)
+
+The following test counts and observations were supplied with the source plan.
+They are retained as historical input only, were not independently verified
+for this candidate, and do not establish its acceptance or build proof. No
+candidate verification is recorded here.
 
 The existing MCP worktree seams cover numeric aliases with and without leading
 zeros, prefixes, suffixes, substrings, explicit paths, exact-name precedence,

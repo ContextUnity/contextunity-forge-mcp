@@ -49,6 +49,13 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         &manifest.replace('\n', "\r\n"),
     );
     main.write("forge-mcp.yaml", &format!("roots: []\ndocs: []\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks: {{enabled: true}}\n", linked.0.display()));
+    linked.write(
+        "forge-mcp.yaml",
+        &format!(
+            "roots: []\ndocs: []\ntask_repository: traverse\ntask_project: traverse\ntasks_db: {}\n",
+            main.0.join(".forge/tasks.sqlite").display()
+        ),
+    );
     let mut client = Client::new(&main);
     client.payload(
         "task_manage",
@@ -386,6 +393,13 @@ scope: [src/]
         "forge-mcp.yaml",
         "roots: []\ndocs: []\ntask_repository: contextunity\ntask_project: tooling\n",
     );
+    reviewer.write(
+        "forge-mcp.yaml",
+        &format!(
+            "roots: []\ndocs: []\ntask_repository: contextunity\ntask_project: tooling\ntasks_db: {}\n",
+            builder.0.join(".forge/tasks.sqlite").display()
+        ),
+    );
     let mut client = Client::new(&builder);
     let synced = client.payload(
         "task_manage",
@@ -504,9 +518,7 @@ scope: [src/]
         assert_eq!(client.payload("task_submit", args.clone()), submitted);
         if gate == 3 {
             let (_, response) = client.call("task_submit", args);
-            let markdown = response["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap();
+            let markdown = response["result"]["content"][0]["text"].as_str().unwrap();
             assert!(markdown.starts_with("# Task submission"));
             assert!(markdown.contains(id));
             assert!(markdown.contains("completed"));
@@ -555,6 +567,11 @@ fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
     let tools = response["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 20);
     for tool in tools {
+        assert!(
+            tool["inputSchema"]["properties"]["worktree"].is_object(),
+            "{} does not advertise worktree selection",
+            tool["name"]
+        );
         for (name, schema) in tool["inputSchema"]["properties"].as_object().unwrap() {
             assert!(schema.is_object(), "{}.{name}: {schema}", tool["name"]);
         }
@@ -1337,7 +1354,10 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
     workspace.write("docs/adr/003-decision-after-rules.md", &decision_rules);
     workspace.write("docs/adr/004-headed-decision.md", "---\ntitle: Headed Decision\ndoc_type: adr\nstatus: accepted\n---\n# Governance\n- INV-HEADED: Preserve the decision through [`unique`](../../src/unique.rs#L1).\n## Decision\nRetain the complete decision from its own section.\n");
     workspace.write("src/minimal_routing.rs", "pub fn minimal_route_task() {}\n");
-    workspace.write("src/minimal_markdown.rs", "pub fn minimal_markdown_task() {}\n");
+    workspace.write(
+        "src/minimal_markdown.rs",
+        "pub fn minimal_markdown_task() {}\n",
+    );
     workspace.write("tests/test_routing.rs", "#[test]\nfn test_routing() {}\n");
     workspace.write("src/cli_routing.rs", "pub fn route_cli_task() {}\n");
     workspace.write(
@@ -1791,10 +1811,8 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         json!({"action":"inspect","message_id":blocker_id}),
     );
     assert_eq!(blocker_full["message"]["payload"], blocker_payload);
-    let embedded_context = client.payload(
-        "task_manage",
-        json!({"action":"context","task_id":task_id}),
-    );
+    let embedded_context =
+        client.payload("task_manage", json!({"action":"context","task_id":task_id}));
     let embedded_blocker = embedded_context["workflow_guidance"]["blackboard_messages"]
         .as_array()
         .unwrap()
@@ -1802,12 +1820,13 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         .find(|message| message["id"] == blocker_id)
         .unwrap();
     assert_eq!(embedded_blocker["scope"], "task");
-    assert_eq!(embedded_blocker["task_id"], blocker_full["message"]["task_id"]);
-
-    let (_, context_response) = client.call(
-        "task_manage",
-        json!({"action":"context","task_id":task_id}),
+    assert_eq!(
+        embedded_blocker["task_id"],
+        blocker_full["message"]["task_id"]
     );
+
+    let (_, context_response) =
+        client.call("task_manage", json!({"action":"context","task_id":task_id}));
     let context_markdown = context_response["result"]["content"][0]["text"]
         .as_str()
         .unwrap();
@@ -1832,7 +1851,10 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         "Full body recovery:",
         &format!("message_id: {blocker_id}"),
     ] {
-        assert!(context_markdown.contains(expected), "missing {expected:?} in:\n{context_markdown}");
+        assert!(
+            context_markdown.contains(expected),
+            "missing {expected:?} in:\n{context_markdown}"
+        );
     }
     assert!(context_markdown.contains(&format!("BLOCKER (#{blocker_id}) by release-coordinator")));
     let blocker_callout = context_markdown
@@ -1909,7 +1931,10 @@ fn task_claim_bundle_and_task_manage_context_returns_unified_agent_context() {
         "contract",
         "Expected evidence template",
     ] {
-        assert!(claim_markdown.contains(expected), "missing {expected:?} in:\n{claim_markdown}");
+        assert!(
+            claim_markdown.contains(expected),
+            "missing {expected:?} in:\n{claim_markdown}"
+        );
     }
 
     let (_, minimal_claim_response) = client.call(
@@ -2227,7 +2252,10 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     );
     reviewer.write(
         "forge-mcp.yaml",
-        "roots: []\ndocs: []\ntasks_db: .forge/tasks.sqlite\n",
+        &format!(
+            "roots: []\ndocs: []\ntasks_db: {}\n",
+            workspace.0.join(".forge/tasks.sqlite").display()
+        ),
     );
 
     let mut client = Client::new(&workspace);
@@ -2542,10 +2570,7 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         completed_context["context_bundle"]["latest_snapshot"]["commit"],
         build_commit
     );
-    let inspected = client.payload(
-        "task_manage",
-        json!({"action":"inspect","task_id":task_id}),
-    );
+    let inspected = client.payload("task_manage", json!({"action":"inspect","task_id":task_id}));
     let findings = inspected["findings"].as_array().unwrap();
     assert!(findings.len() >= 2);
     let review_finding = findings
@@ -2566,10 +2591,8 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         inspected["receipt"]["commit"],
         delivered["receipt"]["commit"]
     );
-    let (_, inspect_response) = client.call(
-        "task_manage",
-        json!({"action":"inspect","task_id":task_id}),
-    );
+    let (_, inspect_response) =
+        client.call("task_manage", json!({"action":"inspect","task_id":task_id}));
     let inspect_markdown = inspect_response["result"]["content"][0]["text"]
         .as_str()
         .unwrap();
@@ -2930,6 +2953,17 @@ fn wave_sync_and_atomic_next_preserve_parked_worktrees() {
         let ordinary = store.inspect(&ids[2]).unwrap();
         client.payload("task_submit", json!({"task_id":ids[2],"stage":"contract","action":"pass","evidence":evidence(&ordinary)}));
         let another_worktree = Workspace::new();
+        another_worktree.write(
+            "forge-mcp.yaml",
+            &format!(
+                "roots: []\ndocs: []\ntasks_db: {}\n",
+                parking.0.join("tasks.sqlite").display()
+            ),
+        );
+        another_worktree.write(
+            "docs/milestones/010-dispatch.md",
+            &fs::read_to_string(parking.0.join("docs/milestones/010-dispatch.md")).unwrap(),
+        );
         let resumed = call(
             &mut client,
             "task_manage",

@@ -9,8 +9,8 @@ use crate::{
     engine::scanner,
 };
 use rmcp::{
-    ServerHandler, handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_handler,
-    tool_router,
+    handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_handler, tool_router,
+    ServerHandler,
 };
 use serde_json::Value;
 
@@ -145,6 +145,50 @@ fn rejected_selector_fields(
             "generation",
             "worktree",
         ],
+        "task_list" => &[
+            "repository",
+            "milestone_ref",
+            "milestone",
+            "milestone_status",
+            "status",
+            "stage",
+            "detail",
+            "worktree",
+        ],
+        "task_claim" => &["task_id", "stage", "worker_id", "worktree", "bundle"],
+        "task_submit" => &[
+            "task_id", "stage", "evidence", "action", "findings", "worktree",
+        ],
+        "task_manage" => &[
+            "worker_id",
+            "worktree",
+            "workspace",
+            "action",
+            "task_id",
+            "milestone_ref",
+            "task_ref",
+            "paths",
+            "force",
+            "subtask_ref",
+            "title",
+            "subtask_status",
+            "evidence",
+        ],
+        "task_blackboard" => &[
+            "action",
+            "scope",
+            "milestone_ref",
+            "task_id",
+            "subtask_ref",
+            "message_id",
+            "author",
+            "topic",
+            "gate",
+            "payload",
+            "limit",
+            "offset",
+            "worktree",
+        ],
         _ => return Vec::new(),
     };
     arguments
@@ -256,8 +300,12 @@ impl Server {
     )]
     fn task_claim(&self, Parameters(p): Parameters<TaskClaimInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
+        let mut request = p.request;
+        if !request.worktree.trim().is_empty() {
+            request.worktree = self.root.display().to_string();
+        }
         self.responding(format, OperationKind::Task, "task_claim", |_, _| {
-            super::tasks::claim(&self.root, p.request)
+            super::tasks::claim(&self.root, request)
         })
     }
     #[tool(
@@ -274,8 +322,20 @@ impl Server {
     )]
     fn task_manage(&self, Parameters(p): Parameters<TaskManageInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
+        let mut request = p.request;
+        if request.action == crate::engine::tasks::ManageAction::Next {
+            if request
+                .worktree
+                .as_deref()
+                .is_some_and(|worktree| !worktree.trim().is_empty())
+            {
+                request.worktree = Some(self.root.display().to_string());
+            }
+        } else {
+            request.worktree = None;
+        }
         self.responding(format, OperationKind::Task, "task_manage", |_, _| {
-            super::tasks::manage(&self.root, p.request)
+            super::tasks::manage(&self.root, request)
         })
     }
     #[tool(
@@ -788,18 +848,12 @@ impl Server {
             .as_ref()
             .map(|adapter| adapter.response.clone())
             .unwrap_or_default();
-        if is_task_tool(&request.name) {
-            return fallback_policy;
-        }
-
         let requested_worktree = request
             .arguments
             .as_ref()
             .and_then(|arguments| arguments.get("worktree"))
             .and_then(Value::as_str);
-        let Ok((target_root, _)) =
-            self.resolve_target_root_and_db(requested_worktree, &primary_adapter)
-        else {
+        let Ok((target_root, _)) = self.resolve_target_root_and_db(requested_worktree) else {
             return fallback_policy;
         };
         if target_root == self.root {
@@ -810,19 +864,6 @@ impl Server {
             .map(|adapter| adapter.response)
             .unwrap_or(fallback_policy)
     }
-}
-
-fn is_task_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "task_list"
-            | "task_claim"
-            | "task_submit"
-            | "task_manage"
-            | "task_blackboard"
-            | "forge_guide"
-            | "session_checkpoint"
-    )
 }
 
 fn operation_kind(name: &str, arguments: Option<&serde_json::Map<String, Value>>) -> OperationKind {
@@ -901,23 +942,19 @@ impl ServerHandler for Server {
             .arguments
             .as_ref()
             .and_then(|args| args.get("worktree"))
-            .and_then(|v| v.as_str());
-        let (target_root, target_db) = if is_task_tool(&request.name) {
-            (self.root.clone(), self.db.clone())
-        } else {
-            match self.resolve_target_root_and_db(requested_worktree, &primary_adapter) {
-                Ok(pair) => pair,
-                Err(error) => {
-                    return Ok(response::result_for(
-                        Err(error),
-                        &ResponsePolicy::default(),
-                        output_format,
-                        operation,
-                        &tool_name,
-                        None,
-                    )
-                    .into());
-                }
+            .and_then(|value| value.as_str());
+        let (target_root, target_db) = match self.resolve_target_root_and_db(requested_worktree) {
+            Ok(pair) => pair,
+            Err(error) => {
+                return Ok(response::result_for(
+                    Err(error),
+                    &ResponsePolicy::default(),
+                    output_format,
+                    operation,
+                    &tool_name,
+                    None,
+                )
+                .into());
             }
         };
         let adapter_result = if target_root == self.root {

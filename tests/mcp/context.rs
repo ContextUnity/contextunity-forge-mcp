@@ -16,7 +16,7 @@ use std::{fs, time::Duration};
 
 #[cfg(unix)]
 #[test]
-fn stdio_active_claim_routing_rejects_special_files() {
+fn stdio_navigation_is_independent_of_task_store_special_files() {
     for kind in ["fifo", "directory", "fifo-alias"] {
         let workspace = Workspace::new();
         workspace.write("forge-mcp.yaml", "tasks_db: .forge/state.sqlite\n");
@@ -38,9 +38,14 @@ fn stdio_active_claim_routing_rejects_special_files() {
             }
         }
         let mut client = Client::new(&workspace);
-        let (_, result) = client.call("code_map_overview", json!({}));
-        assert!(result.to_string().contains("regular file"), "{result}");
-        client.payload("code_map_overview", json!({"worktree":"."}));
+        for arguments in [json!({}), json!({"worktree":"."})] {
+            let result = client.payload("code_map_overview", arguments);
+            assert_eq!(
+                result["workspace_root"],
+                workspace.root().canonicalize().unwrap().to_str().unwrap(),
+                "{kind}: {result}"
+            );
+        }
     }
 }
 
@@ -150,7 +155,13 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         (
             "ast_grep_search",
             vec![
-                "ast", "grep", "def $NAME(): $$$BODY", "--lang", "python", "--limit", "1",
+                "ast",
+                "grep",
+                "def $NAME(): $$$BODY",
+                "--lang",
+                "python",
+                "--limit",
+                "1",
             ],
             json!({"pattern":"def $NAME(): $$$BODY","language":"python","limit":1}),
         ),
@@ -260,10 +271,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         }
         let discovery_tool = matches!(
             tool,
-            "code_map_overview"
-                | "code_map_inspect"
-                | "code_map_search"
-                | "ast_grep_search"
+            "code_map_overview" | "code_map_inspect" | "code_map_search" | "ast_grep_search"
         );
         if tool == "code_map_overview" {
             assert_eq!(
@@ -302,7 +310,10 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
 
         if tool == "ast_grep_search" {
             let page = &mcp_json["matches"];
-            assert!(page.is_object(), "AST matches must retain the shared page envelope: {page}");
+            assert!(
+                page.is_object(),
+                "AST matches must retain the shared page envelope: {page}"
+            );
             let items = page["items"].as_array().expect("AST page items");
             assert_eq!(page["limit"], arguments["limit"]);
             if arguments["limit"].as_u64() == Some(1) {
@@ -1844,7 +1855,7 @@ fn stdio_symbol_search_matches_methods_and_functions_interchangeably() {
 }
 
 #[test]
-fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
+fn stdio_worktree_selectors_preserve_claim_independent_defaults() {
     let workspace = Workspace::new();
     workspace.write(
         "forge-mcp.yaml",
@@ -1950,14 +1961,69 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
         search_wt["nodes"]["items"][0]["name"],
         "semantic_worktree_func"
     );
+    workspace.write("task/src/lib.rs", "pub fn local_shadow() {}\n");
 
-    for alias in ["021-task", "task"] {
+    for alias in ["021-task", "task", "021", "21", "021-ta", "1-tas"] {
         let result = client.payload(
             "code_map_search",
             json!({"pattern":"semantic_worktree_func", "exact":true, "worktree":alias}),
         );
         assert_eq!(result["nodes"]["total"], 1, "alias {alias}: {result}");
     }
+    for (name, symbol) in [
+        ("023-sql-schema-topology", "schema_only"),
+        ("060-acdd", "acdd_only"),
+        ("099-tail-021", "tail_only"),
+        ("099-tail-schema", "suffix_only"),
+    ] {
+        workspace.write(
+            format!(".worktrees/{name}/src/lib.rs"),
+            &format!("pub fn {symbol}() {{}}\n"),
+        );
+        workspace.write(
+            format!(".worktrees/{name}/forge-mcp.yaml"),
+            "roots: [src]\n",
+        );
+    }
+    for (alias, name, symbol) in [
+        ("023", "023-sql-schema-topology", "schema_only"),
+        ("23", "023-sql-schema-topology", "schema_only"),
+        ("023-sql", "023-sql-schema-topology", "schema_only"),
+        ("topology", "023-sql-schema-topology", "schema_only"),
+        ("sql-schema", "023-sql-schema-topology", "schema_only"),
+        ("060", "060-acdd", "acdd_only"),
+        ("60", "060-acdd", "acdd_only"),
+        ("021", "021-task", "semantic_worktree_func"),
+        ("schema", "099-tail-schema", "suffix_only"),
+    ] {
+        let overview = client.payload(
+            "code_map_overview",
+            json!({"worktree":alias, "aspects":["metadata"]}),
+        );
+        assert_eq!(
+            get_workspace_root(&overview),
+            workspace
+                .path(format!(".worktrees/{name}"))
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "selector {alias}"
+        );
+        let result = client.payload(
+            "code_map_search",
+            json!({"worktree":alias, "pattern":symbol, "exact":true}),
+        );
+        assert_eq!(
+            result["nodes"]["items"][0]["name"], symbol,
+            "{alias}: {result}"
+        );
+    }
+    let explicit = client.payload(
+        "code_map_search",
+        json!({"worktree":"./task", "pattern":"local_shadow", "exact":true}),
+    );
+    assert_eq!(explicit["nodes"]["items"][0]["name"], "local_shadow");
 
     // Search in primary does NOT find semantic_worktree_func
     let search_primary = client.payload(
@@ -1979,7 +2045,7 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
         );
     }
 
-    // 4. Active claimed task auto-resolution:
+    // Active claims cannot redirect an omitted worktree selector.
     let tasks_db_path = workspace.path(".forge/tasks.sqlite");
     std::fs::create_dir_all(tasks_db_path.parent().unwrap()).unwrap();
     let conn = rusqlite::Connection::open(&tasks_db_path).unwrap();
@@ -1998,6 +2064,10 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
         "roots: [src]\nresponse:\n  max_output_bytes: 1024\n",
     )
     .unwrap();
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ntasks_db: .forge/tasks.sqlite\nresponse:\n  max_output_bytes: 1024\n",
+    );
     let index_before_auto_rejection = fs::read(&selected_index).unwrap();
     let tasks_db_before_auto_rejection = fs::read(&tasks_db_path).unwrap();
     for (label, invalid_format) in &invalid_formats {
@@ -2012,25 +2082,25 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
             .unwrap_or_default();
         if wire_bytes > 1024 || !is_error || error_code != "INVALID_FORMAT" {
             invalid_policy_failures.push(format!(
-                "automatic selected root {label}: {wire_bytes} wire bytes, isError={is_error}, code={error_code:?}"
+                "default server root {label}: {wire_bytes} wire bytes, isError={is_error}, code={error_code:?}"
             ));
         }
         if fs::read(&selected_index).ok().as_deref() != Some(index_before_auto_rejection.as_slice())
         {
             invalid_policy_failures.push(format!(
-                "automatic selected root {label} changed index bytes before rejection"
+                "default server root {label} changed another root's index during rejection"
             ));
         }
         if fs::read(&tasks_db_path).ok().as_deref()
             != Some(tasks_db_before_auto_rejection.as_slice())
         {
             invalid_policy_failures.push(format!(
-                "automatic selected root {label} changed task database bytes during rejection"
+                "default server root {label} changed task database bytes during rejection"
             ));
         }
         if fs::read(&checkpoint_path).ok() != checkpoint_before {
             invalid_policy_failures.push(format!(
-                "automatic selected root {label} changed checkpoint bytes during rejection"
+                "default server root {label} changed checkpoint bytes during rejection"
             ));
         }
     }
@@ -2040,29 +2110,29 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
         invalid_policy_failures.join("; ")
     );
     std::fs::write(&selected_config, "roots: [src]\n").unwrap();
+    workspace.write(
+        "forge-mcp.yaml",
+        "roots: [src]\ntasks_db: .forge/tasks.sqlite\n",
+    );
 
-    // Call code_map_overview with NO worktree parameter -> automatically resolves to active claim worktree!
+    // Active claims never change the default server root.
     let overview_auto = client.payload(
         "code_map_overview",
         json!({"aspects":["counts","metadata"]}),
     );
     assert_eq!(
         get_workspace_root(&overview_auto),
-        canonical_wt.to_str().unwrap()
+        workspace.root().canonicalize().unwrap().to_str().unwrap()
     );
 
-    // Search with NO worktree parameter -> automatically discovers symbols from the claimed worktree!
+    // Default searches retain the primary corpus with active claims.
     let search_auto = client.payload(
         "code_map_search",
         json!({"pattern": "semantic_worktree_func", "exact": true}),
     );
-    assert_eq!(search_auto["nodes"]["total"], 1);
-    assert_eq!(
-        search_auto["nodes"]["items"][0]["name"],
-        "semantic_worktree_func"
-    );
+    assert_eq!(search_auto["nodes"]["total"], 0);
 
-    // Multiple claims for the same physical tree are still unambiguous.
+    // Multiple claims, including path aliases, cannot redirect the server.
     conn.execute(
         "INSERT INTO task_claims VALUES('same-tree', 1, 'worker-2', ?1, 2000, 0)",
         [".worktrees/021-task/../021-task"],
@@ -2070,7 +2140,7 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
     .unwrap();
     assert_eq!(
         get_workspace_root(&client.payload("code_map_overview", json!({"aspects":["metadata"]}))),
-        canonical_wt.to_str().unwrap()
+        workspace.root().canonicalize().unwrap().to_str().unwrap()
     );
 
     let other = workspace.path(".worktrees/022-task");
@@ -2081,7 +2151,7 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
         [other.to_str().unwrap()],
     )
     .unwrap();
-    for arguments in [json!({}), json!({"worktree":"task"})] {
+    for arguments in [json!({"worktree":"task"}), json!({"worktree":"02"})] {
         let (_, response) = client.call("code_map_overview", arguments);
         assert_eq!(response["result"]["isError"], true, "{response}");
         assert!(
@@ -2112,7 +2182,7 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
     )
     .unwrap();
 
-    // 5. When claim is ended (ended = 1) -> automatically falls back to primary root
+    // Ending a claim also leaves the server root unchanged.
     conn.execute(
         "UPDATE task_claims SET ended = 1 WHERE task_id = '021-task'",
         [],
@@ -2127,7 +2197,7 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
         workspace.root().canonicalize().unwrap().to_str().unwrap()
     );
 
-    // Changing tasks_db invalidates only cached configuration, never claim results.
+    // Changing task-store settings does not select a different code corpus.
     conn.execute(
         "UPDATE task_claims SET ended = 0 WHERE task_id = '021-task'",
         [],
@@ -2150,20 +2220,18 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
     );
     assert_eq!(
         get_workspace_root(&client.payload("code_map_overview", json!({"aspects":["metadata"]}))),
-        other.canonicalize().unwrap().to_str().unwrap()
+        workspace.root().canonicalize().unwrap().to_str().unwrap()
     );
 
-    // Missing and empty configurations have the same digest, but only the latter
-    // enables the default task database. Observe every transition without restart.
+    // Missing, empty, and changed configuration retain the same default root.
     let primary = workspace.root().canonicalize().unwrap();
-    let other = other.canonicalize().unwrap();
     for (configuration, expected) in [
         (None, &primary),
-        (Some("{}\n"), &canonical_wt),
+        (Some("{}\n"), &primary),
         (None, &primary),
         (
             Some("roots: [src]\ntasks_db: .forge/alternate-tasks.sqlite\n"),
-            &other,
+            &primary,
         ),
     ] {
         match configuration {
@@ -2188,8 +2256,8 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
             "roots: [src]\ntasks_db: .forge/alias-tasks.sqlite\n",
         );
         for (target, expected) in [
-            ("alternate-tasks.sqlite", other.canonicalize().unwrap()),
-            ("tasks.sqlite", canonical_wt.clone()),
+            ("alternate-tasks.sqlite", primary.clone()),
+            ("tasks.sqlite", primary.clone()),
             ("missing-tasks.sqlite", primary.clone()),
         ] {
             fs::remove_file(&alias).unwrap();
@@ -2211,7 +2279,7 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
         malformed["result"]["content"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("invalid task configuration"),
+            .contains("TASK_DATABASE_COLLISION"),
         "{malformed}"
     );
     // An explicit target does not depend on the primary task-store configuration.
@@ -2230,8 +2298,14 @@ fn stdio_worktree_parameter_and_active_claim_auto_resolution() {
     );
     assert_eq!(
         get_workspace_root(&client.payload("code_map_overview", json!({"aspects":["metadata"]}))),
-        other.canonicalize().unwrap().to_str().unwrap()
+        workspace.root().canonicalize().unwrap().to_str().unwrap()
     );
+    workspace.write(".worktrees/task/src/lib.rs", "pub fn exact_only() {}\n");
+    let exact = client.payload(
+        "code_map_search",
+        json!({"worktree":"task", "pattern":"exact_only", "exact":true}),
+    );
+    assert_eq!(exact["nodes"]["items"][0]["name"], "exact_only");
 }
 
 #[test]
@@ -2293,6 +2367,93 @@ fn stdio_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names(
         }
         assert_eq!(client.payload("code_map_search", args)["nodes"]["total"], 1);
     }
+    let branch_manifest = sibling.join("docs/milestones/060-branch-only.md");
+    fs::create_dir_all(branch_manifest.parent().unwrap()).unwrap();
+    fs::write(&branch_manifest, "---\nid: m-branch-only\ntitle: Branch only\ndoc_type: contract\nstatus: active\n---\n\n### task: branch-task\n\n```yaml\ntask_ref: branch-task\ntarget: branch task\nproof_policy: direct-proof\nscope: [src/lib.rs]\n```\n").unwrap();
+    for alias in ["051", "51", "051-ex", "external", "1-exter"] {
+        assert_eq!(
+            client.payload(
+                "code_map_search",
+                json!({"pattern":"sibling_only", "exact":true, "worktree":alias})
+            )["nodes"]["total"],
+            1
+        );
+    }
+    drop(conn);
+    fs::remove_file(primary.path(".forge/tasks.sqlite")).unwrap();
+    fs::write(
+        sibling.join("AGENTS.md"),
+        "Load the contextunity-forge skill.\n",
+    )
+    .unwrap();
+    let sync = client.payload(
+        "task_manage",
+        json!({"action":"sync", "milestone_ref":"060", "worktree":"51"}),
+    );
+    assert!(sync.to_string().contains("branch-task"), "{sync}");
+    let list = client.payload(
+        "task_list",
+        json!({"milestone_ref":"060", "status":"all", "worktree":"51"}),
+    );
+    assert!(list.to_string().contains("branch-task"), "{list}");
+    let posted = client.payload(
+        "task_blackboard",
+        json!({"action":"post", "scope":"milestone", "milestone_ref":"060", "topic":"notes", "payload":"branch-only message", "worktree":"51"}),
+    );
+    let board = client.payload(
+        "task_blackboard",
+        json!({"action":"read", "scope":"milestone", "milestone_ref":"060", "worktree":"51"}),
+    );
+    assert_eq!(board["messages"][0]["id"], posted["id"], "{board}");
+    let message = client.payload(
+        "task_blackboard",
+        json!({"action":"inspect", "message_id":posted["id"], "worktree":"51"}),
+    );
+    assert_eq!(
+        message["message"]["payload"], "branch-only message",
+        "{message}"
+    );
+    let task_id = "forge-mcp/m-branch-only:branch-task";
+    let claim = client.payload("task_claim", json!({"task_id":task_id, "stage":"contract", "worker_id":"routing-author", "worktree":"51", "bundle":false}));
+    let canonical_sibling = sibling.canonicalize().unwrap();
+    assert_eq!(
+        claim["worktree"],
+        canonical_sibling.to_str().unwrap(),
+        "{claim}"
+    );
+    client.payload(
+        "task_manage",
+        json!({"action":"reset", "task_id":task_id, "worktree":"51"}),
+    );
+    let next = client.payload(
+        "task_manage",
+        json!({"action":"next", "worker_id":"routing-author", "worktree":"051"}),
+    );
+    assert_eq!(
+        next["worktree"],
+        canonical_sibling.to_str().unwrap(),
+        "{next}"
+    );
+    let mut evidence = next["workflow_guidance"]["expected_evidence_template"].clone();
+    evidence["proof"] =
+        json!({"contract_proof":{"seam_test_ref":"tests/routing.rs", "red_exit_code":101}});
+    let rejected = client.payload("task_submit", json!({"task_id":task_id, "stage":"contract", "action":"reject", "worktree":"51", "evidence":evidence, "findings":{"summary":"Release the fixture claim after proving selected-root submission"}}));
+    assert_eq!(rejected["stage"], "contract", "{rejected}");
+    for (selector, value) in [(".", "linked"), ("51", "sibling")] {
+        client.payload(
+            "session_checkpoint",
+            json!({"action":"save", "name":"routing", "content":value, "worktree":selector}),
+        );
+    }
+    for (selector, value) in [(None, "linked"), (Some("51"), "sibling")] {
+        let mut args = json!({"action":"get", "name":"routing"});
+        if let Some(selector) = selector {
+            args["worktree"] = json!(selector);
+        }
+        let checkpoint = client.payload("session_checkpoint", args);
+        assert_eq!(checkpoint, json!(value));
+    }
+
     assert!(custom_db.is_file());
     assert!(!linked.join(".forge/code-map.sqlite").exists());
     assert_eq!(

@@ -27,6 +27,12 @@ These are protective ceilings, not latency promises. A query may finish earlier,
 
 ## Keeping the index current
 
+All 20 MCP tools support the same `worktree` selector, optional except on task
+claim and `task_manage(action="next")`. Omission retains the stable server
+root. Explicit selection uses that branch's index and adapter/configuration;
+Git-linked worktrees share the task database, but their indexes and checkpoints
+remain worktree-local.
+
 The default database is `<root>/.forge/code-map.sqlite`; override it with `--db` or `FORGE_DB`. The default workspace is `.`; use `--root` or `FORGE_WORKSPACE_ROOT` for another root. `build` creates a full index. `delta` updates changed and deleted files. The MCP server validates workspace identity and adapter configuration on each request, then updates or rebuilds stale data. It reuses a successful source-inventory check for up to five seconds when the adapter digest and database identity remain valid, so an external source edit can remain unreflected during that interval. CLI read commands use the existing index, so refresh it with `build` or `delta` after source edits.
 
 If a source file has changed since it was indexed, `get_code_snippet` rejects stale content by digest. Refresh the index and retry. Response settings such as page size and source preview length do not require a rebuild; changes to admitted roots, linked workspaces, or enabled language profiles do.
@@ -36,5 +42,7 @@ If a source file has changed since it was indexed, `get_code_snippet` rejects st
 `code_map_analyze` accepts one read-only `SELECT` or `WITH` statement and rejects write and administrative SQL. It runs against a read-only connection. Set `include_cycles=true` only when cycle findings are needed; cycle analysis has separate graph limits. A structural result is evidence from indexed source, not a guarantee about runtime behavior.
 
 Source bodies are omitted from MCP responses by default. Opt in through the configured source preview settings or request `get_code_snippet`. Source previews default to 5 leading lines and 200 body lines; requests accept `leading_lines` from 0 to 20 and `max_body_lines` from 1 to 500. Pagination and response byte limits still apply. See [MCP tools](../reference/mcp-tools.md) for the request fields.
+
+MCP checkpoints remain local to the selected worktree. Git-linked worktrees do not share checkpoint files merely because their task database is shared.
 
 Local checkpoints live in `.forge/checkpoints.json`. A name must be 1–200 UTF-8 bytes and cannot contain `..`, `/`, `\`, or a NUL byte. `save` requires valid JSON content; `get` and `delete` report missing names as errors.

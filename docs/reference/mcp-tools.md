@@ -67,32 +67,45 @@ See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI p
 
 ## Worktree selection
 
-Code navigation and documentation tools accept `worktree`: an absolute path,
-a path relative to the server root, an exact worktree directory name, or a unique
-hyphen-delimited suffix. For `.worktrees/049-admission-integrity-database-guards-and-lifecycle-hardening`,
-both the full directory name and `lifecycle-hardening` select that tree.
-Short names search Git's registered worktrees and immediate children of the
-repository's `.worktrees/` directory. Existing explicit paths take precedence,
-then exact names, then suffixes. Multiple matches return `WORKTREE_AMBIGUOUS`.
+All 20 MCP tools support a `worktree` selector, optional on every tool except
+`task_claim` and `task_manage(action: "next")`, which require it for task
+affinity. This includes task tools, `forge_guide`, and `session_checkpoint`.
+The same resolver selects a request-local root, adapter, and index before
+dispatch. `task_submit` accepts a selector optionally without changing evidence
+identity.
 
-With no argument, a server rooted in a linked Git worktree retains that root.
-A server in the primary tree selects the one physical directory used by active
-task claims when workspace configuration is loaded or `forge-mcp.yaml` exists;
-an empty `{}` configuration enables this lookup with default task settings.
-Without configuration, the server retains its root and does not consult claims.
-Duplicate claims for that directory count once. Multiple active
-directories require explicit selection; no active directory uses the server root.
-Use `worktree: "."` to explicitly select the server root. Missing or empty explicit
-values fail with `WORKTREE_NOT_FOUND`. Each selected tree uses its own index;
-selecting the server root retains a custom `--db` path. Task tools, checkpoints,
-and `forge_guide` retain the server root.
+Use `"."` for the server root. An absolute path or a path relative to the
+server root that contains a separator selects an existing directory directly;
+a missing explicit path returns `WORKTREE_NOT_FOUND`. Other selectors search
+canonicalized, deduplicated Git-registered worktrees and immediate
+`.worktrees/` children in this order:
 
-Automatic claim selection rejects a configured task database that is a directory
-or special file before opening SQLite. Explicit worktree selection remains
-available without consulting task claims.
+1. Exact directory name.
+2. Literal prefix, or a pure-digit milestone prefix compared with leading zeros
+   removed (`"23"` and `"023"` match the same numeric prefix).
+3. Literal suffix.
+4. Literal substring.
 
-The MCP request does not carry the client's current working directory. Set the
-server's `cwd`/`--root` to bind a session to a worktree, or pass `worktree` per call.
+The first nonempty tier must contain exactly one candidate. Multiple candidates
+at that tier return `WORKTREE_AMBIGUOUS`; lower tiers do not break a tie.
+No match, including an empty explicit selector, returns `WORKTREE_NOT_FOUND`.
+For example, `worktree: "sql-schema"` can select a unique directory containing
+that substring, while `worktree: "repair"` can select a unique suffix.
+
+Omitting `worktree` always keeps the canonical server root and its configured
+index database. Active claims or task settings never choose another root.
+Existing adapter/configuration validation and reserved database safety checks
+still apply; routing does not bypass them. An explicit selection uses that
+worktree's adapter, index, manifests, and checkpoints; selecting the server
+root retains a custom `--db` path. Git-linked worktrees share the task database
+resolved by the existing task-store configuration; standalone repositories
+remain independent unless explicitly configured to share a store.
+
+These human-friendly aliases are an MCP request feature. The CLI keeps its own
+path inputs: query commands select a workspace with `--root`, while CLI task
+claim/next operations use an existing `--worktree` directory path. MCP requests
+do not carry the client's current working directory. Set the server's
+`cwd`/`--root` to bind a session to a worktree, or pass `worktree` per call.
 
 ## Selectors and graph queries
 

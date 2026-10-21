@@ -21,11 +21,9 @@ machine-specific absolute paths in tracked configuration. In non-git or standalo
 workspaces, relative paths resolve directly from the configuration directory.
 Absolute paths open directly.
 
-Code tools use the [worktree selection rules](mcp-tools.md#worktree-selection):
-explicit path/name, the server's linked worktree, one unique active claim, then
-the primary root. Implicit claim selection requires loaded workspace configuration
-or an existing `forge-mcp.yaml` (an empty `{}` file is sufficient); without it,
-the primary server retains its root. Ambiguous active claims require an explicit selection.
+All MCP tools, including task tools, use the [worktree selection rules](mcp-tools.md#worktree-selection). An omitted selector always keeps the canonical server root, independent of active claims. Explicit selection loads branch-local adapter/configuration and milestone manifests while Git-linked worktrees retain the shared task database; standalone repositories remain independent unless configured to share a store.
+
+The human-friendly alias cascade belongs to MCP requests. CLI task claim/next operations require an existing `--worktree` directory path; CLI query commands select their workspace with `--root`. Do not treat MCP name aliases as CLI path aliases.
 Connections use WAL, a 5000 ms busy timeout, NORMAL
 synchronization, foreign keys, and a 256 MiB mmap ceiling. Transactional changes
 increment the `meta` generation; requests retain no cached task connection.
@@ -138,8 +136,15 @@ and the two detail flags are mutually exclusive within one invocation. See the
 | `task_list` | Optional `repository`, `milestone_ref`, `milestone_status`, `status`, `stage`, and `detail`. Task status defaults to `ready`; values are `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, and `all`. `parked` selects tasks waiting for a scope owner with retained worker/worktree affinity; `all` includes them and retained cancelled tasks. Milestone status defaults to `active`; values are `active`, `planned`, `completed`, and `all`. A targeted `milestone_ref` defaults milestone status to `all`. `stage` matches a gate ID declared by the active profile; null matches every gate. Subtask detail defaults to compact references and statuses; `full` includes titles and verification evidence. Each task summary includes its declared `depends_on` references. |
 | `task_claim` | Required `task_id`, `stage`, `worker_id`, and `worktree`; optional `bundle` (boolean, defaults to true). Claims the current gate atomically, returning context tailored to the active gate (see below). Set `bundle: false` for minimal details. Collisions return typed `TASK_ALREADY_CLAIMED`. |
 | `task_submit` | Required `task_id`, `stage`, JSON object `evidence`, and `action` (`pass` or `reject`); optional JSON `findings`. Reject requires findings. |
-| `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. `next` additionally requires `worker_id` and `worktree`; other actions reject these fields. Selectors follow the table below. |
+| `task_manage` | Required `action`; optional `workspace`, `task_id`, `milestone_ref`, `task_ref`, `paths`, `force` (default false), `subtask_ref`, `title`, `subtask_status`, and `evidence`. `next` additionally requires `worker_id` and a `worktree` path in CLI/engine action input. MCP accepts `worktree` as a routing selector for every action and requires it for `next`. See the action table below. |
 | `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires canonical `topic` and `payload`, accepts `author` and optional active-profile `gate`, and returns an ID. Read accepts `topic`, optional active-profile `gate`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect with `message_id` returns that message including payload and gate, ignoring optional `scope`, `task_id`, and `milestone_ref`; without `message_id`, inspect returns the scoped read page. |
+
+For MCP calls, every task tool accepts `worktree` as a routing selector;
+`task_claim` and `task_manage(action="next")` require it, while `task_submit`
+accepts it optionally. Canonicalize claim and next selectors before engine
+execution and persistence. For other `task_manage` actions, remove the selector
+before engine validation; submit routing never replaces claim-bound evidence
+identity.
 
 Unknown fields are rejected. Ready tasks are unclaimed and nonterminal, with
 satisfied local prerequisites. Missing or amended authority blocks open work.
@@ -152,9 +157,9 @@ guidance, inspect history, findings, candidate bindings, and receipts. See the
 [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle)
 for blocker callouts and message recovery.
 
-| Manage action | Required fields | Other constraints |
+| Manage action | Required CLI/engine action fields | Other constraints |
 | --- | --- | --- |
-| `next` | `worker_id`, `worktree` | Optional workspace; omit task/milestone/subtask selectors, paths, evidence, and force. Returns a claim with context bundle, or `status: "idle"` when no task is eligible. |
+| `next` | `worker_id`, `worktree` path | MCP also requires its routing selector; on other MCP actions this optional selector is removed before engine validation. Optional workspace; omit task/milestone/subtask selectors, paths, evidence, and force. Returns a claim with context bundle, or `status: "idle"` when no task is eligible. |
 | `create` | `milestone_ref`, `task_ref` | Optional workspace; omit task_id/paths; force=false. |
 | `sync` | `milestone_ref` or `workspace` | Optional explicit file within workspace; omit task_id/task_ref/paths; force=false. |
 | `inspect` | `task_id` | Omit workspace/milestone_ref/task_ref/paths; force=false. |
