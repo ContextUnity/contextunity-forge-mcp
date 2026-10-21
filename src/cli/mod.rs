@@ -918,6 +918,9 @@ fn command_discovery(command: &Command) -> Option<format::DiscoveryKind> {
         Command::Query { command } => match command {
             QueryCommand::Overview => Some(format::DiscoveryKind::Overview),
             QueryCommand::Inspect { .. } => Some(format::DiscoveryKind::Inspect),
+            QueryCommand::Run { operation, .. } if operation.trim() == "inspect" => {
+                Some(format::DiscoveryKind::Inspect)
+            }
             QueryCommand::Search { .. } => Some(format::DiscoveryKind::Search),
             _ => None,
         },

@@ -1,5 +1,5 @@
 use serde_json::Value;
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 /// Semantic discovery operations with a domain-specific Markdown layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -768,20 +768,37 @@ fn render_inspect(output: &mut String, value: &Value) {
             output.push_str(&format!("- `{}`: {coordinate}\n", escape_text(id)));
         }
     }
+    let document_items = value.get("documents").and_then(page_items).unwrap_or(&[]);
+    let mut rendered_document_ids = HashSet::new();
     for key in ["documented_in", "analysis_gaps"] {
         if let Some(items) = value.get(key).and_then(page_items) {
             if !items.is_empty() {
                 output.push_str(&format!("\n### {}\n\n", label(key)));
                 for item in items {
-                    render_evidence_row(output, item);
+                    if key == "documented_in" {
+                        let content = text(item, "doc_id")
+                            .filter(|doc_id| rendered_document_ids.insert((*doc_id).to_owned()))
+                            .and_then(|doc_id| {
+                                text(item, "content").or_else(|| {
+                                    document_items
+                                        .iter()
+                                        .find(|document| text(document, "doc_id") == Some(doc_id))
+                                        .and_then(|document| text(document, "content"))
+                                })
+                            });
+                        render_documented_in_row(output, item, content);
+                    } else {
+                        render_evidence_row(output, item);
+                    }
                 }
             }
         }
     }
     for key in ["documents", "coverage"] {
         if let Some(page) = value.get(key) {
-            if page_items(page).is_some_and(|items| !items.is_empty())
-                || page.get("statuses").is_some()
+            if key == "coverage"
+                && (page_items(page).is_some_and(|items| !items.is_empty())
+                    || page.get("statuses").is_some())
             {
                 render_json_section(output, &label(key), page);
             }
@@ -1149,6 +1166,42 @@ fn render_evidence_row(output: &mut String, item: &Value) {
         output.push_str(&format!(" — {}", escape_text(section)));
     }
     output.push('\n');
+}
+
+fn render_documented_in_row(output: &mut String, item: &Value, content: Option<&str>) {
+    let path = text(item, "path").unwrap_or("indexed evidence");
+    let line = number(item, "doc_line").or_else(|| number(item, "line"));
+    let section = text(item, "section_title").unwrap_or("");
+    let label = line
+        .map(|line| format!("{path}#L{line}"))
+        .unwrap_or_else(|| path.to_owned());
+    if let Some(uri) = text(item, "uri") {
+        output.push_str(&format!("- [{}]({uri})", escape_text(&label)));
+    } else {
+        output.push_str(&format!("- `{}`", escape_text(&label)));
+    }
+    if !section.is_empty() {
+        output.push_str(&format!(" — {}", escape_text(section)));
+    }
+    let mut metadata = Vec::new();
+    if let Some(id) = text(item, "doc_id") {
+        metadata.push(format!("id {}", inline_code(id)));
+    }
+    if let Some(doc_type) = text(item, "doc_type") {
+        metadata.push(format!("type {}", inline_code(doc_type)));
+    }
+    if let Some(line) = number(item, "line") {
+        metadata.push(format!("citation line {line}"));
+    }
+    if !metadata.is_empty() {
+        output.push_str(&format!(" ({})", metadata.join(", ")));
+    }
+    output.push('\n');
+    if let Some(content) = content.filter(|content| !content.is_empty()) {
+        output.push('\n');
+        output.push_str(&quote_lines(content));
+        output.push('\n');
+    }
 }
 
 fn render_page_continuation(output: &mut String, page: &Value, name: &str, scope: Option<&str>) {

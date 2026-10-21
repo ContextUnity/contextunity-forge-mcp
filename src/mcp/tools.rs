@@ -395,7 +395,7 @@ impl Server {
                     include_coverage: p.include_coverage,
                 };
                 let mut result = self.read_with_adapter(adapter, |c| {
-                    symbols::inspect_with_path_options(
+                    let mut result = symbols::inspect_with_path_options(
                         c,
                         &self.root,
                         &p.selector,
@@ -406,7 +406,12 @@ impl Server {
                             coverage,
                             page: &page,
                         },
-                    )
+                    )?;
+                    if format == OutputFormat::Markdown && p.show_doc && page.detail == Detail::Full
+                    {
+                        symbols::attach_inspect_document_contents(c, &mut result)?;
+                    }
+                    Ok(result)
                 })?;
                 if format == OutputFormat::Markdown {
                     result["request_scope"] = serde_json::json!({
@@ -622,24 +627,39 @@ impl Server {
         } else {
             OperationKind::Navigation
         };
-        self.responding(format, operation, "code_map_query", |adapter, policy| {
-            self.read_with_adapter(adapter, |c| {
-                traversal::query_with_path_options(
-                    c,
-                    &p.operation,
-                    p.selector.as_deref(),
-                    p.path.as_deref(),
-                    &traversal::GraphQueryOptions {
-                        depth: p.depth,
-                        direction: p.direction.as_deref(),
-                        coverage: CoverageOptions {
-                            include_coverage: p.include_coverage,
+        let is_inspect = p.operation.trim() == "inspect";
+        let discovery = is_inspect.then_some(DiscoveryKind::Inspect);
+        self.responding_with_presentation(
+            format,
+            operation,
+            "code_map_query",
+            |adapter, policy| {
+                self.read_with_adapter(adapter, |c| {
+                    let page = p.page.resolve(policy)?;
+                    let mut result = traversal::query_with_path_options(
+                        c,
+                        &p.operation,
+                        p.selector.as_deref(),
+                        p.path.as_deref(),
+                        &traversal::GraphQueryOptions {
+                            depth: p.depth,
+                            direction: p.direction.as_deref(),
+                            coverage: CoverageOptions {
+                                include_coverage: p.include_coverage,
+                            },
+                            page: &page,
                         },
-                        page: &p.page.resolve(policy)?,
-                    },
-                )
-            })
-        })
+                    )?;
+                    if is_inspect && format == OutputFormat::Markdown && page.detail == Detail::Full
+                    {
+                        symbols::attach_inspect_document_contents(c, &mut result)?;
+                    }
+                    Ok(result)
+                })
+            },
+            None,
+            discovery,
+        )
     }
     #[tool(
         description = "Diagnostics for the workspace or one path, declared-public production symbols not reached by an indexed test case, stored syntax diagnostics, or static cycles. Exact-file resolution and external-import rows include an evidence-based reason when known and a verified source-line snippet; full detail retains resolver evidence. lint=true cannot combine with include_cycles=true."

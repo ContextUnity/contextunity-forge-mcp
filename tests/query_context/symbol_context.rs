@@ -60,6 +60,10 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
         code.push_str(&format!("def caller_{i:02}(): return target({i})\n"));
     }
     workspace.write("graph.py", &code);
+    workspace.write(
+        "docs/guide.md",
+        "---\ntitle: Inspect References\ndoc_type: guide\n---\n# Inspect References\n## Target overview\nDistinct full-detail inspect content.\n[`target`](../graph.py#L1)\n## Target consumers\n[`target`](../graph.py#L1)\n",
+    );
     let conn = workspace.build();
     let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
 
@@ -122,6 +126,8 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
     .unwrap();
     assert_eq!(explained["summary"], inspected["summary"]);
     assert!(explained.get("coverage").is_none());
+    assert_eq!(explained["documents"]["total"], 2);
+    assert!(explained.get("documented_in").is_none());
 
     let with_coverage = symbols::inspect_with_options(
         &conn,
@@ -139,6 +145,132 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
     .unwrap();
     assert!(with_coverage["coverage"]["total"].as_u64().unwrap() >= 1);
     assert_eq!(with_coverage["summary"], inspected["summary"]);
+
+    for operation in ["code_map_inspect", "code_map_query"] {
+        let mut page = options(1);
+        let inspect = |page: &QueryOptions| match operation {
+            "code_map_inspect" => symbols::inspect_with_options(
+                &conn,
+                &workspace.0,
+                "target",
+                &symbols::InspectOptions {
+                    show_doc: true,
+                    source: &source,
+                    coverage: CoverageOptions {
+                        include_coverage: true,
+                    },
+                    page,
+                },
+            ),
+            "code_map_query" => traversal::query_with_options(
+                &conn,
+                "inspect",
+                Some("target"),
+                &traversal::GraphQueryOptions {
+                    depth: 1,
+                    direction: None,
+                    coverage: CoverageOptions {
+                        include_coverage: true,
+                    },
+                    page,
+                },
+            ),
+            _ => unreachable!(),
+        };
+        let first = inspect(&page).unwrap();
+        assert_eq!(first["documents"]["total"], 2, "{operation} JSON page");
+        let documented_in = &first["documented_in"];
+        assert_eq!(documented_in["total"], 2, "{operation}");
+        assert_eq!(documented_in["limit"], 1, "{operation}");
+        assert_eq!(documented_in["has_more"], true, "{operation}");
+        assert!(
+            documented_in["generation"].as_str().is_some(),
+            "{operation}"
+        );
+        let first_citation = &documented_in["items"][0];
+        assert!(first_citation["doc_id"].as_str().is_some(), "{operation}");
+        assert_eq!(first_citation["path"], "docs/guide.md", "{operation}");
+        assert!(
+            ["Target overview", "Target consumers"]
+                .contains(&first_citation["section_title"].as_str().unwrap()),
+            "{operation}: {first_citation}"
+        );
+        assert_eq!(first_citation["doc_type"], "guide", "{operation}");
+        assert!(
+            first_citation["line"].as_u64().unwrap_or_default() > 0,
+            "{operation}"
+        );
+        assert!(
+            first_citation["doc_line"].as_u64().unwrap_or_default() > 0,
+            "{operation}"
+        );
+        assert_eq!(first["coverage"]["limit"], 1, "{operation}");
+        assert!(
+            first["coverage"]["has_more"].as_bool().unwrap_or(false),
+            "{operation}"
+        );
+        assert!(
+            first["coverage"]["generation"].as_str().is_some(),
+            "{operation}"
+        );
+        let coverage_item = &first["coverage"]["items"][0];
+        assert!(
+            coverage_item["expression"].as_str().is_some(),
+            "{operation}"
+        );
+        assert!(coverage_item.get("doc_id").is_none(), "{operation}");
+
+        let title = operation;
+        let discovery = Some(contextunity_forge_mcp::core::format::DiscoveryKind::Inspect);
+        let markdown = contextunity_forge_mcp::core::format::render_for_operation(
+            &first,
+            contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+            title,
+            discovery,
+            contextunity_forge_mcp::core::format::OperationKind::Navigation,
+        );
+        assert!(
+            !markdown.contains("## documents\n\n```json"),
+            "{operation} emitted the parallel documents JSON page: {markdown}"
+        );
+
+        let mut full_page = options(1);
+        full_page.detail = Detail::Full;
+        let full_inspect = inspect(&full_page).unwrap();
+        let full_markdown = contextunity_forge_mcp::core::format::render_for_operation(
+            &full_inspect,
+            contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+            operation,
+            discovery,
+            contextunity_forge_mcp::core::format::OperationKind::Navigation,
+        );
+        assert!(
+            full_markdown.contains("Distinct full-detail inspect content."),
+            "{operation} dropped full document content: {full_markdown}"
+        );
+        assert!(
+            full_markdown.contains(first_citation["doc_id"].as_str().unwrap())
+                && full_markdown.contains("type `guide`")
+                && full_markdown.contains(&format!(
+                    "citation line {}",
+                    first_citation["line"].as_u64().unwrap()
+                )),
+            "{operation} dropped documented_in metadata: {full_markdown}"
+        );
+
+        assert!(continue_page(&mut page, documented_in), "{operation}");
+        let second = inspect(&page).unwrap();
+        let second_citation = &second["documented_in"]["items"][0];
+        assert_eq!(second["documented_in"]["has_more"], false, "{operation}");
+        assert_ne!(
+            first_citation["doc_id"], second_citation["doc_id"],
+            "{operation} repeated a cited section"
+        );
+        assert_ne!(
+            first_citation["line"], second_citation["line"],
+            "{operation}"
+        );
+    }
 }
 
 #[test]

@@ -75,7 +75,18 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         "def entry():\n    return target()\ndef target():\n    return 1\n",
     );
     workspace.write("other.py", "def target():\n    return 2\n");
-    workspace.write("README.md", "# Fixture Guide\nquasarneedle appears here.\n");
+    workspace.write(
+        "README.md",
+        "---\ntitle: Fixture Guide\ndoc_type: guide\n---\n# Fixture Guide\nquasarneedle appears here.\n## Entry overview\nPATH_FIRST_GUIDE_CONTENT\n[`entry`](service.py#L1)\n[`entry`](service.py#L1)\n## Entry usage\nENTRY_USAGE_CONTENT\n[`entry`](service.py#L1)\n",
+    );
+    workspace.write(
+        "z-policy.md",
+        "---\ntitle: Entry Policy\ndoc_type: contract\n---\n# Entry Policy\n- INV-INSPECT-CONTENT: Keep full detail with the cited section.\nPOLICY_DETAIL_CONTENT\n[`entry`](service.py#L1)\n",
+    );
+    workspace.write(
+        "000-unreferenced.md",
+        "---\ntitle: Unreferenced\ndoc_type: guide\n---\n# Unreferenced\nUNREFERENCED_DETAIL_CONTENT\n",
+    );
     workspace.write(
         "tests/test_service.py",
         "from service import entry\ndef test_entry():\n    entry()\n",
@@ -188,7 +199,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
     ];
     const FRESHNESS_MARKDOWN: &str = concat!(
         "- **freshness**\n",
-        "  - **files_checked**: `5`\n",
+        "  - **files_checked**: `7`\n",
         "  - **refresh**: `\"none\"`\n",
         "  - **status**: `\"matched\"`\n",
     );
@@ -262,7 +273,7 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
             .as_object_mut()
             .and_then(|result| result.remove("freshness"));
         let (mcp_domain_text, markdown_freshness) = strip_top_level_freshness(default_text);
-        let expected_freshness = json!({"status":"matched","files_checked":5,"refresh":"none"});
+        let expected_freshness = json!({"status":"matched","files_checked":7,"refresh":"none"});
         if let Some(actual) = &mcp_freshness {
             assert_eq!(actual, &expected_freshness, "{tool} emitted freshness");
         }
@@ -271,8 +282,11 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         }
         let discovery_tool = matches!(
             tool,
-            "code_map_overview" | "code_map_inspect" | "code_map_search" | "ast_grep_search"
-        );
+            "code_map_overview"
+                | "code_map_inspect"
+                | "code_map_search"
+                | "ast_grep_search"
+        ) || (tool == "code_map_query" && arguments["operation"] == "inspect");
         if tool == "code_map_overview" {
             assert_eq!(
                 mcp_freshness.as_ref(),
@@ -357,6 +371,191 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         }
     }
 
+    for (tool, arguments) in [
+        (
+            "code_map_inspect",
+            json!({"selector":"service.py:entry","show_doc":true,"include_coverage":true,"limit":1,"detail":"full"}),
+        ),
+        (
+            "code_map_query",
+            json!({"operation":"inspect","selector":"service.py:entry","include_coverage":true,"limit":1,"detail":"full"}),
+        ),
+    ] {
+        let first = client.payload(tool, arguments.clone());
+        let page = &first["documented_in"];
+        assert_eq!(page["total"], 3, "{tool}");
+        assert_eq!(page["limit"], 1, "{tool}");
+        assert_eq!(page["has_more"], true, "{tool}");
+        assert!(page["generation"].as_str().is_some(), "{tool}");
+        assert_eq!(first["documents"]["total"], 3, "{tool} documents JSON page");
+        assert_eq!(
+            first["documents"]["items"][0]["path"], "z-policy.md",
+            "{tool}"
+        );
+        assert_eq!(first["documents"]["items"][0]["is_invariant"], 1, "{tool}");
+        let first_citation = &page["items"][0];
+        assert!(first_citation["doc_id"].as_str().is_some(), "{tool}");
+        assert_eq!(first_citation["path"], "README.md", "{tool}");
+        assert_eq!(first_citation["section_title"], "Entry overview", "{tool}");
+        assert_ne!(
+            first_citation["doc_id"], first["documents"]["items"][0]["doc_id"],
+            "{tool} fixtures must expose independent page ordering"
+        );
+        assert_eq!(first_citation["doc_type"], "guide", "{tool}");
+        assert!(
+            first_citation["line"].as_u64().unwrap_or_default() > 0,
+            "{tool}"
+        );
+        assert!(
+            first_citation["doc_line"].as_u64().unwrap_or_default() > 0,
+            "{tool}"
+        );
+        assert_eq!(first["coverage"]["limit"], 1, "{tool}");
+        assert!(first["coverage"]["generation"].as_str().is_some(), "{tool}");
+        assert!(
+            first_citation.get("content").is_none(),
+            "{tool} JSON documented_in page must retain its structural shape"
+        );
+
+        let generation = page["generation"].as_str().unwrap().to_owned();
+        let expected_sections = [
+            ("README.md", "Entry overview", "PATH_FIRST_GUIDE_CONTENT"),
+            ("README.md", "Entry usage", "ENTRY_USAGE_CONTENT"),
+            ("z-policy.md", "Entry Policy", "POLICY_DETAIL_CONTENT"),
+        ];
+        for (offset, (expected_path, expected_section, expected_content)) in
+            expected_sections.iter().enumerate()
+        {
+            let mut page_arguments = arguments.clone();
+            page_arguments["offset"] = json!(offset);
+            if offset > 0 {
+                page_arguments["generation"] = json!(generation);
+            }
+            let page_result = client.payload(tool, page_arguments.clone());
+            let current_page = &page_result["documented_in"];
+            assert_eq!(current_page["offset"], offset, "{tool}");
+            assert_eq!(
+                current_page["has_more"],
+                offset + 1 < expected_sections.len(),
+                "{tool}"
+            );
+            assert_eq!(
+                current_page["items"][0]["path"], *expected_path,
+                "{tool} page {offset}"
+            );
+            assert_eq!(
+                current_page["items"][0]["section_title"], *expected_section,
+                "{tool} page {offset}"
+            );
+            assert!(
+                current_page["items"][0].get("content").is_none(),
+                "{tool} JSON documented_in page must retain its structural shape"
+            );
+
+            page_arguments["format"] = json!("markdown");
+            let (_, markdown_result) = client.call(tool, page_arguments);
+            assert_ne!(
+                markdown_result["result"]["isError"], true,
+                "{tool}: {markdown_result}"
+            );
+            let markdown = markdown_result["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap();
+            assert!(
+                !markdown.contains("## documents\n\n```json"),
+                "{tool} emitted the parallel documents JSON page: {markdown}"
+            );
+            assert_eq!(
+                markdown.matches(*expected_content).count(),
+                1,
+                "{tool} lost or duplicated page-local content at offset {offset}: {markdown}"
+            );
+            for (path, _, content) in expected_sections.iter() {
+                if *content != *expected_content {
+                    assert!(
+                        !markdown.contains(content),
+                        "{tool} attached content from {path}: {markdown}"
+                    );
+                }
+            }
+            let document_uri = format!(
+                "file://{}#L{}",
+                workspace
+                    .path(expected_path)
+                    .canonicalize()
+                    .unwrap()
+                    .display(),
+                current_page["items"][0]["doc_line"].as_u64().unwrap()
+            );
+            assert!(
+                markdown.contains(&document_uri),
+                "{tool} dropped cited-section URI {document_uri}: {markdown}"
+            );
+        }
+
+        let mut paired_arguments = arguments.clone();
+        paired_arguments["limit"] = json!(2);
+        let paired_page = client.payload(tool, paired_arguments.clone());
+        assert_eq!(paired_page["documented_in"]["total"], 3, "{tool}");
+        assert_eq!(
+            paired_page["documented_in"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2,
+            "{tool}"
+        );
+        assert_eq!(
+            paired_page["documented_in"]["items"][0]["doc_id"], first_citation["doc_id"],
+            "{tool} duplicate source links should share one section citation"
+        );
+        assert_ne!(
+            paired_page["documented_in"]["items"][0]["doc_id"],
+            paired_page["documented_in"]["items"][1]["doc_id"],
+            "{tool} must keep distinct cited sections"
+        );
+        paired_arguments["format"] = json!("markdown");
+        let (_, paired_markdown_result) = client.call(tool, paired_arguments);
+        let paired_markdown = paired_markdown_result["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            paired_markdown.matches("PATH_FIRST_GUIDE_CONTENT").count(),
+            1,
+            "{tool} duplicated the shared section body across repeated source links"
+        );
+        assert_eq!(
+            paired_markdown.matches("ENTRY_USAGE_CONTENT").count(),
+            1,
+            "{tool} lost content for the second bounded cited section"
+        );
+
+        let document_uri = format!(
+            "file://{}#L{}",
+            workspace
+                .path("README.md")
+                .canonicalize()
+                .unwrap()
+                .display(),
+            first_citation["doc_line"].as_u64().unwrap()
+        );
+        let cli_args: &[&str] = match tool {
+            "code_map_inspect" => &["query", "inspect", "service.py:entry"],
+            _ => &["query", "run", "inspect", "service.py:entry"],
+        };
+        let cli_result = run_cli(&workspace, cli_args);
+        assertions::assert_command_succeeded(&cli_result);
+        let cli_markdown = String::from_utf8(cli_result.stdout).unwrap();
+        assert!(
+            !cli_markdown.contains("## documents\n\n```json"),
+            "{tool} CLI emitted the parallel documents JSON page: {cli_markdown}"
+        );
+        assert!(
+            cli_markdown.contains(&document_uri),
+            "{tool} CLI dropped cited-section URI {document_uri}: {cli_markdown}"
+        );
+    }
+
     let extended_cli_ast = run_cli_json(
         &workspace,
         &[
@@ -413,11 +612,16 @@ fn stdio_compact_navigation_preserves_symbol_and_page_contracts() {
         snippet["source_preview"]["start_line"],
         snippet["source_preview"]["end_line"]
     )));
-    let explained = client.payload("code_map_explain", json!({"selector":"service.py:entry"}));
+    let explained = client.payload(
+        "code_map_explain",
+        json!({"selector":"service.py:entry","show_doc":true}),
+    );
     assert!(explained["relations"]
         .as_array()
         .unwrap()
         .contains(&json!("outgoing")));
+    assert_eq!(explained["documents"]["total"], 3);
+    assert!(explained.get("documented_in").is_none());
     let isolated = client.payload(
         "code_map_explain",
         json!({"selector":"target","path":"other.py"}),

@@ -1,5 +1,5 @@
 use super::paging;
-use crate::core::response::{Detail, QueryOptions};
+use crate::core::response::{Detail, QueryOptions, MAX_PAGE_SIZE};
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::backup::Backup;
 use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
@@ -542,6 +542,48 @@ pub fn rows(
     limit: usize,
 ) -> Result<Vec<Value>> {
     rows_with_mode(conn, sql, params, limit, RowMode::Structural)
+}
+
+pub(crate) fn document_contents_by_ids(
+    conn: &Connection,
+    doc_ids: &BTreeSet<String>,
+) -> Result<BTreeMap<String, String>> {
+    if doc_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    ensure!(
+        doc_ids.len() <= MAX_PAGE_SIZE,
+        "document content lookup exceeds the inspected page bound"
+    );
+    let placeholders = (1..=doc_ids.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT doc_id,content FROM doc_sections WHERE doc_id IN ({placeholders}) ORDER BY doc_id"
+    );
+    let params = doc_ids
+        .iter()
+        .map(|doc_id| doc_id as &dyn rusqlite::ToSql)
+        .collect::<Vec<_>>();
+    let rows = rows(conn, &sql, &params, doc_ids.len())?;
+    let mut contents = BTreeMap::new();
+    for row in rows {
+        let doc_id = row
+            .get("doc_id")
+            .and_then(Value::as_str)
+            .context("document content lookup returned a row without doc_id")?;
+        let content = row
+            .get("content")
+            .and_then(Value::as_str)
+            .context("document content lookup returned a row without content")?;
+        contents.insert(doc_id.to_owned(), content.to_owned());
+    }
+    ensure!(
+        contents.len() == doc_ids.len(),
+        "document content lookup could not resolve every inspected section"
+    );
+    Ok(contents)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

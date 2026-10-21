@@ -2,12 +2,19 @@ use super::{paging, reader};
 use crate::core::{
     commitments, config,
     models::stable_hash64,
-    response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
+    response::{
+        CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions, MAX_PAGE_SIZE,
+    },
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::{collections::HashMap, fs::File, io::Read, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    fs::File,
+    io::Read,
+    path::Path,
+};
 
 #[path = "symbols/search.rs"]
 mod search;
@@ -452,6 +459,90 @@ pub(crate) fn inspect_paged_response(
     result["governing_invariants"] = reader::governing_invariants(conn, &id)?;
     let result = with_analysis_gaps(conn, result, options)?;
     summarize_symbol(conn, result, coverage.include_coverage, options.detail)
+}
+
+pub(crate) fn attach_inspect_document_contents(
+    conn: &Connection,
+    result: &mut Value,
+) -> Result<()> {
+    let Some(items) = result
+        .get("documented_in")
+        .and_then(|page| page.get("items"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    if items.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        items.len() <= MAX_PAGE_SIZE,
+        "documented_in page exceeds the response page bound"
+    );
+
+    let doc_ids = items
+        .iter()
+        .map(|item| {
+            item.get("doc_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .context("documented_in page item is missing doc_id")
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    let mut contents = BTreeMap::new();
+    if let Some(documents) = result
+        .get("documents")
+        .and_then(|page| page.get("items"))
+        .and_then(Value::as_array)
+    {
+        for document in documents {
+            let (Some(doc_id), Some(content)) = (
+                document.get("doc_id").and_then(Value::as_str),
+                document.get("content").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            contents
+                .entry(doc_id.to_owned())
+                .or_insert_with(|| content.to_owned());
+        }
+    }
+    let available = contents.keys().cloned().collect::<BTreeSet<_>>();
+    let missing = doc_ids
+        .difference(&available)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    contents.extend(reader::document_contents_by_ids(conn, &missing)?);
+    ensure!(
+        doc_ids.iter().all(|doc_id| contents.contains_key(doc_id)),
+        "documented_in page has no matching document content"
+    );
+
+    let mut attached = HashSet::new();
+    let items = result
+        .get_mut("documented_in")
+        .and_then(|page| page.get_mut("items"))
+        .and_then(Value::as_array_mut)
+        .context("documented_in page items changed during content projection")?;
+    for item in items {
+        let doc_id = item
+            .get("doc_id")
+            .and_then(Value::as_str)
+            .context("documented_in page item is missing doc_id")?
+            .to_owned();
+        let object = item
+            .as_object_mut()
+            .context("documented_in page item is not an object")?;
+        if attached.insert(doc_id.clone()) {
+            let content = contents
+                .get(&doc_id)
+                .context("documented_in page has no matching document content")?;
+            object.insert("content".into(), json!(content));
+        } else {
+            object.remove("content");
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn explain_paged_response(
