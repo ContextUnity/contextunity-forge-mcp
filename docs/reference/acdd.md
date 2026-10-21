@@ -19,8 +19,8 @@ recoverable caution callout. See the
 
 The embedded profile assigns contract author, builder, and independent reviewer roles. The contract author posts the draft as a blackboard `draft` targeted to `build`; the reviewer continues from review through delivery in the same worker session. Workflow guidance includes `NO_PREFLIGHT_SUBAGENTS`, the registered combined Rust command, and scoped test commands. Contract and build context includes indexed scope symbols, external callers, covering tests, ADR invariant summaries, and a task-bound expected evidence template. The task engine rejects disconnected contract seams and public signature changes whose indexed callers fall outside admitted scope.
 
-The shared [contextunity-forge skill](../../skills/contextunity-forge/SKILL.md#acdd) is what an agent loads for tool choice and delivery. The claim's `workflow_guidance` is what that agent follows for the current gate. [CLI commands](cli.md) lists the terminal forms, including milestone commands, which stay CLI-only.
+The shared [contextunity-forge skill](../../skills/contextunity-forge/SKILL.md#acdd-authority-and-scope) is what an agent loads for tool choice and delivery. The claim's `workflow_guidance` is what that agent follows for the current gate. [CLI commands](cli.md) lists the terminal forms, including milestone commands, which stay CLI-only.
 
 ## Documentation and instructions co-evolution
 
-A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates the matching documentation and agent instructions during its build stage. Follow the [shared skill's co-evolution procedure](../../skills/contextunity-forge/SKILL.md#documentation-and-instructions-co-evolution).
+A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates the matching documentation and agent instructions during its build stage. Follow the [shared skill's co-evolution procedure](../../skills/contextunity-forge/SKILL.md#acdd-authority-and-scope).

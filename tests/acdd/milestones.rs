@@ -1183,9 +1183,17 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         "forge-mcp.yaml",
         "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
     );
-    let source = "---\nid: m-close\ntitle: Close work\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Close work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish work\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
+    let source = "---\nid: m-close\ntitle: Close work\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Close work\n### task: finish\n```yaml\ntask_ref: finish\ntarget: Finish work\nproof_policy: seam-test-first\nscope: [src/lib.rs]\n```\n";
+    root.write("src/lib.rs", "pub fn finish() {}\n");
     root.write("docs/milestones/010-close.md", source);
-    commit_handoff_fixture_inputs(&root, &["forge-mcp.yaml", "docs/milestones/010-close.md"]);
+    commit_handoff_fixture_inputs(
+        &root,
+        &[
+            "forge-mcp.yaml",
+            "src/lib.rs",
+            "docs/milestones/010-close.md",
+        ],
+    );
     let mut store = TasksStore::open(&root.0.join(".forge/tasks.sqlite")).unwrap();
     store
         .sync(
@@ -1208,7 +1216,11 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("finish"));
     assert!(root.0.join("docs/milestones/010-close.md").exists());
     let task = store.list(None, "all", None).unwrap().pop().unwrap();
+    store
+        .extend_scope(&task.task_id, &["src/extra.rs".to_owned()], &root.0)
+        .unwrap();
     root.write("src/lib.rs", "pub fn finish() {}\n");
+    root.write("src/extra.rs", "pub fn admitted_extension() {}\n");
     complete_task_through_engine(&root, &store, &task.task_id);
     drop(store);
     let handoff_commit = git_head(&root.0);
@@ -1337,6 +1349,7 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
         "cancelled-scope",
         "cancelled-receipt",
         "old-ref",
+        "scope-tamper",
         "dependent",
         "rollback",
     ] {
@@ -1457,6 +1470,17 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
                     )
                     .unwrap();
             }
+            "scope-tamper" => {
+                let mut task = store.inspect(&finish_id).unwrap();
+                task.spec.scope.push("unadmitted/outside.rs".into());
+                store
+                    .connection
+                    .execute(
+                        "UPDATE tasks SET descriptor=?1 WHERE task_id=?2",
+                        rusqlite::params![serde_json::to_string(&task).unwrap(), finish_id],
+                    )
+                    .unwrap();
+            }
             "dependent" => {
                 let pending = format!("{cancelled}\n```yaml\ntask_ref: dependent\ntarget: Must remain blocked on cancelled work\nproof_policy: seam-test-first\nscope: [dependent/]\ndepends_on: [transferred]\n```\n");
                 root.write(active, &pending);
@@ -1520,6 +1544,13 @@ fn milestone_handoff_requires_completed_tasks_and_archives_typed_receipt() {
                 String::from_utf8_lossy(&output.stderr)
             ));
             continue;
+        }
+        if scenario == "scope-tamper" {
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("TASK_AUTHORITY_CHANGED"),
+                "unrecorded task-scope mutation must fail authority validation: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         if expected_success {
             assert!(!root.0.join(active).exists());

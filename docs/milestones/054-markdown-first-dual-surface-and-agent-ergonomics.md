@@ -156,8 +156,19 @@ below, and run the full milestone gates on the final combined content.
 
 Consolidated verification runs every required affected target above and
 `cargo clippy --all-targets --all-features -- -D warnings`.
-No benchmarks are admitted. Final documentation scan, independent integration
+The user separately authorized three alternating cold-build and graph-coverage
+pairs on the isolated Commerce control with 30-second intervals. These measurements
+add no performance acceptance requirement. Final documentation scan, independent integration
 review, binding, and full milestone gates follow [TESTS.md](../../TESTS.md).
+
+## Control benchmark
+
+Three alternating baseline/054 pairs ran on the isolated Commerce control with
+Traverse and GridViewSpec, with 30-second intervals and fresh database/extraction
+caches. Median cold build: 10.498 s → 10.427 s (−0.68%). Graph test reachability
+remained 6,756/43,995 production nodes (15.36%); no canonical graph coverage was
+lost and both binaries were deterministic. OS page caches were not flushed;
+three pairs do not establish a causal speed improvement.
 
 ## Tasks in this milestone
 
@@ -849,6 +860,110 @@ receipt:
     - 'INV-CLICKABLE-COORDINATES: Render available file, symbol, and document coordinates as absolute file:/// links with real line fragments; resolve against the selected workspace and never invent missing coordinates.'
     - 'INV-DUAL-SURFACE-PARITY: Shared operations produce equivalent semantic results and use the same formatter; CLI-only operations retain their boundary.'
     - 'INV-DEAD-METADATA-ELIMINATION: Shared compaction preserves active recovery and all meaningful domain evidence.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
+```
+
+### task: handoff-scope-extension-finalization
+
+The user authorizes repairing the existing handoff blocker while closing this
+milestone. The six delivered
+task contracts and their accepted proofs remain unchanged.
+
+```yaml
+task_ref: handoff-scope-extension-finalization
+target: Close the milestone through native handoff after legitimate scope extension and retain strict authority validation
+depends_on:
+- cli-surface-parity-json-alignment-and-seam-tests
+proof_policy: seam-test-first
+contract_revision: 2
+invariants:
+- 'INV-HANDOFF-AUTHORITY: Validate the frozen task contract and admitted effective scope independently; reject contract or scope-ledger tampering without publishing an archive.'
+- 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve all six accepted task contracts, proofs, review independence, and receipt provenance.'
+scope:
+- src/engine/milestones/handoff.rs
+- tests/acdd/milestones.rs
+- docs/reference/tasks.md
+- docs/reference/acdd.md
+status: completed
+subtasks:
+- subtask_ref: handoff-scope-and-control-evidence
+  title: Prove legitimate scope-extension handoff and tamper rejection through the existing production seam and align its documentation
+  status: completed
+  evidence: |-
+    {
+      "command": "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets",
+      "exit_code": 0,
+      "tests_passed": 816,
+      "tests_failed": 0,
+      "tests_ignored": 1,
+      "archive_id": "6c9c752ee79c7c0d",
+      "executed_full_command": "cargo test --test acdd && cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets",
+      "affected_target": {
+        "command": "cargo test --test acdd",
+        "exit_code": 0,
+        "passed": 116,
+        "failed": 0,
+        "ignored": 0
+      },
+      "standalone_commitment": {
+        "command": "cargo test --test commitment_integrity",
+        "exit_code": 0,
+        "passed": 16,
+        "failed": 0,
+        "ignored": 0
+      },
+      "source_sha256": "21c2e8f113c6e3c9d1b28f38f57b17700cdaff794192e6c35cc92699c0e17be7",
+      "test_sha256": "12e4765460cfbf653ba2d90730977380519c7550689169669be9a92aac64b95f",
+      "counts_policy": "Final all-targets sum only; standalone commitment and affected-target prefix not counted twice"
+    }
+receipt:
+  contract_revision: 2
+  passed_at: 2026-10-21T06:09:01.058235264+00:00
+  evidence:
+    command_proof:
+      command: cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 816
+      tests_failed: 0
+      log: Actual full affected target cargo test --test acdd also passed116/0; standalone commitment16/0; complete all-targets816/0/1 after exact source restoration. Central archive6c9c752ee79c7c0d. Existing handoff seam actual extension red101, green1/0, original-bug sensitivity red101 then exact-restored green1/0. Global skill byte-identical to repository. No benchmark report files retained in repository.
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Independently reviewed frozen candidate d366f351c5f97db0b0fab46b7fb3d0f5113a7c83 against baseline 693d0eaa0fb14ab7bc8fb03664e096a5d973cecd. Actual implementation changes are the four original admitted source/test/documentation paths; the operationally admitted src/engine/milestones/mod.rs is unchanged. Source SHA256 21c2e8f113c6e3c9d1b28f38f57b17700cdaff794192e6c35cc92699c0e17be7 and test SHA256 12e4765460cfbf653ba2d90730977380519c7550689169669be9a92aac64b95f match the frozen packet and final proof. validate_effective_scope rejects invalid/noncanonical paths, frozen-path mismatch, initial_scope mismatch, unadmitted extension bases, and effective-scope/ledger mismatch. The original contract digest and the full effective provenance scope remain separately checked.
+        claims:
+          applicable: true
+          evidence: The stored task digest is checked against the current original manifest specification and a stored-spec projection replacing only its operational scope with original scope; all other digest fields, revisions, task set, statuses, receipts, accepted gates, and provenance validation remain intact. All six prior accepted task blocks and receipts are byte-unchanged. The existing production handoff seam now proves a real TasksStore::extend_scope succeeds and an unrecorded completed-descriptor scope change rejects TASK_AUTHORITY_CHANGED without an archive or task-history mutation. Existing digest/revision/cancellation/receipt scenarios remain. Builder runtime red and restored mutation red are supplemental sensitivity evidence, not substituted for final green verification.
+        concurrency:
+          applicable: true
+          evidence: The repair introduces only read-side scope validation in the existing handoff authority path; scope admission transactions, claim transitions, archive writes, rollback guards, and receipt publication are unchanged. Initial frozen rows remain distinct from extension rows. The rejected-scope branch of the existing seam verifies no archive and unchanged task histories. The builder froze both source/test files before independent review and the coordinator alone ran the final shared gates; reviewer performed no Cargo, source, task-authority, receipt, or DB mutation.
+        project_isolation:
+          applicable: true
+          evidence: Scope rows are selected by the exact task_id of the already project-filtered relevant task set. Existing milestone identity, milestone_ref, project/repository-bound digests, clean-tree binding, and task proof provenance checks remain unchanged. All review operations used the dedicated M054 milestone worktree; unrelated primary-worktree M060 changes were untouched. No new API, cross-project query, configuration change, or global state was added.
+        administration:
+          applicable: true
+          evidence: 'Independent reviewer m054-integration-reviewer differs from accepted builder m054-finalization-builder. Rev2 initial four-path authority and the separately admitted unchanged mod.rs extension are preserved. Documentation scan797 and independently read tasks/acdd references agree with the repair; the short manifest summary matches the corrected Commerce benchmark, while all three repository benchmark reports remain absent. Reconciled final archive6c9c752ee79c7c0d: affected ACDD116/0, standalone commitment16/0, strict Clippy exit0, then thirteen all-target summaries totaling816 passed/0 failed/1 ignored; prefix checks are not double-counted. Final source hashes match verification. No unresolved in-scope findings; no manual receipt edits, duplicate commits, policy weakening, or accepted-proof reopening.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-DUAL-SURFACE-PARITY: Operations available on both surfaces share semantic projections and one formatting engine; equivalent data/options produce identical Markdown and equivalent parsed JSON. Existing CLI-only operations remain CLI-only.'
+    - 'INV-MARKDOWN-FIRST-DEFAULT: MCP tools and CLI default to high-density Markdown; explicit format: "json" and --format json preserve programmatic output under ADR 0019, amending ADR 0001 Decision 2.'
+    - 'INV-DEAD-METADATA-ELIMINATION: Omit inactive presentation metadata and empty optional graph sections through operation-aware compaction; preserve all active nested/source continuations and durable/domain data.'
+    - 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve all actionable workflow guidance, stage rules, evidence identities, applicable invariants, dependencies, allowed write scopes, subtask DoD, and receipts under existing operation bounds.'
+    - 'INV-CONTEXTUAL-ACTIONABLE-HINTS: Replace duplicated boilerplate only with equivalent concise contextual guidance; preserve supported recovery steps and error semantics.'
+    - 'INV-CLICKABLE-COORDINATES: Render available file, symbol, and document coordinates as absolute file:/// links with real line fragments; resolve against the selected workspace and never invent missing coordinates.'
+    - 'INV-HANDOFF-AUTHORITY: Validate the frozen task contract and admitted effective scope independently; reject contract or scope-ledger tampering without publishing an archive.'
+    - 'INV-PRESERVED-CONTRACT-INTEGRITY: Preserve all six accepted task contracts, proofs, review independence, and receipt provenance.'
     architectural_notes: []
     review_summary:
       decision: pass

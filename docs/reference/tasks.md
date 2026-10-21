@@ -552,6 +552,12 @@ Git proof objects, and returns `binding`, resolved `target_base`, and diagnostic
 and run the repository verification from [TESTS.md](../../TESTS.md). The reviewer
 must differ from every worker listed in `binding.builders`.
 
+Handoff validates the manifest's original task scope separately from operational
+scope extensions. The stored effective scope must equal the original scope plus
+the admitted extension ledger, within its frozen boundary roots; unrecorded or
+out-of-bound scope changes reject with `TASK_AUTHORITY_CHANGED`. Accepted gate
+proofs, contract revisions and receipts remain unchanged.
+
 Supply a JSON `IntegrationEvidence` record through `--evidence-file`:
 
 | Field | Required value |

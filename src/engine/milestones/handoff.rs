@@ -324,6 +324,111 @@ fn ready_milestone(root: &Path, selector: &str) -> Result<(Snapshot, TasksStore,
     Ok((item, store, relevant))
 }
 
+fn validate_effective_scope(
+    store: &TasksStore,
+    task: &Task,
+    original: &crate::core::tasks::TaskSpec,
+) -> Result<()> {
+    let invalid = || {
+        anyhow::anyhow!(
+            "TASK_AUTHORITY_CHANGED: task '{}' scope differs from its admitted extension ledger",
+            task.task_id
+        )
+    };
+    let normalize = |value: &str| -> Result<String> {
+        crate::core::tasks::relative_path(value)
+            .map(|path| path.to_string_lossy().into_owned())
+            .map_err(|_| invalid())
+    };
+
+    let original_scope = original
+        .scope
+        .iter()
+        .map(|path| normalize(path))
+        .collect::<Result<BTreeSet<_>>>()?;
+    if !task.initial_scope.is_empty()
+        && task
+            .initial_scope
+            .iter()
+            .map(|path| normalize(path))
+            .collect::<Result<BTreeSet<_>>>()?
+            != original_scope
+    {
+        return Err(invalid());
+    }
+
+    let rows = {
+        let mut statement = store.connection.prepare(
+            "SELECT path,base_root,frozen FROM task_scope_paths WHERE task_id=?1 ORDER BY rowid",
+        )?;
+        let rows = statement
+            .query_map([&task.task_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let mut frozen_paths = BTreeSet::new();
+    let mut frozen_bases = BTreeSet::new();
+    let mut extensions = Vec::new();
+    for (stored_path, stored_base, frozen) in rows {
+        let path = normalize(&stored_path)?;
+        let base = normalize(&stored_base)?;
+        if path != stored_path
+            || base != stored_base
+            || !Path::new(&path).starts_with(Path::new(&base))
+        {
+            return Err(invalid());
+        }
+        match frozen {
+            1 => {
+                if !frozen_paths.insert(path) {
+                    return Err(invalid());
+                }
+                frozen_bases.insert(base);
+            }
+            0 => extensions.push((path, base)),
+            _ => return Err(invalid()),
+        }
+    }
+    if frozen_paths != original_scope {
+        return Err(invalid());
+    }
+
+    let allowed_bases = if original.scope_roots.is_empty() {
+        frozen_bases
+    } else {
+        original
+            .scope_roots
+            .iter()
+            .map(|path| normalize(path))
+            .collect::<Result<BTreeSet<_>>>()?
+    };
+    let mut admitted_scope = frozen_paths;
+    for (path, base) in extensions {
+        if !allowed_bases.contains(&base)
+            || !Path::new(&path).starts_with(Path::new(&base))
+            || !admitted_scope.insert(path)
+        {
+            return Err(invalid());
+        }
+    }
+    let effective_scope = task
+        .spec
+        .scope
+        .iter()
+        .map(|path| normalize(path))
+        .collect::<Result<BTreeSet<_>>>()?;
+    if effective_scope != admitted_scope {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 fn validated_authority(
     root: &Path,
     item: &Snapshot,
@@ -348,8 +453,10 @@ fn validated_authority(
             .iter()
             .find(|spec| milestone.task_id(spec) == task.task_id)
             .context("TASK_AUTHORITY_MISSING: accepted task is missing from current milestone")?;
+        let mut task_authority = task.spec.clone();
+        task_authority.scope = spec.scope.clone();
         if milestone.digest(spec)? != task.digest
-            || milestone.digest(&task.spec)? != task.digest
+            || milestone.digest(&task_authority)? != task.digest
             || spec.contract_revision != task.contract_revision
             || task.spec.contract_revision != task.contract_revision
             || spec.status.as_deref() != Some(task.status.as_str())
@@ -360,6 +467,7 @@ fn validated_authority(
                 task.task_id
             );
         }
+        validate_effective_scope(store, task, spec)?;
         if task.status == "cancelled" {
             if task.spec.status.as_deref() != Some("cancelled")
                 || task.receipt.is_some()
